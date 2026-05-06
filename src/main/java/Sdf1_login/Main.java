@@ -46,8 +46,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-public class Main extends JavaPlugin
-        implements CommandExecutor, Listener, TabCompleter {
+public class Main extends JavaPlugin implements CommandExecutor, Listener, TabCompleter {
 
     private DatabaseManager db;
     private ConfigManager config;
@@ -61,45 +60,25 @@ public class Main extends JavaPlugin
     private GUIManager gui;
     private ChatInputManager chatInput;
     private Economy economy;
+    private VerificationManager verification;
 
-    private final Set<String> loggedIn =
-            new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-    private final Set<String> needsPasswordChange =
-            new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-    private final Map<UUID, Long> joinTime =
-            new ConcurrentHashMap<>();
-    private final Map<UUID, Location> joinLoc =
-            new HashMap<>();
-    private final Map<UUID, ItemStack[]> savedInventory =
-            new HashMap<>();
-    private final Map<UUID, ItemStack[]> savedArmor =
-            new HashMap<>();
-    private final Map<UUID, ItemStack[]> savedExtra =
-            new HashMap<>();
-    private final Map<UUID, Integer> savedLevel =
-            new HashMap<>();
-    private final Map<UUID, Float> savedExp =
-            new HashMap<>();
-    private final Map<String, Long> ipAutoLogin =
-            new HashMap<>();
+    private final Set<String> loggedIn = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    private final Set<String> needsPasswordChange = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    private final Map<UUID, Long> joinTime = new ConcurrentHashMap<>();
+    private final Map<UUID, Location> joinLoc = new HashMap<>();
+    private final Map<String, Long> ipAutoLogin = new HashMap<>();
     private static final long IP_SKIP_MS = 300000L;
 
     private static class PwdRollback {
         final String hash;
         final String salt;
         final long time;
-        PwdRollback(String h, String s, long t) {
-            hash = h; salt = s; time = t;
-        }
+        PwdRollback(String h, String s, long t) { hash = h; salt = s; time = t; }
     }
-    private final Map<String, PwdRollback> pwdRollback =
-            new ConcurrentHashMap<>();
+    private final Map<String, PwdRollback> pwdRollback = new ConcurrentHashMap<>();
 
-    public void recordPasswordChange(String name,
-                                     String oldHash, String oldSalt) {
-        pwdRollback.put(name,
-                new PwdRollback(oldHash, oldSalt,
-                        System.currentTimeMillis()));
+    public void recordPasswordChange(String name, String oldHash, String oldSalt) {
+        pwdRollback.put(name, new PwdRollback(oldHash, oldSalt, System.currentTimeMillis()));
     }
 
     public DatabaseManager getDb() { return db; }
@@ -113,10 +92,11 @@ public class Main extends JavaPlugin
     public PointsManager getPoints() { return points; }
     public GUIManager getGui() { return gui; }
     public ChatInputManager getChatInput() { return chatInput; }
+    public VerificationManager getVerification() { return verification; }
     public Set<String> getLoggedIn() { return loggedIn; }
     public Set<String> getNeedsPasswordChange() { return needsPasswordChange; }
 
-    /* ==================== 生命周期 ==================== */
+    // ==================== 生命周期 ====================
 
     @Override
     public void onEnable() {
@@ -137,6 +117,7 @@ public class Main extends JavaPlugin
         points = new PointsManager(this);
         gui = new GUIManager(this);
         chatInput = new ChatInputManager();
+        verification = new VerificationManager(this);
         setupEconomy();
         getCommand("sdf1_login").setExecutor(this);
         getCommand("sdf1_login").setTabCompleter(this);
@@ -154,7 +135,7 @@ public class Main extends JavaPlugin
         getCommand("删除").setExecutor(this);
         getCommand("找回密码").setExecutor(this);
         getCommand("签到").setExecutor(this);
-        getCommand("debug").setExecutor(this);
+        getCommand("sdf1debug").setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
         afk.startCheck();
         startLoginReminder();
@@ -170,8 +151,7 @@ public class Main extends JavaPlugin
 
     private void setupEconomy() {
         if (getServer().getPluginManager().getPlugin("Vault") == null) return;
-        RegisteredServiceProvider<Economy> rsp =
-                getServer().getServicesManager().getRegistration(Economy.class);
+        RegisteredServiceProvider<Economy> rsp = getServer().getServicesManager().getRegistration(Economy.class);
         if (rsp != null) economy = rsp.getProvider();
     }
 
@@ -218,17 +198,15 @@ public class Main extends JavaPlugin
             public void run() {
                 for (Player p : Bukkit.getOnlinePlayers()) {
                     if (needsPasswordChange.contains(p.getName())) {
-                        p.sendTitle("§c§l⚠ 请修改密码 ⚠",
-                                "§f使用 /sdf1_login pw 修改密码", 10, 40, 10);
-                        p.playSound(p.getLocation(),
-                                Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
+                        p.sendTitle("§c§l⚠ 请修改密码 ⚠", "§f使用 /sdf1_login pw 修改密码", 10, 40, 10);
+                        p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1.0f, 1.0f);
                     }
                 }
             }
         }.runTaskTimer(this, 200L, 200L);
     }
 
-    /* ==================== 工具 ==================== */
+    // ==================== 工具 ====================
 
     private String getPlayerIP(Player p) {
         InetSocketAddress addr = p.getAddress();
@@ -250,11 +228,45 @@ public class Main extends JavaPlugin
     }
 
     public void hideInventory(Player p) {
-        savedInventory.put(p.getUniqueId(), p.getInventory().getContents());
-        savedArmor.put(p.getUniqueId(), p.getInventory().getArmorContents());
-        savedExtra.put(p.getUniqueId(), p.getInventory().getExtraContents());
-        savedLevel.put(p.getUniqueId(), p.getLevel());
-        savedExp.put(p.getUniqueId(), p.getExp());
+        String name = p.getName();
+        if (db.hasInventoryBackup(name)) {
+            p.getInventory().clear();
+            p.getInventory().setArmorContents(new ItemStack[4]);
+            p.getInventory().setExtraContents(new ItemStack[1]);
+            p.setLevel(0);
+            p.setExp(0f);
+            return;
+        }
+        ItemStack[] contents = p.getInventory().getContents();
+        ItemStack[] armor = p.getInventory().getArmorContents();
+        ItemStack[] extra = p.getInventory().getExtraContents();
+        boolean hasItems = false;
+        for (ItemStack it : contents) {
+            if (it != null && it.getType() != Material.AIR) { hasItems = true; break; }
+        }
+        if (!hasItems) {
+            for (ItemStack it : armor) {
+                if (it != null && it.getType() != Material.AIR) { hasItems = true; break; }
+            }
+        }
+        if (!hasItems) {
+            for (ItemStack it : extra) {
+                if (it != null && it.getType() != Material.AIR) { hasItems = true; break; }
+            }
+        }
+        try {
+            String invB64 = InventorySerializer.toBase64(contents);
+            String armorB64 = InventorySerializer.toBase64(armor);
+            String extraB64 = InventorySerializer.toBase64(extra);
+            db.saveInventoryBackup(name, invB64, armorB64, extraB64, p.getLevel(), p.getExp());
+            getLogger().info("[Sdf1_login] 保存: " + name
+                    + " | len=" + invB64.length()
+                    + " | slots=" + contents.length
+                    + " | hasItems=" + hasItems);
+        } catch (Exception e) {
+            getLogger().severe("[Sdf1_login] 保存失败: " + name);
+            e.printStackTrace();
+        }
         p.getInventory().clear();
         p.getInventory().setArmorContents(new ItemStack[4]);
         p.getInventory().setExtraContents(new ItemStack[1]);
@@ -262,18 +274,48 @@ public class Main extends JavaPlugin
         p.setExp(0f);
     }
 
+
+
     public void restoreInventory(Player p) {
-        ItemStack[] inv = savedInventory.remove(p.getUniqueId());
-        ItemStack[] armor = savedArmor.remove(p.getUniqueId());
-        ItemStack[] extra = savedExtra.remove(p.getUniqueId());
-        Integer level = savedLevel.remove(p.getUniqueId());
-        Float exp = savedExp.remove(p.getUniqueId());
-        if (inv != null) p.getInventory().setContents(inv);
-        if (armor != null) p.getInventory().setArmorContents(armor);
-        if (extra != null) p.getInventory().setExtraContents(extra);
-        if (level != null) p.setLevel(level);
-        if (exp != null) p.setExp(exp);
+        String name = p.getName();
+        try {
+            String[] backup = db.loadInventoryBackup(name);
+            if (backup != null && backup[0] != null && !backup[0].isEmpty()) {
+                getLogger().info("[Sdf1_login] 还原: " + name + " | len=" + backup[0].length());
+                p.getInventory().setContents(InventorySerializer.fromBase64(backup[0]));
+                if (backup[1] != null && !backup[1].isEmpty()) {
+                    p.getInventory().setArmorContents(InventorySerializer.fromBase64(backup[1]));
+                }
+                if (backup[2] != null && !backup[2].isEmpty()) {
+                    p.getInventory().setExtraContents(InventorySerializer.fromBase64(backup[2]));
+                }
+                int level = Integer.parseInt(backup[3]);
+                if (level > 0) p.setLevel(level);
+                double exp = Double.parseDouble(backup[4]);
+                if (exp > 0) p.setExp((float) exp);
+            } else {
+                getLogger().info("[Sdf1_login] 无备份: " + name);
+            }
+        } catch (Exception e) {
+            getLogger().severe("[Sdf1_login] 还原失败: " + name);
+            e.printStackTrace();
+        }
     }
+
+    public void backupInventory(Player p) {
+        String name = p.getName();
+        try {
+            String invB64 = InventorySerializer.toBase64(p.getInventory().getContents());
+            String armorB64 = InventorySerializer.toBase64(p.getInventory().getArmorContents());
+            String extraB64 = InventorySerializer.toBase64(p.getInventory().getExtraContents());
+            db.saveInventoryBackup(name, invB64, armorB64, extraB64, p.getLevel(), p.getExp());
+            getLogger().info("[Sdf1_login] 退出备份: " + name + " | len=" + invB64.length());
+        } catch (Exception e) {
+            getLogger().severe("[Sdf1_login] 退出备份失败: " + name);
+            e.printStackTrace();
+        }
+    }
+
 
     public boolean isFrozen(Player p) {
         return !loggedIn.contains(p.getName());
@@ -281,8 +323,7 @@ public class Main extends JavaPlugin
 
     private boolean isAdmin(CommandSender sender) {
         if (sender instanceof Player) {
-            return ((Player) sender).getScoreboardTags()
-                    .contains(config.adminTag);
+            return ((Player) sender).getScoreboardTags().contains(config.adminTag);
         }
         return true;
     }
@@ -294,6 +335,47 @@ public class Main extends JavaPlugin
         return true;
     }
 
+    // ==================== 自动登录 ====================
+
+    private void autoLogin(Player p) {
+        String name = p.getName();
+        if (!db.userExists(name)) {
+            String salt = PasswordUtils.generateSalt();
+            String hash = PasswordUtils.hash(PasswordUtils.generateTempPassword(), salt);
+            db.createUser(name, hash, salt);
+            p.sendMessage("§a[Sdf1_login] §f您已自动注册并登录！");
+        } else {
+            p.sendMessage("§a[Sdf1_login] §f您已自动登录！");
+        }
+        loggedIn.add(name);
+        db.setLoggedIn(name, true);
+        db.setField(name, "last_login_time", System.currentTimeMillis());
+        db.setField(name, "last_online_check", System.currentTimeMillis());
+        joinTime.remove(p.getUniqueId());
+        boolean empty = true;
+        for (ItemStack it : p.getInventory().getContents()) {
+            if (it != null && it.getType() != Material.AIR) { empty = false; break; }
+        }
+        if (empty) {
+            String invData = (String) db.getField(name, "inventory_data");
+            if (invData != null && !invData.isEmpty()) {
+                restoreInventory(p);
+            }
+        }
+        recordIPLogin(p);
+        activateBeibao(p);
+    }
+
+    private void activateBeibao(Player p) {
+        try {
+            org.bukkit.plugin.Plugin cy = Bukkit.getPluginManager().getPlugin("CY_beibao");
+            if (cy != null && cy.isEnabled()) {
+                cy.getClass().getMethod("onSdf1Activation", String.class, int.class, int.class)
+                        .invoke(cy, p.getName(), 0, 0);
+            }
+        } catch (Exception ignored) {}
+    }
+
     public void openTaskPanel(Player p) {
         Inventory g = Bukkit.createInventory(null, 27, "§6§l任务面板");
         ItemStack gl = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
@@ -303,9 +385,7 @@ public class Main extends JavaPlugin
         Map<String, Object> user = db.getUser(p.getName());
         int stage = ((Number) user.getOrDefault("gift_stage", 0)).intValue();
         String claimed = (String) user.getOrDefault("gift_claimed", "");
-        g.setItem(11, mkItem(Material.BOOK, "§e新人礼包进度",
-                "§7当前阶段: §e" + stage,
-                "§7已领取: §a" + (claimed.isEmpty() ? "无" : claimed)));
+        g.setItem(11, mkItem(Material.BOOK, "§e新人礼包进度", "§7当前阶段: §e" + stage, "§7已领取: §a" + (claimed.isEmpty() ? "无" : claimed)));
         g.setItem(15, mkItem(Material.CLOCK, "§b签到", "§7今日签到获取积分"));
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
@@ -322,16 +402,14 @@ public class Main extends JavaPlugin
         return it;
     }
 
-    /* ==================== 指令 ==================== */
+    // ==================== 指令 ====================
 
     @Override
-    public boolean onCommand(CommandSender sender, Command cmd,
-                             String label, String[] args) {
+    public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         String cn = cmd.getName();
-
-        if (cn.equalsIgnoreCase("debug")) {
+        if (cn.equalsIgnoreCase("sdf1debug")) {
             if (!isAdmin(sender)) { sender.sendMessage(config.msg("admin_no_permission")); return true; }
-            if (args.length < 2) { sender.sendMessage("§c用法: /debug <玩家> take.<阶段>"); return true; }
+            if (args.length < 2) { sender.sendMessage("§c用法: /sdf1debug <玩家> take.<阶段>"); return true; }
             String target = args[0];
             String action = args[1].toLowerCase();
             if (action.startsWith("take.")) {
@@ -343,101 +421,36 @@ public class Main extends JavaPlugin
                     db.setField(target, "gift_claimed", sb.toString());
                     db.setField(target, "tasks_completed", sb.toString());
                     sender.sendMessage("§a[Debug] §f已将 " + target + " 设为礼包阶段 " + stg);
-                } catch (NumberFormatException e) {
-                    sender.sendMessage("§c[Debug] §f阶段号无效");
-                }
-            } else {
-                sender.sendMessage("§c[Debug] §f未知操作: " + action);
-            }
+                } catch (NumberFormatException e) { sender.sendMessage("§c[Debug] §f阶段号无效"); }
+            } else { sender.sendMessage("§c[Debug] §f未知操作: " + action); }
             return true;
         }
-
-        if (cn.equals("注册")) {
-            if (!(sender instanceof Player)) return true;
-            return loginMgr.handleRegister((Player) sender, args);
-        }
-        if (cn.equals("登录")) {
-            if (!(sender instanceof Player)) return true;
-            return loginMgr.handleLogin((Player) sender, args);
-        }
-        if (cn.equals("玩家信息")) {
-            if (!(sender instanceof Player)) return true;
-            gui.openMain((Player) sender);
-            return true;
-        }
-        if (cn.equals("改密码")) {
-            if (!(sender instanceof Player)) return true;
-            String[] na = new String[args.length + 1];
-            na[0] = "pw";
-            System.arraycopy(args, 0, na, 1, args.length);
-            return handleSubCommand((Player) sender, na);
-        }
-        if (cn.equals("设置邮箱")) {
-            if (!(sender instanceof Player)) return true;
-            String[] na = new String[args.length + 1];
-            na[0] = "email";
-            System.arraycopy(args, 0, na, 1, args.length);
-            return handleSubCommand((Player) sender, na);
-        }
-        if (cn.equals("撤销")) {
-            if (!(sender instanceof Player)) return true;
-            String[] na = new String[args.length + 1];
-            na[0] = "undo";
-            System.arraycopy(args, 0, na, 1, args.length);
-            return handleSubCommand((Player) sender, na);
-        }
+        if (cn.equals("注册")) { if (!(sender instanceof Player)) return true; return loginMgr.handleRegister((Player) sender, args); }
+        if (cn.equals("登录")) { if (!(sender instanceof Player)) return true; return loginMgr.handleLogin((Player) sender, args); }
+        if (cn.equals("玩家信息")) { if (!(sender instanceof Player)) return true; gui.openMain((Player) sender); return true; }
+        if (cn.equals("改密码")) { if (!(sender instanceof Player)) return true; String[] na = new String[args.length + 1]; na[0] = "pw"; System.arraycopy(args, 0, na, 1, args.length); return handleSubCommand((Player) sender, na); }
+        if (cn.equals("设置邮箱")) { if (!(sender instanceof Player)) return true; String[] na = new String[args.length + 1]; na[0] = "email"; System.arraycopy(args, 0, na, 1, args.length); return handleSubCommand((Player) sender, na); }
+        if (cn.equals("撤销")) { if (!(sender instanceof Player)) return true; String[] na = new String[args.length + 1]; na[0] = "undo"; System.arraycopy(args, 0, na, 1, args.length); return handleSubCommand((Player) sender, na); }
         if (cn.equals("删除")) {
             if (!(sender instanceof Player)) {
                 if (args.length < 2) { sender.sendMessage("§c用法: /删除 <玩家> <管理密码>"); return true; }
-                if (args[1].equals(config.adminPassword)) {
-                    db.deleteUser(args[0]);
-                    sender.sendMessage("§a[Sdf1_login] §f玩家 " + args[0] + " 已删除");
-                } else {
-                    sender.sendMessage("§c[Sdf1_login] §f管理密码错误！");
-                }
+                if (args[1].equals(config.adminPassword)) { db.deleteUser(args[0]); sender.sendMessage("§a[Sdf1_login] §f玩家 " + args[0] + " 已删除"); }
+                else { sender.sendMessage("§c[Sdf1_login] §f管理密码错误！"); }
                 return true;
             }
-            String[] na = new String[args.length + 1];
-            na[0] = "del";
-            System.arraycopy(args, 0, na, 1, args.length);
-            return handleSubCommand((Player) sender, na);
+            String[] na = new String[args.length + 1]; na[0] = "del"; System.arraycopy(args, 0, na, 1, args.length); return handleSubCommand((Player) sender, na);
         }
-        if (cn.equals("找回密码")) {
-            if (!(sender instanceof Player)) return true;
-            return loginMgr.handleReset((Player) sender);
-        }
-        if (cn.equals("签到")) {
-            if (!(sender instanceof Player)) return true;
-            Player pl = (Player) sender;
-            if (dailySign(pl)) gui.openTaskCenter(pl);
-            else pl.sendMessage(config.msg("checkin_already"));
-            return true;
-        }
-        if (cn.equalsIgnoreCase("reg")) {
-            if (!(sender instanceof Player)) return true;
-            return loginMgr.handleRegister((Player) sender, args);
-        }
-        if (cn.equalsIgnoreCase("login")) {
-            if (!(sender instanceof Player)) return true;
-            return loginMgr.handleLogin((Player) sender, args);
-        }
+        if (cn.equals("找回密码")) { if (!(sender instanceof Player)) return true; return loginMgr.handleReset((Player) sender); }
+        if (cn.equals("签到")) { if (!(sender instanceof Player)) return true; Player pl = (Player) sender; if (dailySign(pl)) gui.openTaskCenter(pl); else pl.sendMessage(config.msg("checkin_already")); return true; }
+        if (cn.equalsIgnoreCase("reg")) { if (!(sender instanceof Player)) return true; return loginMgr.handleRegister((Player) sender, args); }
+        if (cn.equalsIgnoreCase("login")) { if (!(sender instanceof Player)) return true; return loginMgr.handleLogin((Player) sender, args); }
         if (cn.equalsIgnoreCase("sdf1_login")) {
-            if (args.length == 0) {
-                if (!(sender instanceof Player)) return true;
-                gui.openMain((Player) sender);
-                return true;
-            }
-            if (args[0].equalsIgnoreCase("kick") && !(sender instanceof Player)) {
-                return handleAfkCommand(sender, args);
-            }
+            if (args.length == 0) { if (!(sender instanceof Player)) return true; gui.openMain((Player) sender); return true; }
+            if (args[0].equalsIgnoreCase("kick") && !(sender instanceof Player)) return handleAfkCommand(sender, args);
             if (args[0].equalsIgnoreCase("del") && !(sender instanceof Player)) {
                 if (args.length < 3) { sender.sendMessage("§c用法: /sdf1_login del <玩家> <管理密码>"); return true; }
-                if (args[2].equals(config.adminPassword)) {
-                    db.deleteUser(args[1]);
-                    sender.sendMessage("§a[Sdf1_login] §f玩家 " + args[1] + " 已删除");
-                } else {
-                    sender.sendMessage("§c[Sdf1_login] §f管理密码错误！");
-                }
+                if (args[2].equals(config.adminPassword)) { db.deleteUser(args[1]); sender.sendMessage("§a[Sdf1_login] §f玩家 " + args[1] + " 已删除"); }
+                else { sender.sendMessage("§c[Sdf1_login] §f管理密码错误！"); }
                 return true;
             }
             if (!(sender instanceof Player)) return true;
@@ -446,160 +459,54 @@ public class Main extends JavaPlugin
         return false;
     }
 
-    /* ==================== 子命令 ==================== */
+    // ==================== 子命令 ====================
 
     private boolean handleSubCommand(Player p, String[] args) {
         String sub = args[0].toLowerCase();
         switch (sub) {
-            case "reset":
-                return loginMgr.handleReset(p);
+            case "reset": return loginMgr.handleReset(p);
             case "email":
-                if (args.length < 2) {
-                    chatInput.getState(p).type = ChatInputManager.InputType.SET_EMAIL;
-                    p.sendMessage("§e[Sdf1_login] §f请输入邮箱地址:");
-                    return true;
-                }
+                if (args.length < 2) { chatInput.getState(p).type = ChatInputManager.InputType.SET_EMAIL; p.sendMessage("§e[Sdf1_login] §f请输入邮箱地址:"); return true; }
                 if (!args[1].contains("@")) { p.sendMessage(config.msg("email_invalid")); return true; }
-            {
-                String code = PasswordUtils.generateVerifyCode();
-                chatInput.setVerifyCode(p, code, "email");
-                email.sendVerifyCode(args[1], p.getName(), code);
-                chatInput.getState(p).tmpStr = args[1];
-                chatInput.getState(p).type = ChatInputManager.InputType.EMAIL_VERIFY;
-                p.sendMessage(config.msg("email_verify_sent", "email", args[1]));
-            }
+            { String code = PasswordUtils.generateVerifyCode(); chatInput.setVerifyCode(p, code, "email"); email.sendVerifyCode(args[1], p.getName(), code); chatInput.getState(p).tmpStr = args[1]; chatInput.getState(p).type = ChatInputManager.InputType.EMAIL_VERIFY; p.sendMessage(config.msg("email_verify_sent", "email", args[1])); }
             return true;
-            case "password":
-            case "pw":
+            case "password": case "pw":
                 if (!loggedIn.contains(p.getName())) { p.sendMessage(config.msg("not_logged_in")); return true; }
                 if (args.length < 4) { p.sendMessage("§c用法: /sdf1_login pw <旧密码> <新密码> <确认新密码>"); return true; }
-            {
-                String newPwd = args[2];
-                String cfmPwd = args[3];
-                if (!newPwd.equals(cfmPwd)) { p.sendMessage("§c[Sdf1_login] §f两次新密码不一致"); return true; }
-                if (!PasswordUtils.validate(newPwd)) { p.sendMessage(config.msg("password_invalid")); return true; }
-                String pwdSalt = (String) db.getField(p.getName(), "password_salt");
-                if (pwdSalt == null) return true;
-                String oldHash = PasswordUtils.hash(args[1], pwdSalt);
-                if (db.checkPasswordOrTemp(p.getName(), oldHash)) {
-                    String oldH = (String) db.getField(p.getName(), "password_hash");
-                    String oldS = (String) db.getField(p.getName(), "password_salt");
-                    recordPasswordChange(p.getName(), oldH, oldS);
-                    String nSalt = PasswordUtils.generateSalt();
-                    String nHash = PasswordUtils.hash(newPwd, nSalt);
-                    db.setField(p.getName(), "password_hash", nHash);
-                    db.setField(p.getName(), "password_salt", nSalt);
-                    db.setField(p.getName(), "temp_password", "");
-                    db.setField(p.getName(), "temp_pw_expire", 0L);
-                    needsPasswordChange.remove(p.getName());
-                    p.sendMessage("§a[Sdf1_login] §f密码修改成功！");
-                    p.sendMessage("§73分钟内可用 /sdf1_login undo <旧密码> 撤销");
-                } else {
-                    p.sendMessage("§c[Sdf1_login] §f旧密码错误！");
-                }
-            }
+            { String newPwd = args[2]; String cfmPwd = args[3]; if (!newPwd.equals(cfmPwd)) { p.sendMessage("§c[Sdf1_login] §f两次新密码不一致"); return true; } if (!PasswordUtils.validate(newPwd)) { p.sendMessage(config.msg("password_invalid")); return true; } String pwdSalt = (String) db.getField(p.getName(), "password_salt"); if (pwdSalt == null) return true; String oldHash = PasswordUtils.hash(args[1], pwdSalt); if (db.checkPasswordOrTemp(p.getName(), oldHash)) { String oldH = (String) db.getField(p.getName(), "password_hash"); String oldS = (String) db.getField(p.getName(), "password_salt"); recordPasswordChange(p.getName(), oldH, oldS); String nSalt = PasswordUtils.generateSalt(); String nHash = PasswordUtils.hash(newPwd, nSalt); db.setField(p.getName(), "password_hash", nHash); db.setField(p.getName(), "password_salt", nSalt); db.setField(p.getName(), "temp_password", ""); db.setField(p.getName(), "temp_pw_expire", 0L); needsPasswordChange.remove(p.getName()); p.sendMessage("§a[Sdf1_login] §f密码修改成功！"); p.sendMessage("§73分钟内可用 /sdf1_login undo <旧密码> 撤销"); } else { p.sendMessage("§c[Sdf1_login] §f旧密码错误！"); } }
             return true;
             case "undo":
                 if (!loggedIn.contains(p.getName())) { p.sendMessage(config.msg("not_logged_in")); return true; }
                 if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login undo <旧密码>"); return true; }
-            {
-                PwdRollback rb = pwdRollback.get(p.getName());
-                if (rb == null) { p.sendMessage("§c[Sdf1_login] §f没有可撤销的密码修改"); return true; }
-                if (System.currentTimeMillis() - rb.time > 180000L) {
-                    pwdRollback.remove(p.getName());
-                    p.sendMessage("§c[Sdf1_login] §f已超过3分钟，无法撤销");
-                    return true;
-                }
-                if (!PasswordUtils.hash(args[1], rb.salt).equals(rb.hash)) {
-                    p.sendMessage("§c[Sdf1_login] §f旧密码错误");
-                    return true;
-                }
-                db.setField(p.getName(), "password_hash", rb.hash);
-                db.setField(p.getName(), "password_salt", rb.salt);
-                db.setField(p.getName(), "temp_password", "");
-                db.setField(p.getName(), "temp_pw_expire", 0L);
-                needsPasswordChange.remove(p.getName());
-                pwdRollback.remove(p.getName());
-                p.sendMessage("§a[Sdf1_login] §f密码已回滚到修改前");
-            }
+            { PwdRollback rb = pwdRollback.get(p.getName()); if (rb == null) { p.sendMessage("§c[Sdf1_login] §f没有可撤销的密码修改"); return true; } if (System.currentTimeMillis() - rb.time > 180000L) { pwdRollback.remove(p.getName()); p.sendMessage("§c[Sdf1_login] §f已超过3分钟，无法撤销"); return true; } if (!PasswordUtils.hash(args[1], rb.salt).equals(rb.hash)) { p.sendMessage("§c[Sdf1_login] §f旧密码错误"); return true; } db.setField(p.getName(), "password_hash", rb.hash); db.setField(p.getName(), "password_salt", rb.salt); db.setField(p.getName(), "temp_password", ""); db.setField(p.getName(), "temp_pw_expire", 0L); needsPasswordChange.remove(p.getName()); pwdRollback.remove(p.getName()); p.sendMessage("§a[Sdf1_login] §f密码已回滚到修改前"); }
             return true;
             case "set":
                 if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
                 if (args.length < 3) { p.sendMessage("§c用法: /sdf1_login set <玩家> <密码>"); return true; }
-            {
-                String sSalt = PasswordUtils.generateSalt();
-                String sHash = PasswordUtils.hash(args[2], sSalt);
-                db.setField(args[1], "password_hash", sHash);
-                db.setField(args[1], "password_salt", sSalt);
-                db.setField(args[1], "temp_password", "");
-                p.sendMessage(config.msg("admin_set_password", "user", args[1]));
-            }
+            { String sSalt = PasswordUtils.generateSalt(); String sHash = PasswordUtils.hash(args[2], sSalt); db.setField(args[1], "password_hash", sHash); db.setField(args[1], "password_salt", sSalt); db.setField(args[1], "temp_password", ""); p.sendMessage(config.msg("admin_set_password", "user", args[1])); }
             return true;
             case "del":
                 if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
                 if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login del <玩家> [密码]"); return true; }
-                if (args.length >= 3) {
-                    String dSalt = (String) db.getField(p.getName(), "password_salt");
-                    if (dSalt == null) return true;
-                    if (db.checkPassword(p.getName(), PasswordUtils.hash(args[2], dSalt))) {
-                        db.deleteUser(args[1]);
-                        p.sendMessage(config.msg("admin_delete_success", "user", args[1]));
-                    } else {
-                        p.sendMessage(config.msg("admin_delete_failed"));
-                    }
-                    return true;
-                }
-                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_DELETE_CONFIRM;
-                chatInput.getState(p).targetPlayer = args[1];
-                p.sendMessage(config.msg("admin_delete_confirm"));
-                p.sendMessage("§c格式: <玩家名> <你的密码>");
+                if (args.length >= 3) { String dSalt = (String) db.getField(p.getName(), "password_salt"); if (dSalt == null) return true; if (db.checkPassword(p.getName(), PasswordUtils.hash(args[2], dSalt))) { db.deleteUser(args[1]); p.sendMessage(config.msg("admin_delete_success", "user", args[1])); } else { p.sendMessage(config.msg("admin_delete_failed")); } return true; }
+                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_DELETE_CONFIRM; chatInput.getState(p).targetPlayer = args[1]; p.sendMessage(config.msg("admin_delete_confirm")); p.sendMessage("§c格式: <玩家名> <你的密码>");
                 return true;
-            case "take":
-                openTaskPanel(p);
-                return true;
+            case "take": openTaskPanel(p); return true;
             case "sign":
                 if (!loggedIn.contains(p.getName())) { p.sendMessage(config.msg("not_logged_in")); return true; }
-                if (dailySign(p)) gui.openTaskCenter(p);
-                else p.sendMessage(config.msg("checkin_already"));
+                if (dailySign(p)) gui.openTaskCenter(p); else p.sendMessage(config.msg("checkin_already"));
                 return true;
-            case "kick":
-                if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
-                handleAfkCommand(p, args);
-                return true;
-            case "add":
-                if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
-                if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login add <玩家>"); return true; }
-                config.afkWhitelist.add(args[1]);
-                p.sendMessage(config.msg("afk_whitelist_added", "user", args[1]));
-                return true;
-            case "remove":
-                if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
-                if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login remove <玩家>"); return true; }
-                config.afkWhitelist.remove(args[1]);
-                p.sendMessage(config.msg("afk_whitelist_removed", "user", args[1]));
-                return true;
+            case "kick": if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; } handleAfkCommand(p, args); return true;
+            case "add": if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; } if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login add <玩家>"); return true; } config.afkWhitelist.add(args[1]); p.sendMessage(config.msg("afk_whitelist_added", "user", args[1])); return true;
+            case "remove": if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; } if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login remove <玩家>"); return true; } config.afkWhitelist.remove(args[1]); p.sendMessage(config.msg("afk_whitelist_removed", "user", args[1])); return true;
             case "get":
                 if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
                 if (args.length < 2) { p.sendMessage("§c用法: /sdf1_login get <玩家>"); return true; }
-            {
-                Map<String, Object> gUser = db.getUser(args[1]);
-                if (gUser.isEmpty()) { p.sendMessage("§c未找到玩家: " + args[1]); return true; }
-                p.sendMessage("§e" + args[1] + " 礼包阶段: "
-                        + gUser.getOrDefault("gift_stage", 0)
-                        + " 已领: " + gUser.getOrDefault("gift_claimed", ""));
-            }
+            { Map<String, Object> gUser = db.getUser(args[1]); if (gUser.isEmpty()) { p.sendMessage("§c未找到玩家: " + args[1]); return true; } p.sendMessage("§e" + args[1] + " 礼包阶段: " + gUser.getOrDefault("gift_stage", 0) + " 已领: " + gUser.getOrDefault("gift_claimed", "")); }
             return true;
-            case "reload":
-                if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; }
-                config.loadMessages(); config.loadSmtp(); config.loadSettings(); gift.loadStages();
-                p.sendMessage("§a[Sdf1_login] §f配置已重载");
-                return true;
-            case "open":
-                gui.openMain(p);
-                return true;
-            default:
-                sendHelp(p);
-                return true;
+            case "reload": if (!isAdmin(p)) { p.sendMessage(config.msg("admin_no_permission")); return true; } config.loadMessages(); config.loadSmtp(); config.loadSettings(); gift.loadStages(); p.sendMessage("§a[Sdf1_login] §f配置已重载"); return true;
+            case "open": gui.openMain(p); return true;
+            default: sendHelp(p); return true;
         }
     }
 
@@ -620,7 +527,7 @@ public class Main extends JavaPlugin
         }
     }
 
-    /* ==================== AFK ==================== */
+    // ==================== AFK ====================
 
     private boolean handleAfkCommand(CommandSender sender, String[] args) {
         if (args.length >= 2) {
@@ -636,13 +543,8 @@ public class Main extends JavaPlugin
         return true;
     }
 
-    private boolean isAfkOn(String s) {
-        return s.equals("on") || s.equals("开") || s.equals("启用") || s.equals("开启") || s.equals("true");
-    }
-
-    private boolean isAfkOff(String s) {
-        return s.equals("off") || s.equals("关") || s.equals("停用") || s.equals("关闭") || s.equals("false");
-    }
+    private boolean isAfkOn(String s) { return s.equals("on") || s.equals("开") || s.equals("启用") || s.equals("开启") || s.equals("true"); }
+    private boolean isAfkOff(String s) { return s.equals("off") || s.equals("关") || s.equals("停用") || s.equals("关闭") || s.equals("false"); }
 
     private int parseAfkTimeToSeconds(String input) {
         String s = input.toLowerCase().trim();
@@ -660,13 +562,14 @@ public class Main extends JavaPlugin
         getLogger().info(message.replaceAll("\u00a7[0-9a-fk-orA-FK-OR]", ""));
     }
 
-    /* ==================== 事件 ==================== */
+    // ==================== 事件 ====================
 
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
         String name = p.getName();
         joinLoc.put(p.getUniqueId(), p.getLocation().clone());
+
         if (canAutoLogin(p) && db.userExists(name)) {
             loggedIn.add(name);
             db.setLoggedIn(name, true);
@@ -674,26 +577,48 @@ public class Main extends JavaPlugin
             db.setField(name, "last_online_check", System.currentTimeMillis());
             p.sendMessage(config.msg("auto_login_ip", "user", name));
             joinTime.remove(p.getUniqueId());
-            try {
-                org.bukkit.plugin.Plugin cy = Bukkit.getPluginManager().getPlugin("CY_beibao");
-                if (cy != null && cy.isEnabled()) {
-                    cy.getClass().getMethod("onSdf1Activation", String.class, int.class, int.class)
-                            .invoke(cy, name, 0, 0);
-                }
-            } catch (Exception ignored) {}
+            activateBeibao(p);
             return;
         }
-        hideInventory(p);
-        if (!db.userExists(name)) p.sendMessage(config.msg("not_registered"));
-        else p.sendMessage(config.msg("not_logged_in"));
+
+        if (verification.isOnlineMode()) { autoLogin(p); return; }
+        if (verification.isBedrockPlayer(p)) { autoLogin(p); return; }
+
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!p.isOnline()) return;
+            if (loggedIn.contains(name)) return;
+            if (verification.isBedrockPlayer(p)) autoLogin(p);
+        }, 20L);
+
         joinTime.put(p.getUniqueId(), System.currentTimeMillis());
         db.setField(name, "last_online_check", System.currentTimeMillis());
+
+        if (db.userExists(name)) {
+            p.sendMessage(config.msg("not_logged_in"));
+        } else {
+            p.sendMessage(config.msg("not_registered"));
+        }
+
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!p.isOnline() || !isFrozen(p)) return;
+            hideInventory(p);
+        }, 10L);
+
+        if (db.userExists(name)) {
+            verification.verifyPremiumAsync(p, isPremium -> {
+                if (isPremium && p.isOnline() && !loggedIn.contains(name)) {
+                    autoLogin(p);
+                }
+            });
+        }
     }
+
 
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         Player p = e.getPlayer();
         String name = p.getName();
+        backupInventory(p);
         try {
             Object lastObj = db.getField(name, "last_online_check");
             long last = lastObj != null ? ((Number) lastObj).longValue() : 0;
@@ -708,11 +633,6 @@ public class Main extends JavaPlugin
         needsPasswordChange.remove(name);
         joinTime.remove(p.getUniqueId());
         joinLoc.remove(p.getUniqueId());
-        savedInventory.remove(p.getUniqueId());
-        savedArmor.remove(p.getUniqueId());
-        savedExtra.remove(p.getUniqueId());
-        savedLevel.remove(p.getUniqueId());
-        savedExp.remove(p.getUniqueId());
         afk.remove(p.getUniqueId());
         chatInput.clear(p);
     }
@@ -724,9 +644,7 @@ public class Main extends JavaPlugin
             Location from = e.getFrom();
             Location to = e.getTo();
             if (to == null) return;
-            if (from.getBlockX() != to.getBlockX()
-                    || from.getBlockY() != to.getBlockY()
-                    || from.getBlockZ() != to.getBlockZ()) {
+            if (from.getBlockX() != to.getBlockX() || from.getBlockY() != to.getBlockY() || from.getBlockZ() != to.getBlockZ()) {
                 Location saved = joinLoc.get(p.getUniqueId());
                 if (saved != null) e.setTo(saved.clone());
             }
@@ -745,24 +663,19 @@ public class Main extends JavaPlugin
     public void onBlockBreak(BlockBreakEvent e) {
         if (isFrozen(e.getPlayer())) { e.setCancelled(true); return; }
         String name = e.getPlayer().getName();
-        db.setField(name, "blocks_broken",
-                ((Number) db.getField(name, "blocks_broken")).intValue() + 1);
+        db.setField(name, "blocks_broken", ((Number) db.getField(name, "blocks_broken")).intValue() + 1);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onBlockPlace(BlockPlaceEvent e) {
         if (isFrozen(e.getPlayer())) { e.setCancelled(true); return; }
         String name = e.getPlayer().getName();
-        db.setField(name, "blocks_placed",
-                ((Number) db.getField(name, "blocks_placed")).intValue() + 1);
+        db.setField(name, "blocks_placed", ((Number) db.getField(name, "blocks_placed")).intValue() + 1);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onChat(AsyncPlayerChatEvent e) {
-        if (chatInput.handleInput(e.getPlayer(), e.getMessage(), this)) {
-            e.setCancelled(true);
-            return;
-        }
+        if (chatInput.handleInput(e.getPlayer(), e.getMessage(), this)) { e.setCancelled(true); return; }
         if (isFrozen(e.getPlayer())) e.setCancelled(true);
     }
 
@@ -778,42 +691,30 @@ public class Main extends JavaPlugin
             return;
         }
         if (isFrozen(p)) {
-            String[] white = { "/reg", "/login", "/sdf1_login", "/l",
-                    "/注册", "/登录", "/改密码", "/设置邮箱",
-                    "/撤销", "/玩家信息", "/删除", "/找回密码", "/签到" };
+            String[] white = {"/reg", "/login", "/sdf1_login", "/l", "/注册", "/登录", "/改密码", "/设置邮箱", "/撤销", "/玩家信息", "/删除", "/找回密码", "/签到"};
             boolean pass = false;
-            for (String w : white) {
-                if (msg.equals(w) || msg.startsWith(w + " ")) { pass = true; break; }
-            }
+            for (String w : white) { if (msg.equals(w) || msg.startsWith(w + " ")) { pass = true; break; } }
             if (!pass) { e.setCancelled(true); p.sendMessage(config.msg("not_logged_in")); }
         }
     }
 
     @EventHandler
-    public void onDrop(PlayerDropItemEvent e) {
-        if (isFrozen(e.getPlayer())) e.setCancelled(true);
-    }
+    public void onDrop(PlayerDropItemEvent e) { if (isFrozen(e.getPlayer())) e.setCancelled(true); }
 
     @EventHandler
-    public void onPickup(PlayerPickupItemEvent e) {
-        if (isFrozen(e.getPlayer())) e.setCancelled(true);
-    }
+    public void onPickup(PlayerPickupItemEvent e) { if (isFrozen(e.getPlayer())) e.setCancelled(true); }
 
     @EventHandler
     public void onDamage(EntityDamageEvent e) {
-        if (e.getEntity() instanceof Player && isFrozen((Player) e.getEntity())) {
-            e.setCancelled(true);
-        }
+        if (e.getEntity() instanceof Player && isFrozen((Player) e.getEntity())) e.setCancelled(true);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityAttack(EntityDamageByEntityEvent e) {
-        if (e.getDamager() instanceof Player && isFrozen((Player) e.getDamager())) {
-            e.setCancelled(true);
-        }
+        if (e.getDamager() instanceof Player && isFrozen((Player) e.getDamager())) e.setCancelled(true);
     }
 
-    /* ==================== GUI ==================== */
+    // ==================== GUI ====================
 
     @EventHandler
     public void onInvClick(InventoryClickEvent e) {
@@ -822,224 +723,20 @@ public class Main extends JavaPlugin
         if (isFrozen(p)) { e.setCancelled(true); return; }
         String t = e.getView().getTitle();
         int r = e.getRawSlot();
-
-        /* 临时密码强制改密检查 */
-        if (needsPasswordChange.contains(p.getName())
-                && !t.equals("§6§l任务面板")) {
-            e.setCancelled(true);
-            p.sendMessage("§c[Sdf1_login] §f请先修改密码！");
-            p.sendMessage("§7用法: /sdf1_login pw <旧密码> <新密码> <确认新密码>");
-            return;
-        }
-
-        /* 主线/支线任务面板禁止取出物品 */
-        if (t.equals("§d§l主线任务") || t.equals("§d§l支线任务")) {
-            e.setCancelled(true);
-            int size = e.getInventory().getSize();
-            if (r == size - 1) gui.openTaskCenter(p);
-            return;
-        }
-
-        /* 主界面 */
-        if (t.equals(GUIManager.T_MAIN)) {
-            e.setCancelled(true);
-            if (r == 10) gui.openMyInfo(p);
-            else if (r == 12) gui.openInvite(p);
-            else if (r == 14) p.openInventory(points.createShopGUI(p));
-            else if (r == 16) gui.openTaskCenter(p);
-            else if (r == 22 && isAdmin(p)) {
-                p.closeInventory();
-                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_AUTH;
-                p.sendMessage("§e[Sdf1_login] §f请输入管理密码:");
-            }
-            return;
-        }
-
-        /* 个人信息 */
-        if (t.equals(GUIManager.T_MY_INFO)) {
-            e.setCancelled(true);
-            if (r == 26) {
-                gui.openMain(p);
-            } else if (r == 10) {
-                if (checkIn.isCheckedInToday(p.getName())) {
-                    p.sendMessage(config.msg("checkin_already"));
-                } else {
-                    p.sendMessage(checkIn.checkIn(p));
-                    invite.onInviteeCheckIn(p.getName());
-                    gui.openMyInfo(p);
-                }
-            } else if (r == 11) {
-                chatInput.getState(p).type = ChatInputManager.InputType.CHANGE_PWD_STEP1;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f请输入当前密码:");
-            } else if (r == 12) {
-                chatInput.getState(p).type = ChatInputManager.InputType.BACK_CHECKIN;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f请输入补签日期 (yyyy-MM-dd):");
-            } else if (r == 13) {
-                String code = (String) db.getField(p.getName(), "invite_code");
-                if (code == null || code.isEmpty()) code = invite.generateCode(p);
-                p.sendMessage(config.msg("invite_code_generated", "code", code));
-            } else if (r == 14) {
-                chatInput.getState(p).type = ChatInputManager.InputType.SET_EMAIL;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f请输入邮箱地址:");
-            } else if (r == 15) {
-                p.openInventory(points.createShopGUI(p));
-            }
-            return;
-        }
-
-        /* 管理面板 */
-        if (t.equals(GUIManager.T_ADMIN)) {
-            e.setCancelled(true);
-            if (r == 22) {
-                gui.openMain(p);
-            } else if (r == 10) {
-                chatInput.getState(p).type = ChatInputManager.InputType.SMTP_STEP1;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f当前SMTP: " + config.getSmtp("smtp地址"));
-                p.sendMessage("§e[Sdf1_login] §f输入新地址（输入0跳过）:");
-            } else if (r == 11) {
-                gui.openUserManagement(p);
-            } else if (r == 12) {
-                gui.openMyInfo(p);
-            } else if (r == 14) {
-                p.openInventory(points.createShopGUI(p));
-            } else if (r == 16) {
-                if (e.getClick().isLeftClick()) {
-                    config.afkEnabled = !config.afkEnabled;
-                    p.sendMessage(config.msg(config.afkEnabled ? "afk_set_enabled" : "afk_set_disabled"));
-                    config.saveSettings();
-                    gui.openAdmin(p);
-                } else if (e.getClick().isRightClick()) {
-                    p.closeInventory();
-                    chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_AFK_TIME;
-                    p.sendMessage("§e[Sdf1_login] §f输入挂机踢出时长（如: 5分钟、10m、2小时）:");
-                }
-            }
-            return;
-        }
-
-        /* 任务中心 */
-        if (t.equals(GUIManager.T_TASK_CENTER)) {
-            e.setCancelled(true);
-            if (r == 22) gui.openMain(p);
-            else if (r == 10) gui.openGiftStages(p);
-            else if (r == 12) gui.openTaskList(p, "主线任务");
-            else if (r == 14) gui.openTaskList(p, "支线任务");
-            else if (r == 16) {
-                if (dailySign(p)) gui.openTaskCenter(p);
-                else p.sendMessage(config.msg("checkin_already"));
-            }
-            return;
-        }
-
-        /* 新人任务阶段 */
-        if (t.equals(GUIManager.T_GIFT_STAGES)) {
-            e.setCancelled(true);
-            if (r == 26) {
-                gui.openTaskCenter(p);
-            } else if (r >= 10 && r <= 18) {
-                int stage = r - 9;
-                if (gift.canClaim(p, stage)) {
-                    gift.claimReward(p, stage);
-                    gui.openGiftStages(p);
-                } else {
-                    p.sendMessage(config.msg("gift_not_ready"));
-                }
-            }
-            return;
-        }
-
-        /* 邀请 */
-        if (t.equals(GUIManager.T_INVITE)) {
-            e.setCancelled(true);
-            if (r == 26) {
-                gui.openMain(p);
-            } else if (r == 10) {
-                String code = invite.generateCode(p);
-                p.sendMessage(config.msg("invite_code_generated", "code", code));
-                gui.openInvite(p);
-            } else if (r == 16) {
-                chatInput.getState(p).type = ChatInputManager.InputType.INVITE_INPUT_CODE;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f请输入邀请码:");
-            }
-            return;
-        }
-
-        /* 玩家管理列表 */
-        if (t.equals(GUIManager.T_USER_MGMT)) {
-            e.setCancelled(true);
-            if (r == 53) {
-                gui.openAdmin(p);
-            } else if (r >= 0 && r < 45) {
-                ItemStack item = e.getInventory().getItem(r);
-                if (item != null && item.hasItemMeta() && item.getItemMeta().hasDisplayName()) {
-                    gui.openUserDetail(p, item.getItemMeta().getDisplayName().replace("§e", "").replace("§a", ""));
-                }
-            }
-            return;
-        }
-
-        /* 玩家详情 */
-        if (t.startsWith("§e§l管理: ")) {
-            e.setCancelled(true);
-            String prefix = "§e§l管理: ";
-            if (r == 22) {
-                gui.openUserManagement(p);
-            } else if (r == 10) {
-                String target = t.substring(prefix.length());
-                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_POINTS;
-                chatInput.getState(p).targetPlayer = target;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f输入" + target + "的新积分值:");
-            } else if (r == 12) {
-                String target = t.substring(prefix.length());
-                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_PWD;
-                chatInput.getState(p).targetPlayer = target;
-                p.closeInventory();
-                p.sendMessage("§e[Sdf1_login] §f输入" + target + "的新密码:");
-            } else if (r == 16) {
-                String target = t.substring(prefix.length());
-                chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_DELETE_CONFIRM;
-                chatInput.getState(p).targetPlayer = target;
-                p.closeInventory();
-                p.sendMessage(config.msg("admin_delete_confirm"));
-                p.sendMessage("§c格式: <玩家名> <你的密码>");
-            }
-            return;
-        }
-
-        /* 积分商城 */
-        if (t.startsWith("§d§l积分商城")) {
-            e.setCancelled(true);
-            if (r == 49) gui.openMain(p);
-            else points.handleClick(p, r);
-            return;
-        }
-
-        /* CY背包商城 */
-        if (t.startsWith("§d§lCY背包商城")) {
-            e.setCancelled(true);
-            int size = e.getInventory().getSize();
-            if (r == size - 1) p.openInventory(points.createShopGUI(p));
-            else points.handleCYClick(p, r);
-            return;
-        }
-
-        /* 任务面板 */
-        if (t.equals("§6§l任务面板")) {
-            e.setCancelled(true);
-            if (r == 22) gui.openMain(p);
-            else if (r == 15) {
-                if (dailySign(p)) openTaskPanel(p);
-                else p.sendMessage(config.msg("checkin_already"));
-            }
-            return;
-        }
-    } // onInvClick 结束
+        if (needsPasswordChange.contains(p.getName()) && !t.equals("§6§l任务面板")) { e.setCancelled(true); p.sendMessage("§c[Sdf1_login] §f请先修改密码！"); p.sendMessage("§7用法: /sdf1_login pw <旧密码> <新密码> <确认新密码>"); return; }
+        if (t.equals("§d§l主线任务") || t.equals("§d§l支线任务")) { e.setCancelled(true); int size = e.getInventory().getSize(); if (r == size - 1) gui.openTaskCenter(p); return; }
+        if (t.equals(GUIManager.T_MAIN)) { e.setCancelled(true); if (r == 10) gui.openMyInfo(p); else if (r == 12) gui.openInvite(p); else if (r == 14) p.openInventory(points.createShopGUI(p)); else if (r == 16) gui.openTaskCenter(p); else if (r == 22 && isAdmin(p)) { p.closeInventory(); chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_AUTH; p.sendMessage("§e[Sdf1_login] §f请输入管理密码:"); } return; }
+        if (t.equals(GUIManager.T_MY_INFO)) { e.setCancelled(true); if (r == 26) gui.openMain(p); else if (r == 10) { if (checkIn.isCheckedInToday(p.getName())) p.sendMessage(config.msg("checkin_already")); else { p.sendMessage(checkIn.checkIn(p)); invite.onInviteeCheckIn(p.getName()); gui.openMyInfo(p); } } else if (r == 11) { chatInput.getState(p).type = ChatInputManager.InputType.CHANGE_PWD_STEP1; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f请输入当前密码:"); } else if (r == 12) { chatInput.getState(p).type = ChatInputManager.InputType.BACK_CHECKIN; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f请输入补签日期 (yyyy-MM-dd):"); } else if (r == 13) { String code = (String) db.getField(p.getName(), "invite_code"); if (code == null || code.isEmpty()) code = invite.generateCode(p); p.sendMessage(config.msg("invite_code_generated", "code", code)); } else if (r == 14) { chatInput.getState(p).type = ChatInputManager.InputType.SET_EMAIL; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f请输入邮箱地址:"); } else if (r == 15) p.openInventory(points.createShopGUI(p)); return; }
+        if (t.equals(GUIManager.T_ADMIN)) { e.setCancelled(true); if (r == 22) gui.openMain(p); else if (r == 10) { chatInput.getState(p).type = ChatInputManager.InputType.SMTP_STEP1; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f当前SMTP: " + config.getSmtp("smtp地址")); p.sendMessage("§e[Sdf1_login] §f输入新地址（输入0跳过）:"); } else if (r == 11) gui.openUserManagement(p); else if (r == 12) gui.openMyInfo(p); else if (r == 14) p.openInventory(points.createShopGUI(p)); else if (r == 16) { if (e.getClick().isLeftClick()) { config.afkEnabled = !config.afkEnabled; p.sendMessage(config.msg(config.afkEnabled ? "afk_set_enabled" : "afk_set_disabled")); config.saveSettings(); gui.openAdmin(p); } else if (e.getClick().isRightClick()) { p.closeInventory(); chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_AFK_TIME; p.sendMessage("§e[Sdf1_login] §f输入挂机踢出时长:"); } } return; }
+        if (t.equals(GUIManager.T_TASK_CENTER)) { e.setCancelled(true); if (r == 22) gui.openMain(p); else if (r == 10) gui.openGiftStages(p); else if (r == 12) gui.openTaskList(p, "主线任务"); else if (r == 14) gui.openTaskList(p, "支线任务"); else if (r == 16) { if (dailySign(p)) gui.openTaskCenter(p); else p.sendMessage(config.msg("checkin_already")); } return; }
+        if (t.equals(GUIManager.T_GIFT_STAGES)) { e.setCancelled(true); if (r == 26) gui.openTaskCenter(p); else if (r >= 10 && r <= 18) { int stage = r - 9; if (gift.canClaim(p, stage)) { gift.claimReward(p, stage); gui.openGiftStages(p); } else p.sendMessage(config.msg("gift_not_ready")); } return; }
+        if (t.equals(GUIManager.T_INVITE)) { e.setCancelled(true); if (r == 26) gui.openMain(p); else if (r == 10) { String code = invite.generateCode(p); p.sendMessage(config.msg("invite_code_generated", "code", code)); gui.openInvite(p); } else if (r == 16) { chatInput.getState(p).type = ChatInputManager.InputType.INVITE_INPUT_CODE; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f请输入邀请码:"); } return; }
+        if (t.equals(GUIManager.T_USER_MGMT)) { e.setCancelled(true); if (r == 53) gui.openAdmin(p); else if (r >= 0 && r < 45) { ItemStack item = e.getInventory().getItem(r); if (item != null && item.hasItemMeta() && item.getItemMeta().hasDisplayName()) gui.openUserDetail(p, item.getItemMeta().getDisplayName().replace("§e", "").replace("§a", "")); } return; }
+        if (t.startsWith("§e§l管理: ")) { e.setCancelled(true); String prefix = "§e§l管理: "; if (r == 22) gui.openUserManagement(p); else if (r == 10) { String target = t.substring(prefix.length()); chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_POINTS; chatInput.getState(p).targetPlayer = target; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f输入" + target + "的新积分值:"); } else if (r == 12) { String target = t.substring(prefix.length()); chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_SET_PWD; chatInput.getState(p).targetPlayer = target; p.closeInventory(); p.sendMessage("§e[Sdf1_login] §f输入" + target + "的新密码:"); } else if (r == 16) { String target = t.substring(prefix.length()); chatInput.getState(p).type = ChatInputManager.InputType.ADMIN_DELETE_CONFIRM; chatInput.getState(p).targetPlayer = target; p.closeInventory(); p.sendMessage(config.msg("admin_delete_confirm")); p.sendMessage("§c格式: <玩家名> <你的密码>"); } return; }
+        if (t.startsWith("§d§l积分商城")) { e.setCancelled(true); if (r == 49) gui.openMain(p); else points.handleClick(p, r); return; }
+        if (t.startsWith("§d§lCY背包商城")) { e.setCancelled(true); int size = e.getInventory().getSize(); if (r == size - 1) p.openInventory(points.createShopGUI(p)); else points.handleCYClick(p, r); return; }
+        if (t.equals("§6§l任务面板")) { e.setCancelled(true); if (r == 22) gui.openMain(p); else if (r == 15) { if (dailySign(p)) openTaskPanel(p); else p.sendMessage(config.msg("checkin_already")); } return; }
+    }
 
     @EventHandler
     public void onInvDrag(InventoryDragEvent e) {
@@ -1047,16 +744,13 @@ public class Main extends JavaPlugin
         Player p = (Player) e.getWhoClicked();
         if (isFrozen(p)) { e.setCancelled(true); return; }
         String t = e.getView().getTitle();
-        if (t.equals("§d§l主线任务") || t.equals("§d§l支线任务")) {
-            e.setCancelled(true);
-        }
+        if (t.equals("§d§l主线任务") || t.equals("§d§l支线任务")) e.setCancelled(true);
     }
 
-    /* ==================== TabComplete ==================== */
+    // ==================== TabComplete ====================
 
     @Override
-    public List<String> onTabComplete(CommandSender sender, Command cmd,
-                                      String label, String[] args) {
+    public List<String> onTabComplete(CommandSender sender, Command cmd, String label, String[] args) {
         if (!cmd.getName().equalsIgnoreCase("sdf1_login")) return null;
         List<String> opts = new ArrayList<>();
         boolean op = isAdmin(sender);
@@ -1067,25 +761,17 @@ public class Main extends JavaPlugin
         }
         if (args.length == 2) {
             String sub = args[0].toLowerCase();
-            if (op && (sub.equals("set") || sub.equals("del") || sub.equals("get")
-                    || sub.equals("add") || sub.equals("remove"))) {
+            if (op && (sub.equals("set") || sub.equals("del") || sub.equals("get") || sub.equals("add") || sub.equals("remove")))
                 for (Player op2 : Bukkit.getOnlinePlayers()) opts.add(op2.getName());
-            }
-            if (op && sub.equals("kick")) {
-                opts.addAll(Arrays.asList("on", "off", "开", "关", "启用", "停用"));
-            }
+            if (op && sub.equals("kick")) opts.addAll(Arrays.asList("on", "off", "开", "关", "启用", "停用"));
         }
-        if (args.length == 3 && args[0].equalsIgnoreCase("kick")) {
-            opts.add("<时间>");
-        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("kick")) opts.add("<时间>");
         return filterTab(opts, args[args.length - 1]);
     }
 
     private List<String> filterTab(List<String> opts, String prefix) {
         List<String> r = new ArrayList<>();
-        for (String o : opts) {
-            if (o.toLowerCase().startsWith(prefix.toLowerCase())) r.add(o);
-        }
+        for (String o : opts) { if (o.toLowerCase().startsWith(prefix.toLowerCase())) r.add(o); }
         return r;
     }
 }

@@ -39,9 +39,9 @@ commands:
   找回密码:
     description: 找回密码(中文)
     usage: /找回密码
-  debug:
+  sdf1debug:
     description: 调试指令
-    usage: /debug <玩家> take.<阶段>
+    usage: /sdf1debug <玩家> take.<阶段>
   签到:
     description: 每日签到(中文)
     usage: /签到

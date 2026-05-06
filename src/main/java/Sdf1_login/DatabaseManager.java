@@ -51,10 +51,20 @@ public class DatabaseManager {
                 addColumnIfMissing("temp_password", "TEXT DEFAULT ''");
                 addColumnIfMissing("temp_pw_expire", "INTEGER DEFAULT 0");
                 addColumnIfMissing("temp_pw_used", "INTEGER DEFAULT 0");
+            st.executeUpdate("CREATE TABLE IF NOT EXISTS inventory_backups ("
+                    + "player_name TEXT PRIMARY KEY, "
+                    + "inventory_data TEXT DEFAULT '', "
+                    + "armor_data TEXT DEFAULT '', "
+                    + "extra_data TEXT DEFAULT '', "
+                    + "player_level INTEGER DEFAULT 0, "
+                    + "player_exp REAL DEFAULT 0.0)");
+
+
             st.close();
         } catch (Exception e) {
             throw new RuntimeException(
                     "[Sdf1_login] DB初始化失败: " + e.getMessage(), e);
+
         }
     }
 
@@ -62,7 +72,77 @@ public class DatabaseManager {
         try {
             if (db != null && !db.isClosed()) db.close();
         } catch (Exception ignored) {}
+
     }
+    public void saveInventoryBackup(String name, String inv, String armor, String extra, int level, double exp) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR REPLACE INTO inventory_backups "
+                            + "(player_name, inventory_data, armor_data, extra_data, player_level, player_exp) "
+                            + "VALUES (?, ?, ?, ?, ?, ?)");
+            ps.setString(1, name);
+            ps.setString(2, inv);
+            ps.setString(3, armor);
+            ps.setString(4, extra);
+            ps.setInt(5, level);
+            ps.setDouble(6, exp);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String[] loadInventoryBackup(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT inventory_data, armor_data, extra_data, player_level, player_exp "
+                            + "FROM inventory_backups WHERE player_name = ?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String[] result = new String[5];
+                result[0] = rs.getString("inventory_data");
+                result[1] = rs.getString("armor_data");
+                result[2] = rs.getString("extra_data");
+                result[3] = String.valueOf(rs.getInt("player_level"));
+                result[4] = String.valueOf(rs.getDouble("player_exp"));
+                rs.close();
+                ps.close();
+                return result;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public boolean hasInventoryBackup(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM inventory_backups "
+                            + "WHERE player_name = ? AND inventory_data != ''");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            boolean has = rs.next();
+            rs.close();
+            ps.close();
+            return has;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    public void setFieldSafe(String name, String field, Object value) {
+        if (userExists(name)) {
+            setField(name, field, value);
+        }
+    }
+
+
 
     public Connection getDb() { return db; }
     private void addColumnIfMissing(String col, String def) {
