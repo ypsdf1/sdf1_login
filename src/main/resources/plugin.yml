@@ -1,0 +1,47 @@
+name: Sdf1_login
+version: 1.0
+main: Sdf1_login.Main
+api-version: '1.21'
+commands:
+  sdf1_login:
+    description: Sdf1_login主命令
+    usage: /sdf1_login
+  reg:
+    description: 注册
+    usage: /reg <密码>
+  login:
+    description: 登录
+    usage: /login <密码>
+  l:
+    description: 登录快捷版
+    usage: /l <密码>
+  注册:
+    description: 注册(中文)
+    usage: /注册 <密码>
+  登录:
+    description: 登录(中文)
+    usage: /登录 <密码>
+  玩家信息:
+    description: 打开面板(中文)
+    usage: /玩家信息
+  改密码:
+    description: 修改密码(中文)
+    usage: /改密码 <旧密码> <新密码> <确认新密码>
+  设置邮箱:
+    description: 设置邮箱(中文)
+    usage: /设置邮箱 <邮箱地址>
+  撤销:
+    description: 撤销密码修改(中文)
+    usage: /撤销 <旧密码>
+  删除:
+    description: 删除玩家(中文)
+    usage: /删除 <玩家> <密码>
+  找回密码:
+    description: 找回密码(中文)
+    usage: /找回密码
+  debug:
+    description: 调试指令
+    usage: /debug <玩家> take.<阶段>
+  签到:
+    description: 每日签到(中文)
+    usage: /签到
