@@ -2,138 +2,274 @@ package Sdf1_login;
 
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import java.io.*;
-import java.nio.charset.StandardCharsets;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.net.Socket;
 import java.util.Base64;
+import java.util.logging.Logger;
 
 public class EmailManager {
 
     private final ConfigManager config;
+    private final Logger logger;
 
     public EmailManager(ConfigManager config) {
         this.config = config;
+        this.logger = Logger.getLogger("Sdf1_login");
     }
 
-    public void sendTempPassword(String toEmail,
-                                 String playerName,
-                                 String tempPassword) {
-        String subject = "[Sdf1_login] 密码重置 - "
-                + playerName;
-        String body = "玩家: " + playerName
-                + "\r\n临时密码: " + tempPassword
-                + "\r\n有效期: 5分钟"
-                + "\r\n使用后自动失效"
-                + "\r\n请尽快登录并修改密码";
-        sendEmail(toEmail, subject, body);
+    public boolean isConfigured() {
+        String host = config.getSmtp("smtp地址");
+        String user = config.getSmtp("smtp账号");
+        String pass = config.getSmtp("smtp密码");
+        return host != null && !host.isEmpty()
+                && user != null && !user.isEmpty()
+                && pass != null && !pass.isEmpty();
     }
 
-    public void sendVerifyCode(String toEmail,
-                               String playerName,
-                               String code) {
-        String subject = "[Sdf1_login] 验证码 - "
-                + playerName;
-        String body = "玩家: " + playerName
-                + "\r\n验证码: " + code
-                + "\r\n有效期: 5分钟";
-        sendEmail(toEmail, subject, body);
+    public boolean sendVerifyCode(String to,
+                                  String code) {
+        if (!isConfigured()) {
+            logger.warning(
+                    "[Sdf1_login] SMTP未配置，"
+                            + "无法发送验证码");
+            return false;
+        }
+        logger.info("[Sdf1_login] 发送验证码到 " + to);
+        return sendEmailSync(to,
+                "[Sdf1_login] 验证码",
+                "您的验证码: " + code
+                        + "\n5分钟内有效。\n"
+                        + "如非本人操作请忽略。");
     }
 
-    private void sendEmail(String toEmail,
-                           String subject, String body) {
-        new Thread(() -> {
+    public boolean sendTempPassword(String to,
+                                    String player, String tempPwd) {
+        if (!isConfigured()) {
+            logger.warning(
+                    "[Sdf1_login] SMTP未配置");
+            return false;
+        }
+        return sendEmailSync(to,
+                "[Sdf1_login] 临时密码",
+                "玩家 " + player
+                        + " 的临时密码: " + tempPwd
+                        + "\n请尽快登录并修改密码！");
+    }
+
+    private boolean sendEmailSync(String to,
+                                  String subject, String body) {
+        final boolean[] result = {false};
+        Thread t = new Thread(() -> {
             try {
-                String host = config.getSmtp("smtp地址");
-                int port = 465;
-                try {
-                    port = Integer.parseInt(
-                            config.getSmtp("smtp端口"));
-                } catch (Exception ignored) {}
-                String from = config.getSmtp("发件邮箱");
-                String pass = config.getSmtp("授权码");
+                result[0] = sendEmail(
+                        to, subject, body);
+            } catch (Exception e) {
+                logger.severe(
+                        "[Sdf1_login] 邮件线程异常: "
+                                + e.getMessage());
+            }
+        }, "Sdf1_login-SMTP");
+        t.setDaemon(true);
+        t.start();
+        try {
+            t.join(15000);
+        } catch (InterruptedException ignored) {
+        }
+        if (t.isAlive()) {
+            t.interrupt();
+            logger.severe(
+                    "[Sdf1_login] SMTP超时(15秒)");
+            return false;
+        }
+        return result[0];
+    }
 
-                if (host.isEmpty() || from.isEmpty()
-                        || pass.isEmpty()) return;
-                if (toEmail == null || toEmail.isEmpty())
-                    return;
+    private boolean sendEmail(String to,
+                              String subject, String body) {
+        String host = config.getSmtp("smtp地址");
+        String portStr = config.getSmtp("smtp端口");
+        String user = config.getSmtp("smtp账号");
+        String pass = config.getSmtp("smtp密码");
+        String fromName = config.getSmtp(
+                "发件人名称");
 
+        int port;
+        try {
+            port = Integer.parseInt(portStr);
+        } catch (Exception e) {
+            port = 465;
+        }
+
+        try {
+            String encSubject = "=?UTF-8?B?"
+                    + Base64.getEncoder()
+                    .encodeToString(
+                            subject.getBytes("UTF-8"))
+                    + "?=";
+            String encBody = Base64.getEncoder()
+                    .encodeToString(
+                            body.getBytes("UTF-8"));
+
+            if (port == 465) {
                 SSLSocketFactory factory =
-                        (SSLSocketFactory) SSLSocketFactory
-                                .getDefault();
-                SSLSocket socket = (SSLSocket) factory
-                        .createSocket(host, port);
+                        (SSLSocketFactory)
+                                SSLSocketFactory
+                                        .getDefault();
+                SSLSocket socket = (SSLSocket)
+                        factory.createSocket(
+                                host, port);
+                socket.setSoTimeout(10000);
+                doSmtp(socket, host, user, pass,
+                        to, encSubject, encBody,
+                        fromName);
+                socket.close();
+            } else {
+                Socket plainSocket =
+                        new Socket(host, port);
+                plainSocket.setSoTimeout(10000);
+                BufferedReader preReader =
+                        new BufferedReader(
+                                new InputStreamReader(
+                                        plainSocket
+                                                .getInputStream(),
+                                        "UTF-8"));
+                PrintWriter preWriter =
+                        new PrintWriter(
+                                plainSocket
+                                        .getOutputStream(),
+                                true);
+                checkResponse(preReader, "220");
+                sendLine(preWriter,
+                        "EHLO " + host);
+                checkResponse(preReader, "250");
+                sendLine(preWriter, "STARTTLS");
+                checkResponse(preReader, "220");
+                SSLSocketFactory factory =
+                        (SSLSocketFactory)
+                                SSLSocketFactory
+                                        .getDefault();
+                SSLSocket sslSocket = (SSLSocket)
+                        factory.createSocket(
+                                plainSocket, host,
+                                port, true);
+                sslSocket.startHandshake();
+                doSmtp(sslSocket, host, user, pass,
+                        to, encSubject, encBody,
+                        fromName);
+                sslSocket.close();
+            }
+            logger.info(
+                    "[Sdf1_login] 邮件发送成功 -> "
+                            + to);
+            return true;
+        } catch (Exception e) {
+            logger.severe(
+                    "[Sdf1_login] 邮件异常: "
+                            + e.getClass()
+                            .getSimpleName()
+                            + ": " + e.getMessage());
+            if (e.getCause() != null) {
+                logger.severe(
+                        "[Sdf1_login] 根因: "
+                                + e.getCause()
+                                .getMessage());
+            }
+            return false;
+        }
+    }
 
-                BufferedReader reader = new BufferedReader(
+    private void doSmtp(SSLSocket socket,
+                        String host, String user, String pass,
+                        String to, String subject, String body,
+                        String fromName) throws Exception {
+        BufferedReader reader =
+                new BufferedReader(
                         new InputStreamReader(
                                 socket.getInputStream(),
-                                StandardCharsets.UTF_8));
-                BufferedWriter writer = new BufferedWriter(
-                        new OutputStreamWriter(
-                                socket.getOutputStream(),
-                                StandardCharsets.UTF_8));
+                                "UTF-8"));
+        OutputStream rawOut =
+                socket.getOutputStream();
+        PrintWriter writer =
+                new PrintWriter(
+                        new java.io.BufferedOutputStream(
+                                rawOut), true);
 
-                readResponse(reader);
-                sendCmd(writer, "EHLO localhost");
-                readResponse(reader);
-                sendCmd(writer, "AUTH LOGIN");
-                readResponse(reader);
-                sendCmd(writer, Base64.getEncoder()
-                        .encodeToString(from.getBytes(
-                                StandardCharsets.UTF_8)));
-                readResponse(reader);
-                sendCmd(writer, Base64.getEncoder()
-                        .encodeToString(pass.getBytes(
-                                StandardCharsets.UTF_8)));
-                readResponse(reader);
-                sendCmd(writer,
-                        "MAIL FROM:<" + from + ">");
-                readResponse(reader);
-                sendCmd(writer,
-                        "RCPT TO:<" + toEmail + ">");
-                readResponse(reader);
-                sendCmd(writer, "DATA");
-                readResponse(reader);
-
-                String encodedSubject = Base64.getEncoder()
-                        .encodeToString(subject.getBytes(
-                                StandardCharsets.UTF_8));
-
-                sendCmd(writer, "From: " + from);
-                sendCmd(writer, "To: " + toEmail);
-                sendCmd(writer, "Subject: =?UTF-8?B?"
-                        + encodedSubject + "?=");
-                sendCmd(writer, "MIME-Version: 1.0");
-                sendCmd(writer,
-                        "Content-Type: text/plain;"
-                                + " charset=UTF-8");
-                sendCmd(writer, "");
-                sendCmd(writer, body);
-                sendCmd(writer, ".");
-                readResponse(reader);
-                sendCmd(writer, "QUIT");
-                readResponse(reader);
-
-                socket.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
+        checkResponse(reader, "220");
+        sendLine(writer, "EHLO " + host);
+        checkResponse(reader, "250");
+        sendLine(writer, "AUTH LOGIN");
+        checkResponse(reader, "334");
+        sendLine(writer, Base64.getEncoder()
+                .encodeToString(
+                        user.getBytes("UTF-8")));
+        checkResponse(reader, "334");
+        sendLine(writer, Base64.getEncoder()
+                .encodeToString(
+                        pass.getBytes("UTF-8")));
+        checkResponse(reader, "235");
+        sendLine(writer,
+                "MAIL FROM:<" + user + ">");
+        checkResponse(reader, "250");
+        sendLine(writer,
+                "RCPT TO:<" + to + ">");
+        checkResponse(reader, "250");
+        sendLine(writer, "DATA");
+        checkResponse(reader, "354");
+        sendLine(writer,
+                "From: " + fromName
+                        + " <" + user + ">");
+        sendLine(writer,
+                "To: <" + to + ">");
+        sendLine(writer,
+                "Reply-To: <" + user + ">");
+        sendLine(writer,
+                "Subject: " + subject);
+        sendLine(writer, "MIME-Version: 1.0");
+        sendLine(writer,
+                "Content-Type: text/plain; "
+                        + "charset=UTF-8");
+        sendLine(writer,
+                "Content-Transfer-Encoding: "
+                        + "base64");
+        sendLine(writer, "");
+        sendLine(writer, body);
+        sendLine(writer, ".");
+        checkResponse(reader, "250");
+        sendLine(writer, "QUIT");
     }
 
-    private void sendCmd(BufferedWriter w, String cmd)
-            throws IOException {
-        w.write(cmd + "\r\n");
-        w.flush();
+    private void sendLine(PrintWriter writer,
+                          String line) {
+        writer.print(line + "\r\n");
+        writer.flush();
     }
 
-    private String readResponse(BufferedReader r)
-            throws IOException {
+    private void checkResponse(
+            BufferedReader reader,
+            String expected) throws Exception {
         StringBuilder sb = new StringBuilder();
         String line;
-        while ((line = r.readLine()) != null) {
+        while ((line = reader.readLine()) != null) {
             sb.append(line).append("\n");
-            if (line.length() < 4) break;
-            if (line.charAt(3) == ' ') break;
+            if (line.length() >= 4
+                    && Character.isDigit(
+                    line.charAt(0))
+                    && line.charAt(3) == ' ')
+                break;
         }
-        return sb.toString();
+        String resp = sb.toString().trim();
+        if (!resp.startsWith(expected)) {
+            if (resp.startsWith("535"))
+                logger.severe(
+                        "[Sdf1_login] SMTP 535 "
+                                + "认证失败");
+            throw new Exception(
+                    "SMTP响应异常: 期望 "
+                            + expected
+                            + "，实际: " + resp);
+        }
     }
 }

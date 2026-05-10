@@ -43,6 +43,14 @@ public class GUIManager {
                 "§d§l积分商城"));
         g.setItem(16, mkItem(Material.CHEST,
                 "§e§l新人礼包"));
+        g.setItem(18, mkItem(Material.BOOK,
+                "§6工单系统",
+                "§7提交bug、求助、举报"));
+        if (p.isOp() || isAdmin(p)) {
+            g.setItem(20, mkItem(Material.CHEST,
+                    "§6垃圾回收站",
+                    "§7查看和取回清理的物品"));
+        }
         if (isAdmin(p)) {
             g.setItem(22, mkItem(Material.REDSTONE_BLOCK,
                     "§c§l管理员面板"));
@@ -97,6 +105,180 @@ public class GUIManager {
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
+
+    /**
+     * 打开账号删除选择面板
+     * 展示该玩家IP下所有账号，供选择删除
+     */
+    public void openAccountDelete(Player p) {
+        String ip = plugin.getPlayerIP(p);
+        if (ip == null) {
+            p.sendMessage("§c无法获取你的IP地址");
+            return;
+        }
+
+        List<Map<String, Object>> accounts =
+                plugin.getDb().getAccountDetailsByIP(ip);
+
+        // 54格大箱子
+        org.bukkit.inventory.Inventory g =
+                org.bukkit.Bukkit.createInventory(
+                        null, 54,
+                        "§c§l选择要删除的账号");
+
+        // 填充玻璃面板
+        org.bukkit.inventory.ItemStack glass =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material
+                                .RED_STAINED_GLASS_PANE);
+        org.bukkit.inventory.meta.ItemMeta gm =
+                glass.getItemMeta();
+        if (gm != null) {
+            gm.setDisplayName(" ");
+            glass.setItemMeta(gm);
+        }
+        for (int i = 0; i < 54; i++) {
+            g.setItem(i, glass);
+        }
+
+        // 展示账号列表（从0号位开始放）
+        java.text.SimpleDateFormat sdf =
+                new java.text.SimpleDateFormat(
+                        "yyyy-MM-dd HH:mm");
+        int slot = 0;
+        for (Map<String, Object> acc : accounts) {
+            if (slot >= 45) break;
+            String accName = (String) acc
+                    .get("player_name");
+            long regTime = ((Number) acc
+                    .get("register_time")).longValue();
+            String dateStr = regTime > 0
+                    ? sdf.format(
+                    new java.util.Date(regTime))
+                    : "未知";
+
+            // 当前登录的账号用不同颜色标记
+            boolean isCurrent =
+                    accName.equalsIgnoreCase(
+                            p.getName());
+
+            org.bukkit.inventory.ItemStack item =
+                    new org.bukkit.inventory.ItemStack(
+                            isCurrent
+                                    ? org.bukkit.Material
+                                      .RED_WOOL
+                                    : org.bukkit.Material
+                                      .ORANGE_WOOL);
+            org.bukkit.inventory.meta.ItemMeta im =
+                    item.getItemMeta();
+            if (im != null) {
+                im.setDisplayName(
+                        (isCurrent ? "§c" : "§e")
+                                + accName);
+                im.setLore(java.util.Arrays.asList(
+                        "§7注册时间: " + dateStr,
+                        "§7IP: " + ip,
+                        isCurrent
+                                ? "§c§l（当前账号）"
+                                : "§a点击选择删除此账号"));
+                item.setItemMeta(im);
+            }
+            g.setItem(slot, item);
+            slot++;
+        }
+
+        // 49号位：返回
+        org.bukkit.inventory.ItemStack back =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material.ARROW);
+        org.bukkit.inventory.meta.ItemMeta backMeta =
+                back.getItemMeta();
+        if (backMeta != null) {
+            backMeta.setDisplayName("§7返回");
+            back.setItemMeta(backMeta);
+        }
+        g.setItem(49, back);
+
+        p.openInventory(g);
+    }
+
+    /**
+     * 打开删除确认面板
+     */
+    public void openDeleteConfirm(Player p,
+                                  String targetName) {
+        org.bukkit.inventory.Inventory g =
+                org.bukkit.Bukkit.createInventory(
+                        null, 27,
+                        "§c§l确认删除: " + targetName);
+
+        org.bukkit.inventory.ItemStack glass =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material
+                                .GRAY_STAINED_GLASS_PANE);
+        org.bukkit.inventory.meta.ItemMeta gm =
+                glass.getItemMeta();
+        if (gm != null) {
+            gm.setDisplayName(" ");
+            glass.setItemMeta(gm);
+        }
+        for (int i = 0; i < 27; i++) {
+            g.setItem(i, glass);
+        }
+
+        // 11号位：确认删除
+        org.bukkit.inventory.ItemStack confirm =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material.LIME_WOOL);
+        org.bukkit.inventory.meta.ItemMeta cm =
+                confirm.getItemMeta();
+        if (cm != null) {
+            cm.setDisplayName("§a§l确认删除");
+            cm.setLore(java.util.Arrays.asList(
+                    "§7删除账号: §c" + targetName,
+                    "§c此操作不可撤销！"));
+            confirm.setItemMeta(cm);
+        }
+        g.setItem(11, confirm);
+
+        // 15号位：取消
+        org.bukkit.inventory.ItemStack cancel =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material.RED_WOOL);
+        org.bukkit.inventory.meta.ItemMeta cml =
+                cancel.getItemMeta();
+        if (cml != null) {
+            cml.setDisplayName("§c§l取消");
+            cancel.setItemMeta(cml);
+        }
+        g.setItem(15, cancel);
+
+        p.openInventory(g);
+    }
+
+    public void openShopAdmin(Player p) {
+        Inventory g = Bukkit.createInventory(
+                null, 54, "§c§l商城管理");
+        ItemStack glass = new ItemStack(
+                Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta glm = glass.getItemMeta();
+        if (glm != null) {
+            glm.setDisplayName(" ");
+            glass.setItemMeta(glm);
+        }
+        for (int i = 0; i < 54; i++)
+            g.setItem(i, glass);
+        g.setItem(49, mkItem(Material.ARROW,
+                "§7返回商城"));
+        g.setItem(50, mkItem(Material.EMERALD,
+                "§a添加商品",
+                "§7格式: /sdf1_login shopadd <名称> <价格> <命令>"));
+        g.setItem(51, mkItem(Material.BARRIER,
+                "§c删除商品",
+                "§7格式: /sdf1_login shopdel <序号>"));
+        p.openInventory(g);
+    }
+
 
     public void openAdmin(Player p) {
         Inventory g = Bukkit.createInventory(
@@ -310,6 +492,82 @@ public class GUIManager {
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
+
+    /**
+     * 打开账号请求面板
+     * 玩家通过 /oa 命令触发
+     */
+    public void openAccountRequest(Player p) {
+        org.bukkit.inventory.Inventory g =
+                org.bukkit.Bukkit.createInventory(
+                        null, 27,
+                        "§e§l账号请求");
+
+        // 填充玻璃面板
+        org.bukkit.inventory.ItemStack glass =
+                new org.bukkit.inventory.ItemStack(
+                        org.bukkit.Material
+                                .YELLOW_STAINED_GLASS_PANE);
+        org.bukkit.inventory.meta.ItemMeta gm =
+                glass.getItemMeta();
+        if (gm != null) {
+            gm.setDisplayName(" ");
+            glass.setItemMeta(gm);
+        }
+        for (int i = 0; i < 27; i++) {
+            g.setItem(i, glass);
+        }
+
+        // 10号位：申请删除账号
+        g.setItem(10, makeItem(
+                org.bukkit.Material.BARRIER,
+                "§c§l申请删除账号",
+                "§7点击后确认删除您的账号",
+                "§7此操作不可撤销"));
+
+        // 13号位：找回密码
+        g.setItem(13, makeItem(
+                org.bukkit.Material.TRIPWIRE_HOOK,
+                "§e§l找回密码",
+                "§7通过绑定邮箱获取临时密码",
+                "§7需要先绑定邮箱"));
+
+        // 16号位：联系管理员
+        g.setItem(16, makeItem(
+                org.bukkit.Material.EMERALD,
+                "§a§l联系管理员",
+                "§7遇到问题？向管理员提交工单"));
+
+        // 22号位：返回主菜单
+        g.setItem(22, makeItem(
+                org.bukkit.Material.ARROW,
+                "§7返回"));
+
+        p.openInventory(g);
+    }
+
+    /**
+     * 创建物品的工具方法
+     */
+    private org.bukkit.inventory.ItemStack makeItem(
+            org.bukkit.Material mat,
+            String displayName,
+            String... lore) {
+        org.bukkit.inventory.ItemStack item =
+                new org.bukkit.inventory.ItemStack(mat);
+        org.bukkit.inventory.meta.ItemMeta meta =
+                item.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(displayName);
+            if (lore.length > 0) {
+                meta.setLore(
+                        java.util.Arrays.asList(lore));
+            }
+            item.setItemMeta(meta);
+        }
+        return item;
+    }
+
 
     private boolean isAdmin(Player p) {
         return p.getScoreboardTags().contains(

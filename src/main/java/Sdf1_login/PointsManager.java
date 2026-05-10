@@ -6,6 +6,14 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.List;
+
 
 import java.lang.reflect.Method;
 import java.util.*;
@@ -41,10 +49,9 @@ public class PointsManager {
                 plugin.getLogger().info(
                         "[Sdf1_login] CY_beibao 联控已连接");
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
-
-    // ===== CY 商品拉取 =====
 
     private void refreshCYItems() {
         cyItems.clear();
@@ -98,14 +105,10 @@ public class PointsManager {
         }
     }
 
-    // ===== 积分查询 =====
-
     public int getPoints(String name) {
         return ((Number) plugin.getDb()
                 .getField(name, "points")).intValue();
     }
-
-    // ===== 主面板 =====
 
     public Inventory createShopGUI(Player p) {
         int points = getPoints(p.getName());
@@ -141,8 +144,6 @@ public class PointsManager {
         inv.setItem(49, mkItem(Material.ARROW, "§7返回"));
         return inv;
     }
-
-    // ===== CY 商品面板 =====
 
     public Inventory createCYShopGUI(Player p) {
         refreshCYItems();
@@ -201,7 +202,57 @@ public class PointsManager {
         return inv;
     }
 
-    // ===== 主面板点击 =====
+    public void addItem(String name,
+                        int price, String cmd2) {
+        // 追加到商品配置文件
+        File file = new File(
+                plugin.getDataFolder(),
+                "ShopItems.txt");
+        try {
+            java.io.FileWriter fw =
+                    new java.io.FileWriter(file, true);
+            fw.write(name + ":" + price
+                    + ":" + cmd2 + "\n");
+            fw.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void removeItem(int index) {
+        File file = new File(
+                plugin.getDataFolder(),
+                "ShopItems.txt");
+        try {
+            java.util.List<String> lines =
+                    new java.util.ArrayList<>();
+            java.io.BufferedReader br =
+                    new java.io.BufferedReader(
+                            new java.io.FileReader(
+                                    file));
+            String line;
+            int i = 0;
+            while ((line = br.readLine()) != null) {
+                if (line.trim().isEmpty()
+                        || line.startsWith("#")) {
+                    lines.add(line);
+                    continue;
+                }
+                if (i != index) {
+                    lines.add(line);
+                }
+                i++;
+            }
+            br.close();
+            java.io.PrintWriter pw =
+                    new java.io.PrintWriter(file);
+            for (String l : lines) pw.println(l);
+            pw.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
 
     public void handleClick(Player p, int slot) {
         int points = getPoints(p.getName());
@@ -214,14 +265,14 @@ public class PointsManager {
                         plugin.getEconomy()
                                 .depositPlayer(p, 1000);
                     }
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_purchase_success",
-                            "count", "100"));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_purchase_success")
+                            .replace("{count}", "100"));
                 } else {
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_insufficient",
-                            "points",
-                            String.valueOf(points)));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_insufficient")
+                            .replace("{points}",
+                                    String.valueOf(points)));
                 }
                 break;
             case 12:
@@ -229,14 +280,14 @@ public class PointsManager {
                     plugin.getDb().deductPoints(
                             p.getName(), 50);
                     activateCY(p.getName(), 9, 0);
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_purchase_success",
-                            "count", "50"));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_purchase_success")
+                            .replace("{count}", "50"));
                 } else {
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_insufficient",
-                            "points",
-                            String.valueOf(points)));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_insufficient")
+                            .replace("{points}",
+                                    String.valueOf(points)));
                 }
                 break;
             case 14:
@@ -244,14 +295,14 @@ public class PointsManager {
                     plugin.getDb().deductPoints(
                             p.getName(), 20);
                     p.setLevel(p.getLevel() + 10);
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_purchase_success",
-                            "count", "20"));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_purchase_success")
+                            .replace("{count}", "20"));
                 } else {
-                    p.sendMessage(plugin.getConfig2().msg(
-                            "points_insufficient",
-                            "points",
-                            String.valueOf(points)));
+                    p.sendMessage(plugin.getConfig2()
+                            .msg("points_insufficient")
+                            .replace("{points}",
+                                    String.valueOf(points)));
                 }
                 break;
             case 31:
@@ -262,8 +313,6 @@ public class PointsManager {
                 break;
         }
     }
-
-    // ===== CY 商品面板点击 =====
 
     public void handleCYClick(Player p, int slot) {
         if (slot < 0 || slot >= cyItems.size()
@@ -281,16 +330,15 @@ public class PointsManager {
                 .get("lifetime");
 
         if (stock == -1) {
-            p.sendMessage(
-                    "§c[Sdf1_login] §f该商品已下架");
+            p.sendMessage("§c该商品已下架");
             return;
         }
         int points = getPoints(p.getName());
         if (points < price) {
-            p.sendMessage(plugin.getConfig2().msg(
-                    "points_insufficient",
-                    "points",
-                    String.valueOf(points)));
+            p.sendMessage(plugin.getConfig2()
+                    .msg("points_insufficient")
+                    .replace("{points}",
+                            String.valueOf(points)));
             return;
         }
 
@@ -300,11 +348,9 @@ public class PointsManager {
 
         String tl = lifetime
                 ? "终身" : (days + "天");
-        p.sendMessage("§a[Sdf1_login] §f购买成功！获得 "
+        p.sendMessage("§a购买成功！获得 "
                 + tl + " +" + slots + "格 背包空间");
     }
-
-    // ===== 工具 =====
 
     private void fillBg(Inventory inv) {
         ItemStack gl = mkItem(

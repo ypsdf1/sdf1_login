@@ -1,433 +1,451 @@
 package Sdf1_login;
-// 配置文件
+
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.regex.*;
+
+import static java.lang.Double.parseDouble;
 
 public class ConfigManager {
 
-    private final Map<String, String> messages =
-            new LinkedHashMap<>();
-    private final Map<String, String> smtp = new LinkedHashMap<>();
     private final File dataFolder;
+    private final Map<String, String> messages = new LinkedHashMap<>();
+    private final Map<String, String> smtpSettings = new LinkedHashMap<>();
 
-    // 配置项
-    public int afkTimeout = 300;
-    public int loginTimeout = 120;
-    public boolean afkEnabled = true;
-    public Set<String> afkWhitelist =
-            new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     public String adminTag = "admin";
     public String adminPassword = "qweasd";
+    public int maxAccountsPerIP = 3;
+    public String approvalMode = "manual";
+    public int autoApproveDelayMinutes = 30;
+    public int loginTimeout = 60;
+    public boolean afkEnabled = false;
+    public int afkTimeout = 300;
+    public boolean smtpSsl = true;
+    public String smtpVerifyCode = "";
+    public long smtpVerifyExpire = 0;
+    public long smtpLastSendTime = 0;
+    public String smtpConfiguringPlayer = "";
 
 
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
     }
 
-    // ===== 消息配置 =====
+    // ==================== 消息 ====================
 
     public void loadMessages() {
         messages.clear();
-        File f = new File(dataFolder, "设置.txt");
-        if (!f.exists()) writeDefaultMessages();
-        try {
-            BufferedReader r = new BufferedReader(
-                    new InputStreamReader(
-                            new FileInputStream(f),
-                            StandardCharsets.UTF_8));
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.startsWith("\uFEFF"))
-                    line = line.substring(1);
-                String t = line.trim();
-                if (t.isEmpty() || t.startsWith("#")) continue;
-                int eq = t.indexOf('=');
-                if (eq < 0) continue;
-                messages.put(t.substring(0, eq).trim(),
-                        t.substring(eq + 1).trim());
-            }
-            r.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        ensureMessageDefaults();
+        File file = new File(dataFolder, "消息.txt");
+        if (!file.exists()) createDefaultMessages(file);
+        loadMap(file, messages);
+    }
+
+    public String msg(String key) {
+        String val = messages.getOrDefault(key, key);
+        val = val.replace("<b>", "&l");
+        val = val.replace("</b>", "&r");
+        val = val.replace("<br>", "\n");
+        val = val.replace("\\n", "\n");
+        // &颜色码 转换为 §颜色码
+        val = val.replaceAll(
+                "&([0-9a-fk-orA-FK-OR])", "§$1");
+        return val;
     }
 
 
-    private void ensureMessageDefaults() {
-        putDefault("not_registered",
-                "§c§l[Sdf1_login] §f你还没有注册，请使用 /reg <密码> 注册");
-        putDefault("not_logged_in",
-                "§c§l[Sdf1_login] §f请先使用 /login <密码> 登录");
-        putDefault("login_success",
-                "§a§l[Sdf1_login] §f登录成功！欢迎回来 {user}");
-        putDefault("register_success",
-                "§a§l[Sdf1_login] §f注册成功！请使用 /login <密码> 登录");
-        putDefault("login_failed",
-                "§c§l[Sdf1_login] §f密码错误！");
-        putDefault("already_registered",
-                "§c§l[Sdf1_login] §f你已经注册过了");
-        putDefault("already_logged_in",
-                "§a§l[Sdf1_login] §f你已经登录了");
-        putDefault("password_invalid",
-                "§c§l[Sdf1_login] §f密码不符合要求！需要6-20位，包含大写字母+小写字母+数字");
-        putDefault("password_format_hint",
-                "§7密码要求: 6-20位，至少1个大写字母+1个小写字母+1个数字");
-        putDefault("auto_login_ip",
-                "§a§l[Sdf1_login] §f检测到同IP近期登录，已自动登录！欢迎回来 {user}");
-        putDefault("email_verify_sent",
-                "§a§l[Sdf1_login] §f验证码已发送到 {email}，请输入6位验证码：");
-        putDefault("email_verify_success",
-                "§a§l[Sdf1_login] §f邮箱验证成功，已绑定！");
-        putDefault("email_verify_failed",
-                "§c§l[Sdf1_login] §f验证码错误，请重试");
-        putDefault("smtp_verify_sent",
-                "§a§l[Sdf1_login] §f验证码已发送到 {email}，请输入6位验证码：");
-        putDefault("smtp_verify_success",
-                "§a§l[Sdf1_login] §fSMTP配置验证成功！");
-        putDefault("smtp_verify_failed",
-                "§c§l[Sdf1_login] §f验证码错误，请重试");
-        putDefault("login_timeout",
-                "§c§l[Sdf1_login] §f登录超时，已被踢出");
-        putDefault("login_required",
-                "§c§l[Sdf1_login] §f你还没有登录，请先 /login <密码>");
-        putDefault("reset_no_email",
-                "§c§l[Sdf1_login] §f你还没有绑定邮箱，无法通过邮件重置密码");
-        putDefault("reset_sent",
-                "§a§l[Sdf1_login] §f临时密码已发送到你的邮箱，请查收");
-        putDefault("reset_temp_used",
-                "§a§l[Sdf1_login] §f临时密码已生效，旧密码已失效");
-        putDefault("reset_failed",
-                "§c§l[Sdf1_login] §f重置失败，请联系管理员");
-        putDefault("email_set",
-                "§a§l[Sdf1_login] §f邮箱已设置为: {email}");
-        putDefault("email_invalid",
-                "§c§l[Sdf1_login] §f邮箱格式不正确");
-        putDefault("checkin_success",
-                "§a§l[Sdf1_login] §f签到成功！获得 {points} 积分（连续{streak}天，倍率x{multi}）");
-        putDefault("checkin_already",
-                "§c§l[Sdf1_login] §f今天已经签到过了");
-        putDefault("backcheckin_success",
-                "§a§l[Sdf1_login] §f补签成功！消耗10积分");
-        putDefault("backcheckin_no_point",
-                "§c§l[Sdf1_login] §f积分不足，补签需要10积分");
-        putDefault("backcheckin_expired",
-                "§c§l[Sdf1_login] §f只能补签3天内的签到");
-        putDefault("points_insufficient",
-                "§c§l[Sdf1_login] §f积分不足！当前: {points}");
-        putDefault("points_purchase_success",
-                "§a§l[Sdf1_login] §f兑换成功！消耗 {count} 积分");
-        putDefault("invite_code_generated",
-                "§a§l[Sdf1_login] §f你的邀请码: {code}");
-        putDefault("invite_bound",
-                "§a§l[Sdf1_login] §f你已被 {user} 邀请！");
-        putDefault("invite_referral_bonus",
-                "§a§l[Sdf1_login] §f邀请返点: +{points} 积分");
-        putDefault("gift_claimed",
-                "§a§l[Sdf1_login] §f礼包领取成功！");
-        putDefault("gift_not_ready",
-                "§c§l[Sdf1_login] §f礼包条件未满足");
-        putDefault("gift_all_claimed",
-                "§a§l[Sdf1_login] §f所有礼包已领取完毕！");
-        putDefault("admin_no_permission",
-                "§c§l[Sdf1_login] §f无权限");
-        putDefault("admin_set_password",
-                "§a§l[Sdf1_login] §f已为 {user} 设置新密码");
-        putDefault("admin_delete_confirm",
-                "§c§l[Sdf1_login] §f请输入要删除的玩家名和你的密码进行确认");
-        putDefault("admin_delete_success",
-                "§a§l[Sdf1_login] §f玩家 {user} 已删除");
-        putDefault("admin_delete_failed",
-                "§c§l[Sdf1_login] §f删除失败：验证不通过");
-        putDefault("admin_points_set",
-                "§a§l[Sdf1_login] §f已设置 {user} 积分为 {points}");
-        putDefault("afk_warning",
-                "§e§l[Sdf1_login] §f你已挂机 {duration}，将在 {remain} 后被踢出");
-        putDefault("afk_kicked",
-                "§c§l[Sdf1_login] §f因挂机过久被踢出");
-        putDefault("afk_set_time",
-                "§a§l[Sdf1_login] §f挂机踢出时长已设为 {duration}");
-        putDefault("afk_set_enabled",
-                "§a§l[Sdf1_login] §f挂机踢出已开启");
-        putDefault("afk_set_disabled",
-                "§a§l[Sdf1_login] §f挂机踢出已关闭");
-        putDefault("afk_whitelist_added",
-                "§a§l[Sdf1_login] §f已将 {user} 加入防踢白名单");
-        putDefault("afk_whitelist_removed",
-                "§a§l[Sdf1_login] §f已将 {user} 移出防踢白名单");
+    private void createDefaultMessages(File f) {
+        List<String> L = new ArrayList<>();
+        L.add("# ==========================================");
+        L.add("#      Sdf1_login 消息配置文件");
+        L.add("# ==========================================");
+        L.add("# 颜色代码使用 § 符号");
+        L.add("#   §0黑色 §1深蓝 §2深绿 §3深青");
+        L.add("#   §4深红 §5深紫 §6金色 §7灰色");
+        L.add("#   §8深灰 §9蓝色 §a绿色 §b浅蓝");
+        L.add("#   §c红色 §d粉色 §e黄色 §f白色");
+        L.add("#   §l粗体 §n下划线 §o斜体 §r重置");
+        L.add("#");
+        L.add("# 占位符用 {xxx} 表示，运行时自动替换");
+        L.add("# 支持 <b>粗体</b> 标签");
+        L.add("# 支持 \\n 或 <br> 换行");
+        L.add("# 修改后执行 /sdf1_login reload 重载");
+        L.add("# ==========================================");
+        L.add("");
+
+        // --- 登录/注册 ---
+        L.add("# ---- 登录注册相关 ----");
+        L.add("# login_timeout: 登录超时被踢出时的提示");
+        L.add("login_timeout=§c登录超时，请重新登录");
+        L.add("# not_registered: 未注册玩家收到的提示");
+        L.add("not_registered=§e您尚未注册，请使用 /reg <密码>");
+        L.add("# not_logged_in: 已注册但未登录的提示");
+        L.add("not_logged_in=§e您尚未登录，请使用 /login <密码>");
+        L.add("# already_registered: 已注册玩家再次注册时的提示");
+        L.add("already_registered=§c您已注册过账号");
+        L.add("# already_logged_in: 已登录玩家再次登录时的提示");
+        L.add("already_logged_in=§c您已登录");
+        L.add("# reg_success: 注册成功提示");
+        L.add("reg_success=§a注册成功！欢迎来到服务器");
+        L.add("# login_success: 登录成功提示");
+        L.add("login_success=§a登录成功！");
+        L.add("# login_failed: 密码错误提示");
+        L.add("login_failed=§c密码错误，请重试");
+        L.add("");
+
+        // --- 密码 ---
+        L.add("# ---- 密码相关 ----");
+        L.add("# password_wrong: 旧密码验证失败");
+        L.add("password_wrong=§c密码错误");
+        L.add("# password_changed: 密码修改成功");
+        L.add("password_changed=§a密码修改成功！");
+        L.add("# password_format_error: 密码格式不符合要求");
+        L.add("password_format_error=§c密码需6位以上，含大小写字母和数字");
+        L.add("# password_same: 新密码与旧密码相同");
+        L.add("password_same=§c新密码不能与旧密码相同");
+        L.add("# reset_no_email: 找回密码时未绑定邮箱");
+        L.add("reset_no_email=§c您未绑定邮箱，无法找回密码");
+        L.add("# reset_sent: 临时密码已发送到邮箱");
+        L.add("reset_sent=§a临时密码已发送到您的邮箱，请查收");
+        L.add("");
+
+        // --- 签到积分 ---
+        L.add("# ---- 签到积分相关 ----");
+        L.add("# checkin_already: 今日已签到");
+        L.add("checkin_already=§c您今日已签到");
+        L.add("# checkin_success: 签到成功，{points}=获得积分 {streak}=连续天数 {multi}=倍率");
+        L.add("checkin_success=§a签到成功！获得 {points} 积分，连续 {streak} 天，倍率 x{multi}");
+        L.add("# points_insufficient: 积分不足");
+        L.add("points_insufficient=§c积分不足，当前: {points}");
+        L.add("# points_purchase_success: 积分购买成功");
+        L.add("points_purchase_success=§a购买成功！消耗 {count} 积分");
+        L.add("");
+
+        // --- 挂机 ---
+        L.add("# ---- 挂机检测相关 ----");
+        L.add("# afk_set_enabled: 挂机检测开启");
+        L.add("afk_set_enabled=§a挂机检测已开启");
+        L.add("# afk_set_disabled: 挂机检测关闭");
+        L.add("afk_set_disabled=§c挂机检测已关闭");
+        L.add("# afk_kick: 因挂机被踢出");
+        L.add("afk_kick=§c因挂机过久被踢出");
+        L.add("");
+
+        // --- 邮箱 ---
+        L.add("# ---- 邮箱相关 ----");
+        L.add("# email_set: 邮箱设置成功");
+        L.add("email_set=§a邮箱设置成功：{email}");
+        L.add("# email_format_error: 邮箱格式错误");
+        L.add("email_format_error=§c邮箱格式不正确");
+        L.add("");
+
+        // --- 邀请 ---
+        L.add("# ---- 邀请相关 ----");
+        L.add("# invite_code_generated: 邀请码生成");
+        L.add("invite_code_generated=§a邀请码：{code}");
+        L.add("# invite_used: 使用邀请码成功");
+        L.add("invite_used=§a邀请成功，邀请人：{player}");
+        L.add("# invite_self: 使用自己的邀请码");
+        L.add("invite_self=§c不能使用自己的邀请码");
+        L.add("# invite_not_found: 邀请码不存在");
+        L.add("invite_not_found=§c邀请码不存在");
+        L.add("# invite_referral_bonus: 被邀请人签到后邀请人获得奖励");
+        L.add("invite_referral_bonus=§a邀请奖励！获得 {points} 积分");
+        L.add("");
+
+        // --- 礼包 ---
+        L.add("# ---- 新人礼包相关 ----");
+        L.add("# gift_not_ready: 礼包条件未满足");
+        L.add("gift_not_ready=§c礼包条件未满足");
+        L.add("# gift_claimed: 礼包领取成功");
+        L.add("gift_claimed=§a礼包领取成功！");
+        L.add("");
+
+        // --- 审批/IP ---
+        L.add("# ---- 审批与IP限制 ----");
+        L.add("# need_approval: 注册需审批");
+        L.add("need_approval=§e注册需审批 (工单#{id})");
+        L.add("# ip_max_accounts: IP注册已达上限");
+        L.add("ip_max_accounts=§cIP注册已达上限");
+        L.add("");
+
+        // --- 管理员 ---
+        L.add("# ---- 管理员操作 ----");
+        L.add("# admin_delete_confirm: 管理员删除账号确认提示");
+        L.add("admin_delete_confirm=§c请在聊天中输入玩家名确认删除");
+        L.add("");
+
+        // --- 聊天过滤 ---
+        L.add("# ---- 聊天过滤 ----");
+        L.add("# chat_muted: 禁言玩家尝试聊天");
+        L.add("chat_muted=§c§l[Sdf1_chat] §f你已被禁言，无法聊天");
+        L.add("# chat_url_blocked: 发送违规链接被拦截");
+        L.add("# {url}=检测到的链接地址");
+        L.add("chat_url_blocked=§c§l[Sdf1_chat] §f检测到违规第三方链接: §e{url}");
+        L.add("# chat_url_violation: 当前违规次数");
+        L.add("# {count}=当前违规次数");
+        L.add("chat_url_violation=§7当前违规次数: §e{count}");
+        L.add("# chat_url_admin_notify: 通知管理员，{player}=玩家名 {url}=链接 {count}=次数");
+        L.add("chat_url_admin_notify=§e§l[Sdf1_chat] §f{player} 发送违规链接: {url} (第{count}次)");
+        L.add("# chat_url_broadcast: 全服通报，{player}=玩家名");
+        L.add("chat_url_broadcast=§c§l[Sdf1_chat] §e{player} §f因发送违规链接被处罚");
+        L.add("");
+
+        // --- 通用 ---
+        L.add("# ---- 通用 ----");
+        L.add("# 未知参数: 未知命令或权限不足时的提示");
+        L.add("未知参数=§c未知参数或权限不足");
+        L.add("# only_player: 仅玩家可用的命令");
+        L.add("# only_player=§c此命令仅玩家可用");
+
+        writeLines(f, L);
     }
 
-    private void putDefault(String key, String value) {
-        messages.putIfAbsent(key, value);
-    }
 
-
-    public String msg(String key, Object... kvPairs) {
-        String template = messages.getOrDefault(key, key);
-        for (int i = 0; i < kvPairs.length - 1; i += 2) {
-            String varName = kvPairs[i].toString();
-            String value = kvPairs[i + 1] != null
-                    ? kvPairs[i + 1].toString() : "";
-            String[] open  = {"{", "[", "(", "【", "（", "《", "<"};
-            String[] close = {"}", "]", ")", "】", "）", "》", ">"};
-            for (int j = 0; j < open.length; j++) {
-                template = template.replace(
-                        open[j] + varName + close[j], value);
-            }
-        }
-        template = template.replace("\\n", "\n");
-        template = template.replace("<br>", "\n");
-        return template;
-    }
-
-    private void writeDefaultMessages() {
-        File f = new File(dataFolder, "设置.txt");
-        try (PrintWriter pw = new PrintWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(f),
-                        StandardCharsets.UTF_8))) {
-            pw.println("# ==========================================");
-            pw.println("#        Sdf1_login 消息提示配置");
-            pw.println("# ==========================================");
-            pw.println("# 变量支持: {变量} [变量] (变量) 【变量】");
-            pw.println("# 可用变量: [user] [duration] [count]");
-            pw.println("#           [code] [points] [stage]");
-            pw.println("#           [email] [url] [reason]");
-            pw.println();
-            pw.println("# ===== 登录系统 =====");
-            pw.println("not_registered=§c§l[Sdf1_login] §f你还没有注册，请使用 /reg <密码> 注册");
-            pw.println("not_logged_in=§c§l[Sdf1_login] §f请先使用 /login <密码> 登录");
-            pw.println("login_success=§a§l[Sdf1_login] §f登录成功！欢迎回来 [user]");
-            pw.println("register_success=§a§l[Sdf1_login] §f注册成功！请使用 /login <密码> 登录");
-            pw.println("login_failed=§c§l[Sdf1_login] §f密码错误！");
-            pw.println("already_registered=§c§l[Sdf1_login] §f你已经注册过了");
-            pw.println("already_logged_in=§a§l[Sdf1_login] §f你已经登录了");
-            pw.println("password_invalid=§c§l[Sdf1_login] §f密码不符合要求！需要6-20位，包含大写字母+小写字母+数字");
-            pw.println("password_format_hint=§7密码要求: 6-20位，至少1个大写字母+1个小写字母+1个数字");
-            pw.println();
-            pw.println("# ===== IP自动登录 =====");
-            pw.println("auto_login_ip=§a§l[Sdf1_login] §f检测到同IP近期登录，已自动登录！欢迎回来 [user]");
-            pw.println();
-            pw.println("# ===== 邮箱验证 =====");
-            pw.println("email_verify_sent=§a§l[Sdf1_login] §f验证码已发送到 [email]，请输入6位验证码：");
-            pw.println("email_verify_success=§a§l[Sdf1_login] §f邮箱验证成功，已绑定！");
-            pw.println("email_verify_failed=§c§l[Sdf1_login] §f验证码错误，请重试");
-            pw.println();
-            pw.println("# ===== SMTP验证 =====");
-            pw.println("smtp_verify_sent=§a§l[Sdf1_login] §f验证码已发送到 [email]，请输入6位验证码：");
-            pw.println("smtp_verify_success=§a§l[Sdf1_login] §fSMTP配置验证成功！");
-            pw.println("smtp_verify_failed=§c§l[Sdf1_login] §f验证码错误，请重试");
-            pw.println("login_timeout=§c§l[Sdf1_login] §f登录超时，已被踢出");
-            pw.println("login_required=§c§l[Sdf1_login] §f你还没有登录，请先 /login <密码>");
-            pw.println();
-            pw.println("# ===== 密码重置 =====");
-            pw.println("reset_no_email=§c§l[Sdf1_login] §f你还没有绑定邮箱，无法通过邮件重置密码");
-            pw.println("reset_sent=§a§l[Sdf1_login] §f临时密码已发送到你的邮箱，请查收");
-            pw.println("reset_temp_used=§a§l[Sdf1_login] §f临时密码已生效，旧密码已失效");
-            pw.println("reset_failed=§c§l[Sdf1_login] §f重置失败，请联系管理员");
-            pw.println();
-            pw.println("# ===== 邮箱 =====");
-            pw.println("email_set=§a§l[Sdf1_login] §f邮箱已设置为: [email]");
-            pw.println("email_invalid=§c§l[Sdf1_login] §f邮箱格式不正确");
-            pw.println();
-            pw.println("# ===== 签到 =====");
-            pw.println("checkin_success=§a§l[Sdf1_login] §f签到成功！获得 [points] 积分（连续[streak]天，倍率x[multi]）");
-            pw.println("checkin_already=§c§l[Sdf1_login] §f今天已经签到过了");
-            pw.println("backcheckin_success=§a§l[Sdf1_login] §f补签成功！消耗10积分");
-            pw.println("backcheckin_no_point=§c§l[Sdf1_login] §f积分不足，补签需要10积分");
-            pw.println("backcheckin_expired=§c§l[Sdf1_login] §f只能补签3天内的签到");
-            pw.println();
-            pw.println("# ===== 积分 =====");
-            pw.println("points_insufficient=§c§l[Sdf1_login] §f积分不足！当前: [points]");
-            pw.println("points_purchase_success=§a§l[Sdf1_login] §f兑换成功！消耗 [count] 积分");
-            pw.println();
-            pw.println("# ===== 邀请 =====");
-            pw.println("invite_code_generated=§a§l[Sdf1_login] §f你的邀请码: [code]");
-            pw.println("invite_bound=§a§l[Sdf1_login] §f你已被 [user] 邀请！");
-            pw.println("invite_referral_bonus=§a§l[Sdf1_login] §f邀请返点: +[points] 积分");
-            pw.println();
-            pw.println("# ===== 新人礼包 =====");
-            pw.println("gift_claimed=§a§l[Sdf1_login] §f礼包领取成功！");
-            pw.println("gift_not_ready=§c§l[Sdf1_login] §f礼包条件未满足");
-            pw.println("gift_all_claimed=§a§l[Sdf1_login] §f所有礼包已领取完毕！");
-            pw.println();
-            pw.println("# ===== 管理员 =====");
-            pw.println("admin_no_permission=§c§l[Sdf1_login] §f无权限");
-            pw.println("admin_set_password=§a§l[Sdf1_login] §f已为 [user] 设置新密码");
-            pw.println("admin_delete_confirm=§c§l[Sdf1_login] §f请输入要删除的玩家名和你的密码进行确认");
-            pw.println("admin_delete_success=§a§l[Sdf1_login] §f玩家 [user] 已删除");
-            pw.println("admin_delete_failed=§c§l[Sdf1_login] §f删除失败：验证不通过");
-            pw.println("admin_points_set=§a§l[Sdf1_login] §f已设置 [user] 积分为 [points]");
-            pw.println("管理密码=qweasd");
-            pw.println();
-            pw.println("# ===== 挂机踢出 =====");
-            pw.println("afk_warning=§e§l[Sdf1_login] §f你已挂机 [duration]，将在 [remain] 后被踢出");
-            pw.println("afk_kicked=§c§l[Sdf1_login] §f因挂机过久被踢出");
-            pw.println("afk_set_time=§a§l[Sdf1_login] §f挂机踢出时长已设为 [duration]");
-            pw.println("afk_set_enabled=§a§l[Sdf1_login] §f挂机踢出已开启");
-            pw.println("afk_set_disabled=§a§l[Sdf1_login] §f挂机踢出已关闭");
-            pw.println("afk_whitelist_added=§a§l[Sdf1_login] §f已将 [user] 加入防踢白名单");
-            pw.println("afk_whitelist_removed=§a§l[Sdf1_login] §f已将 [user] 移出防踢白名单");
-            pw.println();
-            pw.println("# ===== 帮助 =====");
-            pw.println("help_header=§e[Sdf1_login] §f命令列表:");
-            pw.println("help_1=§a/sdf1_login §7- 打开面板");
-            pw.println("help_2=§a/reg <密码> §7- 注册");
-            pw.println("help_3=§a/login <密码> §7- 登录");
-            pw.println("help_4=§a/sdf1_login reset §7- 重置密码");
-            pw.println("help_5=§a/sdf1_login email <邮箱> §7- 绑定邮箱");
-            pw.println("help_6=§a/sdf1_login set <玩家> <密码> §7- [管理员] 设置密码");
-            pw.println("help_7=§a/sdf1_login del <玩家> §7- [管理员] 删除用户");
-            pw.println("help_8=§a/sdf1_login kick on/off [分钟] §7- [管理员] 挂机设置");
-            pw.println("help_9=§a/sdf1_login add/remove <玩家> §7- [管理员] 防踢白名单");
-            pw.println("help_10=§a/sdf1_login get <玩家> §7- [管理员] 查看礼包进度");
-            pw.println("help_11=§a/sdf1_login reload §7- [管理员] 重载配置");
-        } catch (IOException ignored) {}
-    }
-
-    // ===== SMTP配置 =====
+    // ==================== SMTP ====================
 
     public void loadSmtp() {
-        smtp.clear();
-        File f = new File(dataFolder, "smtp.txt");
-        if (!f.exists()) writeDefaultSmtp();
-        try {
-            BufferedReader r = new BufferedReader(
-                    new InputStreamReader(
-                            new FileInputStream(f),
-                            StandardCharsets.UTF_8));
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.startsWith("\uFEFF"))
-                    line = line.substring(1);
-                String t = line.trim();
-                if (t.isEmpty() || t.startsWith("#")) continue;
-                int eq = t.indexOf('=');
-                if (eq < 0) continue;
-                smtp.put(t.substring(0, eq).trim(),
-                        t.substring(eq + 1).trim());
-            }
-            r.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        smtpSettings.clear();
+        File file = new File(dataFolder, "SMTP设置.txt");
+        if (!file.exists()) createDefaultSmtp(file);
+        loadMap(file, smtpSettings);
     }
-
-    private void writeDefaultSmtp() {
-        File f = new File(dataFolder, "smtp.txt");
-        try (PrintWriter pw = new PrintWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(f),
-                        StandardCharsets.UTF_8))) {
-            pw.println("# ==========================================");
-            pw.println("#        Sdf1_login SMTP邮件配置");
-            pw.println("# ==========================================");
-            pw.println();
-            pw.println("# SMTP服务器地址");
-            pw.println("smtp地址=smtp.qq.com");
-            pw.println();
-            pw.println("# 端口号（SSL默认465）");
-            pw.println("smtp端口=465");
-            pw.println();
-            pw.println("# 发件人邮箱地址");
-            pw.println("发件邮箱=your@email.com");
-            pw.println();
-            pw.println("# 邮箱授权码（非登录密码）");
-            pw.println("授权码=");
-            pw.println();
-            pw.println("# 测试接收邮箱（留空则发给发件人）");
-            pw.println("测试邮箱=");
-        } catch (IOException ignored) {}
+    private double parseDouble(String s, double def) {
+        try { return Double.parseDouble(s.trim()); }
+        catch (Exception e) { return def; }
     }
 
     public String getSmtp(String key) {
-        return smtp.getOrDefault(key, "");
+        return smtpSettings.getOrDefault(key, "");
     }
-
-    public void setSmtp(String key, String value) {
-        smtp.put(key, value);
-        saveSmtp();
-    }
-
-    public Map<String, String> getSmtpAll() {
-        return new LinkedHashMap<>(smtp);
-    }
-    public void saveSettings() {
-        File f = new File(dataFolder, "url.txt");
-        try (PrintWriter pw = new PrintWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(f),
+    /** 获取挂机白名单列表 */
+    public List<String> getAfkWhitelist() {
+        List<String> list = new ArrayList<>();
+        File file = new File(dataFolder, "挂机白名单.txt");
+        if (!file.exists()) {
+            try {
+                file.createNewFile();
+                try (BufferedWriter w = new BufferedWriter(
+                        new OutputStreamWriter(
+                                new FileOutputStream(file),
+                                StandardCharsets.UTF_8))) {
+                    w.write("# 每行一个玩家名，前面加 # 为注释");
+                    w.newLine();
+                    w.write("# 以下玩家不会被挂机踢出");
+                    w.newLine();
+                }
+            } catch (IOException ignored) {}
+        }
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(
+                        new FileInputStream(file),
                         StandardCharsets.UTF_8))) {
-            pw.println("管理标签: " + adminTag);
-            pw.println("管理密码: " + adminPassword);
-            pw.println("挂机踢出: "
-                    + (afkEnabled ? "true" : "false"));
-            pw.println("挂机时长: " + (afkTimeout / 60));
-            pw.println("登录超时: " + loginTimeout);
-        } catch (IOException ignored) {}
-    }
-
-    private void saveSmtp() {
-        File f = new File(dataFolder, "smtp.txt");
-        try (PrintWriter pw = new PrintWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(f),
-                        StandardCharsets.UTF_8))) {
-            pw.println("# ==========================================");
-            pw.println("#        Sdf1_login SMTP邮件配置");
-            pw.println("# ==========================================");
-            pw.println();
-            pw.println("smtp地址=" + smtp.getOrDefault("smtp地址", "smtp.qq.com"));
-            pw.println("smtp端口=" + smtp.getOrDefault("smtp端口", "465"));
-            pw.println("发件邮箱=" + smtp.getOrDefault("发件邮箱", ""));
-            pw.println("授权码=" + smtp.getOrDefault("授权码", ""));
-            pw.println("测试邮箱=" + smtp.getOrDefault("测试邮箱", ""));
-        } catch (IOException ignored) {}
-    }
-
-    // ===== 其他配置 =====
-
-    public void loadSettings() {
-        File f = new File(dataFolder, "url.txt");
-        if (!f.exists()) return;
-        try {
-            BufferedReader r = new BufferedReader(
-                    new InputStreamReader(
-                            new FileInputStream(f),
-                            StandardCharsets.UTF_8));
             String line;
             while ((line = r.readLine()) != null) {
-                String t = line.trim();
-                if (t.isEmpty() || t.startsWith("#")) continue;
-                String[] kv = t.split(":", 2);
-                if (kv.length < 2) continue;
-                String k = kv[0].trim();
-                String v = kv[1].trim();
-                switch (k) {
-                    case "管理标签":
-                        adminTag = v; break;
-                    case "管理密码":
-                        adminPassword = v; break;
-                    case "挂机踢出":
-                        afkEnabled = v.equalsIgnoreCase("true")
-                                || v.equalsIgnoreCase("开启");
-                        break;
-                    case "挂机时长":
-                        try {
-                            afkTimeout = Integer.parseInt(v) * 60;
-                        } catch (Exception ignored) {}
-                        break;
-                    case "登录超时":
-                        try {
-                            loginTimeout = Integer.parseInt(v);
-                        } catch (Exception ignored) {}
-                        break;
+                line = line.trim();
+                if (!line.isEmpty() && !line.startsWith("#")) {
+                    list.add(line);
                 }
-
             }
-            r.close();
-        } catch (Exception ignored) {}
+        } catch (IOException ignored) {}
+        return list;
     }
+
+    /** 设置SMTP单项（聊天输入用） */
+    public void setSmtp(String key, String value) {
+        smtpSettings.put(key, value);
+    }
+
+    /** 将当前SMTP设置写回文件 */
+    public void saveSmtp() {
+        File file = new File(dataFolder, "SMTP设置.txt");
+        List<String> L = new ArrayList<>();
+        L.add("# ===== SMTP 邮件服务器配置 =====");
+        for (Map.Entry<String, String> e : smtpSettings.entrySet()) {
+            L.add(e.getKey() + "=" + e.getValue());
+        }
+        writeLines(file, L);
+    }
+
+    private void createDefaultSmtp(File f) {
+        List<String> L = new ArrayList<>();
+        L.add("# ===== SMTP 邮件服务器配置 =====");
+        L.add("smtp地址=smtp.example.com");
+        L.add("smtp端口=465");
+        L.add("smtp账号=your_email@example.com");
+        L.add("smtp密码=");
+        L.add("发件人名称=Sdf1_login");
+        L.add("smtp加密=true");
+        writeLines(f, L);
+    }
+
+    // ==================== 插件设置 ====================
+
+    public void loadSettings() {
+        File file = new File(dataFolder, "插件设置.txt");
+        if (!file.exists()) createDefaultSettings(file);
+        Map<String, String> m = new LinkedHashMap<>();
+        loadMap(file, m);
+        adminTag = m.getOrDefault("管理标签", adminTag);
+        adminPassword = m.getOrDefault("管理密码", adminPassword);
+        maxAccountsPerIP = parseInt(
+                m.getOrDefault("每IP最大账号数", "3"), 3);
+        approvalMode = m.getOrDefault("审批模式", approvalMode);
+        autoApproveDelayMinutes = parseInt(
+                m.getOrDefault("自动审批延迟分钟", "30"), 30);
+        loginTimeout = parseInt(
+                m.getOrDefault("登录超时秒数", "60"), 60);
+        afkEnabled = Boolean.parseBoolean(
+                m.getOrDefault("挂机踢出", "false"));
+        afkTimeout = parseInt(
+                m.getOrDefault("挂机超时秒数", "300"), 300);
+        smtpSsl = Boolean.parseBoolean(
+                m.getOrDefault("smtp加密", "true"));
+        providerPointsPerScore = parseDouble(
+                m.getOrDefault("服务商积分倍率", "2.0"),
+                2.0);
+        baseEconomyReward = parseInt(
+                m.getOrDefault("基础经济奖励", "100"),
+                100);
+        providerEconomyPerScore = parseDouble(
+                m.getOrDefault("经济奖励每评分", "50.0"),
+                50.0);
+        requesterPointsReward = parseInt(
+                m.getOrDefault("报单人积分奖励", "10"),
+                10);
+
+
+    }
+
+
+    public void saveSettings() {
+        File file = new File(dataFolder, "插件设置.txt");
+        List<String> L = new ArrayList<>();
+        L.add("# ===== Sdf1_login 插件设置 =====");
+        L.add("管理标签=" + adminTag);
+        L.add("管理密码=" + adminPassword);
+        L.add("每IP最大账号数=" + maxAccountsPerIP);
+        L.add("审批模式=" + approvalMode);
+        L.add("自动审批延迟分钟=" + autoApproveDelayMinutes);
+        L.add("登录超时秒数=" + loginTimeout);
+        L.add("挂机踢出=" + afkEnabled);
+        L.add("挂机超时秒数=" + afkTimeout);
+        // 垃圾站设置
+        L.add("# ---- 垃圾站 ----");
+        L.add("垃圾站_启用: "
+                + garbageEnabled);
+        L.add("垃圾站_清理间隔秒: "
+                + garbageInterval);
+        L.add("垃圾站_保留轮数: "
+                + garbageMaxRounds);
+
+        writeLines(file, L);
+    }
+    public double providerPointsPerScore = 2.0;
+    public int baseEconomyReward = 100;
+    public double providerEconomyPerScore = 50.0;
+    public int requesterPointsReward = 10;
+    public boolean garbageEnabled = true;
+    public int garbageInterval = 300;
+    public int garbageMaxRounds = 1;
+
+
+    private void createDefaultSettings(File f) {
+        List<String> L = new ArrayList<>();
+        L.add("# ===== Sdf1_login 插件设置 =====");
+        L.add("管理标签=admin");
+        L.add("管理密码=qweasd");
+        L.add("每IP最大账号数=3");
+        L.add("审批模式=manual");
+        L.add("自动审批延迟分钟=30");
+        L.add("登录超时秒数=60");
+        L.add("挂机踢出=false");
+        L.add("挂机超时秒数=300");
+        L.add("服务商积分倍率=" + providerPointsPerScore);
+        L.add("基础经济奖励=" + baseEconomyReward);
+        L.add("经济奖励每评分=" + providerEconomyPerScore);
+        L.add("报单人积分奖励=" + requesterPointsReward);
+
+        writeLines(f, L);
+    }
+
+    // ==================== 通用读写 ====================
+
+    private void loadMap(File file, Map<String, String> map) {
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq > 0) map.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+            }
+        } catch (IOException e) {
+            System.err.println("[Sdf1_login] 读取失败: " + file.getName());
+        }
+    }
+
+    private void writeLines(File file, List<String> lines) {
+        try (BufferedWriter w = new BufferedWriter(
+                new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
+            for (String l : lines) { w.write(l); w.newLine(); }
+        } catch (IOException e) {
+            System.err.println("[Sdf1_login] 写入失败: " + file.getName());
+        }
+    }
+
+    private int parseInt(String s, int def) {
+        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
+    }
+    /**
+     * 生成6位验证码（字母+数字）
+     */
+    public String generateSmtpVerifyCode() {
+        String chars =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                        + "abcdefghijklmnopqrstuvwxyz"
+                        + "0123456789";
+        StringBuilder sb = new StringBuilder();
+        java.util.Random r = new java.util.Random();
+        for (int i = 0; i < 6; i++) {
+            sb.append(chars.charAt(r.nextInt(
+                    chars.length())));
+        }
+        smtpVerifyCode = sb.toString();
+        smtpVerifyExpire =
+                System.currentTimeMillis() + 300000L;
+        return smtpVerifyCode;
+    }
+
+    /**
+     * 检查验证码是否有效
+     */
+    public boolean checkSmtpVerifyCode(String code) {
+        if (System.currentTimeMillis() > smtpVerifyExpire) {
+            smtpVerifyCode = "";
+            return false;
+        }
+        return smtpVerifyCode.equalsIgnoreCase(code);
+    }
+
+    /**
+     * 清除验证码
+     */
+    public void clearSmtpVerifyCode() {
+        smtpVerifyCode = "";
+        smtpVerifyExpire = 0;
+    }
+
+    /**
+     * 检查发送间隔是否>=1分钟
+     */
+    public boolean canSendSmtpVerify() {
+        return System.currentTimeMillis()
+                - smtpLastSendTime >= 60000L;
+    }
+
+    public void recordSmtpSendTime() {
+        smtpLastSendTime = System.currentTimeMillis();
+    }
+
 }

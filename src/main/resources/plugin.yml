@@ -31,17 +31,56 @@ commands:
     description: 设置邮箱(中文)
     usage: /设置邮箱 <邮箱地址>
   撤销:
-    description: 撤销密码修改(中文)
-    usage: /撤销 <旧密码>
+    description: 撤销操作(中文)
+    usage: /撤销
   删除:
     description: 删除玩家(中文)
     usage: /删除 <玩家> <密码>
   找回密码:
     description: 找回密码(中文)
     usage: /找回密码
-  sdf1debug:
-    description: 调试指令
-    usage: /sdf1debug <玩家> take.<阶段>
   签到:
     description: 每日签到(中文)
     usage: /签到
+  oa:
+    description: 申请删除账号
+    usage: /oa [玩家名]
+  删除账号:
+    description: 申请删除账号(中文)
+    usage: /删除账号 [玩家名]
+  通过:
+    description: 批准OA请求(中文)
+    usage: /通过 <编号>
+  拒绝:
+    description: 拒绝OA请求(中文)
+    usage: /拒绝 <编号> [理由]
+  accept:
+    description: 批准OA请求
+    usage: /accept <编号>
+  deny:
+    description: 拒绝OA请求
+    usage: /deny <编号> [理由]
+  sdf1debug:
+    description: 调试指令
+    usage: /sdf1debug <玩家> take.<阶段>
+  email:
+    description: 绑定邮箱
+    usage: /email <邮箱>
+  绑定:
+    description: 绑定邮箱(中文)
+    usage: /绑定 <邮箱>
+  调试:
+    description: 调试模式
+    usage: /调试
+  绑定邮箱:
+    description: 绑定邮箱
+    usage: /绑定邮箱
+  chat:
+    description: 聊天过滤管理
+    usage: /chat
+  recycle:
+    description: 打开垃圾回收站
+    usage: /recycle
+  垃圾清理:
+    description: 手动清理掉落物
+    usage: /垃圾清理

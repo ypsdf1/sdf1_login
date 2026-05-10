@@ -24,7 +24,8 @@ public class InviteManager {
     public void onInviteeCheckIn(String inviteeName) {
         String invitedBy = (String) plugin.getDb()
                 .getField(inviteeName, "invited_by");
-        if (invitedBy == null || invitedBy.isEmpty()) return;
+        if (invitedBy == null || invitedBy.isEmpty())
+            return;
 
         String month = new SimpleDateFormat("yyyy-MM")
                 .format(new Date());
@@ -40,9 +41,11 @@ public class InviteManager {
 
         int count = ((Number) plugin.getDb()
                 .getField(invitedBy,
-                        "monthly_invite_count")).intValue();
+                        "monthly_invite_count"))
+                .intValue();
         plugin.getDb().setField(
-                invitedBy, "monthly_invite_count", count + 1);
+                invitedBy, "monthly_invite_count",
+                count + 1);
 
         double rate = 0.10;
         if (count + 1 > 15) {
@@ -61,22 +64,24 @@ public class InviteManager {
             if (inviterPlayer != null
                     && inviterPlayer.isOnline()) {
                 inviterPlayer.sendMessage(
-                        plugin.getConfig2().msg(
-                                "invite_referral_bonus",
-                                "points",
-                                String.valueOf(bonus)));
+                        plugin.getConfig2()
+                                .msg("invite_referral_bonus")
+                                .replace("{points}",
+                                        String.valueOf(bonus)));
             }
         }
     }
 
     public List<Map<String, Object>> getAllInviteData() {
-        List<Map<String, Object>> result = new ArrayList<>();
+        List<Map<String, Object>> result =
+                new ArrayList<>();
         for (Map<String, Object> user
                 : plugin.getDb().getAllUsers()) {
             String code = (String) user.getOrDefault(
                     "invite_code", "");
             if (!code.isEmpty()) {
-                Map<String, Object> row = new LinkedHashMap<>();
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
                 row.put("player",
                         user.get("player_name"));
                 row.put("code", code);

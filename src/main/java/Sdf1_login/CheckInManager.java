@@ -24,17 +24,20 @@ public class CheckInManager {
     public String checkIn(Player p) {
         String name = p.getName();
         if (isCheckedInToday(name)) {
-            return plugin.getConfig2().msg("checkin_already");
+            return plugin.getConfig2()
+                    .msg("checkin_already");
         }
 
-        int streak = ((Number) plugin.getDb()
-                .getField(name, "checkin_streak")).intValue();
+        Object streakObj = plugin.getDb()
+                .getField(name, "checkin_streak");
+        int streak = streakObj != null
+                ? ((Number) streakObj).intValue() : 0;
+
         String lastDate = (String) plugin.getDb()
                 .getField(name, "last_checkin_date");
         String today = new SimpleDateFormat("yyyy-MM-dd")
                 .format(new Date());
 
-        // 检查是否连续
         if (lastDate != null && !lastDate.isEmpty()) {
             try {
                 java.util.Date lastD = new SimpleDateFormat(
@@ -43,11 +46,12 @@ public class CheckInManager {
                         "yyyy-MM-dd").parse(today);
                 long diff = todayD.getTime() - lastD.getTime();
                 if (diff > 86400000L * 2) {
-                    streak = 0; // 断签
+                    streak = 0;
                 } else if (diff > 86400000L) {
-                    streak++; // 连续
+                    streak++;
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
 
         if (streak == 0) streak = 1;
@@ -64,22 +68,28 @@ public class CheckInManager {
                 name, "checkin_streak", streak);
         plugin.getDb().setField(
                 name, "last_checkin_date", today);
-        int total = ((Number) plugin.getDb()
-                .getField(name, "total_checkin_days"))
-                .intValue();
+        Object totalObj = plugin.getDb()
+                .getField(name, "total_checkin_days");
+        int total = totalObj != null
+                ? ((Number) totalObj).intValue() : 0;
         plugin.getDb().setField(
                 name, "total_checkin_days", total + 1);
 
-        return plugin.getConfig2().msg("checkin_success",
-                "points", String.valueOf(points),
-                "streak", String.valueOf(streak),
-                "multi", String.valueOf(multi));
+        return plugin.getConfig2()
+                .msg("checkin_success")
+                .replace("{points}",
+                        String.valueOf(points))
+                .replace("{streak}",
+                        String.valueOf(streak))
+                .replace("{multi}",
+                        String.valueOf(multi));
     }
 
     public String backCheckIn(Player p, String dateStr) {
         String name = p.getName();
         if (!plugin.getDb().deductPoints(name, 10)) {
-            return plugin.getConfig2().msg("backcheckin_no_point");
+            return plugin.getConfig2()
+                    .msg("checkin_already");
         }
         try {
             java.util.Date target = new SimpleDateFormat(
@@ -90,15 +100,15 @@ public class CheckInManager {
                             .format(new Date()));
             long diff = now.getTime() - target.getTime();
             if (diff < 0 || diff > 3 * 86400000L) {
-                plugin.getDb().addPoints(name, 10); // 退还
-                return plugin.getConfig2().msg(
-                        "backcheckin_expired");
+                plugin.getDb().addPoints(name, 10);
+                return plugin.getConfig2()
+                        .msg("checkin_already");
             }
-            plugin.getDb().addPoints(name, 1); // 补签也给1分
-            return plugin.getConfig2().msg("backcheckin_success");
+            plugin.getDb().addPoints(name, 1);
+            return "§a补签成功！日期: " + dateStr;
         } catch (Exception e) {
             plugin.getDb().addPoints(name, 10);
-            return "§c[Sdf1_login] §f日期格式错误，请用 yyyy-MM-dd";
+            return "§c日期格式错误，请用 yyyy-MM-dd";
         }
     }
 }
