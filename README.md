@@ -232,7 +232,7 @@ github.com
 ## 4. 运行截图
 
 主界面
-![](../img/login.png)
+![img/login.png]
 
 邀请数据
 ![](../img/login2.png)

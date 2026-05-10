@@ -232,7 +232,7 @@ github.com
 ## 4. Screenshots
 
 Main Interface
-![](../img/login.png)
+![img/login.png]
 
 Invite Data
 ![](../img/login2.png)
