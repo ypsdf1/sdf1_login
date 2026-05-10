@@ -162,9 +162,9 @@ smtp地址=smtp.example.com
 smtp端口=465
 smtp账号=mail@example.com
 smtp密码=example.com
-发件人名称=Sdf1_login
+发件人名�?Sdf1_login
 smtp加密=true
-验证码接收邮箱=example@example.com
+验证码接收邮�?example@example.com
 
 ```
 
@@ -184,8 +184,8 @@ This config controls the entire plugin, including how many accounts players can 
 挂机超时秒数=300
 服务商积分倍率=2.0
 基础经济奖励=100
-经济奖励每评分=50.0
-报单人积分奖励=10
+经济奖励每评�?50.0
+报单人积分奖�?10
 
 ```
 
@@ -200,11 +200,11 @@ Available penalty rules:
 
 ```txt
 # Sdf1_chat Chat Filter Config
-通知管理员: true
+通知管理�? true
 全服通报: true
 禁言时长: 300
 
-白名单:
+白名�?
 *.minecraft.net
 baidu.com
 github.com
@@ -217,7 +217,7 @@ github.com
 8:kick:0
 10:ban:0
 
-白名单玩家:
+白名单玩�?
 
 ```
 
@@ -235,46 +235,46 @@ Main Interface
 ![img/login.png]
 
 Invite Data
-![](../img/login2.png)
+![](img/login2.png)
 
 Points Shop
-![](../img/login3.png)
+![](img/login3.png)
 
 Task Center
-![](../img/login4.png)
+![](img/login4.png)
 
 Trash Can
-![](../img/login5.png)
+![](img/login5.png)
 
 Admin Panel
-![](../img/login6.png)
+![](img/login6.png)
 
 Admin Panel - User Management
-![](../img/login7.png)
+![](img/login7.png)
 
 Ticket Center
-![](../img/login8.png)
+![](img/login8.png)
 
 Ticket Management
-![](../img/login9.png)
+![](img/login9.png)
 
 My Tickets
-![](../img/login10.png)
+![](img/login10.png)
 
 Submit Ticket
-![](../img/login11.png)
+![](img/login11.png)
 
 Provider List
-![](../img/login12.png)
+![](img/login12.png)
 
 Provider Grab Hall
-![](../img/login13.png)
+![](img/login13.png)
 
 Provider - Order Interface
-![](../img/login14.png)
+![](img/login14.png)
 
 Admin - Ticket Detail Page
-![](../img/login15.png)
+![](img/login15.png)
 
 ## 5. Download Links
 - GitHub: [https://github.com/ypsdf1/sdf1_login](https://github.com/ypsdf1/sdf1_login)
