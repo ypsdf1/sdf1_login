@@ -201,7 +201,18 @@ public class DatabaseManager {
                     + "active INTEGER DEFAULT 1,"
                     + "join_time INTEGER DEFAULT 0"
                     + ")");
-
+            // 垃圾回收站物品表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "items ("
+                    + "id INTEGER PRIMARY KEY "
+                    + "AUTOINCREMENT,"
+                    + "player_name TEXT NOT NULL,"
+                    + "item_data TEXT DEFAULT '',"
+                    + "amount INTEGER DEFAULT 1,"
+                    + "create_time INTEGER DEFAULT 0"
+                    + ")");
+            safeAdd(st, "menu_snowball",
+                    "INTEGER DEFAULT 1");
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
         } catch (Exception e) {

@@ -196,6 +196,8 @@ public class Main extends JavaPlugin
             getCommand("sdf1debug").setExecutor(this);
         if (getCommand("oa") != null)
             getCommand("oa").setExecutor(this);
+        if (getCommand("menu") != null)
+            getCommand("menu").setExecutor(this);
 
 
         getServer().getPluginManager()
@@ -1099,6 +1101,9 @@ public class Main extends JavaPlugin
                 return;
             }
         }
+        if (isFrozen(p)) {
+            p.setAllowFlight(true);
+        }
 
         if (!"manual".equals(config.approvalMode)
                 && !db.userExists(name)) {
@@ -1238,36 +1243,82 @@ public class Main extends JavaPlugin
     private static final String MENU_SNOWBALL_TAG =
             "sdf1_menu";
 
+    // 雪球菜单
     public void giveMenuSnowball(Player p) {
-        // 检查背包里是否已有菜单雪球
+        // 检查开关
+        Object val = db.getField(
+                p.getName(), "menu_snowball");
+        if (val != null) {
+            int on = val instanceof Number
+                    ? ((Number) val).intValue()
+                    : 1;
+            if (on == 0) {
+                return; // 开关关了，不发放
+            }
+        }
+        // 检查是否已有
         for (ItemStack it : p.getInventory()
                 .getContents()) {
             if (isMenuSnowball(it)) {
-                return; // 已有，不重复发
+                return;
             }
         }
-        // 没有则发放
+        // 发放
         ItemStack snow = new ItemStack(
                 Material.SNOWBALL);
         ItemMeta im = snow.getItemMeta();
         if (im != null) {
             im.setDisplayName(
                     "§e§l[菜单] §f右键打开主菜单");
-            List<String> lore = new ArrayList<>();
+            List<String> lore =
+                    new ArrayList<>();
             lore.add("§7右键点击打开功能菜单");
             lore.add("§8" + MENU_SNOWBALL_TAG);
             im.setLore(lore);
             snow.setItemMeta(im);
         }
-        // 放到最后一个空格，避免覆盖
-        int emptySlot =
-                p.getInventory()
-                        .firstEmpty();
-        if (emptySlot >= 0) {
+        int slot = p.getInventory()
+                .firstEmpty();
+        if (slot >= 0) {
             p.getInventory().setItem(
-                    emptySlot, snow);
+                    slot, snow);
         } else {
-            // 背包满，丢在地上
+            p.getWorld().dropItemNaturally(
+                    p.getLocation(), snow);
+        }
+    }
+
+    /**
+     * 手动发放雪球菜单（绕过开关检查）
+     */
+    public void forceGiveMenuSnowball(
+            Player p) {
+        // 只检查是否已有
+        for (ItemStack it : p.getInventory()
+                .getContents()) {
+            if (isMenuSnowball(it)) {
+                return;
+            }
+        }
+        ItemStack snow = new ItemStack(
+                Material.SNOWBALL);
+        ItemMeta im = snow.getItemMeta();
+        if (im != null) {
+            im.setDisplayName(
+                    "§e§l[菜单] §f右键打开主菜单");
+            List<String> lore =
+                    new ArrayList<>();
+            lore.add("§7右键点击打开功能菜单");
+            lore.add("§8" + MENU_SNOWBALL_TAG);
+            im.setLore(lore);
+            snow.setItemMeta(im);
+        }
+        int slot = p.getInventory()
+                .firstEmpty();
+        if (slot >= 0) {
+            p.getInventory().setItem(
+                    slot, snow);
+        } else {
             p.getWorld().dropItemNaturally(
                     p.getLocation(), snow);
         }
@@ -1296,21 +1347,24 @@ public class Main extends JavaPlugin
     @EventHandler
     public void onMove(PlayerMoveEvent e) {
         Player p = e.getPlayer();
+        if (!isFrozen(p)) return;
+
         Location from = e.getFrom();
         Location to = e.getTo();
-        if (isFrozen(p)) {
-            if (to != null && (from.getX() != to.getX()
-                    || from.getY() != to.getY()
-                    || from.getZ() != to.getZ())) {
-                e.setTo(e.getFrom());
-            }
+        if (to == null) return;
+
+        // 允许转头（无位移）
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockY() == to.getBlockY()
+                && from.getBlockZ() == to.getBlockZ()) {
             return;
         }
-        if (to != null && (from.getX() != to.getX()
-                || from.getY() != to.getY()
-                || from.getZ() != to.getZ())) {
-            afk.recordAction(p.getUniqueId());
-        }
+
+        // 有位移 → 取消
+        e.setCancelled(true);
+
+        // 防止"服务器未启用飞行"踢出
+        p.setAllowFlight(true);
     }
 
     @EventHandler
@@ -1484,7 +1538,8 @@ public class Main extends JavaPlugin
 
 
 
-        // ===== Inventory Click =====
+    // ===== Inventory Click =====
+    // ===== Inventory Click =====
     @EventHandler
     public void onInvClick(InventoryClickEvent e) {
         if (!(e.getWhoClicked() instanceof Player))
@@ -1494,12 +1549,41 @@ public class Main extends JavaPlugin
             e.setCancelled(true);
             return;
         }
-        String title =
-                e.getView().getTitle();
+        String title = e.getView().getTitle();
         int slot = e.getRawSlot();
 
-        if (needsPasswordChange.contains(p.getName())
-                && !title.equals("§6§l任务面板")) {
+        // Shift+点击背包物品 → 存入垃圾箱
+        if (e.isShiftClick()
+                && e.getClickedInventory() != null
+                && e.getClickedInventory()
+                == p.getInventory()
+                && e.getCurrentItem() != null
+                && e.getCurrentItem().getType()
+                != Material.AIR
+                && !isMenuSnowball(
+                e.getCurrentItem())
+                && title.equals(
+                "§6§l垃圾回收站")) {
+            e.setCancelled(true);
+            ItemStack clicked =
+                    e.getCurrentItem().clone();
+            garbage.saveItem(clicked);
+            e.getInventory().setItem(
+                    e.getSlot(), null);
+            Bukkit.getScheduler()
+                    .runTaskLater(this,
+                            () -> {
+                                garbage.openRecyclePage(p,
+                                        garbage.getRecyclePage(
+                                                p.getName()));
+                            }, 1L);
+            return;
+        }
+
+        if (needsPasswordChange
+                .contains(p.getName())
+                && !title.equals(
+                "§6§l任务面板")) {
             e.setCancelled(true);
             p.sendMessage("§c请先修改密码！");
             return;
@@ -1516,12 +1600,15 @@ public class Main extends JavaPlugin
                 TicketManager.T_TICKET_ADMIN)
                 || title.equals(
                 TicketManager.T_TICKET_DETAIL)
-                || title.equals("§d§l服务商面板")
-                || title.equals("§6§l抢单大厅")
+                || title.equals(
+                "§d§l服务商面板")
+                || title.equals(
+                "§6§l抢单大厅")
                 || title.equals(
                 "§b§l我处理中的工单")) {
             e.setCancelled(true);
-            ticket.handleClick(p, title, slot);
+            ticket.handleClick(
+                    p, title, slot);
             return;
         }
 
@@ -1539,96 +1626,67 @@ public class Main extends JavaPlugin
 
             ItemStack inSlot =
                     e.getInventory().getItem(slot);
-            ItemStack onCursor = e.getCursor();
+            ItemStack cursor = e.getCursor();
 
-            // 1. 格子里是垃圾站物品 → 取出
-            if (isTrashDisplayItem(inSlot)) {
-                e.setCancelled(true);
-                try {
-                    List<String> lore =
-                            inSlot.getItemMeta()
-                                    .getLore();
-                    String numStr =
-                            lore.get(0)
-                                    .replace(
-                                            "§7ID: #", "")
-                                    .trim();
-                    int dbId = Integer
-                            .parseInt(numStr);
-                    // 先从DB删除
-                    if (garbage.removeItem(
-                            dbId)) {
-                        // 再给玩家（去掉ID lore）
-                        ItemStack give =
-                                inSlot.clone();
-                        ItemMeta gm =
-                                give.getItemMeta();
-                        if (gm != null) {
-                            List<String> newLore =
-                                    new ArrayList<>();
-                            // 保留原始lore（跳过ID和数量行）
-                            if (lore.size() > 2) {
-                                for (int li = 2;
-                                     li < lore
-                                             .size();
-                                     li++) {
-                                    newLore.add(
-                                            lore.get(
-                                                    li));
-                                }
-                            }
-                            gm.setLore(
-                                    newLore.isEmpty()
-                                            ? null
-                                            : newLore);
+            // ===== 取出 =====
+            if (inSlot != null
+                    && inSlot.hasItemMeta()
+                    && inSlot.getItemMeta().hasLore()) {
+                List<String> lore =
+                        inSlot.getItemMeta().getLore();
+                if (lore != null && !lore.isEmpty()
+                        && lore.get(0)
+                        .startsWith("§7ID: #")) {
+                    e.setCancelled(true);
+                    try {
+                        String numStr = lore.get(0)
+                                .replace("§7ID: #", "")
+                                .trim();
+                        int dbId =
+                                Integer.parseInt(numStr);
+                        if (garbage.removeItem(dbId)) {
+                            ItemStack give =
+                                    inSlot.clone();
+                            ItemMeta gm =
+                                    give.getItemMeta();
+                            gm.setLore(null);
                             give.setItemMeta(gm);
+                            p.getInventory()
+                                    .addItem(give);
+                            e.getInventory()
+                                    .setItem(slot, null);
                         }
-                        p.getInventory()
-                                .addItem(give);
-                        // 清空格子
-                        e.getInventory()
-                                .setItem(slot,
-                                        null);
+                    } catch (Exception ex) {
+                        p.sendMessage("§c取出失败");
                     }
-                } catch (Exception ex) {
-                    p.sendMessage("§c取出失败");
+                    return;
                 }
-                return;
             }
 
-            // 2. 格子空 + 手上有物品 → 放入
-            if ((inSlot == null
-                    || inSlot.getType()
-                    == Material.AIR)
-                    && onCursor != null
-                    && onCursor.getType()
+            // ===== 光标存入 =====
+            if (cursor != null
+                    && cursor.getType()
                     != Material.AIR
-                    && !isMenuSnowball(
-                    onCursor)) {
-                // 不取消！让物品自然进入格子
-                Bukkit.getScheduler()
-                        .runTaskLater(this,
-                                () -> {
-                                    ItemStack after =
-                                            e.getInventory()
-                                                    .getItem(
-                                                            slot);
-                                    if (after != null
-                                            && after.getType()
-                                            != Material.AIR) {
-                                        garbage.saveItem(
-                                                after
-                                                        .clone());
-                                        e.getInventory()
-                                                .setItem(
-                                                        slot,
-                                                        null);
-                                    }
-                                }, 1L);
+                    && !isMenuSnowball(cursor)) {
+                ItemStack toSave = cursor.clone();
+                getLogger().info(
+                        "[垃圾站] 存入: "
+                                + toSave.getType()
+                                + " x" + toSave.getAmount());
+                garbage.saveItem(toSave);
+                e.setCancelled(true);
+                Bukkit.getScheduler().runTaskLater(
+                        this, () -> {
+                            p.getOpenInventory()
+                                    .setCursor(null);
+                            garbage.openRecyclePage(p,
+                                    garbage.getRecyclePage(
+                                            p.getName()));
+                        }, 1L);
                 return;
             }
 
-            // 3. 其他情况
+            // 默认取消
             e.setCancelled(true);
             return;
         }
@@ -1806,6 +1864,7 @@ public class Main extends JavaPlugin
                 p.closeInventory();
                 p.sendMessage("§e请输入邀请码:");
             }
+
             return;
         }
 
@@ -1828,6 +1887,7 @@ public class Main extends JavaPlugin
                                     .replace("§e", "")
                                     .replace("§a", ""));
             }
+
             return;
         }
 
@@ -1856,7 +1916,18 @@ public class Main extends JavaPlugin
                 p.closeInventory();
                 p.sendMessage("§e输入" + tgt
                         + "的临时密码:");
-            } else if (slot == 16) {
+            } else if (slot == 14) {
+                Player tp = Bukkit.getPlayer(tgt);
+                if (tp != null && tp.isOnline()) {
+                    forceGiveMenuSnowball(tp);
+                    p.sendMessage("§a已发放雪球菜单给 "
+                            + tgt);
+                } else {
+                    p.sendMessage("§c玩家不在线");
+                }
+
+
+        } else if (slot == 16) {
                 chatInput.getState(p).type =
                         ChatInputManager.InputType
                                 .ADMIN_DELETE_CONFIRM;
@@ -1866,8 +1937,11 @@ public class Main extends JavaPlugin
                 p.sendMessage(config.msg(
                         "admin_delete_confirm"));
             }
+
             return;
+
         }
+
 
         // 积分商城
         if (title.startsWith("§d§l积分商城")) {
@@ -1958,43 +2032,45 @@ public class Main extends JavaPlugin
 
         // 回收站拖拽
         if (t.equals("§6§l垃圾回收站")) {
-            for (int rawSlot : e.getRawSlots()) {
-                if (rawSlot >= 49
-                        && rawSlot <= 53) {
+            for (int rawSlot :
+                    e.getRawSlots()) {
+                if (rawSlot >= 49) {
                     e.setCancelled(true);
                     return;
                 }
             }
-            // 0-48：不取消，延迟存DB
+            // 0-48允许拖入，不取消
+            // 延迟2tick后扫描格子
+            final Player fp = p;
             Bukkit.getScheduler()
-                    .runTaskLater(this, () -> {
-                        for (int rawSlot :
-                                e.getRawSlots()) {
-                            if (rawSlot < 0
-                                    || rawSlot >= 49)
-                                continue;
-                            ItemStack item =
-                                    e.getInventory()
-                                            .getItem(
-                                                    rawSlot);
-                            if (item != null
-                                    && item.getType()
-                                    != Material.AIR
-                                    && !isMenuSnowball(
-                                    item)) {
-                                garbage.saveItem(
-                                        item.clone());
-                                e.getInventory()
-                                        .setItem(
-                                                rawSlot,
-                                                null);
-                            }
-                        }
-                    }, 1L);
+                    .runTaskLater(this,
+                            () -> {
+                                Inventory top = fp
+                                        .getOpenInventory()
+                                        .getTopInventory();
+                                for (int rawSlot :
+                                        e.getRawSlots()) {
+                                    if (rawSlot < 0
+                                            || rawSlot >= 49)
+                                        continue;
+                                    ItemStack item =
+                                            top.getItem(rawSlot);
+                                    if (item != null
+                                            && item.getType()
+                                            != Material.AIR
+                                            && !isMenuSnowball(
+                                            item)) {
+                                        garbage.saveItem(
+                                                item.clone());
+                                        top.setItem(
+                                                rawSlot, null);
+                                    }
+                                }
+                            }, 2L);
             return;
         }
 
-
+        //服务商工单系统
         if (t.equals(TicketManager.T_TICKET_MAIN)
                 || t.equals(
                 TicketManager.T_TICKET_CREATE)
@@ -2048,6 +2124,38 @@ public class Main extends JavaPlugin
             int count = garbage.collectItems();
             sender.sendMessage("§a已清理 "
                     + count + " 个掉落物");
+            return true;
+        }
+        // /menu 开关雪球菜单
+        if (cmdName.equals("menu")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage(
+                        "§c仅玩家可用");
+                return true;
+            }
+            Player p2 = (Player) sender;
+            if (args.length == 0) {
+                p2.sendMessage(
+                        "§e用法: /menu <开/关>");
+                return true;
+            }
+            String arg = args[0];
+            if (arg.equals("开")) {
+                db.setField(p2.getName(),
+                        "menu_snowball", 1);
+                p2.sendMessage(
+                        "§a雪球菜单已开启，"
+                                + "下次进入将发放");
+            } else if (arg.equals("关")) {
+                db.setField(p2.getName(),
+                        "menu_snowball", 0);
+                p2.sendMessage(
+                        "§c雪球菜单已关闭，"
+                                + "下次进入不再发放");
+            } else {
+                p2.sendMessage(
+                        "§e用法: /menu <开/关>");
+            }
             return true;
         }
 
@@ -2461,9 +2569,9 @@ public class Main extends JavaPlugin
                 sender.sendMessage(
                         "§e§l================================");
             }
-            }
+        }
 
-                // pw / password
+        // pw / password
         if (sub.equals("pw")
                 || sub.equals("password")) {
             if (!(sender instanceof Player)) {
@@ -2788,6 +2896,29 @@ public class Main extends JavaPlugin
                                                 to, fName,
                                                 bodyF));
             }
+            return true;
+        }
+        // give - 手动发放雪球菜单
+        if (sub.equals("give")) {
+            if (args.length < 2) {
+                sender.sendMessage(
+                        "§e用法: /sdf1_login give <玩家名>");
+                return true;
+            }
+            Player tp = Bukkit.getPlayer(
+                    args[1]);
+            if (tp == null || !tp.isOnline()) {
+                sender.sendMessage(
+                        "§c玩家不在线: "
+                                + args[1]);
+                return true;
+            }
+            forceGiveMenuSnowball(tp);
+            tp.sendMessage(
+                    "§a管理员已为您发放菜单雪球");
+            sender.sendMessage(
+                    "§a已发放雪球菜单给 "
+                            + args[1]);
             return true;
         }
 

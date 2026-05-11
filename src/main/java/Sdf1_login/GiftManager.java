@@ -155,55 +155,18 @@ public class GiftManager {
     }
 
     public boolean canClaim(Player p, int stage) {
-        Map<String, Object> user = plugin.getDb()
-                .getUser(p.getName());
-        if (user.isEmpty()) return false;
-        int curStage = ((Number) user.getOrDefault(
-                "gift_stage", 0)).intValue();
-        if (stage > curStage + 1) return false;
-        if (stage < 1 || stage > stages.size())
-            return false;
-        String claimed = (String) user.getOrDefault(
-                "gift_claimed", "");
-        if (claimed.contains("[" + stage + "]"))
-            return false;
-
-        // debug 绕过：检查 tasks_completed
-        String completed = (String) user.getOrDefault(
-                "tasks_completed", "");
-        if (completed.contains("[" + stage + "]"))
-            return true;
-
-        // 正常条件检查
-        long dbTime = ((Number) user.getOrDefault(
-                "total_online_time", 0L)).longValue();
-        long sessionTime = 0;
-        Object lastObj = plugin.getDb().getField(
-                p.getName(), "last_online_check");
-        if (lastObj != null && plugin.getLoggedIn()
-                .contains(p.getName())) {
-            long last = ((Number) lastObj).longValue();
-            if (last > 0) {
-                sessionTime =
-                        System.currentTimeMillis() - last;
-            }
-        }
-        long onlineTime = dbTime + sessionTime;
-        int broken = ((Number) user.getOrDefault(
-                "blocks_broken", 0)).intValue();
-        int placed = ((Number) user.getOrDefault(
-                "blocks_placed", 0)).intValue();
-
-        switch (stage) {
-            case 1: return true;
-            case 2: return onlineTime >= 3600000;
-            case 3: return broken >= 100
-                    && onlineTime >= 86400000L;
-            case 4: return (broken + placed) >= 300
-                    && onlineTime >= 604800000L;
-            default: return false;
-        }
+        String name = p.getName();
+        int curStage = ((Number) plugin.getDb()
+                .getField(name, "gift_stage"))
+                .intValue();
+        String claimed = (String) plugin.getDb()
+                .getField(name, "gift_claimed");
+        if (claimed == null) claimed = "";
+        return curStage >= stage
+                && !claimed.contains(
+                String.valueOf(stage));
     }
+
 
     public void claimReward(Player p, int stage) {
         if (!canClaim(p, stage)) return;

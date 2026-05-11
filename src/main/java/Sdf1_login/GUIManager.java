@@ -489,6 +489,12 @@ public class GUIManager {
                 "§e设置密码"));
         g.setItem(16, mkItem(Material.BARRIER,
                 "§c删除用户", "§7二次验证删除"));
+        // 雪球菜单检测（slot 14）
+        g.setItem(14, mkItem(
+                Material.SNOWBALL,
+                "§e§l雪球菜单",
+                "§7点击为该玩家发放菜单雪球"));
+
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }

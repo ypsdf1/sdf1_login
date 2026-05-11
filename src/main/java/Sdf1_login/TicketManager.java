@@ -1014,39 +1014,27 @@ public class TicketManager {
                 openDetail(p, id);
                 return true;
             }
-            // 管理员：标记完结（自己在处理）
-            if (adm(p) && "processing".equals(st)
-                    && asg.equals("admin")) {
-                Map<String, Object> tk =
-                        plugin.getDb().getTicket(id);
-                String tkType = sv(tk, "type");
-                if (TYPE_DELETE.equals(tkType)) {
-                    approveDeleteTicket(p, id);
-                    return true;
-                }
-                plugin.getDb().completeTicket(id);
-                p.sendMessage("§a工单 #" + id
-                        + " 已标记完结");
-                openDetail(p, id);
-                return true;
-            }
             // 管理员：标记完结（已回复状态）
             if (adm(p) && "replied".equals(st)
                     && asg.equals("admin")) {
-                Map<String, Object> tk =
-                        plugin.getDb().getTicket(id);
-                String tkType = sv(tk, "type");
-                if (TYPE_DELETE.equals(tkType)) {
-                    approveDeleteTicket(p, id);
+
+                // 管理员：标记完结（已回复状态）
+                if (adm(p) && "replied".equals(st)
+                        && asg.equals("admin")) {
+                    Map<String, Object> tk =
+                            plugin.getDb().getTicket(id);
+                    String tkType = sv(tk, "type");
+                    if (TYPE_DELETE.equals(tkType)) {
+                        approveDeleteTicket(p, id);
+                        return true;
+                    }
+                    plugin.getDb().completeTicket(id);
+                    p.sendMessage("§a工单 #" + id
+                            + " 已标记完结");
+                    openDetail(p, id);
                     return true;
                 }
-                plugin.getDb().completeTicket(id);
-                p.sendMessage("§a工单 #" + id
-                        + " 已标记完结");
-                openDetail(p, id);
-                return true;
             }
-
             // 服务商：抢单
             if (plugin.getDb()
                     .isServiceProvider(p.getName())

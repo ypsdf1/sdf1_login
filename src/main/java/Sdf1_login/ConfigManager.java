@@ -312,6 +312,14 @@ public class ConfigManager {
         requesterPointsReward = parseInt(
                 m.getOrDefault("报单人积分奖励", "10"),
                 10);
+        garbageEnabled = Boolean.parseBoolean(
+                m.getOrDefault("垃圾站_启用", "true"));
+        garbageInterval = parseInt(
+                m.getOrDefault("垃圾站_清理间隔秒",
+                        "300"), 300);
+        garbageMaxRounds = parseInt(
+                m.getOrDefault("垃圾站_保留轮数",
+                        "1"), 1);
 
 
     }
@@ -331,12 +339,10 @@ public class ConfigManager {
         L.add("挂机超时秒数=" + afkTimeout);
         // 垃圾站设置
         L.add("# ---- 垃圾站 ----");
-        L.add("垃圾站_启用: "
-                + garbageEnabled);
-        L.add("垃圾站_清理间隔秒: "
-                + garbageInterval);
-        L.add("垃圾站_保留轮数: "
-                + garbageMaxRounds);
+        L.add("垃圾站_启用=" + garbageEnabled);
+        L.add("垃圾站_清理间隔秒=" + garbageInterval);
+        L.add("垃圾站_保留轮数=" + garbageMaxRounds);
+
 
         writeLines(file, L);
     }
@@ -364,6 +370,11 @@ public class ConfigManager {
         L.add("基础经济奖励=" + baseEconomyReward);
         L.add("经济奖励每评分=" + providerEconomyPerScore);
         L.add("报单人积分奖励=" + requesterPointsReward);
+        L.add("# ---- 垃圾站 ----");
+        L.add("垃圾站_启用=true");
+        L.add("垃圾站_清理间隔秒=300");
+        L.add("垃圾站_保留轮数=1");
+
 
         writeLines(f, L);
     }

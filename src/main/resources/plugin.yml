@@ -84,3 +84,6 @@ commands:
   垃圾清理:
     description: 手动清理掉落物
     usage: /垃圾清理
+  menu:
+    description: 雪球菜单开关控制
+    usage: /menu <开/关>

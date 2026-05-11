@@ -231,26 +231,26 @@ public class GarbageManager {
 
     public void saveItem(ItemStack stack) {
         {
-        try {
-            String data =
-                    stackToBase64(stack);
-            if (data.isEmpty()) return;
-            PreparedStatement ps = db.prepareStatement(
-                    "INSERT INTO items "
-                            + "(item_data, amount, "
-                            + "round, create_time) "
-                            + "VALUES (?,?,?,?)");
-            ps.setString(1, data);
-            ps.setInt(2, stack.getAmount());
-            ps.setInt(3, currentRound);
-            ps.setLong(4,
-                    System.currentTimeMillis());
-            ps.executeUpdate();
-            ps.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }}
+            try {
+                String data =
+                        stackToBase64(stack);
+                if (data.isEmpty()) return;
+                PreparedStatement ps = db.prepareStatement(
+                        "INSERT INTO items "
+                                + "(item_data, amount, "
+                                + "round, create_time) "
+                                + "VALUES (?,?,?,?)");
+                ps.setString(1, data);
+                ps.setInt(2, stack.getAmount());
+                ps.setInt(3, currentRound);
+                ps.setLong(4,
+                        System.currentTimeMillis());
+                ps.executeUpdate();
+                ps.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }}
 
     private int deleteOldItems(int beforeRound) {
         try {
@@ -381,6 +381,38 @@ public class GarbageManager {
                     .get("amount")).intValue();
             ItemStack stack = base64ToStack(data);
             if (stack != null) {
+                try {
+                    byte[] bytes =
+                            stack.serializeAsBytes();
+                    String b64 = java.util.Base64
+                            .getEncoder()
+                            .encodeToString(bytes);
+                    int len = b64.length();
+                    String f = len > 15
+                            ? b64.substring(10, 15) : "短";
+                    String m = len >= 5
+                            ? b64.substring(len / 2,
+                            Math.min(len / 2 + 5, len))
+                            : "短";
+                    String b = len > 10
+                            ? b64.substring(len - 10, len - 5)
+                            : "短";
+                    plugin.getLogger().info(
+                            "[垃圾站加载] ID#" + id
+                                    + " " + stack.getType()
+                                    + " x" + amount
+                                    + " base64[" + len + "]"
+                                    + " 前=" + f
+                                    + " 中=" + m
+                                    + " 后=" + b);
+                } catch (Exception ex) {
+                    plugin.getLogger().warning(
+                            "[垃圾站加载] 序列化异常: "
+                                    + ex.getMessage());
+                }
+            }
+
+                if (stack != null) {
                 stack.setAmount(amount);
                 ItemMeta im =
                         stack.getItemMeta();
@@ -431,6 +463,10 @@ public class GarbageManager {
             g.setItem(51, mk(Material.ARROW,
                     "§7已是最后一页"));
         }
+        // 52格：返回按钮
+        g.setItem(52, mk(Material.ARROW,
+                "§7返回",
+                "§7返回主菜单"));
 
         p.openInventory(g);
     }
@@ -459,6 +495,12 @@ public class GarbageManager {
             openRecyclePage(p, page + 1);
             return true;
         }
+        // 52：返回
+        if (slot == 52) {
+            plugin.getGui().openMain(p);
+            return true;
+        }
+
         // 50/52/53：不处理
         if (slot >= 49 && slot <= 53)
             return true;
