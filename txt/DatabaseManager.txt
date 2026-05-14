@@ -63,7 +63,7 @@ public class DatabaseManager {
                     + "register_type TEXT DEFAULT 'manual'"
                     + ")");
 
-            // 安全添加 users 缺失列
+            // 安全添加缺失列
             safeAdd(st, "tasks_completed",
                     "TEXT DEFAULT ''");
             safeAdd(st, "temp_password",
@@ -80,76 +80,39 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "register_type",
                     "TEXT DEFAULT 'manual'");
-
-            // ===== 背包备份表：安全迁移 =====
-            // 检查旧表是否存在（用 inventory_data 列判断）
-            boolean hasOldTable = false;
+            // 在 init 方法的 try 中添加
+            // 如果表存在但没有save_time列，添加它
             try {
-                ResultSet rs = st.executeQuery(
-                        "SELECT inventory_data "
-                                + "FROM inventory_backups "
-                                + "LIMIT 1");
-                hasOldTable = true;
-                rs.close();
-            } catch (SQLException e) {
-                hasOldTable = false;
-            }
-
-            if (hasOldTable) {
-                // 旧表存在，迁移数据到新表
-                st.execute("CREATE TABLE IF NOT EXISTS "
-                        + "inventory_backups_new ("
-                        + "id INTEGER PRIMARY KEY "
-                        + "AUTOINCREMENT,"
-                        + "player_name TEXT NOT NULL,"
-                        + "contents_b64 TEXT DEFAULT '',"
-                        + "armor_b64 TEXT DEFAULT '',"
-                        + "extra_b64 TEXT DEFAULT '',"
-                        + "level INTEGER DEFAULT 0,"
-                        + "experience REAL DEFAULT 0,"
-                        + "save_time INTEGER DEFAULT 0"
-                        + ")");
-                // 迁移旧数据
-                try {
-                    st.execute("INSERT INTO "
-                            + "inventory_backups_new "
-                            + "(player_name, "
-                            + "contents_b64, "
-                            + "armor_b64, "
-                            + "extra_b64, "
-                            + "level, "
-                            + "experience) "
-                            + "SELECT player_name, "
-                            + "inventory_data, "
-                            + "armor_data, "
-                            + "extra_data, "
-                            + "player_level, "
-                            + "player_exp "
-                            + "FROM inventory_backups");
-                } catch (SQLException ignored) {
-                }
-                st.execute("DROP TABLE "
-                        + "inventory_backups");
                 st.execute("ALTER TABLE "
-                        + "inventory_backups_new "
-                        + "RENAME TO "
-                        + "inventory_backups");
-            } else {
-                // 无旧表或已迁移，直接创建
-                st.execute("CREATE TABLE IF NOT EXISTS "
-                        + "inventory_backups ("
-                        + "id INTEGER PRIMARY KEY "
-                        + "AUTOINCREMENT,"
-                        + "player_name TEXT NOT NULL,"
-                        + "contents_b64 TEXT DEFAULT '',"
-                        + "armor_b64 TEXT DEFAULT '',"
-                        + "extra_b64 TEXT DEFAULT '',"
-                        + "level INTEGER DEFAULT 0,"
-                        + "experience REAL DEFAULT 0,"
-                        + "save_time INTEGER DEFAULT 0"
-                        + ")");
+                        + "inventory_backups "
+                        + "ADD COLUMN save_time "
+                        + "INTEGER DEFAULT 0");
+            } catch (SQLException ignored) {
+                // 列已存在
             }
 
+            // 背包备份表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "inventory_backups ("
+                    + "player_name TEXT PRIMARY KEY,"
+                    + "inventory_data TEXT DEFAULT '',"
+                    + "armor_data TEXT DEFAULT '',"
+                    + "extra_data TEXT DEFAULT '',"
+                    + "player_level INTEGER DEFAULT 0,"
+                    + "player_exp REAL DEFAULT 0.0)");
+// 确保 inventory_backups 表结构正确
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "inventory_backups ("
+                    + "id INTEGER PRIMARY KEY "
+                    + "AUTOINCREMENT,"
+                    + "player_name TEXT NOT NULL,"
+                    + "contents_b64 TEXT,"
+                    + "armor_b64 TEXT,"
+                    + "extra_b64 TEXT,"
+                    + "level INTEGER DEFAULT 0,"
+                    + "experience REAL DEFAULT 0,"
+                    + "save_time INTEGER DEFAULT 0"
+                    + ")");
             // 安全报警表
             st.execute("CREATE TABLE IF NOT EXISTS "
                     + "security_alerts ("
@@ -181,7 +144,6 @@ public class DatabaseManager {
                     + "admin_confirmed INTEGER DEFAULT 0,"
                     + "reject_reason TEXT DEFAULT ''"
                     + ")");
-
             // 工单回复表
             st.execute("CREATE TABLE IF NOT EXISTS "
                     + "ticket_replies ("
@@ -201,29 +163,57 @@ public class DatabaseManager {
                     + "active INTEGER DEFAULT 1,"
                     + "join_time INTEGER DEFAULT 0"
                     + ")");
-            // 垃圾回收站物品表
-            st.execute("CREATE TABLE IF NOT EXISTS "
-                    + "items ("
-                    + "id INTEGER PRIMARY KEY "
-                    + "AUTOINCREMENT,"
-                    + "player_name TEXT NOT NULL,"
-                    + "item_data TEXT DEFAULT '',"
-                    + "amount INTEGER DEFAULT 1,"
-                    + "create_time INTEGER DEFAULT 0"
-                    + ")");
-            safeAdd(st, "menu_snowball",
-                    "INTEGER DEFAULT 1");
-            // ===== 独立任务进度表 =====
-            st.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS "
-                            + "quest_progress ("
-                            + "player_name TEXT NOT NULL, "
-                            + "condition_key TEXT NOT NULL, "
-                            + "progress_value INTEGER DEFAULT 0, "
-                            + "completed INTEGER DEFAULT 0, "
-                            + "PRIMARY KEY (player_name, "
-                            + "condition_key)"
-                            + ")");
+            // 安全迁移 inventory_backups 表
+            // 不删除旧数据，只补缺失列
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "save_time INTEGER "
+                        + "DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "level INTEGER "
+                        + "DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "experience REAL "
+                        + "DEFAULT 0");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "armor_b64 TEXT "
+                        + "DEFAULT ''");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "extra_b64 TEXT "
+                        + "DEFAULT ''");
+            } catch (SQLException ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE "
+                        + "inventory_backups "
+                        + "ADD COLUMN "
+                        + "contents_b64 TEXT "
+                        + "DEFAULT ''");
+            } catch (SQLException ignored) {
+            }
+
 
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
@@ -233,7 +223,6 @@ public class DatabaseManager {
                             + e.getMessage(), e);
         }
     }
-
 
     private void safeAdd(Statement st,
                          String col, String def) {
@@ -873,8 +862,9 @@ public class DatabaseManager {
         return list;
     }
 
-    /*
-      获取指定ID的备份数据
+
+    /**
+     * 获取指定ID的备份数据
      */
     public String[] getInventoryBackupById(
             int backupId) {

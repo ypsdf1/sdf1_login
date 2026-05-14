@@ -1,0 +1,137 @@
+package Sdf1_login;
+
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+public class VerificationManager {
+
+    private final JavaPlugin plugin;
+    private final Logger logger;
+
+    public VerificationManager(JavaPlugin plugin) {
+        this.plugin = plugin;
+        this.logger = plugin.getLogger();
+    }
+
+    public boolean isBedrockPlayer(Player player) {
+        UUID uuid = player.getUniqueId();
+        if (uuid.toString().startsWith("00000000-0000-0000-0009-")) {
+            logger.info("[Sdf1_login] Geyser: UUID前缀匹配 → 基岩版");
+            return true;
+        }
+        if (player.hasMetadata("isgeyserplayer")) {
+            logger.info("[Sdf1_login] Geyser: metadata匹配 → 基岩版");
+            return true;
+        }
+        if (player.hasPermission("geyser.player")) {
+            logger.info("[Sdf1_login] Geyser: permission匹配 → 基岩版");
+            return true;
+        }
+        try {
+            Plugin floodgate = Bukkit.getPluginManager().getPlugin("floodgate");
+            if (floodgate == null) floodgate = Bukkit.getPluginManager().getPlugin("Floodgate");
+            if (floodgate != null && floodgate.isEnabled()) {
+                Class<?> apiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
+                Object api = apiClass.getMethod("getInstance").invoke(null);
+                boolean isBedrock = (boolean) apiClass.getMethod("isFloodgatePlayer", UUID.class).invoke(api, uuid);
+                if (isBedrock) {
+                    logger.info("[Sdf1_login] Geyser: Floodgate API确认 → 基岩版");
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {}
+        logger.info("[Sdf1_login] Geyser: 非基岩版");
+        return false;
+    }
+
+    public boolean isOnlineMode() {
+        return Bukkit.getOnlineMode();
+    }
+
+    public void verifyPremiumAsync(Player player, Consumer<Boolean> callback) {
+        String name = player.getName();
+        UUID playerUUID = player.getUniqueId();
+        logger.info("[Sdf1_login] Mojang验证: 查询 " + name + " ...");
+        logger.info("[Sdf1_login] Mojang验证: 玩家UUID = " + playerUUID);
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            UUID premiumUUID = queryMojangUUID(name);
+
+            if (premiumUUID == null) {
+                logger.info("[Sdf1_login] Mojang验证: " + name + " 无记录 → 非正版");
+                Bukkit.getScheduler().runTask(plugin, () -> callback.accept(false));
+                return;
+            }
+
+            logger.info("[Sdf1_login] Mojang验证: 正版UUID = " + premiumUUID);
+            boolean match = playerUUID.equals(premiumUUID);
+
+            if (match) {
+                logger.info("[Sdf1_login] Mojang验证: ✓ UUID匹配 → 正版");
+            } else {
+                logger.info("[Sdf1_login] Mojang验证: ✗ UUID不匹配 → 非正版");
+                logger.info("[Sdf1_login] Mojang验证:   玩家: " + playerUUID);
+                logger.info("[Sdf1_login] Mojang验证:   正版: " + premiumUUID);
+            }
+
+            final boolean finalResult = match;
+            Bukkit.getScheduler().runTask(plugin, () -> callback.accept(finalResult));
+        });
+    }
+
+    private UUID queryMojangUUID(String name) {
+        try {
+            URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + name);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1_login");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                conn.disconnect();
+                return null;
+            }
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+
+            String json = sb.toString();
+            logger.info("[Sdf1_login] Mojang响应: " + json);
+
+            int idIndex = json.indexOf("\"id\"");
+            if (idIndex < 0) return null;
+
+            int colonIndex = json.indexOf(":", idIndex);
+            int quoteStart = json.indexOf("\"", colonIndex + 1);
+            int quoteEnd = json.indexOf("\"", quoteStart + 1);
+
+            String rawUUID = json.substring(quoteStart + 1, quoteEnd);
+            String formatted = rawUUID.replaceFirst(
+                    "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})",
+                    "$1-$2-$3-$4-$5");
+
+            return UUID.fromString(formatted);
+
+        } catch (Exception e) {
+            logger.log(Level.WARNING, "[Sdf1_login] Mojang查询异常: " + name, e);
+            return null;
+        }
+    }
+}

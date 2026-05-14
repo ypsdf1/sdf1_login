@@ -399,6 +399,12 @@ public class TicketManager {
                     || TYPE_PASSWORD.equals(type)) {
                 plugin.getDb().updateTicketField(
                         id, "assigned_to", "admin");
+                // 播放派单音效
+                if (plugin.getTicketSound() != null) {
+                    plugin.getTicketSound()
+                            .playSound(p, "assign");
+                }
+
                 plugin.getDb().updateTicketStatus(
                         id, "processing");
                 p.sendMessage(

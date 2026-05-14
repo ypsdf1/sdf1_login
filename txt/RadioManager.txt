@@ -1,0 +1,563 @@
+package Sdf1_login;
+
+import org.bukkit.*;
+import org.bukkit.entity.Player;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
+
+import java.io.*;
+import java.nio.file.*;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Logger;
+import java.util.zip.*;
+
+public class RadioManager {
+
+    private final Main plugin;
+    private File radioDir;
+    private File oggDir;
+    private File packDir;
+    private BukkitTask mainRadioTask;
+    private BukkitTask loginRadioTask;
+    private final Map<String, Boolean>
+            loginPlayers =
+            new ConcurrentHashMap<>();
+    private int radioIndex = 0;
+    private RadioConverter converter;
+
+    private final List<File> mainFiles =
+            new ArrayList<>();
+    private final List<File> loginFiles =
+            new ArrayList<>();
+
+    public RadioManager(Main plugin) {
+        this.plugin = plugin;
+        this.radioDir = new File(
+                plugin.getDataFolder(),
+                "radio");
+        this.oggDir = new File(
+                plugin.getDataFolder(),
+                "radio/ogg");
+        this.packDir = new File(
+                plugin.getDataFolder(),
+                "radiopack");
+        radioDir.mkdirs();
+        oggDir.mkdirs();
+        packDir.mkdirs();
+    }
+
+    // ========== 初始化 ==========
+
+    public void init() {
+        converter = new RadioConverter(
+                plugin.getLogger());
+
+        convertAll();
+        buildResourcePack();
+        loadFiles();
+
+        plugin.getLogger().info(
+                "[Radio] 初始化完成: 全服="
+                        + mainFiles.size()
+                        + " 登录=" + loginFiles.size());
+    }
+
+    // ========== 格式转换 ==========
+
+    private void convertAll() {
+        // 根目录
+        convertDir(radioDir,
+                new File(oggDir, "radio"));
+        // login 目录
+        File loginSrc = new File(
+                radioDir, "login");
+        if (loginSrc.exists()) {
+            convertDir(loginSrc,
+                    new File(oggDir,
+                            "radio/login"));
+        }
+        // reg 目录
+        File regSrc = new File(
+                radioDir, "reg");
+        if (regSrc.exists()) {
+            convertDir(regSrc,
+                    new File(oggDir,
+                            "radio/reg"));
+        }
+    }
+
+    private void convertDir(File src,
+                            File dest) {
+        dest.mkdirs();
+        File[] files = src.listFiles(
+                (d, n) -> {
+                    String l =
+                            n.toLowerCase();
+                    return l.endsWith(".mp3")
+                            || l.endsWith(".wav")
+                            || l.endsWith(".flac")
+                            || l.endsWith(".ogg");
+                });
+        if (files == null) return;
+
+        for (File f : files) {
+            String oggName = f.getName()
+                    .replaceAll(
+                            "\\.(mp3|wav|flac"
+                                    + "|ogg)$",
+                            ".ogg");
+            File oggFile =
+                    new File(dest, oggName);
+            if (oggFile.exists()
+                    && oggFile.lastModified()
+                    >= f.lastModified()) {
+                continue;
+            }
+            boolean ok = converter.convert(
+                    f, oggFile);
+            if (ok) {
+                plugin.getLogger().info(
+                        "[Radio] 转换成功: "
+                                + f.getName());
+            } else {
+                plugin.getLogger().warning(
+                        "[Radio] 转换失败: "
+                                + f.getName());
+            }
+        }
+    }
+
+    // ========== 资源包 ==========
+    private void buildResourcePack() {
+        // 清理旧文件
+        deleteDir(packDir);
+        packDir.mkdirs();
+
+        List<File> allOggs = new ArrayList<>();
+        collectOggs(oggDir, allOggs);
+
+        if (allOggs.isEmpty()) {
+            plugin.getLogger().warning(
+                    "[Radio] 无 ogg 文件，跳过资源包");
+            return;
+        }
+
+        // assets/sdf1radio/sounds/ 下面直接放文件
+        File soundsDir = new File(
+                packDir,
+                "assets/sdf1radio/sounds");
+        soundsDir.mkdirs();
+
+        // 构建 sounds.json
+        StringBuilder json =
+                new StringBuilder("{\n");
+
+        for (int i = 0;
+             i < allOggs.size(); i++) {
+            File ogg = allOggs.get(i);
+            // 简化路径：只取文件名（去掉所有目录前缀）
+            String simpleName =
+                    ogg.getName()
+                            .replace(".ogg", "");
+            // 检查是否有同名文件，加前缀区分
+            String soundKey = simpleName;
+
+            // 复制 ogg 到资源包
+            File dest =
+                    new File(soundsDir,
+                            simpleName + ".ogg");
+            try {
+                Files.copy(ogg.toPath(),
+                        dest.toPath(),
+                        StandardCopyOption
+                                .REPLACE_EXISTING);
+            } catch (Exception e) {
+                // 忽略
+            }
+
+            // 写 JSON
+            json.append("  \"sdf1radio:")
+                    .append(soundKey)
+                    .append("\": {\n");
+            json.append("    \"sounds\": [{\n");
+            json.append("      \"name\": \"")
+                    .append("sdf1radio/")
+                    .append(soundKey)
+                    .append("\",\n");
+            json.append(
+                    "      \"stream\": true\n");
+            json.append("    }]\n");
+            json.append("  }");
+            if (i < allOggs.size() - 1)
+                json.append(",");
+            json.append("\n");
+        }
+        json.append("}");
+
+        // 写 sounds.json
+        try {
+            Files.write(
+                    new File(packDir,
+                            "assets/sdf1radio/"
+                                    + "sounds.json")
+                            .toPath(),
+                    json.toString()
+                            .getBytes("UTF-8"));
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[Radio] sounds.json写入失败");
+        }
+
+        // 写 pack.mcmeta
+        try {
+            Files.write(
+                    new File(packDir,
+                            "pack.mcmeta")
+                            .toPath(),
+                    ("{\n"
+                            + "  \"pack\": {\n"
+                            + "    \"pack_format\": 34,\n"
+                            + "    \"description\": "
+                            + "\"Sdf1 Radio\"\n"
+                            + "  }\n"
+                            + "}")
+                            .getBytes("UTF-8"));
+        } catch (Exception e) {
+            // 忽略
+        }
+
+        // 打包 zip
+        try {
+            File zipFile = new File(
+                    plugin.getDataFolder(),
+                    "radiopack.zip");
+            packZip(packDir, zipFile);
+            plugin.getLogger().info(
+                    "[Radio] 资源包生成: "
+                            + allOggs.size()
+                            + " 个音频");
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[Radio] zip打包失败: "
+                            + e.getMessage());
+        }
+    }
+
+    private void deleteDir(File dir) {
+        if (!dir.exists()) return;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (f.isDirectory()) {
+                    deleteDir(f);
+                } else {
+                    f.delete();
+                }
+            }
+        }
+        dir.delete();
+    }
+
+    private void collectOggs(File dir,
+                             List<File> list) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                collectOggs(f, list);
+            } else if (f.getName()
+                    .endsWith(".ogg")) {
+                list.add(f);
+            }
+        }
+    }
+
+    private String getRelativePath(
+            File base, File file) {
+        return base.toURI()
+                .relativize(file.toURI())
+                .getPath();
+    }
+
+    private void packZip(File root,
+                         File zipFile) throws Exception {
+        try (ZipOutputStream zos =
+                     new ZipOutputStream(
+                             new FileOutputStream(
+                                     zipFile))) {
+            zipDir(root, root, zos);
+        }
+    }
+
+    private void zipDir(File root,
+                        File current,
+                        ZipOutputStream zos)
+            throws Exception {
+        File[] files = current.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isDirectory()) {
+                zipDir(root, f, zos);
+            } else {
+                String path =
+                        root.toURI()
+                                .relativize(f.toURI())
+                                .getPath();
+                zos.putNextEntry(
+                        new ZipEntry(path));
+                zos.write(Files.readAllBytes(
+                        f.toPath()));
+                zos.closeEntry();
+            }
+        }
+    }
+
+    // ========== 加载文件列表 ==========
+
+    private void loadFiles() {
+        mainFiles.clear();
+        loginFiles.clear();
+
+        File radioOgg = new File(
+                oggDir, "radio");
+        loadOggs(radioOgg, mainFiles);
+
+        File loginOgg = new File(
+                oggDir, "radio/login");
+        loadOggs(loginOgg, loginFiles);
+
+        File regOgg = new File(
+                oggDir, "radio/reg");
+        loadOggs(regOgg, loginFiles);
+    }
+
+    private void loadOggs(File dir,
+                          List<File> list) {
+        File[] files = dir.listFiles(
+                (d, n) -> n.toLowerCase()
+                        .endsWith(".ogg"));
+        if (files != null) {
+            Arrays.sort(files);
+            for (File f : files)
+                list.add(f);
+        }
+    }
+
+    // ========== 资源包发送 ==========
+    public void sendResourcePack(Player p) {
+        File zip = new File(
+                plugin.getDataFolder(),
+                "radiopack.zip");
+        if (!zip.exists()) return;
+        try {
+            byte[] data =
+                    Files.readAllBytes(
+                            zip.toPath());
+            java.security.MessageDigest md =
+                    java.security.MessageDigest
+                            .getInstance("SHA-1");
+            md.update(data);
+            byte[] hashBytes = md.digest();
+            StringBuilder sb =
+                    new StringBuilder();
+            for (byte b : hashBytes)
+                sb.append(String.format(
+                        "%02x", b));
+            String hash = sb.toString();
+            UUID uuid = UUID.randomUUID();
+
+            // 用反射兼容不同版本
+            try {
+                java.lang.reflect.Method m =
+                        p.getClass().getMethod(
+                                "setResourcePack",
+                                UUID.class,
+                                byte[].class,
+                                String.class,
+                                String.class,
+                                boolean.class);
+                m.invoke(p, uuid, data,
+                        hash,
+                        "Sdf1 Radio",
+                        false);
+            } catch (NoSuchMethodException ex) {
+                try {
+                    java.lang.reflect.Method m2 =
+                            p.getClass().getMethod(
+                                    "setResourcePack",
+                                    UUID.class,
+                                    byte[].class,
+                                    String.class);
+                    m2.invoke(p, uuid,
+                            data, hash);
+                } catch (Exception ex2) {
+                    plugin.getLogger().warning(
+                            "[Radio] 服务端不支持"
+                                    + "发送资源包");
+                }
+            }
+        } catch (Exception e) {
+        }
+    }
+
+    // ========== 全服广播 ==========
+
+    public void startMainRadio() {
+        stopMainRadio();
+        if (mainFiles.isEmpty()) {
+            plugin.getLogger().warning(
+                    "[Radio] radio/ 目录"
+                            + "无 .ogg 文件");
+            return;
+        }
+        plugin.getLogger().info(
+                "[Radio] 启动全服广播"
+                        + " (" + mainFiles.size()
+                        + " 个文件)");
+
+        mainRadioTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                playNext();
+            }
+        }.runTaskTimer(
+                plugin, 100L, 2400L);
+    }
+    private void playNext() {
+        if (mainFiles.isEmpty()) return;
+        File file = mainFiles.get(
+                radioIndex % mainFiles.size());
+        String name = file.getName()
+                .replace(".ogg", "");
+        String key = "sdf1radio:" + name;
+
+        for (Player p
+                : Bukkit.getOnlinePlayers()) {
+            p.playSound(
+                    p.getLocation(),
+                    key,
+                    SoundCategory.RECORDS,
+                    2.0f, 1.0f);
+        }
+
+        Bukkit.broadcastMessage(
+                "§6§l[广播] §f正在播放: §e"
+                        + name);
+        radioIndex++;
+    }
+
+
+    public void stopMainRadio() {
+        if (mainRadioTask != null) {
+            mainRadioTask.cancel();
+            mainRadioTask = null;
+        }
+    }
+
+    // ========== 登录阶段广播 ==========
+
+    public void startLoginRadio(
+            Player p) {
+        loginPlayers.put(p.getName(), true);
+        if (loginRadioTask != null) return;
+        if (loginFiles.isEmpty()) return;
+
+        loginRadioTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (loginPlayers.isEmpty()) {
+                    cancel();
+                    loginRadioTask = null;
+                    return;
+                }
+                int idx = (int)
+                        (System.currentTimeMillis()
+                                / 2400L
+                                % loginFiles.size());
+                File file =
+                        loginFiles.get(idx);
+                String rel =
+                        getRelativePath(
+                                oggDir, file)
+                                .replace("\\", "/");
+                String key =
+                        "sdf1radio:"
+                                + rel.replace(".ogg", "");
+
+                for (String name
+                        : loginPlayers.keySet()) {
+                    Player lp = Bukkit
+                            .getPlayer(name);
+                    if (lp != null
+                            && lp.isOnline()) {
+                        lp.playSound(
+                                lp.getLocation(),
+                                key,
+                                SoundCategory
+                                        .RECORDS,
+                                1.5f, 1.0f);
+                    }
+                }
+            }
+        }.runTaskTimer(
+                plugin, 0L, 24L);
+    }
+
+    public void stopLoginRadio(
+            Player p) {
+        loginPlayers.remove(p.getName());
+        if (loginPlayers.isEmpty()
+                && loginRadioTask != null) {
+            loginRadioTask.cancel();
+            loginRadioTask = null;
+        }
+    }
+
+    public void stopAllLoginRadio() {
+        loginPlayers.clear();
+        if (loginRadioTask != null) {
+            loginRadioTask.cancel();
+            loginRadioTask = null;
+        }
+    }
+
+    // ========== 手动播放 ==========
+    public boolean playSpecific(
+            Player sender, String name) {
+        List<File> all = new ArrayList<>();
+        collectOggs(oggDir, all);
+        for (File f : all) {
+            String fn = f.getName()
+                    .replace(".ogg", "");
+            if (fn.equalsIgnoreCase(name)) {
+                String key = "sdf1radio:" + name;
+                for (Player p
+                        : Bukkit.getOnlinePlayers()) {
+                    p.playSound(
+                            p.getLocation(),
+                            key,
+                            SoundCategory.RECORDS,
+                            2.0f, 1.0f);
+                }
+                Bukkit.broadcastMessage(
+                        "§6§l[广播] §f正在播放: §e"
+                                + name);
+                return true;
+            }
+        }
+        sender.sendMessage("§c未找到: " + name);
+        return false;
+    }
+
+    // ========== 重载 ==========
+
+    public void reload() {
+        stopMainRadio();
+        stopAllLoginRadio();
+        convertAll();
+        buildResourcePack();
+        loadFiles();
+        // 不自动启动，由管理员手动启动
+    }    }
+

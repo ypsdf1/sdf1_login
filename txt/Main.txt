@@ -105,7 +105,7 @@ public class Main extends JavaPlugin
     private final Set<String> removeFlightOnce =
             new TreeSet<>(
                     String.CASE_INSENSITIVE_ORDER);
-    public RadioManager radio;
+    private RadioManager radio;
     public RadioManager getRadio() {
         return radio;
     }
@@ -170,9 +170,6 @@ public class Main extends JavaPlugin
     @Override
     public void onEnable() {
         radio = new RadioManager(this);
-        radio.init();
-        getServer().getPluginManager().registerEvents(
-                new RadioDownloadListener(this), this);
         getDataFolder().mkdirs();
         config = new ConfigManager(getDataFolder());
         config.loadMessages();
@@ -263,6 +260,8 @@ public class Main extends JavaPlugin
                 : Bukkit.getOnlinePlayers()) {
             radio.sendResourcePack(online);
         }
+
+
     }
 
    @Override
@@ -1331,26 +1330,7 @@ public class Main extends JavaPlugin
                                 });
                     }
                 });
-        // ===== 在 onJoin 方法的最后一行（关闭括号之前）加入 =====
-        // 延迟2秒发送广播资源包，确保客户端完全就绪
-        final Player radioTarget = p;
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (radioTarget.isOnline()) {
-                radio.sendResourcePack(radioTarget);
-            }
-        }, 40L);  // 40 tick = 2 秒
-        // 发送广播资源包
-        final Player rpTarget = p;
-        Bukkit.getScheduler().runTaskLater(this,
-                () -> {
-                    if (rpTarget != null
-                            && rpTarget.isOnline()) {
-                        radio.sendResourcePack(
-                                rpTarget);
-                    }
-                }, 60L);
-
-    }  // ← onJoin 的结束括号
+    }
 
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
@@ -1429,7 +1409,6 @@ public class Main extends JavaPlugin
         joinTime.remove(p.getUniqueId());
         joinLoc.remove(p.getUniqueId());
         needsPasswordChange.remove(name);
-
     }
 
     private static final String MENU_SNOWBALL_TAG =
@@ -2683,7 +2662,12 @@ public class Main extends JavaPlugin
                 frozenFlightPlayers.remove(p.getName());
                 p.setAllowFlight(false);
                 p.setFlying(false);
-                removeFlightOnce.add(p.getName());
+                // 仅关闭冻结期间的飞行
+                if (frozenFlightPlayers.remove(
+                        p.getName())) {
+                    p.setAllowFlight(false);
+                    p.setFlying(false);
+            removeFlightOnce.add(p.getName());
                 if (questTracker != null) {
                     questTracker.markConditionComplete(
                             p.getName(),
@@ -2695,6 +2679,7 @@ public class Main extends JavaPlugin
             }
             return true;
         }
+}
 
         if (cmdName.equals("login")
                 || cmdName.equals("l")
@@ -3107,20 +3092,6 @@ public class Main extends JavaPlugin
                 sender.sendMessage(
                         "§e§l================================");
             }
-        }
-        // radio - 播放/停止广播
-        if (sub.equals("radio")) {
-            // /sdf1_login radio wrktrx3.ogg
-            // args = ["radio", "wrktrx3.ogg"]
-            // 剥掉 "radio"，把剩余参数传给 handleCommand
-            String[] radioArgs =
-                    new String[args.length - 1];
-            System.arraycopy(
-                    args, 1,
-                    radioArgs, 0,
-                    radioArgs.length);
-            radio.handleCommand(sender, radioArgs);
-            return true;
         }
 
         // pw / password

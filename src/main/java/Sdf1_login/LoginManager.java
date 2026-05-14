@@ -233,12 +233,12 @@ public class LoginManager {
                 tempPwd, salt);
         plugin.getDb().setField(name,
                 "temp_password", hash);
-            plugin.getDb().setField(name,
-                    "temp_pw_expire",
-                    System.currentTimeMillis()
-                            + 300000L);
+        plugin.getDb().setField(name,
+                "temp_pw_expire",
+                System.currentTimeMillis()
+                        + 300000L);
 
-            plugin.getDb().setField(name,
+        plugin.getDb().setField(name,
                 "temp_pw_used", 0);
         p.sendMessage("§e正在发送临时密码...");
         final String to = emailAddr;
