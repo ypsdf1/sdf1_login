@@ -5,6 +5,7 @@ import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.*;
 import org.bukkit.inventory.meta.ItemMeta;
+import java.io.File;
 
 import java.util.*;
 
@@ -41,7 +42,7 @@ public class GUIManager {
         g.setItem(14, mkItem(Material.EMERALD,
                 "§d§l积分商城"));
         g.setItem(16, mkItem(Material.CHEST,
-                "§e§l任务中心"));
+                "§e§l新人礼包"));
         g.setItem(18, mkItem(Material.BOOK,
                 "§6工单系统",
                 "§7提交bug、求助、举报"));
@@ -103,6 +104,32 @@ public class GUIManager {
                 "§7当前: " + points + "积分"));
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
+    }
+
+    // 在 openGiftStages 方法之前添加：
+
+    /**
+     * 获取任务列表（带真实完成状态）
+     * 使用 QuestTracker 解析 .md 文件
+     */
+    public List<Map<String, Object>> getQuestList(
+            String category) {
+        QuestTracker qt = plugin.getQuestTracker();
+        if (qt == null) return new ArrayList<>();
+        List<QuestTracker.QuestFile> quests =
+                qt.getQuests(category);
+        List<Map<String, Object>> list =
+                new ArrayList<>();
+        for (QuestTracker.QuestFile qf : quests) {
+            Map<String, Object> map =
+                    new LinkedHashMap<>();
+            map.put("name", qf.displayName);
+            map.put("conditions", qf.conditions);
+            map.put("rewards", qf.rewards);
+            map.put("questFile", qf);
+            list.add(map);
+        }
+        return list;
     }
 
     /**
@@ -370,7 +397,6 @@ public class GUIManager {
                     "§7双击管理"));
             slot++;
         }
-
         g.setItem(53, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
@@ -379,279 +405,154 @@ public class GUIManager {
         Inventory g = Bukkit.createInventory(
                 null, 27, T_TASK_CENTER);
         fillBg(g);
-
-        QuestTracker qt =
-                plugin.getQuestTracker();
-        String player = p.getName();
-
-        // 新人任务进度
-        List<QuestTracker.QuestFile> newQuests =
-                qt.getQuests("新人任务");
-        int newTotal = newQuests.size();
-        int newDone =
-                qt.getCompletedStageCount(
-                        player, newQuests);
-        QuestTracker.QuestFile newCurrent =
-                qt.getCurrentStage(
-                        player, newQuests);
-
-        String newInfo = newDone + "/" + newTotal;
-        List<String> newLore = new ArrayList<>();
-        newLore.add("§7进度: §e" + newInfo);
-        if (newCurrent != null) {
-            newLore.add("§7当前: §f"
-                    + newCurrent.displayName);
-            if (newCurrent.hasConditions()) {
-                List<String> unmet =
-                        qt.getUnmetConditions(
-                                player,
-                                newCurrent.conditions);
-                if (!unmet.isEmpty()) {
-                    for (String c : unmet) {
-                        newLore.add("§7  "
-                                + qt.getProgress(
-                                player, c));
-                    }
-                } else {
-                    newLore.add("§a✓ 条件已满足");
-                }
-            }
-        } else {
-            newLore.add("§a§l全部完成！");
-        }
-
         g.setItem(10, mkItem(Material.BOOK,
-                "§e§l新人任务 §7["
-                        + newInfo + "]",
-                newLore.toArray(new String[0])));
-
-        // 主线任务
-        List<QuestTracker.QuestFile> mainQuests =
-                qt.getQuests("主线任务");
+                "§e§l新人任务",
+                "§7完成新手阶段获取奖励"));
         g.setItem(12, mkItem(Material.COMPASS,
-                "§b§l主线任务 §7["
-                        + qt.getCompletedStageCount(
-                        player, mainQuests)
-                        + "/" + mainQuests.size()
-                        + "]",
+                "§b§l主线任务",
                 "§7查看主线任务列表"));
-
-        // 支线任务
-        List<QuestTracker.QuestFile> sideQuests =
-                qt.getQuests("支线任务");
         g.setItem(14, mkItem(Material.PAPER,
-                "§a§l支线任务 §7["
-                        + qt.getCompletedStageCount(
-                        player, sideQuests)
-                        + "/" + sideQuests.size()
-                        + "]",
+                "§a§l支线任务",
                 "§7查看支线任务列表"));
-
         g.setItem(16, mkItem(Material.EMERALD,
                 "§d§l每日签到",
                 "§7签到获取积分"));
-
-        // 打卡上报按钮（slot 21）
-        g.setItem(21, mkItem(
-                Material.EMERALD,
-                "§a§l打卡上报",
-                "§7验证当前阶段任务完成情况",
-                "§7满足条件将自动标记完成"));
-
-        // 返回按钮（slot 26）
-        g.setItem(26, mkItem(
-                Material.ARROW, "§7返回"));
+        g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
-
-
     public void openGiftStages(Player p) {
         Inventory g = Bukkit.createInventory(
-                null, 54, T_GIFT_STAGES);
+                null, 27, T_GIFT_STAGES);
         fillBg(g);
 
-        QuestTracker qt =
-                plugin.getQuestTracker();
+        QuestTracker qt = plugin.getQuestTracker();
+        if (qt == null) {
+            g.setItem(22, mkItem(Material.BARRIER,
+                    "§7任务系统未加载"));
+            p.openInventory(g);
+            return;
+        }
+
         List<QuestTracker.QuestFile> quests =
                 qt.getQuests("新人任务");
-        int total = quests.size();
-        int completed =
-                qt.getCompletedStageCount(
-                        p.getName(), quests);
-        QuestTracker.QuestFile current =
-                qt.getCurrentStage(
-                        p.getName(), quests);
+        String playerName = p.getName();
 
-        g.setItem(4, mkItem(Material.BOOK,
-                "§e§l新人任务进度",
-                "§7已完成: §e" + completed
-                        + "/" + total,
-                current != null
-                        ? "§7当前: §f"
-                          + current.displayName
-                        : "§a§l全部完成！"));
-
-        for (int i = 0;
-             i < quests.size() && i < 44; i++) {
-            QuestTracker.QuestFile qf =
-                    quests.get(i);
-            boolean done =
-                    qt.isStageCompleted(
-                            p.getName(), qf);
-            boolean isCurrent =
-                    (current != null
-                            && current == qf);
+        int max = quests.size();
+        for (int i = 0; i < max && i < 9; i++) {
+            QuestTracker.QuestFile qf = quests.get(i);
+            boolean completed =
+                    qt.isStageCompleted(playerName, qf);
+            boolean claimed =
+                    qt.hasClaimed(playerName, qf);
 
             Material mat;
-            List<String> lore = new ArrayList<>();
-
-            if (done) {
+            String status;
+            if (completed && claimed) {
                 mat = Material.LIME_WOOL;
-            } else if (isCurrent) {
+                status = "§a已领取";
+            } else if (completed) {
                 mat = Material.YELLOW_WOOL;
+                status = "§e可领取";
             } else {
                 mat = Material.RED_WOOL;
+                status = "§c未达标";
             }
 
-            if (!qf.details.isEmpty()) {
-                lore.add("§7---- 任务详情 ----");
-                for (String d : qf.details) {
-                    lore.add("§f" + d);
-                }
-            }
-
-            if (qf.hasConditions()
-                    && (done || isCurrent)) {
-                lore.add("");
-                for (String c : qf.conditions) {
-                    if (qt.isOptional(c))
-                        continue;
-                    if (qt.isConditionMet(
-                            p.getName(), c)) {
-                        lore.add("§7  §a✓ "
-                                + qt.getProgress(
-                                p.getName(), c));
-                    } else {
-                        lore.add("§7  §c✗ "
-                                + qt.getProgress(
-                                p.getName(), c));
-                    }
-                }
-            }
-
-            if (!qf.rewards.isEmpty()) {
-                lore.add("");
-                lore.add("§7---- 奖励 ----");
-                for (String r : qf.rewards) {
-                    lore.add("§a" + r);
-                }
-            }
-
-            if (done
-                    && !qf.rewards.isEmpty()
-                    && !qt.hasClaimed(
-                    p.getName(), qf)) {
-                lore.add("");
-                lore.add("§e§l点击领取奖励");
-            }
-            if (done && qt.hasClaimed(
-                    p.getName(), qf)) {
-                lore.add("");
-                lore.add("§7已领取奖励");
+            // 显示进度
+            List<String> lore = new ArrayList<>();
+            lore.add("§7" + status);
+            for (String cond : qf.conditions) {
+                String progress =
+                        qt.getProgress(playerName, cond);
+                lore.add("§7" + progress);
             }
 
             g.setItem(10 + i, mkItem(mat,
                     "§e" + qf.displayName,
                     lore.toArray(new String[0])));
         }
-        // 返回按钮
-        g.setItem(53, mkItem(
-                Material.ARROW, "§7返回"));
+        g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
 
 
-
-
-    public void openTaskList(Player p,
-                             String folderName) {
-        QuestTracker qt =
-                plugin.getQuestTracker();
-        List<QuestTracker.QuestFile> tasks =
-                qt.getQuests(folderName);
-
-        int size = Math.min(54,
-                Math.max(54,
-                        ((tasks.size() / 9) + 1) * 9));
-        Inventory g = Bukkit.createInventory(
-                null, size,
+    public void openTaskList(Player p, String folderName) {
+        Inventory g = Bukkit.createInventory(null, 54,
                 "§d§l" + folderName);
         fillBg(g);
 
-        for (int i = 0;
-             i < tasks.size()
-                     && i < 45; i++) {
-            QuestTracker.QuestFile qf =
-                    tasks.get(i);
-            boolean done =
-                    qt.isStageCompleted(
-                            p.getName(), qf);
-            Material mat = done
-                    ? Material.LIME_WOOL
-                    : Material.BOOK;
+        // [FIX] 使用 QuestTracker 获取真实任务数据
+        QuestTracker qt = plugin.getQuestTracker();
+        if (qt == null) {
+            g.setItem(22, mkItem(Material.BARRIER,
+                    "§7任务系统未加载"));
+            p.openInventory(g);
+            return;
+        }
+
+        List<QuestTracker.QuestFile> quests =
+                qt.getQuests(folderName);
+        String playerName = p.getName();
+
+        if (quests.isEmpty()) {
+            g.setItem(22, mkItem(Material.BARRIER,
+                    "§7暂无任务"));
+            p.openInventory(g);
+            return;
+        }
+
+        int slot = 0;
+        for (QuestTracker.QuestFile qf : quests) {
+            if (slot >= 45) break;
+
+            boolean completed =
+                    qt.isStageCompleted(playerName, qf);
+            boolean claimed =
+                    qt.hasClaimed(playerName, qf);
+
+            Material mat;
+            String status;
+            if (completed && claimed) {
+                mat = Material.LIME_WOOL;
+                status = "§a✓ 已完成并领取";
+            } else if (completed) {
+                mat = Material.YELLOW_WOOL;
+                status = "§e✓ 已完成 - 可领取奖励";
+            } else {
+                mat = Material.RED_WOOL;
+                status = "§c未完成";
+            }
 
             List<String> lore = new ArrayList<>();
+            lore.add(status);
+            lore.add("§7───── 条件 ─────");
 
-            // 解锁条件
-            if (qf.hasConditions()) {
-                lore.add("§7──── 解锁条件 ────");
-                for (String c : qf.conditions) {
-                    if (qt.isOptional(c))
-                        continue;
-                    if (qt.isConditionMet(
-                            p.getName(), c)) {
-                        lore.add("§a  ✓ "
-                                + qt.getProgress(
-                                p.getName(), c));
-                    } else {
-                        lore.add("§c  ✗ "
-                                + qt.getProgress(
-                                p.getName(), c));
-                    }
+            // 显示每个条件及完成状态
+            for (String cond : qf.conditions) {
+                String progress =
+                        qt.getProgress(playerName, cond);
+                if (qt.isOptional(cond)) {
+                    lore.add("§7[可选] " + progress);
+                } else {
+                    lore.add("§e" + progress);
                 }
             }
 
-            // 任务详情
-            if (!qf.details.isEmpty()) {
-                lore.add("");
-                lore.add("§7──── 任务详情 ────");
-                for (String d : qf.details) {
-                    lore.add("§f" + d);
-                }
-            }
-
-            // 任务奖励
             if (!qf.rewards.isEmpty()) {
                 lore.add("");
-                lore.add("§7──── 任务奖励 ────");
+                lore.add("§7───── 奖励 ─────");
                 for (String r : qf.rewards) {
                     lore.add("§a" + r);
                 }
             }
 
-            g.setItem(i, mkItem(mat,
-                    (done ? "§a✓ " : "§e")
-                            + qf.displayName,
+            g.setItem(slot, mkItem(mat,
+                    "§e" + qf.displayName,
                     lore.toArray(new String[0])));
+            slot++;
         }
 
-        if (tasks.isEmpty()) {
-            g.setItem(22, mkItem(
-                    Material.BARRIER,
-                    "§7暂无任务"));
-        }
-        g.setItem(size - 1, mkItem(
-                Material.ARROW, "§7返回"));
+        g.setItem(53, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
 
@@ -683,80 +584,10 @@ public class GUIManager {
                 Material.SNOWBALL,
                 "§e§l雪球菜单",
                 "§7点击为该玩家发放菜单雪球"));
-        g.setItem(16, mkItem(
-                Material.ENDER_EYE,
-                "§b§l打卡记录",
-                "§7查看该玩家的群系打卡记录"));
 
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
-
-    public void openCheckInRecords(
-            Player p, String target) {
-        Inventory g = Bukkit.createInventory(
-                null, 54,
-                "§b§l打卡记录: " + target);
-        fillBg(g);
-
-        QuestTracker qt =
-                plugin.getQuestTracker();
-        List<String> records =
-                qt.getPlayerRecords(target);
-
-        java.text.SimpleDateFormat sdf =
-                new java.text.SimpleDateFormat(
-                        "yyyy-MM-dd HH:mm:ss");
-
-        int slot = 0;
-        for (int i = records.size() - 1;
-             i >= 0 && slot < 45; i--) {
-            String r = records.get(i);
-            String[] parts = r.split("\\|");
-            if (parts.length < 7) continue;
-
-            String world = parts[1];
-            String biome = parts[2];
-            String category = parts[3];
-            String x = parts[4];
-            String y = parts[5];
-            String z = parts[6];
-            String timeStr = "";
-            if (parts.length >= 8) {
-                try {
-                    long ts = Long.parseLong(
-                            parts[7]);
-                    timeStr = sdf.format(
-                            new java.util.Date(
-                                    ts));
-                } catch (Exception e) {
-                    timeStr = parts[7];
-                }
-            }
-
-            g.setItem(slot, mkItem(
-                    Material.PAPER,
-                    "§e" + category + " - "
-                            + biome,
-                    "§7时间: " + timeStr,
-                    "§7世界: " + world,
-                    "§7坐标: " + x
-                            + ", " + y
-                            + ", " + z));
-            slot++;
-        }
-
-        if (slot == 0) {
-            g.setItem(22, mkItem(
-                    Material.BARRIER,
-                    "§7暂无打卡记录"));
-        }
-
-        g.setItem(53, mkItem(
-                Material.ARROW, "§7返回"));
-        p.openInventory(g);
-    }
-
 
     /**
      * 打开账号请求面板

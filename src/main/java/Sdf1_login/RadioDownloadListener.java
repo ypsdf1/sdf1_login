@@ -14,15 +14,20 @@ import java.util.logging.Logger;
 public class RadioDownloadListener
         implements Listener {
 
-    private final Logger log;
     private final Main plugin;
+    private final Logger log;
     private final Map<UUID, Integer> retryCount =
             new ConcurrentHashMap<>();
-    private static final int MAX_RETRY = 2;
+    private final Map<UUID, Integer> totalAttempts =
+            new ConcurrentHashMap<>();
+    private static final int MAX_RETRY = 3;
+    // 每位玩家最多总共尝试5次，防死循环
+    private static final int MAX_TOTAL = 5;
 
     public RadioDownloadListener(Main plugin) {
         this.plugin = plugin;
         this.log = plugin.getLogger();
+
     }
 
     @EventHandler
@@ -33,86 +38,81 @@ public class RadioDownloadListener
         String status = e.getStatus().name();
 
         log.info("[Radio] " + p.getName()
-                + " status: " + status);
+                + " 资源包: " + status);
 
         switch (status) {
-            case "ACCEPTED":
-                break;
-
-            case "DOWNLOADED":
-                break;
-
             case "SUCCESS":
                 log.info("[Radio] " + p.getName()
                         + " 资源包加载成功");
                 retryCount.remove(uuid);
+                totalAttempts.remove(uuid);
                 break;
 
             case "FAILED_DOWNLOAD":
-                handleRetry(p, uuid);
+                int retry = retryCount
+                        .getOrDefault(uuid, 0) + 1;
+                int total = totalAttempts
+                        .getOrDefault(uuid, 0) + 1;
+                retryCount.put(uuid, retry);
+                totalAttempts.put(uuid, total);
+
+                log.warning("[Radio] " + p.getName()
+                        + " 下载失败 (重试"
+                        + retry + "/" + MAX_RETRY
+                        + ", 总计" + total
+                        + "/" + MAX_TOTAL + ")");
+
+                if (total >= MAX_TOTAL) {
+                    p.sendMessage(
+                            "§7[Radio] §f资源包加载失败，跳过");
+                    retryCount.remove(uuid);
+                    totalAttempts.remove(uuid);
+                    break;
+                }
+
+                if (retry > MAX_RETRY) {
+                    retryCount.put(uuid, 0);
+                    Bukkit.getScheduler()
+                            .runTaskLater(plugin,
+                                    () -> {
+                                        if (p.isOnline()
+                                                && plugin
+                                                .radio
+                                                != null) {
+                                            plugin.radio
+                                                    .sendResourcePack(
+                                                            p);
+                                        }
+                                    }, 100L);
+                    break;
+                }
+
+                p.sendMessage(
+                        "§e[Radio] §f下载失败，重试中...");
+                Bukkit.getScheduler()
+                        .runTaskLater(plugin,
+                                () -> {
+                                    if (p.isOnline()
+                                            && plugin.radio
+                                            != null) {
+                                        plugin.radio
+                                                .sendResourcePack(
+                                                        p);
+                                    }
+                                }, 60L);
                 break;
 
             case "DECLINED":
                 log.info("[Radio] " + p.getName()
                         + " 拒绝下载");
-                p.sendMessage(
-                        "§e[Radio] §f你拒绝了资源包");
                 retryCount.remove(uuid);
-                break;
-
-            case "DISCARDED":
-                log.warning("[Radio] " + p.getName()
-                        + " DISCARDED");
-                p.sendMessage(
-                        "§c[Radio] §f资源包下载失败"
-                                + "，可能原因:");
-                p.sendMessage(
-                        "§71. CDN/防火墙拦截");
-                p.sendMessage(
-                        "§72. SSL证书问题");
-                retryCount.remove(uuid);
-                break;
-
-            case "INVALID_URL":
-                log.warning("[Radio] " + p.getName()
-                        + " URL无效");
-                retryCount.remove(uuid);
+                totalAttempts.remove(uuid);
                 break;
 
             default:
-                log.info("[Radio] " + p.getName()
-                        + " 未知: " + status);
+                retryCount.remove(uuid);
+                totalAttempts.remove(uuid);
                 break;
-        }
-    }
-
-    private void handleRetry(Player p, UUID uuid) {
-        int count = retryCount
-                .getOrDefault(uuid, 0) + 1;
-        retryCount.put(uuid, count);
-
-        log.warning("[Radio] " + p.getName()
-                + " 下载失败 (" + count
-                + "/" + MAX_RETRY + ")");
-
-        if (count <= MAX_RETRY) {
-            p.sendMessage(
-                    "§e[Radio] §f下载失败，重试中... ("
-                            + count + "/" + MAX_RETRY + ")");
-            Bukkit.getScheduler().runTaskLater(
-                    plugin,
-                    () -> {
-                        if (p.isOnline()
-                                && plugin.radio != null) {
-                            plugin.radio
-                                    .sendResourcePack(p);
-                        }
-                    }, 60L);
-        } else {
-            p.sendMessage(
-                    "§c[Radio] §f资源包加载失败，"
-                            + "部分音乐无法播放");
-            retryCount.remove(uuid);
         }
     }
 }

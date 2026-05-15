@@ -37,3 +37,9 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# 开发辅助文件（本地保留，不推送到仓库）
+txt/
+*.xlsx
+*.patch
+新建*.txt

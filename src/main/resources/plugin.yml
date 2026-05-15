@@ -87,4 +87,3 @@ commands:
   menu:
     description: 雪球菜单开关控制
     usage: /menu <开/关>
-    commands:

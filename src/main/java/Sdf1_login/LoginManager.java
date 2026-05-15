@@ -66,6 +66,8 @@ public class LoginManager {
         plugin.getDb().createUser(
                 name, hash, salt);
         plugin.getLoggedIn().add(name);
+        p.setAllowFlight(false);
+        p.setFlying(false);
         plugin.getDb().setLoggedIn(name, true);
         plugin.getDb().setField(name,
                 "last_login_time",
@@ -153,6 +155,8 @@ public class LoginManager {
                 plugin.getLoggedIn().add(name);
                 plugin.getDb().setLoggedIn(
                         name, true);
+                plugin.getDb().setLoggedIn(
+                        name, true);
                 plugin.getDb().setField(name,
                         "last_login_time",
                         System.currentTimeMillis());
@@ -177,6 +181,8 @@ public class LoginManager {
                 plugin.getLoggedIn().add(name);
                 plugin.getDb().setLoggedIn(
                         name, true);
+                p.setAllowFlight(false);
+                p.setFlying(false);
                 plugin.getDb().setField(name,
                         "last_login_time",
                         System.currentTimeMillis());
@@ -233,12 +239,12 @@ public class LoginManager {
                 tempPwd, salt);
         plugin.getDb().setField(name,
                 "temp_password", hash);
-        plugin.getDb().setField(name,
-                "temp_pw_expire",
-                System.currentTimeMillis()
-                        + 300000L);
+            plugin.getDb().setField(name,
+                    "temp_pw_expire",
+                    System.currentTimeMillis()
+                            + 300000L);
 
-        plugin.getDb().setField(name,
+            plugin.getDb().setField(name,
                 "temp_pw_used", 0);
         p.sendMessage("§e正在发送临时密码...");
         final String to = emailAddr;

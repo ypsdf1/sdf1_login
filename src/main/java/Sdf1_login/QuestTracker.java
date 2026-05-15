@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 public class QuestTracker {
 
     private final Plugin plugin;
-    private final PlayerStorage storage;
+    private final QuestStorage storage;
     private final Map<String, String>
             playerBiome = new HashMap<>();
     private final Map<String, List<QuestFile>>
@@ -76,9 +76,9 @@ public class QuestTracker {
 
     public QuestTracker(Plugin plugin) {
         this.plugin = plugin;
-        this.storage = new PlayerStorage(
-                plugin.getDataFolder(),
-                plugin.getLogger());
+        this.storage = new QuestStorage(
+                plugin.getDataFolder());
+
         loadAllQuests();
     }
 
@@ -1490,30 +1490,22 @@ public class QuestTracker {
         }
         return unmet;
     }
-
     public String getProgress(
-            String player,
-            String rawCond) {
-        if (player == null
-                || rawCond == null)
+            String player, String rawCond) {
+        if (player == null || rawCond == null)
             return "§7未知";
-
         String key = stripOptional(rawCond);
-        // 打卡群系进度
-        if (key.contains("打卡")
-                && (key.contains("群系")
-                || key.contains("风景点"))) {
 
+        if (key.contains("打卡")
+                && key.contains("群系")) {
             String biome =
                     extractBiome(key);
-
             if ("ALL".equals(biome)) {
                 int total = getCounter(
                         player, "biome_ALL");
                 return "§7群系打卡: §e"
                         + total + "/1";
             }
-
             if (!biome.isEmpty()) {
                 int catCount = getCounter(
                         player,
@@ -1522,16 +1514,12 @@ public class QuestTracker {
                         + "群系: §e"
                         + catCount + "/1";
             }
-
             int total = getCounter(
                     player, "biome_ALL");
             return "§7群系打卡: §e"
                     + total + "/1";
         }
 
-
-
-        // 阶段依赖
         if (key.contains("完成")
                 && key.contains("阶段")) {
             boolean done = checkStageDependency(
@@ -1541,9 +1529,6 @@ public class QuestTracker {
                     : "§c✗ " + key;
         }
 
-
-        // 注册登录（检查主数据库是否已注册）
-        // 注册登录（检查主数据库是否已注册）
         if ("完成注册登录".equals(key)) {
             boolean done = getDb() != null
                     && getDb().userExists(
@@ -1553,7 +1538,6 @@ public class QuestTracker {
                     : "§c✗ 完成注册登录";
         }
 
-        // 绑定邮箱
         if (key.contains("绑定Email")
                 || key.contains("绑定邮箱")) {
             Object val =
@@ -1566,7 +1550,6 @@ public class QuestTracker {
                     : "§c✗ 绑定Email";
         }
 
-        // 在线时间
         if (key.contains("在线")
                 && key.contains("小时")) {
             int needed = parseNumberFromText(key);
@@ -1578,17 +1561,16 @@ public class QuestTracker {
                     + needed + "小时";
         }
 
-        // 打招呼/发消息/聊天
         if (key.contains("打招呼")
                 || key.contains("打个招呼")
                 || key.contains("发消息")
                 || key.contains("聊天")) {
             int cur = getCounter(
                     player, "CHAT");
-            return "§7聊天: §e" + cur + "/1";
+            return "§7聊天: §e"
+                    + cur + "/1";
         }
 
-        // 破坏/放置方块
         if ((key.contains("破坏")
                 || key.contains("放置"))
                 && key.contains("方块")) {
@@ -1606,20 +1588,17 @@ public class QuestTracker {
                 && key.contains("登录")) {
             int needed = parseNumberFromText(key);
             if (needed <= 0) needed = 1;
-            int totalDays = getIntField(
-                    player,
-                    "total_checkin_days");
-            if (totalDays == 0) {
-                totalDays = getIntField(
-                        player,
-                        "checkin_streak");
-            }
+            Object val =
+                    getDb().getField(
+                            player,
+                            "checkin_streak");
+            int streak = val instanceof Number
+                    ? ((Number) val).intValue()
+                    : 0;
             return "§7连续登录: §e"
-                    + totalDays + "/" + needed + "天";
+                    + streak + "/" + needed + "天";
         }
 
-
-        // 挖矿
         if (key.startsWith("MINE:")) {
             String[] parts = key.split(":");
             if (parts.length >= 3) {
@@ -1634,7 +1613,6 @@ public class QuestTracker {
             }
         }
 
-        // 击杀生物
         if (key.startsWith("KILL:")) {
             String[] parts = key.split(":");
             if (parts.length >= 3) {
@@ -1649,7 +1627,6 @@ public class QuestTracker {
             }
         }
 
-        // 击杀玩家
         if (key.startsWith("KILL_PLAYER")) {
             String[] parts = key.split(":");
             int needed = parts.length >= 2
@@ -1660,7 +1637,6 @@ public class QuestTracker {
                     + cur + "/" + needed;
         }
 
-        // 合成
         if (key.startsWith("CRAFT")) {
             String[] parts = key.split(":");
             int needed = parts.length >= 2
@@ -1671,7 +1647,6 @@ public class QuestTracker {
                     + cur + "/" + needed;
         }
 
-        // 钓鱼
         if (key.startsWith("FISH")) {
             String[] parts = key.split(":");
             int needed = parts.length >= 2
@@ -1682,7 +1657,6 @@ public class QuestTracker {
                     + cur + "/" + needed;
         }
 
-        // 在线时长(毫秒)
         if (key.startsWith("PLAYTIME")) {
             String[] parts = key.split(":");
             long needed = parts.length >= 2
@@ -1694,7 +1668,7 @@ public class QuestTracker {
                     + formatMs(cur) + "/"
                     + formatMs(needed);
         }
-        // 上报村庄
+
         if (key.contains("上报")
                 && key.contains("村庄")) {
             int needed = parseNumberFromText(key);
@@ -1705,7 +1679,6 @@ public class QuestTracker {
                     + cur + "/" + needed;
         }
 
-        // 探索村庄
         if (key.contains("探索")
                 && key.contains("村庄")) {
             int cur = getCounter(
@@ -1713,40 +1686,28 @@ public class QuestTracker {
             return "§7探索村庄: §e"
                     + cur + "/1";
         }
-        // ===== 修改后 =====
+
         if (key.contains("7天")
                 || key.contains("七天")) {
             int needed = parseNumberFromText(key);
             if (needed <= 0) needed = 1;
-
-            // 优先使用 total_checkin_days（累计天数）
-            int totalDays = getIntField(
+            int streak = getIntField(
                     player,
-                    "total_checkin_days");
-            if (totalDays == 0) {
-                totalDays = getIntField(
-                        player,
-                        "checkin_streak");
-            }
-            if (totalDays == 0) {
-                totalDays = getIntField(
+                    "checkin_streak");
+            if (streak == 0) {
+                streak = getIntField(
                         player, "streak");
             }
-
-            plugin.getLogger().info(
-                    "[QuestTracker] 登录检测: "
-                            + player
-                            + " 需要=" + needed
-                            + " 实际(累计天数)=" + totalDays);
+            if (streak == 0) {
+                streak = getIntField(
+                        player,
+                        "total_checkin_days");
+            }
             return "§7近7天登录: §e"
-                    + totalDays + "/"
+                    + streak + "/"
                     + needed + "天";
-
-
         }
 
-
-        // 完成新手任务全部
         if (key.contains("新手任务")
                 && key.contains("全部")) {
             List<QuestFile> quests =
@@ -1763,7 +1724,6 @@ public class QuestTracker {
                     + quests.size();
         }
 
-        // 完成主线任务全部
         if (key.contains("主线任务")
                 && key.contains("全部")) {
             List<QuestFile> quests =
@@ -1782,23 +1742,7 @@ public class QuestTracker {
 
         return "§7" + key;
     }
-    private int getIntField(
-            String player, String field) {
-        try {
-            Object val = getDb().getField(
-                    player, field);
-            if (val instanceof Number) {
-                return ((Number) val).intValue();
-            }
-            if (val != null) {
-                return Integer.parseInt(
-                        val.toString().trim());
-            }
-        } catch (Exception e) {
-            // 忽略
-        }
-        return 0;
-    }
+
 
     public List<String> checkInBiome(
             String player,
@@ -2051,32 +1995,42 @@ public class QuestTracker {
             return false;
 
         String key = stripOptional(rawCond);
-        // 打卡群系
+
+        // 无条件类文本直接通过
+        if (key.equals("无前级条件")
+                || key.equals("无条件")
+                || key.equals("无")
+                || key.equals("none")
+                || key.equals("无需条件")
+                || key.equals("无解锁条件")) {
+            return true;
+        }
+
         if (key.contains("打卡")
                 && (key.contains("群系")
                 || key.contains("风景点"))) {
-
             String biome =
                     extractBiome(key);
-
             if ("ALL".equals(biome)) {
                 int total = getCounter(
                         player, "biome_ALL");
                 return total >= 1;
             }
-
             if (!biome.isEmpty()) {
                 int catCount = getCounter(
                         player,
                         "biomecat_" + biome);
-                return catCount >= 1;  // ← 加这一行
+                return catCount >= 1;
             }
-
             return getCounter(
                     player, "biome_ALL") >= 1;
         }
 
-        // 注册登录
+        if (key.contains("完成")
+                && key.contains("阶段")) {
+            return checkStageDependency(
+                    player, key);
+        }
 
         if ("完成注册登录".equals(key)) {
             return getDb() != null
@@ -2084,8 +2038,6 @@ public class QuestTracker {
                     player);
         }
 
-
-        // 绑定邮箱
         if (key.contains("绑定Email")
                 || key.contains("绑定邮箱")) {
             Object val =
@@ -2095,7 +2047,6 @@ public class QuestTracker {
                     && !val.toString().isEmpty();
         }
 
-        // 在线时间
         if (key.contains("在线")
                 && key.contains("小时")) {
             int needed = parseNumberFromText(key);
@@ -2105,7 +2056,6 @@ public class QuestTracker {
             return cur >= needed * 3600000L;
         }
 
-        // 打招呼/发消息/聊天
         if (key.contains("打招呼")
                 || key.contains("打个招呼")
                 || key.contains("发消息")
@@ -2114,7 +2064,6 @@ public class QuestTracker {
                     player, "CHAT") >= 1;
         }
 
-        // 破坏/放置方块
         if ((key.contains("破坏")
                 || key.contains("放置"))
                 && key.contains("方块")) {
@@ -2127,25 +2076,20 @@ public class QuestTracker {
             return total >= needed;
         }
 
-        // 连续登录
         if (key.contains("连续")
                 && key.contains("登录")) {
             int needed = parseNumberFromText(key);
             if (needed <= 0) needed = 1;
-            // 优先用累计天数，因为
-            // streak 可能大于 total（数据不一致时）
-            int totalDays = getIntField(
-                    player,
-                    "total_checkin_days");
-            if (totalDays == 0) {
-                totalDays = getIntField(
-                        player,
-                        "checkin_streak");
-            }
-            return totalDays >= needed;
+            Object val =
+                    getDb().getField(
+                            player,
+                            "checkin_streak");
+            int streak = val instanceof Number
+                    ? ((Number) val).intValue()
+                    : 0;
+            return streak >= needed;
         }
 
-        // 挖矿
         if (key.startsWith("MINE:")) {
             String[] p = key.split(":");
             if (p.length >= 3) {
@@ -2155,7 +2099,6 @@ public class QuestTracker {
             }
         }
 
-        // 击杀生物
         if (key.startsWith("KILL:")) {
             String[] p = key.split(":");
             if (p.length >= 3) {
@@ -2165,7 +2108,6 @@ public class QuestTracker {
             }
         }
 
-        // 击杀玩家
         if (key.startsWith("KILL_PLAYER")) {
             String[] p = key.split(":");
             int n = p.length >= 2
@@ -2174,7 +2116,6 @@ public class QuestTracker {
                     "KILL_PLAYER") >= n;
         }
 
-        // 合成
         if (key.startsWith("CRAFT")) {
             String[] p = key.split(":");
             int n = p.length >= 2
@@ -2183,7 +2124,6 @@ public class QuestTracker {
                     player, "CRAFT") >= n;
         }
 
-        // 钓鱼
         if (key.startsWith("FISH")) {
             String[] p = key.split(":");
             int n = p.length >= 2
@@ -2192,7 +2132,6 @@ public class QuestTracker {
                     player, "FISH") >= n;
         }
 
-        // 在线时长
         if (key.startsWith("PLAYTIME")) {
             String[] p = key.split(":");
             long n = p.length >= 2
@@ -2200,69 +2139,27 @@ public class QuestTracker {
             return getCounterLong(player,
                     "PLAYTIME") >= n;
         }
-        // 上报村庄
+
         if (key.contains("上报")
                 && key.contains("村庄")) {
             int needed = parseNumberFromText(key);
             if (needed <= 0) needed = 1;
-            int cur = getCounter(
-                    player, "REPORT_VILLAGE");
-            return cur >= needed;
+            return getCounter(
+                    player, "REPORT_VILLAGE")
+                    >= needed;
         }
 
-        // 探索村庄
         if (key.contains("探索")
                 && key.contains("村庄")) {
             return getCounter(
                     player, "REPORT_VILLAGE")
                     >= 1;
         }
-        // 近7天登录记录
+
         if (key.contains("7天")
                 || key.contains("七天")) {
             int needed = parseNumberFromText(key);
             if (needed <= 0) needed = 1;
-            // 优先使用 total_checkin_days
-            int totalDays = getIntField(
-                    player,
-                    "total_checkin_days");
-            if (totalDays == 0) {
-                totalDays = getIntField(
-                        player,
-                        "checkin_streak");
-            }
-            if (totalDays == 0) {
-                totalDays = getIntField(
-                        player, "streak");
-                return totalDays >= needed;
-
-            }
-
-
-        // 诊断：读取数据库所有字段
-            try {
-                var user = getDb().getUser(
-                        player);
-                if (user != null) {
-                    plugin.getLogger().info(
-                            "[QuestTracker] "
-                                    + "登录诊断 "
-                                    + player + ": "
-                                    + user.toString());
-                } else {
-                    plugin.getLogger().info(
-                            "[QuestTracker] "
-                                    + "登录诊断: "
-                                    + player
-                                    + " getUser返回null");
-                }
-            } catch (Exception e) {
-                plugin.getLogger().info(
-                        "[QuestTracker] "
-                                + "登录诊断异常: "
-                                + e.getMessage());
-            }
-
             int streak = getIntField(
                     player,
                     "checkin_streak");
@@ -2275,17 +2172,9 @@ public class QuestTracker {
                         player,
                         "total_checkin_days");
             }
-
-            plugin.getLogger().info(
-                    "[QuestTracker] 登录检测: "
-                            + player
-                            + " 需要=" + needed
-                            + " 实际=" + streak);
-
             return streak >= needed;
         }
 
-        // 完成新手任务全部内容
         if (key.contains("新手任务")
                 && key.contains("全部")) {
             List<QuestFile> quests =
@@ -2299,7 +2188,6 @@ public class QuestTracker {
             return true;
         }
 
-        // 完成主线任务全部内容
         if (key.contains("主线任务")
                 && key.contains("全部")) {
             List<QuestFile> quests =
@@ -2362,6 +2250,23 @@ public class QuestTracker {
                 player, "cnt_" + key);
         if (val instanceof Number) {
             return ((Number) val).intValue();
+        }
+        return 0;
+    }
+    private int getIntField(
+            String player, String field) {
+        try {
+            Object val = getDb().getField(
+                    player, field);
+            if (val instanceof Number) {
+                return ((Number) val).intValue();
+            }
+            if (val != null) {
+                return Integer.parseInt(
+                        val.toString().trim());
+            }
+        } catch (Exception e) {
+            // 忽略
         }
         return 0;
     }

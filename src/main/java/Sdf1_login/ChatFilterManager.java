@@ -335,12 +335,42 @@ public class ChatFilterManager {
                     "[\\s.,;!?，。；！？、）》」』】"
                             + "\\]\\[\\(（]+$",
                     "");
-            if (!url.isEmpty())
-                urls.add(url);
+            if (!url.isEmpty()) urls.add(url);
         }
         return urls;
     }
 
+    public boolean isWhitelisted(String url) {
+        String clean = url
+                .replaceAll("^https?://", "")
+                .toLowerCase();
+        int colon = clean.indexOf(':');
+        int slash = clean.indexOf('/');
+        if (colon > 0 && (slash < 0
+                || colon < slash)) {
+            clean = clean.substring(0, colon);
+        }
+        slash = clean.indexOf('/');
+        if (slash > 0) {
+            clean = clean.substring(0, slash);
+        }
+        for (String entry : whitelistUrls) {
+            String e = entry.toLowerCase().trim();
+            if (e.startsWith("*.")) {
+                String suffix = e.substring(1);
+                if (clean.endsWith(suffix)
+                        || clean.equals(
+                        suffix.substring(1)))
+                    return true;
+            } else {
+                if (clean.equals(e)
+                        || clean.endsWith(
+                        "." + e))
+                    return true;
+            }
+        }
+        return false;
+    }
 
     public boolean isLikelyDomain(String url) {
         int lastDot = url.lastIndexOf('.');

@@ -25,7 +25,10 @@ public class ConfigManager {
     public long smtpVerifyExpire = 0;
     public long smtpLastSendTime = 0;
     public String smtpConfiguringPlayer = "";
-    public String updatePlatform = "gh";
+    public String broadcastServerUrl = "";
+    public int httpPort = 8080;
+    public String garbageTag= "admin";
+
 
 
     public ConfigManager(File dataFolder) {
@@ -321,11 +324,8 @@ public class ConfigManager {
         garbageMaxRounds = parseInt(
                 m.getOrDefault("垃圾站_保留轮数",
                         "1"), 1);
-
-
+        // loadSettings() 末尾添加：
     }
-
-
     public void saveSettings() {
         File file = new File(dataFolder, "插件设置.txt");
         List<String> L = new ArrayList<>();
@@ -344,8 +344,7 @@ public class ConfigManager {
         L.add("垃圾站_清理间隔秒=" + garbageInterval);
         L.add("垃圾站_保留轮数=" + garbageMaxRounds);
 
-
-        writeLines(file, L);
+            writeLines(file, L);
     }
     public double providerPointsPerScore = 2.0;
     public int baseEconomyReward = 100;
@@ -375,6 +374,9 @@ public class ConfigManager {
         L.add("垃圾站_启用=true");
         L.add("垃圾站_清理间隔秒=300");
         L.add("垃圾站_保留轮数=1");
+        L.add("# ---- 资源包(HTTP) ----");
+        L.add("resource-pack-url=");
+        L.add("http-port=8080");
 
 
         writeLines(f, L);

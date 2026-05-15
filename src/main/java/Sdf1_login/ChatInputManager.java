@@ -818,6 +818,7 @@ public class ChatInputManager {
 
             default:
                 reset(p);
+                return;
         }
     }
 }

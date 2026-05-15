@@ -213,18 +213,6 @@ public class DatabaseManager {
                     + ")");
             safeAdd(st, "menu_snowball",
                     "INTEGER DEFAULT 1");
-            // ===== 独立任务进度表 =====
-            st.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS "
-                            + "quest_progress ("
-                            + "player_name TEXT NOT NULL, "
-                            + "condition_key TEXT NOT NULL, "
-                            + "progress_value INTEGER DEFAULT 0, "
-                            + "completed INTEGER DEFAULT 0, "
-                            + "PRIMARY KEY (player_name, "
-                            + "condition_key)"
-                            + ")");
-
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
         } catch (Exception e) {
@@ -873,8 +861,9 @@ public class DatabaseManager {
         return list;
     }
 
-    /*
-      获取指定ID的备份数据
+
+    /**
+     * 获取指定ID的备份数据
      */
     public String[] getInventoryBackupById(
             int backupId) {

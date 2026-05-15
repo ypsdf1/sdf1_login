@@ -47,8 +47,15 @@ public class InviteManager {
                 invitedBy, "monthly_invite_count",
                 count + 1);
 
-        double rate = plugin.getCommission()
-                .getCommissionRate(invitedBy);
+        double rate = 0.10;
+        if (count + 1 > 15) {
+            rate = 0.60;
+        } else if (count + 1 > 10) {
+            rate = 0.35;
+        } else if (count + 1 > 5) {
+            rate = 0.15;
+        }
+
         int bonus = (int) (1 * rate);
         if (bonus > 0) {
             plugin.getDb().addPoints(invitedBy, bonus);
