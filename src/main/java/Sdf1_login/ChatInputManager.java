@@ -36,7 +36,8 @@ public class ChatInputManager {
         TICKET_ADMIN_TYPE,
         TICKET_ADMIN_TITLE,
         TICKET_ADMIN_DESC,
-        TICKET_ADMIN_PROVIDER
+        TICKET_ADMIN_PROVIDER,
+        BACK_CHECK_ECONOMY_CONFIRM,
     }
 
     public static class PlayerState {
@@ -62,6 +63,11 @@ public class ChatInputManager {
 
     public void reset(Player p) {
         states.remove(p.getName());
+    }
+    public boolean isInFlow(Player p) {
+        PlayerState state = states.get(p.getName());
+        return state != null
+                && state.type != InputType.NONE;
     }
 
     public void handleInput(Player p, String msg,
@@ -542,23 +548,32 @@ public class ChatInputManager {
             }
 
             case BACK_CHECKIN: {
-                int cost = 20;
-                if (!mainPlugin.getDb()
-                        .deductPoints(
-                                p.getName(), cost)) {
-                    p.sendMessage(
-                            "§c积分不足，补签需 "
-                                    + cost + " 积分");
-                    reset(p);
+                String result =
+                        mainPlugin.getCheckIn()
+                                .backCheckIn(p, msg);
+                if (result == null) {
+                    // 等待选择（NEED_CONFIRM）
                     return;
                 }
-                p.sendMessage(
-                        "§a补签成功！扣除 "
-                                + cost + " 积分。"
-                                + "日期: " + msg);
+                if (result.startsWith(
+                        "NEED_CONFIRM:")) {
+                    String[] parts =
+                            result.split(":");
+                    // 存储到Main的Map
+                    mainPlugin.pendingBackCheck.put(
+                            p.getName(),
+                            parts[1] + ":" + parts[2]);
+                    return;
+                }
+                if (result.startsWith("§c")) {
+                    p.sendMessage(result);
+                } else {
+                    p.sendMessage(result);
+                }
                 reset(p);
                 return;
             }
+
 
             case INVITE_INPUT_CODE: {
                 String code = msg.trim();

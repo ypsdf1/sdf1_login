@@ -1,6 +1,6 @@
 package Sdf1_login;
 
-import java.io.File;
+
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -14,7 +14,6 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
-import org.bukkit.SoundCategory;
 
 
 import net.milkbowl.vault.economy.Economy;
@@ -48,12 +47,11 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.scheduler.BukkitRunnable;
-// 在现有import区域最后添加：
-import java.util.HashSet;
-import java.util.Collections;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.player.PlayerFishEvent;
+import java.util.HashMap;
+
 
 
 public class Main extends JavaPlugin
@@ -90,6 +88,23 @@ public class Main extends JavaPlugin
             new ConcurrentHashMap<>();
     // 在 private WelcomeManager welcome; 字段（若不存在）添加：
     private WelcomeManager welcome;
+    private final Set<String> pendingAdminAuth =
+            new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    /*
+    资源包下载部分控制，不经过RadioDownloadListener的熔断控制
+     */
+    private RadioDownloadListener radioDL;
+    private final Set<String> chatInputActive =
+            ConcurrentHashMap.newKeySet();
+    // 补签确认：玩家名 → "日期:总积分"
+    public final Map<String, String>
+            pendingBackCheck =
+            new HashMap<>();
+
+
+
+
+
 
 
     private final Set<String> loggedIn =
@@ -125,6 +140,9 @@ public class Main extends JavaPlugin
             time = t;
         }
     }
+    // 待删除的玩家名（仅保留最后一个）
+    private String pendingDeleteName = null;
+    private BukkitRunnable pendingDeleteTask = null;
 
     private final Map<String, PwdRollback>
             pwdRollback =
@@ -228,8 +246,9 @@ public class Main extends JavaPlugin
     public void onEnable() {
         radio = new RadioManager(this);
         radio.init();
-        getServer().getPluginManager().registerEvents(
-                new RadioDownloadListener(this), this);
+        radioDL = new RadioDownloadListener(this);
+        getServer().getPluginManager()
+                .registerEvents(radioDL, this);
         getDataFolder().mkdirs();
         config = new ConfigManager(getDataFolder());
         config.loadMessages();
@@ -249,6 +268,7 @@ public class Main extends JavaPlugin
         points = new PointsManager(this);
         gui = new GUIManager(this);
         chatInput = new ChatInputManager();
+
         verification = new VerificationManager(this);
         ipGroup = new IPGroupManager(this,
                 config.maxAccountsPerIP);
@@ -338,11 +358,22 @@ public class Main extends JavaPlugin
 
     @Override
     public void onDisable() {
+        // 取消未执行的删除任务
+        if (pendingDeleteTask != null) {
+            pendingDeleteTask.cancel();
+            pendingDeleteTask = null;
+            getLogger().info(
+                    "[Sdf1_login] 服务器关闭，"
+                            + "取消待删除: "
+                            + pendingDeleteName);
+            pendingDeleteName = null;
+        }
         if (db != null) db.close();
         if (garbage != null) garbage.close();
         if (questTracker != null)
             questTracker.shutdown();
     }
+
 
 
     private void setupEconomy() {
@@ -811,7 +842,6 @@ public class Main extends JavaPlugin
         invite.onInviteeCheckIn(p.getName());
         return true;
     }
-
     public void openTaskPanel(Player p) {
         Inventory g = Bukkit.createInventory(
                 null, 27, "§6§l任务面板");
@@ -824,21 +854,22 @@ public class Main extends JavaPlugin
         }
         for (int i = 0; i < 27; i++)
             g.setItem(i, gl);
-        Map<String, Object> user =
-                db.getUser(p.getName());
-        int stage = ((Number) user.getOrDefault(
-                "gift_stage", 0)).intValue();
-        String claimed = (String) user.getOrDefault(
-                "gift_claimed", "");
-        g.setItem(11, mkItem(Material.BOOK,
-                "§e新人礼包进度",
-                "§7当前阶段: §e" + stage,
-                "§7已领取: §a" + (claimed.isEmpty()
-                        ? "无" : claimed)));
-        g.setItem(15, mkItem(Material.CLOCK,
-                "§b签到", "§7今日签到获取积分"));
+
+        // 打卡按钮（独立，slot 11）
+        g.setItem(11, mkItem(Material.COMPASS,
+                "§b§l群系打卡",
+                "§7在不同群系打卡完成任务",
+                "§7打卡范围: 32格去重"));
+
+        // 新人任务（slot 15）
+        g.setItem(15, mkItem(Material.BOOK,
+                "§e新人任务",
+                "§7完成新手阶段获取奖励"));
+
+        // 返回
         g.setItem(22, mkItem(Material.ARROW,
                 "§7返回"));
+
         p.openInventory(g);
     }
 
@@ -1207,6 +1238,15 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         String ip = getPlayerIP(p);
+
+        // 强制重发资源包（清掉客户端拒绝记录）
+        Bukkit.getScheduler()
+                .runTaskLater(this, () -> {
+                    if (p.isOnline()
+                            && radio != null) {
+                        radio.sendResourcePack(p);
+                    }
+                }, 20L);
         // 重置聊天输入状态（防止上次退出时残留）
         chatInput.reset(p);
         if (needsPasswordChange.contains(name))
@@ -1277,6 +1317,7 @@ public class Main extends JavaPlugin
         hideInventoryDelayed(p, 0);
         // [ADDED] 发送资源包
         if (radio != null) radio.sendResourcePack(p);
+
         // [ADDED] 发送资源包（延迟5秒确保客户端就绪）
         if (radio != null) {
             final Player jp = p;
@@ -1390,6 +1431,12 @@ public class Main extends JavaPlugin
         joinTime.remove(p.getUniqueId());
         joinLoc.remove(p.getUniqueId());
         needsPasswordChange.remove(name);
+        // [ADDED] 清除 Radio 熔断状态
+        // [ADDED] 清除 Radio 熔断状态
+        if (radioDL != null)
+            radioDL.onPlayerQuit(
+                    p.getUniqueId());
+        pendingAdminAuth.remove(name);
     }
 
     private static final String MENU_SNOWBALL_TAG =
@@ -1558,6 +1605,26 @@ public class Main extends JavaPlugin
     }
 
     @EventHandler
+    public void onBlockPlace2(BlockPlaceEvent e) {
+        Player p = e.getPlayer();
+        if (isFrozen(p)) return;
+        afk.recordAction(p.getUniqueId());
+        if (questTracker != null)
+            questTracker.onBlockPlaced(
+                    p.getName(),
+                    e.getBlock().getType().name());
+    }
+
+    @EventHandler
+    public void onChatTrack(AsyncPlayerChatEvent e) {
+        if (isFrozen(e.getPlayer())) return;
+        if (questTracker != null)
+            questTracker.onPlayerChat(
+                    e.getPlayer().getName());
+    }
+
+
+    @EventHandler
     public void onBlockPlace(BlockPlaceEvent e) {
         if (isFrozen(e.getPlayer()))
             e.setCancelled(true);
@@ -1637,148 +1704,210 @@ public class Main extends JavaPlugin
             questTracker.onFishCaught(p.getName());
     }
 
-    @EventHandler(priority = EventPriority.LOWEST)
+    // [ADDED] 村民交易追踪
+    @EventHandler(priority = EventPriority.MONITOR,
+            ignoreCancelled = true)
+    public void onVillagerTrade(InventoryClickEvent e) {
+        if (!(e.getWhoClicked() instanceof Player))
+            return;
+        Player p = (Player) e.getWhoClicked();
+        if (isFrozen(p)) return;
+        if (questTracker == null) return;
+
+        Inventory topInv =
+                e.getView().getTopInventory();
+        if (topInv == null
+                || topInv.getHolder() == null)
+            return;
+        if (!(topInv.getHolder()
+                instanceof org.bukkit.entity.Villager))
+            return;
+
+        // 结果槽 = 2
+        if (e.getRawSlot() != 2) return;
+        ItemStack result = topInv.getItem(2);
+        if (result == null
+                || result.getType() == Material.AIR)
+            return;
+
+        final Player fp = p;
+        Bukkit.getScheduler().runTaskLater(this,
+                () -> {
+                    if (fp.isOnline())
+                        questTracker.onVillagerTrade(
+                                fp.getName());
+                }, 2L);
+    }
+
+
+    @EventHandler
     public void onChat(AsyncPlayerChatEvent e) {
         Player p = e.getPlayer();
         String msg = e.getMessage();
 
-        if (chatInput.getState(p).type
-                != ChatInputManager.InputType.NONE) {
-            e.setCancelled(true);
-            ChatInputManager.InputType inputType =
-                    chatInput.getState(p).type;
-            if (ticket != null
-                    && ticket.handleChatInput(
-                    p, msg, inputType)) {
-                return;
-            }
-            chatInput.handleInput(p, msg, this);
-            return;
-        }
-
+        // ===== 冻结检查 =====
         if (isFrozen(p)) {
             e.setCancelled(true);
             return;
         }
-        // [ADDED] 任务聊天计数
-        if (questTracker != null)
-            questTracker.onPlayerChat(p.getName());
 
-        if (chatFilter == null) return;
-        if (chatFilter.isPlayerWhitelisted(
-                p.getName())) return;
-        if (chatFilter.isMuted(p.getName())) {
+        // ===== 聊天输入流程（改密码/绑邮箱等） =====
+        if (chatInput.isInFlow(p)) {
             e.setCancelled(true);
-            p.sendMessage(
-                    chatFilter.msg("chat_muted"));
+            chatInput.handleInput(p, msg, this);
             return;
         }
 
+        // ===== 管理员密码验证 =====
+        if (pendingAdminAuth.contains(p.getName())) {
+            e.setCancelled(true);
+            pendingAdminAuth.remove(p.getName());
+            if (msg.equals(config.adminPassword)) {
+                p.sendMessage("§a验证通过");
+                p.sendMessage("§7输入的密码已验证");
+            } else {
+                p.sendMessage("§c密码错误");
+            }
+            return;
+        }
+
+        // ===== 聊天过滤 - 开关检查 =====
+        if (!chatFilter.isEnabled()) return;
+
+        // ===== 白名单玩家 =====
+        if (chatFilter.isPlayerWhitelisted(
+                p.getName())) return;
+
+        // ===== 禁言检查 =====
+        if (chatFilter.isMuted(p.getName())) {
+            e.setCancelled(true);
+            p.sendMessage(chatFilter.msg(
+                    "chat_muted"));
+            return;
+        }
+
+        // ===== URL检测 =====
         List<String> urls =
                 chatFilter.extractUrls(msg);
         if (urls.isEmpty()) return;
-        for (String u : urls) {
-            if (chatFilter.isWhitelisted(u))
-                continue;
 
-            // [FIX] 增强域名检测：支持中文域名
-            if (!isLikelyUrl(u)) continue;
+        // 过滤白名单
+        List<String> blocked = new ArrayList<>();
+        for (String url : urls) {
+            if (!chatFilter.isWhitelisted(url)) {
+                blocked.add(url);
+            }
+        }
+        if (blocked.isEmpty()) return;
 
-            e.setCancelled(true);
-            chatFilter.incrementViolation(
-                    p.getName());
-            int count = chatFilter
-                    .getViolationCount(p.getName());
+        // 取消消息
+        e.setCancelled(true);
 
-            p.sendMessage(chatFilter
-                    .msg("chat_url_blocked")
-                    .replace("{url}", u));
-            p.sendMessage(chatFilter
-                    .msg("chat_url_violation")
-                    .replace("{count}",
-                            String.valueOf(count)));
+        for (String url : blocked) {
+            p.sendMessage(chatFilter.msg(
+                    "chat_url_blocked",
+                    "url", url));
+        }
 
-            chatFilter.applyPunishment(p, count);
+        // 增加违规计数
+        chatFilter.incrementViolation(p.getName());
+        int count = chatFilter.getViolationCount(
+                p.getName());
+        p.sendMessage(chatFilter.msg(
+                "chat_url_violation",
+                "count", String.valueOf(count)));
 
-            if (chatFilter.isNotifyAdmin()) {
-                String tag = config.adminTag;
-                for (Player op :
-                        Bukkit.getOnlinePlayers()) {
-                    if (op.getScoreboardTags()
-                            .contains(tag)
-                            && !op.equals(p)) {
-                        op.sendMessage(chatFilter
-                                .msg("chat_url_admin_notify")
-                                .replace("{player}",
-                                        p.getName())
-                                .replace("{url}", u)
-                                .replace("{count}",
-                                        String.valueOf(
-                                                count)));
-                    }
+        // 通知管理员
+        if (chatFilter.isNotifyAdmin()) {
+            String notify = chatFilter.msg(
+                    "chat_url_admin_notify",
+                    "player", p.getName(),
+                    "url", blocked.get(0),
+                    "count", String.valueOf(count));
+            for (Player op :
+                    Bukkit.getOnlinePlayers()) {
+                if (op.hasPermission(
+                        "sdf1.admin")
+                        || op.isOp()) {
+                    op.sendMessage(notify);
                 }
             }
-            if (chatFilter.isNotifyAll()) {
-                Bukkit.broadcastMessage(
-                        chatFilter
-                                .msg("chat_url_broadcast")
-                                .replace("{player}",
-                                        p.getName()));
-            }
         }
+
+        // 通报
+        if (chatFilter.isNotifyAll()) {
+            Bukkit.broadcastMessage(
+                    chatFilter.msg(
+                            "chat_url_broadcast",
+                            "player",
+                            p.getName()));
+        }
+
+        // 处罚
+        chatFilter.applyPunishment(p, count);
+        // ===== 补签确认 =====
+        if (pendingBackCheck.containsKey(
+                p.getName())) {
+            e.setCancelled(true);
+            String data = pendingBackCheck
+                    .remove(p.getName());
+            String[] parts = data.split(":");
+            String dateStr = parts[0];
+            int totalPoints =
+                    Integer.parseInt(parts[1]);
+
+            if (msg.trim().equals("1")
+                    || msg.trim()
+                    .equalsIgnoreCase("yes")
+                    || msg.trim().contains("是")
+                    || msg.trim().contains("愿意")) {
+                int extra = totalPoints - 10;
+                if (extra > 0
+                        && !db.deductPoints(
+                        p.getName(), extra)) {
+                    db.addPoints(p.getName(), 10);
+                    p.sendMessage("§c积分也不足，"
+                            + "10积分已退还");
+                    return;
+                }
+                checkIn.doBackCheckIn(p, dateStr);
+                p.sendMessage("§a补签成功！日期: "
+                        + dateStr + " §7(扣除"
+                        + totalPoints
+                        + "积分，免经济)");
+                playSuccessSound(p);
+            } else {
+                db.addPoints(p.getName(), 10);
+                p.sendMessage("§c补签已取消，"
+                        + "10积分已退还");
+            }
+            return;
+        }
+
     }
 
-    /**
-     * 增强URL检测：支持中文域名+新后缀
-     * 匹配 http(s)://xxx 或裸域名 xxx.xxx
-     */
-    private boolean isLikelyUrl(String text) {
-        if (text.toLowerCase().startsWith("http://")
-                || text.toLowerCase()
-                .startsWith("https://")) {
-            return true;
-        }
-        boolean hasChinese = false;
-        for (int i = 0; i < text.length(); i++) {
-            int code = text.codePointAt(i);
-            if (code >= 0x4E00 && code <= 0x9FFF) {
-                hasChinese = true;
-                break;
-            }
-            if (code >= 0x3400 && code <= 0x4DBF) {
-                hasChinese = true;
-                break;
-            }
-        }
-        String[] commonTlds = {
-                ".com", ".net", ".org", ".cn",
-                ".top", ".xyz", ".cc", ".icu",
-                ".online", ".site", ".club",
-                ".vip", ".shop", ".live",
-                ".app", ".dev", ".me", ".io",
-                ".co", ".tk", ".ml"
-        };
-        String lower = text.toLowerCase().trim();
-        for (String tld : commonTlds) {
-            if (lower.contains(tld)) return true;
-        }
-        if (hasChinese
-                && lower.matches(
-                ".*\\.[a-z]{2,}.*")) {
-            return true;
-        }
-        if (lower.matches(
-                "[\\w\\u4e00-\\u9fff"
-                        + "\\u3400-\\u4dbf"
-                        + "\\.-]+\\.[a-z]{2,}")) {
-            return true;
-        }
-        return false;
-    }
 
     // ===== Inventory Click =====
     @EventHandler
-    public void onInvClick(InventoryClickEvent e) {
+    public void onInvClick(
+            InventoryClickEvent e) {
+
+        // 防止越界：检查slot是否在容器范围内
+        if (e.getClickedInventory() == null) {
+            return;
+        }
+        if (e.getSlot() < 0
+                || e.getSlot()
+                >= e.getClickedInventory()
+                .getSize()) {
+            return;
+        }
+        // 防止非本插件容器触发
+        if (e.getInventory().getSize() != 54
+                && e.getInventory().getSize() != 27) {
+            return;
+        }
+
         if (!(e.getWhoClicked() instanceof Player))
             return;
         Player p = (Player) e.getWhoClicked();
@@ -1814,22 +1943,88 @@ public class Main extends JavaPlugin
             ticket.handleClick(p, title, slot);
             return;
         }
-
+        // 垃圾回收站
         // 垃圾回收站
         if (title.equals("§6§l垃圾回收站")) {
-            if (slot < 0 || slot >= 54) return;
-            e.setCancelled(true);
+
+            // 玩家背包普通点击 → 不拦截
+            if (e.getClickedInventory() != null
+                    && e.getClickedInventory()
+                    == p.getInventory()
+                    && !e.isShiftClick()) {
+                return;
+            }
+
+            // Shift+Click 存入（玩家背包→垃圾站）
+            if (e.isShiftClick()
+                    && e.getClickedInventory() != null
+                    && e.getClickedInventory()
+                    == p.getInventory()
+                    && e.getCurrentItem() != null
+                    && e.getCurrentItem().getType()
+                    != Material.AIR
+                    && !isMenuSnowball(
+                    e.getCurrentItem())) {
+                e.setCancelled(true);
+                long now = System.currentTimeMillis();
+                Long last = garbageBusy
+                        .get(p.getUniqueId());
+                if (last != null
+                        && now - last < 200L) {
+                    return;
+                }
+                garbageBusy.put(
+                        p.getUniqueId(), now);
+                ItemStack toSave =
+                        e.getCurrentItem().clone();
+                p.getInventory()
+                        .setItem(e.getSlot(), null);
+                garbage.saveItem(toSave);
+                Bukkit.getScheduler()
+                        .runTaskLater(this, () -> {
+                            garbage.openRecyclePage(
+                                    p, 0);
+                        }, 1L);
+                return;
+            }
 
             // 功能格 49-53
             if (slot >= 49 && slot <= 53) {
+                e.setCancelled(true);
                 garbage.handleClick(p, title, slot);
                 return;
             }
 
+            // 玩家背包区域（非Shift）→ 不拦截
+            if (slot >= 54 && !e.isShiftClick()) {
+                return;
+            }
+
+            // ===== 光标点击存入（点击GUI空格） =====
+            if (slot < 54
+                    && e.getCursor() != null
+                    && e.getCursor().getType()
+                    != Material.AIR
+                    && !isMenuSnowball(
+                    e.getCursor())) {
+                e.setCancelled(true);
+                ItemStack toSave =
+                        e.getCursor().clone();
+                p.getOpenInventory()
+                        .setCursor(null);
+                garbage.saveItem(toSave);
+                Bukkit.getScheduler()
+                        .runTaskLater(this, () -> {
+                            garbage.openRecyclePage(
+                                    p, 0);
+                        }, 2L);
+                return;
+            }
+
+            // 取出物品（点击有ID的物品）
+            e.setCancelled(true);
             ItemStack inSlot =
                     e.getInventory().getItem(slot);
-
-            // ===== 取出物品（点击垃圾箱格子） =====
             if (inSlot != null
                     && inSlot.hasItemMeta()
                     && inSlot.getItemMeta().hasLore()) {
@@ -1847,10 +2042,13 @@ public class Main extends JavaPlugin
                         if (garbage.removeItem(dbId)) {
                             ItemStack give =
                                     inSlot.clone();
-                            ItemMeta gm =
-                                    give.getItemMeta();
+                            ItemMeta gm = give.getItemMeta();
+                            if (gm == null) gm =
+                                    Bukkit.getItemFactory()
+                                            .getItemMeta(give.getType());
                             gm.setLore(null);
                             give.setItemMeta(gm);
+
                             p.getInventory()
                                     .addItem(give);
                             e.getInventory()
@@ -1859,41 +2057,7 @@ public class Main extends JavaPlugin
                     } catch (Exception ex) {
                         p.sendMessage("§c取出失败");
                     }
-                    return;
                 }
-            }
-
-            // ===== Shift+Click 存入（仅在垃圾箱界面生效） =====
-            if (e.isShiftClick()
-                    && e.getClickedInventory() != null
-                    && e.getClickedInventory()
-                    == p.getInventory()
-                    && e.getCurrentItem() != null
-                    && e.getCurrentItem().getType()
-                    != Material.AIR
-                    && !isMenuSnowball(
-                    e.getCurrentItem())) {
-                long now = System.currentTimeMillis();
-                Long last = garbageBusy
-                        .get(p.getUniqueId());
-                if (last != null
-                        && now - last < 200L) {
-                    return;
-                }
-                garbageBusy.put(p.getUniqueId(), now);
-
-                ItemStack toSave =
-                        e.getCurrentItem().clone();
-                p.getInventory()
-                        .setItem(e.getSlot(), null);
-                garbage.saveItem(toSave);
-                Bukkit.getScheduler()
-                        .runTaskLater(this, () -> {
-                            garbage.openRecyclePage(
-                                    p,
-                                    garbage.getRecyclePage(
-                                            p.getName()));
-                        }, 1L);
             }
             return;
         }
@@ -1909,13 +2073,18 @@ public class Main extends JavaPlugin
                         points.createShopGUI(p));
             else if (slot == 16)
                 gui.openTaskCenter(p);
-            else if (slot == 18) ticket.openMain(p);
-            else if (slot == 20) {
+            else if (slot == 18) {
+                dailySignWithReward(p);
+                gui.openMain(p);
+            }
+            else if (slot == 20) ticket.openMain(p);
+            else if (slot == 22) {
                 if (p.isOp() || p.getScoreboardTags()
                         .contains(config.adminTag)) {
                     garbage.openRecycle(p);
                 }
-            } else if (slot == 22 && isAdmin(p)) {
+            }
+            else if (slot == 24 && isAdmin(p)) {
                 p.closeInventory();
                 chatInput.getState(p).type =
                         ChatInputManager.InputType
@@ -1924,6 +2093,7 @@ public class Main extends JavaPlugin
             }
             return;
         }
+
         // 新人礼包（QuestTracker版）
         if (title.equals(GUIManager.T_GIFT_STAGES)) {
             e.setCancelled(true);
@@ -2080,24 +2250,29 @@ public class Main extends JavaPlugin
         }
 
         // 任务中心
-        if (title.equals(
-                GUIManager.T_TASK_CENTER)) {
+        if (title.equals(GUIManager.T_TASK_CENTER)) {
             e.setCancelled(true);
             if (slot == 22) gui.openMain(p);
             else if (slot == 10)
                 gui.openGiftStages(p);
-            else if (slot == 12)
-                gui.openTaskList(p, "主线任务");
-            else if (slot == 14)
-                gui.openTaskList(p, "支线任务");
-            else if (slot == 16) {
-                if (dailySign(p)) {
-                    gui.openTaskCenter(p);
+            else if (slot == 12) {
+                // ===== 打卡 =====
+                if (questTracker != null) {
+                    Location loc = p.getLocation();
+                    String result =
+                            questTracker.checkInAtPosition(
+                                    p.getName(),
+                                    p.getWorld().getName(),
+                                    loc.getX(),
+                                    loc.getY(),
+                                    loc.getZ());
+                    p.sendMessage(result);
                     playSuccessSound(p);
-                } else
-                    p.sendMessage(config.msg(
-                            "checkin_already"));
-            }
+                }
+            } else if (slot == 14)
+                gui.openTaskList(p, "主线任务");
+            else if (slot == 16)
+                gui.openTaskList(p, "支线任务");
             return;
         }
 
@@ -2248,16 +2423,25 @@ public class Main extends JavaPlugin
         }
 
         // 任务面板
+        // 任务面板
         if (title.equals("§6§l任务面板")) {
             e.setCancelled(true);
             if (slot == 22) gui.openMain(p);
-            else if (slot == 15) {
-                if (dailySign(p)) {
-                    openTaskPanel(p);
-                    playSuccessSound(p);
-                } else
-                    p.sendMessage(config.msg(
-                            "checkin_already"));
+            else if (slot == 11) {
+                // ===== 打卡按钮：报告坐标 =====
+                Location loc = p.getLocation();
+                String result =
+                        questTracker.checkInAtPosition(
+                                p.getName(),
+                                p.getWorld().getName(),
+                                loc.getX(),
+                                loc.getY(),
+                                loc.getZ());
+                p.sendMessage(result);
+                playSuccessSound(p);
+                openTaskPanel(p);
+            } else if (slot == 15) {
+                gui.openGiftStages(p);
             }
             return;
         }
@@ -2290,6 +2474,159 @@ public class Main extends JavaPlugin
         }
     }
 
+
+
+    /**
+     * 签到 + 盲盒经济奖励
+     */
+    public void dailySignWithReward(Player p) {
+        String name = p.getName();
+
+        if (checkIn.isCheckedInToday(name)) {
+            p.sendMessage(
+                    config.msg("checkin_already"));
+            return;
+        }
+
+        // ===== 1. 执行签到（内部已加积分） =====
+        p.sendMessage(checkIn.checkIn(p));
+        invite.onInviteeCheckIn(name);
+
+        // ===== 2. 获取连续天数 =====
+        int streak = checkIn.getStreak(name);
+        double multiplier = 1.0;
+        if (streak >= 21) {
+            multiplier = 1.3;
+        } else if (streak >= 14) {
+            multiplier = 1.2;
+        } else if (streak >= 7) {
+            multiplier = 1.1;
+        }
+
+        // ===== 3. 经济奖励（不再重复加积分） =====
+        if (economy == null) {
+            playSuccessSound(p);
+            return;
+        }
+
+        // 固定金额模式
+        if ("fixed".equals(
+                config.checkinRewardType)
+                && config.checkinRewardFixed > 0) {
+            final double reward =
+                    config.checkinRewardFixed;
+            final double m = multiplier;
+            p.sendMessage("§e§l[签到] §f"
+                    + "正在生成今日奖励...");
+            Bukkit.getScheduler()
+                    .runTaskLater(this, () -> {
+                        double rewardFinal =
+                                Math.round(
+                                        reward * m
+                                                * 100.0)
+                                        / 100.0;
+                        double before =
+                                economy
+                                        .getBalance(p);
+                        economy.depositPlayer(
+                                p, rewardFinal);
+                        double after =
+                                economy
+                                        .getBalance(p);
+                        p.sendMessage(
+                                "§6§l[签到] §f"
+                                        + "获得奖励: §a§l$"
+                                        + String.format(
+                                        "%.2f",
+                                        rewardFinal));
+                        p.sendMessage("§7余额: §e"
+                                + String.format(
+                                "%.2f", before)
+                                + " §7→ §a"
+                                + String.format(
+                                "%.2f", after));
+                        playSuccessSound(p);
+                    }, 30L);
+            return;
+        }
+
+        // 盲盒范围模式
+        if ("range".equals(
+                config.checkinRewardType)
+                && config.checkinRewardMin > 0
+                && config.checkinRewardMax
+                > config.checkinRewardMin) {
+            final double min =
+                    config.checkinRewardMin;
+            final double max =
+                    config.checkinRewardMax;
+            final double m = multiplier;
+            getLogger().info(
+                    "[签到] 盲盒: min="
+                            + min + " max=" + max
+                            + " multi=" + m);
+            p.sendMessage("§e§l[签到盲盒] "
+                    + "§f正在生成今日惊喜...");
+            Bukkit.getScheduler()
+                    .runTaskLater(this, () -> {
+                        double rand =
+                                Math.random();
+                        double reward = min
+                                + rand
+                                * (max - min);
+                        reward = Math.round(
+                                reward * m * 100.0)
+                                / 100.0;
+                        getLogger().info(
+                                "[签到] 盲盒结果: rand="
+                                        + String.format(
+                                        "%.4f", rand)
+                                        + " reward="
+                                        + reward);
+                        double before =
+                                economy
+                                        .getBalance(p);
+                        economy.depositPlayer(
+                                p, reward);
+                        double after =
+                                economy
+                                        .getBalance(p);
+                        p.sendMessage(
+                                "§6§l====== 签到盲盒 ======");
+                        p.sendMessage(
+                                "§7开出: §a§l$"
+                                        + String.format(
+                                        "%.2f",
+                                        reward));
+                        p.sendMessage("§7余额: §e"
+                                + String.format(
+                                "%.2f", before)
+                                + " §7→ §a"
+                                + String.format(
+                                "%.2f", after));
+                        p.sendMessage(
+                                "§6§l========================");
+                        playSuccessSound(p);
+                    }, 40L);
+            return;
+        }
+
+        // 无经济奖励
+        playSuccessSound(p);
+    }
+
+
+
+    @EventHandler
+    public void onVillagerTrade(
+            org.bukkit.event.inventory.TradeSelectEvent e) {
+        // TradeSelectEvent 在玩家点击交易时触发
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        Player p = (Player) e.getWhoClicked();
+        if (isFrozen(p) || questTracker == null) return;
+        questTracker.onVillagerTrade(p.getName());
+    }
+
     @EventHandler
     public void onInvDrag(InventoryDragEvent e) {
         if (!(e.getWhoClicked() instanceof Player))
@@ -2303,44 +2640,32 @@ public class Main extends JavaPlugin
 
         // 回收站拖拽
         if (t.equals("§6§l垃圾回收站")) {
+            boolean toGUI = false;
             for (int rawSlot : e.getRawSlots()) {
-                if (rawSlot >= 49) {
-                    e.setCancelled(true);
-                    return;
+                if (rawSlot < 54) {
+                    toGUI = true;
+                    break;
                 }
             }
-            // 取消所有拖拽，改用Shift+Click
-            e.setCancelled(true);
-
-            final Player fp = p;
-            // 取出光标上的物品
-            final ItemStack curItem =
-                    fp.getOpenInventory()
-                            .getCursor();
-            if (curItem != null
-                    && curItem.getType()
-                    != Material.AIR
-                    && !isMenuSnowball(curItem)) {
-                // 1. 保存到数据库
-                garbage.saveItem(curItem.clone());
-                // 2. 清空光标
-                fp.getOpenInventory()
-                        .setCursor(null);
-                // 3. 从背包移除
-                fp.getInventory()
-                        .removeItem(
-                                curItem.clone());
-                // 4. 刷新GUI
-                Bukkit.getScheduler()
-                        .runTaskLater(this,
-                                () -> {
-                                    garbage.openRecyclePage(
-                                            fp,
-                                            garbage
-                                                    .getRecyclePage(
-                                                            fp
-                                                                    .getName()));
-                                }, 2L);
+            if (toGUI) {
+                ItemStack cur = e.getCursor();
+                if (cur != null
+                        && cur.getType() != Material.AIR
+                        && !isMenuSnowball(cur)) {
+                    e.setCancelled(true);
+                    p.getOpenInventory().setCursor(null);
+                    garbage.saveItem(cur.clone());
+                    Bukkit.getScheduler()
+                            .runTaskLater(this, () -> {
+                                garbage.openRecyclePage(
+                                        p,
+                                        garbage
+                                                .getRecyclePage(
+                                                        p
+                                                                .getName()));
+                            }, 2L);
+                    return;
+                }
             }
             return;
         }
@@ -2374,6 +2699,101 @@ public class Main extends JavaPlugin
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+        // ===== /chat 独立命令 =====
+        if (cmdName.equals("chat")
+                || cmdName.equals("聊天")) {
+            if (sender instanceof Player) {
+                Player chatP = (Player) sender;
+                if (!chatP.getScoreboardTags()
+                        .contains(config.adminTag)) {
+                    sender.sendMessage("§c权限不足");
+                    return true;
+                }
+            }
+            if (args.length < 1) {
+                sender.sendMessage(
+                        "§e/chat <reload|开|关|add|remove|addplayer|takeplayer|unmute|reset>");
+                return true;
+            }
+            String cs = args[0].toLowerCase();
+            if (cs.equals("reload")) {
+                chatFilter.loadConfig();
+                sender.sendMessage("§a聊天配置已重载");
+                return true;
+            }
+            if (cs.equals("开") || cs.equals("on")) {
+                chatFilter.setEnabled(true);
+                chatFilter.saveConfig();
+                sender.sendMessage("§aURL过滤已开启");
+                return true;
+            }
+            if (cs.equals("关") || cs.equals("off")) {
+                chatFilter.setEnabled(false);
+                chatFilter.saveConfig();
+                sender.sendMessage("§cURL过滤已关闭");
+                return true;
+            }
+            if (cs.equals("add")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat add <URL>");
+                    return true;
+                }
+                chatFilter.addUrl(args[1]);
+                sender.sendMessage("§a已添加白名单: " + args[1]);
+                return true;
+            }
+            if (cs.equals("remove")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat remove <URL>");
+                    return true;
+                }
+                if (chatFilter.removeUrl(args[1]))
+                    sender.sendMessage("§c已移除: " + args[1]);
+                else
+                    sender.sendMessage("§c未找到: " + args[1]);
+                return true;
+            }
+            if (cs.equals("addplayer")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat addplayer <玩家>");
+                    return true;
+                }
+                chatFilter.addWhitelistPlayer(args[1]);
+                sender.sendMessage("§a白名单玩家: " + args[1]);
+                return true;
+            }
+            if (cs.equals("takeplayer")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat takeplayer <玩家>");
+                    return true;
+                }
+                if (chatFilter.removeWhitelistPlayer(args[1]))
+                    sender.sendMessage("§c已移除白名单: " + args[1]);
+                else
+                    sender.sendMessage("§c未找到: " + args[1]);
+                return true;
+            }
+            if (cs.equals("unmute")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat unmute <玩家>");
+                    return true;
+                }
+                chatFilter.unmutePlayer(args[1]);
+                sender.sendMessage("§a已解禁: " + args[1]);
+                return true;
+            }
+            if (cs.equals("reset")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat reset <玩家>");
+                    return true;
+                }
+                chatFilter.resetPlayer(args[1]);
+                sender.sendMessage("§a已重置: " + args[1]);
+                return true;
+            }
+            sender.sendMessage("§c未知子命令");
+            return true;
+        }
 
         if (cmdName.equals("recycle")) {
             if (!(sender instanceof Player)) {
@@ -2664,56 +3084,154 @@ public class Main extends JavaPlugin
             gui.openMain((Player) sender);
             return true;
         }
+      //  String cmdName = cmd.getName().toLowerCase();
+        if (!cmdName.equals("sdf1_login")) return false;
+
+        if (args.length == 0) {
+            if (sender instanceof Player) {
+                gui.openMain((Player) sender);
+            } else {
+                sender.sendMessage("§e用法: /sdf1_login <子命令>");
+            }
+            return true;
+        }
 
         String sub = args[0].toLowerCase();
 
-        // stop
+// ===== del / confirm / cancel（最先处理） =====
+        if (sub.equals("del")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage(
+                        "§e用法: /sdf1_login del <玩家>");
+                return true;
+            }
+            String target = args[1];
+            if (!db.userExists(target)) {
+                sender.sendMessage(
+                        "§c玩家 " + target + " 不存在");
+                return true;
+            }
+            if (pendingDeleteTask != null) {
+                pendingDeleteTask.cancel();
+                String old = pendingDeleteName;
+                pendingDeleteTask = null;
+                pendingDeleteName = null;
+                getLogger().info(
+                        "[Sdf1_login] 取消旧待删除: " + old);
+            }
+            pendingDeleteName = target;
+            pendingDeleteTask = new BukkitRunnable() {
+                @Override
+                public void run() {
+                    String name = pendingDeleteName;
+                    pendingDeleteName = null;
+                    pendingDeleteTask = null;
+                    if (name == null) return;
+                    db.deleteUser(name);
+                    getLogger().info(
+                            "[Sdf1_login] 已删除: " + name);
+                    Player tp = Bukkit.getPlayer(name);
+                    if (tp != null && tp.isOnline())
+                        tp.kickPlayer(
+                                "§c账号已被管理员删除");
+                }
+            };
+            pendingDeleteTask.runTaskLater(this, 1200L);
+            sender.sendMessage("§e§l[删除确认] 目标: §c"
+                    + target);
+            sender.sendMessage("§760秒后执行，"
+                    + "§a/sdf1_login confirm §7确认，"
+                    + "§c/sdf1_login cancel §7取消");
+            getLogger().warning("[Sdf1_login] 待删除: "
+                    + target + " by " + sender.getName());
+            return true;
+        }
+
+        if (sub.equals("confirm")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (pendingDeleteName == null
+                    || pendingDeleteTask == null) {
+                sender.sendMessage(
+                        "§c当前没有待删除的账号");
+                return true;
+            }
+            pendingDeleteTask.cancel();
+            String name = pendingDeleteName;
+            pendingDeleteName = null;
+            pendingDeleteTask = null;
+            db.deleteUser(name);
+            sender.sendMessage("§a已立即删除: " + name);
+            Player tp = Bukkit.getPlayer(name);
+            if (tp != null && tp.isOnline())
+                tp.kickPlayer("§c账号已被管理员删除");
+            return true;
+        }
+
+        if (sub.equals("cancel")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (pendingDeleteName == null
+                    || pendingDeleteTask == null) {
+                sender.sendMessage(
+                        "§c当前没有待删除的账号");
+                return true;
+            }
+            pendingDeleteTask.cancel();
+            String name = pendingDeleteName;
+            pendingDeleteName = null;
+            pendingDeleteTask = null;
+            sender.sendMessage("§a已取消删除: " + name);
+            return true;
+        }
+
+// ===== stop =====
         if (sub.equals("stop")) {
             if (!(sender instanceof Player)) {
-                // 控制台
                 if (args.length >= 2) {
                     db.clearTempPassword(args[1]);
                     sender.sendMessage("§a已报废 "
                             + args[1] + " 的临时密码");
                 } else {
                     db.clearAllTempPasswords();
-                    sender.sendMessage(
-                            "§a已报废所有临时密码");
+                    sender.sendMessage("§a已报废所有临时密码");
                 }
                 return true;
             }
             Player p2 = (Player) sender;
             if (args.length >= 2) {
                 String tgt = args[1];
-                String myIP =
-                        getPlayerIP(p2);
+                String myIP = getPlayerIP(p2);
                 String targetIP =
                         db.getPlayerIPByName(tgt);
                 if (targetIP == null) {
-                    Player tp =
-                            Bukkit.getPlayer(tgt);
+                    Player tp = Bukkit.getPlayer(tgt);
                     if (tp != null && tp.isOnline())
-                        targetIP =
-                                getPlayerIP(tp);
+                        targetIP = getPlayerIP(tp);
                 }
                 if (targetIP == null
                         || !targetIP.equals(myIP)) {
-                    p2.sendMessage(
-                            "§c只能操作同IP下的玩家");
+                    p2.sendMessage("§c只能操作同IP下的玩家");
                     return true;
                 }
                 db.clearTempPassword(tgt);
-                p2.sendMessage("§a已报废 " + tgt
-                        + " 的临时密码");
+                p2.sendMessage("§a已报废 " + tgt + " 的临时密码");
             } else {
                 db.clearTempPassword(p2.getName());
-                p2.sendMessage(
-                        "§a已报废您的临时密码");
+                p2.sendMessage("§a已报废您的临时密码");
             }
             return true;
         }
 
-        // reload
+// ===== reload =====
         if (sub.equals("reload")) {
             if (!isAdmin(sender)) {
                 sender.sendMessage("§c权限不足");
@@ -2727,146 +3245,260 @@ public class Main extends JavaPlugin
             sender.sendMessage("§a配置已重载！");
             return true;
         }
-        // back - 恢复背包备份
+
+// ===== back =====
         if (sub.equals("back")) {
             if (!isAdmin(sender)) {
                 sender.sendMessage("§c权限不足");
                 return true;
             }
+            // ... 保持原有back代码不变 ...
             if (args.length < 2) {
-                sender.sendMessage(
-                        "§e用法: /sdf1_login back <玩家> [#编号]");
+                sender.sendMessage("§e用法: /sdf1_login back <玩家> [#编号]");
                 return true;
             }
+            // 原有back逻辑
             String backTarget = args[1];
             if (args.length >= 3
                     && args[2].startsWith("#")) {
-                // /sdf1_login back Aplayer #1
                 int backupId;
                 try {
                     backupId = Integer.parseInt(
                             args[2].replace("#", ""));
                 } catch (NumberFormatException ex) {
-                    sender.sendMessage(
-                            "§c无效编号");
+                    sender.sendMessage("§c无效编号");
                     return true;
                 }
                 String[] backup =
-                        db.getInventoryBackupById(
-                                backupId);
+                        db.getInventoryBackupById(backupId);
                 if (backup == null) {
-                    sender.sendMessage(
-                            "§c备份 #" + backupId
-                                    + " 不存在");
+                    sender.sendMessage("§c备份 #" + backupId + " 不存在");
                     return true;
                 }
-                // 如果玩家在线，直接恢复
-                Player tp = Bukkit.getPlayer(
-                        backTarget);
+                Player tp = Bukkit.getPlayer(backTarget);
                 if (tp != null && tp.isOnline()) {
                     try {
-                        tp.getInventory()
-                                .setContents(
-                                        InventorySerializer
-                                                .fromBase64(
-                                                        backup[0]));
-                        if (backup[1] != null
-                                && !backup[1]
-                                .isEmpty())
-                            tp.getInventory()
-                                    .setArmorContents(
-                                            InventorySerializer
-                                                    .fromBase64(
-                                                            backup[1]));
-                        if (backup[2] != null
-                                && !backup[2]
-                                .isEmpty())
-                            tp.getInventory()
-                                    .setExtraContents(
-                                            InventorySerializer
-                                                    .fromBase64(
-                                                            backup[2]));
-                        int lv = Integer.parseInt(
-                                backup[3]);
-                        if (lv > 0)
-                            tp.setLevel(lv);
-                        tp.sendMessage(
-                                "§a管理员已恢复您的背包");
-                        sender.sendMessage(
-                                "§a已恢复 " + backTarget
-                                        + " 的背包 (备份#"
-                                        + backupId + ")");
+                        tp.getInventory().setContents(
+                                InventorySerializer.fromBase64(backup[0]));
+                        if (backup[1] != null && !backup[1].isEmpty())
+                            tp.getInventory().setArmorContents(
+                                    InventorySerializer.fromBase64(backup[1]));
+                        if (backup[2] != null && !backup[2].isEmpty())
+                            tp.getInventory().setExtraContents(
+                                    InventorySerializer.fromBase64(backup[2]));
+                        int lv = Integer.parseInt(backup[3]);
+                        if (lv > 0) tp.setLevel(lv);
+                        tp.sendMessage("§a管理员已恢复您的背包");
+                        sender.sendMessage("§a已恢复 " + backTarget + " (备份#" + backupId + ")");
                     } catch (Exception e) {
-                        sender.sendMessage(
-                                "§c恢复失败: "
-                                        + e.getMessage());
+                        sender.sendMessage("§c恢复失败: " + e.getMessage());
                     }
                 } else {
-                    // 玩家离线：保存到数据库供下次登录恢复
-                    db.saveInventoryBackup(
-                            backTarget,
-                            backup[0],
-                            backup[1],
-                            backup[2],
-                            Integer.parseInt(
-                                    backup[3]),
-                            Double.parseDouble(
-                                    backup[4]));
-                    sender.sendMessage(
-                            "§a" + backTarget
-                                    + " 离线，备份已写入数据库，"
-                                    + "下次登录时恢复");
+                    db.saveInventoryBackup(backTarget,
+                            backup[0], backup[1], backup[2],
+                            Integer.parseInt(backup[3]),
+                            Double.parseDouble(backup[4]));
+                    sender.sendMessage("§a" + backTarget + " 离线，备份已写入");
                 }
             } else {
-                // /sdf1_login back Aplayer
-                // 罗列最近5条备份
                 List<Map<String, Object>> backups =
-                        db.getInventoryBackups(
-                                backTarget, 5);
+                        db.getInventoryBackups(backTarget, 5);
                 if (backups.isEmpty()) {
-                    sender.sendMessage(
-                            "§c" + backTarget
-                                    + " 没有背包备份");
+                    sender.sendMessage("§c" + backTarget + " 没有背包备份");
                     return true;
                 }
-                sender.sendMessage(
-                        "§e§l=== " + backTarget
-                                + " 背包备份 ===");
+                sender.sendMessage("§e§l=== " + backTarget + " 背包备份 ===");
                 java.text.SimpleDateFormat sdf =
-                        new java.text.SimpleDateFormat(
-                                "MM-dd HH:mm:ss");
-                for (Map<String, Object> b :
-                        backups) {
-                    int bid = ((Number)
-                            b.get("id"))
-                            .intValue();
-                    Object stObj =
-                            b.get("save_time");
+                        new java.text.SimpleDateFormat("MM-dd HH:mm:ss");
+                for (Map<String, Object> b : backups) {
+                    int bid = ((Number) b.get("id")).intValue();
+                    Object stObj = b.get("save_time");
                     long st = stObj != null
-                            ? ((Number) stObj)
-                              .longValue() : 0;
+                            ? ((Number) stObj).longValue() : 0;
                     String time = st > 0
-                            ? sdf.format(
-                            new java.util.Date(st))
+                            ? sdf.format(new java.util.Date(st))
                             : "未知时间";
-                    String itemNames =
-                            getBackupItemPreview(
-                                    bid);
-                    sender.sendMessage(
-                            "§7#" + bid
-                                    + " §f" + time
-                                    + " §7: "
-                                    + itemNames);
+                    String itemNames = getBackupItemPreview(bid);
+                    sender.sendMessage("§7#" + bid + " §f" + time + " §7: " + itemNames);
                 }
-                sender.sendMessage(
-                        "§7使用 §e/sdf1_login back "
-                                + backTarget
-                                + " #编号 §7恢复");
-                sender.sendMessage(
-                        "§e§l================================");
+                sender.sendMessage("§7使用 §e/sdf1_login back " + backTarget + " #编号 §7恢复");
             }
+            return true;
         }
-        // radio子命令（控制台+玩家）
+
+// ===== pw / password =====
+        if (sub.equals("pw") || sub.equals("password")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p2 = (Player) sender;
+
+            if (args.length >= 3) {
+                String oldPwd = args[1];
+                String newPwd = args[2];
+                if (!PasswordUtils.validate(newPwd)) {
+                    p2.sendMessage(config.msg("password_format_error"));
+                    return true;
+                }
+                String salt = (String) db.getField(
+                        p2.getName(), "password_salt");
+                String hash = PasswordUtils.hash(oldPwd, salt);
+                boolean mainOk = db.checkPassword(
+                        p2.getName(), hash);
+                boolean tempOk = db.checkPasswordOrTemp(
+                        p2.getName(), hash);
+                if (!mainOk && !tempOk) {
+                    p2.sendMessage(config.msg("password_wrong"));
+                    return true;
+                }
+                String oldHash = (String) db.getField(
+                        p2.getName(), "password_hash");
+                String newSalt = PasswordUtils.generateSalt();
+                String newHash = PasswordUtils.hash(newPwd, newSalt);
+                if (newHash.equals(oldHash)) {
+                    p2.sendMessage(config.msg("password_same"));
+                    return true;
+                }
+                recordPasswordChange(p2.getName(), oldHash, salt);
+                db.setField(p2.getName(), "password_hash", newHash);
+                db.setField(p2.getName(), "password_salt", newSalt);
+                if (!mainOk && tempOk)
+                    db.clearTempPassword(p2.getName());
+                needsPasswordChange.remove(p2.getName());
+                p2.sendMessage(config.msg("password_changed"));
+                return true;
+            }
+
+            if (args.length == 2) {
+                String oldPwd = args[1];
+                String salt = (String) db.getField(
+                        p2.getName(), "password_salt");
+                String hash = PasswordUtils.hash(oldPwd, salt);
+                boolean mainOk = db.checkPassword(
+                        p2.getName(), hash);
+                boolean tempOk = db.checkPasswordOrTemp(
+                        p2.getName(), hash);
+                if (!mainOk && !tempOk) {
+                    p2.sendMessage(config.msg("password_wrong"));
+                    return true;
+                }
+                chatInput.getState(p2).type =
+                        ChatInputManager.InputType.CHANGE_PWD_STEP2;
+                chatInput.getState(p2).ticketTitle =
+                        mainOk ? "main" : "temp";
+                p2.sendMessage("§e请输入新密码:");
+                return true;
+            }
+
+            chatInput.getState(p2).type =
+                    ChatInputManager.InputType.CHANGE_PWD_STEP1;
+            p2.sendMessage("§e请输入当前密码:");
+            return true;
+        }
+
+// ===== email =====
+        if (sub.equals("email")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p2 = (Player) sender;
+            if (args.length >= 2) {
+                String emailAddr = args[1];
+                if (!emailAddr.contains("@")
+                        || !emailAddr.contains(".")) {
+                    p2.sendMessage("§c邮箱格式不正确");
+                    return true;
+                }
+                String oldEmail = (String) db.getField(
+                        p2.getName(), "email");
+                if (oldEmail != null && !oldEmail.isEmpty()) {
+                    chatInput.getState(p2).type =
+                            ChatInputManager.InputType.SET_EMAIL_VERIFY;
+                    chatInput.getState(p2).targetPlayer = emailAddr;
+                    chatInput.getState(p2).ticketTitle = "need_pwd";
+                    p2.sendMessage("§e您已绑定邮箱: " + oldEmail);
+                    p2.sendMessage("§e请输入登录密码以确认修改:");
+                } else {
+                    String code = String.valueOf(
+                            (int) (Math.random() * 900000 + 100000));
+                    chatInput.getState(p2).type =
+                            ChatInputManager.InputType.SET_EMAIL_VERIFY;
+                    chatInput.getState(p2).targetPlayer = emailAddr;
+                    chatInput.getState(p2).ticketTitle = code;
+                    final String to = emailAddr;
+                    final String c = code;
+                    final Player fp = p2;
+                    Bukkit.getScheduler()
+                            .runTaskAsynchronously(this,
+                                    () -> {
+                                        boolean sent =
+                                                email.sendVerifyCode(to, c);
+                                        Bukkit.getScheduler()
+                                                .runTask(this, () -> {
+                                                    if (sent) {
+                                                        fp.sendMessage("§a验证码已发送到 " + to);
+                                                        fp.sendMessage("§e输入6位验证码(0取消):");
+                                                    } else {
+                                                        fp.sendMessage("§c发送失败");
+                                                    }
+                                                });
+                                    });
+                }
+            } else {
+                chatInput.getState(p2).type =
+                        ChatInputManager.InputType.SET_EMAIL;
+                p2.sendMessage("§e请输入邮箱:");
+            }
+            return true;
+        }
+
+// ===== sign =====
+        if (sub.equals("sign")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            dailySignWithReward((Player) sender);
+            return true;
+        }
+
+// ===== reset =====
+        if (sub.equals("reset")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            loginMgr.handleReset((Player) sender);
+            return true;
+        }
+
+// ===== undo（密码撤销） =====
+        if (sub.equals("undo")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p2 = (Player) sender;
+            PwdRollback rb = pwdRollback.get(p2.getName());
+            if (rb == null) {
+                p2.sendMessage("§c无可撤销记录");
+                return true;
+            }
+            if (System.currentTimeMillis() - rb.time > 600000L) {
+                pwdRollback.remove(p2.getName());
+                p2.sendMessage("§c撤销已过期");
+                return true;
+            }
+            db.setField(p2.getName(), "password_hash", rb.hash);
+            db.setField(p2.getName(), "password_salt", rb.salt);
+            pwdRollback.remove(p2.getName());
+            p2.sendMessage("§a密码已撤销！");
+            return true;
+        }
+
+            // radio子命令（控制台+玩家）
         // sdf1_login radio → 停止全服广播
         // sdf1_login radio reload → 重载
         // sdf1_login radio <歌名> → 全服播放
@@ -2909,6 +3541,7 @@ public class Main extends JavaPlugin
                     } else {
                         sender.sendMessage(
                                 "§c未找到歌曲: " + songName);
+                        return true;
                     }
                 } else {
                     Player targetP =
@@ -3375,24 +4008,6 @@ public class Main extends JavaPlugin
                 return true;
             }
 
-            // del
-            if (sub.equals("del")) {
-                if (!isAdmin(sender)) {
-                    sender.sendMessage("§c权限不足");
-                    return true;
-                }
-                if (args.length < 2) {
-                    sender.sendMessage(
-                            "§e用法: /sdf1_login del <玩家>");
-                    return true;
-                }
-                db.deleteUser(args[1]);
-                sender.sendMessage("§a已删除 " + args[1]);
-                Player tp = Bukkit.getPlayer(args[1]);
-                if (tp != null && tp.isOnline())
-                    tp.kickPlayer("§c账号已被管理员删除");
-                return true;
-            }
 
             // kick (挂机)
             if (sub.equals("kick")) {
@@ -3504,6 +4119,7 @@ public class Main extends JavaPlugin
         p.sendMessage(
                 "§e§l======== 聊天过滤帮助 ==========");
         p.sendMessage("§e/chat reload §7- 重载配置");
+        p.sendMessage("§e/chat 开/关 §7- 开启/关闭聊天过滤");
         p.sendMessage("§e/chat add <URL> §7- 添加白名单URL");
         p.sendMessage("§e/chat remove <URL> §7- 移除白名单URL");
         p.sendMessage("§e/chat addplayer <玩家> §7- 添加白名单玩家");

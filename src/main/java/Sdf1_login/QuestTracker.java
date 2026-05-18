@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -178,20 +179,111 @@ public class QuestTracker {
         BIOME_CATEGORY.put("minecraft:warped_forest", "下界");
         BIOME_CATEGORY.put("minecraft:soul_sand_valley", "下界");
         BIOME_CATEGORY.put("minecraft:basalt_deltas", "下界");
+        // 岩岸/沙滩
+        BIOME_CATEGORY.put("minecraft:stony_shore",
+                "石岸");
+// 海岸
+        BIOME_CATEGORY.put("minecraft:mushroom_fields",
+                "蘑菇岛");
+// 苍白之园
+        BIOME_CATEGORY.put(
+                "minecraft:pale_garden", "森林");
+// 末地小型岛屿
+        BIOME_CATEGORY.put(
+                "minecraft:small_end_islands", "末地");
+// 主世界结构归类
+        BIOME_CATEGORY.put("minecraft:village", "平原");
+        BIOME_CATEGORY.put(
+                "minecraft:desert_pyramid", "沙漠");
+        BIOME_CATEGORY.put(
+                "minecraft:jungle_pyramid", "森林");
+        BIOME_CATEGORY.put(
+                "minecraft:swamp_hut", "沼泽");
+
         // 末地群系
         BIOME_CATEGORY.put("minecraft:the_end", "末地");
         BIOME_CATEGORY.put("minecraft:the_void", "末地");
         BIOME_CATEGORY.put("minecraft:end_highlands", "末地");
         BIOME_CATEGORY.put("minecraft:end_midlands", "末地");
         BIOME_CATEGORY.put("minecraft:end_barrens", "末地");
+
+
     }
 
     // 所有群系大类列表
-    private static final String[] ALL_CATEGORIES =
-            {"海洋", "平原", "森林", "沙漠",
-                    "恶地", "雪原", "沙砾", "沼泽",
-                    "河流", "蘑菇岛", "地下",
-                    "下界", "末地"};
+    private static final String[]
+            ALL_CATEGORIES = {
+            "海洋", "平原", "森林", "沙漠",
+            "恶地", "雪原", "沙砾", "沼泽",
+            "河流", "石岸", "蘑菇岛", "地下",
+            "下界", "末地"
+    };
+
+    // ===== 结构映射 =====
+    private static final Map<String, String>
+            STRUCTURE_CATEGORY =
+            new HashMap<>();
+    static {
+        // 主世界结构
+        STRUCTURE_CATEGORY.put(
+                "minecraft:village", "村庄");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:desert_pyramid",
+                "沙漠");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:jungle_pyramid",
+                "森林");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:swamp_hut", "沼泽");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:igloo", "雪原");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:mansion", "森林");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:pillager_outpost",
+                "平原");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:mineshaft", "地下");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:stronghold", "地下");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ancient_city",
+                "地下");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:trail_ruins",
+                "平原");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:trial_chambers",
+                "地下");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ocean_ruin", "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:shipwreck", "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:buried_treasure",
+                "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ruined_portal",
+                "平原");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:fossil", "平原");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ancient_city",
+                "地下");
+        // 下界结构
+        STRUCTURE_CATEGORY.put(
+                "minecraft:nether_fortress",
+                "下界");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:bastion_remnant",
+                "下界");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:nether_fossil",
+                "下界");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:basalt_pillars",
+                "下界");
+    }
 
     // 所有群系分类的条件关键词映射
     private static final Map<String, String>
@@ -214,6 +306,10 @@ public class QuestTracker {
         CATEGORY_KEYWORDS.put("地狱", "下界");
         CATEGORY_KEYWORDS.put("下届", "下界");
         CATEGORY_KEYWORDS.put("主岛", "末地");
+        CATEGORY_KEYWORDS.put("石岸", "石岸");
+        CATEGORY_KEYWORDS.put("沙滩", "石岸");
+        CATEGORY_KEYWORDS.put("海岸", "石岸");
+
     }
 
     /**
@@ -224,23 +320,51 @@ public class QuestTracker {
      */
     public String mapBiomeCategory(
             String rawKey, String worldName) {
-        // 下界维度优先用世界名
+        // 优先用世界名判断维度
         if (worldName != null) {
-            String w = worldName.toLowerCase();
+            String w =
+                    worldName.toLowerCase();
             if (w.contains("nether"))
                 return "下界";
             if (w.contains("end"))
                 return "末地";
         }
+
         // 用群系映射表
         if (rawKey != null) {
+            String lower =
+                    rawKey.toLowerCase();
+            // 带 minecraft: 前缀的直接查
             String cat =
-                    BIOME_CATEGORY.get(
-                            rawKey.toLowerCase());
-            if (cat != null) return cat;
+                    BIOME_CATEGORY.get(lower);
+            if (cat != null)
+                return cat;
+
+            // 不带前缀的尝试补全
+            String prefixed =
+                    "minecraft:" + lower;
+            cat = BIOME_CATEGORY.get(prefixed);
+            if (cat != null)
+                return cat;
+
+            // 模糊匹配群系名
+            for (Map.Entry<String, String> entry
+                    : BIOME_CATEGORY.entrySet()) {
+                if (entry.getKey()
+                        .contains(lower)
+                        || lower.contains(
+                        entry.getKey()
+                                .replace(
+                                        "minecraft:",
+                                        ""))) {
+                    return entry.getValue();
+                }
+            }
         }
+
         return "主世界";
     }
+
 
 
 // ========== 解析为区块 ==========
@@ -1611,21 +1735,67 @@ public class QuestTracker {
                         + ": §e" + cur
                         + "/" + needed;
             }
+            if (key.contains("村民")
+                    && key.contains("交易")) {
+                int needed = parseNumberFromText(key);
+                if (needed <= 0) needed = 1;
+                int cur = getCounter(
+                        player, "VILLAGER_TRADE");
+                return "§7村民交易: §e"
+                        + cur + "/" + needed;
+            }
+
         }
 
+        // ===== 击杀泛解析（支持中文列表） =====
+// 匹配 "击杀10只骷髅、僵尸、苦力怕" 等
+        if (key.contains("击杀") && key.contains("只")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+
+            String mobPart = key;
+            java.util.regex.Matcher killM =
+                    java.util.regex.Pattern
+                            .compile("击杀\\d+只(.+)")
+                            .matcher(key);
+            if (killM.find()) {
+                mobPart = killM.group(1).trim();
+            }
+
+            String[] mobNames = mobPart
+                    .split("[、，,，]+");
+            int totalKills = 0;
+            StringBuilder names = new StringBuilder();
+            for (String name : mobNames) {
+                String trimmed = name.trim();
+                if (trimmed.isEmpty()) continue;
+                String entityType =
+                        chineseMobToEntity(trimmed);
+                if (!entityType.isEmpty()) {
+                    totalKills += getCounter(
+                            player,
+                            "KILL:" + entityType);
+                    if (names.length() > 0)
+                        names.append("/");
+                    names.append(trimmed);
+                }
+            }
+            return "§7击杀" + names + ": §e"
+                    + totalKills + "/" + needed;
+        }
+
+// 单一KILL:xxx:N 格式（原有逻辑保留）
         if (key.startsWith("KILL:")) {
-            String[] parts = key.split(":");
-            if (parts.length >= 3) {
-                int needed =
-                        parseInt(parts[2]);
-                int cur = getCounter(
-                        player,
-                        "KILL:" + parts[1]);
-                return "§7杀 " + parts[1]
-                        + ": §e" + cur
-                        + "/" + needed;
+            String[] p = key.split(":");
+            if (p.length >= 3) {
+                int needed = parseInt(p[2]);
+                int cur = getCounter(player,
+                        "KILL:" + p[1]);
+                return "§7击杀" + p[1] + ": §e"
+                        + cur + "/" + needed;
             }
         }
+
 
         if (key.startsWith("KILL_PLAYER")) {
             String[] parts = key.split(":");
@@ -1739,10 +1909,219 @@ public class QuestTracker {
                     + done + "/"
                     + quests.size();
         }
+        // ===== 泛解析：击杀类进度 =====
+        if (key.contains("击杀") || key.contains("猎杀")
+                || key.contains("消灭")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            List<String> mobTypes = extractMobTypes(key);
+            if (!mobTypes.isEmpty()) {
+                int total = 0;
+                StringBuilder names =
+                        new StringBuilder();
+                for (int i = 0;
+                     i < mobTypes.size(); i++) {
+                    total += getCounter(player,
+                            "KILL:" + mobTypes.get(i));
+                    if (i > 0) names.append("/");
+                    names.append(reverseMobName(
+                            mobTypes.get(i)));
+                }
+                return "§7击杀" + names + ": §e"
+                        + total + "/" + needed;
+            }
+        }
+
+        // ===== 泛解析：村民交易进度 =====
+        if (key.contains("交易")
+                && (key.contains("村民")
+                || key.contains("与村民"))) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            int cur = getCounter(player, "TRADE");
+            return "§7村民交易: §e"
+                    + cur + "/" + needed;
+        }
+        // ===== 泛解析：采集/挖矿进度 =====
+        if (key.contains("采集")
+                || key.contains("挖")) {
+            int needed =
+                    parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            List<String> matTypes =
+                    extractMaterialTypes(key);
+            if (!matTypes.isEmpty()) {
+                int total = 0;
+                StringBuilder names =
+                        new StringBuilder();
+                for (int i = 0;
+                     i < matTypes.size(); i++) {
+                    total += getCounter(
+                            player,
+                            "MINE:" + matTypes
+                                    .get(i));
+                    if (i > 0)
+                        names.append("/");
+                    names.append(
+                            translateMaterialName(
+                                    matTypes
+                                            .get(i)));
+                }
+                return "§7采集" + names
+                        + ": §e" + total
+                        + "/" + needed;
+            }
+        }
+
+        // ===== 泛解析：合成进度 =====
+        if (key.contains("合成") || key.contains("制作")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            int cur = getCounter(player, "CRAFT");
+            return "§7合成: §e" + cur + "/" + needed;
+        }
+
+        // ===== 泛解析：钓鱼进度 =====
+        if (key.contains("钓鱼") || key.contains("钓")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            int cur = getCounter(player, "FISH");
+            return "§7钓鱼: §e" + cur + "/" + needed;
+        }
 
         return "§7" + key;
     }
+    private String translateMaterialName(
+            String name) {
+        switch (name) {
+            case "COAL_ORE":
+                return "煤矿石";
+            case "DEEPSLATE_COAL_ORE":
+                return "深层煤矿石";
+            case "IRON_ORE":
+                return "铁矿石";
+            case "DEEPSLATE_IRON_ORE":
+                return "深层铁矿石";
+            case "COPPER_ORE":
+                return "铜矿石";
+            case "DEEPSLATE_COPPER_ORE":
+                return "深层铜矿石";
+            case "GOLD_ORE":
+                return "金矿石";
+            case "DEEPSLATE_GOLD_ORE":
+                return "深层金矿石";
+            case "DIAMOND_ORE":
+                return "钻石矿石";
+            case "DEEPSLATE_DIAMOND_ORE":
+                return "深层钻石矿石";
+            case "EMERALD_ORE":
+                return "绿宝石矿石";
+            case "DEEPSLATE_EMERALD_ORE":
+                return "深层绿宝石矿石";
+            case "LAPIS_ORE":
+                return "青金石矿石";
+            case "DEEPSLATE_LAPIS_ORE":
+                return "深层青金石矿石";
+            case "REDSTONE_ORE":
+                return "红石矿石";
+            case "DEEPSLATE_REDSTONE_ORE":
+                return "深层红石矿石";
+            case "NETHER_GOLD_ORE":
+                return "下界金矿石";
+            case "NETHER_QUARTZ_ORE":
+                return "下界石英矿石";
+            case "ANCIENT_DEBRIS":
+                return "远古残骸";
+            case "COAL":
+                return "煤炭";
+            case "RAW_IRON":
+                return "粗铁";
+            case "RAW_GOLD":
+                return "粗金";
+            case "RAW_COPPER":
+                return "粗铜";
+            case "DIAMOND":
+                return "钻石";
+            case "EMERALD":
+                return "绿宝石";
+            case "LAPIS_LAZULI":
+                return "青金石";
+            case "REDSTONE":
+                return "红石";
+            case "QUARTZ":
+                return "石英";
+            default:
+                return name;
+        }
+    }
 
+    /**
+     * 中文物种名 → Bukkit EntityType 名
+     * 支持击杀泛解析的模糊匹配
+     */
+    private String chineseMobToEntity(String cn) {
+        String n = cn.toLowerCase().trim();
+
+        // 直接别名表
+        Map<String, String> mobMap = new HashMap<>();
+        mobMap.put("骷髅", "SKELETON");
+        mobMap.put("僵尸", "ZOMBIE");
+        mobMap.put("苦力怕", "CREEPER");
+        mobMap.put("蜘蛛", "SPIDER");
+        mobMap.put("洞穴蜘蛛", "CAVE_SPIDER");
+        mobMap.put("小白", "SKELETON");
+        mobMap.put("末影人", "ENDERMAN");
+        mobMap.put("enderman", "ENDERMAN");
+        mobMap.put("猪灵", "PIGLIN");
+        mobMap.put("猪灵蛮兵", "PIGLIN_BRUTE");
+        mobMap.put("恶魂", "GHAST");
+        mobMap.put("凋灵骷髅", "WITHER_SKELETON");
+        mobMap.put("烈焰人", "BLAZE");
+        mobMap.put("史莱姆", "SLIME");
+        mobMap.put("岩浆怪", "MAGMA_CUBE");
+        mobMap.put("女巫", "WITCH");
+        mobMap.put("蠹虫", "SILVERFISH");
+        mobMap.put("潜影贝", "SHULKER");
+        mobMap.put("守卫者", "GUARDIAN");
+        mobMap.put("远古守卫者", "ELDER_GUARDIAN");
+        mobMap.put("溺尸", "DROWNED");
+        mobMap.put("僵尸村民", "ZOMBIE_VILLAGER");
+        mobMap.put("尸壳", "HUSK");
+        mobMap.put("流浪者", "STRAY");
+        mobMap.put("幻翼", "PHANTOM");
+        mobMap.put("掠夺者", "PILLAGER");
+        mobMap.put("卫道士", "VINDICATOR");
+        mobMap.put("唤魔者", "EVOKER");
+        mobMap.put("恼鬼", "VEX");
+        mobMap.put("劫掠兽", "RAVAGER");
+        mobMap.put("蜘蛛骑士", "SPIDER_JOCKEY");
+        mobMap.put("凋灵", "WITHER");
+        mobMap.put("末影龙", "ENDER_DRAGON");
+
+        // 精确匹配
+        if (mobMap.containsKey(n)) {
+            return mobMap.get(n);
+        }
+
+        // 模糊匹配（包含关系）
+        for (Map.Entry<String, String> en
+                : mobMap.entrySet()) {
+            if (n.contains(en.getKey())
+                    || en.getKey().contains(n)) {
+                return en.getValue();
+            }
+        }
+
+        // 尝试直接用英文名
+        try {
+            return org.bukkit.entity.EntityType
+                    .valueOf(n.toUpperCase()
+                            .replace(" ", "_"))
+                    .name();
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
     public List<String> checkInBiome(
             String player,
@@ -1776,6 +2155,23 @@ public class QuestTracker {
         String category =
                 mapBiomeCategory(
                         rawBiomeKey, worldName);
+        // 结构检测（覆盖纯生物群系分类）
+        // 地下检测：Y低于表面则归类为地下
+// 覆盖废弃矿井/试炼密室/要塞/远古城市等
+        try {
+            org.bukkit.World uw =
+                    Bukkit.getWorld(worldName);
+            if (uw != null) {
+                int surfaceY = uw
+                        .getHighestBlockYAt(
+                                (int) Math.floor(x),
+                                (int) Math.floor(z));
+                if (y < surfaceY - 8) {
+                    category = "地下";
+                }
+            }
+        } catch (Exception ignored) {}
+
 
         // 记录总打卡
         int allCur = getCounter(
@@ -1849,6 +2245,344 @@ public class QuestTracker {
         }
 
         return matched;
+    }
+
+    /*
+     * 打卡入口：报告坐标 → 32格去重 → 匹配条件 → 记录
+     */
+    public String checkInAtPosition(
+            String player, String worldName,
+            double x, double y, double z) {
+
+        List<double[]> history =
+                loadCheckInPositions(player);
+        for (double[] pos : history) {
+            double dist = Math.sqrt(
+                    Math.pow(x - pos[0], 2)
+                            + Math.pow(y - pos[1], 2)
+                            + Math.pow(z - pos[2], 2));
+            if (dist <= 32) {
+                return "§c距离上次打卡点太近（"
+                        + String.format(
+                        "%.0f", dist)
+                        + "格）";
+            }
+        }
+
+        // ===== 获取群系和分类 =====
+        String biome = "minecraft:plains";
+        String category = "平原";
+        try {
+            org.bukkit.World w =
+                    Bukkit.getWorld(worldName);
+            if (w != null) {
+                org.bukkit.Location loc =
+                        new org.bukkit.Location(
+                                w,
+                                (int) Math.floor(x),
+                                (int) Math.floor(y),
+                                (int) Math.floor(z));
+                biome = loc.getBlock()
+                        .getBiome().getKey()
+                        .toString();
+                category = mapBiomeCategory(
+                        biome, worldName);
+
+                int surfaceY = w
+                        .getHighestBlockYAt(
+                                (int) Math.floor(x),
+                                (int) Math.floor(z));
+                if (y < surfaceY - 8) {
+                    category = "地下";
+                }
+
+                if ("下界".equals(category)
+                        || w.getEnvironment()
+                        == org.bukkit.World
+                        .Environment.NETHER) {
+                    category = "下界";
+                } else if ("末地".equals(category)
+                        || w.getEnvironment()
+                        == org.bukkit.World
+                        .Environment.THE_END) {
+                    category = "末地";
+                }
+            }
+        } catch (Exception ex) {
+            plugin.getLogger().warning(
+                    "[QuestTracker] 群系读取失败: "
+                            + ex.getMessage());
+        }
+
+        plugin.getLogger().info(
+                "[QuestTracker] 打卡: "
+                        + player
+                        + " world=" + worldName
+                        + " biome=" + biome
+                        + " cat=" + category
+                        + " pos="
+                        + String.format(
+                        "%.0f,%.0f,%.0f",
+                        x, y, z));
+
+        saveCheckInPosition(
+                player, x, y, z);
+        recordCheckIn(
+                player, biome, category,
+                worldName, x, y, z);
+        List<String> matched =
+                checkInBiome(
+                        player, biome,
+                        worldName, x, y, z);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("§a打卡成功！群系: §e")
+                .append(category);
+        if (!matched.isEmpty()) {
+            sb.append("\n§a完成任务条件:");
+            for (String m : matched) {
+                String qn =
+                        findQuestName(m);
+                sb.append("\n§7• ");
+                if (qn != null) {
+                    sb.append("§e[")
+                            .append(qn)
+                            .append("§7] §f");
+                }
+                sb.append(m);
+            }
+        }
+        return sb.toString();
+    }
+
+
+        /**
+         * 根据条件文本查找所属任务名
+         */
+    private String findQuestName(
+            String condition) {
+        for (String cat : Arrays.asList(
+                "新人任务",
+                "主线任务",
+                "支线任务")) {
+            for (QuestFile qf :
+                    getQuests(cat)) {
+                if (qf.conditions.contains(
+                        condition)) {
+                    return qf.displayName;
+                }
+            }
+        }
+        return null;
+    }
+
+
+    /**
+     * 加载玩家所有历史打卡坐标
+     * 格式: x1,y1,z1;x2,y2,z2;...
+     */
+    private List<double[]> loadCheckInPositions(
+            String player) {
+        List<double[]> list = new ArrayList<>();
+        Object val = storage.getCondition(
+                player, "checkin_all_pos");
+        if (val == null) return list;
+        String data = val.toString();
+        if (data.isEmpty()) return list;
+        String[] records = data.split(";");
+        for (String r : records) {
+            String[] parts = r.split(",");
+            if (parts.length >= 3) {
+                try {
+                    list.add(new double[]{
+                            Double.parseDouble(parts[0]),
+                            Double.parseDouble(parts[1]),
+                            Double.parseDouble(parts[2])});
+                } catch (NumberFormatException e) {
+                    // 跳过损坏数据
+                }
+            }
+        }
+        return list;
+    }
+
+    /**
+     * 保存打卡坐标（追加到已有记录）
+     */
+    private void saveCheckInPosition(
+            String player, double x,
+            double y, double z) {
+        List<double[]> list =
+                loadCheckInPositions(player);
+        list.add(new double[]{x, y, z});
+        StringBuilder sb = new StringBuilder();
+        for (double[] pos : list) {
+            if (sb.length() > 0) sb.append(";");
+            sb.append(pos[0]).append(",")
+                    .append(pos[1]).append(",")
+                    .append(pos[2]);
+        }
+        storage.setConditionRaw(
+                player,
+                "checkin_all_pos",
+                sb.toString());
+    }
+    // ========== 中文生物名 → EntityType 映射 ==========
+    private static final Map<String, String>
+            MOB_NAME_MAP = new HashMap<>();
+    static {
+        MOB_NAME_MAP.put("洞穴蜘蛛", "CAVE_SPIDER");
+        MOB_NAME_MAP.put("骷髅", "SKELETON");
+        MOB_NAME_MAP.put("僵尸", "ZOMBIE");
+        MOB_NAME_MAP.put("苦力怕", "CREEPER");
+        MOB_NAME_MAP.put("蜘蛛", "SPIDER");
+        MOB_NAME_MAP.put("末影人", "ENDERMAN");
+        MOB_NAME_MAP.put("女巫", "WITCH");
+        MOB_NAME_MAP.put("烈焰人", "BLAZE");
+        MOB_NAME_MAP.put("僵尸猪灵",
+                "ZOMBIFIED_PIGLIN");
+        MOB_NAME_MAP.put("猪灵", "PIGLIN");
+        MOB_NAME_MAP.put("恶魂", "GHAST");
+        MOB_NAME_MAP.put("凋灵骷髅",
+                "WITHER_SKELETON");
+        MOB_NAME_MAP.put("史莱姆", "SLIME");
+        MOB_NAME_MAP.put("岩浆怪", "MAGMA_CUBE");
+        MOB_NAME_MAP.put("溺尸", "DROWNED");
+        MOB_NAME_MAP.put("尸壳", "HUSK");
+        MOB_NAME_MAP.put("流髑", "STRAY");
+        MOB_NAME_MAP.put("幻翼", "PHANTOM");
+        MOB_NAME_MAP.put("守卫者", "GUARDIAN");
+        MOB_NAME_MAP.put("远古守卫者",
+                "ELDER_GUARDIAN");
+        MOB_NAME_MAP.put("掠夺者", "PILLAGER");
+        MOB_NAME_MAP.put("卫道士", "VINDICATOR");
+        MOB_NAME_MAP.put("唤魔者", "EVOKER");
+        MOB_NAME_MAP.put("恼鬼", "VEX");
+        MOB_NAME_MAP.put("劫掠兽", "RAVAGER");
+        MOB_NAME_MAP.put("潜影贝", "SHULKER");
+        MOB_NAME_MAP.put("末影螨", "ENDERMITE");
+        MOB_NAME_MAP.put("凋灵", "WITHER");
+        MOB_NAME_MAP.put("末影龙", "ENDER_DRAGON");
+        MOB_NAME_MAP.put("监守者", "WARDEN");
+        MOB_NAME_MAP.put("嗅探兽", "SNIFFER");
+        MOB_NAME_MAP.put("僵尸村民",
+                "ZOMBIE_VILLAGER");
+    }
+
+    /**
+     * 从条件文本中提取所有匹配的生物类型
+     * 按名称长度降序匹配，避免短名误匹配
+     */
+    private List<String> extractMobTypes(
+            String text) {
+        List<String> types = new ArrayList<>();
+        List<Map.Entry<String, String>> sorted =
+                new ArrayList<>(
+                        MOB_NAME_MAP.entrySet());
+        sorted.sort((a, b) ->
+                b.getKey().length()
+                        - a.getKey().length());
+        String remaining = text;
+        for (Map.Entry<String, String> entry
+                : sorted) {
+            if (remaining.contains(
+                    entry.getKey())) {
+                if (!types.contains(
+                        entry.getValue())) {
+                    types.add(entry.getValue());
+                }
+                remaining = remaining.replace(
+                        entry.getKey(), "");
+            }
+        }
+        return types;
+    }
+
+    /**
+     * EntityType → 中文名
+     */
+    private String reverseMobName(
+            String entityType) {
+        for (Map.Entry<String, String> entry
+                : MOB_NAME_MAP.entrySet()) {
+            if (entry.getValue()
+                    .equals(entityType)) {
+                return entry.getKey();
+            }
+        }
+        return entityType;
+    }
+
+    /**
+     * 从条件文本中提取矿物名
+     * "采集任意矿物(煤炭除外)1组"
+     * → [COAL_ORE, IRON_ORE, GOLD_ORE, ...]
+     */
+    private List<String> extractMaterialTypes(
+            String text) {
+        List<String> types = new ArrayList<>();
+        // 排除列表
+        List<String> excludes =
+                new ArrayList<>();
+        if (text.contains("煤炭除外")) {
+            excludes.add("COAL");
+            excludes.add("COAL_ORE");
+            excludes.add("DEEPSLATE_COAL_ORE");
+        }
+        // 通配符："矿物" "矿石"
+        if (text.contains("矿物")
+                || text.contains("矿石")) {
+            String[] ores = {
+                    "COAL_ORE",
+                    "DEEPSLATE_COAL_ORE",
+                    "IRON_ORE",
+                    "DEEPSLATE_IRON_ORE",
+                    "COPPER_ORE",
+                    "DEEPSLATE_COPPER_ORE",
+                    "GOLD_ORE",
+                    "DEEPSLATE_GOLD_ORE",
+                    "DIAMOND_ORE",
+                    "DEEPSLATE_DIAMOND_ORE",
+                    "EMERALD_ORE",
+                    "DEEPSLATE_EMERALD_ORE",
+                    "LAPIS_ORE",
+                    "DEEPSLATE_LAPIS_ORE",
+                    "REDSTONE_ORE",
+                    "DEEPSLATE_REDSTONE_ORE",
+                    "NETHER_GOLD_ORE",
+                    "NETHER_QUARTZ_ORE",
+                    "ANCIENT_DEBRIS"
+            };
+            for (String ore : ores) {
+                if (!excludes.contains(ore)) {
+                    types.add(ore);
+                }
+            }
+            return types;
+        }
+        // 单个矿物名
+        if (text.contains("煤炭"))
+            types.add("COAL");
+        if (text.contains("铁矿")
+                || text.contains("铁锭"))
+            types.add("RAW_IRON");
+        if (text.contains("金矿")
+                || text.contains("金锭"))
+            types.add("RAW_GOLD");
+        if (text.contains("钻石"))
+            types.add("DIAMOND");
+        if (text.contains("绿宝石"))
+            types.add("EMERALD");
+        if (text.contains("青金石"))
+            types.add("LAPIS_LAZULI");
+        if (text.contains("红石"))
+            types.add("REDSTONE");
+        if (text.contains("铜"))
+            types.add("RAW_COPPER");
+        if (text.contains("下界石英")
+                || text.contains("石英"))
+            types.add("QUARTZ");
+        return types;
     }
 
 
@@ -2108,6 +2842,16 @@ public class QuestTracker {
             }
         }
 
+        if (key.contains("村民")
+                && key.contains("交易")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            return getCounter(
+                    player, "VILLAGER_TRADE")
+                    >= needed;
+        }
+
+
         if (key.startsWith("KILL_PLAYER")) {
             String[] p = key.split(":");
             int n = p.length >= 2
@@ -2200,6 +2944,63 @@ public class QuestTracker {
             }
             return true;
         }
+        // ===== 泛解析：击杀类中文条件 =====
+        if (key.contains("击杀") || key.contains("猎杀")
+                || key.contains("消灭")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            List<String> mobTypes = extractMobTypes(key);
+            if (!mobTypes.isEmpty()) {
+                int total = 0;
+                for (String mobType : mobTypes) {
+                    total += getCounter(player,
+                            "KILL:" + mobType);
+                }
+                return total >= needed;
+            }
+        }
+
+        // ===== 泛解析：村民交易条件 =====
+        if (key.contains("交易")
+                && (key.contains("村民")
+                || key.contains("与村民"))) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            return getCounter(player, "TRADE")
+                    >= needed;
+        }
+
+        // ===== 泛解析：采集/挖矿类条件 =====
+        if (key.contains("采集") || key.contains("挖")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            List<String> matTypes =
+                    extractMaterialTypes(key);
+            if (!matTypes.isEmpty()) {
+                int total = 0;
+                for (String mat : matTypes) {
+                    total += getCounter(player,
+                            "MINE:" + mat);
+                }
+                return total >= needed;
+            }
+        }
+
+        // ===== 泛解析：合成类条件 =====
+        if (key.contains("合成") || key.contains("制作")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            return getCounter(player, "CRAFT")
+                    >= needed;
+        }
+
+        // ===== 泛解析：钓鱼类条件 =====
+        if (key.contains("钓鱼") || key.contains("钓")) {
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
+            return getCounter(player, "FISH")
+                    >= needed;
+        }
 
         return false;
     }
@@ -2269,6 +3070,12 @@ public class QuestTracker {
             // 忽略
         }
         return 0;
+    }
+
+    public void onVillagerTrade(String player) {
+        String key = "VILLAGER_TRADE";
+        int cur = getCounter(player, key);
+        setCounter(player, key, cur + 1);
     }
 
     private long getCounterLong(

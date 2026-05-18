@@ -22,7 +22,7 @@ public class GiftManager {
     public GiftManager(Main plugin) {
         this.plugin = plugin;
         this.giftFolder = new File(
-                plugin.getDataFolder(), "新人礼包");
+                plugin.getDataFolder(), "任务面板");
     }
 
     public void loadStages() {

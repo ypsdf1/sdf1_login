@@ -37,6 +37,16 @@ public class ChatFilterManager {
     private boolean notifyAdmin = true;
     private boolean notifyAll = false;
     private int muteDuration = 300;
+    private boolean enabled = true;
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean v) {
+        enabled = v;
+    }
+
 
     private static final Pattern URL_PATTERN =
             Pattern.compile(
@@ -106,6 +116,7 @@ public class ChatFilterManager {
                 if (line.startsWith("\uFEFF"))
                     line = line.substring(1);
                 String t = line.trim();
+
                 if (t.isEmpty()
                         || t.startsWith("#"))
                     continue;
@@ -128,6 +139,12 @@ public class ChatFilterManager {
                     String[] kv = t.split(":", 2);
                     String k = kv[0].trim();
                     String v = kv[1].trim();
+                    if (equals("启用过滤")
+                            || equals("enabled")) {
+                        enabled = parseBool(v);
+                        continue;
+                    }
+
                     if (k.equals("通知管理员")) {
                         notifyAdmin = parseBool(v);
                         continue;
@@ -238,6 +255,7 @@ public class ChatFilterManager {
                         new FileOutputStream(f),
                         StandardCharsets.UTF_8))) {
             pw.println("# Sdf1_chat 聊天过滤配置");
+            pw.println("启用过滤: " + enabled);
             pw.println("通知管理员: true");
             pw.println("全服通报: false");
             pw.println("禁言时长: 300");

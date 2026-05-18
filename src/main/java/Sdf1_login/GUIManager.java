@@ -30,7 +30,6 @@ public class GUIManager {
     public GUIManager(Main plugin) {
         this.plugin = plugin;
     }
-
     public void openMain(Player p) {
         Inventory g = Bukkit.createInventory(
                 null, 27, T_MAIN);
@@ -42,17 +41,21 @@ public class GUIManager {
         g.setItem(14, mkItem(Material.EMERALD,
                 "§d§l积分商城"));
         g.setItem(16, mkItem(Material.CHEST,
-                "§e§l新人礼包"));
-        g.setItem(18, mkItem(Material.BOOK,
+                "§e§l任务中心"));
+        g.setItem(18, mkItem(Material.EMERALD_BLOCK,
+                "§a§l每日签到",
+                "§7签到获取积分和惊喜奖励"));
+        g.setItem(20, mkItem(Material.BOOK,
                 "§6工单系统",
                 "§7提交bug、求助、举报"));
         if (p.isOp() || isAdmin(p)) {
-            g.setItem(20, mkItem(Material.CHEST,
+            g.setItem(22, mkItem(Material.CHEST,
                     "§6垃圾回收站",
                     "§7查看和取回清理的物品"));
         }
         if (isAdmin(p)) {
-            g.setItem(22, mkItem(Material.REDSTONE_BLOCK,
+            g.setItem(24, mkItem(
+                    Material.REDSTONE_BLOCK,
                     "§c§l管理员面板"));
         }
         p.openInventory(g);
@@ -107,6 +110,70 @@ public class GUIManager {
     }
 
     // 在 openGiftStages 方法之前添加：
+    public void openGiftStages(Player p) {
+        Inventory g = Bukkit.createInventory(
+                null, 27, T_GIFT_STAGES);
+        fillBg(g);
+
+        QuestTracker qt =
+                plugin.getQuestTracker();
+        if (qt == null) {
+            g.setItem(22, mkItem(
+                    Material.BARRIER,
+                    "§7任务系统未加载"));
+            p.openInventory(g);
+            return;
+        }
+
+        List<QuestTracker.QuestFile> quests =
+                qt.getQuests("新人任务");
+        String playerName = p.getName();
+
+        int max = quests.size();
+        for (int i = 0;
+             i < max && i < 9; i++) {
+            QuestTracker.QuestFile qf =
+                    quests.get(i);
+            boolean completed =
+                    qt.isStageCompleted(
+                            playerName, qf);
+            boolean claimed =
+                    qt.hasClaimed(
+                            playerName, qf);
+
+            Material mat;
+            String status;
+            if (completed && claimed) {
+                mat = Material.LIME_WOOL;
+                status = "§a已领取";
+            } else if (completed) {
+                mat = Material.YELLOW_WOOL;
+                status = "§e可领取";
+            } else {
+                mat = Material.RED_WOOL;
+                status = "§c未达标";
+            }
+
+            List<String> lore =
+                    new ArrayList<>();
+            lore.add("§7" + status);
+            for (String cond :
+                    qf.conditions) {
+                String progress =
+                        qt.getProgress(
+                                playerName, cond);
+                lore.add("§7" + progress);
+            }
+
+            g.setItem(10 + i, mkItem(mat,
+                    "§e" + qf.displayName,
+                    lore.toArray(
+                            new String[0])));
+        }
+        g.setItem(26, mkItem(Material.ARROW,
+                "§7返回"));
+        p.openInventory(g);
+    }
 
     /**
      * 获取任务列表（带真实完成状态）
@@ -408,72 +475,27 @@ public class GUIManager {
         g.setItem(10, mkItem(Material.BOOK,
                 "§e§l新人任务",
                 "§7完成新手阶段获取奖励"));
-        g.setItem(12, mkItem(Material.COMPASS,
+        g.setItem(12, mkItem(Material.MAP,
+                "§a§l群系打卡",
+                "§7在不同群系打卡完成任务",
+                "§7打卡范围: 32格去重"));
+        g.setItem(14, mkItem(Material.COMPASS,
                 "§b§l主线任务",
                 "§7查看主线任务列表"));
-        g.setItem(14, mkItem(Material.PAPER,
+        g.setItem(16, mkItem(Material.PAPER,
                 "§a§l支线任务",
                 "§7查看支线任务列表"));
-        g.setItem(16, mkItem(Material.EMERALD,
-                "§d§l每日签到",
-                "§7签到获取积分"));
-        g.setItem(22, mkItem(Material.ARROW, "§7返回"));
+        g.setItem(18, mkItem(Material.BOOK,
+                "§6工单系统",
+                "§7提交bug、求助、举报"));
+        g.setItem(20, mkItem(Material.EMERALD,
+                "§a§l每日签到",
+                "§7签到获取积分和奖励"));
+        g.setItem(22, mkItem(Material.ARROW,
+                "§7返回"));
         p.openInventory(g);
     }
-    public void openGiftStages(Player p) {
-        Inventory g = Bukkit.createInventory(
-                null, 27, T_GIFT_STAGES);
-        fillBg(g);
 
-        QuestTracker qt = plugin.getQuestTracker();
-        if (qt == null) {
-            g.setItem(22, mkItem(Material.BARRIER,
-                    "§7任务系统未加载"));
-            p.openInventory(g);
-            return;
-        }
-
-        List<QuestTracker.QuestFile> quests =
-                qt.getQuests("新人任务");
-        String playerName = p.getName();
-
-        int max = quests.size();
-        for (int i = 0; i < max && i < 9; i++) {
-            QuestTracker.QuestFile qf = quests.get(i);
-            boolean completed =
-                    qt.isStageCompleted(playerName, qf);
-            boolean claimed =
-                    qt.hasClaimed(playerName, qf);
-
-            Material mat;
-            String status;
-            if (completed && claimed) {
-                mat = Material.LIME_WOOL;
-                status = "§a已领取";
-            } else if (completed) {
-                mat = Material.YELLOW_WOOL;
-                status = "§e可领取";
-            } else {
-                mat = Material.RED_WOOL;
-                status = "§c未达标";
-            }
-
-            // 显示进度
-            List<String> lore = new ArrayList<>();
-            lore.add("§7" + status);
-            for (String cond : qf.conditions) {
-                String progress =
-                        qt.getProgress(playerName, cond);
-                lore.add("§7" + progress);
-            }
-
-            g.setItem(10 + i, mkItem(mat,
-                    "§e" + qf.displayName,
-                    lore.toArray(new String[0])));
-        }
-        g.setItem(26, mkItem(Material.ARROW, "§7返回"));
-        p.openInventory(g);
-    }
 
 
     public void openTaskList(Player p, String folderName) {
@@ -551,6 +573,7 @@ public class GUIManager {
                     lore.toArray(new String[0])));
             slot++;
         }
+
 
         g.setItem(53, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);

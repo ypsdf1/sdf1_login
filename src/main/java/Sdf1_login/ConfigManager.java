@@ -4,14 +4,15 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
-import static java.lang.Double.parseDouble;
-
 public class ConfigManager {
 
     private final File dataFolder;
-    private final Map<String, String> messages = new LinkedHashMap<>();
-    private final Map<String, String> smtpSettings = new LinkedHashMap<>();
+    private final Map<String, String> messages =
+            new LinkedHashMap<>();
+    private final Map<String, String> smtpSettings =
+            new LinkedHashMap<>();
 
+    // ===== 公共字段 =====
     public String adminTag = "admin";
     public String adminPassword = "qweasd";
     public int maxAccountsPerIP = 3;
@@ -27,9 +28,26 @@ public class ConfigManager {
     public String smtpConfiguringPlayer = "";
     public String broadcastServerUrl = "";
     public int httpPort = 8080;
-    public String garbageTag= "admin";
+    public String garbageTag = "admin";
 
+    // 签到经济奖励
+    public double checkinRewardFixed = 0;
+    public double checkinRewardMin = 0;
+    public double checkinRewardMax = 0;
+    public boolean checkinGivePoints = true;
+    public int checkinPoints = 10;
+    public String checkinRewardType = "none";
+    public int backCheckPointMultiplier = 5;
+    // 提成/工单
+    public double providerPointsPerScore = 2.0;
+    public int baseEconomyReward = 100;
+    public double providerEconomyPerScore = 50.0;
+    public int requesterPointsReward = 10;
 
+    // 垃圾站
+    public boolean garbageEnabled = true;
+    public int garbageInterval = 300;
+    public int garbageMaxRounds = 1;
 
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
@@ -39,232 +57,132 @@ public class ConfigManager {
 
     public void loadMessages() {
         messages.clear();
-        File file = new File(dataFolder, "消息.txt");
-        if (!file.exists()) createDefaultMessages(file);
+        File file =
+                new File(dataFolder, "消息.txt");
+        if (!file.exists())
+            createDefaultMessages(file);
         loadMap(file, messages);
     }
 
     public String msg(String key) {
-        String val = messages.getOrDefault(key, key);
+        String val =
+                messages.getOrDefault(key, key);
         val = val.replace("<b>", "&l");
         val = val.replace("</b>", "&r");
         val = val.replace("<br>", "\n");
         val = val.replace("\\n", "\n");
-        // &颜色码 转换为 §颜色码
         val = val.replaceAll(
                 "&([0-9a-fk-orA-FK-OR])", "§$1");
         return val;
     }
 
-
     private void createDefaultMessages(File f) {
         List<String> L = new ArrayList<>();
-        L.add("# ==========================================");
-        L.add("#      Sdf1_login 消息配置文件");
-        L.add("# ==========================================");
-        L.add("# 颜色代码使用 § 符号");
-        L.add("#   §0黑色 §1深蓝 §2深绿 §3深青");
-        L.add("#   §4深红 §5深紫 §6金色 §7灰色");
-        L.add("#   §8深灰 §9蓝色 §a绿色 §b浅蓝");
-        L.add("#   §c红色 §d粉色 §e黄色 §f白色");
-        L.add("#   §l粗体 §n下划线 §o斜体 §r重置");
-        L.add("#");
-        L.add("# 占位符用 {xxx} 表示，运行时自动替换");
-        L.add("# 支持 <b>粗体</b> 标签");
-        L.add("# 支持 \\n 或 <br> 换行");
-        L.add("# 修改后执行 /sdf1_login reload 重载");
-        L.add("# ==========================================");
+        L.add("# ===== Sdf1_login 消息配置 =====");
+        L.add("# 占位符用 {xxx} 表示");
+        L.add("# 修改后执行 /sdf1_login reload");
         L.add("");
 
-        // --- 登录/注册 ---
-        L.add("# ---- 登录注册相关 ----");
-        L.add("# login_timeout: 登录超时被踢出时的提示");
+        L.add("# ---- 登录注册 ----");
         L.add("login_timeout=§c登录超时，请重新登录");
-        L.add("# not_registered: 未注册玩家收到的提示");
         L.add("not_registered=§e您尚未注册，请使用 /reg <密码>");
-        L.add("# not_logged_in: 已注册但未登录的提示");
         L.add("not_logged_in=§e您尚未登录，请使用 /login <密码>");
-        L.add("# already_registered: 已注册玩家再次注册时的提示");
         L.add("already_registered=§c您已注册过账号");
-        L.add("# already_logged_in: 已登录玩家再次登录时的提示");
         L.add("already_logged_in=§c您已登录");
-        L.add("# reg_success: 注册成功提示");
         L.add("reg_success=§a注册成功！欢迎来到服务器");
-        L.add("# login_success: 登录成功提示");
         L.add("login_success=§a登录成功！");
-        L.add("# login_failed: 密码错误提示");
         L.add("login_failed=§c密码错误，请重试");
         L.add("");
 
-        // --- 密码 ---
-        L.add("# ---- 密码相关 ----");
-        L.add("# password_wrong: 旧密码验证失败");
+        L.add("# ---- 密码 ----");
         L.add("password_wrong=§c密码错误");
-        L.add("# password_changed: 密码修改成功");
         L.add("password_changed=§a密码修改成功！");
-        L.add("# password_format_error: 密码格式不符合要求");
         L.add("password_format_error=§c密码需6位以上，含大小写字母和数字");
-        L.add("# password_same: 新密码与旧密码相同");
         L.add("password_same=§c新密码不能与旧密码相同");
-        L.add("# reset_no_email: 找回密码时未绑定邮箱");
         L.add("reset_no_email=§c您未绑定邮箱，无法找回密码");
-        L.add("# reset_sent: 临时密码已发送到邮箱");
-        L.add("reset_sent=§a临时密码已发送到您的邮箱，请查收");
+        L.add("reset_sent=§a临时密码已发送到您的邮箱");
         L.add("");
 
-        // --- 签到积分 ---
-        L.add("# ---- 签到积分相关 ----");
-        L.add("# checkin_already: 今日已签到");
+        L.add("# ---- 签到积分 ----");
         L.add("checkin_already=§c您今日已签到");
-        L.add("# checkin_success: 签到成功，{points}=获得积分 {streak}=连续天数 {multi}=倍率");
-        L.add("checkin_success=§a签到成功！获得 {points} 积分，连续 {streak} 天，倍率 x{multi}");
-        L.add("# points_insufficient: 积分不足");
+        L.add("checkin_success=§a签到成功！获得 {points} 积分");
         L.add("points_insufficient=§c积分不足，当前: {points}");
-        L.add("# points_purchase_success: 积分购买成功");
         L.add("points_purchase_success=§a购买成功！消耗 {count} 积分");
         L.add("");
 
-        // --- 挂机 ---
-        L.add("# ---- 挂机检测相关 ----");
-        L.add("# afk_set_enabled: 挂机检测开启");
+        L.add("# ---- 挂机检测 ----");
         L.add("afk_set_enabled=§a挂机检测已开启");
-        L.add("# afk_set_disabled: 挂机检测关闭");
         L.add("afk_set_disabled=§c挂机检测已关闭");
-        L.add("# afk_kick: 因挂机被踢出");
         L.add("afk_kick=§c因挂机过久被踢出");
         L.add("");
 
-        // --- 邮箱 ---
-        L.add("# ---- 邮箱相关 ----");
-        L.add("# email_set: 邮箱设置成功");
+        L.add("# ---- 邮箱 ----");
         L.add("email_set=§a邮箱设置成功：{email}");
-        L.add("# email_format_error: 邮箱格式错误");
         L.add("email_format_error=§c邮箱格式不正确");
         L.add("");
 
-        // --- 邀请 ---
-        L.add("# ---- 邀请相关 ----");
-        L.add("# invite_code_generated: 邀请码生成");
+        L.add("# ---- 邀请 ----");
         L.add("invite_code_generated=§a邀请码：{code}");
-        L.add("# invite_used: 使用邀请码成功");
         L.add("invite_used=§a邀请成功，邀请人：{player}");
-        L.add("# invite_self: 使用自己的邀请码");
         L.add("invite_self=§c不能使用自己的邀请码");
-        L.add("# invite_not_found: 邀请码不存在");
         L.add("invite_not_found=§c邀请码不存在");
-        L.add("# invite_referral_bonus: 被邀请人签到后邀请人获得奖励");
         L.add("invite_referral_bonus=§a邀请奖励！获得 {points} 积分");
         L.add("");
 
-        // --- 礼包 ---
-        L.add("# ---- 新人礼包相关 ----");
-        L.add("# gift_not_ready: 礼包条件未满足");
+        L.add("# ---- 礼包 ----");
         L.add("gift_not_ready=§c礼包条件未满足");
-        L.add("# gift_claimed: 礼包领取成功");
         L.add("gift_claimed=§a礼包领取成功！");
         L.add("");
 
-        // --- 审批/IP ---
-        L.add("# ---- 审批与IP限制 ----");
-        L.add("# need_approval: 注册需审批");
+        L.add("# ---- 审批与IP ----");
         L.add("need_approval=§e注册需审批 (工单#{id})");
-        L.add("# ip_max_accounts: IP注册已达上限");
         L.add("ip_max_accounts=§cIP注册已达上限");
         L.add("");
 
-        // --- 管理员 ---
-        L.add("# ---- 管理员操作 ----");
-        L.add("# admin_delete_confirm: 管理员删除账号确认提示");
+        L.add("# ---- 管理员 ----");
         L.add("admin_delete_confirm=§c请在聊天中输入玩家名确认删除");
         L.add("");
 
-        // --- 聊天过滤 ---
         L.add("# ---- 聊天过滤 ----");
-        L.add("# chat_muted: 禁言玩家尝试聊天");
-        L.add("chat_muted=§c§l[Sdf1_chat] §f你已被禁言，无法聊天");
-        L.add("# chat_url_blocked: 发送违规链接被拦截");
-        L.add("# {url}=检测到的链接地址");
-        L.add("chat_url_blocked=§c§l[Sdf1_chat] §f检测到违规第三方链接: §e{url}");
-        L.add("# chat_url_violation: 当前违规次数");
-        L.add("# {count}=当前违规次数");
+        L.add("chat_muted=§c§l[Sdf1_chat] §f你已被禁言");
+        L.add("chat_url_blocked=§c§l[Sdf1_chat] §f检测到违规链接: §e{url}");
         L.add("chat_url_violation=§7当前违规次数: §e{count}");
-        L.add("# chat_url_admin_notify: 通知管理员，{player}=玩家名 {url}=链接 {count}=次数");
-        L.add("chat_url_admin_notify=§e§l[Sdf1_chat] §f{player} 发送违规链接: {url} (第{count}次)");
-        L.add("# chat_url_broadcast: 全服通报，{player}=玩家名");
+        L.add("chat_url_admin_notify=§e§l[Sdf1_chat] §f{player} 发送违规链接: {url}");
         L.add("chat_url_broadcast=§c§l[Sdf1_chat] §e{player} §f因发送违规链接被处罚");
         L.add("");
 
-        // --- 通用 ---
         L.add("# ---- 通用 ----");
-        L.add("# 未知参数: 未知命令或权限不足时的提示");
         L.add("未知参数=§c未知参数或权限不足");
-        L.add("# only_player: 仅玩家可用的命令");
-        L.add("# only_player=§c此命令仅玩家可用");
 
         writeLines(f, L);
     }
-
 
     // ==================== SMTP ====================
 
     public void loadSmtp() {
         smtpSettings.clear();
-        File file = new File(dataFolder, "SMTP设置.txt");
-        if (!file.exists()) createDefaultSmtp(file);
+        File file =
+                new File(dataFolder, "SMTP设置.txt");
+        if (!file.exists())
+            createDefaultSmtp(file);
         loadMap(file, smtpSettings);
-    }
-    private double parseDouble(String s, double def) {
-        try { return Double.parseDouble(s.trim()); }
-        catch (Exception e) { return def; }
     }
 
     public String getSmtp(String key) {
         return smtpSettings.getOrDefault(key, "");
     }
-    /** 获取挂机白名单列表 */
-    public List<String> getAfkWhitelist() {
-        List<String> list = new ArrayList<>();
-        File file = new File(dataFolder, "挂机白名单.txt");
-        if (!file.exists()) {
-            try {
-                file.createNewFile();
-                try (BufferedWriter w = new BufferedWriter(
-                        new OutputStreamWriter(
-                                new FileOutputStream(file),
-                                StandardCharsets.UTF_8))) {
-                    w.write("# 每行一个玩家名，前面加 # 为注释");
-                    w.newLine();
-                    w.write("# 以下玩家不会被挂机踢出");
-                    w.newLine();
-                }
-            } catch (IOException ignored) {}
-        }
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(
-                        new FileInputStream(file),
-                        StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
-                line = line.trim();
-                if (!line.isEmpty() && !line.startsWith("#")) {
-                    list.add(line);
-                }
-            }
-        } catch (IOException ignored) {}
-        return list;
-    }
 
-    /** 设置SMTP单项（聊天输入用） */
     public void setSmtp(String key, String value) {
         smtpSettings.put(key, value);
     }
 
-    /** 将当前SMTP设置写回文件 */
     public void saveSmtp() {
-        File file = new File(dataFolder, "SMTP设置.txt");
+        File file =
+                new File(dataFolder, "SMTP设置.txt");
         List<String> L = new ArrayList<>();
         L.add("# ===== SMTP 邮件服务器配置 =====");
-        for (Map.Entry<String, String> e : smtpSettings.entrySet()) {
+        for (Map.Entry<String, String> e
+                : smtpSettings.entrySet()) {
             L.add(e.getKey() + "=" + e.getValue());
         }
         writeLines(file, L);
@@ -285,17 +203,25 @@ public class ConfigManager {
     // ==================== 插件设置 ====================
 
     public void loadSettings() {
-        File file = new File(dataFolder, "插件设置.txt");
-        if (!file.exists()) createDefaultSettings(file);
-        Map<String, String> m = new LinkedHashMap<>();
+        File file =
+                new File(dataFolder, "插件设置.txt");
+        if (!file.exists())
+            createDefaultSettings(file);
+        Map<String, String> m =
+                new LinkedHashMap<>();
         loadMap(file, m);
-        adminTag = m.getOrDefault("管理标签", adminTag);
-        adminPassword = m.getOrDefault("管理密码", adminPassword);
+
+        adminTag = m.getOrDefault(
+                "管理标签", adminTag);
+        adminPassword = m.getOrDefault(
+                "管理密码", adminPassword);
         maxAccountsPerIP = parseInt(
                 m.getOrDefault("每IP最大账号数", "3"), 3);
-        approvalMode = m.getOrDefault("审批模式", approvalMode);
+        approvalMode = m.getOrDefault(
+                "审批模式", approvalMode);
         autoApproveDelayMinutes = parseInt(
-                m.getOrDefault("自动审批延迟分钟", "30"), 30);
+                m.getOrDefault("自动审批延迟分钟", "30"),
+                30);
         loginTimeout = parseInt(
                 m.getOrDefault("登录超时秒数", "60"), 60);
         afkEnabled = Boolean.parseBoolean(
@@ -304,56 +230,106 @@ public class ConfigManager {
                 m.getOrDefault("挂机超时秒数", "300"), 300);
         smtpSsl = Boolean.parseBoolean(
                 m.getOrDefault("smtp加密", "true"));
+        httpPort = parseInt(
+                m.getOrDefault("http-port", "8080"),
+                8080);
+        broadcastServerUrl = m.getOrDefault(
+                "resource-pack-url", "");
+
+        // 提成
         providerPointsPerScore = parseDouble(
-                m.getOrDefault("服务商积分倍率", "2.0"),
-                2.0);
+                m.getOrDefault(
+                        "服务商积分倍率", "2.0"), 2.0);
         baseEconomyReward = parseInt(
-                m.getOrDefault("基础经济奖励", "100"),
-                100);
+                m.getOrDefault(
+                        "基础经济奖励", "100"), 100);
         providerEconomyPerScore = parseDouble(
-                m.getOrDefault("经济奖励每评分", "50.0"),
-                50.0);
+                m.getOrDefault(
+                        "经济奖励每评分", "50.0"), 50.0);
         requesterPointsReward = parseInt(
-                m.getOrDefault("报单人积分奖励", "10"),
-                10);
+                m.getOrDefault(
+                        "报单人积分奖励", "10"), 10);
+
+        // 垃圾站
         garbageEnabled = Boolean.parseBoolean(
-                m.getOrDefault("垃圾站_启用", "true"));
+                m.getOrDefault(
+                        "垃圾站_启用", "true"));
         garbageInterval = parseInt(
-                m.getOrDefault("垃圾站_清理间隔秒",
-                        "300"), 300);
+                m.getOrDefault(
+                        "垃圾站_清理间隔秒", "300"), 300);
         garbageMaxRounds = parseInt(
-                m.getOrDefault("垃圾站_保留轮数",
-                        "1"), 1);
-        // loadSettings() 末尾添加：
+                m.getOrDefault(
+                        "垃圾站_保留轮数", "1"), 1);
+
+        // 签到
+        checkinRewardFixed = parseDouble(
+                m.getOrDefault(
+                        "签到固定金额", "0"), 0);
+        checkinRewardMin = parseDouble(
+                m.getOrDefault(
+                        "签到最小金额", "0"), 0);
+        checkinRewardMax = parseDouble(
+                m.getOrDefault(
+                        "签到最大金额", "0"), 0);
+        checkinGivePoints = Boolean.parseBoolean(
+                m.getOrDefault(
+                        "签到给积分", "true"));
+        checkinPoints = parseInt(
+                m.getOrDefault(
+                        "签到积分数量", "10"), 10);
+        backCheckPointMultiplier = parseInt(
+                m.getOrDefault(
+                        "补签积分倍率", "5"), 5);
+
+
+        // 自动判断模式
+        if (checkinRewardFixed > 0) {
+            checkinRewardType = "fixed";
+        } else if (checkinRewardMin > 0
+                && checkinRewardMax > 0
+                && checkinRewardMax
+                > checkinRewardMin) {
+            checkinRewardType = "range";
+        } else {
+            checkinRewardType = "none";
+        }
     }
+
     public void saveSettings() {
-        File file = new File(dataFolder, "插件设置.txt");
+        File file =
+                new File(dataFolder, "插件设置.txt");
         List<String> L = new ArrayList<>();
         L.add("# ===== Sdf1_login 插件设置 =====");
         L.add("管理标签=" + adminTag);
         L.add("管理密码=" + adminPassword);
         L.add("每IP最大账号数=" + maxAccountsPerIP);
         L.add("审批模式=" + approvalMode);
-        L.add("自动审批延迟分钟=" + autoApproveDelayMinutes);
+        L.add("自动审批延迟分钟="
+                + autoApproveDelayMinutes);
         L.add("登录超时秒数=" + loginTimeout);
         L.add("挂机踢出=" + afkEnabled);
         L.add("挂机超时秒数=" + afkTimeout);
-        // 垃圾站设置
+        L.add("# ---- 资源包 ----");
+        L.add("resource-pack-url="
+                + broadcastServerUrl);
+        L.add("http-port=" + httpPort);
         L.add("# ---- 垃圾站 ----");
         L.add("垃圾站_启用=" + garbageEnabled);
-        L.add("垃圾站_清理间隔秒=" + garbageInterval);
+        L.add("垃圾站_清理间隔秒="
+                + garbageInterval);
         L.add("垃圾站_保留轮数=" + garbageMaxRounds);
+        L.add("# ---- 签到盲盒奖励 ----");
+        L.add("签到固定金额=" + checkinRewardFixed);
+        L.add("签到最小金额=" + checkinRewardMin);
+        L.add("签到最大金额=" + checkinRewardMax);
+        L.add("签到给积分=" + checkinGivePoints);
+        L.add("签到积分数量=" + checkinPoints);
+        L.add("补签积分倍率="
+                + backCheckPointMultiplier);
 
-            writeLines(file, L);
+
+        writeLines(file, L);
     }
-    public double providerPointsPerScore = 2.0;
-    public int baseEconomyReward = 100;
-    public double providerEconomyPerScore = 50.0;
-    public int requesterPointsReward = 10;
-    public boolean garbageEnabled = true;
-    public int garbageInterval = 300;
-    public int garbageMaxRounds = 1;
-
 
     private void createDefaultSettings(File f) {
         List<String> L = new ArrayList<>();
@@ -366,100 +342,177 @@ public class ConfigManager {
         L.add("登录超时秒数=60");
         L.add("挂机踢出=false");
         L.add("挂机超时秒数=300");
-        L.add("服务商积分倍率=" + providerPointsPerScore);
-        L.add("基础经济奖励=" + baseEconomyReward);
-        L.add("经济奖励每评分=" + providerEconomyPerScore);
-        L.add("报单人积分奖励=" + requesterPointsReward);
+        L.add("# ---- 资源包 ----");
+        L.add("resource-pack-url=");
+        L.add("http-port=8080");
         L.add("# ---- 垃圾站 ----");
         L.add("垃圾站_启用=true");
         L.add("垃圾站_清理间隔秒=300");
         L.add("垃圾站_保留轮数=1");
-        L.add("# ---- 资源包(HTTP) ----");
-        L.add("resource-pack-url=");
-        L.add("http-port=8080");
+        L.add("# ---- 签到盲盒奖励 ----");
+        L.add("签到固定金额=0");
+        L.add("签到最小金额=50");
+        L.add("签到最大金额=500");
+        L.add("签到给积分=true");
+        L.add("签到积分数量=10");
+        L.add("补签积分倍率=5");
 
 
         writeLines(f, L);
     }
 
-    // ==================== 通用读写 ====================
+    // ==================== 通用工具 ====================
 
-    private void loadMap(File file, Map<String, String> map) {
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+    public List<String> getAfkWhitelist() {
+        List<String> list = new ArrayList<>();
+        File file = new File(
+                dataFolder, "挂机白名单.txt");
+        if (!file.exists()) {
+            try {
+                file.createNewFile();
+                try (BufferedWriter w =
+                             new BufferedWriter(
+                                     new OutputStreamWriter(
+                                             new FileOutputStream(
+                                                     file),
+                                             StandardCharsets
+                                                     .UTF_8))) {
+                    w.write("# 每行一个玩家名");
+                    w.newLine();
+                }
+            } catch (IOException ignored) {}
+        }
+        try (BufferedReader r =
+                     new BufferedReader(
+                             new InputStreamReader(
+                                     new FileInputStream(
+                                             file),
+                                     StandardCharsets
+                                             .UTF_8))) {
             String line;
             while ((line = r.readLine()) != null) {
                 line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
-                int eq = line.indexOf('=');
-                if (eq > 0) map.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+                if (!line.isEmpty()
+                        && !line.startsWith("#")) {
+                    list.add(line);
+                }
             }
-        } catch (IOException e) {
-            System.err.println("[Sdf1_login] 读取失败: " + file.getName());
-        }
+        } catch (IOException ignored) {}
+        return list;
     }
 
-    private void writeLines(File file, List<String> lines) {
-        try (BufferedWriter w = new BufferedWriter(
-                new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
-            for (String l : lines) { w.write(l); w.newLine(); }
-        } catch (IOException e) {
-            System.err.println("[Sdf1_login] 写入失败: " + file.getName());
-        }
-    }
-
-    private int parseInt(String s, int def) {
-        try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; }
-    }
-    /**
-     * 生成6位验证码（字母+数字）
-     */
     public String generateSmtpVerifyCode() {
         String chars =
                 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
                         + "abcdefghijklmnopqrstuvwxyz"
                         + "0123456789";
         StringBuilder sb = new StringBuilder();
-        java.util.Random r = new java.util.Random();
+        java.util.Random r =
+                new java.util.Random();
         for (int i = 0; i < 6; i++) {
-            sb.append(chars.charAt(r.nextInt(
-                    chars.length())));
+            sb.append(chars.charAt(
+                    r.nextInt(chars.length())));
         }
         smtpVerifyCode = sb.toString();
         smtpVerifyExpire =
-                System.currentTimeMillis() + 300000L;
+                System.currentTimeMillis()
+                        + 300000L;
         return smtpVerifyCode;
     }
 
-    /**
-     * 检查验证码是否有效
-     */
-    public boolean checkSmtpVerifyCode(String code) {
-        if (System.currentTimeMillis() > smtpVerifyExpire) {
+    public boolean checkSmtpVerifyCode(
+            String code) {
+        if (System.currentTimeMillis()
+                > smtpVerifyExpire) {
             smtpVerifyCode = "";
             return false;
         }
-        return smtpVerifyCode.equalsIgnoreCase(code);
+        return smtpVerifyCode
+                .equalsIgnoreCase(code);
     }
 
-    /**
-     * 清除验证码
-     */
     public void clearSmtpVerifyCode() {
         smtpVerifyCode = "";
         smtpVerifyExpire = 0;
     }
 
-    /**
-     * 检查发送间隔是否>=1分钟
-     */
     public boolean canSendSmtpVerify() {
         return System.currentTimeMillis()
                 - smtpLastSendTime >= 60000L;
     }
 
     public void recordSmtpSendTime() {
-        smtpLastSendTime = System.currentTimeMillis();
+        smtpLastSendTime =
+                System.currentTimeMillis();
     }
 
+    // ==================== 文件读写 ====================
+
+    private void loadMap(File file,
+                         Map<String, String> map) {
+        try (BufferedReader r =
+                     new BufferedReader(
+                             new InputStreamReader(
+                                     new FileInputStream(
+                                             file),
+                                     StandardCharsets
+                                             .UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty()
+                        || line.startsWith("#"))
+                    continue;
+                int eq = line.indexOf('=');
+                if (eq > 0) {
+                    map.put(
+                            line.substring(0, eq)
+                                    .trim(),
+                            line.substring(eq + 1)
+                                    .trim());
+                }
+            }
+        } catch (IOException e) {
+            System.err.println(
+                    "[Sdf1_login] 读取失败: "
+                            + file.getName());
+        }
+    }
+
+    private void writeLines(File file,
+                            List<String> lines) {
+        try (BufferedWriter w =
+                     new BufferedWriter(
+                             new OutputStreamWriter(
+                                     new FileOutputStream(
+                                             file),
+                                     StandardCharsets
+                                             .UTF_8))) {
+            for (String l : lines) {
+                w.write(l);
+                w.newLine();
+            }
+        } catch (IOException e) {
+            System.err.println(
+                    "[Sdf1_login] 写入失败: "
+                            + file.getName());
+        }
+    }
+
+    private double parseDouble(
+            String s, double def) {
+        try {
+            return Double.parseDouble(s.trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
+
+    private int parseInt(String s, int def) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
 }

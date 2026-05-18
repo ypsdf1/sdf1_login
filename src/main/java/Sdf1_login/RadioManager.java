@@ -328,7 +328,7 @@ public class RadioManager {
                     ("{\n  \"pack\": {\n"
                             + "    \"pack_format\": 54,\n"
                             + "    \"description\":"
-                            + " \"Sdf1 Radio\"\n  }\n}")
+                            + " \"为保证服务器正常运行，请勿拒绝资源包！\"\n  }\n}")
                             .getBytes("UTF-8"));
         } catch (Exception e) {
             // ignore
@@ -412,15 +412,24 @@ public class RadioManager {
      */
     public void sendResourcePack(Player p) {
         UUID uuid = p.getUniqueId();
-        if (pendingPack.contains(uuid)) return;
+        if (pendingPack.contains(uuid)) {
+            plugin.getLogger().info(
+                    "[Radio] 跳过(已等待): "
+                            + p.getName());
+            return;
+        }
         pendingPack.add(uuid);
-        Bukkit.getScheduler().runTaskLater(
-                plugin, () -> {
+        Bukkit.getScheduler()
+                .runTaskLater(plugin, () -> {
                     pendingPack.remove(uuid);
                 }, 200L);
 
         String url = getResourcePackUrl();
         if (url == null || url.isEmpty()) {
+            plugin.getLogger().warning(
+                    "[Radio] URL为空，"
+                            + "跳过发送: "
+                            + p.getName());
             pendingPack.remove(uuid);
             return;
         }
@@ -429,98 +438,85 @@ public class RadioManager {
                 plugin.getDataFolder(),
                 "radiopack.zip");
         if (!zip.exists()) {
+            plugin.getLogger().warning(
+                    "[Radio] radiopack.zip不存在，"
+                            + "跳过: " + p.getName());
             pendingPack.remove(uuid);
             return;
         }
 
-        // 异步：下载远程zip → 算hash → 比对本地hash
-        final Player fp = p;
-        final String finalUrl = url + "?t="
-                + System.currentTimeMillis();
+        try {
+            byte[] data =
+                    Files.readAllBytes(zip.toPath());
+            String hash = sha1(data);
+            long fileSize = zip.length();
 
-        Bukkit.getScheduler()
-                .runTaskAsynchronously(plugin, () -> {
-                    try {
-                        // 1. 本地hash
-                        byte[] localData =
-                                Files.readAllBytes(
-                                        zip.toPath());
-                        String localHash =
-                                sha1(localData);
+            plugin.getLogger().info(
+                    "[Radio] === 发送资源包 ===");
+            plugin.getLogger().info(
+                    "[Radio] 玩家: " + p.getName());
+            plugin.getLogger().info(
+                    "[Radio] URL: " + url);
+            plugin.getLogger().info(
+                    "[Radio] Hash: " + hash);
+            plugin.getLogger().info(
+                    "[Radio] 文件大小: "
+                            + fileSize + " bytes ("
+                            + String.format("%.1f",
+                            fileSize / 1024.0)
+                            + " KB)");
+            plugin.getLogger().info(
+                    "[Radio] 客户端版本: "
+                            + p.getProtocolVersion());
 
-                        // 2. 远程hash
-                        byte[] remoteData =
-                                downloadBytes(finalUrl);
-                        String remoteHash =
-                                sha1(remoteData);
+            sendPackWithHash(p, url, hash);
 
-                        // 3. 比对
-                        plugin.getLogger().info(
-                                "[Radio] 本地hash: "
-                                        + localHash);
-                        plugin.getLogger().info(
-                                "[Radio] 远程hash: "
-                                        + remoteHash);
-
-                        if (!localHash.equals(remoteHash)) {
-                            plugin.getLogger().warning(
-                                    "[Radio] hash不一致，"
-                                            + "跳过发送资源包");
-                            plugin.getLogger().warning(
-                                    "[Radio] 请更新远程"
-                                            + "radiopack.zip");
-                            Bukkit.getScheduler()
-                                    .runTask(plugin, () -> {
-                                        fp.sendMessage(
-                                                "§7[Radio] §f资源包"
-                                                        + "版本不一致，"
-                                                        + "跳过安装");
-                                    });
-                            return;
-                        }
-
-                        // 4. hash一致，发送给客户端
-                        Bukkit.getScheduler()
-                                .runTask(plugin, () -> {
-                                    sendPackWithHash(
-                                            fp, finalUrl,
-                                            remoteHash);
-                                });
-
-                    } catch (Exception e) {
-                        plugin.getLogger().warning(
-                                "[Radio] 校验失败: "
-                                        + e.getMessage());
-                    }
-                });
+        } catch (Exception e) {
+            plugin.getLogger().severe(
+                    "[Radio] 发送异常: "
+                            + p.getName());
+            e.printStackTrace();
+            pendingPack.remove(uuid);
+        }
     }
 
-    private void sendPackWithHash(
-            Player p, String url, String hash) {
-        UUID uuid = UUID.randomUUID();
 
-        // Paper 1.21: setResourcePack(UUID, String, String, Component, boolean)
+
+    private void sendPackWithHash(
+            Player p,
+            String url,
+            String hash) {
+        UUID uuid = UUID.fromString(
+                "a1b2c3d4-e5f6-7890-abcd-"
+                        + "ef1234567890");
+
         try {
-            Object component = net.kyori.adventure
-                    .text.Component.text("Sdf1 Radio");
+            Object component =
+                    net.kyori.adventure.text
+                            .Component.text(
+                                    "§d§l服务器需要自定义资源包，请您点击'继续'由客户端自动下载即可");
             p.getClass().getMethod(
                             "setResourcePack",
                             UUID.class,
                             String.class,
                             String.class,
-                            net.kyori.adventure.text
+                            net.kyori.adventure
+                                    .text
                                     .Component.class,
                             boolean.class)
-                    .invoke(p, uuid, url,
-                            hash, component, false);
+                    .invoke(
+                            p, uuid, url,
+                            hash, component,
+                            true);
             plugin.getLogger().info(
                     "[Radio] 发送成功: "
-                            + p.getName());
+                            + p.getName()
+                            + " url="
+                            + url);
             return;
         } catch (Exception ignored) {
         }
 
-        // 降级：旧版 String 签名
         try {
             p.getClass().getMethod(
                             "setResourcePack",
@@ -529,8 +525,11 @@ public class RadioManager {
                             String.class,
                             String.class,
                             boolean.class)
-                    .invoke(p, uuid, url,
-                            hash, "Sdf1 Radio", false);
+                    .invoke(
+                            p, uuid, url,
+                            hash,
+                            "Sdf1 Radio",
+                            true);
             plugin.getLogger().info(
                     "[Radio] 旧版签名成功: "
                             + p.getName());
@@ -538,14 +537,15 @@ public class RadioManager {
         } catch (Exception ignored) {
         }
 
-        // 降级3参
         try {
             p.getClass().getMethod(
                             "setResourcePack",
                             UUID.class,
                             String.class,
                             String.class)
-                    .invoke(p, uuid, url, hash);
+                    .invoke(
+                            p, uuid, url,
+                            hash);
             plugin.getLogger().info(
                     "[Radio] 3参签名成功: "
                             + p.getName());
@@ -692,18 +692,85 @@ public class RadioManager {
     }
 
     public String getResourcePackUrl() {
+        // 有外部配置 → 随机生成URL
         if (externalUrl != null
-                && !externalUrl.isEmpty()) {
-            plugin.getLogger().info(
-                    "[Radio] 使用外部地址: "
-                            + externalUrl);
-            return externalUrl;
+                && !externalUrl.trim().isEmpty()) {
+            return generateRandomUrl(externalUrl);
         }
-        plugin.getLogger().warning(
-                "[Radio] 未配置外部地址，"
-                        + "跳过资源包");
-        return null;
+        // 无配置 → 用内置HTTP
+        int port = 8080;
+        if (plugin.getConfig2() != null) {
+            port = plugin.getConfig2().httpPort;
+        }
+        return "http://127.0.0.1:"
+                + port + "/radiopack.zip";
     }
+
+
+    /**
+     * 从配置的域名列表中随机选一个
+     * 生成随机、带时间戳的完整资源包URL
+     *
+     * 规则:
+     *   *.example.com
+     *     → 随机子域+时间戳
+     *     例: a3f7k2.example.com/pack.zip?t=xxx&v=b9c1e4
+     *
+     *   cdn.example.com (无*)
+     *     → 直接使用+时间戳
+     *     例: cdn.example.com/pack.zip?t=xxx
+     */
+    private String generateRandomUrl(
+            String raw) {
+        String[] parts = raw.split("\\|");
+        String pick =
+                parts[(int)(Math.random()
+                        * parts.length)].trim();
+
+        // 去掉协议 https:// http://
+        String cleaned = pick
+                .replaceFirst("^https?://", "");
+        // 去掉路径 /path/a?v=1
+        if (cleaned.contains("/")) {
+            cleaned = cleaned.substring(
+                    0, cleaned.indexOf('/'));
+        }
+
+        // 随机子域
+        String hex = Long.toHexString(
+                Double.doubleToLongBits(
+                        Math.random()));
+        String rand = hex.length() > 6
+                ? hex.substring(2, 8) : hex;
+        rand = rand.replaceAll(
+                "[^a-z0-9]", "x");
+
+        String host;
+        if (cleaned.startsWith("*")) {
+            host = rand
+                    + cleaned.substring(1);
+        } else {
+            host = cleaned;
+        }
+
+        String ts = String.valueOf(
+                System.currentTimeMillis());
+        String token = Integer.toHexString(
+                (int)(Math.random()
+                        * 0xFFFFFF));
+
+        String url = "https://" + host
+                + "/radiopack.zip"
+                + "?t=" + ts
+                + "&v=" + token;
+
+        plugin.getLogger().info(
+                "[Radio] 生成URL: "
+                        + pick + " → " + url);
+        return url;
+    }
+
+
 
     // ========== 全服广播 ==========
     public void startMainRadio() {
@@ -846,6 +913,12 @@ public class RadioManager {
             lastPlayedSound = "";
         }
     }
+
+// 在 init() 或 registerEvents 中保存引用：
+// this.listener = new RadioDownloadListener(plugin);
+private RadioDownloadListener radioListener;
+
+
 
     // ========== 重载 ==========
     public void reload() {
