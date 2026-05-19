@@ -347,51 +347,51 @@ http-port=443
 ## 运行截图
 
 主界面
-![](../img/login.png)
+![](img/login.png)
 
 邀请数据
-![](../img/login2.png)
+![](img/login2.png)
 
 积分商店
-![](../img/login3.png)
+![](img/login3.png)
 
 任务中心
-![](../img/login4.png)
+![](img/login4.png)
 
 垃圾箱
-![](../img/login5.png)
+![](img/login5.png)
 
 管理员面板
-![](../img/login6.png)
+![](img/login6.png)
 
 管理面板-用户管理
-![](../img/login7.png)
+![](img/login7.png)
 
 
 工单中心
-![](../img/login8.png)
+![](img/login8.png)
 
 工单管理
-![](../img/login9.png)
+![](img/login9.png)
 
 我的工单
-![](../img/login10.png)
+![](img/login10.png)
 
 
 提交工单
-![](../img/login11.png)
+![](img/login11.png)
 
 服务商列表
-![](../img/login12.png)
+![](img/login12.png)
 
 服务商抢单大厅
-![](../img/login13.png)
+![](img/login13.png)
 
 服务商-接单界面
-![](../img/login14.png)
+![](img/login14.png)
 
 管理员-工单详情页面
-![](../img/login15.png)
+![](img/login15.png)
 
 ## 4. 下载地址
 - GitHub：[https://github.com/ypsdf1/sdf1_login](https://github.com/ypsdf1/sdf1_login)
