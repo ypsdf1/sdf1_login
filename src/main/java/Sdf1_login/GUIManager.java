@@ -1,69 +1,797 @@
 package Sdf1_login;
 
-import org.bukkit.Bukkit;
-import org.bukkit.Material;
+import org.bukkit.*;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.*;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.*;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import java.io.File;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 
-public class GUIManager {
+public class GUIManager implements Listener {
 
     private final Main plugin;
 
     public static final String T_MAIN =
-            "§6§l登录面板";
+            "§6§l服务器菜单";
+    public static final String T_MORE =
+            "§6§l更多功能";
+    public static final String T_EDITOR =
+            "§6§l编辑菜单项";
+    public static final String T_BIOME =
+            "§b§l目标群系传送";
     public static final String T_MY_INFO =
-            "§a§l我的信息";
+            "§6§l我的信息";
+    public static final String T_GIFT_STAGES =
+            "§6§l礼包阶段";
     public static final String T_ADMIN =
-            "§c§l管理员面板";
-    public static final String T_USER_MGMT =
-            "§e§l用户管理";
+            "§6§l管理员面板";
     public static final String T_INVITE =
-            "§b§l邀请数据";
-    public static final String T_TASK_CENTER = "§d§l任务中心";
-    public static final String T_GIFT_STAGES = "§d§l新人任务";
+            "§6§l邀请数据";
+    public static final String T_USER_MGMT =
+            "§6§l用户管理";
+    public static final String T_TASK_CENTER =
+            "§6§l任务中心";
 
 
     public GUIManager(Main plugin) {
         this.plugin = plugin;
     }
+
     public void openMain(Player p) {
         Inventory g = Bukkit.createInventory(
-                null, 27, T_MAIN);
+                null, 54, T_MAIN);
+// ===== 自定义菜单项 =====
+        if (plugin.getMenu() != null) {
+            List<MenuManager.MenuItem> customs =
+                    plugin.getMenu().getItems();
+
+            // 已占用的槽位
+            Set<Integer> occupied = new HashSet<>();
+            occupied.add(10);
+            occupied.add(12);
+            occupied.add(14);
+            occupied.add(16);
+            occupied.add(19);
+            occupied.add(21);
+            occupied.add(23);
+            occupied.add(25);
+            occupied.add(29);
+            occupied.add(31);
+            occupied.add(32);
+            occupied.add(34);
+
+            // 自定义区域：第1排(0-8) + 第5排(36-44) + 第6排(45-53)
+            int[] customArea = {
+                    0, 1, 2, 3, 4, 5, 6, 7, 8,
+                    36, 37, 38, 39, 40, 41, 42, 43, 44,
+                    45, 46, 47, 48, 49, 50, 51, 52, 53
+            };
+
+            int autoIdx = 0;
+            for (int ci = 0;
+                 ci < customs.size() && ci < 27; ci++) {
+                MenuManager.MenuItem mi =
+                        customs.get(ci);
+
+                // 权限过滤
+                if ("OP".equals(mi.permType)
+                        && !p.isOp()
+                        && !isAdmin(p)) continue;
+
+                int targetSlot = -1;
+
+                // 玩家指定了格子？
+                if (mi.slot != null) {
+                    targetSlot = findBestSlot(
+                            mi.slot - 1, occupied);
+                }
+
+                // 未指定或冲突 → 自动排队
+                if (targetSlot < 0) {
+                    while (autoIdx < customArea.length) {
+                        int s = customArea[autoIdx++];
+                        if (!occupied.contains(s)) {
+                            targetSlot = s;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetSlot < 0
+                        || targetSlot >= 54) continue;
+                occupied.add(targetSlot);
+
+                // 放置物品
+                ItemStack icon =
+                        mi.icon.clone();
+                ItemMeta im =
+                        icon.getItemMeta();
+                im.setDisplayName(
+                        "§e§l" + mi.title);
+                im.setLore(java.util.Arrays.asList(
+                        "§7指令: §f"
+                                + mi.command,
+                        "§7权限: §f"
+                                + mi.permType,
+                        "",
+                        "§a左键执行"));
+                icon.setItemMeta(im);
+                g.setItem(targetSlot, icon);
+            }
+        }
+
+// 背景填充
         fillBg(g);
+        p.openInventory(g);
+
+        // ===== Row1(9-17): 核心功能 =====
         g.setItem(10, mkItem(Material.PLAYER_HEAD,
                 "§a§l我的信息"));
         g.setItem(12, mkItem(Material.PAPER,
                 "§b§l邀请数据"));
         g.setItem(14, mkItem(Material.EMERALD,
                 "§d§l积分商城"));
-        g.setItem(16, mkItem(Material.CHEST,
-                "§e§l任务中心"));
-        g.setItem(18, mkItem(Material.EMERALD_BLOCK,
+        g.setItem(16, mkItem(Material.COMPASS,
+                "§b§l群系传送",
+                "§7传送到指定群系"));
+
+        // ===== Row2(18-26): 日常功能 =====
+        g.setItem(19, mkItem(Material.BOOK,
+                "§6工单系统"));
+        g.setItem(21, mkItem(Material.EMERALD_BLOCK,
                 "§a§l每日签到",
                 "§7签到获取积分和惊喜奖励"));
-        g.setItem(20, mkItem(Material.BOOK,
-                "§6工单系统",
-                "§7提交bug、求助、举报"));
+        g.setItem(23, mkItem(Material.ENDER_CHEST,
+                "§6§l任务中心"));
         if (p.isOp() || isAdmin(p)) {
-            g.setItem(22, mkItem(Material.CHEST,
-                    "§6垃圾回收站",
+            g.setItem(25, mkItem(Material.HOPPER,
+                    "§6§l垃圾回收站",
                     "§7查看和取回清理的物品"));
+
         }
+        // ===== Row3(27-35): 管理功能 =====
         if (isAdmin(p)) {
-            g.setItem(24, mkItem(
+            g.setItem(29, mkItem(
                     Material.REDSTONE_BLOCK,
                     "§c§l管理员面板"));
         }
+        if (p.isOp()) {
+            g.setItem(31, mkItem(Material.ECHO_SHARD,
+                    "§c§l管理菜单",
+                    "§7添加、编辑、删除菜单项"));
+        }
+        // 在 openMain 方法中，Row3 区域加：
+
+        // ★ 余额查询 - 所有人都能看 ★
+        double myBal = 0;
+        try {
+            var reg = plugin.getServer()
+                    .getServicesManager()
+                    .getRegistration(
+                            net.milkbowl.vault.economy
+                                    .Economy.class);
+            if (reg != null)
+                myBal = reg.getProvider()
+                        .getBalance(p);
+        } catch (Exception ignored) {}
+        g.setItem(32, mkItem(Material.DIAMOND,
+                "§a§l余额查询",
+                "§7我的余额: §a$"
+                        + String.format("%.2f", myBal)));
+
+// ★ 余额操作 - 仅OP和tag玩家 ★
+        if (isAdmin(p)) {
+            g.setItem(34, mkItem(Material.GOLD_INGOT,
+                    "§6§l余额操作",
+                    "§7给钱、扣钱"));
+        }
+
+
+
+        // ===== Row0(0-8): 自定义菜单项 =====
+        if (plugin.getMenu() != null) {
+            List<MenuManager.MenuItem> customs =
+                    plugin.getMenu().getItems();
+            for (int i = 0;
+                 i < customs.size() && i < 9;
+                 i++) {
+                MenuManager.MenuItem mi =
+                        customs.get(i);
+                if ("OP".equals(mi.permType)
+                        && !p.isOp()
+                        && !isAdmin(p)) continue;
+                ItemStack icon =
+                        mi.icon.clone();
+                ItemMeta im =
+                        icon.getItemMeta();
+                im.setDisplayName(
+                        "§e§l" + mi.title);
+                im.setLore(Arrays.asList(
+                        "§7指令: §f"
+                                + mi.command,
+                        "§7权限: §f"
+                                + mi.permType,
+                        "",
+                        "§a左键执行"));
+                icon.setItemMeta(im);
+                g.setItem(i, icon);
+            }
+        }
+
+        // 背景最后填充（不覆盖物品）
+        fillBg(g);
+        p.openInventory(g);
+    }
+    private int findBestSlot(
+            int requested,
+            Set<Integer> occupied) {
+        // 目标位空闲直接用
+        if (requested >= 0 && requested < 54
+                && !occupied.contains(requested)) {
+            return requested;
+        }
+        // BFS上下左右找最近空位
+        int row = requested / 9;
+        int col = requested % 9;
+        boolean[][] visited =
+                new boolean[6][9];
+        java.util.Queue<int[]> queue =
+                new java.util.LinkedList<>();
+        queue.add(new int[]{row, col});
+        visited[row][col] = true;
+        int[][] dirs = {
+                {-1, 0}, {1, 0},
+                {0, -1}, {0, 1}};
+        while (!queue.isEmpty()) {
+            int[] cur = queue.poll();
+            for (int[] d : dirs) {
+                int nr = cur[0] + d[0];
+                int nc = cur[1] + d[1];
+                if (nr >= 0 && nr < 6
+                        && nc >= 0 && nc < 9
+                        && !visited[nr][nc]) {
+                    visited[nr][nc] = true;
+                    int s = nr * 9 + nc;
+                    if (!occupied.contains(s)) {
+                        return s;
+                    }
+                    queue.add(new int[]{nr, nc});
+                }
+            }
+        }
+        return -1;
+    }
+
+    public void openMenuManager(Player p) {
+        List<MenuManager.MenuItem> list =
+                plugin.getMenu().getItems();
+        Inventory g = Bukkit.createInventory(
+                null, 27,
+                "§c§l菜单管理");
+        fillBg(g);
+
+        for (int i = 0;
+             i < list.size() && i < 9; i++) {
+            MenuManager.MenuItem mi = list.get(i);
+            // ★ 直接用 mi.icon，不要随机 ★
+            g.setItem(i, mkItem(
+                    mi.icon.getType(),
+                    "§e" + mi.title,
+                    "§7指令: " + mi.command,
+                    "§7权限: " + mi.permType,
+                    "",
+                    "§a左键编辑",
+                    "§7右键切换权限"));
+        }
+
+        g.setItem(22, mkItem(Material.LIME_WOOL,
+                "§a§l添加菜单项"));
+
+        g.setItem(26, mkItem(Material.ARROW,
+                "§7返回"));
+
         p.openInventory(g);
     }
 
+    public void openBalanceOps(Player p) {
+        Inventory g = Bukkit.createInventory(
+                null, 54,
+                "§d§l余额操作");
+        fillBg(g);
+
+        net.milkbowl.vault.economy.Economy eco = null;
+        try {
+            var reg = plugin.getServer()
+                    .getServicesManager()
+                    .getRegistration(
+                            net.milkbowl
+                                    .vault
+                                    .economy
+                                    .Economy
+                                    .class);
+            if (reg != null) eco = reg.getProvider();
+        } catch (Exception ignored) {}
+
+        int slot = 0;
+        for (Player op :
+                Bukkit.getOnlinePlayers()) {
+            if (slot >= 45) break;
+            double bal = 0;
+            if (eco != null) bal =
+                    eco.getBalance(op);
+
+            boolean isSelf =
+                    op.getName().equals(p.getName());
+
+            g.setItem(slot, mkItem(
+                    isSelf ? Material.EMERALD_BLOCK
+                            : Material.PLAYER_HEAD,
+                    "§e" + op.getName(),
+                    "§7余额: §a$"
+                            + String.format(
+                            "%.2f", bal),
+                    "",
+                    "§a左键给钱  §c右键扣钱"));
+            slot++;
+        }
+
+        g.setItem(49, mkItem(Material.ARROW,
+                "§7返回"));
+
+        p.openInventory(g);
+    }
+
+    public void openShop(Player p) {
+        p.closeInventory();
+        p.performCommand("sdf1_login shop");
+    }
+
+    public void openTicket(Player p) {
+        p.closeInventory();
+        p.performCommand("sdf1_login ticket");
+    }
+    @EventHandler
+    public void onInvClose(
+            InventoryCloseEvent e) {
+        if (!(e.getPlayer() instanceof Player))
+            return;
+        Player p = (Player) e.getPlayer();
+        String t = e.getView().getTitle();
+
+        if (!t.equals(T_EDITOR)) return;
+
+        // ★ 编辑器关闭时清理空项 ★
+        List<MenuManager.MenuItem> list =
+                plugin.getMenu().getItems();
+        if (!list.isEmpty()) {
+            MenuManager.MenuItem last =
+                    list.get(list.size() - 1);
+            if ((last.command == null
+                    || last.command.trim().isEmpty()
+                    || last.command.trim()
+                    .equals("/"))
+                    && "新菜单项"
+                    .equals(last.title)) {
+                list.remove(list.size() - 1);
+            }
+        }
+    }
+
+    public void openSubMenu(
+            Player p, String fileName) {
+        String menuTitle =
+                "§6§l" + fileName
+                        .replace(".txt", "");
+        Inventory g = Bukkit.createInventory(
+                null, 54, menuTitle);
+        fillBg(g);
+
+        java.io.File f = new java.io.File(
+                plugin.getDataFolder(), fileName);
+        if (!f.exists()) {
+            p.sendMessage("§c文件不存在: "
+                    + fileName);
+            return;
+        }
+        try {
+            List<String> lines =
+                    java.nio.file.Files
+                            .readAllLines(
+                                    f.toPath(),
+                                    java.nio.charset
+                                            .StandardCharsets
+                                            .UTF_8);
+            List<String[]> items =
+                    new ArrayList<>();
+            StringBuilder buf =
+                    new StringBuilder();
+            boolean inItem = false;
+
+            for (String raw : lines) {
+                String l = raw.trim();
+                if (l.startsWith("#")
+                        || l.startsWith("//"))
+                    continue;
+                if (l.contains("<!--")
+                        || l.contains("/*"))
+                    continue;
+                int h = l.indexOf('#');
+                int s = l.indexOf("//");
+                if (h >= 0)
+                    l = l.substring(0, h)
+                            .trim();
+                if (s >= 0 && (h < 0 || s < h))
+                    l = l.substring(0, s)
+                            .trim();
+                if (l.equals("{")) {
+                    inItem = true;
+                    buf.setLength(0);
+                    continue;
+                }
+                if (l.equals("}") && inItem) {
+                    String[] parsed =
+                            parseSubItem(
+                                    buf.toString());
+                    if (parsed != null)
+                        items.add(parsed);
+                    inItem = false;
+                    continue;
+                }
+                if (inItem)
+                    buf.append(l).append("\n");
+            }
+
+            for (int i = 0;
+                 i < items.size() && i < 45;
+                 i++) {
+                String[] item = items.get(i);
+                Material mat = Material.PAPER;
+                try {
+                    mat = Material.valueOf(
+                            item.length > 2
+                                    ? item[2]
+                                    : "PAPER");
+                } catch (Exception ignored) {}
+                ItemStack it =
+                        new ItemStack(mat);
+                ItemMeta im =
+                        it.getItemMeta();
+                im.setDisplayName(
+                        "§e§l" + item[0]);
+                im.setLore(Arrays.asList(
+                        "§7指令: §f"
+                                + item[1]));
+                it.setItemMeta(im);
+                g.setItem(i, it);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[Menu] 子菜单读取失败: "
+                            + e.getMessage());
+        }
+
+        g.setItem(49, mkItem(
+                Material.ARROW,
+                "§c返回主菜单"));
+        p.openInventory(g);
+    }
+
+    private String[] parseSubItem(
+            String block) {
+        String title = "";
+        String cmd = "";
+        String icon = "PAPER";
+        for (String line : block.split("\n")) {
+            line = line.trim();
+            String v = "";
+            int idx = line.indexOf('\uff1a');
+            if (idx < 0)
+                idx = line.indexOf(':');
+            if (idx >= 0) {
+                v = line.substring(idx + 1)
+                        .trim();
+                if (v.startsWith("\"")
+                        && v.endsWith("\""))
+                    v = v.substring(1,
+                            v.length() - 1);
+            }
+            if (line.startsWith("标题"))
+                title = v;
+            else if (line.startsWith("指令")) {
+                cmd = v;
+                if (!cmd.isEmpty()
+                        && !cmd.startsWith("/"))
+                    cmd = "/" + cmd;
+            } else if (line.startsWith("图标"))
+                icon = v;
+        }
+        if (title.isEmpty()) return null;
+        return new String[]{title, cmd, icon};
+    }
+
+
+    public void openBiomeMenu(Player p) {
+        Inventory g = Bukkit.createInventory(
+                null, 54, T_BIOME);
+        fillBg(g);
+
+        String[][] biomes = {
+                {"海洋", "WATER_BUCKET"},
+                {"平原", "GRASS_BLOCK"},
+                {"森林", "OAK_LOG"},
+                {"沙漠", "SAND"},
+                {"恶地", "TERRACOTTA"},
+                {"雪原", "SNOW_BLOCK"},
+                {"沼泽", "LILY_PAD"},
+                {"河流", "COD"},
+                {"地下", "DEEPSLATE"},
+                {"蘑菇岛", "RED_MUSHROOM"},
+                {"下界", "NETHERRACK"},
+                {"末地", "END_STONE"},
+        };
+        String[] colors = {
+                "§b", "§a", "§2", "§e",
+                "§6", "§f", "§a", "§9",
+                "§8", "§c", "§4", "§5"
+        };
+
+        for (int i = 0;
+             i < biomes.length; i++) {
+            ItemStack it = new ItemStack(
+                    Material.valueOf(
+                            biomes[i][1]));
+            ItemMeta im = it.getItemMeta();
+            im.setDisplayName(
+                    colors[i] + biomes[i][0]);
+            im.setLore(Arrays.asList(
+                    "§7点击传送"));
+            it.setItemMeta(im);
+            g.setItem(i, it);
+        }
+
+        g.setItem(49, mkItem(
+                Material.ARROW,
+                "§c返回主菜单"));
+        p.openInventory(g);
+    }
+
+    // 常量
+    private static final int BIOME_SCAN_STEP = 32;
+    private static final int BIOME_SCAN_MAX = 512;
+    private static final int BIOME_BATCH = 30;
+
+    public void teleportToBiome(
+            Player p, String category) {
+        p.sendMessage("§e正在搜索 "
+                + category + " 群系...");
+
+        // 1. 纯计算收集候选坐标（不碰Bukkit API）
+        int baseX = p.getLocation().getBlockX();
+        int baseZ = p.getLocation().getBlockZ();
+        List<int[]> candidates = new ArrayList<>();
+
+        for (int r = BIOME_SCAN_STEP;
+             r <= BIOME_SCAN_MAX;
+             r += BIOME_SCAN_STEP) {
+            for (int dx = -r; dx <= r;
+                 dx += BIOME_SCAN_STEP) {
+                for (int dz = -r; dz <= r;
+                     dz += BIOME_SCAN_STEP) {
+                    if (dx * dx + dz * dz > r * r)
+                        continue;
+                    candidates.add(new int[]{
+                            baseX + dx, baseZ + dz});
+                }
+            }
+        }
+
+        // 2. 打乱顺序，避免每次往同一方向搜
+        Collections.shuffle(candidates);
+
+        // 3. 主线程分批检测，每tick处理30个坐标
+        final int[] idx = {0};
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                World w = p.getWorld();
+                int end = Math.min(
+                        idx[0] + BIOME_BATCH,
+                        candidates.size());
+
+                for (int i = idx[0]; i < end; i++) {
+                    int x = candidates.get(i)[0];
+                    int z = candidates.get(i)[1];
+
+                    // 跳过未加载区块
+                    if (!w.isChunkLoaded(x >> 4, z >> 4))
+                        continue;
+
+                    // 获取地表高度
+                    int surfaceY =
+                            w.getHighestBlockYAt(x, z);
+
+                    // 在地表Y取群系（避免地下误判）
+                    String key = w.getBlockAt(
+                                    x, surfaceY, z)
+                            .getBiome()
+                            .getKey().toString();
+                    String cat =
+                            mapBiomeCategory(
+                                    key, w.getName());
+
+                    if (category.equals(cat)) {
+                        this.cancel();
+                        Bukkit.getScheduler()
+                                .runTask(plugin, () -> {
+                                    Location tp =
+                                            new Location(
+                                                    w,
+                                                    x + 0.5,
+                                                    surfaceY + 1,
+                                                    z + 0.5);
+                                    p.teleport(tp);
+                                    p.sendMessage(
+                                            "§a已传送到 "
+                                                    + category
+                                                    + " ("
+                                                    + x + ","
+                                                    + (surfaceY + 1)
+                                                    + ","
+                                                    + z + ")");
+                                });
+                        return;
+                    }
+                }
+
+                idx[0] = end;
+                if (idx[0] >= candidates.size()) {
+                    this.cancel();
+                    Bukkit.getScheduler()
+                            .runTask(plugin, () ->
+                                    p.sendMessage(
+                                            "§c附近未找到 "
+                                                    + category
+                                                    + "，请换个位置再试"));
+                }
+            }
+        }.runTaskTimer(plugin, 0L, 1L);
+    }
+
+
+
+    private String mapBiomeCategory(
+            String biome, String worldName) {
+        if (biome == null) return "平原";
+        String b = biome.toLowerCase();
+
+        // 海洋
+        if (b.contains("ocean")) return "海洋";
+        // 下界
+        if (b.contains("nether")) return "下界";
+        // 末地
+        if (b.contains("end")) return "末地";
+        // 洞穴群系
+        if (b.contains("deep_dark")
+                || b.contains("lush_caves")
+                || b.contains("dripstone_caves")
+                || b.contains("stony_peaks"))
+            return "地下";
+        // 蘑菇岛
+        if (b.contains("mushroom")) return "蘑菇岛";
+        // 沼泽（先于森林）
+        if (b.contains("swamp")) return "沼泽";
+        // 沙漠
+        if (b.contains("desert")) return "沙漠";
+        // 恶地
+        if (b.contains("badlands")
+                || b.contains("mesa"))
+            return "恶地";
+        // 雪原
+        if (b.contains("snow")
+                || b.contains("ice")
+                || b.contains("frozen")
+                || b.contains("tundra"))
+            return "雪原";
+        // 河流
+        if (b.contains("river")) return "河流";
+        // 森林（排除沼泽/恶地/雪原后匹配）
+        if (b.contains("forest")
+                || b.contains("taiga")
+                || b.contains("jungle")
+                || b.contains("cherry")
+                || b.contains("birch")
+                || b.contains("dark_forest")
+                || b.contains("mangrove"))
+            return "森林";
+
+        return "平原";
+    }
+
+
+    private boolean titleStartsWith6(String t) {
+        return t != null
+                && t.length() >= 3
+                && t.charAt(1) == '6'
+                && t.charAt(2) == 'l';
+    }
+
+
+
+    @EventHandler
+    public void onInvDrag(
+            InventoryDragEvent e) {
+        if (!(e.getWhoClicked()
+                instanceof Player)) return;
+        Player p = (Player) e.getWhoClicked();
+        if (!T_EDITOR.equals(
+                e.getView().getTitle())) return;
+        if (e.getRawSlots().contains(12)) {
+            List<MenuManager.MenuItem> list =
+                    plugin.getMenu().getItems();
+            int idx = list.size() - 1;
+            if (idx >= 0)
+                list.get(idx).icon =
+                        e.getOldCursor().clone();
+        }
+    }
+
+
+    public void openEditor(
+            Player p, int idx) {
+        List<MenuManager.MenuItem> list =
+                plugin.getMenu().getItems();
+        MenuManager.MenuItem item;
+        if (idx < 0 || idx >= list.size()) {
+            item = new MenuManager.MenuItem();
+            list.add(item);
+            idx = list.size() - 1;
+        } else {
+            item = list.get(idx);
+        }
+        Inventory g = Bukkit.createInventory(
+                null, 27, T_EDITOR);
+        fillBg(g);
+        g.setItem(10, mkItem(Material.NAME_TAG,
+                "§e§l标题",
+                "§7当前: §f" + item.title));
+        g.setItem(11, mkItem(
+                Material.COMMAND_BLOCK,
+                "§e§l指令",
+                "§7当前: §f" + item.command));
+        ItemStack ic = item.icon.clone();
+        ItemMeta im = ic.getItemMeta();
+        im.setDisplayName("§e§l菜单图标");
+        im.setLore(Arrays.asList(
+                "§7拖拽替换"));
+        ic.setItemMeta(im);
+        g.setItem(12, ic);
+        g.setItem(20, mkItem(
+                "OP".equals(item.permType)
+                        ? Material.RED_BANNER
+                        : Material.GREEN_BANNER,
+                "§e§l权限: " + item.permType,
+                "§a左键切换"));
+        g.setItem(22, mkItem(
+                Material.LIME_STAINED_GLASS_PANE,
+                "§a§l保存"));
+        g.setItem(24, mkItem(
+                Material.RED_STAINED_GLASS_PANE,
+                "§c§l取消"));
+        p.openInventory(g);
+    }
+
+
     public void openMyInfo(Player p) {
         Inventory g = Bukkit.createInventory(
-                null, 27, T_MY_INFO);
+                null, 54, T_MY_INFO);
         fillBg(g);
         Map<String, Object> user = plugin.getDb()
                 .getUser(p.getName());
@@ -400,6 +1128,11 @@ public class GUIManager {
                 "§7右键: 设置时长",
                 "§7当前: " + afkMin + "分钟"));
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
+        // openAdmin 方法中加：
+        g.setItem(15, mkItem(Material.EMERALD_BLOCK,
+                "§d§l余额操作",
+                "§7给钱、扣钱"));
+
         p.openInventory(g);
     }
 
@@ -694,11 +1427,18 @@ public class GUIManager {
     }
 
     private void fillBg(Inventory inv) {
-        ItemStack gl = mkItem(
-                Material.GRAY_STAINED_GLASS_PANE, " ");
-        for (int i = 0; i < inv.getSize(); i++)
-            inv.setItem(i, gl);
+        ItemStack glass = new ItemStack(
+                Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta gm = glass.getItemMeta();
+        gm.setDisplayName(" ");
+        glass.setItemMeta(gm);
+        for (int i = 0; i < inv.getSize(); i++) {
+            if (inv.getItem(i) == null) {
+                inv.setItem(i, glass);
+            }
+        }
     }
+
 
     private ItemStack mkItem(Material mat, String name,
                              String... lore) {
