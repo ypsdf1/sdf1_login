@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 问题排查指南
+    url: https://github.com/ypsdf1/sdf1_login
+    about: 在提交 Bug 前，请先查阅文档确认是否已有相关说明。
