@@ -250,6 +250,95 @@ public class RadioManager {
         Arrays.sort(files);
         for (File f : files) list.add(f);
     }
+    /**
+     * 解析 pack.png：优先读取插件目录，
+     * 没有则搜索图片并用ffmpeg转码
+     */
+    private File resolvePackIcon() {
+        File dataDir = plugin.getDataFolder();
+        File packPng = new File(dataDir, "pack.png");
+
+        if (packPng.exists()
+                && packPng.length() > 0) {
+            plugin.getLogger().info(
+                    "[Radio] 找到 pack.png ("
+                            + packPng.length()
+                            + " bytes)");
+            return packPng;
+        }
+
+        // 搜索可转换的图片文件
+        String[] exts = {"png", "jpg", "jpeg",
+                "bmp", "webp", "tiff", "gif"};
+        File[] found = dataDir.listFiles(
+                (dir, name) -> {
+                    String low = name.toLowerCase();
+                    for (String ext : exts) {
+                        if (low.endsWith("." + ext)
+                                && !name.equals(
+                                "pack.png")) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+
+        if (found != null && found.length > 0) {
+            File src = found[0];
+            plugin.getLogger().info(
+                    "[Radio] 找到图片: "
+                            + src.getName()
+                            + " → 转码为 pack.png");
+            if (convertToPackPng(src, packPng)) {
+                return packPng;
+            }
+            plugin.getLogger().warning(
+                    "[Radio] 转码失败");
+            return null;
+        }
+
+        plugin.getLogger().warning(
+                "[Radio] 未找到 pack.png 或可转换图片");
+        return null;
+    }
+
+    /**
+     * ffmpeg 将任意图片转为 256x256 PNG
+     */
+    private boolean convertToPackPng(
+            File input, File output) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                    "ffmpeg", "-y",
+                    "-i", input.getAbsolutePath(),
+                    "-vf",
+                    "scale='min(256,iw)'"
+                            + ":'min(256,ih)':"
+                            + "force_original_aspect_ratio"
+                            + "=decrease,"
+                            + "pad=256:256:"
+                            + "(ow-iw)/2:"
+                            + "(oh-ih)/2:"
+                            + "color=0x00000000",
+                    "-c:v", "png",
+                    output.getAbsolutePath());
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            boolean ok = p.waitFor(
+                    30, TimeUnit.SECONDS);
+            if (!ok) {
+                p.destroyForcibly();
+                return false;
+            }
+            return output.exists()
+                    && output.length() > 0;
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[Radio] ffmpeg转码失败: "
+                            + e.getMessage());
+            return false;
+        }
+    }
 
     // ========== 资源包构建 ==========
     private void buildResourcePack() {
@@ -319,6 +408,25 @@ public class RadioManager {
         } catch (Exception e) {
             plugin.getLogger().warning(
                     "[Radio] sounds.json写入失败");
+        }
+// sounds.json 写入后...
+
+// ===== 新增：打包 pack.png 作为资源包图标 =====
+        File iconPng = resolvePackIcon();
+        if (iconPng != null && iconPng.exists()) {
+            try {
+                Files.copy(iconPng.toPath(),
+                        new File(packDir, "pack.png")
+                                .toPath(),
+                        StandardCopyOption
+                                .REPLACE_EXISTING);
+                plugin.getLogger().info(
+                        "[Radio] pack.png 已加入资源包");
+            } catch (Exception e) {
+                plugin.getLogger().warning(
+                        "[Radio] pack.png复制失败: "
+                                + e.getMessage());
+            }
         }
 
         // pack.mcmeta（pack_format=54）

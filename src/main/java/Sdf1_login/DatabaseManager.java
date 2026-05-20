@@ -160,6 +160,14 @@ public class DatabaseManager {
                     + "alert_date TEXT NOT NULL,"
                     + "notified INTEGER DEFAULT 0,"
                     + "notified_time INTEGER DEFAULT 0)");
+// 菜单图标表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "menu_icons ("
+                    + "player_name TEXT PRIMARY KEY,"
+                    + "icon_b64 TEXT DEFAULT '',"
+                    + "item_name TEXT DEFAULT '',"
+                    + "save_time INTEGER DEFAULT 0"
+                    + ")");
 
             // 工单表
             st.execute("CREATE TABLE IF NOT EXISTS "
@@ -237,6 +245,76 @@ public class DatabaseManager {
             if (db != null && !db.isClosed())
                 db.close();
         } catch (Exception ignored) {
+        }
+    }
+// ==================== 菜单图标 ====================
+
+    public void saveMenuIcon(String name,
+                             String iconB64, String itemName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR REPLACE INTO menu_icons "
+                            + "(player_name, icon_b64, "
+                            + "item_name, save_time) "
+                            + "VALUES (?,?,?,?)");
+            ps.setString(1, name);
+            ps.setString(2, iconB64);
+            ps.setString(3, itemName);
+            ps.setLong(4,
+                    System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String getMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT icon_b64 FROM menu_icons "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            String b64 = null;
+            if (rs.next()) {
+                b64 = rs.getString("icon_b64");
+            }
+            rs.close();
+            ps.close();
+            return b64;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    public void deleteMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "DELETE FROM menu_icons "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public boolean hasMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM menu_icons "
+                            + "WHERE player_name=? "
+                            + "AND icon_b64 IS NOT NULL "
+                            + "AND icon_b64 != '' "
+                            + "LIMIT 1");
+            ps.setString(1, name);
+            boolean r = ps.executeQuery().next();
+            ps.close();
+            return r;
+        } catch (SQLException e) {
+            return false;
         }
     }
 
@@ -773,6 +851,7 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+
     }
 
     public List<Map<String, Object>>

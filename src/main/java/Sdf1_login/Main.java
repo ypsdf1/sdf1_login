@@ -14,6 +14,9 @@ import java.util.TreeSet;
 import java.util.UUID;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import org.bukkit.NamespacedKey;
+import org.bukkit.persistence.PersistentDataType;
+
 
 
 import net.milkbowl.vault.economy.Economy;
@@ -59,6 +62,7 @@ public class Main extends JavaPlugin
         TabCompleter {
 
     private DatabaseManager db;
+    private MenuIconManager menuIconMgr;
     private ConfigManager config;
     private EmailManager email;
     private LoginManager loginMgr;
@@ -165,6 +169,7 @@ public class Main extends JavaPlugin
         return db;
     }
 
+
     public ConfigManager getConfig2() {
         return config;
     }
@@ -258,6 +263,9 @@ public class Main extends JavaPlugin
         // ===== 2. 数据库 =====
         db = new DatabaseManager(getDataFolder());
         db.init();
+        menuIconMgr = new MenuIconManager(this);
+
+
 
         // ===== 3. 菜单 =====
         menu = new MenuManager(this);
@@ -359,7 +367,6 @@ public class Main extends JavaPlugin
                 }
             }
         }.runTaskTimer(this, 600L, 600L);
-
         getLogger().info("Sdf1_login v1.0 | 就绪");
     }
 
@@ -1243,10 +1250,10 @@ public class Main extends JavaPlugin
     // ===== Events =====
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
+
         Player p = e.getPlayer();
         String name = p.getName();
         String ip = getPlayerIP(p);
-
         // 强制重发资源包（清掉客户端拒绝记录）
         Bukkit.getScheduler()
                 .runTaskLater(this, () -> {
@@ -1450,50 +1457,88 @@ public class Main extends JavaPlugin
     private static final String MENU_SNOWBALL_TAG =
             "sdf1_menu";
 
-    // 雪球菜单
     public void giveMenuSnowball(Player p) {
-        // 检查开关
         Object val = db.getField(
                 p.getName(), "menu_snowball");
         if (val != null) {
             int on = val instanceof Number
-                    ? ((Number) val).intValue()
-                    : 1;
-            if (on == 0) {
-                return; // 开关关了，不发放
-            }
+                    ? ((Number) val).intValue() : 1;
+            if (on == 0) return;
         }
-        // 检查是否已有
+
         for (ItemStack it : p.getInventory()
                 .getContents()) {
-            if (isMenuSnowball(it)) {
-                return;
-            }
+            if (isMenuSnowball(it)) return;
+            if (isCustomMenuTrigger(it)) return;
         }
-        // 发放
+
+        ItemStack customIcon =
+                menuIconMgr.getIcon(p);
+        if (customIcon != null) {
+            tagAsMenuTrigger(customIcon);
+            // 加外观标识
+            ItemMeta cm = customIcon.getItemMeta();
+            if (cm != null) {
+                String originalName =
+                        cm.getDisplayName();
+                if (originalName == null
+                        || originalName.isEmpty()
+                        || originalName.equals(
+                        customIcon.getType()
+                                .name())) {
+                    originalName = "自定义物品";
+                }
+                cm.setDisplayName(
+                        "\u00a7e\u00a7l[菜单] \u00a7f"
+                                + originalName);
+                List<String> cmLore =
+                        cm.hasLore()
+                                ? new ArrayList<>(cm.getLore())
+                                : new ArrayList<>();
+                // 避免重复添加
+                if (cmLore.isEmpty()
+                        || !cmLore.get(0).contains(
+                        "\u00a77右键打开主菜单")) {
+                    cmLore.add(0,
+                            "\u00a77右键打开主菜单");
+                }
+                cm.setLore(cmLore);
+                customIcon.setItemMeta(cm);
+            }
+            int slot = p.getInventory()
+                    .firstEmpty();
+            if (slot >= 0) {
+                p.getInventory().setItem(
+                        slot, customIcon);
+            } else {
+                p.getWorld().dropItemNaturally(
+                        p.getLocation(), customIcon);
+            }
+            return;
+        }
+
         ItemStack snow = new ItemStack(
                 Material.SNOWBALL);
         ItemMeta im = snow.getItemMeta();
         if (im != null) {
             im.setDisplayName(
-                    "§e§l[菜单] §f右键打开主菜单");
-            List<String> lore =
-                    new ArrayList<>();
-            lore.add("§7右键点击打开功能菜单");
-            lore.add("§8" + MENU_SNOWBALL_TAG);
+                    "\u00a7e\u00a7l[菜单] \u00a7f右键打开主菜单");
+            List<String> lore = new ArrayList<>();
+            lore.add("\u00a77右键点击打开功能菜单");
+            lore.add("\u00a78" + MENU_SNOWBALL_TAG);
             im.setLore(lore);
             snow.setItemMeta(im);
         }
         int slot = p.getInventory()
                 .firstEmpty();
         if (slot >= 0) {
-            p.getInventory().setItem(
-                    slot, snow);
+            p.getInventory().setItem(slot, snow);
         } else {
             p.getWorld().dropItemNaturally(
                     p.getLocation(), snow);
         }
     }
+
 
     /**
      * 手动发放雪球菜单（绕过开关检查）
@@ -1549,6 +1594,37 @@ public class Main extends JavaPlugin
         }
         return false;
     }
+    // 运行时初始化版本（避免静态加载问题）
+    private NamespacedKey getTriggerKey() {
+        return new NamespacedKey(this, "menu_trigger");
+    }
+
+    /**
+     * 给物品打上菜单触发标记
+     */
+    private void tagAsMenuTrigger(ItemStack item) {
+        if (item == null) return;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return;
+        meta.getPersistentDataContainer().set(
+                getTriggerKey(),
+                PersistentDataType.STRING,
+                "true");
+        item.setItemMeta(meta);
+    }
+
+    /**
+     * 检查物品是否带菜单触发标记
+     */
+    private boolean isCustomMenuTrigger(
+            ItemStack item) {
+        if (item == null) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        return meta.getPersistentDataContainer()
+                .has(getTriggerKey(),
+                        PersistentDataType.STRING);
+    }
 
 
     @EventHandler
@@ -1583,7 +1659,6 @@ public class Main extends JavaPlugin
             return;
         }
 
-        // 同时检查主手和副手
         ItemStack hand = p.getInventory()
                 .getItemInMainHand();
         ItemStack offhand = p.getInventory()
@@ -1593,6 +1668,15 @@ public class Main extends JavaPlugin
                 || isMenuSnowball(offhand)) {
             e.setCancelled(true);
             gui.openMain(p);
+            return;
+        }
+
+        if (isCustomMenuTrigger(hand)
+                || isCustomMenuTrigger(offhand)) {
+            if (db.hasMenuIcon(p.getName())) {
+                e.setCancelled(true);
+                gui.openMain(p);
+            }
         }
     }
 
@@ -2411,7 +2495,6 @@ public class Main extends JavaPlugin
                     break;
             }}
         // ==================== 主菜单（新布局） ====================
-        // ===== 主菜单 =====
         if (title.equals(GUIManager.T_MAIN)) {
             e.setCancelled(true);
 
@@ -2479,10 +2562,14 @@ public class Main extends JavaPlugin
                                 "请输入管理密码:");
                     }
                     break;
-                case 31: gui.openMenuManager(p); break;
-                case 32: gui.openMain(p); break;
+                case 31:
+                    if (p.isOp()) {
+                        gui.openMenuManager(p);
+                    }
+                    break;
+
                 case 34:
-                    if (isAdmin(p)) {
+                    if (p.isOp() || isAdmin(p)) {
                         gui.openBalanceOps(p);
                     }
                     break;
@@ -2567,6 +2654,9 @@ public class Main extends JavaPlugin
         // ==================== 我的信息 ====================
         if (title.equals(GUIManager.T_MY_INFO)) {
             e.setCancelled(true);
+            // 先处理图标槽
+            if (gui.handleMyInfoIconClick(p, e))
+                return;
             if (slot == 26) gui.openMain(p);
             else if (slot == 10) {
                 if (checkIn.isCheckedInToday(
@@ -2610,6 +2700,7 @@ public class Main extends JavaPlugin
             }
             return;
         }
+
 
         // ==================== 管理面板 ====================
         if (title.equals(GUIManager.T_ADMIN)) {
@@ -2838,95 +2929,6 @@ public class Main extends JavaPlugin
                 p.closeInventory();
                 loginMgr.handleReset(p);
             }
-            /* .txt子菜单
-            if (title.startsWith("§6§l")
-                    && !title.equals(GUIManager.T_MAIN)
-                    && !title.equals(GUIManager.T_ADMIN)
-                    && !title.equals(GUIManager.T_MY_INFO)
-                    && !title.equals(GUIManager.T_INVITE)
-                    && !title.equals(GUIManager.T_TASK_CENTER)
-                    && !title.equals(GUIManager.T_GIFT_STAGES)
-                    && !title.equals("§6§l任务面板")) {
-                e.setCancelled(true);
-                if (slot == 49) {
-                    gui.openMain(p);
-                    return;
-                }
-                // ===== 二级菜单（.txt） =====
-                if (title.startsWith("§6§l")
-                        && !title.equals(GUIManager.T_MAIN)
-                        && !title.equals(GUIManager.T_ADMIN)
-                        && !title.equals(GUIManager.T_MY_INFO)
-                        && !title.equals(GUIManager.T_INVITE)
-                        && !title.equals(GUIManager.T_TASK_CENTER)
-                        && !title.equals(GUIManager.T_GIFT_STAGES)
-                        && !title.equals("§6§l任务面板")) {
-                    e.setCancelled(true);
-                    if (slot == 49) {
-                        gui.openMain(p);
-                        return;
-                    }
-                    if (slot < 45 && e.getCurrentItem() != null) {
-                        ItemMeta subLm =
-                                e.getCurrentItem().getItemMeta();
-                        if (subLm != null
-                                && subLm.getLore() != null) {
-                            for (String subLn
-                                    : subLm.getLore()) {
-                                if (subLn.contains(
-                                        "§7指令: §f")) {
-                                    String cmd =
-                                            subLn.replace(
-                                                    "§7指令: §f",
-                                                    "").trim();
-                                    if (cmd.isEmpty()
-                                            || cmd.equals("/")
-                                            || cmd.equals("null")) {
-                                        p.sendMessage(
-                                                "§c该菜单项指令为空");
-                                        return;
-                                    }
-                                    p.closeInventory();
-                                    if (cmd.startsWith("/"))
-                                        cmd = cmd.substring(1);
-                                    Bukkit.dispatchCommand(p, cmd);
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-                if (slot < 45 && e.getCurrentItem() != null) {
-                    ItemMeta lm =
-                            e.getCurrentItem().getItemMeta();
-                    if (lm != null && lm.getLore() != null) {
-                        for (String ln : lm.getLore()) {
-                            if (ln.contains("§7指令: §f")) {
-                                String cmd = ln.replace(
-                                                "§7指令: §f", "")
-                                        .trim();
-                                // ★ 空指令保护 ★
-                                if (cmd.isEmpty()
-                                        || cmd.equals("/")
-                                        || cmd.equals("null")) {
-                                    p.sendMessage(
-                                            "§c该菜单项指令为空");
-                                    return;
-                                }
-                                p.closeInventory();
-                                if (cmd.startsWith("/"))
-                                    cmd = cmd.substring(1);
-                                Bukkit.dispatchCommand(p, cmd);
-                                return;
-                            }
-
-
-                        }
-                    }
-                }
-                return;
-            }*/
         }
     }
 
@@ -3091,6 +3093,36 @@ public class Main extends JavaPlugin
             return;
         }
         String t = e.getView().getTitle();
+// 禁止T_MY_INFO拖拽，只允许点击操作
+        // 我的信息：允许拖入图标槽(31)
+        if (GUIManager.T_MY_INFO.equals(
+                e.getView().getTitle())) {
+            boolean toIconSlot = false;
+            for (int raw : e.getRawSlots()) {
+                if (raw == 31) {
+                    toIconSlot = true;
+                    break;
+                }
+            }
+            if (toIconSlot) {
+                ItemStack dragged =
+                        e.getOldCursor().clone();
+                String b64 = gui.serializeItem(dragged);
+                if (b64 != null) {
+                    db.saveMenuIcon(p.getName(), b64,
+                            dragged.getType().name());
+                }
+                p.sendMessage("§a已保存菜单图标: "
+                        + dragged.getType().name());
+                // 刷新GUI显示
+                Bukkit.getScheduler()
+                        .runTaskLater(this, () ->
+                                gui.openMyInfo(p), 2L);
+            }
+            e.setCancelled(true);
+            return;
+        }
+
 
         // 回收站拖拽
         if (t.equals("§6§l垃圾回收站")) {

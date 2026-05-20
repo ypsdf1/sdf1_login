@@ -11,6 +11,14 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.util.io.BukkitObjectInputStream;
+import org.bukkit.util.io.BukkitObjectOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.util.Base64;
+
+
 
 import java.util.*;
 
@@ -792,6 +800,7 @@ public class GUIManager implements Listener {
     public void openMyInfo(Player p) {
         Inventory g = Bukkit.createInventory(
                 null, 54, T_MY_INFO);
+
         fillBg(g);
         Map<String, Object> user = plugin.getDb()
                 .getUser(p.getName());
@@ -833,9 +842,411 @@ public class GUIManager implements Listener {
         g.setItem(15, mkItem(Material.EMERALD_BLOCK,
                 "§a§l积分商城",
                 "§7当前: " + points + "积分"));
+
+
+        // 图标说明
+        g.setItem(30, mkItem(Material.PAPER,
+                "§e§l自定义菜单图标",
+                "§7将物品放入右侧槽位",
+                "§7即可保存为你的专属图标",
+                "§7下次加入自动发放"));
+        // ===== 菜单图标区 =====
+        g.setItem(30, mkItem(Material.PAPER,
+                "§e§l自定义菜单图标",
+                "§7Shift+点击背包物品放入右侧槽位",
+                "§7即可保存为你的专属图标",
+                "§7下次加入自动发放"));
+
+        String iconB64 = plugin.getDb()
+                .getMenuIcon(p.getName());
+        if (iconB64 != null && !iconB64.isEmpty()) {
+            ItemStack iconItem =
+                    deserializeItem(iconB64);
+            if (iconItem != null) {
+                g.setItem(31, iconItem);
+            } else {
+                putIconPlaceholder(g);
+            }
+        } else {
+            putIconPlaceholder(g);
+        }
+
+        g.setItem(32, mkItem(Material.WOODEN_SHOVEL,
+                "§c清除图标",
+                "§7点击可清除已保存的图标"));
+
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
+
+    /**
+     * 图标槽的空占位物品
+     */
+    private static final String ICON_SLOT_DEFAULT =
+            "§7默认菜单（雪球）";
+
+    private void putIconPlaceholder(Inventory g) {
+        ItemStack empty = new ItemStack(
+                Material.SNOWBALL);
+        ItemMeta m = empty.getItemMeta();
+        m.setDisplayName(ICON_SLOT_DEFAULT);
+        m.setLore(Arrays.asList(
+                "§7Shift+点击背包物品放入",
+                "§7保存后下次登录自动发放"));
+        empty.setItemMeta(m);
+        g.setItem(31, empty);
+    }
+
+
+    /**
+     * 处理"我的信息"GUI中菜单图标槽的点击
+     * 在已有的 onInventoryClick 方法中，
+     * 匹配到 T_MY_INFO 标题后调用此方法
+     *
+     * 返回 true 表示已处理（事件应取消）
+     * 返回 false 表示未处理（继续原有逻辑）
+     */
+    public boolean handleMyInfoIconClick(
+            Player p,
+            InventoryClickEvent event) {
+
+        event.setCancelled(true);
+        Inventory topInv = event.getView()
+                .getTopInventory();
+        int raw = event.getRawSlot();
+
+        if (raw == 32) {
+            doClearIcon(p, topInv);
+            return true;
+        }
+        if (raw != 31) return true;
+
+        ItemStack cursor = event.getCursor();
+        boolean hasCursor = cursor != null
+                && cursor.getType() != Material.AIR;
+
+        // Shift-click：从背包放入
+        if (event.isShiftClick()
+                && event.getClickedInventory()
+                == p.getInventory()) {
+            int srcSlot = event.getSlot();
+            ItemStack src =
+                    p.getInventory().getItem(srcSlot);
+            if (src != null
+                    && src.getType() != Material.AIR
+                    && !isCustomMenuTrigger(src)) {
+                doPlaceIcon(p, topInv, src, srcSlot);
+            }
+            return true;
+        }
+
+        // 普通点击 + 光标有物品 → 放入
+        if (hasCursor
+                && !isCustomMenuTrigger(cursor)) {
+            doPlaceIcon(p, topInv, cursor, -1);
+            return true;
+        }
+
+        // 普通点击 + 光标空 + 非占位 → 清除
+        if (!hasCursor) {
+            ItemStack cur = topInv.getItem(31);
+            if (!isPlaceholder(cur)) {
+                doClearIcon(p, topInv);
+            }
+        }
+        return true;
+    }
+
+    // ===== 放入自定义图标 =====
+    private void doPlaceIcon(Player p,
+                             Inventory topInv,
+                             ItemStack item, int removeSlot) {
+
+        int amount = item.getAmount();
+        removeSnowballFromInventory(p); //没收雪球菜单
+        // 1. 从来源移除
+        if (removeSlot >= 0) {
+            // Shift-click：从背包格子移除
+            p.getInventory()
+                    .setItem(removeSlot, null);
+        } else {
+            // 普通点击：从光标移除
+            p.getOpenInventory().setCursor(null);
+        }
+
+        // 2. 退回多余（amount-1）到背包
+        if (amount > 1) {
+            ItemStack excess = item.clone();
+            excess.setAmount(amount - 1);
+            java.util.HashMap<Integer,
+                    ItemStack> leftover =
+                    p.getInventory()
+                            .addItem(excess);
+            for (ItemStack drop :
+                    leftover.values()) {
+                p.getWorld().dropItemNaturally(
+                        p.getLocation(), drop);
+            }
+        }
+
+        // 3. 存原件（数量=1）到DB
+        ItemStack original = item.clone();
+        original.setAmount(1);
+        String b64 = serializeItem(original);
+        if (b64 == null) {
+            p.sendMessage("§c保存失败");
+            return;
+        }
+        plugin.getDb().saveMenuIcon(
+                p.getName(), b64,
+                original.getType().name());
+
+        // 4. 创建带标记的菜单物品
+        ItemStack menu = original.clone();
+        ItemMeta mm = menu.getItemMeta();
+        if (mm != null) {
+            String oldName =
+                    mm.getDisplayName();
+            if (oldName == null
+                    || oldName.isEmpty()
+                    || oldName.equals(
+                    menu.getType().name())) {
+                oldName = "自定义物品";
+            }
+            mm.setDisplayName(
+                    "\u00a7e\u00a7l[菜单] \u00a7f"
+                            + oldName);
+            List<String> lore = mm.hasLore()
+                    ? new ArrayList<>(mm.getLore())
+                    : new ArrayList<>();
+            lore.add(0,
+                    "\u00a77右键打开主菜单");
+            mm.setLore(lore);
+            mm.getPersistentDataContainer().set(
+                    new org.bukkit.NamespacedKey(
+                            plugin, "menu_trigger"),
+                    org.bukkit.persistence
+                            .PersistentDataType
+                            .STRING,
+                    "true");
+            menu.setItemMeta(mm);
+        }
+
+        // 5. 发放菜单物品
+        int slot = p.getInventory()
+                .firstEmpty();
+        if (slot >= 0) {
+            p.getInventory().setItem(slot, menu);
+        } else {
+            p.getWorld().dropItemNaturally(
+                    p.getLocation(), menu);
+        }
+
+        // 6. 更新GUI
+        topInv.setItem(31, original);
+        p.sendMessage("§a已保存菜单图标: "
+                + original.getType().name());
+        p.updateInventory();
+    }
+
+
+
+    // ===== 清除自定义图标 =====
+    private void doClearIcon(Player p,
+                             Inventory topInv) {
+
+        String dbIcon = plugin.getDb()
+                .getMenuIcon(p.getName());
+
+        // 1. 没收自定义菜单物品
+        removeCustomMenuFromInventory(p);
+
+        // 2. 删DB
+        plugin.getDb().deleteMenuIcon(
+                p.getName());
+
+        // 3. 强制清空slot 31
+        topInv.setItem(31, null);
+
+        // 4. 发雪球
+        plugin.giveMenuSnowball(p);
+
+        // 5. 还原件
+        if (dbIcon != null && !dbIcon.isEmpty()) {
+            ItemStack original =
+                    deserializeItem(dbIcon);
+            if (original != null) {
+                p.getInventory()
+                        .addItem(original);
+            }
+        }
+
+        // 6. 重新设置占位符
+        putIconPlaceholder(topInv);
+        p.sendMessage("§c已清除菜单图标");
+        p.updateInventory();
+    }
+
+
+// ===== 辅助方法 =====
+
+    // 只匹配带[菜单]的非雪球物品
+    private boolean isCustomMenuTrigger(
+            ItemStack item) {
+        if (item == null) return false;
+        if (item.getType() == Material.SNOWBALL)
+            return false;
+        ItemMeta im = item.getItemMeta();
+        if (im == null) return false;
+        if (im.hasDisplayName()
+                && im.getDisplayName()
+                .contains("[菜单]")) {
+            return true;
+        }
+        return false;
+    }
+
+    // 只移除自定义菜单物品（不动雪球）
+    private void removeCustomMenuFromInventory(
+            Player p) {
+        for (int i = 0;
+             i < p.getInventory().getSize(); i++) {
+            ItemStack it = p.getInventory()
+                    .getItem(i);
+            if (isCustomMenuTrigger(it)) {
+                p.getInventory().setItem(i, null);
+                return;
+            }
+        }
+    }
+
+    // 只移除雪球菜单
+    private void removeSnowballFromInventory(
+            Player p) {
+        for (int i = 0;
+             i < p.getInventory().getSize(); i++) {
+            ItemStack it = p.getInventory()
+                    .getItem(i);
+            if (it != null
+                    && it.getType()
+                    == Material.SNOWBALL
+                    && it.hasItemMeta()) {
+                ItemMeta im = it.getItemMeta();
+                if (im.hasLore()
+                        && im.getLore() != null) {
+                    for (String ln : im.getLore()) {
+                        if (ln.contains(
+                                "\u00a78")) {
+                            p.getInventory()
+                                    .setItem(i,
+                                            null);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 已有方法，不需要改
+    private boolean isPlaceholder(
+            ItemStack item) {
+        if (item == null) return true;
+        if (item.getType() == Material.AIR)
+            return true;
+        // fillBg 可能覆盖了slot 31
+        if (item.getType()
+                == Material.GRAY_STAINED_GLASS_PANE)
+            return true;
+        ItemMeta im = item.getItemMeta();
+        if (im == null) return true;
+        if ("\u00a77默认菜单（雪球）"
+                .equals(im.getDisplayName()))
+            return true;
+        if (im.hasLore() && im.getLore() != null
+                && im.getLore().size() >= 2
+                && im.getLore().get(0)
+                .contains("Shift+点击"))
+            return true;
+        return false;
+    }
+
+
+// ===== 辅助方法 =====
+
+    private boolean isMenuTriggerItem(
+            ItemStack item) {
+        if (item == null) return false;
+        ItemMeta im = item.getItemMeta();
+        if (im == null) return false;
+        // 自定义图标：显示名含[菜单]
+        if (im.hasDisplayName()
+                && im.getDisplayName()
+                .contains("[菜单]")) {
+            return true;
+        }
+        // 默认雪球
+        if (item.getType() == Material.SNOWBALL
+                && im.hasLore()
+                && im.getLore() != null) {
+            for (String ln : im.getLore()) {
+                if (ln.contains("\u00a77右键打开主菜单"))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /*private boolean isPlaceholder(ItemStack item) {
+        if (item == null) return true;
+        if (item.getType() == Material.AIR)
+            return true;
+        ItemMeta im = item.getItemMeta();
+        if (im == null) return true;
+        if ("\u00a77默认菜单（雪球）"
+                .equals(im.getDisplayName())) {
+            return true;
+        }
+        if (im.hasLore() && im.getLore() != null
+                && im.getLore().size() >= 2
+                && im.getLore().get(0)
+                .contains("Shift+点击")) {
+            return true;
+        }
+        return false;
+    }*/
+
+    private void removeMenuTriggerFromInventory(
+            Player p) {
+        for (int i = 0;
+             i < p.getInventory().getSize(); i++) {
+            ItemStack it = p.getInventory()
+                    .getItem(i);
+            if (isMenuTriggerItem(it)) {
+                p.getInventory().setItem(i, null);
+                return;
+            }
+        }
+    }
+
+    private void removeCustomTriggerFromInventory(
+            Player p) {
+        for (int i = 0;
+             i < p.getInventory().getSize(); i++) {
+            ItemStack it = p.getInventory()
+                    .getItem(i);
+            if (it == null) continue;
+            ItemMeta im = it.getItemMeta();
+            if (im == null) continue;
+            if (im.hasDisplayName()
+                    && im.getDisplayName()
+                    .contains("[菜单]")) {
+                p.getInventory().setItem(i, null);
+                return;
+            }
+        }
+    }
+
 
     // 在 openGiftStages 方法之前添加：
     public void openGiftStages(Player p) {
@@ -1073,11 +1484,30 @@ public class GUIManager implements Listener {
             cancel.setItemMeta(cml);
         }
         g.setItem(15, cancel);
+        // ===== 图标槽31 =====
+        g.setItem(30, mkItem(Material.PAPER,
+                "§e§l自定义菜单图标",
+                "§7Shift+点击背包物品放入右侧槽位",
+                "§7即可保存为你的专属图标",
+                "§7下次加入自动发放"));
 
-        p.openInventory(g);
+        putIconPlaceholder(g);
+
+        String iconB64 = plugin.getDb()
+                .getMenuIcon(p.getName());
+        if (iconB64 != null && !iconB64.isEmpty()) {
+            ItemStack iconItem =
+                    deserializeItem(iconB64);
+            if (iconItem != null) {
+                g.setItem(31, iconItem);
+            }
+        }
+
+        g.setItem(32, mkItem(Material.BARRIER,
+                "§c清除图标",
+                "§7点击可清除已保存的图标"));
     }
-
-    public void openShopAdmin(Player p) {
+        public void openShopAdmin(Player p) {
         Inventory g = Bukkit.createInventory(
                 null, 54, "§c§l商城管理");
         ItemStack glass = new ItemStack(
@@ -1439,6 +1869,43 @@ public class GUIManager implements Listener {
         }
     }
 
+// ===== 本地序列化，不依赖MenuIconManager =====
+
+    public String serializeItem(ItemStack item) {
+        try {
+            ByteArrayOutputStream baos =
+                    new ByteArrayOutputStream();
+            BukkitObjectOutputStream os =
+                    new BukkitObjectOutputStream(baos);
+            os.writeObject(item);
+            os.close();
+            return Base64.getEncoder()
+                    .encodeToString(baos.toByteArray());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private ItemStack deserializeItem(String b64) {
+        if (b64 == null || b64.isEmpty()) return null;
+        try {
+            byte[] data =
+                    Base64.getDecoder().decode(b64);
+            ByteArrayInputStream bais =
+                    new ByteArrayInputStream(data);
+            BukkitObjectInputStream is =
+                    new BukkitObjectInputStream(bais);
+            Object obj = is.readObject();
+            is.close();
+            if (obj instanceof ItemStack)
+                return (ItemStack) obj;
+        } catch (Exception e) {
+        }
+        return null;
+    }
+
+    private static final String ICON_SLOT_EMPTY =
+            "§7图标槽（空）";
 
     private ItemStack mkItem(Material mat, String name,
                              String... lore) {
