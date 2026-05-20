@@ -131,6 +131,8 @@ public class Main extends JavaPlugin
     public CommissionManager getCommission() {
         return commission;
     }
+//pvp
+private PVPManager pvpManager;
 
     private static class PwdRollback {
         final String hash;
@@ -355,7 +357,6 @@ public class Main extends JavaPlugin
         startPasswordReminder();
         startTicketAutoProcess();
         radio.startMainRadio();
-
         new BukkitRunnable() {
             public void run() {
                 if (questTracker == null) return;
@@ -367,9 +368,74 @@ public class Main extends JavaPlugin
                 }
             }
         }.runTaskTimer(this, 600L, 600L);
+
+        // 12 ===PVP===
+        pvpManager = new PVPManager(this);
+        getServer().getPluginManager()
+                .registerEvents(pvpManager, this);
+// PVP区域检测定时器
+        getServer().getScheduler()
+                .runTaskTimer(this,
+                        () -> pvpManager.tickRegions(),
+                        20L, 20L);
+        setupPVPTab();
+
         getLogger().info("Sdf1_login v1.0 | 就绪");
     }
 
+    private void setupPVPTab() {
+        if (getCommand("pvp") != null) {
+            getCommand("pvp")
+                    .setTabCompleter(
+                            (sender, cmd,
+                             alias, args) -> {
+                                List<String> list =
+                                        new ArrayList<>();
+                                if (args.length == 1) {
+                                    String[] sub = {
+                                            "create", "stats",
+                                            "list", "delete",
+                                            "tool", "on", "off",
+                                            "tempban"};
+                                    for (String s : sub) {
+                                        if (s.startsWith(
+                                                args[0]
+                                                        .toLowerCase())) {
+                                            list.add(s);
+                                        }
+                                    }
+                                } else if (args.length == 2) {
+                                    String sub =
+                                            args[0].toLowerCase();
+                                    if (sub.equals("stats")) {
+                                        for (Player pp : Bukkit
+                                                .getOnlinePlayers()) {
+                                            if (pp.getName()
+                                                    .toLowerCase()
+                                                    .startsWith(args[1]
+                                                            .toLowerCase())) {
+                                                list.add(pp.getName());
+                                            }
+                                        }
+                                    } else if (sub.equals("delete")
+                                            || sub.equals("on")
+                                            || sub.equals("off")
+                                            || sub.equals("tempban")) {
+                                        for (String rn :
+                                                pvpManager
+                                                        .getRegionNames()) {
+                                            if (rn.toLowerCase()
+                                                    .startsWith(args[1]
+                                                            .toLowerCase())) {
+                                                list.add(rn);
+                                            }
+                                        }
+                                    }
+                                }
+                                return list;
+                            });
+        }
+    }
 
     @Override
     public void onDisable() {
@@ -2107,6 +2173,9 @@ public class Main extends JavaPlugin
     public MenuManager getMenu() {
         return menu;
     }
+    public PVPManager getPVPManager() {
+        return pvpManager;
+    }
 
 
     // ===== Inventory Click（旧逻辑 + 新主菜单布局 + 新功能） =====
@@ -3185,6 +3254,17 @@ public class Main extends JavaPlugin
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+
+        if (label.equalsIgnoreCase("pvp")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            return pvpManager.onCommand(p, args);
+        }
+
+
         // ===== /chat 独立命令 =====
         if (cmdName.equals("chat")
                 || cmdName.equals("聊天")) {
