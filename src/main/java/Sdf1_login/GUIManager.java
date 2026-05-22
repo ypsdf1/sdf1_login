@@ -189,10 +189,10 @@ public class GUIManager implements Listener {
                 myBal = reg.getProvider()
                         .getBalance(p);
         } catch (Exception ignored) {}
-        g.setItem(32, mkItem(Material.DIAMOND,
-                "§a§l余额查询",
-                "§7我的余额: §a$"
-                        + String.format("%.2f", myBal)));
+        int myBonds = plugin.getBonds().getBonds(p.getName());
+        g.setItem(32, mkItem(Material.EMERALD,
+                "§b§l我的钱包",
+                "§7查看债券余额与流水记录"));
 
 // ★ 余额操作 - 仅OP和tag玩家 ★
         if (isAdmin(p)) {
@@ -309,50 +309,34 @@ public class GUIManager implements Listener {
     }
 
     public void openBalanceOps(Player p) {
-        Inventory g = Bukkit.createInventory(
-                null, 54,
-                "§d§l余额操作");
+        Inventory g = Bukkit.createInventory(null, 54, "§d§l余额操作");
         fillBg(g);
 
         net.milkbowl.vault.economy.Economy eco = null;
         try {
-            var reg = plugin.getServer()
-                    .getServicesManager()
-                    .getRegistration(
-                            net.milkbowl
-                                    .vault
-                                    .economy
-                                    .Economy
-                                    .class);
+            var reg = plugin.getServer().getServicesManager()
+                    .getRegistration(net.milkbowl.vault.economy.Economy.class);
             if (reg != null) eco = reg.getProvider();
         } catch (Exception ignored) {}
 
         int slot = 0;
-        for (Player op :
-                Bukkit.getOnlinePlayers()) {
+        for (Player op : Bukkit.getOnlinePlayers()) {
             if (slot >= 45) break;
             double bal = 0;
-            if (eco != null) bal =
-                    eco.getBalance(op);
-
-            boolean isSelf =
-                    op.getName().equals(p.getName());
-
+            if (eco != null) bal = eco.getBalance(op);
+            boolean isSelf = op.getName().equals(p.getName());
+            int bondBal = plugin.getBonds().getBonds(op.getName());
             g.setItem(slot, mkItem(
-                    isSelf ? Material.EMERALD_BLOCK
-                            : Material.PLAYER_HEAD,
+                    isSelf ? Material.EMERALD_BLOCK : Material.PLAYER_HEAD,
                     "§e" + op.getName(),
-                    "§7余额: §a$"
-                            + String.format(
-                            "%.2f", bal),
+                    "§7金币: §a$" + String.format("%.2f", bal),
+                    "§7债券: §e" + bondBal + " §6枚",
                     "",
-                    "§a左键给钱  §c右键扣钱"));
+                    "§a左键经济(±)  §6右键债券(±)"));
             slot++;
         }
 
-        g.setItem(49, mkItem(Material.ARROW,
-                "§7返回"));
-
+        g.setItem(49, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
 
@@ -750,9 +734,69 @@ public class GUIManager implements Listener {
                         e.getOldCursor().clone();
         }
     }
+    @EventHandler
+    public void onInvClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player)) return;
+        Player p = (Player) event.getWhoClicked();
+        String title = event.getView().getTitle();
+        int raw = event.getRawSlot();
 
+        // 我的信息 — CDK兑换 (slot 16)
+        if (T_MY_INFO.equals(title) && raw == 16) {
+            event.setCancelled(true);
+            p.closeInventory();
+            p.sendMessage("§e§l[CDK] §f请输入兑换码（聊天输入）:");
+            plugin.getCDK().requestInput(p, "cdk", "");
+            return;
+        }
+        if (T_MAIN.equals(title) && raw == 32) {
+            event.setCancelled(true);
+            plugin.openMyWallet(p);
+            return;
+        }
+        // 余额操作界面
+        // 余额操作界面
+        if ("§d§l余额操作".equals(title)) {
+            event.setCancelled(true);
+            if (raw == 49) {
+                openAdmin(p);
+                return;
+            }
+            if (raw < 0 || raw >= 45) return;
+            ItemStack item = event.getView().getTopInventory().getItem(raw);
+            if (item == null) return;
+            Material mat = item.getType();
+            if (mat != Material.PLAYER_HEAD && mat != Material.EMERALD_BLOCK) return;
+            ItemMeta im = item.getItemMeta();
+            if (im == null || im.getDisplayName() == null) return;
+            String targetName = im.getDisplayName().replaceAll("§[0-9a-fk-orA-FK-OR]", "");
+            Player target = plugin.getServer().getPlayerExact(targetName);
+            if (target == null) return;
+            String adminTag = plugin.getConfig2().adminTag;
+            boolean isAdmin = p.isOp() || (!adminTag.isEmpty() && p.getScoreboardTags().contains(adminTag));
+            if (!isAdmin) return;
 
-    public void openEditor(
+            boolean leftOnly = event.isLeftClick() && !event.isRightClick();
+            boolean rightOnly = event.isRightClick() && !event.isLeftClick();
+
+            if (leftOnly) {
+                event.setCancelled(true);
+                p.closeInventory();
+                p.sendMessage("§e§l[经济操作] §f对 §a" + targetName + " §f进行经济操作");
+                p.sendMessage("§7输入 §a+数字 §7给钱，§c-数字 §7扣钱");
+                plugin.getCDK().requestInput(p, "econ", targetName);
+            } else if (rightOnly) {
+                event.setCancelled(true);
+                p.closeInventory();
+                p.sendMessage("§e§l[债券操作] §f对 §a" + targetName + " §f进行债券操作");
+                p.sendMessage("§7输入 §a+数字 §7给债券，§c-数字 §7扣债券");
+                plugin.getCDK().requestInput(p, "bond", targetName);
+            }
+            return;
+        }
+    }
+
+        public void openEditor(
             Player p, int idx) {
         List<MenuManager.MenuItem> list =
                 plugin.getMenu().getItems();
@@ -842,6 +886,19 @@ public class GUIManager implements Listener {
         g.setItem(15, mkItem(Material.EMERALD_BLOCK,
                 "§a§l积分商城",
                 "§7当前: " + points + "积分"));
+        // CDK兑换入口
+        g.setItem(16, mkItem(Material.BOOK,
+                "§6§lCDK兑换",
+                "§7输入兑换码获取债券",
+                "",
+                "§e点击输入兑换码"));
+
+// 显示当前债券余额
+        int bondBal = plugin.getBonds().getBonds(p.getName());
+        g.setItem(20, mkItem(Material.EMERALD,
+                "§e§l我的债券: " + bondBal + "枚",
+                "§7债券可通过签到、CDK、转账获得"));
+
 
 
         // 图标说明
@@ -874,6 +931,15 @@ public class GUIManager implements Listener {
         g.setItem(32, mkItem(Material.WOODEN_SHOVEL,
                 "§c清除图标",
                 "§7点击可清除已保存的图标"));
+        String ugLabel = "§7(玩家)";
+        if (plugin.getUserGroup() != null) {
+            UserGroupManager.UserGroupConfig ugCfg =
+                    plugin.getUserGroup().getHighestGroup(p.getName());
+            if (ugCfg != null) {
+                ugLabel = ugCfg.displayColor + ugCfg.displayName;
+            }
+        }
+        g.setItem(22, mkItem(Material.PAPER, "§e§l我的用户组", "§7当前: " + ugLabel));
 
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
@@ -955,6 +1021,30 @@ public class GUIManager implements Listener {
             }
         }
         return true;
+    }
+    /**
+     * 处理"我的信息"GUI中CDK兑换按钮的点击
+     * 返回 true 表示已处理
+     */
+    public boolean handleCDKClick(Player p,
+                                  InventoryClickEvent event) {
+        String title = event.getView().getTitle();
+        int raw = event.getRawSlot();
+
+        if (!T_MY_INFO.equals(title)) return false;
+
+        // CDK兑换按钮 (slot 16)
+        if (raw == 16) {
+            event.setCancelled(true);
+            p.closeInventory();
+            p.sendMessage(
+                    "§e§l[CDK] §f请输入兑换码"
+                            + "（直接输入聊天即可）:");
+            plugin.getCDK().requestInput(
+                    p, "cdk", "");
+            return true;
+        }
+        return false;
     }
 
     // ===== 放入自定义图标 =====
@@ -1557,14 +1647,22 @@ public class GUIManager implements Listener {
                 "§7左键: 切换开关",
                 "§7右键: 设置时长",
                 "§7当前: " + afkMin + "分钟"));
-        g.setItem(22, mkItem(Material.ARROW, "§7返回"));
-        // openAdmin 方法中加：
-        g.setItem(15, mkItem(Material.EMERALD_BLOCK,
-                "§d§l余额操作",
-                "§7给钱、扣钱"));
+        String ugLabel = "§7(玩家)";
+        if (plugin.getUserGroup() != null) {
+            UserGroupManager.UserGroupConfig ugCfg =
+                    plugin.getUserGroup().getHighestGroup(p.getName());
+            if (ugCfg != null) {
+                ugLabel = ugCfg.displayColor + ugCfg.displayName;
+            }
+        }
+        g.setItem(22, mkItem(Material.NETHERITE_UPGRADE_SMITHING_TEMPLATE,
+                "§e§l我的用户组",
+                "§7当前: " + ugLabel));
 
-        p.openInventory(g);
-    }
+        g.setItem(24, mkItem(Material.ARROW, "§7返回"));
+        // openAdmin 方法中加：
+        }
+
 
 
     public void openInvite(Player p) {
@@ -1593,6 +1691,16 @@ public class GUIManager implements Listener {
                 "§7绑定他人的邀请码",
                 "",
                 "§e点击输入"));
+        String ugLabel = "§7(玩家)";
+        UserGroupManager.UserGroupConfig ugCfg =
+                plugin.getUserGroup().getHighestGroup(p.getName());
+        if (ugCfg != null) {
+            ugLabel = ugCfg.displayColor + ugCfg.displayName;
+        }
+        g.setItem(22, mkItem(Material.ENCHANTED_BOOK,
+                "§e§l我的用户组",
+                "§7当前: " + ugLabel));
+
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }

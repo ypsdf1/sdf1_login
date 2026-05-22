@@ -515,30 +515,32 @@ public class RadioManager {
     // ========== 资源包发送 ==========
 
     /**
-     * 发送资源包（可选，不强制）
-     * 优先用HTTP URL发送，兜底用byte[]
+     * 发送资源包（带限流，不禁重试）
      */
+    private final Map<UUID, Long> lastSendTime =
+            new ConcurrentHashMap<>();
+
     public void sendResourcePack(Player p) {
         UUID uuid = p.getUniqueId();
-        if (pendingPack.contains(uuid)) {
+
+        // 最短间隔 5秒（不是10秒的全锁死）
+        Long last = lastSendTime.get(uuid);
+        if (last != null
+                && System.currentTimeMillis() - last
+                < 5000L) {
             plugin.getLogger().info(
-                    "[Radio] 跳过(已等待): "
+                    "[Radio] 跳过(5秒内): "
                             + p.getName());
             return;
         }
-        pendingPack.add(uuid);
-        Bukkit.getScheduler()
-                .runTaskLater(plugin, () -> {
-                    pendingPack.remove(uuid);
-                }, 200L);
+        lastSendTime.put(uuid,
+                System.currentTimeMillis());
 
         String url = getResourcePackUrl();
         if (url == null || url.isEmpty()) {
             plugin.getLogger().warning(
-                    "[Radio] URL为空，"
-                            + "跳过发送: "
+                    "[Radio] URL为空，跳过: "
                             + p.getName());
-            pendingPack.remove(uuid);
             return;
         }
 
@@ -549,7 +551,6 @@ public class RadioManager {
             plugin.getLogger().warning(
                     "[Radio] radiopack.zip不存在，"
                             + "跳过: " + p.getName());
-            pendingPack.remove(uuid);
             return;
         }
 
@@ -560,22 +561,10 @@ public class RadioManager {
             long fileSize = zip.length();
 
             plugin.getLogger().info(
-                    "[Radio] === 发送资源包 ===");
-            plugin.getLogger().info(
-                    "[Radio] 玩家: " + p.getName());
-            plugin.getLogger().info(
-                    "[Radio] URL: " + url);
-            plugin.getLogger().info(
-                    "[Radio] Hash: " + hash);
-            plugin.getLogger().info(
-                    "[Radio] 文件大小: "
-                            + fileSize + " bytes ("
-                            + String.format("%.1f",
-                            fileSize / 1024.0)
-                            + " KB)");
-            plugin.getLogger().info(
-                    "[Radio] 客户端版本: "
-                            + p.getProtocolVersion());
+                    "[Radio] 发送: " + p.getName()
+                            + " url=" + url
+                            + " size=" + fileSize
+                            + " hash=" + hash);
 
             sendPackWithHash(p, url, hash);
 
@@ -584,7 +573,6 @@ public class RadioManager {
                     "[Radio] 发送异常: "
                             + p.getName());
             e.printStackTrace();
-            pendingPack.remove(uuid);
         }
     }
 
@@ -594,37 +582,38 @@ public class RadioManager {
             Player p,
             String url,
             String hash) {
+
         UUID uuid = UUID.fromString(
                 "a1b2c3d4-e5f6-7890-abcd-"
                         + "ef1234567890");
 
+        // 尝试5参 + Component
         try {
             Object component =
                     net.kyori.adventure.text
                             .Component.text(
-                                    "§d§l服务器需要自定义资源包，请您点击'继续'由客户端自动下载即可");
+                                    "§d§l请下载自定义资源包");
             p.getClass().getMethod(
                             "setResourcePack",
                             UUID.class,
                             String.class,
                             String.class,
                             net.kyori.adventure
-                                    .text
-                                    .Component.class,
+                                    .text.Component
+                                    .class,
                             boolean.class)
                     .invoke(
                             p, uuid, url,
                             hash, component,
                             true);
             plugin.getLogger().info(
-                    "[Radio] 发送成功: "
-                            + p.getName()
-                            + " url="
-                            + url);
+                    "[Radio] 成功(5参): "
+                            + p.getName());
             return;
         } catch (Exception ignored) {
         }
 
+        // 尝试5参 + String描述
         try {
             p.getClass().getMethod(
                             "setResourcePack",
@@ -639,12 +628,13 @@ public class RadioManager {
                             "Sdf1 Radio",
                             true);
             plugin.getLogger().info(
-                    "[Radio] 旧版签名成功: "
+                    "[Radio] 成功(5参String): "
                             + p.getName());
             return;
         } catch (Exception ignored) {
         }
 
+        // 尝试3参
         try {
             p.getClass().getMethod(
                             "setResourcePack",
@@ -655,16 +645,25 @@ public class RadioManager {
                             p, uuid, url,
                             hash);
             plugin.getLogger().info(
-                    "[Radio] 3参签名成功: "
+                    "[Radio] 成功(3参): "
                             + p.getName());
             return;
         } catch (Exception ignored) {
         }
 
+        // ★ 全部失败 → 通知玩家 + 熔断
         plugin.getLogger().severe(
                 "[Radio] 所有签名失败: "
-                        + p.getName());
+                        + p.getName()
+                        + " 客户端版本: "
+                        + p.getProtocolVersion());
+        p.sendMessage(
+                "§e§l[Radio] §f资源包发送失败，"
+                        + "§7部分功能可能异常");
+        p.sendMessage(
+                "§7可尝试: §e/rejoin §7或重启客户端");
     }
+
 
 
     private void sendPackFromLocal(
@@ -718,7 +717,7 @@ public class RadioManager {
     }
 
     public void clearPending(UUID uuid) {
-        pendingPack.remove(uuid);
+        lastSendTime.remove(uuid);
     }
 
 

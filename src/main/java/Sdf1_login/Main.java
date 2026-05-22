@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.NamespacedKey;
 import org.bukkit.persistence.PersistentDataType;
+import java.util.Date;
 
 
 
@@ -126,6 +127,29 @@ public class Main extends JavaPlugin
     // 余额操作待处理
     private String balanceTarget = null;
     private boolean balanceGiveMode = false;
+    private BondManager bondManager;
+    private CDKManager cdkManager;
+    private UserGroupManager userGroupManager;
+    private CypayCommand cypayCommand;
+    public BondManager getBonds() { return bondManager; }
+    public CDKManager getCDK() { return cdkManager; }
+    public UserGroupManager getUserGroup() { return userGroupManager; }
+    public CypayCommand getCypay() { return cypayCommand; }
+    // 在 Main.java 字段声明区域（bondManager 附近）添加：
+// 在 bondManager 字段附近添加：
+    private BondPrinter bondPrinter;
+
+    // 钱包流水查看目标（玩家名 → 查看目标）
+    private final Map<String, String> walletViewTarget =
+            new ConcurrentHashMap<>();
+
+    // 流水格式化
+    private static final java.text.SimpleDateFormat
+            TX_SDF = new java.text.SimpleDateFormat(
+            "yyyy-MM-dd HH:mm:ss");
+
+
+
 
 
     public CommissionManager getCommission() {
@@ -345,6 +369,10 @@ private PVPManager pvpManager;
             getCommand("oa").setExecutor(this);
         if (getCommand("menu") != null)
             getCommand("menu").setExecutor(this);
+        if (getCommand("printer") != null) {
+            getCommand("printer").setExecutor(this);
+        }
+
 
         // ===== 10. 注册事件 =====
         getServer().getPluginManager()
@@ -368,6 +396,13 @@ private PVPManager pvpManager;
                 }
             }
         }.runTaskTimer(this, 600L, 600L);
+// [新增] Printer 文件清理（每小时检测一次）
+        new BukkitRunnable() {
+            public void run() {
+                if (bondPrinter != null)
+                    bondPrinter.cleanupOldFiles();
+            }
+        }.runTaskTimer(this, 1200L, 72000L);
 
         // 12 ===PVP===
         pvpManager = new PVPManager(this);
@@ -380,7 +415,27 @@ private PVPManager pvpManager;
                         20L, 20L);
         setupPVPTab();
 
+        // 13 ====cypay债券====
+        // 债券系统（独立DB）
+        bondManager = new BondManager(this);
+        cdkManager = new CDKManager(this);
+        userGroupManager = new UserGroupManager(this);
+        cypayCommand = new CypayCommand(this);
+// 加载CDK文件
+        cdkManager.loadCDKsFromDir();
+        // cypay 命令
+        if (getCommand("cypay") != null) {
+            getCommand("cypay").setExecutor(cypayCommand);
+            getCommand("cypay").setTabCompleter(cypayCommand);
+        }
+        bondPrinter = new BondPrinter(this);
+        cdkManager.loadCDKsFromDir();
+
+
         getLogger().info("Sdf1_login v1.0 | 就绪");
+    }
+    public BondPrinter getBondPrinter() {
+        return bondPrinter;
     }
 
     private void setupPVPTab() {
@@ -582,6 +637,15 @@ private PVPManager pvpManager;
 
     public boolean isFrozen(Player p) {
         return !loggedIn.contains(p.getName());
+    }
+    private String debugCodePoints(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            if (i > 0) sb.append(" ");
+            sb.append(String.format("U+%04X",
+                    (int) s.charAt(i)));
+        }
+        return sb.toString();
     }
 
     private boolean isAdmin(CommandSender sender) {
@@ -1323,16 +1387,23 @@ private PVPManager pvpManager;
         // 强制重发资源包（清掉客户端拒绝记录）
         Bukkit.getScheduler()
                 .runTaskLater(this, () -> {
-                    if (p.isOnline()
-                            && radio != null) {
-                        radio.sendResourcePack(p);
+                    // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
+                    if (radio != null) {
+                        final Player jp = p;
+                        Bukkit.getScheduler().runTaskLater(
+                                this, () -> {
+                                    if (jp.isOnline()) {
+                                        radio.sendResourcePack(jp);
+                                    }
+                                }, 60L);
                     }
+
                 }, 20L);
         // 重置聊天输入状态（防止上次退出时残留）
         chatInput.reset(p);
         if (needsPasswordChange.contains(name))
             needsPasswordChange.remove(name);
-
+// 改完了直接打包，要打sdf1一起
         lastActivity.put(p.getUniqueId(),
                 System.currentTimeMillis());
         if (needsPasswordChange.contains(name))
@@ -1371,6 +1442,7 @@ private PVPManager pvpManager;
             }
         }
         // [ADDED] 资源包（延迟发送，不强制）
+        // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
         if (radio != null) {
             final Player jp = p;
             Bukkit.getScheduler().runTaskLater(
@@ -1397,18 +1469,30 @@ private PVPManager pvpManager;
         afk.recordAction(p.getUniqueId());
         hideInventoryDelayed(p, 0);
         // [ADDED] 发送资源包
-        if (radio != null) radio.sendResourcePack(p);
-
-        // [ADDED] 发送资源包（延迟5秒确保客户端就绪）
+        // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
         if (radio != null) {
             final Player jp = p;
-            Bukkit.getScheduler().runTaskLater(this,
-                    () -> {
+            Bukkit.getScheduler().runTaskLater(
+                    this, () -> {
                         if (jp.isOnline()) {
                             radio.sendResourcePack(jp);
                         }
-                    }, 100L);
+                    }, 60L);
         }
+
+
+        // [ADDED] 发送资源包（延迟5秒确保客户端就绪）
+        // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
+        if (radio != null) {
+            final Player jp = p;
+            Bukkit.getScheduler().runTaskLater(
+                    this, () -> {
+                        if (jp.isOnline()) {
+                            radio.sendResourcePack(jp);
+                        }
+                    }, 60L);
+        }
+
 
 
         verification.verifyPremiumAsync(p,
@@ -1903,129 +1987,19 @@ private PVPManager pvpManager;
     public void onChat(AsyncPlayerChatEvent e) {
         Player p = e.getPlayer();
         String msg = e.getMessage();
+        // ★ CDK/经济/债券输入拦截 — 必须在所有聊天处理之前
+        if (this.getCDK() != null && this.getCDK().isListening(p.getName())) {
+            e.setCancelled(true);
+            this.getCDK().onChat(p, msg);
+            return;
+        }
+
+
 // ===== 菜单聊天输入 =====
         if (getMenu().isEditing(p.getName())) {
             e.setCancelled(true);
             getMenu().onChat(p, msg);
             return;
-        }
-// ===== 余额操作输入 =====
-        if (balanceTarget != null) {
-            e.setCancelled(true);
-            String input = msg.trim();
-            String[] parts = input.split("\\s+", 2);
-            if (parts.length < 2
-                    || parts[0].isEmpty()
-                    || parts[1].isEmpty()) {
-                p.sendMessage("§c格式: 金额 理由");
-                p.sendMessage("§7例: 100 测试扣款");
-                balanceTarget = null;
-                return;
-            }
-            double amount;
-            try {
-                amount = Double.parseDouble(parts[0]);
-            } catch (NumberFormatException ex) {
-                p.sendMessage("§c金额格式错误");
-                balanceTarget = null;
-                return;
-            }
-            if (amount <= 0) {
-                p.sendMessage("§c金额必须大于0");
-                balanceTarget = null;
-                return;
-            }
-            String reason = parts[1];
-            String target = balanceTarget;
-            boolean giveMode = balanceGiveMode;
-            balanceTarget = null;
-            var reg = getServer().getServicesManager()
-                    .getRegistration(
-                            net.milkbowl.vault.economy
-                                    .Economy.class);
-            if (reg == null) {
-                p.sendMessage("§c经济系统未加载");
-                return;
-            }
-            net.milkbowl.vault.economy.Economy eco =
-                    reg.getProvider();
-            Player tp = Bukkit.getPlayer(target);
-            if (tp == null || !tp.isOnline()) {
-                p.sendMessage(
-                        "§c玩家不在线: "
-                                + target);
-                return;
-            }
-            if (giveMode) {
-                var resp =
-                        eco.depositPlayer(target, amount);
-                if (resp.transactionSuccess()) {
-                    double oldBal = resp.balance
-                            - amount;
-                    double newBal = resp.balance;
-                    // 操作者看到的
-                    p.sendMessage("");
-                    p.sendMessage("§6【余额转账】正在执行...");
-                    p.sendMessage("§7============== §6余额转账 §7==============");
-                    p.sendMessage("§7目标: §e" + target);
-                    p.sendMessage("§a到账: §e$" + String.format("%.2f", amount));
-                    p.sendMessage("§7余额: §e" + String.format("%.2f", oldBal) + " → §a" + String.format("%.2f", newBal));
-                    p.sendMessage("§7理由: §f" + reason);
-                    p.sendMessage("§7============== §6余额转账 §7==============");
-                    p.sendMessage("");
-                    // 被转账者看到的
-                    tp.sendMessage("");
-                    tp.sendMessage("§a【收到转账】一笔新入账...");
-                    tp.sendMessage("§7============== §a收到转账 §7==============");
-                    tp.sendMessage("§a到账: §e$" + String.format("%.2f", amount));
-                    tp.sendMessage("§7余额: §e" + String.format("%.2f", oldBal) + " → §a" + String.format("%.2f", newBal));
-                    tp.sendMessage("§7来自: §e" + p.getName());
-                    tp.sendMessage("§7理由: §f" + reason);
-                    tp.sendMessage("§7============== §a收到转账 §7==============");
-                    tp.sendMessage("");
-                } else {
-                    p.sendMessage("§c转账失败: "
-                            + resp.errorMessage);
-                }
-            } else {
-                double bal = eco.getBalance(target);
-                if (bal < amount) {
-                    p.sendMessage("§c" + target
-                            + " 余额不足");
-                    p.sendMessage("§7当前余额: §e$"
-                            + String.format("%.2f", bal));
-                    return;
-                }
-                var resp =
-                        eco.withdrawPlayer(target, amount);
-                if (resp.transactionSuccess()) {
-                    double oldBal = resp.balance + amount;
-                    double newBal = resp.balance;
-                    // 操作者看到的
-                    p.sendMessage("");
-                    p.sendMessage("§c【余额扣款】正在执行...");
-                    p.sendMessage("§7============== §c余额扣款 §7==============");
-                    p.sendMessage("§7目标: §e" + target);
-                    p.sendMessage("§c扣款: §e-$" + String.format("%.2f", amount));
-                    p.sendMessage("§7余额: §e" + String.format("%.2f", oldBal) + " → §c" + String.format("%.2f", newBal));
-                    p.sendMessage("§7理由: §f" + reason);
-                    p.sendMessage("§7============== §c余额扣款 §7==============");
-                    p.sendMessage("");
-                    // 被扣款者看到的
-                    tp.sendMessage("");
-                    tp.sendMessage("§c【余额扣款】你的账户收到扣款...");
-                    tp.sendMessage("§7============== §c余额扣款 §7==============");
-                    tp.sendMessage("§c扣款: §e-$" + String.format("%.2f", amount));
-                    tp.sendMessage("§7余额: §e" + String.format("%.2f", oldBal) + " → §c" + String.format("%.2f", newBal));
-                    tp.sendMessage("§7操作者: §e" + p.getName());
-                    tp.sendMessage("§7理由: §f" + reason);
-                    tp.sendMessage("§7============== §c余额扣款 §7==============");
-                    tp.sendMessage("");
-                } else {
-                    p.sendMessage("§c扣款失败: "
-                            + resp.errorMessage);
-                }
-            }
         }
 
             // ===== 冻结检查 =====
@@ -2176,11 +2150,251 @@ private PVPManager pvpManager;
     public PVPManager getPVPManager() {
         return pvpManager;
     }
+// ==================== 我的钱包 ====================
+
+    public void openMyWallet(Player p) {
+        openWalletGUI(p, p.getName());
+    }
+
+    private void openWalletGUI(Player p, String target) {
+        Inventory g = Bukkit.createInventory(
+                null, 27, "§6§l我的钱包");
+
+
+        ItemStack glass = new ItemStack(
+                Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta gm = glass.getItemMeta();
+        if (gm != null) {
+            gm.setDisplayName(" ");
+            glass.setItemMeta(gm);
+        }
+        for (int i = 0; i < 27; i++)
+            g.setItem(i, glass);
+
+        // 债券余额 (slot 4)
+        int balance = bondManager.getBonds(target);
+        g.setItem(4, mkItem(Material.GOLD_INGOT,
+                "§6§l债券余额: §e" + balance + " §6枚",
+                "§7当前持有的债券数量"));
+
+        // 账户状态 (slot 10)
+        String status = bondManager
+                .getAccountStatus(target);
+        if ("frozen".equals(status)) {
+            g.setItem(10, mkItem(Material.REDSTONE,
+                    "§c§l账户状态: 冻结中",
+                    "§7无法进行任何资金交易"));
+        } else {
+            g.setItem(10, mkItem(Material.EMERALD,
+                    "§a§l账户状态: 正常",
+                    "§7账户运行正常"));
+        }
+
+        // 同IP玩家 (slot 11)
+        if (target.equals(p.getName())) {
+            List<String> sameIP = bondManager
+                    .getSameIPPlayers(target);
+            List<String> lore = new ArrayList<>();
+            lore.add("§7同IP下注册的其他玩家:");
+            if (sameIP.isEmpty()) {
+                lore.add("§a  无");
+            } else {
+                for (String n : sameIP)
+                    lore.add("§c  - " + n);
+            }
+            lore.add("§7");
+            lore.add("§7转账限制:");
+            lore.add("§7  不能与同IP玩家转账");
+            g.setItem(11, mkItem(Material.PAPER,
+                    "§e§l同IP玩家", lore.toArray(
+                            new String[0])));
+        }
+
+        // 近7天流水 (slot 12)
+        g.setItem(12, mkItem(Material.BOOK,
+                "§e近7天流水",
+                "§7点击查看最近7天交易记录"));
+
+        // 近14天流水 (slot 13)
+        g.setItem(13, mkItem(Material.BOOK,
+                "§e近14天流水",
+                "§7点击查看最近14天交易记录",
+                "§8(系统最大支持14天)"));
+
+        // 转账记录 (slot 14)
+        g.setItem(14, mkItem(Material.PAPER,
+                "§e转账记录",
+                "§7点击查看所有转账明细"));
+
+        // 返回 (slot 22)
+        g.setItem(22, mkItem(Material.ARROW,
+                "§7← 返回"));
+
+        walletViewTarget.put(p.getName(), target);
+        p.openInventory(g);
+    }
+
+// ==================== 流水记录GUI ====================
+
+    public void openWalletTransactions(
+            Player p, int days) {
+        String target = walletViewTarget.getOrDefault(
+                p.getName(), p.getName());
+        openWalletTxGUI(p, target, days, false);
+    }
+
+    public void openWalletTransfers(Player p) {
+        String target = walletViewTarget.getOrDefault(
+                p.getName(), p.getName());
+        openWalletTxGUI(p, target, 14, true);
+    }
+
+    private void openWalletTxGUI(Player p,
+                                 String target,
+                                 int days,
+                                 boolean transfersOnly) {
+        days = Math.min(days, 14); // 普通玩家最大14天
+        String title = transfersOnly
+                ? "§e§l转账记录 - " + target
+                : "§e§l流水记录 - 近" + days
+                  + "天 - " + target;
+
+        Inventory g = Bukkit.createInventory(
+                null, 54, title);
+
+        List<Map<String, Object>> txs = transfersOnly
+                ? bondManager.getTransferTransactions(
+                target, days)
+                : bondManager.getTransactions(
+                target, days);
+
+        int slot = 0;
+        for (Map<String, Object> tx : txs) {
+            if (slot >= 45) break;
+
+            String type = (String) tx.get("type");
+            int amount = ((Number) tx.get("amount"))
+                    .intValue();
+            String tgt = (String) tx.get("target_player");
+            String reason = (String) tx.get("reason");
+            int bal = ((Number) tx.get("balance_after"))
+                    .intValue();
+            long time = ((Number) tx.get("time"))
+                    .longValue();
+
+            boolean pos = amount > 0;
+            String sign = pos ? "+" : "";
+            String color = pos ? "§a" : "§c";
+            String typeName = walletFormatType(type);
+
+            // 用 if-else 替代 switch 避免编译问题
+            Material mat = Material.PAPER;
+            if (BondManager.TX_TRANSFER_OUT.equals(type)) {
+                mat = Material.RED_WOOL;
+            } else if (BondManager.TX_TRANSFER_IN
+                    .equals(type)) {
+                mat = Material.LIME_WOOL;
+            } else if (BondManager.TX_ADMIN_GIVE
+                    .equals(type)) {
+                mat = Material.GOLD_BLOCK;
+            } else if (BondManager.TX_ADMIN_DEDUCT
+                    .equals(type)) {
+                mat = Material.REDSTONE_BLOCK;
+            } else if (BondManager.TX_REDEEM
+                    .equals(type)) {
+                mat = Material.NAME_TAG;
+            } else if (BondManager.TX_SHOP_BUY
+                    .equals(type)) {
+                mat = Material.CHEST;
+            } else if (BondManager.TX_FREEZE
+                    .equals(type)) {
+                mat = Material.BARRIER;
+            } else if (BondManager.TX_UNFREEZE
+                    .equals(type)) {
+                mat = Material.EMERALD_BLOCK;
+            } else if (pos) {
+                mat = Material.LIME_WOOL;
+            } else {
+                mat = Material.RED_WOOL;
+            }
+
+            List<String> lore = new ArrayList<>();
+            lore.add("§7类型: " + typeName);
+            lore.add("§7金额: " + color + sign + amount
+                    + " §6枚");
+            if (tgt != null && !tgt.isEmpty())
+                lore.add("§7对象: §e" + tgt);
+            if (reason != null && !reason.isEmpty())
+                lore.add("§7理由: §7" + reason);
+            lore.add("§7余额: §f" + bal + " §6枚");
+            lore.add("§8" + TX_SDF.format(
+                    new Date(time)));
+
+            ItemStack item = new ItemStack(mat);
+            ItemMeta im = item.getItemMeta();
+            if (im != null) {
+                im.setDisplayName(color + sign + amount
+                        + " §6枚 - " + typeName);
+                im.setLore(lore);
+                item.setItemMeta(im);
+            }
+            g.setItem(slot, item);
+            slot++;
+        }
+
+        if (txs.isEmpty()) {
+            ItemStack empty = new ItemStack(
+                    Material.BARRIER);
+            ItemMeta em = empty.getItemMeta();
+            if (em != null) {
+                em.setDisplayName("§7暂无记录");
+                empty.setItemMeta(em);
+            }
+            g.setItem(22, empty);
+        } else if (txs.size() > 45) {
+            g.setItem(49, mkItem(Material.PAPER,
+                    "§7还有 " + (txs.size() - 45)
+                            + " 条未显示"));
+        }
+
+        g.setItem(53, mkItem(Material.ARROW,
+                "§7← 返回钱包"));
+
+        p.openInventory(g);
+    }
+
+
+    private String walletFormatType(String type) {
+        if (type == null) return "未知";
+        switch (type) {
+            case BondManager.TX_ADMIN_GIVE:
+                return "管理员发放";
+            case BondManager.TX_ADMIN_DEDUCT:
+                return "管理员扣除";
+            case BondManager.TX_TRANSFER_OUT:
+                return "转出";
+            case BondManager.TX_TRANSFER_IN:
+                return "转入";
+            case BondManager.TX_REDEEM:
+                return "CDK兑换";
+            case BondManager.TX_SHOP_BUY:
+                return "商城购买";
+            case BondManager.TX_DAILY_SIGN:
+                return "签到奖励";
+            case BondManager.TX_FREEZE:
+                return "冻结";
+            case BondManager.TX_UNFREEZE:
+                return "解冻";
+            default:
+                return type;
+        }
+    }
 
 
     // ===== Inventory Click（旧逻辑 + 新主菜单布局 + 新功能） =====
     @EventHandler
     public void onInvClick(InventoryClickEvent e) {
+        if (e.isCancelled()) return;
         if (!(e.getWhoClicked() instanceof Player))
             return;
         Player p = (Player) e.getWhoClicked();
@@ -2393,29 +2607,137 @@ private PVPManager pvpManager;
             return;
         }
 
-        // ===== 余额操作 —— 移到前面 =====
+        // ===== [DEBUG] 标题追踪 =====
+        {
+            String dt = title;
+            if (dt.contains("钱包")
+                    || dt.contains("余额")
+                    || dt.contains("流水")
+                    || dt.contains("转账")) {
+                getLogger().info(
+                        "[DEBUG-CLICK] "
+                                + "player=" + p.getName()
+                                + " title=[" + dt + "]"
+                                + " slot=" + slot
+                                + " codePoints="
+                                + debugCodePoints(dt));
+            }
+        }
+
+        // ===== 二级菜单（.txt）—— 排除所有固定GUI =====
+        if (title.startsWith("§6§l")
+                && !title.equals(GUIManager.T_MAIN)
+                && !title.equals(GUIManager.T_ADMIN)
+                && !title.equals(GUIManager.T_MY_INFO)
+                && !title.equals(GUIManager.T_INVITE)
+                && !title.equals(
+                GUIManager.T_TASK_CENTER)
+                && !title.equals(
+                GUIManager.T_GIFT_STAGES)
+                && !title.equals("§6§l任务面板")
+                && !title.equals("§6§l垃圾回收站")
+                && !title.equals("§6§l我的钱包")
+                && !title.equals("§6§l余额操作")) {
+            e.setCancelled(true);
+            if (slot == 49) {
+                gui.openMain(p);
+                return;
+            }
+            if (slot < 45
+                    && slot < e.getInventory()
+                    .getSize()
+                    && e.getCurrentItem() != null) {
+                ItemMeta subLm = e.getCurrentItem()
+                        .getItemMeta();
+                if (subLm != null
+                        && subLm.getLore() != null) {
+                    for (String subLn
+                            : subLm.getLore()) {
+                        if (subLn.contains(
+                                "§7指令: §f")) {
+                            String cmd = subLn
+                                    .replace("§7指令: §f", "")
+                                    .trim();
+                            if (cmd.isEmpty()
+                                    || cmd.equals("/")
+                                    || cmd.equals("null")) {
+                                p.sendMessage("§c指令为空");
+                                return;
+                            }
+                            p.closeInventory();
+                            if (cmd.startsWith("/")) {
+                                cmd = cmd.substring(1);
+                            }
+                            Bukkit.dispatchCommand(p, cmd);
+                            return;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // ===== 我的钱包（唯一handler） =====
+        if (title.equals("§6§l我的钱包")) {
+            e.setCancelled(true);
+            if (slot == 22) {
+                gui.openMain(p);
+            } else if (slot == 12) {
+                openWalletTransactions(p, 7);
+            } else if (slot == 13) {
+                openWalletTransactions(p, 14);
+            } else if (slot == 14) {
+                openWalletTransfers(p);
+            }
+            return;
+        }
+
+        // ===== 流水/转账记录（唯一handler） =====
+        if (title.startsWith("§e§l流水记录")
+                || title.startsWith("§e§l转账记录")) {
+            e.setCancelled(true);
+            if (slot == 53) {
+                openMyWallet(p);
+            }
+            return;
+        }
+
+        // ===== 余额操作（唯一handler） =====
         if (title.equals("§d§l余额操作")) {
             e.setCancelled(true);
             if (slot == 49) {
                 gui.openMain(p);
                 return;
             }
-            // ★ bounds检查 ★
             if (slot >= 0
-                    && slot < e.getInventory()
-                    .getSize()) {
-                ItemStack item =
-                        e.getInventory().getItem(slot);
+                    && slot < e.getInventory().getSize()) {
+                ItemStack item = e.getInventory()
+                        .getItem(slot);
                 if (item == null
                         || !item.hasItemMeta()
                         || !item.getItemMeta()
-                        .hasDisplayName())
+                        .hasDisplayName()) {
                     return;
-                String targetName =
-                        item.getItemMeta()
-                                .getDisplayName()
-                                .replace("§e", "")
-                                .replace("§a", "");
+                }
+                // 在 slot == 49 的 return 之后、读取 item 之前
+             //   ItemStack item = e.getInventory().getItem(slot);
+                if (item == null) return;
+                Material mat = item.getType();
+// 以下是常见的装饰性玻璃板材质，按需扩展
+                if (mat.name().contains("STAINED_GLASS")
+                        || mat.name().contains("GLASS_PANE")
+                        || mat == Material.LIGHT_BLUE_STAINED_GLASS_PANE
+                        || mat == Material.GRAY_STAINED_GLASS_PANE
+                        // ... 其他装饰物
+                        || mat == Material.BLACK_STAINED_GLASS_PANE) {
+                    e.setCancelled(true);
+                    return; // 装饰物品，不处理
+                }
+
+                String targetName = item.getItemMeta()
+                        .getDisplayName()
+                        .replace("§e", "")
+                        .replace("§a", "");
                 if (targetName.equals(p.getName())) {
                     p.sendMessage("§c不能操作自己");
                     return;
@@ -2423,18 +2745,37 @@ private PVPManager pvpManager;
                 if (e.isLeftClick()) {
                     balanceTarget = targetName;
                     balanceGiveMode = true;
+                    p.closeInventory();
+                    p.sendMessage(
+                            "§e请输入金额和理由");
+                    p.sendMessage(
+                            "§7例: +100 给款 / -100 扣款");
                 } else if (e.isRightClick()) {
-                    balanceTarget = targetName;
-                    balanceGiveMode = false;
+                    if (this.getCDK() != null) {
+                        this.getCDK().requestInput(
+                                p, "bond",
+                                targetName);
+                    }
+                    p.closeInventory();
+                    p.sendMessage(
+                            "§e【债券操作】对 §a"
+                                    + targetName
+                                    + " §e进行债券操作");
+                    p.sendMessage(
+                            "§e输入 +金额 给债券,"
+                                    + " -金额 扣债券");
+                    p.sendMessage(
+                            "§7可附加理由: §a+100 "
+                                    + "活动奖励 §7不填默认:"
+                                    + "管理员手动调整");
                 }
-                p.closeInventory();
-                p.sendMessage(
-                        "§e请输入金额和理由");
-                p.sendMessage(
-                        "§7例: 100 测试扣款");
             }
             return;
         }
+
+
+
+
 // ===== 菜单管理 =====
         if (title.equals("§c§l菜单管理")) {
             e.setCancelled(true);
@@ -2562,7 +2903,9 @@ private PVPManager pvpManager;
                     p.sendMessage("§c已取消");
                     gui.openMain(p);
                     break;
-            }}
+            }
+        }
+        // ==================== 主菜单（新布局） ====================
         // ==================== 主菜单（新布局） ====================
         if (title.equals(GUIManager.T_MAIN)) {
             e.setCancelled(true);
@@ -2573,27 +2916,24 @@ private PVPManager pvpManager;
                         .getItemMeta();
                 if (meta != null && meta.getLore() != null) {
                     for (String ln : meta.getLore()) {
-                        if (ln.contains(
-                                "§7指令: §f")) {
+                        if (ln.contains("§7指令: §f")) {
                             String cmd = ln.replace(
-                                    "§7指令: §f",
-                                    "").trim();
+                                    "§7指令: §f", "").trim();
                             if (cmd.isEmpty()
                                     || cmd.equals("/")
                                     || cmd.equals("null")) {
-                                p.sendMessage(
-                                        "§c指令为空");
+                                p.sendMessage("§c指令为空");
                                 return;
                             }
                             p.closeInventory();
-                            if (cmd.startsWith("/"))
+                            if (cmd.startsWith("/")) {
                                 cmd = cmd.substring(1);
+                            }
                             if (cmd.endsWith(".txt")) {
                                 gui.openSubMenu(p,
                                         cmd.substring(1));
                             } else {
-                                Bukkit.dispatchCommand(
-                                        p, cmd);
+                                Bukkit.dispatchCommand(p, cmd);
                             }
                             return;
                         }
@@ -2602,47 +2942,45 @@ private PVPManager pvpManager;
             }
 
             // 固定按钮
-            switch (slot) {
-                case 10: gui.openMyInfo(p); break;
-                case 12: gui.openInvite(p); break;
-                case 14:
-                    p.openInventory(
-                            points.createShopGUI(p));
-                    break;
-                case 16: gui.openBiomeMenu(p); break;
-                case 19: ticket.openMain(p); break;
-                case 21:
-                    dailySignWithReward(p);
-                    gui.openMain(p);
-                    break;
-                case 23: gui.openTaskCenter(p); break;
-                case 25:
-                    if (p.isOp() || isAdmin(p)) {
-                        garbage.openRecycle(p);
-                    }
-                    break;
-                case 29:
-                    if (isAdmin(p)) {
-                        p.closeInventory();
-                        chatInput.getState(p).type =
-                                ChatInputManager.InputType
-                                         .ADMIN_AUTH;
-                        p.sendMessage(
-                                "请输入管理密码:");
-                    }
-                    break;
-                case 31:
-                    if (p.isOp()) {
-                        gui.openMenuManager(p);
-                    }
-                    break;
-
-                case 34:
-                    if (p.isOp() || isAdmin(p)) {
-                        gui.openBalanceOps(p);
-                    }
-                    break;
+            if (slot == 10) {
+                gui.openMyInfo(p);
+            } else if (slot == 12) {
+                gui.openInvite(p);
+            } else if (slot == 14) {
+                p.openInventory(points.createShopGUI(p));
+            } else if (slot == 16) {
+                gui.openBiomeMenu(p);
+            } else if (slot == 19) {
+                ticket.openMain(p);
+            } else if (slot == 20) {
+                openMyWallet(p);
+            } else if (slot == 21) {
+                dailySignWithReward(p);
+                gui.openMain(p);
+            } else if (slot == 23) {
+                gui.openTaskCenter(p);
+            } else if (slot == 25) {
+                if (p.isOp() || isAdmin(p)) {
+                    garbage.openRecycle(p);
+                }
+            } else if (slot == 29) {
+                if (isAdmin(p)) {
+                    p.closeInventory();
+                    chatInput.getState(p).type =
+                            ChatInputManager.InputType.ADMIN_AUTH;
+                    p.sendMessage("请输入管理密码:");
+                }
+            } else if (slot == 31) {
+                if (p.isOp()) {
+                    gui.openMenuManager(p);
+                }
+            } else if (slot == 34) {
+                if (p.isOp() || isAdmin(p)) {
+                    gui.openBalanceOps(p);
+                }
             }
+
+
             return;
         }
 
@@ -2723,10 +3061,13 @@ private PVPManager pvpManager;
         // ==================== 我的信息 ====================
         if (title.equals(GUIManager.T_MY_INFO)) {
             e.setCancelled(true);
-            // 先处理图标槽
-            if (gui.handleMyInfoIconClick(p, e))
+            // ★ 只在图标槽(slot 4)调用，不干扰按钮
+            if (slot == 4
+                    && gui.handleMyInfoIconClick(p, e)) {
                 return;
+            }
             if (slot == 26) gui.openMain(p);
+
             else if (slot == 10) {
                 if (checkIn.isCheckedInToday(
                         p.getName()))
@@ -3263,8 +3604,41 @@ private PVPManager pvpManager;
             Player p = (Player) sender;
             return pvpManager.onCommand(p, args);
         }
+        if (cmdName.equals("cypay")) {
+            return cypayCommand.onCommand(sender, cmd, label, args);
+        }
 
-
+        // ===== /printer [玩家名] =====
+        if (label.equalsIgnoreCase("printer")) {
+            if (bondPrinter == null) {
+                sender.sendMessage("§cPrinter未初始化");
+                return true;
+            }
+            if (!sender.isOp()
+                    && !isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length == 0) {
+                // 打印全服
+                sender.sendMessage(
+                        "§e正在导出全服流水...");
+                bondPrinter.printAll(sender);
+                return true;
+            }
+            if (args.length == 1) {
+                // 打印指定玩家
+                String target = args[0];
+                sender.sendMessage("§e正在导出 "
+                        + target + " 的流水...");
+                bondPrinter.printPlayer(
+                        target, sender);
+                return true;
+            }
+            sender.sendMessage(
+                    "§7用法: /printer [玩家名]");
+            return true;
+        }
         // ===== /chat 独立命令 =====
         if (cmdName.equals("chat")
                 || cmdName.equals("聊天")) {
@@ -3609,33 +3983,6 @@ private PVPManager pvpManager;
             return true;
         }
 
-
-        // /sdf1debug
-        if (cmdName.equals("sdf1debug")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage("§c仅玩家可用");
-                return true;
-            }
-            Player p2 = (Player) sender;
-            if (!isAdmin(sender)) {
-                p2.sendMessage("§c权限不足");
-                return true;
-            }
-            if (args.length < 2) {
-                p2.sendMessage("§e用法: /sdf1debug <玩家> <阶段>");
-                return true;
-            }
-            String tgt = args[0];
-            try {
-                int stage = Integer.parseInt(args[1]);
-                db.setField(tgt, "gift_stage", stage);
-                p2.sendMessage("§a已将 " + tgt
-                        + " 的任务阶段设为 " + stage);
-            } catch (NumberFormatException ex) {
-                p2.sendMessage("§c请输入有效数字");
-            }
-            return true;
-        }
 
         // /oa
         if (cmdName.equals("oa")) {
@@ -4765,6 +5112,10 @@ private PVPManager pvpManager;
                     "addplayer", "takeplayer",
                     "unmute", "reset"));
         }
+        if (cmd.getName().equalsIgnoreCase("cypay")) {
+            return cypayCommand.onTabComplete(sender, cmd, label, args);
+        }
+
         return list;
     }
 }

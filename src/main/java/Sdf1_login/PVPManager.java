@@ -13,6 +13,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.scoreboard.*;
 
+
 import java.io.File;
 import java.sql.*;
 import java.util.*;
@@ -39,6 +40,10 @@ public class PVPManager implements Listener {
     private final Map<String, KillSession>
             killSessions =
             new ConcurrentHashMap<>();
+    private final Set<String> tripleAnnounced =
+            ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> lastScoreboardRefresh = new ConcurrentHashMap<>();
+
 
     // 边框显示
     private final Set<String>
@@ -47,6 +52,7 @@ public class PVPManager implements Listener {
     private final Set<String>
             tempBorders =
             ConcurrentHashMap.newKeySet();
+
 
     public static class KillSession {
         public int count = 0;
@@ -576,13 +582,10 @@ public class PVPManager implements Listener {
             }
             String was = inRegion.get(pn);
 
-            if (inside != null
-                    && !inside
-                    .equals(was)) {
+            if (inside != null && !inside.equals(was)) {
                 inRegion.put(pn, inside);
                 if (was == null) {
                     String reg = inside;
-                    initSession(pn, reg);
                     final Player pp = p;
                     Bukkit.getScheduler()
                             .runTaskLater(plugin,
@@ -591,22 +594,20 @@ public class PVPManager implements Listener {
                                                     pp, reg),
                                     1L);
                 }
-            } else if (inside == null
+
+        } else if (inside == null
                     && was != null) {
                 inRegion.remove(pn);
+                // 不删 sessionKills，等倒计时结束再清
                 removeScoreboard(p);
                 final Player pp = p;
                 Bukkit.getScheduler()
                         .runTaskLater(plugin,
                                 () -> plugin
-                                        .giveMenuSnowball(
-                                                pp),
+                                        .giveMenuSnowball(pp),
                                 5L);
-            } else if (inside != null
-                    && inside
-                    .equals(was)) {
-                ensureScoreboard(p, inside);
             }
+
         }
 
         // 5分钟超时重置连杀session
@@ -624,18 +625,27 @@ public class PVPManager implements Listener {
         }
 
         // 5分钟无击杀 → 计数榜切总榜
+        // 5分钟无击杀 → 归档并清零
         for (String rName :
                 new ArrayList<>(
                         lastKillTime
                                 .keySet())) {
             long last = lastKillTime
                     .getOrDefault(rName, 0L);
-            if (now - last
-                    > 5 * 60 * 1000) {
+            if (now - last > 5 * 60 * 1000) {
+                // 清零该区域所有sessionKills
+                sessionKills.keySet()
+                        .removeIf(k -> k
+                                .startsWith(
+                                        rName + ":"));
+                // 切换到总榜
                 refreshScoreboard(rName);
                 lastKillTime.remove(rName);
+                lastScoreboardRefresh.remove(rName);
+
             }
         }
+
 
         // 边框渲染
         for (Player p :
@@ -653,12 +663,38 @@ public class PVPManager implements Listener {
                     .contains(pr)) {
                 drawBorder(p, r);
             }
+            // 每秒刷新活跃区域的计分板倒计时
+            for (String rName : new ArrayList<>(lastKillTime.keySet())) {
+                long last = lastScoreboardRefresh.getOrDefault(rName, 0L);
+                if (now - last >= 1000) {
+                    lastScoreboardRefresh.put(rName, now);
+                    for (Player tp : Bukkit.getOnlinePlayers()) {
+                        String inR = inRegion.get(tp.getName());
+                        if (rName.equals(inR)) {
+                            showCounter(tp, rName);
+                        }
+                    }
+                }
+            }
+
+
+
         }
     }
+
+    private void broadcastWithSound(String msg, Sound sound) {
+        Bukkit.broadcastMessage(msg);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.playSound(p.getLocation(), sound, 1.0f, 1.0f);
+        }
+    }
+
 
     private void initSession(String player,
                              String region) {
         killSessions.remove(player);
+        tripleAnnounced.remove(
+                region + ":" + player);
         KillSession s = new KillSession();
         s.region = region;
         s.firstKill =
@@ -694,7 +730,7 @@ public class PVPManager implements Listener {
         addKill(kName, region);
         addDeath(vName, region);
 
-        // sessionKills（计数榜用）
+        // 计数榜
         String kKey =
                 region + ":" + kName;
         sessionKills.merge(kKey, 1,
@@ -703,11 +739,11 @@ public class PVPManager implements Listener {
                 System.currentTimeMillis());
 
         // 终结检测
+        // 终结检测
         KillSession victimSession =
                 killSessions.get(vName);
         if (victimSession != null
-                && victimSession.count
-                >= 3) {
+                && victimSession.count >= 3) {
             String endMsg =
                     "§b§l" + kName
                             + " §e终结了 "
@@ -716,27 +752,22 @@ public class PVPManager implements Listener {
                             + "连杀！§a恭喜终结者 "
                             + kName
                             + "§e！§7快来挑战！";
-            Bukkit.broadcastMessage(endMsg);
-            for (Player pp :
-                    Bukkit.getOnlinePlayers()) {
-                pp.playSound(
-                        pp.getLocation(),
-                        Sound
-                                .UI_TOAST_CHALLENGE_COMPLETE,
-                        2.5f, 0.8f);
-            }
+            killSessions.remove(vName);
+            broadcastWithSound(endMsg, Sound.ENTITY_ENDER_DRAGON_GROWL);
+
             killSessions.remove(vName);
         }
 
-        // 击杀者连杀计数
+
+        // 击杀者连杀
         KillSession ks =
                 killSessions.get(kName);
         if (ks == null
-                || !ks.region
-                .equals(region)
+                || !ks.region.equals(region)
                 || System.currentTimeMillis()
-                - ks.lastKill
-                > 5 * 60 * 1000) {
+                - ks.lastKill > 5 * 60 * 1000) {
+            tripleAnnounced.remove(
+                    region + ":" + kName);
             KillSession ns =
                     new KillSession();
             ns.region = region;
@@ -756,6 +787,11 @@ public class PVPManager implements Listener {
         KillSession killerSession =
                 killSessions.get(kName);
         if (killerSession != null) {
+            plugin.getLogger().info(
+                    "[PVP] checkMultiKill: "
+                            + kName + " count="
+                            + killerSession.count
+                            + " region=" + region);
             checkMultiKill(killer,
                     region, killerSession);
         }
@@ -783,6 +819,7 @@ public class PVPManager implements Listener {
             KillSession session) {
         int count = session.count;
         String kName = killer.getName();
+        String key = region + ":" + kName;
         String msg = null;
 
         if (count >= 5) {
@@ -791,8 +828,7 @@ public class PVPManager implements Listener {
                     + "」达成 " + count
                     + "连杀！§7§l快来挑战！";
         } else if (count == 3) {
-            if (!session.tripleAnnounced) {
-                session.tripleAnnounced = true;
+            if (tripleAnnounced.add(key)) {
                 msg = "§6§l三杀！"
                         + kName
                         + " 势不可挡！"
@@ -801,35 +837,35 @@ public class PVPManager implements Listener {
         }
 
         if (msg != null) {
-            Bukkit.broadcastMessage(msg);
-            for (Player pp :
-                    Bukkit.getOnlinePlayers()) {
-                pp.playSound(
-                        pp.getLocation(),
-                        Sound
-                                .UI_TOAST_CHALLENGE_COMPLETE,
-                        2.0f, 1.0f);
+            if (count >= 5) {
+                broadcastWithSound(msg, Sound.ENTITY_ENDER_DRAGON_GROWL);
+            } else {
+                broadcastWithSound(msg, Sound.BLOCK_END_PORTAL_SPAWN);
             }
         }
+
     }
+
+
 
     // ===== 计分板（英文ID） =====
 
     private void ensureScoreboard(
             Player p, String region) {
-        if (lastKillTime
-                .containsKey(region)) {
+        // 活跃击杀：每秒强制刷新（更新倒计时）
+        if (lastKillTime.containsKey(region)) {
             showCounter(p, region);
             return;
         }
-        Scoreboard sb =
-                p.getScoreboard();
+        // 无活跃击杀：只在没有scoreboard时创建总榜
+        Scoreboard sb = p.getScoreboard();
         if (sb == null
                 || sb.getObjective(
                 "sdf1pvp") == null) {
             showTotal(p, region);
         }
     }
+
 
     private void updateScoreboard(
             Player p, String region) {
@@ -885,13 +921,11 @@ public class PVPManager implements Listener {
         }
         p.setScoreboard(sb);
     }
-
     private void showCounter(Player p,
                              String region) {
         ScoreboardManager mgr =
                 Bukkit.getScoreboardManager();
-        Scoreboard sb =
-                mgr.getNewScoreboard();
+        Scoreboard sb = mgr.getNewScoreboard();
         Objective obj =
                 sb.registerNewObjective(
                         "sdf1pvp",
@@ -940,17 +974,19 @@ public class PVPManager implements Listener {
         Long last =
                 lastKillTime.get(region);
         if (last != null) {
+            long elapsed =
+                    System.currentTimeMillis()
+                            - last;
             long remaining =
                     Math.max(0,
-                            5 * 60 * 1000
-                                    - (System
-                                    .currentTimeMillis()
-                                    - last));
+                            5 * 60 * 1000 - elapsed);
             long secs = remaining / 1000;
             obj.getScore(
                             "§7冷却: " + secs + "s")
                     .setScore(-1);
         }
+
+        // 关键：强制赋值新scoreboard
         p.setScoreboard(sb);
     }
 
@@ -1286,6 +1322,7 @@ public class PVPManager implements Listener {
                         .startsWith(
                                 name + ":"));
         lastKillTime.remove(name);
+        lastScoreboardRefresh.remove(name);
         p.sendMessage(
                 "§a已删除: " + name);
         return true;

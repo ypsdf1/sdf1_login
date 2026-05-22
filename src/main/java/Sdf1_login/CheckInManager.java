@@ -35,36 +35,28 @@ public class CheckInManager {
         }
 
         Object streakObj = plugin.getDb()
-                .getField(name,
-                        "checkin_streak");
+                .getField(name, "checkin_streak");
         int streak = streakObj != null
-                ? ((Number) streakObj)
-                  .intValue() : 0;
+                ? ((Number) streakObj).intValue()
+                : 0;
 
-        String lastDate = (String) plugin
-                .getDb().getField(name,
-                        "last_checkin_date");
-        String today = new SimpleDateFormat(
-                "yyyy-MM-dd")
+        String lastDate = (String) plugin.getDb()
+                .getField(name, "last_checkin_date");
+        String today = new SimpleDateFormat("yyyy-MM-dd")
                 .format(new Date());
 
-        if (lastDate != null
-                && !lastDate.isEmpty()) {
+        if (lastDate != null && !lastDate.isEmpty()) {
             try {
                 java.util.Date lastD =
-                        new SimpleDateFormat(
-                                "yyyy-MM-dd")
+                        new SimpleDateFormat("yyyy-MM-dd")
                                 .parse(lastDate);
                 java.util.Date todayD =
-                        new SimpleDateFormat(
-                                "yyyy-MM-dd")
+                        new SimpleDateFormat("yyyy-MM-dd")
                                 .parse(today);
-                long diff = todayD.getTime()
-                        - lastD.getTime();
+                long diff = todayD.getTime() - lastD.getTime();
                 if (diff > 86400000L * 2) {
                     streak = 0;
-                } else if (diff
-                        > 86400000L) {
+                } else if (diff > 86400000L) {
                     streak++;
                 }
             } catch (Exception ignored) {
@@ -79,40 +71,34 @@ public class CheckInManager {
         else if (streak >= 14) multi = 1.3;
         else if (streak >= 7) multi = 1.1;
 
-        int basePoints = plugin.getConfig2()
-                .checkinPoints;
-        int points =
-                (int) (basePoints * multi);
+        int basePoints = plugin.getConfig2().checkinPoints;
+        int points = (int) (basePoints * multi);
 
-        plugin.getDb().addPoints(
-                name, points);
-        plugin.getDb().setField(
-                name, "checkin_streak",
-                streak);
-        plugin.getDb().setField(
-                name,
-                "last_checkin_date", today);
+        plugin.getDb().addPoints(name, points);
+        plugin.getDb().setField(name, "checkin_streak", streak);
+        plugin.getDb().setField(name, "last_checkin_date", today);
 
         Object totalObj = plugin.getDb()
-                .getField(name,
-                        "total_checkin_days");
+                .getField(name, "total_checkin_days");
         int total = totalObj != null
-                ? ((Number) totalObj)
-                  .intValue() : 0;
-        plugin.getDb().setField(
-                name,
-                "total_checkin_days",
+                ? ((Number) totalObj).intValue()
+                : 0;
+        plugin.getDb().setField(name, "total_checkin_days",
                 total + 1);
 
-        return plugin.getConfig2()
-                .msg("checkin_success")
-                .replace("{points}",
-                        String.valueOf(points))
-                .replace("{streak}",
-                        String.valueOf(streak))
-                .replace("{multi}",
-                        String.valueOf(multi));
+        int bondReward = 1;
+        if (streak >= 21) bondReward = 3;
+        else if (streak >= 14) bondReward = 2;
+        else if (streak >= 7) bondReward = 2;
+        plugin.getBonds().addBonds(name, bondReward);
+
+        return plugin.getConfig2().msg("checkin_success")
+                .replace("{points}", String.valueOf(points))
+                .replace("{streak}", String.valueOf(streak))
+                .replace("{multi}", String.valueOf(multi))
+                + " §e+" + bondReward + "债券";
     }
+
 
     // ===== 获取连续天数 =====
     public int getStreak(String name) {
@@ -257,9 +243,13 @@ public class CheckInManager {
         plugin.getDb().setField(name,
                 "checkin_streak",
                 streak + 1);
+        int bondReward = 1;
+        if (streak >= 21) bondReward = 3;
+        else if (streak >= 14) bondReward = 2;
+        else if (streak >= 7) bondReward = 2;
+        plugin.getBonds().addBonds(name, bondReward);
     }
-
-    // ===== 标准化日期 =====
+        // ===== 标准化日期 =====
     private String normalizeDate(
             String input) {
         String s = input.trim()

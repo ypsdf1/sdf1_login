@@ -111,34 +111,39 @@ public class RadioDownloadListener
     }
 
     private void handleFailure(Player p, UUID uuid) {
-        int failNum = failCount.getOrDefault(uuid, 0) + 1;
+        int failNum = failCount.getOrDefault(
+                uuid, 0) + 1;
         failCount.put(uuid, failNum);
 
         log.warning("[Radio] " + p.getName()
-                + " 失败次数: " + failNum + "/" + MAX_FAILED);
+                + " 失败次数: " + failNum
+                + "/" + MAX_FAILED);
 
         if (failNum >= MAX_FAILED) {
             blocked.put(uuid, true);
             log.severe("[Radio] " + p.getName()
-                    + " 已达最大失败次数，停止重试，"
-                    + "玩家继续留在服务器");
-            // 不踢出，只记录熔断，玩家正常游玩
-            p.sendMessage("§e§l[Radio] 资源包加载失败"
-                    + "，跳过资源包，部分画面、音频可能出现问题"
-            + "§d§l若想继续下载，请退出重进");
-
+                    + " 达到最大失败，停止重试");
+            p.sendMessage(
+                    "§e§l[Radio] 资源包加载失败"
+                            + "，部分音频可能异常");
+            p.sendMessage(
+                    "§d§l若想重试，请退出重进");
             return;
         }
-// 打了包没测试
-        p.sendMessage("§e§l[Radio] 下载失败，"
-                + "重试... (" + failNum + "/" + MAX_FAILED + ")");
 
-        // 5秒后重试
+        p.sendMessage("§e§l[Radio] 下载失败，"
+                + "第 " + failNum + " 次重试"
+                + " (" + failNum + "/"
+                + +MAX_FAILED + ")");
+
+        // ★ 3秒后重试（之前是5秒）
         Bukkit.getScheduler()
                 .runTaskLater(plugin, () -> {
-                    if (p.isOnline() && plugin.radio != null) {
-                        plugin.radio.sendResourcePack(p);
+                    if (p.isOnline()
+                            && plugin.radio != null) {
+                        plugin.radio
+                                .sendResourcePack(p);
                     }
-                }, 100L);
+                }, 60L);
     }
 }
