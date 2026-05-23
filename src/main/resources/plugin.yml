@@ -60,9 +60,9 @@ commands:
   deny:
     description: 拒绝OA请求
     usage: /deny <编号> [理由]
-  sdf1debug:
-    description: 调试指令
-    usage: /sdf1debug <玩家> take.<阶段>
+  #sdf1debug:
+  #  description: 调试指令
+  #  usage: /sdf1debug <玩家> take.<阶段>
   email:
     description: 绑定邮箱
     usage: /email <邮箱>
@@ -87,3 +87,12 @@ commands:
   menu:
     description: 雪球菜单开关控制
     usage: /menu <开/关>
+  pvp :
+    description: PVP榜单
+    usage: /pvp
+  cypay :
+    description: 草原探险债券
+    usage: /cypay
+  printer :
+    description: 打印债券流水
+    usage: /printer

@@ -160,6 +160,40 @@ public class DatabaseManager {
                     + "alert_date TEXT NOT NULL,"
                     + "notified INTEGER DEFAULT 0,"
                     + "notified_time INTEGER DEFAULT 0)");
+            // PVP区域表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "pvp_regions ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "name TEXT NOT NULL UNIQUE,"
+                    + "world TEXT NOT NULL,"
+                    + "x1 INTEGER NOT NULL,"
+                    + "y1 INTEGER NOT NULL,"
+                    + "z1 INTEGER NOT NULL,"
+                    + "x2 INTEGER NOT NULL,"
+                    + "y2 INTEGER NOT NULL,"
+                    + "z2 INTEGER NOT NULL,"
+                    + "create_time INTEGER DEFAULT 0"
+                    + ")");
+
+// PVP击杀总榜表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "pvp_kills ("
+                    + "player_name TEXT NOT NULL,"
+                    + "region_name TEXT NOT NULL,"
+                    + "kills INTEGER DEFAULT 0,"
+                    + "deaths INTEGER DEFAULT 0,"
+                    + "PRIMARY KEY(player_name, region_name)"
+                    + ")");
+
+
+// 菜单图标表
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "menu_icons ("
+                    + "player_name TEXT PRIMARY KEY,"
+                    + "icon_b64 TEXT DEFAULT '',"
+                    + "item_name TEXT DEFAULT '',"
+                    + "save_time INTEGER DEFAULT 0"
+                    + ")");
 
             // 工单表
             st.execute("CREATE TABLE IF NOT EXISTS "
@@ -237,6 +271,76 @@ public class DatabaseManager {
             if (db != null && !db.isClosed())
                 db.close();
         } catch (Exception ignored) {
+        }
+    }
+// ==================== 菜单图标 ====================
+
+    public void saveMenuIcon(String name,
+                             String iconB64, String itemName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR REPLACE INTO menu_icons "
+                            + "(player_name, icon_b64, "
+                            + "item_name, save_time) "
+                            + "VALUES (?,?,?,?)");
+            ps.setString(1, name);
+            ps.setString(2, iconB64);
+            ps.setString(3, itemName);
+            ps.setLong(4,
+                    System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String getMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT icon_b64 FROM menu_icons "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            String b64 = null;
+            if (rs.next()) {
+                b64 = rs.getString("icon_b64");
+            }
+            rs.close();
+            ps.close();
+            return b64;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    public void deleteMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "DELETE FROM menu_icons "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public boolean hasMenuIcon(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM menu_icons "
+                            + "WHERE player_name=? "
+                            + "AND icon_b64 IS NOT NULL "
+                            + "AND icon_b64 != '' "
+                            + "LIMIT 1");
+            ps.setString(1, name);
+            boolean r = ps.executeQuery().next();
+            ps.close();
+            return r;
+        } catch (SQLException e) {
+            return false;
         }
     }
 
@@ -747,6 +851,252 @@ public class DatabaseManager {
             return false;
         }
     }
+// ==================== PVP区域 ====================
+
+    public void savePVPRegion(String name,
+                              String world,
+                              int x1, int y1, int z1,
+                              int x2, int y2, int z2) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "INSERT OR REPLACE "
+                                    + "INTO pvp_regions "
+                                    + "(name, world, "
+                                    + "x1, y1, z1, "
+                                    + "x2, y2, z2, "
+                                    + "create_time) "
+                                    + "VALUES "
+                                    + "(?,?,?,?,?,?,?,?,?)");
+            ps.setString(1, name);
+            ps.setString(2, world);
+            ps.setInt(3, x1);
+            ps.setInt(4, y1);
+            ps.setInt(5, z1);
+            ps.setInt(6, x2);
+            ps.setInt(7, y2);
+            ps.setInt(8, z2);
+            ps.setLong(9,
+                    System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public Map<String, Object>
+    getPVPRegion(String name) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT * FROM "
+                                    + "pvp_regions "
+                                    + "WHERE name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                for (int i = 1; i <= rs
+                        .getMetaData()
+                        .getColumnCount(); i++) {
+                    row.put(rs.getMetaData()
+                                    .getColumnName(i),
+                            rs.getObject(i));
+                }
+                rs.close();
+                ps.close();
+                return row;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public List<Map<String, Object>>
+    getAllPVPRegions() {
+        List<Map<String, Object>> list =
+                new ArrayList<>();
+        try {
+            Statement st =
+                    db.createStatement();
+            ResultSet rs =
+                    st.executeQuery(
+                            "SELECT * FROM "
+                                    + "pvp_regions");
+            while (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                for (int i = 1; i <= rs
+                        .getMetaData()
+                        .getColumnCount(); i++) {
+                    row.put(rs.getMetaData()
+                                    .getColumnName(i),
+                            rs.getObject(i));
+                }
+                list.add(row);
+            }
+            rs.close();
+            st.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public void deletePVPRegion(String name) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "DELETE FROM "
+                                    + "pvp_regions "
+                                    + "WHERE name=?");
+            ps.setString(1, name);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+// ==================== PVP击杀 ====================
+
+    public int getPVPKills(
+            String player, String region) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT kills FROM "
+                                    + "pvp_kills "
+                                    + "WHERE "
+                                    + "player_name=? "
+                                    + "AND region_name=?");
+            ps.setString(1, player);
+            ps.setString(2, region);
+            ResultSet rs = ps.executeQuery();
+            int kills = 0;
+            if (rs.next())
+                kills = rs.getInt("kills");
+            rs.close();
+            ps.close();
+            return kills;
+        } catch (SQLException e) {
+            return 0;
+        }
+    }
+
+    public int getPVPDeaths(
+            String player, String region) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT deaths FROM "
+                                    + "pvp_kills "
+                                    + "WHERE "
+                                    + "player_name=? "
+                                    + "AND region_name=?");
+            ps.setString(1, player);
+            ps.setString(2, region);
+            ResultSet rs = ps.executeQuery();
+            int deaths = 0;
+            if (rs.next())
+                deaths = rs.getInt("deaths");
+            rs.close();
+            ps.close();
+            return deaths;
+        } catch (SQLException e) {
+            return 0;
+        }
+    }
+
+    public void addPVPKill(
+            String player, String region) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "INSERT INTO pvp_kills "
+                                    + "(player_name, "
+                                    + "region_name, "
+                                    + "kills, deaths) "
+                                    + "VALUES (?,?,1,0) "
+                                    + "ON CONFLICT"
+                                    + "(player_name, "
+                                    + "region_name) "
+                                    + "DO UPDATE SET "
+                                    + "kills=kills+1");
+            ps.setString(1, player);
+            ps.setString(2, region);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void addPVPDeath(
+            String player, String region) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "INSERT INTO pvp_kills "
+                                    + "(player_name, "
+                                    + "region_name, "
+                                    + "kills, deaths) "
+                                    + "VALUES (?,?,0,1) "
+                                    + "ON CONFLICT"
+                                    + "(player_name, "
+                                    + "region_name) "
+                                    + "DO UPDATE SET "
+                                    + "deaths=deaths+1");
+            ps.setString(1, player);
+            ps.setString(2, region);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public List<Map<String, Object>>
+    getPVPKillTop(String region, int limit) {
+        List<Map<String, Object>> list =
+                new ArrayList<>();
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT player_name, "
+                                    + "kills, deaths "
+                                    + "FROM pvp_kills "
+                                    + "WHERE "
+                                    + "region_name=? "
+                                    + "AND kills>0 "
+                                    + "ORDER BY kills "
+                                    + "DESC LIMIT ?");
+            ps.setString(1, region);
+            ps.setInt(2, limit);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                row.put("player_name",
+                        rs.getString("player_name"));
+                row.put("kills",
+                        rs.getInt("kills"));
+                row.put("deaths",
+                        rs.getInt("deaths"));
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
 
 
     // ==================== 安全报警 ====================
@@ -773,6 +1123,7 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+
     }
 
     public List<Map<String, Object>>
