@@ -110,71 +110,35 @@ public class RadioDownloadListener
         }
     }
 
-    private void handleFailure(
-            Player p, UUID uuid) {
-        int failNum = failCount
-                .getOrDefault(uuid, 0) + 1;
+    private void handleFailure(Player p, UUID uuid) {
+        int failNum = failCount.getOrDefault(uuid, 0) + 1;
         failCount.put(uuid, failNum);
 
-        log.warning("[Radio] "
-                + p.getName()
-                + " 失败次数: "
-                + failNum + "/" + MAX_FAILED);
+        log.warning("[Radio] " + p.getName()
+                + " 失败次数: " + failNum + "/" + MAX_FAILED);
 
         if (failNum >= MAX_FAILED) {
             blocked.put(uuid, true);
-            log.severe("[Radio] "
-                    + p.getName()
-                    + " 已达最大失败次数，"
-                    + "触发踢出");
-            Bukkit.getScheduler()
-                    .runTaskLater(plugin,
-                            () -> {
-                                Player kp =
-                                        Bukkit
-                                                .getPlayer(
-                                                        uuid);
-                                if (kp != null
-                                        && kp
-                                        .isOnline()) {
-                                    kp.kickPlayer(
-                                            "§c资源包"
-                                                    + "加载失败"
-                                                    + "（"
-                                                    + MAX_FAILED
-                                                    + "次），"
-                                                    + "请联系管理员");
-                                }
-                            }, 1L);
+            log.severe("[Radio] " + p.getName()
+                    + " 已达最大失败次数，停止重试，"
+                    + "玩家继续留在服务器");
+            // 不踢出，只记录熔断，玩家正常游玩
+            p.sendMessage("§e§l[Radio] 资源包加载失败"
+                    + "，跳过资源包，部分画面、音频可能出现问题"
+            + "§d§l若想继续下载，请退出重进");
+
             return;
         }
-
-        p.sendMessage(
-                "§e§l[Radio] 下载失败，"
-                        + "重试... ("
-                        + failNum + "/"
-                        + MAX_FAILED + ")");
+// 打了包没测试
+        p.sendMessage("§e§l[Radio] 下载失败，"
+                + "重试... (" + failNum + "/" + MAX_FAILED + ")");
 
         // 5秒后重试
         Bukkit.getScheduler()
-                .runTaskLater(plugin,
-                        () -> {
-                            if (p.isOnline()
-                                    && plugin
-                                    .radio
-                                    != null) {
-                                plugin.getLogger()
-                                        .info(
-                                                "[Radio] "
-                                                        + "第"
-                                                        + failNum
-                                                        + "次重试: "
-                                                        + p
-                                                        .getName());
-                                plugin.radio
-                                        .sendResourcePack(
-                                                p);
-                            }
-                        }, 100L);
+                .runTaskLater(plugin, () -> {
+                    if (p.isOnline() && plugin.radio != null) {
+                        plugin.radio.sendResourcePack(p);
+                    }
+                }, 100L);
     }
 }

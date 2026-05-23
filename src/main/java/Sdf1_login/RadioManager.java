@@ -328,7 +328,7 @@ public class RadioManager {
                     ("{\n  \"pack\": {\n"
                             + "    \"pack_format\": 54,\n"
                             + "    \"description\":"
-                            + " \"为保证服务器正常运行，请勿拒绝资源包！\"\n  }\n}")
+                            + " \"§d§l草原探险服务器资源包，请勿拒绝资源包\"\n  }\n}")
                             .getBytes("UTF-8"));
         } catch (Exception e) {
             // ignore
