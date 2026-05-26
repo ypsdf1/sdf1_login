@@ -59,6 +59,15 @@ public class EmailManager {
                         + "\n请尽快登录并修改密码！");
     }
 
+    public boolean sendBody(String to, String subject, String body) {
+        if (!isConfigured()) {
+            logger.warning("[Sdf1_login] SMTP未配置");
+            return false;
+        }
+        return sendEmailSync(to, subject, body);
+    }
+
+
     private boolean sendEmailSync(String to,
                                   String subject, String body) {
         final boolean[] result = {false};

@@ -9,12 +9,7 @@ import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 public class BondPrinter {
 
@@ -38,9 +33,11 @@ public class BondPrinter {
         TYPE_NAMES.put("transfer_in", "转入");
         TYPE_NAMES.put("redeem", "CDK兑换");
         TYPE_NAMES.put("shop_buy", "商城购买");
+        TYPE_NAMES.put("shop_sell", "商城出售");   // ← 补上
         TYPE_NAMES.put("daily_sign", "签到奖励");
         TYPE_NAMES.put("freeze", "冻结");
         TYPE_NAMES.put("unfreeze", "解冻");
+
     }
 
     public BondPrinter(Main plugin) {
@@ -151,8 +148,7 @@ public class BondPrinter {
                             .getAllPlayerNames();
             if (players.isEmpty()) {
                 if (sender != null) {
-                    sender.sendMessage(
-                            "§c没有流水数据");
+                    sender.sendMessage("§c没有流水数据");
                 }
                 return;
             }
@@ -162,59 +158,84 @@ public class BondPrinter {
                     + ".xls";
             File file = new File(outputDir, fileName);
 
+            // ===== 收集所有流水 =====
+            // key = 时间戳+玩家+金额，用于去重
+            // value = 一行数据
+            List<String[]> allRows = new ArrayList<>();
+            Set<String> seenKeys = new HashSet<>();
+
+            for (String player : players) {
+                List<Map<String, Object>> txs =
+                        plugin.getBonds()
+                                .getAllTransactions(player);
+                for (Map<String, Object> tx : txs) {
+                    int txId = ((Number) tx.get("id"))
+                            .intValue();
+                    String dedupKey =
+                            String.valueOf(txId);
+                    if (!seenKeys.add(dedupKey)) {
+                        continue;
+                    }
+
+                    String timeStr = txTime(tx);
+                    long timeMs = 0;
+                    Object t = tx.get("time");
+                    if (t != null) {
+                        timeMs =
+                                ((Number) t).longValue();
+                    }
+
+                    allRows.add(new String[]{
+                            player,
+                            timeStr,
+                            txTypeName(tx),
+                            String.valueOf(
+                                    txInt(tx, "amount")),
+                            txStr(tx, "target_player"),
+                            txStr(tx, "operator"),
+                            txStr(tx, "reason"),
+                            String.valueOf(
+                                    txInt(tx,
+                                            "balance_before")),
+                            String.valueOf(
+                                    txInt(tx,
+                                            "balance_after")),
+                            // 额外存时间戳用于排序
+                            String.valueOf(timeMs)
+                    });
+                }
+            }
+
+            // ===== 按时间戳排序 =====
+            allRows.sort((a, b) -> {
+                long ta = Long.parseLong(
+                        a[a.length - 1]);
+                long tb = Long.parseLong(
+                        b[b.length - 1]);
+                return Long.compare(ta, tb);
+            });
+
+            // ===== 写入文件 =====
             PrintWriter pw = new PrintWriter(
                     new OutputStreamWriter(
                             new FileOutputStream(file),
                             StandardCharsets.UTF_8));
             try {
                 writeXmlHeader(pw, "全服流水");
-                writeXmlRow(pw,
-                        new String[]{
-                                "玩家", "时间",
-                                "类型", "金额",
-                                "对象", "操作者",
-                                "理由",
-                                "操作前余额",
-                                "操作后余额"});
+                writeXmlRow(pw, new String[]{
+                        "玩家", "时间", "类型",
+                        "金额", "对象", "操作者",
+                        "理由", "操作前余额",
+                        "操作后余额"
+                });
 
-                Set<String> written = new HashSet<>();
-                int totalRows = 0;
-
-                for (String player : players) {
-                    List<Map<String, Object>> txs =
-                            plugin.getBonds()
-                                    .getAllTransactions(
-                                            player);
-                    for (Map<String, Object> tx : txs) {
-                        int txId = ((Number) tx
-                                .get("id"))
-                                .intValue();
-                        if (!written.add(
-                                String.valueOf(
-                                        txId))) {
-                            continue;
-                        }
-
-                        writeXmlRow(pw, new String[]{
-                                player,
-                                txTime(tx),
-                                txTypeName(tx),
-                                String.valueOf(
-                                        txInt(tx,
-                                                "amount")),
-                                txStr(tx,
-                                        "target_player"),
-                                txStr(tx, "operator"),
-                                txStr(tx, "reason"),
-                                String.valueOf(
-                                        txInt(tx,
-                                                "balance_before")),
-                                String.valueOf(
-                                        txInt(tx,
-                                                "balance_after"))
-                        });
-                        totalRows++;
-                    }
+                for (String[] row : allRows) {
+                    // 去掉最后的时间戳列
+                    String[] cells =
+                            new String[row.length - 1];
+                    System.arraycopy(row, 0,
+                            cells, 0, cells.length);
+                    writeXmlRow(pw, cells);
                 }
 
                 writeXmlFooter(pw);
@@ -222,14 +243,15 @@ public class BondPrinter {
 
                 if (sender != null) {
                     sender.sendMessage(
-                            "§a[打印] §f全服流水"
-                                    + " §a已导出");
+                            "§a[打印] §f全服流水 §a已导出");
                     sender.sendMessage("§7文件: §f"
                             + fileName);
                     sender.sendMessage("§7共 §f"
                             + players.size()
                             + " 名玩家，§f"
-                            + totalRows + " §7条");
+                            + allRows.size() + " §7条");
+                    sender.sendMessage(
+                            "§7按时间从早到晚排序");
                     sender.sendMessage(
                             "§724小时后自动删除");
                 }

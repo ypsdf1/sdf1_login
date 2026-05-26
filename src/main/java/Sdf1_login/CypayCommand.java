@@ -74,7 +74,7 @@ public class CypayCommand
         }
 
         // ===== /cypay import =====
-        if (args.length == 2
+   /*     if (args.length == 2
                 && "import".equalsIgnoreCase(
                 args[0])) {
             if (!hasAdminPerm(sender)) {
@@ -93,7 +93,7 @@ public class CypayCommand
                 sender.sendMessage("§a导入完成: "
                         + result + " 条");
             return true;
-        }
+        }*/
 
         // ===== /cypay freeze =====
         if (args.length == 2
@@ -368,6 +368,14 @@ public class CypayCommand
             // ===== /cypay <player> — 查指定玩家 =====
         if (args.length == 1) {
             String target = args[0];
+            // ★ 验证玩家在 login.db 中存在 ★
+            if (!plugin.getDb().userExists(target)) {
+                sender.sendMessage("§c玩家 " + target
+                        + " 不存在于服务器");
+                return true;
+            }
+
+   //         String target = args[0];
             if (hasAdminPerm(sender)) {
                 int bonds = plugin.getBonds()
                         .getBonds(target);

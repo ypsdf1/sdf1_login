@@ -15,6 +15,8 @@ import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
+// 如果 Bonds 在 Sdf1_login 包下：
+import Sdf1_login.BondManager;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -892,7 +894,7 @@ public class QuestTracker {
 
     /**
      * 发放阶段奖励
-     * 含经济内容的走 Vault API
+     * 含经济内容的走 Vault API或债券
      */
     public void claimRewards(
             Player player,
@@ -900,13 +902,20 @@ public class QuestTracker {
         if (qf == null
                 || qf.rewards == null
                 || qf.rewards.isEmpty()) {
-            player.sendMessage(
-                    "§c无可领取的奖励");
+            player.sendMessage("§c无可领取的奖励");
             return;
         }
 
-        net.milkbowl.vault.economy.Economy econ =
-                ((Main) plugin).getEconomy();
+        Main main = (Main) plugin;
+        // ★ 读取配置：economy = Vault，bonds = 债券（默认）
+        boolean useEconomy = "economy".equalsIgnoreCase(
+                main.getConfigMgr().rewardChannel);
+
+        // Vault 经济引用（仅 useEconomy 时使用）
+        net.milkbowl.vault.economy.Economy econ = null;
+        if (useEconomy) {
+            econ = main.getEconomy();
+        }
 
         int sentCount = 0;
 
@@ -916,52 +925,70 @@ public class QuestTracker {
 
             // 检查可选奖励标记
             if (hasOptionalMarker(rt)) {
-                if (!areAllConditionsMet(player.getName(), qf))
+                if (!areAllConditionsMet(player.getName(), qf)) {
                     player.sendMessage(
-                            "§7[可选奖励] "
-                                    + "需完成所有可选条件: "
-                                    + rt);
+                            "§7[可选奖励] 需完成所有可选条件: " + rt);
                     continue;
                 }
-
+            }
 
             // 按 + 分割子项
-            String[] parts =
-                    rt.split("[+，]");
+            String[] parts = rt.split("[+，]");
             for (String part : parts) {
                 part = part.trim();
                 if (part.isEmpty()) continue;
 
-                // 尝试发经济
-                double amt =
-                        extractEconomyAmount(part);
-                if (amt > 0 && econ != null) {
-                    double before =
-                            econ.getBalance(player);
-                    econ.depositPlayer(
-                            player, amt);
-                    player.sendMessage(
-                            "§a§l[任务奖励] §f"
-                                    + part
-                                    + " §7(余额: §e"
-                                    + String.format(
-                                    "%.2f", before)
-                                    + " §7→ §a"
-                                    + String.format(
-                                    "%.2f",
-                                    econ.getBalance(
-                                            player))
-                                    + "§7)");
-                    // 通知提成系统
-                    if (plugin instanceof Main) {
-                        ((Main) plugin)
-                                .getCommission()
-                                .payCommission(
-                                        player
-                                                .getName(),
-                                        amt);
+                // 尝试识别经济金额
+                double amt = extractEconomyAmount(part);
+                if (amt > 0) {
+                    // ★ 根据配置分发
+                    if (useEconomy && econ != null) {
+                        // —— Vault 经济 ——
+                        double before =
+                                econ.getBalance(player);
+                        econ.depositPlayer(player, amt);
+                        double after =
+                                econ.getBalance(player);
+                        player.sendMessage(
+                                "§a§l[任务奖励] §f" + part
+                                        + " §7(余额: §e"
+                                        + String.format("%.2f", before)
+                                        + " §7→ §a"
+                                        + String.format("%.2f", after)
+                                        + "§7)");
+                        if (plugin instanceof Main) {
+                            ((Main) plugin).getCommission()
+                                    .payCommission(
+                                            player.getName(), amt);
+                        }
+                    } else {
+                        // —— 债券（默认） ——
+                        int bondAmt =
+                                (int) Math.round(amt);
+                        BondManager bonds = main.getBonds();
+                        if (bonds != null) {
+                            int before = bonds.getBonds(
+                                    player.getName());
+                            bonds.addBonds(
+                                    player.getName(),
+                                    bondAmt,
+                                    "quest_reward",
+                                    qf.displayName,
+                                    "任务系统",
+                                    "任务奖励：" + qf.displayName);
+                            int after = bonds.getBonds(
+                                    player.getName());
+                            player.sendMessage(
+                                    "§a§l[任务奖励] §f" + part
+                                            + " §7(债券: §e"
+                                            + before
+                                            + " §7→ §a"
+                                            + after + "§7)");
+                        } else {
+                            player.sendMessage(
+                                    "§c债券系统不可用");
+                        }
                     }
-
                     sentCount++;
                     continue;
                 }
@@ -971,32 +998,27 @@ public class QuestTracker {
                         parseRewardItems(part);
                 if (!items.isEmpty()) {
                     for (ItemStack is : items) {
-                        player.getInventory()
-                                .addItem(is);
+                        player.getInventory().addItem(is);
                     }
                     player.sendMessage(
-                            "§a§l[任务奖励] §f"
-                                    + part);
+                            "§a§l[任务奖励] §f" + part);
                     sentCount++;
                     continue;
                 }
 
                 // 非经济非物品 → 仅消息
                 player.sendMessage(
-                        "§a§l[任务奖励] §f"
-                                + part);
+                        "§a§l[任务奖励] §f" + part);
                 sentCount++;
             }
         }
 
         plugin.getLogger().info(
-                "[QuestTracker] "
-                        + player.getName()
-                        + " 领取了 \""
-                        + qf.displayName
-                        + "\" 共 " + sentCount
-                        + " 项奖励");
+                "[QuestTracker] " + player.getName()
+                        + " 预取了 \"" + qf.displayName
+                        + "\" 共 " + sentCount + "项奖励");
     }
+
     /**
      * 检查奖励文本是否含可选标记
      */
@@ -1043,7 +1065,9 @@ public class QuestTracker {
                         || t.contains("$")
                         || t.contains("经济")
                         || t.contains("余额")
-                        || t.contains("发钱");
+                        || t.contains("发钱")
+                        || t.contains("债券");  // ★ 新增
+
 
         if (!hasEcon) return 0;
 

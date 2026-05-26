@@ -60,18 +60,12 @@ commands:
   deny:
     description: 拒绝OA请求
     usage: /deny <编号> [理由]
-  #sdf1debug:
-  #  description: 调试指令
-  #  usage: /sdf1debug <玩家> take.<阶段>
   email:
     description: 绑定邮箱
     usage: /email <邮箱>
   绑定:
     description: 绑定邮箱(中文)
     usage: /绑定 <邮箱>
-  调试:
-    description: 调试模式
-    usage: /调试
   绑定邮箱:
     description: 绑定邮箱
     usage: /绑定邮箱
@@ -96,3 +90,12 @@ commands:
   printer :
     description: 打印债券流水
     usage: /printer
+  shop :
+    description: 游戏商人
+    usage: /shop
+  商店:
+    description: 打开商店
+    usage: /商店
+  #testorder:
+  #  description: 测试订单中心
+  #  usage: /testorder

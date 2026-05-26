@@ -182,6 +182,23 @@ public class BondManager {
         } catch (SQLException e) { return 0; }
     }
 
+    /** 该玩家是否在 bond 表中有真实记录 */
+    public boolean hasBondAccount(String player) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM bonds "
+                            + "WHERE player_name=? "
+                            + "AND amount > 0");
+            ps.setString(1, player);
+            ResultSet rs = ps.executeQuery();
+            boolean exists = rs.next();
+            rs.close(); ps.close();
+            return exists;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
     // ======================== 增加债券 ========================
 
     public int addBonds(String player, int amount) {
@@ -272,6 +289,53 @@ public class BondManager {
                                 int balanceBefore,
                                 int balanceAfter) {
         try {
+            // 合并模式：shop_buy 30秒内同商品合并
+            if ("shop_buy".equals(type)
+                    && reason != null
+                    && !reason.isEmpty()) {
+                long mergeWindow =
+                        System.currentTimeMillis() - 30000L;
+                PreparedStatement chk =
+                        db.prepareStatement(
+                                "SELECT id, amount "
+                                        + "FROM bond_transaction "
+                                        + "WHERE player_name=? "
+                                        + "AND type=? "
+                                        + "AND reason=? "
+                                        + "AND time > ? "
+                                        + "ORDER BY time DESC "
+                                        + "LIMIT 1");
+                chk.setString(1, player);
+                chk.setString(2, type);
+                chk.setString(3, reason);
+                chk.setLong(4, mergeWindow);
+                ResultSet rs = chk.executeQuery();
+                if (rs.next()) {
+                    int existId = rs.getInt("id");
+                    int existAmt = rs.getInt("amount");
+                    rs.close();
+                    chk.close();
+                    PreparedStatement upd =
+                            db.prepareStatement(
+                                    "UPDATE bond_transaction "
+                                            + "SET amount=?, "
+                                            + "balance_after=?, "
+                                            + "time=? "
+                                            + "WHERE id=?");
+                    upd.setInt(1, existAmt + amount);
+                    upd.setInt(2, balanceAfter);
+                    upd.setLong(3,
+                            System.currentTimeMillis());
+                    upd.setInt(4, existId);
+                    upd.executeUpdate();
+                    upd.close();
+                    return;
+                }
+                rs.close();
+                chk.close();
+            }
+
+            // 原始插入
             PreparedStatement ps = db.prepareStatement(
                     "INSERT INTO bond_transaction "
                             + "(player_name, type, amount,"
@@ -283,16 +347,14 @@ public class BondManager {
             ps.setString(2, type);
             ps.setInt(3, amount);
             ps.setString(4,
-                    targetPlayer != null
-                            ? targetPlayer : "");
+                    targetPlayer != null ? targetPlayer : "");
             ps.setString(5,
                     operator != null ? operator : "");
             ps.setString(6,
                     reason != null ? reason : "");
             ps.setInt(7, balanceBefore);
             ps.setInt(8, balanceAfter);
-            ps.setLong(9,
-                    System.currentTimeMillis());
+            ps.setLong(9, System.currentTimeMillis());
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
@@ -314,6 +376,47 @@ public class BondManager {
                 type, targetPlayer, operator, reason);
     }
 
+    public boolean checkoutCart(String player,
+                                String[] itemNames,
+                                int[] subtotals) {
+        int total = 0;
+        for (int s : subtotals) total += s;
+        if (isFrozen(player)) return false;
+
+        int before = getBonds(player);
+        if (before < total) return false;
+        int after = before - total;
+
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO bonds "
+                            + "(player_name,amount,status) "
+                            + "VALUES (?,?,'normal') "
+                            + "ON CONFLICT(player_name) "
+                            + "DO UPDATE SET amount=?");
+            ps.setString(1, player);
+            ps.setInt(2, after);
+            ps.setInt(3, after);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return false;
+        }
+
+        int running = before;
+        for (int i = 0; i < itemNames.length; i++) {
+            int next = running - subtotals[i];
+            logTransaction(player, "shop_buy", subtotals[i],
+                    "", "商店系统",
+                    "购物车购买-" + itemNames[i],
+                    running, next);
+            running = next;
+        }
+
+        logLegacy(player, -total);
+        return true;
+    }
 
     public boolean setBonds(String player, int amount) {
         ensureAccount(player);

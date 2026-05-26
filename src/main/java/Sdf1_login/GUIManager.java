@@ -16,7 +16,7 @@ import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.util.Base64;
+
 
 
 
@@ -163,8 +163,15 @@ public class GUIManager implements Listener {
                     "§6§l垃圾回收站",
                     "§7查看和取回清理的物品"));
 
+
         }
         // ===== Row3(27-35): 管理功能 =====
+        // ★ 商店 - 所有人都能看 ★
+        g.setItem(27, mkItem(Material.CHEST,
+                "§6§l商店",
+                "§7浏览、购买、出售物品",
+                "§7货币: 债券"));
+
         if (isAdmin(p)) {
             g.setItem(29, mkItem(
                     Material.REDSTONE_BLOCK,
@@ -301,6 +308,10 @@ public class GUIManager implements Listener {
 
         g.setItem(22, mkItem(Material.LIME_WOOL,
                 "§a§l添加菜单项"));
+        g.setItem(27, mkItem(Material.ENDER_CHEST,
+                "§6§l商店",
+                "§7浏览、购买、出售物品",
+                "§7货币: 债券"));
 
         g.setItem(26, mkItem(Material.ARROW,
                 "§7返回"));
@@ -342,7 +353,7 @@ public class GUIManager implements Listener {
 
     public void openShop(Player p) {
         p.closeInventory();
-        p.performCommand("sdf1_login shop");
+        plugin.getShopManager().openShopMain(p);
     }
 
     public void openTicket(Player p) {
@@ -351,11 +362,16 @@ public class GUIManager implements Listener {
     }
     @EventHandler
     public void onInvClose(
+
             InventoryCloseEvent e) {
         if (!(e.getPlayer() instanceof Player))
             return;
+        if (!(e.getPlayer() instanceof Player)) return;
         Player p = (Player) e.getPlayer();
+        Player p3 = (Player) e.getPlayer();
         String t = e.getView().getTitle();
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p2 = (Player) e.getPlayer();
 
         if (!t.equals(T_EDITOR)) return;
 
@@ -718,13 +734,39 @@ public class GUIManager implements Listener {
 
 
     @EventHandler
-    public void onInvDrag(
-            InventoryDragEvent e) {
-        if (!(e.getWhoClicked()
-                instanceof Player)) return;
-        Player p = (Player) e.getWhoClicked();
-        if (!T_EDITOR.equals(
-                e.getView().getTitle())) return;
+    public void onInvDrag(InventoryDragEvent e) {
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        String title = e.getView().getTitle();
+        plugin.getLogger().info("[GUI] title检查点1: [" + title + "]");
+
+        // 购物车/退款/商店/流水记录页面：禁止一切拖拽
+        if ("§a§l购物车".equals(title)
+                || "§c§l退款中心".equals(title)
+                || "§6§l商店".equals(title)
+                || title.startsWith("§e§l流水记录")
+                || title.startsWith("§e§l转账记录")
+                || title.startsWith("§d§l余额操作")) {
+            e.setCancelled(true);
+            return;
+        }
+
+        // 商店分类页：禁止拖拽
+        if (title.startsWith("§6§l") && !title.equals(T_MAIN)
+                && !title.equals(T_MY_INFO)
+                && !title.equals(T_ADMIN)
+                && !title.equals(T_MORE)
+                && !title.equals(T_EDITOR)
+                && !title.equals(T_BIOME)
+                && !title.equals(T_GIFT_STAGES)
+                && !title.equals(T_INVITE)
+                && !title.equals(T_USER_MGMT)
+                && !title.equals(T_TASK_CENTER)) {
+            e.setCancelled(true);
+            return;
+        }
+
+        // 编辑器：图标拖拽替换
+        if (!T_EDITOR.equals(title)) return;
         if (e.getRawSlots().contains(12)) {
             List<MenuManager.MenuItem> list =
                     plugin.getMenu().getItems();
@@ -734,69 +776,195 @@ public class GUIManager implements Listener {
                         e.getOldCursor().clone();
         }
     }
+
+
     @EventHandler
     public void onInvClick(InventoryClickEvent event) {
-        if (!(event.getWhoClicked() instanceof Player)) return;
+        if (!(event.getWhoClicked() instanceof Player))
+            return;
         Player p = (Player) event.getWhoClicked();
         String title = event.getView().getTitle();
         int raw = event.getRawSlot();
 
-        // 我的信息 — CDK兑换 (slot 16)
+        // ★ 模糊匹配所有订单相关
+        if (title.contains("订单")
+                || title.contains("购买记录")) {
+            event.setCancelled(true);
+            if (title.contains("小票配置")) {
+                plugin.getOrderManager()
+                        .handleReceiptConfigClick(p, raw);
+            } else if (title.contains("编辑:")) {
+                plugin.getOrderManager()
+                        .handleReceiptBuilderClick(p, raw);
+            } else if (title.contains("购买记录")) {
+                plugin.getOrderManager()
+                        .handleMyOrdersClick(
+                                p, raw, event.isLeftClick(),
+                                event.isShiftClick());
+            } else if (title.contains("管理员订单面板")) {
+                plugin.getOrderManager()
+                        .handleAdminClick(p, raw);
+            } else if (title.contains("订单管理")) {
+                plugin.getOrderManager()
+                        .handleAdminOrdersClick(
+                                p, raw, event.isLeftClick(),
+                                event.isShiftClick());
+            } else if (title.contains("订单中心")) {
+                plugin.getOrderManager()
+                        .handleCenterClick(p, raw);
+            }
+            return;
+        }
+
+        // ===== 我的信息 — CDK兑换 =====
         if (T_MY_INFO.equals(title) && raw == 16) {
-            event.setCancelled(true);
-            p.closeInventory();
-            p.sendMessage("§e§l[CDK] §f请输入兑换码（聊天输入）:");
-            plugin.getCDK().requestInput(p, "cdk", "");
-            return;
+            if (handleCDKClick(p, event)) return;
         }
-        if (T_MAIN.equals(title) && raw == 32) {
-            event.setCancelled(true);
-            plugin.openMyWallet(p);
-            return;
-        }
-        // 余额操作界面
-        // 余额操作界面
-        if ("§d§l余额操作".equals(title)) {
-            event.setCancelled(true);
-            if (raw == 49) {
-                openAdmin(p);
+
+        // ===== 主菜单 =====
+        if (T_MAIN.equals(title)) {
+            if (raw == 32) {
+                event.setCancelled(true);
+                plugin.openMyWallet(p);
                 return;
             }
+            if (raw == 27) {
+                event.setCancelled(true);
+                plugin.getShopManager().openShopMain(p);
+                return;
+            }
+            return;
+        }
+
+        // ===== 我的钱包 =====
+        if ("§6§l我的钱包".equals(title)) {
+            event.setCancelled(true);
+            if (raw == 22) { openMain(p); return; }
+            if (raw == 12) { plugin.openWalletTransactions(p, 7); return; }
+            if (raw == 13) { plugin.openWalletTransactions(p, 14); return; }
+            if (raw == 14) { plugin.openWalletTransfers(p); return; }
+            return;
+        }
+
+        // ===== 流水/转账记录 =====
+        if (title.startsWith("§e§l流水记录")
+                || title.startsWith("§e§l转账记录")) {
+            event.setCancelled(true);
+            if (raw == 53) { plugin.openMyWallet(p); return; }
+            return;
+        }
+
+        // ===== 余额操作 =====
+        if ("§d§l余额操作".equals(title)) {
+            event.setCancelled(true);
+            if (raw == 49) { openAdmin(p); return; }
             if (raw < 0 || raw >= 45) return;
-            ItemStack item = event.getView().getTopInventory().getItem(raw);
+            ItemStack item = event.getView()
+                    .getTopInventory().getItem(raw);
             if (item == null) return;
             Material mat = item.getType();
-            if (mat != Material.PLAYER_HEAD && mat != Material.EMERALD_BLOCK) return;
+            if (mat != Material.PLAYER_HEAD
+                    && mat != Material.EMERALD_BLOCK) return;
             ItemMeta im = item.getItemMeta();
-            if (im == null || im.getDisplayName() == null) return;
-            String targetName = im.getDisplayName().replaceAll("§[0-9a-fk-orA-FK-OR]", "");
-            Player target = plugin.getServer().getPlayerExact(targetName);
+            if (im == null
+                    || im.getDisplayName() == null) return;
+            String targetName = im.getDisplayName()
+                    .replaceAll("§[0-9a-fk-orA-FK-OR]", "");
+            Player target = plugin.getServer()
+                    .getPlayerExact(targetName);
             if (target == null) return;
-            String adminTag = plugin.getConfig2().adminTag;
-            boolean isAdmin = p.isOp() || (!adminTag.isEmpty() && p.getScoreboardTags().contains(adminTag));
+            String adminTag =
+                    plugin.getConfig2().adminTag;
+            boolean isAdmin = p.isOp()
+                    || (!adminTag.isEmpty()
+                    && p.getScoreboardTags()
+                    .contains(adminTag));
             if (!isAdmin) return;
-
-            boolean leftOnly = event.isLeftClick() && !event.isRightClick();
-            boolean rightOnly = event.isRightClick() && !event.isLeftClick();
-
-            if (leftOnly) {
-                event.setCancelled(true);
+            if (event.isLeftClick()
+                    && !event.isRightClick()) {
                 p.closeInventory();
-                p.sendMessage("§e§l[经济操作] §f对 §a" + targetName + " §f进行经济操作");
+                p.sendMessage("§e§l[经济操作] §f对 §a"
+                        + targetName + " §f进行经济操作");
                 p.sendMessage("§7输入 §a+数字 §7给钱，§c-数字 §7扣钱");
                 plugin.getCDK().requestInput(p, "econ", targetName);
-            } else if (rightOnly) {
-                event.setCancelled(true);
+            } else if (event.isRightClick()
+                    && !event.isLeftClick()) {
                 p.closeInventory();
-                p.sendMessage("§e§l[债券操作] §f对 §a" + targetName + " §f进行债券操作");
+                p.sendMessage("§e§l[债券操作] §f对 §a"
+                        + targetName + " §f进行债券操作");
                 p.sendMessage("§7输入 §a+数字 §7给债券，§c-数字 §7扣债券");
                 plugin.getCDK().requestInput(p, "bond", targetName);
             }
             return;
         }
+
+        // ===== 商店主界面 =====
+        if ("§6§l商店".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleMainShopClick(p, raw);
+            return;
+        }
+
+        // ===== 退款中心 → 重定向订单中心 =====
+        if ("§c§l退款中心".equals(title)) {
+            event.setCancelled(true);
+            plugin.getOrderManager().openOrderCenter(p);
+            return;
+        }
+
+        // ===== 购物车页面 =====
+        if ("§a§l购物车".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleCartClick(
+                    p, raw, event.isLeftClick(),
+                    event.isRightClick());
+            return;
+        }
+
+        // ===== 打包确认 =====
+        if ("§6§l选择包装方式".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handlePackingConfirm(p, raw);
+            return;
+        }
+
+        // ===== 自选颜色 =====
+        if ("§b§l选择潜影盒颜色".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleColorSelect(p, raw);
+            return;
+        }
+
+        // ===== 我的订单 =====
+        if ("§6§l我的订单".equals(title)) {
+            event.setCancelled(true);
+            plugin.getOrderManager().handleMyOrdersClick(
+                    p, raw, event.isLeftClick(),
+                    event.isShiftClick());
+            return;
+        }
+
+        // ===== 管理员订单面板 =====
+        if ("§c§l管理员订单面板".equals(title)) {
+            event.setCancelled(true);
+            plugin.getOrderManager().handleAdminClick(p, raw);
+            return;
+        }
+
+        // ===== 商店分类页 =====
+        ShopManager sm = plugin.getShopManager();
+        boolean handled = sm.handleCategoryClick(
+                p, title, raw,
+                event.isLeftClick(),
+                event.isShiftClick());
+        if (handled) {
+            event.setCancelled(true);
+            return;
+        }
     }
 
-        public void openEditor(
+
+    public void openEditor(
             Player p, int idx) {
         List<MenuManager.MenuItem> list =
                 plugin.getMenu().getItems();
@@ -1026,26 +1194,50 @@ public class GUIManager implements Listener {
      * 处理"我的信息"GUI中CDK兑换按钮的点击
      * 返回 true 表示已处理
      */
-    public boolean handleCDKClick(Player p,
-                                  InventoryClickEvent event) {
+    public boolean handleCDKClick(Player p, InventoryClickEvent event) {
         String title = event.getView().getTitle();
         int raw = event.getRawSlot();
 
         if (!T_MY_INFO.equals(title)) return false;
 
-        // CDK兑换按钮 (slot 16)
         if (raw == 16) {
             event.setCancelled(true);
             p.closeInventory();
-            p.sendMessage(
-                    "§e§l[CDK] §f请输入兑换码"
-                            + "（直接输入聊天即可）:");
-            plugin.getCDK().requestInput(
-                    p, "cdk", "");
+
+            org.bukkit.plugin.Plugin sdf1 =
+                    org.bukkit.Bukkit.getPluginManager().getPlugin("Sdf1");
+
+            // 情况1：插件未安装
+            if (sdf1 == null) {
+                p.sendMessage("§c§l[CDK] §f口令兑换系统尚未安装，请联系管理员");
+                return true;
+            }
+
+            // 情况2：插件已安装但未启用
+            if (!sdf1.isEnabled()) {
+                p.sendMessage("§c§l[CDK] §f口令兑换系统未启用，请联系管理员");
+                return true;
+            }
+
+            // 情况3：正常接入 — 反射调用SDF1的startListening
+            try {
+                Class<?> mainClass = sdf1.getClass();
+                java.lang.reflect.Method method =
+                        mainClass.getDeclaredMethod("startListening", Player.class);
+                method.setAccessible(true);
+                method.invoke(sdf1, p);
+                // startListening内部已发送 "已开启口令监听 (15秒)" 提示
+            } catch (NoSuchMethodException e) {
+                p.sendMessage("§c§l[CDK] §f口令系统版本过低，请联系管理员更新");
+            } catch (Exception e) {
+                p.sendMessage("§c§l[CDK] §f兑换系统异常，请稍后再试");
+            }
+
             return true;
         }
         return false;
     }
+
 
     // ===== 放入自定义图标 =====
     private void doPlaceIcon(Player p,

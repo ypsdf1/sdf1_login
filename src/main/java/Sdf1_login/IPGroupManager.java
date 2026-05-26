@@ -16,38 +16,34 @@ public class IPGroupManager {
         this.maxAccounts = maxAccounts;
     }
 
-    /**
-     * 检查该IP是否还能注册新账号
-     */
     public boolean canRegister(String ip) {
         if (maxAccounts <= 0) return true;
         if (ip == null || ip.isEmpty()) return true;
-        return queryAccountsByIP(ip).size() < maxAccounts;
+        int count = getAccountCount(ip);
+        boolean can = count < maxAccounts;
+        plugin.getLogger().info(
+                "[IP限制] IP=" + ip
+                        + " 已注册=" + count
+                        + " 上限=" + maxAccounts
+                        + " 允许=" + can);
+        return can;
     }
 
-    /**
-     * 获取该IP下已注册的账号数量
-     */
     public int getAccountCount(String ip) {
         if (ip == null || ip.isEmpty()) return 0;
         return queryAccountsByIP(ip).size();
     }
 
-    /**
-     * 获取该IP下所有账号名
-     */
     public List<String> getAccounts(String ip) {
         return queryAccountsByIP(ip);
     }
 
-    /**
-     * 直接通过数据库连接查询指定IP下的所有账号
-     */
     private List<String> queryAccountsByIP(String ip) {
         List<String> accounts = new ArrayList<>();
         Connection conn = plugin.getDb().getDb();
         if (conn == null) return accounts;
         try {
+            // 主查询：ip_address 列
             PreparedStatement ps = conn.prepareStatement(
                     "SELECT player_name FROM users "
                             + "WHERE ip_address = ?");
@@ -59,6 +55,53 @@ public class IPGroupManager {
             }
             rs.close();
             ps.close();
+
+            // 兜底：如果主列没数据，查 last_login_ip
+            if (accounts.isEmpty()) {
+                PreparedStatement ps2 = conn.prepareStatement(
+                        "SELECT player_name FROM users "
+                                + "WHERE last_login_ip = ? "
+                                + "AND (ip_address IS NULL "
+                                + "OR ip_address = '' "
+                                + "OR ip_address != ?)");
+                ps2.setString(1, ip);
+                ps2.setString(2, ip);
+                ResultSet rs2 = ps2.executeQuery();
+                while (rs2.next()) {
+                    String name = rs2.getString("player_name");
+                    if (!accounts.contains(name))
+                        accounts.add(name);
+                }
+                rs2.close();
+                ps2.close();
+            }
+
+            // 兜底2：查 register_ip
+            if (accounts.isEmpty()) {
+                PreparedStatement ps3 = conn.prepareStatement(
+                        "SELECT player_name FROM users "
+                                + "WHERE register_ip = ? "
+                                + "AND (ip_address IS NULL "
+                                + "OR ip_address = '') "
+                                + "AND (last_login_ip IS NULL "
+                                + "OR last_login_ip = '' "
+                                + "OR last_login_ip != ?)");
+                ps3.setString(1, ip);
+                ps3.setString(2, ip);
+                ResultSet rs3 = ps3.executeQuery();
+                while (rs3.next()) {
+                    String name = rs3.getString("player_name");
+                    if (!accounts.contains(name))
+                        accounts.add(name);
+                }
+                rs3.close();
+                ps3.close();
+            }
+
+            plugin.getLogger().info(
+                    "[IP限制] 查询IP=" + ip
+                            + " 结果数=" + accounts.size()
+                            + " 账号=" + accounts);
         } catch (Exception e) {
             e.printStackTrace();
         }

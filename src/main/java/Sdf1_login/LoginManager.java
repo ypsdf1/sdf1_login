@@ -118,7 +118,16 @@ public class LoginManager {
 
     public boolean handleLogin(Player p,
                                String[] args) {
+
         String name = p.getName();
+        // ★ 在 handleLogin 方法开头
+        if (plugin.getNeedsPasswordChange().contains(name)
+                && plugin.getLoggedIn().contains(name)) {
+            // 已登录但还没改密码，只允许执行 /sdf1_login pw
+            p.sendMessage("§c请先修改密码: /sdf1_login pw <旧密码> <新密码>");
+            return true;
+        }
+
         try {
             if (plugin.getLoggedIn().contains(name)) {
                 p.sendMessage(plugin.getConfig2()
@@ -179,27 +188,21 @@ public class LoginManager {
                                     name, hash);
             if (matchTemp) {
                 plugin.getLoggedIn().add(name);
-                plugin.getDb().setLoggedIn(
-                        name, true);
+                plugin.getDb().setLoggedIn(name, true);
                 p.setAllowFlight(false);
                 p.setFlying(false);
-                plugin.getDb().setField(name,
-                        "last_login_time",
+                plugin.getDb().setField(name, "last_login_time",
                         System.currentTimeMillis());
-                plugin.getDb().setField(name,
-                        "last_online_check",
+                plugin.getDb().setField(name, "last_online_check",
                         System.currentTimeMillis());
                 plugin.restoreInventory(p);
                 plugin.recordIPLogin(p);
                 plugin.giveMenuSnowball(p);
-                plugin.getNeedsPasswordChange()
-                        .add(name);
-                p.sendMessage(plugin.getConfig2()
-                        .msg("login_success"));
-                p.sendMessage(
-                        "§c§l[警告] §f您使用的是临时密码，请尽快修改密码！");
-                p.sendMessage(
-                        "§7用法: /sdf1_login pw");
+                // ★ 确保这行存在
+                plugin.getNeedsPasswordChange().add(name);
+                p.sendMessage(plugin.getConfig2().msg("login_success"));
+                p.sendMessage("§c§l[警告] §f您使用的是临时密码，请尽快修改密码！");
+                p.sendMessage("§7用法: /sdf1_login pw");
                 activateCY(p, name);
                 return true;
             }

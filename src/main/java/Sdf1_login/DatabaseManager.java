@@ -60,8 +60,10 @@ public class DatabaseManager {
                     + "tasks_completed TEXT DEFAULT '',"
                     + "premium_uuid TEXT DEFAULT '',"
                     + "register_ip TEXT DEFAULT '',"
-                    + "register_type TEXT DEFAULT 'manual'"
+                    + "register_type TEXT DEFAULT 'manual',"
+                    + "backcheck_dates TEXT DEFAULT ''"
                     + ")");
+
 
             // 安全添加 users 缺失列
             safeAdd(st, "tasks_completed",

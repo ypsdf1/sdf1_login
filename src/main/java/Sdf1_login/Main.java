@@ -5,6 +5,8 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+
+import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.PlayerInteractEvent;
 import java.util.Iterator;
 import java.util.List;
@@ -17,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.NamespacedKey;
 import org.bukkit.persistence.PersistentDataType;
 import java.util.Date;
-
+import org.bukkit.command.CommandSender;
 
 
 import net.milkbowl.vault.economy.Economy;
@@ -33,8 +35,6 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.inventory.InventoryClickEvent;
-import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -52,7 +52,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.event.entity.EntityDeathEvent;
-import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.player.PlayerFishEvent;
 import java.util.HashMap;
 
@@ -120,6 +119,7 @@ public class Main extends JavaPlugin
     private final Map<String, Long> ipAutoLogin =
             new HashMap<>();
     private static final long IP_SKIP_MS = 300000L;
+    private SalesStatsManager salesStats;
 
     private final Map<UUID, Long> lastActivity =
             new ConcurrentHashMap<>();
@@ -138,6 +138,11 @@ public class Main extends JavaPlugin
     // 在 Main.java 字段声明区域（bondManager 附近）添加：
 // 在 bondManager 字段附近添加：
     private BondPrinter bondPrinter;
+    private OrderManager orderManager;
+
+    public OrderManager getOrderManager() {
+        return orderManager;
+    }
 
     // 钱包流水查看目标（玩家名 → 查看目标）
     private final Map<String, String> walletViewTarget =
@@ -148,7 +153,7 @@ public class Main extends JavaPlugin
             TX_SDF = new java.text.SimpleDateFormat(
             "yyyy-MM-dd HH:mm:ss");
 
-
+    private ShopManager shopManager; //商店
 
 
 
@@ -275,17 +280,23 @@ private PVPManager pvpManager;
     public Set<String> getNeedsPasswordChange() {
         return needsPasswordChange;
     }
+
+
     // public RadioManager radio;
     @Override
     public void onEnable() {
         getDataFolder().mkdirs();
+        salesStats = new SalesStatsManager(this);
 
         // ===== 1. 基础配置 =====
         config = new ConfigManager(getDataFolder());
         config.loadMessages();
         config.loadSmtp();
         config.loadSettings();
-
+        configMgr = new ConfigManager(getDataFolder());
+        configMgr.loadSettings();
+        configMgr.loadMessages();
+        orderManager = new OrderManager(this);
         // ===== 2. 数据库 =====
         db = new DatabaseManager(getDataFolder());
         db.init();
@@ -299,6 +310,10 @@ private PVPManager pvpManager;
 
         // ===== 4. GUI（依赖 menu） =====
         gui = new GUIManager(this);
+        shopManager = new ShopManager(this);
+        Bukkit.getPluginManager().registerEvents(shopManager, this);
+        shopManager.loadCategories();
+
         getServer().getPluginManager()
                 .registerEvents(gui, this);
 
@@ -371,6 +386,10 @@ private PVPManager pvpManager;
             getCommand("menu").setExecutor(this);
         if (getCommand("printer") != null) {
             getCommand("printer").setExecutor(this);
+            getCommand("shop").setExecutor(this);
+            getCommand("商店").setExecutor(this);
+     //       getCommand("testorder").setExecutor(this);
+
         }
 
 
@@ -421,22 +440,46 @@ private PVPManager pvpManager;
         cdkManager = new CDKManager(this);
         userGroupManager = new UserGroupManager(this);
         cypayCommand = new CypayCommand(this);
-// 加载CDK文件
-        cdkManager.loadCDKsFromDir();
+/*加载CDK文件
+        cdkManager.loadCDKsFromDir();*/
         // cypay 命令
         if (getCommand("cypay") != null) {
             getCommand("cypay").setExecutor(cypayCommand);
             getCommand("cypay").setTabCompleter(cypayCommand);
         }
         bondPrinter = new BondPrinter(this);
-        cdkManager.loadCDKsFromDir();
+     //   cdkManager.loadCDKsFromDir();
+//14 ====商店====
+        // ★ 只重载数据，不创建新实例 ★
+        if (shopManager != null) {
+            shopManager.loadCategories();
+        }
+
+        configMgr = new ConfigManager(getDataFolder());
+        configMgr.loadSettings();
+        orderManager = new OrderManager(this);
+
+
+
 
 
         getLogger().info("Sdf1_login v1.0 | 就绪");
+        getLogger().info("[SDF1] orderManager=" + (orderManager != null ? "OK" : "NULL"));
+
     }
     public BondPrinter getBondPrinter() {
         return bondPrinter;
     }
+    public ShopManager getShopManager() {
+        return shopManager;
+    }
+
+    private ConfigManager configMgr;
+
+    public ConfigManager getConfigMgr() {
+        return configMgr;
+    }
+
 
     private void setupPVPTab() {
         if (getCommand("pvp") != null) {
@@ -494,6 +537,7 @@ private PVPManager pvpManager;
 
     @Override
     public void onDisable() {
+        if (shopManager != null) shopManager.saveAll();
         // 取消未执行的删除任务
         if (pendingDeleteTask != null) {
             pendingDeleteTask.cancel();
@@ -2282,10 +2326,14 @@ private PVPManager pvpManager;
             long time = ((Number) tx.get("time"))
                     .longValue();
 
-            boolean pos = amount > 0;
-            String sign = pos ? "+" : "";
-            String color = pos ? "§a" : "§c";
-            String typeName = walletFormatType(type);
+            boolean isExpense = "shop_buy".equals(type)
+                    || "shop_packing".equals(type);
+            boolean pos = isExpense ? false : (amount > 0);
+            String sign = pos ? "+" : (isExpense ? "-" : "");
+            String color = pos ? "§a" : (isExpense ? "§c" : (amount < 0 ? "§c" : ""));
+// 金额取绝对值显示
+            int displayAmount = Math.abs(amount);
+
 
             // 用 if-else 替代 switch 避免编译问题
             Material mat = Material.PAPER;
@@ -2317,11 +2365,13 @@ private PVPManager pvpManager;
             } else {
                 mat = Material.RED_WOOL;
             }
+            String typeName = walletFormatType(type);
 
             List<String> lore = new ArrayList<>();
             lore.add("§7类型: " + typeName);
-            lore.add("§7金额: " + color + sign + amount
+            lore.add("§7金额: " + color + sign + displayAmount
                     + " §6枚");
+
             if (tgt != null && !tgt.isEmpty())
                 lore.add("§7对象: §e" + tgt);
             if (reason != null && !reason.isEmpty())
@@ -2333,8 +2383,9 @@ private PVPManager pvpManager;
             ItemStack item = new ItemStack(mat);
             ItemMeta im = item.getItemMeta();
             if (im != null) {
-                im.setDisplayName(color + sign + amount
+                im.setDisplayName(color + sign + displayAmount
                         + " §6枚 - " + typeName);
+
                 im.setLore(lore);
                 item.setItemMeta(im);
             }
@@ -3587,6 +3638,18 @@ private PVPManager pvpManager;
             e.setCancelled(true);
         }
     }
+    /** 验证玩家是否在主库中真实存在 */
+    public boolean isRealPlayer(String name) {
+        if (name == null || name.isEmpty()) return false;
+        try {
+            Map<String, Object> user =
+                    getDb().getUser(name);
+            return user != null && !user.isEmpty()
+                    && user.containsKey("player_name");
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     // ===== Commands =====
     @Override
@@ -3595,6 +3658,136 @@ private PVPManager pvpManager;
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+        if (cmd.getName().equalsIgnoreCase("testorder")
+                && sender instanceof Player) {
+            Player p = (Player) sender;
+            p.sendMessage("§e=== 测试订单中心 ===");
+            p.sendMessage("§7当前界面: §f"
+                    + p.getOpenInventory().getTitle());
+            this.getOrderManager().openOrderCenter(p);
+            // 延迟1秒检查实际打开了什么
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (p.isOnline()) {
+                    String opened = p.getOpenInventory()
+                            .getTitle();
+                    p.sendMessage("§7打开后界面: §f" + opened);
+                    this.getLogger().info("[TEST] 打开后: "
+                            + opened);
+                }
+            }, 20L);
+            return true;
+        }
+        if (cmd.getName().equalsIgnoreCase("shop")
+                || cmd.getName().equals("商店")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (shopManager != null) {
+                shopManager.openShopMain((Player) sender);
+            } else {
+                sender.sendMessage("§c商店系统未加载");
+            }
+            return true;
+        }
+
+// ===== 在 onCommand 方法体内，最开头加： =====
+        if (cmd.getName().equalsIgnoreCase("sdf1_login")
+                && args.length > 0
+                && args[0].equalsIgnoreCase("shop")) {
+            if (shopManager == null) {
+                sender.sendMessage("§c商店未加载");
+                return true;
+            }
+            return shopManager.handleCommand(sender, args);
+        }
+        // set
+        String sub = args[0].toLowerCase();
+        if (sub.equals("set")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /sdf1_login set <玩家> <临时密码>");
+                return true;
+            }
+            String tgt = args[1];
+            String tempPwd = args[2];
+            if (!db.userExists(tgt)) {
+                sender.sendMessage("§c玩家不存在");
+                return true;
+            }
+            String salt = (String) db.getField(tgt, "password_salt");
+            String hash = PasswordUtils.hash(tempPwd, salt);
+            db.setField(tgt, "temp_password", hash);
+            db.setField(tgt, "temp_pw_expire",
+                    System.currentTimeMillis() + 300000L);
+            db.setField(tgt, "temp_pw_used", 0);
+
+            // ★ 立即发邮件（踢人之前）
+            String emailAddr = (String) db.getField(tgt, "email");
+            if (emailAddr != null && !emailAddr.isEmpty()) {
+                // 获取最近登录信息
+                Object lastLoginObj = db.getField(tgt, "last_login_time");
+                long lastLogin = lastLoginObj != null
+                        ? ((Number) lastLoginObj).longValue() : 0;
+                String lastIP = (String) db.getField(tgt, "last_ip");
+                if (lastIP == null || lastIP.isEmpty())
+                    lastIP = "未知";
+
+                java.text.SimpleDateFormat sdf =
+                        new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+                String loginTimeStr = lastLogin > 0
+                        ? sdf.format(new java.util.Date(lastLogin))
+                        : "未知时间";
+
+                final String to = emailAddr;
+                final String fName = tgt;
+                final String pwd = tempPwd;
+                final String ipInfo = lastIP;
+                final String timeInfo = loginTimeStr;
+                final Main self = this;
+
+                Bukkit.getScheduler().runTaskAsynchronously(this,
+                        () -> {
+                            // ★ 发送临时密码邮件（带登录信息）
+                            boolean sent = email.sendTempPassword(
+                                    to, fName, pwd);
+                            // ★ 额外发送安全通知邮件
+                            if (sent) {
+                                String body = "玩家 " + fName
+                                        + "：\n\n"
+                                        + "管理员已为您的账号设置了临时密码。\n\n"
+                                        + "临时密码: " + pwd + "\n"
+                                        + "过期时间: 5分钟内\n\n"
+                                        + "最近登录记录:\n"
+                                        + "  时间: " + timeInfo + "\n"
+                                        + "  IP地址: " + ipInfo + "\n\n"
+                                        + "如果您本人未操作，请忽略此邮件。\n"
+                                        + "如果您怀疑账号被盗，请立即修改密码。";
+                                email.sendBody(to,
+                                        "【安全通知】账号临时密码已设置", body);
+                            }
+                            Bukkit.getScheduler().runTask(self, () -> {
+                                if (sent) {
+                                    sender.sendMessage("§a临时密码已发送至 "
+                                            + tgt + " 的邮箱");
+                                }
+                            });
+                        });
+            } else {
+                sender.sendMessage("§7该玩家未绑定邮箱，跳过邮件通知");
+            }
+
+            // 踢人
+            Player tp = Bukkit.getPlayer(tgt);
+            if (tp != null && tp.isOnline())
+                tp.kickPlayer("§c管理员已设置了临时密码，请用新密码登录");
+            sender.sendMessage("§a已为 " + tgt + " 设置临时密码");
+            return true;
+        }
+
 
         if (label.equalsIgnoreCase("pvp")) {
             if (!(sender instanceof Player)) {
@@ -3604,9 +3797,21 @@ private PVPManager pvpManager;
             Player p = (Player) sender;
             return pvpManager.onCommand(p, args);
         }
+
         if (cmdName.equals("cypay")) {
-            return cypayCommand.onCommand(sender, cmd, label, args);
+            if (args.length > 0) {
+                String target = args[0];
+                if (!getDb().userExists(target)) {
+                    sender.sendMessage("§c玩家 " + target
+                            + " 不存在于服务器");
+                    return true;
+                }
+            }
+            return cypayCommand.onCommand(
+                    sender, cmd, label, args);
         }
+
+
 
         // ===== /printer [玩家名] =====
         if (label.equalsIgnoreCase("printer")) {
@@ -4018,19 +4223,6 @@ private PVPManager pvpManager;
             gui.openMain((Player) sender);
             return true;
         }
-      //  String cmdName = cmd.getName().toLowerCase();
-        if (!cmdName.equals("sdf1_login")) return false;
-
-        if (args.length == 0) {
-            if (sender instanceof Player) {
-                gui.openMain((Player) sender);
-            } else {
-                sender.sendMessage("§e用法: /sdf1_login <子命令>");
-            }
-            return true;
-        }
-
-        String sub = args[0].toLowerCase();
 
 // ===== del / confirm / cancel（最先处理） =====
         if (sub.equals("del")) {
@@ -4179,7 +4371,10 @@ private PVPManager pvpManager;
             if (getMenu() != null) {
                 getMenu().loadMenu();
             }
-
+            if (shopManager != null) {
+                shopManager.loadCategories();
+            }
+            if (shopManager != null) shopManager.loadCategories();
             sender.sendMessage("§a配置已重载！");
             return true;
         }
@@ -4303,8 +4498,12 @@ private PVPManager pvpManager;
                 db.setField(p2.getName(), "password_salt", newSalt);
                 if (!mainOk && tempOk)
                     db.clearTempPassword(p2.getName());
+                // pw 命令改密码成功后
                 needsPasswordChange.remove(p2.getName());
-                p2.sendMessage(config.msg("password_changed"));
+// 清除临时密码
+                if (!mainOk && tempOk)
+                    db.clearTempPassword(p2.getName());
+
                 return true;
             }
 
@@ -4785,62 +4984,6 @@ private PVPManager pvpManager;
                 return true;
             }
 
-            // set
-            if (sub.equals("set")) {
-                if (!isAdmin(sender)) {
-                    sender.sendMessage("§c权限不足");
-                    return true;
-                }
-                if (args.length < 3) {
-                    sender.sendMessage(
-                            "§e用法: /sdf1_login set <玩家> <临时密码>");
-                    return true;
-                }
-                String tgt = args[1];
-                String tempPwd = args[2];
-                if (!PasswordUtils.validate(tempPwd)) {
-                    sender.sendMessage("§c密码格式不符合要求");
-                    return true;
-                }
-                if (!db.userExists(tgt)) {
-                    sender.sendMessage("§c玩家不存在");
-                    return true;
-                }
-                String salt = (String) db.getField(
-                        tgt, "password_salt");
-                String hash = PasswordUtils.hash(
-                        tempPwd, salt);
-                db.setField(tgt, "temp_password", hash);
-                db.setField(tgt, "temp_pw_expire",
-                        System.currentTimeMillis()
-                                + 300000L);
-
-                db.setField(tgt, "temp_pw_used", 0);
-                sender.sendMessage("§a已为 " + tgt
-                        + " 设置临时密码");
-                Player tp = Bukkit.getPlayer(tgt);
-                if (tp != null && tp.isOnline())
-                    tp.kickPlayer(
-                            "§c管理员已设置临时密码");
-                // 邮件通知
-                String emailAddr = (String) db.getField(
-                        tgt, "email");
-                if (emailAddr != null
-                        && !emailAddr.isEmpty()) {
-                    String body = "玩家 " + tgt
-                            + "：\n您的临时密码已由管理员设置。\n"
-                            + "临时密码将在5分钟后过期，请尽快登录并修改密码。";
-                    final String to = emailAddr;
-                    final String finalBody = body;
-                    Bukkit.getScheduler()
-                            .runTaskAsynchronously(this,
-                                    () -> email
-                                            .sendTempPassword(
-                                                    to, tgt,
-                                                    finalBody));
-                }
-                return true;
-            }
 
             // give - 手动发放雪球菜单
             if (sub.equals("give")) {
@@ -5032,6 +5175,21 @@ private PVPManager pvpManager;
 
         return true;
     }
+    /**
+     * 供SDF1反射调用的CDK兑换
+     * 返回: "success:金额:余额前:余额后"
+     *       或 "fail:原因"
+     */
+    public String redeemBondForExternal(
+            String playerName, String code) {
+        if (cdkManager == null)
+            return "fail:CDK未初始化";
+        return cdkManager.redeem(code, playerName);
+    }
+    // 旧的（可能缺失或拼写错误）
+    public SalesStatsManager getSalesStats() {
+        return salesStats;
+    }
 
     /**
      * 是否是垃圾站展示物品（带ID lore）
@@ -5096,7 +5254,7 @@ private PVPManager pvpManager;
                         "get", "del", "set",
                         "take", "add", "kick",
                         "ticket", "oa", "stop",
-                        "shopadd", "shopdel", "back", "radio", "back"));
+                        "shopadd", "shopdel", "back", "radio", "back", "shop"));
             } else {
                 list.addAll(Arrays.asList(
                         "pw", "email", "sign",
