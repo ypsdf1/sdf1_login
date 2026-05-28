@@ -125,7 +125,8 @@ public class RadioDownloadListener
             // 不踢出，只记录熔断，玩家正常游玩
             p.sendMessage("§e§l[Radio] 资源包加载失败"
                     + "，跳过资源包，部分画面、音频可能出现问题"
-            + "§d§l若想继续下载，请退出重进");
+            + "\n§d§l若想继续下载，请退出重进" +
+                    "\n§b§l若持续失败，请重启客户端");
 
             return;
         }

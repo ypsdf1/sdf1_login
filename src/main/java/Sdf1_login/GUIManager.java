@@ -46,6 +46,9 @@ public class GUIManager implements Listener {
             "§6§l用户管理";
     public static final String T_TASK_CENTER =
             "§6§l任务中心";
+    private final Map<UUID, Integer> userMgmtPages = new HashMap<>();
+    private static final int UMGMT_PAGE_SIZE = 45;
+
 
 
     public GUIManager(Main plugin) {
@@ -1853,6 +1856,7 @@ public class GUIManager implements Listener {
 
         g.setItem(24, mkItem(Material.ARROW, "§7返回"));
         // openAdmin 方法中加：
+        p.openInventory(g);
         }
 
 
@@ -1907,28 +1911,69 @@ public class GUIManager implements Listener {
     }
 
     public void openUserManagement(Player p) {
-        Inventory g = Bukkit.createInventory(
-                null, 54, T_USER_MGMT);
+        openUserManagement(p, 1);
+    }
+
+    public void openUserManagement(Player p, int page) {
+        userMgmtPages.put(p.getUniqueId(), page);
+        Inventory g = Bukkit.createInventory(null, 54, T_USER_MGMT);
         fillBg(g);
-        List<Map<String, Object>> users = plugin.getDb()
-                .getAllUsers();
+
+        List<Map<String, Object>> users = plugin.getDb().getAllUsers();
+        int totalPages = Math.max(1, (users.size() + UMGMT_PAGE_SIZE - 1) / UMGMT_PAGE_SIZE);
+        if (page > totalPages) page = totalPages;
+        userMgmtPages.put(p.getUniqueId(), page);
+
+        int start = (page - 1) * UMGMT_PAGE_SIZE;
+        int end = Math.min(start + UMGMT_PAGE_SIZE, users.size());
         int slot = 0;
-        for (Map<String, Object> user : users) {
-            if (slot >= 45) break;
+        for (int i = start; i < end; i++) {
+            if (slot >= UMGMT_PAGE_SIZE) break;
+            Map<String, Object> user = users.get(i);
             String name = (String) user.get("player_name");
-            int pts = ((Number) user.getOrDefault(
-                    "points", 0)).intValue();
-            int stage = ((Number) user.getOrDefault(
-                    "gift_stage", 0)).intValue();
+            int pts = ((Number) user.getOrDefault("points", 0)).intValue();
+            int stage = ((Number) user.getOrDefault("gift_stage", 0)).intValue();
             g.setItem(slot, mkItem(Material.PLAYER_HEAD,
                     "§e" + name,
-                    "§7积分: " + pts
-                            + "  礼包阶段: " + stage,
+                    "§7积分: " + pts + "  礼包阶段: " + stage,
                     "§7双击管理"));
             slot++;
         }
+
+        // ===== 底部导航栏 =====
+        // 上一页
+        g.setItem(45, page > 1
+                ? mkItem(Material.ARROW, "§a上一页")
+                : mkItem(Material.GRAY_STAINED_GLASS_PANE, " "));
+
+        // 页码信息
+        g.setItem(49, mkItem(Material.PAPER,
+                "§e第" + page + "/" + totalPages + "页",
+                "§7共 " + users.size() + " 名玩家"));
+
+        // 下一页
+        g.setItem(51, page < totalPages
+                ? mkItem(Material.ARROW, "§a下一页")
+                : mkItem(Material.GRAY_STAINED_GLASS_PANE, " "));
+
+        // 搜索按钮
+        g.setItem(46, mkItem(Material.ENDER_PEARL,
+                "§b§l搜索玩家",
+                "§7点击后输入玩家名",
+                "§7快速定位指定玩家"));
+
+        // 返回
         g.setItem(53, mkItem(Material.ARROW, "§7返回"));
+
         p.openInventory(g);
+    }
+
+    public int getUserMgmtPage(Player p) {
+        return userMgmtPages.getOrDefault(p.getUniqueId(), 1);
+    }
+
+    public int getUserMgmtTotalUsers() {
+        return plugin.getDb().getAllUsers().size();
     }
 
     public void openTaskCenter(Player p) {

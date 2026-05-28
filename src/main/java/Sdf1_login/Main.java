@@ -143,6 +143,8 @@ public class Main extends JavaPlugin
     public OrderManager getOrderManager() {
         return orderManager;
     }
+    public AreaProtection areaProtection;
+
 
     // 钱包流水查看目标（玩家名 → 查看目标）
     private final Map<String, String> walletViewTarget =
@@ -282,6 +284,16 @@ private PVPManager pvpManager;
     }
 
 
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent e) {
+        if (areaProtection != null) {
+            Player p = e.getPlayer();
+            areaProtection.onPlayerOffline(
+                    p.getUniqueId(), p.getName(), "");
+        }
+    }
+
+
     // public RadioManager radio;
     @Override
     public void onEnable() {
@@ -380,8 +392,8 @@ private PVPManager pvpManager;
         if (getCommand("垃圾清理") != null)
             getCommand("垃圾清理")
                     .setExecutor(this);
-        if (getCommand("oa") != null)
-            getCommand("oa").setExecutor(this);
+      /*  if (getCommand("oa") != null)
+            getCommand("oa").setExecutor(this);*/
         if (getCommand("menu") != null)
             getCommand("menu").setExecutor(this);
         if (getCommand("printer") != null) {
@@ -389,6 +401,13 @@ private PVPManager pvpManager;
             getCommand("shop").setExecutor(this);
             getCommand("商店").setExecutor(this);
      //       getCommand("testorder").setExecutor(this);
+            if (getCommand("protect") != null) {
+                getCommand("protect").setExecutor(this);
+                getCommand("protect").setTabCompleter(this);
+                getLogger().info("[防护] protect命令注册成功");
+            } else {
+                getLogger().severe("[防护] protect命令注册失败！plugin.yml可能有问题");
+            }
 
         }
 
@@ -459,12 +478,66 @@ private PVPManager pvpManager;
         configMgr.loadSettings();
         orderManager = new OrderManager(this);
 
+//15 ======区域保护=========
+        areaProtection = new AreaProtection(this);
+        getServer().getPluginManager()
+                .registerEvents(areaProtection, this);
+// 效果清除定时器
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (areaProtection != null) {
+                areaProtection.checkPendingClears();
+            }
+        }, 100L, 100L);
+        getServer().getPluginManager()
+                .registerEvents(areaProtection, this);
+        // 和平模式独立检测（每2秒扫描）
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (areaProtection == null) return;
+            areaProtection.cleanupExpiredProtections();
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                AreaProtection.AreaConfig ac = areaProtection.getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac != null && ac.peaceMode) {
+                    areaProtection.banHostilesWithWhitelist(p, ac);
+                }
+            }
+        }, 40L, 40L);
+        // 效果清理定时器
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (areaProtection != null) {
+                areaProtection.checkPendingClears();
+            }
+        }, 20L, 20L);
 
 
 
+
+    /*    // ===== 命令诊断 =====
+        getLogger().info("========== 命令诊断 ==========");
+        String[] expectedCmds = {
+                "sdf1_login", "reg", "login", "l", "签到",
+                "recycle", "垃圾清理", "oa", "menu",
+                "printer", "shop", "商店", "protect",
+                "区域保护", "cypay"
+        };
+        for (String cmdName : expectedCmds) {
+            if (getCommand(cmdName) != null) {
+                getLogger().info("[诊断] " + cmdName
+                        + " → plugin.yml已注册, executor="
+                        + (getCommand(cmdName).getExecutor() != null
+                        ? "已设置" : "未设置"));
+            } else {
+                getLogger().severe("[诊断] " + cmdName
+                        + " → plugin.yml中不存在！");
+            }
+        }
+        getLogger().info("========== 诊断结束 ==========");*/
 
         getLogger().info("Sdf1_login v1.0 | 就绪");
-        getLogger().info("[SDF1] orderManager=" + (orderManager != null ? "OK" : "NULL"));
+      //  getLogger().info("[SDF1] orderManager=" + (orderManager != null ? "OK" : "NULL"));
 
     }
     public BondPrinter getBondPrinter() {
@@ -1838,6 +1911,16 @@ private PVPManager pvpManager;
             e.setCancelled(true);
             p.setAllowFlight(true);
         }
+    }
+
+    private List<String> filterTab(List<String> opts, String prefix) {
+        List<String> r = new ArrayList<>();
+        for (String o : opts) {
+            if (o.toLowerCase().startsWith(prefix.toLowerCase())) {
+                r.add(o);
+            }
+        }
+        return r;
     }
 
 
@@ -3658,25 +3741,46 @@ private PVPManager pvpManager;
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
-        if (cmd.getName().equalsIgnoreCase("testorder")
-                && sender instanceof Player) {
-            Player p = (Player) sender;
-            p.sendMessage("§e=== 测试订单中心 ===");
-            p.sendMessage("§7当前界面: §f"
-                    + p.getOpenInventory().getTitle());
-            this.getOrderManager().openOrderCenter(p);
-            // 延迟1秒检查实际打开了什么
-            Bukkit.getScheduler().runTaskLater(this, () -> {
-                if (p.isOnline()) {
-                    String opened = p.getOpenInventory()
-                            .getTitle();
-                    p.sendMessage("§7打开后界面: §f" + opened);
-                    this.getLogger().info("[TEST] 打开后: "
-                            + opened);
-                }
-            }, 20L);
-            return true;
+        // 区域防护（必须在最前面）
+        if (cmd.getName().equalsIgnoreCase("protect")
+                || cmd.getName().equals("区域保护")) {
+            if (areaProtection == null) {
+                sender.sendMessage("§c区域防护未初始化");
+                return true;
+            }
+            if (args.length == 0) {
+                sender.sendMessage("§a§l===== 区域防护 =====");
+                sender.sendMessage("§e/protect 工具 §7获取选区工具");
+                sender.sendMessage("§e/protect 创建 <区域名> §7创建区域");
+                sender.sendMessage("§e/protect 列表 §7查看所有区域");
+                sender.sendMessage("§e/protect 重载 §7重载配置");
+                sender.sendMessage("§e/protect add <玩家> §7全局加白");
+                sender.sendMessage("§e/protect add <区域> <玩家> §7区域加白");
+                sender.sendMessage("§e/protect remove <玩家> §7全局删白");
+                sender.sendMessage("§e/protect remove <区域> <玩家> §7区域删白");
+                sender.sendMessage("§e/protect additem <物品ID> §7全局加黑");
+                sender.sendMessage("§e/protect additem <区域> <物品ID> §7区域加黑");
+                sender.sendMessage("§e/protect removeitem <物品ID> §7全局删黑");
+                sender.sendMessage("§e/protect removeitem <区域> <物品ID> §7区域删黑");
+                sender.sendMessage("§e/protect list §7全局白名单");
+                sender.sendMessage("§e/protect list <区域> §7区域白名单");
+                sender.sendMessage("§e/protect listitem §7全局物品黑名单");
+                sender.sendMessage("§e/protect listitem <区域> §7区域物品黑名单");
+                sender.sendMessage("§e/protect expand [格数] §7扩建选区");
+                sender.sendMessage("§e/protect contraction [格数] §7收缩选区");
+                return true;
+            }
+            // 其他子命令交给 areaProtection
+            try {
+                return areaProtection.handleCommand(sender, args);
+            } catch (Exception e) {
+                sender.sendMessage("§c执行出错: " + e.getMessage());
+                e.printStackTrace();
+                return true;
+            }
         }
+
+
         if (cmd.getName().equalsIgnoreCase("shop")
                 || cmd.getName().equals("商店")) {
             if (!(sender instanceof Player)) {
@@ -5262,6 +5366,83 @@ private PVPManager pvpManager;
                         "ticket", "oa", "stop"));
             }
         }
+        if (cmd.getName().equalsIgnoreCase("protect")
+                || cmd.getName().equals("区域保护")) {
+
+            String sub = args.length > 0 ? args[0].toLowerCase() : "";
+
+            // ===== 第一层：子命令 =====
+            if (args.length == 1) {
+                List<String> opts = Arrays.asList(
+                        "工具", "创建", "列表", "重载", "删除",
+                        "add", "remove",
+                        "additem", "removeitem",
+                        "on", "off", "tempon",
+                        "expand", "contraction",
+                        "list", "listitem");
+                return filterTab(opts, args[0]);
+            }
+
+            // ===== 第二层 =====
+            if (args.length == 2) {
+                // add/remove: global + 在线玩家 + 区域名
+                if (sub.equals("add") || sub.equals("remove")) {
+                    List<String> all = new ArrayList<>();
+                    all.add("global");
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        all.add(pl.getName());
+                    all.addAll(areaProtection.getAreaNames());
+                    return filterTab(all, args[1]);
+                }
+                // additem/removeitem: 区域名 + 常用物品ID
+                if (sub.equals("additem") || sub.equals("removeitem")) {
+                    List<String> all = new ArrayList<>();
+                    all.add("global");
+                    all.addAll(areaProtection.getAreaNames());
+                    return filterTab(all, args[1]);
+                }
+                // list/listitem: 区域名
+                if (sub.equals("list") || sub.equals("listitem")) {
+                    List<String> all = new ArrayList<>(areaProtection.getAreaNames());
+                    return filterTab(all, args[1]);
+                }
+                // expand/contraction: 数字
+                if (sub.equals("expand") || sub.equals("contraction")) {
+                    return Arrays.asList("1", "3", "5", "10", "20", "50");
+                }
+                // 创建: 自由输入区域名
+                if (sub.equals("创建") || sub.equals("delete") || sub.equals("删除")) {
+                    List<String> all = new ArrayList<>(areaProtection.getAreaNames());
+                    return filterTab(all, args[1]);
+                }
+            }
+
+            // ===== 第三层 =====
+            if (args.length == 3) {
+                // add global <玩家> 或 add <区域> <玩家>
+                if (sub.equals("add") || sub.equals("remove")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
+                }
+                // additem global <物品> 或 additem <区域> <物品>
+                if (sub.equals("additem") || sub.equals("removeitem")) {
+                    List<String> items = Arrays.asList(
+                            "TNT", "BROWN_MUSHROOM", "RED_MUSHROOM",
+                            "MUSHROOM_STEW", "POISONOUS_POTATO",
+                            "SPIDER_EYE", "POTION", "SPLASH_POTION",
+                            "OMINOUS_BOTTLE", "ENDER_PEARL",
+                            "BOW", "CROSSBOW", "ARROW",
+                            "FLINT_AND_STEEL");
+                    return filterTab(items, args[2]);
+                }
+            }
+
+            return null;
+        }
+
+
         if (cmd.getName().equalsIgnoreCase("chat")
                 && args.length == 1
                 && isAdmin(sender)) {

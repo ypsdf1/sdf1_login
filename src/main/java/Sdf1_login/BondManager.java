@@ -22,6 +22,7 @@ public class BondManager {
     public static final String TX_FREEZE       = "freeze";
     public static final String TX_UNFREEZE     = "unfreeze";
 
+
     public static final int MAX_WATER_DAYS = 14;
     public static final int ADMIN_MAX_WATER_DAYS = 30;
 

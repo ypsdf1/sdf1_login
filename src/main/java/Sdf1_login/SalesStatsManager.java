@@ -110,7 +110,7 @@ public class SalesStatsManager {
 
     public void report() {
         if (sessionItems == 0 && sessionRefunds == 0) {
-            plugin.getLogger().info("[Sales] 无数据，跳过");
+         //   plugin.getLogger().info("[Sales] 无数据，跳过");
             return;
         }
 

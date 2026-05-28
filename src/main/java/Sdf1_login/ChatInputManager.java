@@ -38,7 +38,9 @@ public class ChatInputManager {
         TICKET_ADMIN_DESC,
         TICKET_ADMIN_PROVIDER,
         BACK_CHECK_ECONOMY_CONFIRM,
-    }
+        USER_MGMT_SEARCH,
+
+        }
 
     public static class PlayerState {
         public InputType type = InputType.NONE;
@@ -49,6 +51,7 @@ public class ChatInputManager {
         public int ticketId = 0;
         public int smtpStep = 0;
         public int scoreValue = 0;
+
     }
 
     private final Map<String, PlayerState> states =
