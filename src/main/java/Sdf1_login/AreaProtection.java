@@ -82,7 +82,9 @@ public class AreaProtection implements Listener {
             = new HashMap<>();
     private final Map<UUID, Long> protectedEntities
             = new ConcurrentHashMap<>();
-
+    // 记录每个玩家当前所在的区域名
+    private final Map<String, String> playerCurrentArea
+            = new HashMap<>();
 
 
     public AreaProtection(Main plugin) {
@@ -288,6 +290,18 @@ public class AreaProtection implements Listener {
     // ==================== 加载 ====================
 
     public void loadAllAreas() {
+        // 验证所有区域的和平白名单
+        plugin.getLogger().info("====== 区域解析验证 ======");
+        for (Map.Entry<String, AreaConfig> entry : areas.entrySet()) {
+            AreaConfig ac = entry.getValue();
+            plugin.getLogger().info("[验证] " + entry.getKey()
+                    + " peaceMode=" + ac.peaceMode
+                    + " peaceWhitelist=" + ac.peaceWhitelist
+                    + " enforceGameMode=" + ac.enforceGameMode
+                    + " modeExempt=" + ac.modeExempt);
+        }
+        plugin.getLogger().info("====== 验证结束 ======");
+
         areas.clear();
         File[] files = areaDir.listFiles(
                 (d, n) -> n.endsWith(".txt"));
@@ -336,6 +350,48 @@ public class AreaProtection implements Listener {
         }
     }
 
+    /**
+     * 全量容错：把全角字符统一转半角，
+     * 去掉零宽字符/不可见字符，
+     * 让用户怎么写都能正确解析。
+     */
+    private String normalizeLine(String input) {
+        if (input == null || input.isEmpty()) return "";
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+
+            // 跳过零宽字符和不可见字符
+            if (c == '\u200B'   // 零宽空格
+                    || c == '\u200C'   // 零宽非连接
+                    || c == '\u200D'   // 零宽连接
+                    || c == '\uFEFF'   // BOM
+                    || c == '\u00A0'   // 不间断空格
+                    || c == '\u2028'   // 行分隔符
+                    || c == '\u2029'   // 段分隔符
+                    || c == '\u200E'   // LTR标记
+                    || c == '\u200F'   // RTL标记
+                    || c == '\u2060'   // 字连接符
+                    || (c >= '\u2000' && c <= '\u200A')) { // 各种空格
+                continue;
+            }
+
+            // 全角→半角映射
+            if (c >= '\uFF01' && c <= '\uFF5E') {
+                c = (char) (c - 0xFEE0);
+            }
+
+            // 全角空格→半角空格
+            if (c == '\u3000') {
+                c = ' ';
+            }
+
+            sb.append(c);
+        }
+
+        return sb.toString();
+    }
 
 
     private AreaConfig parseArea(String name, File f)
@@ -353,6 +409,69 @@ public class AreaProtection implements Listener {
         while ((line = br.readLine()) != null) {
             line = line.trim();
             if (line.isEmpty()) continue;
+// ===== 全量容错预处理：全角→半角，去零宽字符 =====
+            line = normalizeLine(line);
+            if (line.isEmpty()) continue;
+// ===== 暴力调试：输出所有包含关键词的行 =====
+            if (line.indexOf("游戏") >= 0
+                    || line.indexOf("模式") >= 0
+                    || line.indexOf("生存") >= 0
+                    || line.indexOf("创造") >= 0
+                    || line.indexOf("排除") >= 0
+                    || line.indexOf("豁免") >= 0
+                    || line.indexOf("强制") >= 0
+                    || line.indexOf("GameMode") >= 0
+                    || line.indexOf("SURVIVAL") >= 0
+                    || line.indexOf("CREATIVE") >= 0) {
+                StringBuilder hex = new StringBuilder();
+                for (int i = 0; i < line.length(); i++) {
+                    hex.append(String.format("U+%04X ", (int) line.charAt(i)));
+                }
+                plugin.getLogger().info("[暴力调试] 行=[" + line
+                        + "] 长度=" + line.length()
+                        + " 字符码=" + hex.toString());
+            }
+// ===== 兜底扫描：确保和平白名单一定能解析 =====
+            if (line.indexOf("白名单") >= 0
+                    || line.indexOf("排除名单") >= 0
+                    || line.indexOf("模式排除") >= 0
+                    || line.indexOf("模式豁免") >= 0) {
+                int ci = line.indexOf(':');
+                if (ci < 0) ci = line.indexOf('：');
+                if (ci < 0) ci = line.indexOf('=');
+                if (ci < 0) ci = line.indexOf(' ');
+
+                // 和平白名单
+                if (line.indexOf("和平") >= 0
+                        && line.indexOf("白名单") >= 0
+                        && ci >= 0) {
+                    String rest = line.substring(ci + 1).trim();
+                    rest = rest.replaceAll("[,，;；|、/]", ",");
+                    for (String s : rest.split(",")) {
+                        String nm = s.trim();
+                        if (!nm.isEmpty()) ac.peaceWhitelist.add(nm);
+                    }
+                    plugin.getLogger().info("[解析兜底] 和平白名单="
+                            + ac.peaceWhitelist);
+                }
+
+                // 排除名单
+                if (line.indexOf("排除名单") >= 0
+                        || line.indexOf("模式排除") >= 0
+                        || line.indexOf("模式豁免") >= 0) {
+                    if (ci >= 0) {
+                        String rest = line.substring(ci + 1).trim();
+                        rest = rest.replaceAll("[,，;；|、/]", ",");
+                        for (String s : rest.split(",")) {
+                            String nm = s.trim();
+                            if (!nm.isEmpty()) ac.modeExempt.add(nm);
+                        }
+                        plugin.getLogger().info("[解析兜底] 排除名单="
+                                + ac.modeExempt);
+                    }
+                }
+            }
+// ===== 兜底结束 =====
 
             if (inBlockComment) {
                 int endIdx = line.indexOf("*/");
@@ -480,7 +599,14 @@ public class AreaProtection implements Listener {
                             effName.length() - 2);
                 if (!effName.isEmpty())
                     ac.clearEffects.add(effName);
-            } else if (line.startsWith("效果")) {
+            } else if (line.contains("和平模式")
+                    && !line.contains("白名单")
+                    && !line.contains("定时")
+                    && !line.contains("开关")) {
+                ac.peaceMode = true;
+                plugin.getLogger().info("[解析] 和平模式已识别");
+
+        } else if (line.startsWith("效果")) {
                 String rest = line.substring(2).trim();
                 while (rest.length() > 0
                         && (rest.charAt(0) == ':'
@@ -488,6 +614,7 @@ public class AreaProtection implements Listener {
                         || rest.charAt(0) == ' '
                         || rest.charAt(0) == '\t')) {
                     rest = rest.substring(1);
+
                 }
                 if (!rest.isEmpty()) {
                     String[] parts = rest.split("\\s+");
@@ -526,11 +653,45 @@ public class AreaProtection implements Listener {
             } else if (line.startsWith("惩罚命令:")) {
                 ac.punishCommands.add(line.substring(
                         "惩罚命令:".length()).trim());
-            } else if (line.equals("和平模式")) {
-                ac.peaceMode = true;
-            } else if (line.contains("和平") && line.contains("白名单")) {
-                int widx = line.indexOf("白名单");
-                String rest = line.substring(widx + 3).trim();
+            } else if (line.startsWith("强制游戏模式:")
+                    || line.startsWith("游戏模式:")) {
+                String prefix = line.startsWith("强制游戏模式:")
+                        ? "强制游戏模式:" : "游戏模式:";
+                String modeStr = line.substring(prefix.length())
+                        .trim().toUpperCase();
+                // 容错：支持多种写法
+                if (modeStr.equals("CREATIVE") || modeStr.equals("创造")
+                        || modeStr.equals("1")) {
+                    ac.enforceGameMode = "CREATIVE";
+                } else if (modeStr.equals("SURVIVAL") || modeStr.equals("生存")
+                        || modeStr.equals("0")) {
+                    ac.enforceGameMode = "SURVIVAL";
+                } else if (modeStr.equals("ADVENTURE") || modeStr.equals("冒险")
+                        || modeStr.equals("2")) {
+                    ac.enforceGameMode = "ADVENTURE";
+                } else if (modeStr.equals("SPECTATOR") || modeStr.equals("旁观")
+                        || modeStr.equals("spectator")
+                        || modeStr.equals("3")) {
+                    ac.enforceGameMode = "SPECTATOR";
+                }
+            } else if (line.contains("排除名单")
+                    || line.contains("模式排除")
+                    || line.contains("模式豁免")) {
+                int colonIdx = line.indexOf(':');
+                if (colonIdx < 0) colonIdx = line.indexOf('：');
+                if (colonIdx < 0) colonIdx = line.indexOf('=');
+                if (colonIdx >= 0) {
+                    String rest = line.substring(colonIdx + 1).trim();
+                    String cleaned = rest.replaceAll("[,，;；|、/]", ",");
+                    for (String s : cleaned.split(",")) {
+                        String playerName = s.trim();
+                        if (!playerName.isEmpty()) {
+                            ac.modeExempt.add(playerName);
+                        }
+                    }
+                }
+
+            String rest = line.substring(/*idx*/ + 4).trim();
                 while (rest.length() > 0) {
                     char c = rest.charAt(0);
                     if (c == ':' || c == '：' || c == '='
@@ -539,6 +700,24 @@ public class AreaProtection implements Listener {
                     } else {
                         break;
                     }
+                }
+                if (!rest.isEmpty()) {
+                    String cleaned = rest.replaceAll("[,，;；|、/]", ",");
+                    for (String s : cleaned.split(",")) {
+                        String playername = s.trim();
+                        if (!name.isEmpty()) ac.modeExempt.add(name);
+                    }
+                }
+
+            while (rest.length() > 0) {
+                    char c = rest.charAt(0);
+                    if (c == ':' || c == '：' || c == '='
+                            || c == ' ' || c == '\t') {
+                        rest = rest.substring(1);
+                    } else {
+                        break;
+                    }
+
                 }
                 if (!rest.isEmpty()) {
                     String cleaned = rest.replaceAll("[,，;；|、/]", ",");
@@ -561,12 +740,33 @@ public class AreaProtection implements Listener {
         br.close();
         return ac;
     }
+// ===== 和平白名单操作 =====
+
+    // 添加生物名字到区域和平白名单
+    public boolean addPeaceName(String areaName, String creatureName) {
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) return false;
+        ac.peaceWhitelist.add(creatureName);
+        savePeaceWhitelist(ac);
+        return true;
+    }
+
+    // 从区域和平白名单移除生物名字
+    public boolean removePeaceName(String areaName, String creatureName) {
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) return false;
+        ac.peaceWhitelist.remove(creatureName);
+        savePeaceWhitelist(ac);
+        return true;
+    }
+
+// ===== 模式排除名单操作 =====
+
 
     @EventHandler
     public void onCreatureSpawn(CreatureSpawnEvent e) {
         Entity entity = e.getEntity();
-        String typeName = entity.getType().name();
-        if (!isHostile(typeName)) return;
+        if (!isHostile(entity.getType().name())) return;
 
         Location loc = entity.getLocation();
         AreaConfig ac = getArea(
@@ -576,18 +776,17 @@ public class AreaProtection implements Listener {
 
         if (ac == null || !ac.peaceMode) return;
 
-        long now = System.currentTimeMillis();
-        protectedEntities.entrySet().removeIf(
-                entry -> now > entry.getValue());
-
         protectedEntities.put(
-                entity.getUniqueId(), now + 5000);
+                entity.getUniqueId(),
+                System.currentTimeMillis() + 5000);
 
-      /*  plugin.getLogger().info("[和平模式] "
-                + typeName + " 获得5秒保护期"
-                + " 白名单=" + ac.peaceWhitelist);*/
+       /* plugin.getLogger().info("[和平] "
+                + entity.getType().name()
+                + " 获得5秒保护期"
+                + " 区域=" + ac.name
+                + " 白名单=" + ac.peaceWhitelist
+                + " 白名单数量=" + ac.peaceWhitelist.size());*/
     }
-
 
 
     public void cleanupProtectedEntities() {
@@ -609,85 +808,135 @@ public class AreaProtection implements Listener {
         }
     }
 
+
     public void banHostilesWithWhitelist(Player p, AreaConfig ac) {
         long now = System.currentTimeMillis();
-        protectedEntities.entrySet().removeIf(
-                entry -> now > entry.getValue());
-
+        // 看看附近到底有什么实体
+        List<Entity> nearby = p.getNearbyEntities(48, 48, 48);
+       /* plugin.getLogger().info("[和平] " + p.getName()
+                + " 附近实体总数=" + nearby.size());*/
+        for (Entity ent : nearby) {
+            String typeName = ent.getType().name();
+       /*     plugin.getLogger().info("[和平] 实体: "
+                    + typeName + " isHostile=" + isHostile(typeName));*/
+        }
         int scanned = 0;
-        int banished = 0;
         int waiting = 0;
         int saved = 0;
+        int banished = 0;
 
         for (Entity ent : p.getNearbyEntities(48, 48, 48)) {
-            String typeName = ent.getType().name();
-            if (!isHostile(typeName)) continue;
+            if (!isHostile(ent.getType().name())) continue;
             scanned++;
 
             UUID entUid = ent.getUniqueId();
             Long protectUntil = protectedEntities.get(entUid);
             String customName = ent.getCustomName();
 
-         /*   plugin.getLogger().info("[和平模式] 扫描: "
-                    + typeName
-                    + " name=[" + customName + "]"
-                    + " protectUntil=" + protectUntil);*/
-
+            // 有保护期记录
             if (protectUntil != null) {
                 long remain = protectUntil - now;
+
                 if (remain > 0) {
-                    // 保护期内，检查名字
+                    // 保护期内，精确剩余秒数
+                    int secondsLeft = (int) Math.ceil(remain / 1000.0);
+                    waiting++;
+
+                    // 保护期内也检查名字（玩家可能刚贴上）
                     if (customName != null
                             && !customName.isEmpty()
                             && ac.peaceWhitelist.contains(customName)) {
                         protectedEntities.remove(entUid);
                         saved++;
-                        plugin.getLogger().info("[和平模式] "
-                                + typeName + " 命名[" + customName
-                                + "]在白名单，永久保留");
-                    } else {
-                        waiting++;
-                     /*   plugin.getLogger().info("[和平模式] "
-                                + typeName + " 保护期内等待");*/
+                /*        plugin.getLogger().info("[和平] "
+                                + ent.getType().name()
+                                + " 命名[" + customName
+                                + "] 白名单匹配，永久保留");*/
+                        continue;
                     }
+
+                  /*  plugin.getLogger().info("[和平] "
+                            + ent.getType().name()
+                            + " 保护期剩余约" + secondsLeft + "秒");*/
                     continue;
                 }
-                // 过期了
+
+                // 保护期到了，最终检查
                 protectedEntities.remove(entUid);
-           /*     plugin.getLogger().info("[和平模式] "
-                        + typeName + " 保护期已过");*/
+           /*     plugin.getLogger().info("[和平] "
+                        + ent.getType().name() + " 5秒到期");*/
+
+                // 到期时再查一次白名单
+                if (customName != null
+                        && !customName.isEmpty()
+                        && ac.peaceWhitelist.contains(customName)) {
+                    saved++;
+                 /*   plugin.getLogger().info("[和平] "
+                            + ent.getType().name()
+                            + " 命名[" + customName
+                            + "] 到期但白名单匹配，保留");*/
+                    continue;
+                }
+
+                // 没名字或不在白名单，传送虚空
+                Location voidLoc = ent.getLocation().clone();
+                voidLoc.setY(ent.getWorld().getMinHeight() - 50);
+                ent.teleport(voidLoc);
+                banished++;
+            /*    plugin.getLogger().info("[和平] "
+                        + ent.getType().name()
+                        + " 命名=[" + customName + "] 传送虚空");*/
+                continue;
             }
 
-            // 无保护期或已过期，最终检查
+            // 没有保护期记录（非刷怪蛋生成的或记录被清了）
+            // 也检查一下白名单
             if (customName != null
                     && !customName.isEmpty()
                     && ac.peaceWhitelist.contains(customName)) {
                 saved++;
-                plugin.getLogger().info("[和平模式] "
-                        + typeName + " 命名[" + customName
-                        + "]在白名单，保留");
+             /*   plugin.getLogger().info("[和平] "
+                        + ent.getType().name()
+                        + " 命名[" + customName
+                        + "] 无保护期但白名单匹配，保留");*/
                 continue;
             }
 
-            // 传送虚空
+            // 没有保护期且不在白名单，传送虚空
             Location voidLoc = ent.getLocation().clone();
-            voidLoc.setY(ent.getWorld().getMinHeight() - 500);
+            voidLoc.setY(ent.getWorld().getMinHeight() - 50);
             ent.teleport(voidLoc);
             banished++;
-        /*    plugin.getLogger().info("[和平模式] "
-                    + typeName + " 命名=[" + customName + "] 传送虚空");*/
+           /* plugin.getLogger().info("[和平] "
+                    + ent.getType().name()
+                    + " 无保护期，命名=[" + customName + "] 传送虚空");*/
         }
 
-        if (scanned > 0) {
-        /*    plugin.getLogger().info("[和平模式] "
-                    + p.getName() + " 扫描:"
-                    + " 总=" + scanned
-                    + " 等待=" + waiting
-                    + " 保留=" + saved
-                    + " 传送=" + banished);*/
-        }
+     /*   plugin.getLogger().info("[和平] "
+                + " 扫描=" + scanned
+                + " 等待=" + waiting
+                + " 保留=" + saved
+                + " 传送=" + banished
+                + " 白名单=" + ac.peaceWhitelist);*/
     }
 
+    private static final Set<String> HOSTILE_TYPES = new HashSet<>(Arrays.asList(
+            "ZOMBIE", "ZOMBIE_VILLAGER", "HUSK", "DROWNED",
+            "SKELETON", "STRAY", "BOGGED", "WITHER_SKELETON",
+            "CREEPER", "SPIDER", "CAVE_SPIDER", "ENDERMITE",
+            "SILVERFISH", "BLAZE", "GHAST", "BIG_GHAST",
+            "MAGMA_CUBE", "SLIME", "WITCH",
+            "GUARDIAN", "ELDER_GUARDIAN",
+            "PILLAGER", "VINDICATOR", "EVOKER", "RAVAGER",
+            "ILLUSIONER", "VEX",
+            "PHANTOM", "SHULKER", "WARDEN", "BREEZE",
+            "PIGLIN", "PIGLIN_BRUTE", "ZOGLIN",
+            "ZOMBIFIED_PIGLIN", "ENDER_DRAGON"
+    ));
+
+    private boolean isHostile(String typeName) {
+        return HOSTILE_TYPES.contains(typeName);
+    }
 
     // ==================== 白/黑名单持久化 ====================
 
@@ -922,9 +1171,69 @@ public class AreaProtection implements Listener {
         }
     }
 
+    public void onPlayerQuit(String playerName) {
+        playerCurrentArea.remove(playerName);
+    }
+
+    public void clearAllPlayerAreas() {
+        playerCurrentArea.clear();
+    }
+    private void saveModeExempt(AreaConfig ac) {
+        File file = new File(areaDir, ac.name + ".txt");
+        if (!file.exists()) return;
+
+        try {
+            List<String> lines = new ArrayList<>();
+            BufferedReader reader = new BufferedReader(
+                    new FileReader(file, StandardCharsets.UTF_8));
+            String line;
+            boolean found = false;
+
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.contains("排除名单")
+                        || trimmed.contains("模式排除")
+                        || trimmed.contains("模式豁免")) {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("排除名单:");
+                    boolean first = true;
+                    for (String name : ac.modeExempt) {
+                        if (!first) sb.append(",");
+                        sb.append(name);
+                        first = false;
+                    }
+                    lines.add(sb.toString());
+                    found = true;
+                } else {
+                    lines.add(line);
+                }
+            }
+            reader.close();
+
+            if (!found && !ac.modeExempt.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("排除名单:");
+                boolean first = true;
+                for (String name : ac.modeExempt) {
+                    if (!first) sb.append(",");
+                    sb.append(name);
+                    first = false;
+                }
+                lines.add(sb.toString());
+            }
+
+            FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8);
+            for (String l : lines) {
+                writer.write(l + "\n");
+            }
+            writer.close();
+        } catch (IOException e) {
+            plugin.getLogger().warning(
+                    "[防护] 保存模式排除名单失败: " + e.getMessage());
+        }
+    }
 
     // ==================== 事件监听 ====================
-
     @EventHandler
     public void onPlayerMove(PlayerMoveEvent e) {
         Player p = e.getPlayer();
@@ -932,37 +1241,63 @@ public class AreaProtection implements Listener {
         Location to = e.getTo();
         if (to == null) return;
 
+        // 获取当前位置的区域
         AreaConfig toArea = getArea(
                 to.getWorld().getName(),
                 to.getBlockX(), to.getBlockY(),
                 to.getBlockZ());
 
- /*       // ===== 调试日志（先加这个排查）=====
-        plugin.getLogger().info("[防护调试] 玩家=" + p.getName()
-                + " 世界=" + to.getWorld().getName()
-                + " 坐标=" + to.getBlockX() + "," + to.getBlockY() + "," + to.getBlockZ()
-                + " 区域=" + (toArea != null ? toArea.name : "null"));*/
-
+        // 获取上一tick位置的区域
         AreaConfig fromArea = getArea(
                 from.getWorld().getName(),
                 from.getBlockX(), from.getBlockY(),
                 from.getBlockZ());
 
-        if (fromArea == null && toArea != null) {
-            handleEnter(p, toArea);
-        } else if (fromArea != null && toArea == null) {
-            handleLeave(p, fromArea);
-        }
-        if (toArea != null) {
+        // 用 playerCurrentArea 追踪区域变化
+        String toAreaName = (toArea != null) ? toArea.name : null;
+        String lastAreaName = playerCurrentArea.get(p.getName());
+
+        if (toAreaName != null) {
+            if (!toAreaName.equals(lastAreaName)) {
+                // 进入了新区域
+                // 先离开旧区域
+                if (lastAreaName != null) {
+                    AreaConfig oldAc = areas.get(lastAreaName);
+                    if (oldAc != null) {
+                        handleLeave(p, oldAc);
+                    }
+                }
+                // 进入新区域
+                handleEnter(p, toArea);
+                playerCurrentArea.put(p.getName(), toAreaName);
+            }
+            // 在同一区域内 → 调用 handleInside（持续检查）
             handleInside(p, toArea);
+        } else {
+            // 不在任何区域内
+            if (lastAreaName != null) {
+                // 离开了区域
+                AreaConfig oldAc = areas.get(lastAreaName);
+                if (oldAc != null) {
+                    handleLeave(p, oldAc);
+                }
+                playerCurrentArea.remove(p.getName());
+            }
+        }
+    }
+
+    private String getChineseGameMode(GameMode mode) {
+        switch (mode) {
+            case SURVIVAL:  return "生存模式";
+            case CREATIVE:  return "创造模式";
+            case ADVENTURE: return "冒险模式";
+            case SPECTATOR: return "旁观模式";
+            default:        return mode.name();
         }
     }
 
     private void handleEnter(Player p, AreaConfig ac) {
         UUID uid = p.getUniqueId();
-
-        // 不要动 lastLeaveTime 和 pendingClear
-        // 让 checkPendingClears 的15秒定时器统一处理
 
         // 进入提示
         if (ac.enterMsg != null && !ac.enterMsg.isEmpty()) {
@@ -970,11 +1305,6 @@ public class AreaProtection implements Listener {
                     "§e" + ac.enterMsg, 10, 60, 20);
             p.sendMessage("§c§l[区域防护] §f" + ac.enterMsg);
         }
-        plugin.getLogger().info("[防护] " + p.getName()
-                + " 进入" + ac.name
-                + " peaceMode=" + ac.peaceMode
-                + " denyRaid=" + ac.denyRaid
-                + " denyItemFrame=" + ac.denyItemFrame);
 
         // 清除负面效果
         clearBadEffects(p, ac);
@@ -989,7 +1319,6 @@ public class AreaProtection implements Listener {
             catch (NumberFormatException ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
             catch (NumberFormatException ignored) {}
-
             PotionEffectType type = resolveEffectType(effName);
             if (type != null) {
                 p.addPotionEffect(new PotionEffect(
@@ -998,26 +1327,55 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // 保存到DB
         removePlayerEffects(uid, ac.name);
         if (!given.isEmpty()) {
             savePlayerEffects(uid, p.getName(), ac.name, given);
         }
 
+        // 白名单检查（最先执行）
+        if (isPlayerWhitelisted(p.getName(), ac)) return;
+
+        // 游戏模式切换（只对非白名单玩家）
+        if (ac.enforceGameMode != null) {
+            boolean exempt = isPlayerExemptFromModeChange(p, ac);
+            if (!exempt) {
+                GameMode target = GameMode.valueOf(ac.enforceGameMode);
+                if (p.getGameMode() != target) {
+                    p.setGameMode(target);
+                    p.sendMessage("§e§l[区域防护] §f游戏模式已切换为: "
+                            + getChineseGameMode(target));
+                }
+            }
+        }
+
+        // 和平模式/袭击检查
         if (ac.peaceMode) {
             banHostilesWithWhitelist(p, ac);
         } else if (ac.denyRaid) {
             banRaidMobs(p, ac);
         }
-        if (ac.denyItemFrame) {
-            banRangedHostiles(p, ac);
-        }
 
-        if (isPlayerWhitelisted(p.getName(), ac)) return;
         handleConfiscate(p, ac);
     }
 
-
+    private boolean isPlayerExemptFromModeChange(
+            Player p, AreaConfig ac) {
+     //   if (p.isOp()) return true;
+        Set<String> global = globalWhitelist.get("global");
+        if (global != null
+                && global.contains(p.getName().toLowerCase())) {
+            return true;
+        }
+        Set<String> areaWl = areaWhitelist.get(ac.name);
+        if (areaWl != null
+                && areaWl.contains(p.getName().toLowerCase())) {
+            return true;
+        }
+        if (ac.modeExempt.contains(p.getName())) {
+            return true;
+        }
+        return false;
+    }
 
     private void banRangedHostiles(Player p, AreaConfig ac) {
         for (Entity ent : p.getNearbyEntities(48, 48, 48)) {
@@ -1430,24 +1788,29 @@ public class AreaProtection implements Listener {
     }
 
     public void handleInside(Player p, AreaConfig ac) {
-        // 清除负面效果（所有人一视同仁）
         clearBadEffects(p, ac);
 
-        // 和平模式：只由独立定时器驱动，这里不做任何驱逐
-        if (!ac.peaceMode) {
-            // 非和平模式才走这些
-            if (ac.denyRaid) {
-                banRaidMobs(p, ac);
-            }
-            if (ac.denyItemFrame) {
-                banRangedHostiles(p, ac);
+        // 和平模式
+        if (ac.peaceMode) {
+            banHostilesWithWhitelist(p, ac);
+        } else if (ac.denyRaid) {
+            banRaidMobs(p, ac);
+        }
+
+        // 游戏模式：每次都强制切换（排除全白/区白/豁免/OP）
+        if (ac.enforceGameMode != null) {
+            if (!isPlayerExemptFromModeChange(p, ac)) {
+                GameMode target = GameMode.valueOf(ac.enforceGameMode);
+                if (p.getGameMode() != target) {
+                    p.setGameMode(target);
+                }
             }
         }
 
-        // 限制性规则：白名单跳过
         if (isPlayerWhitelisted(p.getName(), ac)) return;
         handleConfiscate(p, ac);
     }
+
     public void cleanupExpiredProtections() {
         protectedEntities.entrySet().removeIf(
                 entry -> System.currentTimeMillis() > entry.getValue());
@@ -1477,46 +1840,6 @@ public class AreaProtection implements Listener {
     }
 
 
-    // 判断是否为敌对生物
-    private boolean isHostile(String typeName) {
-        switch (typeName) {
-            case "ZOMBIE":
-            case "SKELETON":
-            case "CREEPER":
-            case "SPIDER":
-            case "CAVE_SPIDER":
-            case "ENDERMAN":
-            case "BLAZE":
-            case "GHAST":
-            case "MAGMA_CUBE":
-            case "SLIME":
-            case "WITCH":
-            case "GUARDIAN":
-            case "ELDER_GUARDIAN":
-            case "PILLAGER":
-            case "VINDICATOR":
-            case "EVOKER":
-            case "RAVAGER":
-            case "ILLUSIONER":
-            case "STRAY":
-            case "HUSK":
-            case "DROWNED":
-            case "PHANTOM":
-            case "VEX":
-            case "WITHER_SKELETON":
-            case "SHULKER":
-            case "SILVERFISH":
-            case "ENDERMITE":
-            case "WARDEN":
-            case "BREEZE":
-            case "BOGGED":
-            case "PIGLIN_BRUTE":
-            case "ZOGLIN":
-                return true;
-            default:
-                return false;
-        }
-    }
 
     // 判断是否为远程攻击敌对生物
     private boolean isRangedHostile(String typeName) {
@@ -1852,12 +2175,137 @@ public class AreaProtection implements Listener {
         }
     }
 
+    /**
+     * 解析区域名：先精准匹配，再模糊匹配
+     * @param input 用户输入的区域名
+     * @return 匹配到的区域名，无匹配返回null
+     */
+    public String resolveAreaName(String input) {
+        if (input == null || input.isEmpty()) return null;
+        if (input.equalsIgnoreCase("global")) return "global";
+
+        // 第一步：精准匹配
+        for (String name : areas.keySet()) {
+            if (name.equalsIgnoreCase(input)) {
+                return name;
+            }
+        }
+
+        // 第二步：包含匹配（用户只打了部分名字）
+        for (String name : areas.keySet()) {
+            if (name.contains(input) || input.contains(name)) {
+                return name;
+            }
+        }
+
+        // 第三步：编辑距离模糊匹配（著称→主城）
+        String bestMatch = null;
+        int bestDistance = Integer.MAX_VALUE;
+        for (String name : areas.keySet()) {
+            int dist = levenshteinDistance(
+                    input.toLowerCase(), name.toLowerCase());
+            if (dist < bestDistance) {
+                bestDistance = dist;
+                bestMatch = name;
+            }
+        }
+
+        // 容错阈值：编辑距离 <= 名字长度的一半
+        if (bestMatch != null) {
+            int threshold = Math.max(1, bestMatch.length() / 2);
+            if (bestDistance <= threshold) {
+                return bestMatch;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 判断字符串是否是区域名（精准或模糊）
+     */
+    private boolean isAreaName(String name) {
+        if (name.equalsIgnoreCase("global")) return false;
+        return resolveAreaName(name) != null;
+    }
+
+    /**
+     * 获取模糊匹配的实际区域名（用于提示用户）
+     */
+    private String getResolvedName(String input) {
+        return resolveAreaName(input);
+    }
+
+    /**
+     * 编辑距离算法（莱文斯坦距离）
+     */
+    private int levenshteinDistance(String s1, String s2) {
+        int[][] dp = new int[s1.length() + 1][s2.length() + 1];
+        for (int i = 0; i <= s1.length(); i++) dp[i][0] = i;
+        for (int j = 0; j <= s2.length(); j++) dp[0][j] = j;
+        for (int i = 1; i <= s1.length(); i++) {
+            for (int j = 1; j <= s2.length(); j++) {
+                if (s1.charAt(i - 1) == s2.charAt(j - 1)) {
+                    dp[i][j] = dp[i - 1][j - 1];
+                } else {
+                    dp[i][j] = 1 + Math.min(dp[i - 1][j - 1],
+                            Math.min(dp[i - 1][j], dp[i][j - 1]));
+                }
+            }
+        }
+        return dp[s1.length()][s2.length()];
+    }
+
+    /**
+     * 智能重排参数：找出子命令位置，重排为标准顺序
+     * 标准顺序：/protect 子命令 参数1 参数2 ...
+     */
+    private String[] smartReorderArgs(String[] original) {
+        if (original.length <= 1) return original;
+
+        Set<String> knownSubs = new HashSet<>(Arrays.asList(
+                "add", "remove", "additem", "removeitem",
+                "addname", "removename", "listname",
+                "addwhite", "removewhite", "listwhite",
+                "list", "listitem", "创建", "删除", "重载",
+                "工具", "expand", "contraction",
+                "on", "off", "tempon", "modeexempt"
+        ));
+
+        String first = original[0].toLowerCase();
+        if (knownSubs.contains(first)) {
+            return original;
+        }
+
+        int subIndex = -1;
+        for (int i = 0; i < original.length; i++) {
+            if (knownSubs.contains(original[i].toLowerCase())) {
+                subIndex = i;
+                break;
+            }
+        }
+
+        if (subIndex < 0) {
+            return original;
+        }
+
+        String[] reordered = new String[original.length];
+        reordered[0] = original[subIndex];
+        int idx = 1;
+        for (int i = 0; i < original.length; i++) {
+            if (i == subIndex) continue;
+            reordered[idx] = original[i];
+            idx++;
+        }
+
+        return reordered;
+    }
 
     // ==================== 管理命令 ====================
 
     public boolean handleCommand(CommandSender sender,
                                  String[] args) {
-
+        args = smartReorderArgs(args);
         if (args.length == 0) {
             showHelp(sender);
             return true;
@@ -1954,6 +2402,185 @@ public class AreaProtection implements Listener {
             }
             return true;
         }
+// ===== 和平白名单：addname / removename =====
+        if (sub.equals("addname")) {
+            if (args.length == 3) {
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String creatureName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (ac == null) {
+                    sender.sendMessage("§c区域不存在: " + areaName);
+                    return true;
+                }
+                if (ac.peaceWhitelist.contains(creatureName)) {
+                    sender.sendMessage("§e" + creatureName + " 已在 " + areaName + " 和平白名单中");
+                    return true;
+                }
+                ac.peaceWhitelist.add(creatureName);
+                savePeaceWhitelist(ac);
+                sender.sendMessage("§a已添加: " + creatureName + " → " + areaName + " 和平白名单");
+                return true;
+            }
+            sender.sendMessage("§c用法: /protect addname <区域/名字> <区域/名字>");
+            return true;
+        }
+
+
+        if (sub.equals("removename")) {
+            if (args.length == 3) {
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String creatureName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (ac == null) {
+                    sender.sendMessage("§c区域不存在: " + areaName);
+                    return true;
+                }
+                if (!ac.peaceWhitelist.contains(creatureName)) {
+                    sender.sendMessage("§e" + creatureName + " 不在 " + areaName + " 和平白名单中");
+                    return true;
+                }
+                ac.peaceWhitelist.remove(creatureName);
+                savePeaceWhitelist(ac);
+                sender.sendMessage("§a已移除: " + creatureName + " ← " + areaName + " 和平白名单");
+                return true;
+            }
+            sender.sendMessage("§c用法: /protect removename <区域/名字> <区域/名字>");
+            return true;
+        }
+
+
+        if (sub.equals("listname")) {
+            if (args.length < 2) {
+                sender.sendMessage("§c用法: /protect listname <区域>");
+                return true;
+            }
+            String areaName = args[1];
+            AreaConfig ac = areas.get(areaName);
+            if (ac == null) {
+                sender.sendMessage("§c区域不存在: " + areaName);
+                return true;
+            }
+            sender.sendMessage("§a" + areaName + " 和平白名单:");
+            if (ac.peaceWhitelist.isEmpty()) {
+                sender.sendMessage("§7  (空)");
+            } else {
+                for (String name : ac.peaceWhitelist) {
+                    sender.sendMessage("§7  - " + name);
+                }
+            }
+            return true;
+        }
+
+// ===== 模式排除：addwhite / removewhite =====
+        if (sub.equals("addwhite")) {
+            if (args.length == 3) {
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String playerName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (ac == null) {
+                    sender.sendMessage("§c区域不存在: " + areaName);
+                    return true;
+                }
+                Set<String> global = globalWhitelist.get("global");
+                if (global != null && global.contains(playerName.toLowerCase())) {
+                    sender.sendMessage("§c" + playerName + " 已在全局白名单中，不需要添加到模式排除");
+                    return true;
+                }
+                Set<String> areaWl = areaWhitelist.get(areaName);
+                if (areaWl != null && areaWl.contains(playerName.toLowerCase())) {
+                    sender.sendMessage("§c" + playerName + " 已在" + areaName + "白名单中，不需要添加到模式排除");
+                    return true;
+                }
+                if (ac.modeExempt.contains(playerName)) {
+                    sender.sendMessage("§c" + playerName + " 已在" + areaName + "模式排除名单中");
+                    return true;
+                }
+                ac.modeExempt.add(playerName);
+                saveModeExempt(ac);
+                sender.sendMessage("§a已添加: " + playerName + " → " + areaName + " 模式排除名单");
+                return true;
+            }
+            sender.sendMessage("§c用法: /protect addwhite <区域/玩家> <区域/玩家>");
+            return true;
+        }
+
+        if (sub.equals("removewhite")) {
+            if (args.length == 3) {
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String playerName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (ac == null) {
+                    sender.sendMessage("§c区域不存在: " + areaName);
+                    return true;
+                }
+                if (!ac.modeExempt.contains(playerName)) {
+                    sender.sendMessage("§c" + playerName + " 不在 " + areaName + " 模式排除名单中");
+                    return true;
+                }
+                ac.modeExempt.remove(playerName);
+                saveModeExempt(ac);
+                sender.sendMessage("§a已移除: " + playerName + " ← " + areaName + " 模式排除名单");
+                return true;
+            }
+            sender.sendMessage("§c用法: /protect removewhite <区域/玩家> <区域/玩家>");
+            return true;
+        }
+
+        if (sub.equals("listwhite")) {
+            if (args.length < 2) {
+                sender.sendMessage("§c用法: /protect listwhite <区域>");
+                return true;
+            }
+            String areaName = args[1];
+            AreaConfig ac = areas.get(areaName);
+            if (ac == null) {
+                sender.sendMessage("§c区域不存在: " + areaName);
+                return true;
+            }
+            sender.sendMessage("§a" + areaName + " 模式排除名单:");
+            if (ac.modeExempt.isEmpty()) {
+                sender.sendMessage("§7  (空)");
+            } else {
+                for (String name : ac.modeExempt) {
+                    sender.sendMessage("§7  - " + name);
+                }
+            }
+            return true;
+        }
+
+
 
         // 列表
         if (sub.equals("列表") || sub.equals("list")) {
@@ -1979,33 +2606,46 @@ public class AreaProtection implements Listener {
         }
 // ===== list：列出白名单 =====
         if (sub.equals("list")) {
-            if (args.length < 2) {
-                // 全局白名单
-                Set<String> wl = globalWhitelist.get("global");
-                sender.sendMessage("§a§l===== 全局白名单 =====");
+            if (args.length == 2) {
+                String areaName = resolveAreaName(args[1]);
+                if (areaName == null || areaName.equalsIgnoreCase("global")) {
+                    sender.sendMessage("§a全局白名单:");
+                    Set<String> wl = globalWhitelist.get("global");
+                    if (wl == null || wl.isEmpty()) {
+                        sender.sendMessage("§7  (空)");
+                    } else {
+                        for (String name : wl) {
+                            sender.sendMessage("§7  - " + name);
+                        }
+                    }
+                    return true;
+                }
+                if (!areaName.equals(args[1])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                Set<String> wl = areaWhitelist.get(areaName);
+                sender.sendMessage("§a" + areaName + " 白名单:");
                 if (wl == null || wl.isEmpty()) {
-                    sender.sendMessage("§7（空）");
+                    sender.sendMessage("§7  (空)");
                 } else {
                     for (String name : wl) {
-                        sender.sendMessage("§f- " + name);
+                        sender.sendMessage("§7  - " + name);
                     }
                 }
                 return true;
             }
-            // 区域白名单
-            String area = args[1];
-            if (!validateArea(sender, area)) return true;
-            Set<String> wl = areaWhitelist.get(area);
-            sender.sendMessage("§a§l===== " + area + " 白名单 =====");
+            sender.sendMessage("§a全局白名单:");
+            Set<String> wl = globalWhitelist.get("global");
             if (wl == null || wl.isEmpty()) {
-                sender.sendMessage("§7（空）");
-                return true;
-            }
-            for (String name : wl) {
-                sender.sendMessage("§f- " + name);
+                sender.sendMessage("§7  (空)");
+            } else {
+                for (String name : wl) {
+                    sender.sendMessage("§7  - " + name);
+                }
             }
             return true;
         }
+
 
 // ===== listitem：列出黑名单物品 =====
         if (sub.equals("listitem")) {
@@ -2163,24 +2803,10 @@ public class AreaProtection implements Listener {
         }
 
         // ===== add 玩家白名单 =====
-        // add 命令
         if (sub.equals("add")) {
             if (args.length == 2) {
-                // /protect add PlayerName → 全局加白
                 String playerName = args[1];
-                // 验证玩家存在
-                boolean exists = false;
-                for (Player online : Bukkit.getOnlinePlayers()) {
-                    if (online.getName().equalsIgnoreCase(playerName)) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
-                    exists = op.hasPlayedBefore();
-                }
-                if (!exists) {
+                if (!playerExists(playerName)) {
                     sender.sendMessage("§c玩家不存在: " + playerName);
                     return true;
                 }
@@ -2196,28 +2822,21 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String arg1 = args[1];
-                String arg2 = args[2];
-                // 自动判断：第一个参数是区域名还是玩家名
-                if (arg1.equalsIgnoreCase("global")
-                        || !areas.containsKey(arg1)) {
-                    // arg1不是区域名 → 全局加白 arg2是玩家名
-                    String playerName = arg2;
-                    boolean exists = false;
-                    for (Player online : Bukkit.getOnlinePlayers()) {
-                        if (online.getName().equalsIgnoreCase(playerName)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) {
-                        OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
-                        exists = op.hasPlayedBefore();
-                    }
-                    if (!exists) {
-                        sender.sendMessage("§c玩家不存在: " + playerName);
-                        return true;
-                    }
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String playerName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                if (!playerExists(playerName)) {
+                    sender.sendMessage("§c玩家不存在: " + playerName);
+                    return true;
+                }
+                if (areaName.equalsIgnoreCase("global")) {
                     Set<String> wl = globalWhitelist
                             .computeIfAbsent("global", k -> new HashSet<>());
                     if (wl.contains(playerName.toLowerCase())) {
@@ -2228,44 +2847,25 @@ public class AreaProtection implements Listener {
                     saveGlobalWhitelist();
                     sender.sendMessage("§a已全局加白: " + playerName);
                 } else {
-                    // arg1是区域名 → 区域加白
-                    String playerName = arg2;
-                    boolean exists = false;
-                    for (Player online : Bukkit.getOnlinePlayers()) {
-                        if (online.getName().equalsIgnoreCase(playerName)) {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    if (!exists) {
-                        OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
-                        exists = op.hasPlayedBefore();
-                    }
-                    if (!exists) {
-                        sender.sendMessage("§c玩家不存在: " + playerName);
-                        return true;
-                    }
                     Set<String> wl = areaWhitelist
-                            .computeIfAbsent(arg1, k -> new HashSet<>());
+                            .computeIfAbsent(areaName, k -> new HashSet<>());
                     if (wl.contains(playerName.toLowerCase())) {
-                        sender.sendMessage("§e" + playerName + " 已在 " + arg1 + " 白名单中");
+                        sender.sendMessage("§e" + playerName + " 已在 " + areaName + " 白名单中");
                         return true;
                     }
                     wl.add(playerName.toLowerCase());
-                    saveAreaWhitelist(arg1, "whitelist", wl);
-                    sender.sendMessage("§a已加白: " + playerName + " → " + arg1);
+                    saveAreaWhitelist(areaName, "whitelist", wl);
+                    sender.sendMessage("§a已加白: " + playerName + " → " + areaName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect add <玩家名> 或 /protect add <区域> <玩家名>");
+            sender.sendMessage("§c用法: /protect add <区域/玩家> <区域/玩家>");
             return true;
         }
-
 
 // remove 命令
         if (sub.equals("remove")) {
             if (args.length == 2) {
-                // /protect remove PlayerName → 全局删白
                 String playerName = args[1];
                 Set<String> wl = globalWhitelist.get("global");
                 if (wl == null || !wl.contains(playerName.toLowerCase())) {
@@ -2278,42 +2878,46 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String arg1 = args[1];
-                String arg2 = args[2];
-                if (arg1.equalsIgnoreCase("global")
-                        || !areas.containsKey(arg1)) {
-                    // 全局删白
+                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    return true;
+                }
+                String areaName = parsed[0];
+                String playerName = parsed[1];
+                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                if (areaName.equalsIgnoreCase("global")) {
                     Set<String> wl = globalWhitelist.get("global");
-                    if (wl == null || !wl.contains(arg2.toLowerCase())) {
-                        sender.sendMessage("§e" + arg2 + " 不在全局白名单中");
+                    if (wl == null || !wl.contains(playerName.toLowerCase())) {
+                        sender.sendMessage("§e" + playerName + " 不在全局白名单中");
                         return true;
                     }
-                    wl.remove(arg2.toLowerCase());
+                    wl.remove(playerName.toLowerCase());
                     saveGlobalWhitelist();
-                    sender.sendMessage("§a已从全局白名单移除: " + arg2);
+                    sender.sendMessage("§a已从全局白名单移除: " + playerName);
                 } else {
-                    // 区域删白
-                    Set<String> wl = areaWhitelist.get(arg1);
-                    if (wl == null || !wl.contains(arg2.toLowerCase())) {
-                        sender.sendMessage("§e" + arg2 + " 不在 " + arg1 + " 白名单中");
+                    Set<String> wl = areaWhitelist.get(areaName);
+                    if (wl == null || !wl.contains(playerName.toLowerCase())) {
+                        sender.sendMessage("§e" + playerName + " 不在 " + areaName + " 白名单中");
                         return true;
                     }
-                    wl.remove(arg2.toLowerCase());
-                    saveAreaWhitelist(arg1, "whitelist", wl);
-                    sender.sendMessage("§a已从 " + arg1 + " 白名单移除: " + arg2);
+                    wl.remove(playerName.toLowerCase());
+                    saveAreaWhitelist(areaName, "whitelist", wl);
+                    sender.sendMessage("§a已从 " + areaName + " 白名单移除: " + playerName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect remove <玩家名> 或 /protect remove <区域> <玩家名>");
+            sender.sendMessage("§c用法: /protect remove <区域/玩家> <区域/玩家>");
             return true;
         }
 
+
         if (sub.equals("additem")) {
             if (args.length == 2) {
-                // /protect additem TNT → 全局加黑
                 String itemName = args[1].toUpperCase();
-                Material mat = Material.matchMaterial(itemName);
-                if (mat == null) {
+                if (Material.matchMaterial(itemName) == null) {
                     sender.sendMessage("§c无效的物品ID: " + args[1]);
                     return true;
                 }
@@ -2323,37 +2927,73 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String arg1 = args[1];
-                String itemName = args[2].toUpperCase();
-                Material mat = Material.matchMaterial(itemName);
-                if (mat == null) {
-                    sender.sendMessage("§c无效的物品ID: " + args[2]);
-                    return true;
+                // 先尝试两边都解析区域名
+                String r1 = resolveAreaName(args[1]);
+                String r2 = resolveAreaName(args[2]);
+
+                String areaName = null;
+                String itemName = null;
+
+                if (r1 != null && r2 == null) {
+                    // arg1是区域名，arg2是物品
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else if (r2 != null && r1 == null) {
+                    // arg2是区域名，arg1是物品
+                    areaName = r2;
+                    itemName = args[1].toUpperCase();
+                } else if (r1 != null && r2 != null) {
+                    // 两边都是区域名，第一个优先
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else {
+                    // 都不是区域名，默认arg1是物品，arg2是区域名
+                    // 也尝试 arg1 当区域名模糊匹配
+                    itemName = args[1].toUpperCase();
+                    areaName = r2 != null ? r2 : "global";
                 }
-                if (arg1.equalsIgnoreCase("global")
-                        || !areas.containsKey(arg1)) {
-                    // 全局加黑
+
+                // 验证物品ID
+                if (Material.matchMaterial(itemName) == null) {
+                    // 再试一次：可能 arg2 才是物品
+                    itemName = args[2].toUpperCase();
+                    if (areaName.equals(args[2])) {
+                        areaName = r1 != null ? r1 : "global";
+                    }
+                    if (Material.matchMaterial(itemName) == null) {
+                        sender.sendMessage("§c无效的物品ID: " + args[1] + " 和 " + args[2]);
+                        return true;
+                    }
+                }
+
+                // 纠正提示
+                if (r1 != null && !r1.equals(args[1]) && areaName.equals(r1)) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                if (r2 != null && !r2.equals(args[2]) && areaName.equals(r2)) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+
+                if (areaName.equalsIgnoreCase("global")) {
                     globalItemBlacklist.add(itemName);
                     saveGlobalWhitelist();
                     sender.sendMessage("§a已全局加黑: " + itemName);
                 } else {
-                    // 区域加黑
                     areaItemBlacklist
-                            .computeIfAbsent(arg1, k -> ConcurrentHashMap.newKeySet())
+                            .computeIfAbsent(areaName, k -> ConcurrentHashMap.newKeySet())
                             .add(itemName);
-                    saveAreaWhitelist(arg1, "item",
-                            areaItemBlacklist.get(arg1));
-                    sender.sendMessage("§a已加黑: " + itemName + " → " + arg1);
+                    saveAreaWhitelist(areaName, "item",
+                            areaItemBlacklist.get(areaName));
+                    sender.sendMessage("§a已加黑: " + itemName + " → " + areaName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect additem <物品ID> 或 /protect additem <区域> <物品ID>");
+            sender.sendMessage("§c用法: /protect additem <区域/物品> <区域/物品>");
             return true;
         }
 
         if (sub.equals("removeitem")) {
             if (args.length == 2) {
-                // /protect removeitem TNT → 全局删黑
                 String itemName = args[1].toUpperCase();
                 if (!globalItemBlacklist.contains(itemName)) {
                     sender.sendMessage("§c全局黑名单中没有: " + itemName);
@@ -2365,11 +3005,35 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String arg1 = args[1];
-                String itemName = args[2].toUpperCase();
-                if (arg1.equalsIgnoreCase("global")
-                        || !areas.containsKey(arg1)) {
-                    // 全局删黑
+                String r1 = resolveAreaName(args[1]);
+                String r2 = resolveAreaName(args[2]);
+
+                String areaName = null;
+                String itemName = null;
+
+                if (r1 != null && r2 == null) {
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else if (r2 != null && r1 == null) {
+                    areaName = r2;
+                    itemName = args[1].toUpperCase();
+                } else if (r1 != null && r2 != null) {
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else {
+                    itemName = args[1].toUpperCase();
+                    areaName = "global";
+                }
+
+                // 纠正提示
+                if (r1 != null && !r1.equals(args[1]) && areaName.equals(r1)) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+                if (r2 != null && !r2.equals(args[2]) && areaName.equals(r2)) {
+                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
+                }
+
+                if (areaName.equalsIgnoreCase("global")) {
                     if (!globalItemBlacklist.contains(itemName)) {
                         sender.sendMessage("§c全局黑名单中没有: " + itemName);
                         return true;
@@ -2378,21 +3042,21 @@ public class AreaProtection implements Listener {
                     saveGlobalWhitelist();
                     sender.sendMessage("§a已从全局黑名单移除: " + itemName);
                 } else {
-                    // 区域删黑
-                    Set<String> list = areaItemBlacklist.get(arg1);
+                    Set<String> list = areaItemBlacklist.get(areaName);
                     if (list == null || !list.contains(itemName)) {
-                        sender.sendMessage("§c" + arg1 + " 黑名单中没有: " + itemName);
+                        sender.sendMessage("§c" + areaName + " 黑名单中没有: " + itemName);
                         return true;
                     }
                     list.remove(itemName);
-                    saveAreaWhitelist(arg1, "item", list);
-                    sender.sendMessage("§a已从 " + arg1 + " 黑名单移除: " + itemName);
+                    saveAreaWhitelist(areaName, "item", list);
+                    sender.sendMessage("§a已从 " + areaName + " 黑名单移除: " + itemName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect removeitem <物品ID> 或 /protect removeitem <区域> <物品ID>");
+            sender.sendMessage("§c用法: /protect removeitem <区域/物品> <区域/物品>");
             return true;
         }
+
 
         // ===== on 显示边框 =====
         if (sub.equals("on")) {
@@ -2452,6 +3116,29 @@ public class AreaProtection implements Listener {
         showHelp(sender);
         return true;
     }
+    private String[] parseAreaAndTarget(String arg1, String arg2) {
+        String r1 = resolveAreaName(arg1);
+        if (r1 != null) {
+            return new String[]{r1, arg2};
+        }
+        String r2 = resolveAreaName(arg2);
+        if (r2 != null) {
+            return new String[]{r2, arg1};
+        }
+        return null;
+    }
+
+    private boolean playerExists(String playerName) {
+        // 在线玩家
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            if (online.getName().equalsIgnoreCase(playerName)) return true;
+        }
+        // 离线玩家
+        @SuppressWarnings("deprecation")
+        OfflinePlayer op = Bukkit.getOfflinePlayer(playerName);
+        return op.hasPlayedBefore();
+    }
+
 
     private boolean validateArea(CommandSender sender, String areaName) {
         if (!areas.containsKey(areaName)) {
@@ -2875,6 +3562,59 @@ public class AreaProtection implements Listener {
     }
 
 
+    private void savePeaceWhitelist(AreaConfig ac) {
+        File file = new File(areaDir, ac.name + ".txt");
+        if (!file.exists()) return;
+
+        try {
+            List<String> lines = new ArrayList<>();
+            BufferedReader reader = new BufferedReader(
+                    new FileReader(file, StandardCharsets.UTF_8));
+            String line;
+            boolean found = false;
+
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.contains("和平")
+                        && trimmed.contains("白名单")) {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("和平模式白名单:");
+                    boolean first = true;
+                    for (String name : ac.peaceWhitelist) {
+                        if (!first) sb.append(",");
+                        sb.append(name);
+                        first = false;
+                    }
+                    lines.add(sb.toString());
+                    found = true;
+                } else {
+                    lines.add(line);
+                }
+            }
+            reader.close();
+
+            if (!found && !ac.peaceWhitelist.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("和平模式白名单:");
+                boolean first = true;
+                for (String name : ac.peaceWhitelist) {
+                    if (!first) sb.append(",");
+                    sb.append(name);
+                    first = false;
+                }
+                lines.add(sb.toString());
+            }
+
+            FileWriter writer = new FileWriter(file, StandardCharsets.UTF_8);
+            for (String l : lines) {
+                writer.write(l + "\n");
+            }
+            writer.close();
+        } catch (IOException e) {
+            plugin.getLogger().warning(
+                    "[防护] 保存和平白名单失败: " + e.getMessage());
+        }
+    }
 
 
     @EventHandler
@@ -2920,6 +3660,9 @@ public class AreaProtection implements Listener {
         public boolean peaceMode = false;
         public boolean denyItemFrame = false;
         public Set<String> peaceWhitelist = new HashSet<>();
+        public String enforceGameMode = null;  // 强制游戏模式
+        public Set<String> modeExempt = new HashSet<>(); // 模式排除名单
+
 
 
 

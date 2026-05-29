@@ -290,6 +290,10 @@ private PVPManager pvpManager;
             Player p = e.getPlayer();
             areaProtection.onPlayerOffline(
                     p.getUniqueId(), p.getName(), "");
+            if (areaProtection != null) {
+                areaProtection.onPlayerQuit(p.getName());
+            }
+
         }
     }
 
@@ -313,7 +317,6 @@ private PVPManager pvpManager;
         db = new DatabaseManager(getDataFolder());
         db.init();
         menuIconMgr = new MenuIconManager(this);
-
 
 
         // ===== 3. 菜单 =====
@@ -400,19 +403,20 @@ private PVPManager pvpManager;
             getCommand("printer").setExecutor(this);
             getCommand("shop").setExecutor(this);
             getCommand("商店").setExecutor(this);
-     //       getCommand("testorder").setExecutor(this);
+            //       getCommand("testorder").setExecutor(this);
+            if (getCommand("printer") != null) {
+                getCommand("printer").setExecutor(this);
+                getCommand("shop").setExecutor(this);
+                getCommand("商店").setExecutor(this);
+            }
+// protect 命令独立注册
             if (getCommand("protect") != null) {
                 getCommand("protect").setExecutor(this);
                 getCommand("protect").setTabCompleter(this);
-                getLogger().info("[防护] protect命令注册成功");
-            } else {
-                getLogger().severe("[防护] protect命令注册失败！plugin.yml可能有问题");
             }
-
         }
 
-
-        // ===== 10. 注册事件 =====
+            // ===== 10. 注册事件 =====
         getServer().getPluginManager()
                 .registerEvents(this, this);
 
@@ -467,7 +471,7 @@ private PVPManager pvpManager;
             getCommand("cypay").setTabCompleter(cypayCommand);
         }
         bondPrinter = new BondPrinter(this);
-     //   cdkManager.loadCDKsFromDir();
+        //   cdkManager.loadCDKsFromDir();
 //14 ====商店====
         // ★ 只重载数据，不创建新实例 ★
         if (shopManager != null) {
@@ -478,67 +482,59 @@ private PVPManager pvpManager;
         configMgr.loadSettings();
         orderManager = new OrderManager(this);
 
-//15 ======区域保护=========
+// 15 ======区域保护=========
         areaProtection = new AreaProtection(this);
         getServer().getPluginManager()
                 .registerEvents(areaProtection, this);
-// 效果清除定时器
-        getServer().getScheduler().runTaskTimer(this, () -> {
-            if (areaProtection != null) {
-                areaProtection.checkPendingClears();
-            }
-        }, 100L, 100L);
-        getServer().getPluginManager()
-                .registerEvents(areaProtection, this);
-        // 和平模式独立检测（每2秒扫描）
-        getServer().getScheduler().runTaskTimer(this, () -> {
-            if (areaProtection == null) return;
-            areaProtection.cleanupExpiredProtections();
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                AreaProtection.AreaConfig ac = areaProtection.getArea(
-                        p.getWorld().getName(),
-                        p.getLocation().getBlockX(),
-                        p.getLocation().getBlockY(),
-                        p.getLocation().getBlockZ());
-                if (ac != null && ac.peaceMode) {
-                    areaProtection.banHostilesWithWhitelist(p, ac);
-                }
-            }
-        }, 40L, 40L);
-        // 效果清理定时器
+
+// 效果清除定时器（只留一个）
         getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection != null) {
                 areaProtection.checkPendingClears();
             }
         }, 20L, 20L);
 
-
-
-
-    /*    // ===== 命令诊断 =====
-        getLogger().info("========== 命令诊断 ==========");
-        String[] expectedCmds = {
-                "sdf1_login", "reg", "login", "l", "签到",
-                "recycle", "垃圾清理", "oa", "menu",
-                "printer", "shop", "商店", "protect",
-                "区域保护", "cypay"
-        };
-        for (String cmdName : expectedCmds) {
-            if (getCommand(cmdName) != null) {
-                getLogger().info("[诊断] " + cmdName
-                        + " → plugin.yml已注册, executor="
-                        + (getCommand(cmdName).getExecutor() != null
-                        ? "已设置" : "未设置"));
-            } else {
-                getLogger().severe("[诊断] " + cmdName
-                        + " → plugin.yml中不存在！");
+// 和平模式独立检测
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (areaProtection == null) return;
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                AreaProtection.AreaConfig ac = areaProtection.getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac != null) {
+                    // 无条件打印，不管 peaceMode 是啥
+                 /*   getLogger().info("[和平定时器] " + p.getName()
+                            + " 在[" + ac.name
+                            + "] peaceMode=" + ac.peaceMode
+                            + " 白名单=" + ac.peaceWhitelist);*/
+                    if (ac.peaceMode) {
+                        areaProtection.banHostilesWithWhitelist(p, ac);
+                    }
+                }
             }
-        }
-        getLogger().info("========== 诊断结束 ==========");*/
+        }, 40L, 40L);
 
-        getLogger().info("Sdf1_login v1.0 | 就绪");
-      //  getLogger().info("[SDF1] orderManager=" + (orderManager != null ? "OK" : "NULL"));
-
+        getLogger().info("§b[Sdf1_login]启动完毕\n§lSdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
+        getLogger().info("sdf1系列插件包含：\nsdf1自助兑奖插件\nCY_beibao云背包\nsdf1_login登陆插件");
+      getLogger().info("\n" +
+              "  ____      _  __ _     _             _                          \n" +
+                      " / ___|  __| |/ _/ |   | | ___   __ _(_)_ __                     \n" +
+                      " \\___ \\ / _` | |_| |   | |/ _ \\ / _` | | '_ \\                    \n" +
+                      "  ___) | (_| |  _| |   | | (_) | (_| | | | | |                   \n" +
+                      " |____/ \\__,_|_| |_|___|_|\\___/ \\__, |_|_| |_|                   \n" +
+                      "  ____      _  __ |_____| _     |___/   _                        \n" +
+                      " / ___|  __| |/ _/ |_ __ | |_   _  __ _(_)_ __                   \n" +
+                      " \\___ \\ / _` | |_| | '_ \\| | | | |/ _` | | '_ \\                  \n" +
+                      "  ___) | (_| |  _| | |_) | | |_| | (_| | | | | |                 \n" +
+                      " |____/ \\__,_|_| |_| .__/|_|\\__,_|\\__, |_|_| |_|___      _  __ _ \n" +
+                      "  _ __   _____     |_|___ _ __  | |___/_   _  / ___|  __| |/ _/ |\n" +
+                      " | '_ \\ / _ \\ \\ /\\ / / _ \\ '__| | '_ \\| | | | \\___ \\ / _` | |_| |\n" +
+                      " | |_) | (_) \\ V  V /  __/ |    | |_) | |_| |  ___) | (_| |  _| |\n" +
+                      " | .__/ \\___/ \\_/\\_/ \\___|_|    |_.__/ \\__, | |____/ \\__,_|_| |_|\n" +
+                      " |_|                                   |___/                     "
+      );
     }
     public BondPrinter getBondPrinter() {
         return bondPrinter;
@@ -3615,6 +3611,9 @@ private PVPManager pvpManager;
         playSuccessSound(p);
     }
 
+    public BondManager getBondManager() {
+        return bondManager;
+    }
 
 
     @EventHandler
@@ -3768,6 +3767,13 @@ private PVPManager pvpManager;
                 sender.sendMessage("§e/protect listitem <区域> §7区域物品黑名单");
                 sender.sendMessage("§e/protect expand [格数] §7扩建选区");
                 sender.sendMessage("§e/protect contraction [格数] §7收缩选区");
+                sender.sendMessage("§e/protect addname <区域> <名字> §7添加和平白名单生物");
+                sender.sendMessage("§e/protect removename <区域> <名字> §7移除和平白名单生物");
+                sender.sendMessage("§e/protect addwhite <玩家> §7添加模式排除玩家");
+                sender.sendMessage("§e/protect removewhite <玩家> §7移除模式排除玩家");
+                sender.sendMessage("§e/protect listname <区域> §7查看和平白名单");
+                sender.sendMessage("§e/protect listwhite §7查看模式排除名单");
+
                 return true;
             }
             // 其他子命令交给 areaProtection
@@ -3795,6 +3801,8 @@ private PVPManager pvpManager;
             return true;
         }
 
+        String sub = (args.length > 0) ? args[0].toLowerCase() : "";
+
 // ===== 在 onCommand 方法体内，最开头加： =====
         if (cmd.getName().equalsIgnoreCase("sdf1_login")
                 && args.length > 0
@@ -3806,7 +3814,6 @@ private PVPManager pvpManager;
             return shopManager.handleCommand(sender, args);
         }
         // set
-        String sub = args[0].toLowerCase();
         if (sub.equals("set")) {
             if (!isAdmin(sender)) {
                 sender.sendMessage("§c权限不足");
@@ -4479,7 +4486,10 @@ private PVPManager pvpManager;
                 shopManager.loadCategories();
             }
             if (shopManager != null) shopManager.loadCategories();
-            sender.sendMessage("§a配置已重载！");
+            if (areaProtection != null) {
+                areaProtection.clearAllPlayerAreas();
+            }
+            sender.sendMessage("§a§l配置已重载！");
             return true;
         }
 
@@ -5379,22 +5389,24 @@ private PVPManager pvpManager;
                         "additem", "removeitem",
                         "on", "off", "tempon",
                         "expand", "contraction",
-                        "list", "listitem");
+                        "list", "listitem",
+                        "addname", "removename", "listname",
+                        "addwhite", "removewhite", "listwhite");
                 return filterTab(opts, args[0]);
             }
 
             // ===== 第二层 =====
             if (args.length == 2) {
-                // add/remove: global + 在线玩家 + 区域名
+                // add/remove: 区域名 + global + 在线玩家
                 if (sub.equals("add") || sub.equals("remove")) {
                     List<String> all = new ArrayList<>();
                     all.add("global");
+                    all.addAll(areaProtection.getAreaNames());
                     for (Player pl : Bukkit.getOnlinePlayers())
                         all.add(pl.getName());
-                    all.addAll(areaProtection.getAreaNames());
                     return filterTab(all, args[1]);
                 }
-                // additem/removeitem: 区域名 + 常用物品ID
+                // additem/removeitem: 区域名 + global
                 if (sub.equals("additem") || sub.equals("removeitem")) {
                     List<String> all = new ArrayList<>();
                     all.add("global");
@@ -5403,30 +5415,46 @@ private PVPManager pvpManager;
                 }
                 // list/listitem: 区域名
                 if (sub.equals("list") || sub.equals("listitem")) {
-                    List<String> all = new ArrayList<>(areaProtection.getAreaNames());
-                    return filterTab(all, args[1]);
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
                 }
                 // expand/contraction: 数字
                 if (sub.equals("expand") || sub.equals("contraction")) {
                     return Arrays.asList("1", "3", "5", "10", "20", "50");
                 }
-                // 创建: 自由输入区域名
-                if (sub.equals("创建") || sub.equals("delete") || sub.equals("删除")) {
-                    List<String> all = new ArrayList<>(areaProtection.getAreaNames());
-                    return filterTab(all, args[1]);
+                // 创建/删除: 区域名
+                if (sub.equals("创建") || sub.equals("删除")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // addname/removename/listname: 区域名
+                if (sub.equals("addname") || sub.equals("removename")
+                        || sub.equals("listname")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // addwhite/removewhite/listwhite: 区域名
+                if (sub.equals("addwhite") || sub.equals("removewhite")
+                        || sub.equals("listwhite")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
                 }
             }
 
             // ===== 第三层 =====
             if (args.length == 3) {
-                // add global <玩家> 或 add <区域> <玩家>
+                // add/remove: 第三层是玩家名
                 if (sub.equals("add") || sub.equals("remove")) {
                     List<String> players = new ArrayList<>();
                     for (Player pl : Bukkit.getOnlinePlayers())
                         players.add(pl.getName());
                     return filterTab(players, args[2]);
                 }
-                // additem global <物品> 或 additem <区域> <物品>
+                // additem/removeitem: 第三层是物品ID
                 if (sub.equals("additem") || sub.equals("removeitem")) {
                     List<String> items = Arrays.asList(
                             "TNT", "BROWN_MUSHROOM", "RED_MUSHROOM",
@@ -5436,6 +5464,17 @@ private PVPManager pvpManager;
                             "BOW", "CROSSBOW", "ARROW",
                             "FLINT_AND_STEEL");
                     return filterTab(items, args[2]);
+                }
+                // addname/removename: 第三层是生物名字（自由输入）
+                if (sub.equals("addname") || sub.equals("removename")) {
+                    return null;
+                }
+                // addwhite/removewhite: 第三层是玩家名
+                if (sub.equals("addwhite") || sub.equals("removewhite")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
                 }
             }
 
