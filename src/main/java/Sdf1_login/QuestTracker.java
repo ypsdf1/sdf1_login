@@ -11,8 +11,13 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
+import org.bukkit.generator.structure.Structure;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 // 如果 Bonds 在 Sdf1_login 包下：
@@ -35,6 +40,8 @@ public class QuestTracker {
             checkInRecords = new ArrayList<>();
     private final Map<String, String>
             lastCheckInPos = new HashMap<>();
+    private static boolean loggedStructureRegistry
+            = false;
 
     public void recordCheckIn(
             String player,
@@ -80,9 +87,17 @@ public class QuestTracker {
     public QuestTracker(Plugin plugin) {
         this.plugin = plugin;
         this.storage = new QuestStorage(
-                plugin.getDataFolder());
+                plugin.getDataFolder(), plugin);
 
         loadAllQuests();
+    }
+
+    // ========== 重载任务配置 ==========
+    public void reload() {
+        questCache.clear();
+        loadAllQuests();
+        plugin.getLogger().info(
+                "[QuestTracker] 任务配置已重载");
     }
 
     public void debugPlayer(String player) {
@@ -221,14 +236,27 @@ public class QuestTracker {
             "下界", "末地"
     };
 
-    // ===== 结构映射 =====
+    // ===== 结构映射（PaperMC 1.21.4 实际结构 key）=====
     private static final Map<String, String>
             STRUCTURE_CATEGORY =
             new HashMap<>();
     static {
         // 主世界结构
         STRUCTURE_CATEGORY.put(
-                "minecraft:village", "村庄");
+                "minecraft:village_plains",
+                "村庄");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:village_desert",
+                "村庄");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:village_savanna",
+                "村庄");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:village_snowy",
+                "村庄");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:village_taiga",
+                "村庄");
         STRUCTURE_CATEGORY.put(
                 "minecraft:desert_pyramid",
                 "沙漠");
@@ -243,24 +271,39 @@ public class QuestTracker {
                 "minecraft:mansion", "森林");
         STRUCTURE_CATEGORY.put(
                 "minecraft:pillager_outpost",
-                "平原");
+                "掠夺者前哨站");
         STRUCTURE_CATEGORY.put(
                 "minecraft:mineshaft", "地下");
         STRUCTURE_CATEGORY.put(
-                "minecraft:stronghold", "地下");
+                "minecraft:mineshaft_mesa",
+                "地下");
+        // 要塞是独立的探索结构（通往末地的传送门所在地）
+        STRUCTURE_CATEGORY.put(
+                "minecraft:stronghold",
+                "末地要塞");
+        // 远古城市是结构，应分类为"远古城市"而非"地下"
         STRUCTURE_CATEGORY.put(
                 "minecraft:ancient_city",
-                "地下");
+                "远古城市");
         STRUCTURE_CATEGORY.put(
                 "minecraft:trail_ruins",
-                "平原");
+                "远古遗迹");
         STRUCTURE_CATEGORY.put(
                 "minecraft:trial_chambers",
-                "地下");
+                "试炼密室");
         STRUCTURE_CATEGORY.put(
-                "minecraft:ocean_ruin", "海洋");
+                "minecraft:monument", "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ocean_ruin_cold",
+                "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ocean_ruin_warm",
+                "海洋");
         STRUCTURE_CATEGORY.put(
                 "minecraft:shipwreck", "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:shipwreck_beached",
+                "海洋");
         STRUCTURE_CATEGORY.put(
                 "minecraft:buried_treasure",
                 "海洋");
@@ -268,14 +311,23 @@ public class QuestTracker {
                 "minecraft:ruined_portal",
                 "平原");
         STRUCTURE_CATEGORY.put(
-                "minecraft:fossil", "平原");
+                "minecraft:ruined_portal_desert",
+                "沙漠");
         STRUCTURE_CATEGORY.put(
-                "minecraft:ancient_city",
-                "地下");
+                "minecraft:ruined_portal_jungle",
+                "森林");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ruined_portal_mountain",
+                "山地");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ruined_portal_ocean",
+                "海洋");
+        STRUCTURE_CATEGORY.put(
+                "minecraft:ruined_portal_swamp",
+                "沼泽");
         // 下界结构
         STRUCTURE_CATEGORY.put(
-                "minecraft:nether_fortress",
-                "下界");
+                "minecraft:fortress", "下界");
         STRUCTURE_CATEGORY.put(
                 "minecraft:bastion_remnant",
                 "下界");
@@ -283,8 +335,11 @@ public class QuestTracker {
                 "minecraft:nether_fossil",
                 "下界");
         STRUCTURE_CATEGORY.put(
-                "minecraft:basalt_pillars",
+                "minecraft:ruined_portal_nether",
                 "下界");
+        // 末地结构
+        STRUCTURE_CATEGORY.put(
+                "minecraft:end_city", "末地");
     }
 
     // 所有群系分类的条件关键词映射
@@ -311,6 +366,40 @@ public class QuestTracker {
         CATEGORY_KEYWORDS.put("石岸", "石岸");
         CATEGORY_KEYWORDS.put("沙滩", "石岸");
         CATEGORY_KEYWORDS.put("海岸", "石岸");
+
+        // ===== 结构名称关键词映射 =====
+        // 主世界结构
+        CATEGORY_KEYWORDS.put("村庄", "村庄");
+        CATEGORY_KEYWORDS.put("沙漠神殿", "沙漠");
+        CATEGORY_KEYWORDS.put("丛林神庙", "森林");
+        CATEGORY_KEYWORDS.put("沼泽小屋", "沼泽");
+        CATEGORY_KEYWORDS.put("雪屋", "雪原");
+        CATEGORY_KEYWORDS.put("林地府邸", "森林");
+        CATEGORY_KEYWORDS.put("掠夺者前哨站", "平原");
+        CATEGORY_KEYWORDS.put("废弃矿井", "地下");
+        CATEGORY_KEYWORDS.put("要塞", "末地要塞");
+        CATEGORY_KEYWORDS.put("末地要塞", "末地要塞");
+        CATEGORY_KEYWORDS.put("远古城市", "远古城市");
+        CATEGORY_KEYWORDS.put("古迹废墟", "地下");
+        CATEGORY_KEYWORDS.put("试炼密室", "地下");
+        CATEGORY_KEYWORDS.put("海底废墟", "海洋");
+        CATEGORY_KEYWORDS.put("沉船", "海洋");
+        CATEGORY_KEYWORDS.put("埋藏的宝箱", "海洋");
+        CATEGORY_KEYWORDS.put("废弃传送门", "主世界");
+        CATEGORY_KEYWORDS.put("化石", "主世界");
+
+        // 下界结构
+        CATEGORY_KEYWORDS.put("下界要塞", "下界");
+        CATEGORY_KEYWORDS.put("猪灵堡垒", "下界");
+        CATEGORY_KEYWORDS.put("玄武岩结构", "下界");
+
+        // 末地结构
+        CATEGORY_KEYWORDS.put("末地城", "末地");
+        CATEGORY_KEYWORDS.put("末地船", "末地");
+
+        // 下界相关别名
+        CATEGORY_KEYWORDS.put("地狱要塞", "下界");
+        CATEGORY_KEYWORDS.put("下界堡垒", "下界");
 
     }
 
@@ -367,6 +456,223 @@ public class QuestTracker {
         return "主世界";
     }
 
+    // ========== 结构检测 ==========
+
+    /**
+     * 检测指定位置是否存在自然生成的结构
+     * 返回结构分类（如"村庄"、"沙漠"等），未找到返回null
+     * 使用 PaperMC World.hasStructureAt() + Registry.STRUCTURE API
+     */
+    private String detectStructureAt(
+            String worldName, double x,
+            double y, double z) {
+        try {
+            World w = Bukkit.getWorld(worldName);
+            if (w == null) {
+                plugin.getLogger().warning(
+                        "[QuestTracker] 结构检测: 世界 '"
+                                + worldName + "' 不存在");
+                return null;
+            }
+
+            int bx = (int) Math.floor(x);
+            int by = (int) Math.floor(y);
+            int bz = (int) Math.floor(z);
+
+            // 首次调用时打印所有注册表结构键
+            if (!loggedStructureRegistry) {
+                plugin.getLogger().info(
+                        "[QuestTracker] === 结构注册表诊断 ===");
+                int count = 0;
+                for (Structure s : Registry.STRUCTURE) {
+                    NamespacedKey key =
+                            Registry.STRUCTURE.getKey(s);
+                    plugin.getLogger().info(
+                            "[QuestTracker] 注册表结构 #"
+                                    + count + ": " + key);
+                    count++;
+                }
+                plugin.getLogger().info(
+                        "[QuestTracker] 注册表共 "
+                                + count + " 个结构");
+                plugin.getLogger().info(
+                        "[QuestTracker] === 诊断结束 ===");
+                loggedStructureRegistry = true;
+            }
+
+            // 第1步: 精确位置检查
+            io.papermc.paper.math.Position exactPos =
+                    io.papermc.paper.math.Position.block(
+                            bx, by, bz);
+            for (Structure structure : Registry.STRUCTURE) {
+                boolean hasAt =
+                        w.hasStructureAt(exactPos, structure);
+                if (hasAt) {
+                    NamespacedKey key =
+                            Registry.STRUCTURE
+                                    .getKey(structure);
+                    String keyStr = (key != null)
+                            ? key.toString() : "unknown";
+                    String cat =
+                            STRUCTURE_CATEGORY.get(keyStr);
+                    plugin.getLogger().info(
+                            "[QuestTracker] 结构匹配(精确): "
+                                    + keyStr + " -> category="
+                                    + (cat != null
+                                    ? cat : "未映射"));
+                    if (cat != null) return cat;
+                }
+            }
+
+            // 第2步: Y轴偏移检查 (-5 到 +10)
+            for (int dy = -5; dy <= 10; dy++) {
+                if (dy == 0) continue;
+                int testY = by + dy;
+                io.papermc.paper.math.Position testPos =
+                        io.papermc.paper.math.Position.block(
+                                bx, testY, bz);
+                for (Structure structure
+                        : Registry.STRUCTURE) {
+                    boolean hasAt = w.hasStructureAt(
+                            testPos, structure);
+                    if (hasAt) {
+                        NamespacedKey key =
+                                Registry.STRUCTURE
+                                        .getKey(structure);
+                        String keyStr = (key != null)
+                                ? key.toString() : "unknown";
+                        String cat =
+                                STRUCTURE_CATEGORY
+                                        .get(keyStr);
+                        plugin.getLogger().info(
+                                "[QuestTracker] 结构匹配(Y偏移"
+                                        + dy + "): "
+                                        + keyStr
+                                        + " -> category="
+                                        + (cat != null
+                                        ? cat : "未映射"));
+                        if (cat != null) return cat;
+                    }
+                }
+            }
+
+            // 第3步: 水平偏移检查 (±1格)
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dz == 0) continue;
+                    io.papermc.paper.math.Position offsetPos =
+                            io.papermc.paper.math.Position
+                                    .block(bx + dx, by,
+                                            bz + dz);
+                    for (Structure structure
+                            : Registry.STRUCTURE) {
+                        boolean hasAt = w.hasStructureAt(
+                                offsetPos, structure);
+                        if (hasAt) {
+                            NamespacedKey key =
+                                    Registry.STRUCTURE
+                                            .getKey(
+                                                    structure);
+                            String keyStr = (key != null)
+                                    ? key.toString()
+                                    : "unknown";
+                            String cat =
+                                    STRUCTURE_CATEGORY
+                                            .get(keyStr);
+                            plugin.getLogger().info(
+                                    "[QuestTracker] 结构匹配(偏移"
+                                            + dx + ","
+                                            + dz + "): "
+                                            + keyStr
+                                            + " -> category="
+                                            + (cat != null
+                                            ? cat
+                                            : "未映射"));
+                            if (cat != null) return cat;
+                        }
+                    }
+                }
+            }
+
+            plugin.getLogger().info(
+                    "[QuestTracker] 所有位置检查完毕, "
+                            + "未匹配任何结构 (pos="
+                            + bx + "," + by + "," + bz
+                            + ")");
+        } catch (Exception ex) {
+            plugin.getLogger().warning(
+                    "[QuestTracker] 结构检测异常: "
+                            + ex.getClass().getSimpleName()
+                            + ": " + ex.getMessage());
+            ex.printStackTrace();
+        }
+        return null;
+    }
+
+    /**
+     * 将结构中文名映射到对应的大类
+     * 用于匹配任务条件中的结构名
+     */
+    private String mapStructureCategory(
+            String structureName) {
+        if (structureName == null) return "";
+
+        // 主世界结构
+        if (structureName.contains("村庄"))
+            return "村庄";
+        if (structureName.contains("沙漠神殿"))
+            return "沙漠";
+        if (structureName.contains("丛林神庙") || structureName.contains("丛林神殿"))
+            return "森林";
+        if (structureName.contains("沼泽小屋"))
+            return "沼泽";
+        if (structureName.contains("雪屋") || structureName.contains("冰屋"))
+            return "雪原";
+        if (structureName.contains("林地府邸"))
+            return "森林";
+        if (structureName.contains("掠夺者前哨站"))
+            return "掠夺者前哨站";
+        if (structureName.contains("废弃矿井") || structureName.contains("恶地废弃矿井"))
+            return "地下";
+        // 要塞是独立的探索结构
+        if (structureName.contains("要塞"))
+            return "末地要塞";
+        // 远古城市是结构，应分类为"远古城市"
+        if (structureName.contains("远古城市"))
+            return "远古城市";
+        if (structureName.contains("远古遗迹") || structureName.contains("古迹废墟"))
+            return "远古遗迹";
+        if (structureName.contains("试炼密室"))
+            return "试炼密室";
+        if (structureName.contains("海底神殿") || structureName.contains("海洋神殿"))
+            return "海洋";
+        if (structureName.contains("海底废墟") || structureName.contains("冻洋废墟") || structureName.contains("暖洋废墟"))
+            return "海洋";
+        if (structureName.contains("沉船"))
+            return "海洋";
+        if (structureName.contains("埋藏的宝箱") || structureName.contains("埋藏的宝藏"))
+            return "海洋";
+        if (structureName.contains("废弃传送门"))
+            return "平原";
+        if (structureName.contains("化石"))
+            return "主世界";
+
+        // 下界结构
+        if (structureName.contains("下界要塞"))
+            return "下界";
+        if (structureName.contains("猪灵堡垒") || structureName.contains("堡垒遗迹"))
+            return "下界";
+        if (structureName.contains("玄武岩结构") || structureName.contains("下界化石"))
+            return "下界";
+
+        // 末地结构
+        if (structureName.contains("末地城"))
+            return "末地";
+        if (structureName.contains("末地船"))
+            return "末地";
+
+        return "";
+    }
 
 
 // ========== 解析为区块 ==========
@@ -1668,6 +1974,24 @@ public class QuestTracker {
                     + total + "/1";
         }
 
+        // 打卡结构条件：打卡X个结构名 → 显示进度
+        if (key.contains("打卡")
+                && !key.contains("群系")
+                && !key.contains("风景")) {
+            String target = extractBiome(key);
+            if (!target.isEmpty()) {
+                int needed = parseNumberFromText(key);
+                if (needed <= 0) needed = 1;
+                int cur = getCounter(player,
+                        "biomecat_" + target);
+                boolean done = cur >= needed;
+                return (done ? "§a" : "§7")
+                        + "打卡 " + target + ": §e"
+                        + Math.min(cur, needed)
+                        + "/" + needed;
+            }
+        }
+
         if (key.contains("完成")
                 && key.contains("阶段")) {
             boolean done = checkStageDependency(
@@ -1739,11 +2063,19 @@ public class QuestTracker {
             Object val =
                     getDb().getField(
                             player,
-                            "checkin_streak");
+                            "login_streak");
+            if (val == null || (val instanceof Number && ((Number) val).intValue() == 0)) {
+                // 兼容旧数据：如果没有login_streak则读取checkin_streak
+                val = getDb().getField(
+                        player,
+                        "checkin_streak");
+            }
             int streak = val instanceof Number
                     ? ((Number) val).intValue()
                     : 0;
-            return "§7连续登录: §e"
+            boolean done = streak >= needed;
+            return (done ? "§a" : "§7")
+                    + "连续登录: §e"
                     + streak + "/" + needed + "天";
         }
 
@@ -1887,7 +2219,12 @@ public class QuestTracker {
             if (needed <= 0) needed = 1;
             int streak = getIntField(
                     player,
-                    "checkin_streak");
+                    "login_streak");
+            if (streak == 0) {
+                streak = getIntField(
+                        player,
+                        "checkin_streak");
+            }
             if (streak == 0) {
                 streak = getIntField(
                         player, "streak");
@@ -1897,7 +2234,9 @@ public class QuestTracker {
                         player,
                         "total_checkin_days");
             }
-            return "§7近7天登录: §e"
+            boolean done = streak >= needed;
+            return (done ? "§a" : "§7")
+                    + "近7天登录: §e"
                     + streak + "/"
                     + needed + "天";
         }
@@ -2179,22 +2518,57 @@ public class QuestTracker {
         String category =
                 mapBiomeCategory(
                         rawBiomeKey, worldName);
-        // 结构检测（覆盖纯生物群系分类）
-        // 地下检测：Y低于表面则归类为地下
-// 覆盖废弃矿井/试炼密室/要塞/远古城市等
+
+        // ===== 结构检测优先于Y轴"地下"判断 =====
+        // 要塞等结构可生成在任何主世界群系下，不应固定为"地下"
+        // 使用 PaperMC API 检测玩家所在位置的结构
+        String structureCat = null;
         try {
-            org.bukkit.World uw =
-                    Bukkit.getWorld(worldName);
-            if (uw != null) {
-                int surfaceY = uw
-                        .getHighestBlockYAt(
-                                (int) Math.floor(x),
-                                (int) Math.floor(z));
-                if (y < surfaceY - 8) {
-                    category = "地下";
-                }
-            }
+            structureCat = detectStructureAt(
+                    worldName, x, y, z);
         } catch (Exception ignored) {}
+
+        if (structureCat != null
+                && !structureCat.isEmpty()
+                && !"地下".equals(structureCat)) {
+            // 结构检测成功且非"地下"类，结构分类优先
+            category = structureCat;
+            plugin.getLogger().info(
+                    "[QuestTracker] 结构覆盖: "
+                            + category
+                            + " (结构: "
+                            + structureCat + ")");
+        } else {
+            // 未检测到有效结构，使用Y轴检测判定地下
+            // 地下检测：Y低于表面则归类为地下
+            try {
+                org.bukkit.World uw =
+                        Bukkit.getWorld(worldName);
+                if (uw != null) {
+                    int surfaceY = uw
+                            .getHighestBlockYAt(
+                                    (int) Math.floor(x),
+                                    (int) Math.floor(z));
+                    if (y < surfaceY - 8) {
+                        category = "地下";
+                    }
+                }
+            } catch (Exception ignored) {}
+            if (structureCat != null
+                    && !structureCat.isEmpty()) {
+                plugin.getLogger().info(
+                        "[QuestTracker] 结构"
+                                + structureCat
+                                + " 使用Y轴判定");
+            } else {
+                plugin.getLogger().info(
+                        "[QuestTracker] 未检测到结构: world="
+                                + worldName + ", pos="
+                                + String.format(
+                                "%.0f,%.0f,%.0f",
+                                x, y, z));
+            }
+        }
 
 
         // 记录总打卡
@@ -2203,16 +2577,28 @@ public class QuestTracker {
         setCounter(player, "biome_ALL",
                 allCur + 1);
 
-        // 记录分类打卡
+        // 记录分类打卡（群系，排除结构避免重复计数）
         if (!category.isEmpty()
-                && !"主世界"
-                .equals(category)) {
+                && !"主世界".equals(category)
+                && (structureCat == null
+                || !category.equals(structureCat))) {
             String catKey =
                     "biomecat_" + category;
             int catCur = getCounter(
                     player, catKey);
             setCounter(player, catKey,
                     catCur + 1);
+        }
+
+        // 记录结构打卡（结构单独计数）
+        if (structureCat != null
+                && !structureCat.isEmpty()) {
+            String structKey =
+                    "biomecat_" + structureCat;
+            int structCur = getCounter(
+                    player, structKey);
+            setCounter(player, structKey,
+                    structCur + 1);
         }
 
         // 记录具体群系
@@ -2244,12 +2630,61 @@ public class QuestTracker {
                     String condKey =
                             stripOptional(cond);
                     if (!condKey
-                            .contains("打卡")
-                            || !condKey
-                            .contains("群系"))
+                            .contains("打卡"))
+                        continue;
+                    // 支持群系和结构两种打卡条件
+                    boolean isBiomeCond =
+                            condKey.contains("群系")
+                                    || condKey
+                                    .contains("风景点");
+                    boolean isStructureCond =
+                            condKey.contains("结构")
+                                    || condKey
+                                    .contains("村庄")
+                                    || condKey
+                                    .contains("神殿")
+                                    || condKey
+                                    .contains("神庙")
+                                    || condKey
+                                    .contains("小屋")
+                                    || condKey
+                                    .contains("雪屋")
+                                    || condKey
+                                    .contains("府邸")
+                                    || condKey
+                                    .contains("前哨站")
+                                    || condKey
+                                    .contains("矿井")
+                                    || condKey
+                                    .contains("要塞")
+                                    || condKey
+                                    .contains("城市")
+                                    || condKey
+                                    .contains("废墟")
+                                    || condKey
+                                    .contains("密室")
+                                    || condKey
+                                    .contains("沉船")
+                                    || condKey
+                                    .contains("宝箱")
+                                    || condKey
+                                    .contains("传送门")
+                                    || condKey
+                                    .contains("化石")
+                                    || condKey
+                                    .contains("堡垒");
+                    if (!isBiomeCond
+                            && !isStructureCond)
                         continue;
                     String target =
                             extractBiome(condKey);
+                    plugin.getLogger().info(
+                            "[QuestTracker] 条件匹配: condKey=\""
+                                    + condKey + "\", target=\""
+                                    + target + "\", category=\""
+                                    + category + "\", isBiomeCond="
+                                    + isBiomeCond + ", isStructureCond="
+                                    + isStructureCond);
                     boolean hit = false;
                     if ("ALL".equals(target)
                             || "风景点"
@@ -2296,6 +2731,7 @@ public class QuestTracker {
         // ===== 获取群系和分类 =====
         String biome = "minecraft:plains";
         String category = "平原";
+        String structureCat = null;
         try {
             org.bukkit.World w =
                     Bukkit.getWorld(worldName);
@@ -2312,12 +2748,29 @@ public class QuestTracker {
                 category = mapBiomeCategory(
                         biome, worldName);
 
-                int surfaceY = w
-                        .getHighestBlockYAt(
-                                (int) Math.floor(x),
-                                (int) Math.floor(z));
-                if (y < surfaceY - 8) {
-                    category = "地下";
+                // ===== 结构检测优先于Y轴"地下"判断 =====
+                structureCat =
+                        detectStructureAt(
+                                worldName, x, y, z);
+                plugin.getLogger().info(
+                        "[QuestTracker] checkInAtPosition 结构检测: "
+                                + structureCat + " at "
+                                + String.format("%.0f,%.0f,%.0f", x, y, z));
+
+                if (structureCat != null
+                        && !structureCat.isEmpty()
+                        && !"地下".equals(structureCat)) {
+                    // 结构检测成功且非"地下"类，结构分类优先
+                    category = structureCat;
+                } else {
+                    // 未检测到有效结构，使用Y轴检测判定地下
+                    int surfaceY = w
+                            .getHighestBlockYAt(
+                                    (int) Math.floor(x),
+                                    (int) Math.floor(z));
+                    if (y < surfaceY - 8) {
+                        category = "地下";
+                    }
                 }
 
                 if ("下界".equals(category)
@@ -2362,6 +2815,9 @@ public class QuestTracker {
         StringBuilder sb = new StringBuilder();
         sb.append("§a打卡成功！群系: §e")
                 .append(category);
+        if (structureCat != null && !structureCat.isEmpty()) {
+            sb.append("\n§a结构: §e").append(structureCat);
+        }
         if (!matched.isEmpty()) {
             sb.append("\n§a完成任务条件:");
             for (String m : matched) {
@@ -2616,9 +3072,19 @@ public class QuestTracker {
      * "打卡任意海洋群系" → "海洋"
      * "打卡任意群系" → "ALL"
      * "打卡任意风景点" → ""
+     * "打卡村庄" → "村庄"
+     * "打卡沙漠神殿" → "沙漠"
      */
     private String extractBiome(String text) {
         if (text == null) return "";
+
+        // 优先匹配结构名称（更具体）
+        String structureResult =
+                mapStructureCategory(text);
+        if (!structureResult.isEmpty()) {
+            return structureResult;
+        }
+
         // 逐个匹配分类关键词
         for (Map.Entry<String, String> en
                 : CATEGORY_KEYWORDS.entrySet()) {
@@ -2766,22 +3232,43 @@ public class QuestTracker {
 
         if (key.contains("打卡")
                 && (key.contains("群系")
-                || key.contains("风景点"))) {
+                || key.contains("风景点")
+                || key.contains("结构")
+                || key.contains("村庄")
+                || key.contains("神殿")
+                || key.contains("神庙")
+                || key.contains("小屋")
+                || key.contains("雪屋")
+                || key.contains("府邸")
+                || key.contains("前哨站")
+                || key.contains("矿井")
+                || key.contains("要塞")
+                || key.contains("城市")
+                || key.contains("废墟")
+                || key.contains("密室")
+                || key.contains("废墟")
+                || key.contains("沉船")
+                || key.contains("宝箱")
+                || key.contains("传送门")
+                || key.contains("化石")
+                || key.contains("堡垒"))) {
             String biome =
                     extractBiome(key);
+            int needed = parseNumberFromText(key);
+            if (needed <= 0) needed = 1;
             if ("ALL".equals(biome)) {
                 int total = getCounter(
                         player, "biome_ALL");
-                return total >= 1;
+                return total >= needed;
             }
             if (!biome.isEmpty()) {
                 int catCount = getCounter(
                         player,
                         "biomecat_" + biome);
-                return catCount >= 1;
+                return catCount >= needed;
             }
             return getCounter(
-                    player, "biome_ALL") >= 1;
+                    player, "biome_ALL") >= needed;
         }
 
         if (key.contains("完成")
@@ -2841,7 +3328,12 @@ public class QuestTracker {
             Object val =
                     getDb().getField(
                             player,
-                            "checkin_streak");
+                            "login_streak");
+            if (val == null || (val instanceof Number && ((Number) val).intValue() == 0)) {
+                val = getDb().getField(
+                        player,
+                        "checkin_streak");
+            }
             int streak = val instanceof Number
                     ? ((Number) val).intValue()
                     : 0;
@@ -2930,7 +3422,12 @@ public class QuestTracker {
             if (needed <= 0) needed = 1;
             int streak = getIntField(
                     player,
-                    "checkin_streak");
+                    "login_streak");
+            if (streak == 0) {
+                streak = getIntField(
+                        player,
+                        "checkin_streak");
+            }
             if (streak == 0) {
                 streak = getIntField(
                         player, "streak");

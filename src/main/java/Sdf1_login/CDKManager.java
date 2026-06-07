@@ -164,6 +164,12 @@ public class CDKManager {
         if ("bond".equals(input.type)) {
             handleBondInput(p, msg.trim(),
                     input.context);
+            return;
+        }
+
+        if ("points".equals(input.type)) {
+            handlePointsInput(p, msg.trim(),
+                    input.context);
         }
     }
 
@@ -274,6 +280,41 @@ public class CDKManager {
                 plugin.getBonds().addBonds(target,
                         amount, txType,
                         "", opName, reason);
+                admin.sendMessage("§a发放成功");
+            }
+        } catch (NumberFormatException e) {
+            admin.sendMessage("§c格式错误");
+        }
+    }
+
+    private void handlePointsInput(Player admin,
+                                   String msg,
+                                   String target) {
+        if (!msg.startsWith("+")
+                && !msg.startsWith("-")) {
+            admin.sendMessage("§c格式: §a+100"
+                    + " §7或 §c-50");
+            return;
+        }
+        try {
+            String sign = msg.substring(0, 1);
+            String rest =
+                    msg.substring(1).trim();
+            int amount = Integer.parseInt(rest);
+            if (amount <= 0) {
+                admin.sendMessage("§c金额必须>0");
+                return;
+            }
+            if ("-".equals(sign)) {
+                if (plugin.getDb().deductPoints(
+                        target, amount)) {
+                    admin.sendMessage("§a扣除成功");
+                } else {
+                    admin.sendMessage("§c积分不足");
+                }
+            } else {
+                plugin.getDb().addPoints(
+                        target, amount);
                 admin.sendMessage("§a发放成功");
             }
         } catch (NumberFormatException e) {

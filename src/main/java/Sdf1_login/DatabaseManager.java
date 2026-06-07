@@ -82,6 +82,12 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "register_type",
                     "TEXT DEFAULT 'manual'");
+            safeAdd(st, "login_streak",
+                    "INTEGER DEFAULT 0");
+            safeAdd(st, "last_login_date",
+                    "TEXT DEFAULT ''");
+            safeAdd(st, "last_login_ip",
+                    "TEXT DEFAULT ''");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
@@ -675,6 +681,8 @@ public class DatabaseManager {
     public void recordIP(String name, String ip) {
         if (ip != null && !ip.isEmpty()) {
             setField(name, "ip_address", ip);
+            // ★ 同时更新最后登录IP
+            setField(name, "last_login_ip", ip);
         }
     }
 

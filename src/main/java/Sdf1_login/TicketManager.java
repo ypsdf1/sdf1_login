@@ -163,7 +163,7 @@ public class TicketManager {
                 "§7类型: §f" + type,
                 "§7状态: " + stxt(status),
                 "§7提交者: §f" + requester,
-                "§7奖励: §e" + reward + " 积分"));
+                "§7奖励: §e" + reward + " 债券"));
 
         g.setItem(12, mk(Material.BOOK,
                 "§7详细描述",
@@ -241,6 +241,13 @@ public class TicketManager {
                 g.setItem(19, mk(Material.LIME_DYE,
                         "§a标记完结",
                         "§7确认工单处理完成"));
+            }
+            // ★ 服务商上报完结后：管理员确认完结
+            if ("completed".equals(status)) {
+                g.setItem(19, mk(Material.LIME_DYE,
+                        "§a确认完结",
+                        "§7确认服务商处理完成",
+                        "§7输入评分1-5"));
             }
             // 驳回（非已关闭/已完结状态）
             if (!"closed".equals(status)
@@ -410,7 +417,7 @@ public class TicketManager {
                         "§a§l[工单] §f创建成功！"
                                 + " #§e" + id
                                 + " 奖励: §e"
-                                + price + "积分");
+                                + price + "债券");
             }
             notifyAdmins(p.getName(), id);
         } else {
@@ -1017,23 +1024,18 @@ public class TicketManager {
             // 管理员：标记完结（已回复状态）
             if (adm(p) && "replied".equals(st)
                     && asg.equals("admin")) {
-
-                // 管理员：标记完结（已回复状态）
-                if (adm(p) && "replied".equals(st)
-                        && asg.equals("admin")) {
-                    Map<String, Object> tk =
-                            plugin.getDb().getTicket(id);
-                    String tkType = sv(tk, "type");
-                    if (TYPE_DELETE.equals(tkType)) {
-                        approveDeleteTicket(p, id);
-                        return true;
-                    }
-                    plugin.getDb().completeTicket(id);
-                    p.sendMessage("§a工单 #" + id
-                            + " 已标记完结");
-                    openDetail(p, id);
+                Map<String, Object> tk =
+                        plugin.getDb().getTicket(id);
+                String tkType = sv(tk, "type");
+                if (TYPE_DELETE.equals(tkType)) {
+                    approveDeleteTicket(p, id);
                     return true;
                 }
+                plugin.getDb().completeTicket(id);
+                p.sendMessage("§a工单 #" + id
+                        + " 已标记完结");
+                openDetail(p, id);
+                return true;
             }
             // 服务商：抢单
             if (plugin.getDb()
@@ -1042,6 +1044,19 @@ public class TicketManager {
                     && asg.isEmpty()) {
                 grabTicket(p, id);
                 openDetail(p, id);
+                return true;
+            }
+            // ★ 管理员：确认服务商完结（输入评分）
+            if (adm(p) && "completed".equals(st)) {
+                p.closeInventory();
+                plugin.getChatInput()
+                        .getState(p).type =
+                        ChatInputManager.InputType
+                                .TICKET_SCORE;
+                plugin.getChatInput()
+                        .getState(p).ticketId = id;
+                p.sendMessage(
+                        "§e输入评分1-5:");
                 return true;
             }
             // 服务商：标记完结
@@ -1263,44 +1278,34 @@ public class TicketManager {
         int score = nv(t, "score");
         ConfigManager cfg =
                 plugin.getConfig2();
+
+        // ★ 提交者获得工单奖励（债券）
         if (reward > 0) {
-            plugin.getDb().addPoints(
-                    requester, reward);
+            plugin.getBonds().addBonds(
+                    requester, reward,
+                    BondManager.TX_TICKET_REWARD, "",
+                    "System", "工单 #" + tid + " 奖励");
             Player rp = Bukkit.getPlayer(
                     requester);
             if (rp != null && rp.isOnline()) {
                 rp.sendMessage(
                         "§e§l[工单] §f获得 "
                                 + reward
-                                + " 积分奖励");
+                                + " 债券奖励");
             }
         }
+
+        // ★ 服务商获得债券奖励
         if (!assigned.isEmpty()) {
-            int pts = (int) (score
+            int bondReward = (int) (score
                     * cfg.providerPointsPerScore);
-            if (pts > 0) {
-                plugin.getDb().addPoints(
-                        assigned, pts);
-            }
-            double money =
-                    cfg.baseEconomyReward
-                            + score
-                            * cfg.providerEconomyPerScore;
-            boolean ok = false;
-            try {
-                if (plugin.getEconomy() != null) {
-                    OfflinePlayer op =
-                            Bukkit.getOfflinePlayer(
-                                    assigned);
-                    plugin.getEconomy()
-                            .depositPlayer(
-                                    op, money);
-                    ok = true;
-                }
-            } catch (Exception e) {
-                plugin.getLogger().warning(
-                        "[Sdf1_login] 经济失败: "
-                                + e.getMessage());
+            if (bondReward > 0) {
+                plugin.getBonds().addBonds(
+                        assigned, bondReward,
+                        BondManager.TX_TICKET_SERVICE, "",
+                        "System", "工单 #" + tid
+                                + " 服务奖励(评分"
+                                + score + ")");
             }
             Player pp =
                     Bukkit.getPlayer(assigned);
@@ -1309,13 +1314,9 @@ public class TicketManager {
                         "§a§l[工单] §f工单 #"
                                 + tid
                                 + " 确认完结");
-                if (pts > 0)
-                    pp.sendMessage("§7积分: §e"
-                            + pts);
-                if (ok)
-                    pp.sendMessage("§7经济: §a$"
-                            + String.format(
-                            "%.0f", money));
+                if (bondReward > 0)
+                    pp.sendMessage("§7债券: §e"
+                            + bondReward + " 枚");
             }
         }
     }
@@ -1559,7 +1560,7 @@ public class TicketManager {
             lore.add("§7提交者: §f"
                     + requester);
             lore.add("§7奖励: §e" + reward
-                    + " 积分");
+                    + " 债券");
             lore.add("");
             lore.add("§7点击查看详情");
             im.setLore(lore);

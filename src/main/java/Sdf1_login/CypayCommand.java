@@ -241,7 +241,7 @@ public class CypayCommand
         }
 
         // ===== /cypay give/remove =====
-        if (args.length == 3) {
+        if (args.length >= 3 && args.length <= 4) {
             String action = args[0].toLowerCase();
             if ("give".equals(action)
                     || "remove".equals(action)) {
@@ -268,12 +268,18 @@ public class CypayCommand
                             sender instanceof Player
                                     ? sender.getName()
                                     : "Console";
+                    // 自定义理由（可选）
+                    String reason = args.length == 4
+                            ? args[3]
+                            : ("give".equals(action)
+                                    ? "管理员发放"
+                                    : "管理员扣除");
 
                     if ("give".equals(action)) {
                         plugin.getBonds().addBonds(
                                 target, amount,
                                 txType, "",
-                                opName, "管理员发放");
+                                opName, reason);
                         sender.sendMessage(
                                 "§a已给 " + target
                                         + " " + amount
@@ -291,7 +297,7 @@ public class CypayCommand
                                         amount,
                                         txType, "",
                                         opName,
-                                        "管理员扣除")) {
+                                        reason)) {
                             sender.sendMessage(
                                     "§a已扣除 " + target
                                             + " " + amount
@@ -477,9 +483,9 @@ public class CypayCommand
                 "§e/cypay <玩家> <金额> §7- 转账");
         if (hasAdminPerm(sender)) {
             sender.sendMessage(
-                    "§e/cypay give <玩家> <金额> §7- 给债券");
+                    "§e/cypay give <玩家> <金额> [理由] §7- 给债券");
             sender.sendMessage(
-                    "§e/cypay remove <玩家> <金额> §7- 扣债券");
+                    "§e/cypay remove <玩家> <金额> [理由] §7- 扣债券");
             sender.sendMessage(
                     "§e/cypay import <文件> §7- 导入CDK");
             sender.sendMessage(
@@ -569,6 +575,19 @@ public class CypayCommand
                 list.add("14");
                 return filter(list,
                         args[2].toLowerCase());
+            }
+        }
+
+        if (args.length == 4) {
+            String first = args[0].toLowerCase();
+            if ("give".equals(first)
+                    || "remove".equals(first)) {
+                list.add("管理员发放");
+                list.add("管理员扣除");
+                list.add("工单奖励");
+                list.add("活动奖励");
+                return filter(list,
+                        args[3].toLowerCase());
             }
         }
 

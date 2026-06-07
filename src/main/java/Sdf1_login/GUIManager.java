@@ -298,7 +298,6 @@ public class GUIManager implements Listener {
         for (int i = 0;
              i < list.size() && i < 9; i++) {
             MenuManager.MenuItem mi = list.get(i);
-            // ★ 直接用 mi.icon，不要随机 ★
             g.setItem(i, mkItem(
                     mi.icon.getType(),
                     "§e" + mi.title,
@@ -311,16 +310,13 @@ public class GUIManager implements Listener {
 
         g.setItem(22, mkItem(Material.LIME_WOOL,
                 "§a§l添加菜单项"));
-        g.setItem(27, mkItem(Material.ENDER_CHEST,
-                "§6§l商店",
-                "§7浏览、购买、出售物品",
-                "§7货币: 债券"));
 
         g.setItem(26, mkItem(Material.ARROW,
                 "§7返回"));
 
         p.openInventory(g);
     }
+
 
     public void openBalanceOps(Player p) {
         Inventory g = Bukkit.createInventory(null, 54, "§d§l余额操作");
@@ -836,6 +832,7 @@ public class GUIManager implements Listener {
                 plugin.getShopManager().openShopMain(p);
                 return;
             }
+            // 自定义菜单项点击由 Main.onInvClick 统一处理
             return;
         }
 
@@ -964,6 +961,333 @@ public class GUIManager implements Listener {
             event.setCancelled(true);
             return;
         }
+        // ===== 用户管理面板 =====
+        if (T_USER_MGMT.equals(title)) {
+            event.setCancelled(true);
+
+            // 点击玩家头像 → 打开详情
+            if (raw >= 0 && raw < 45) {
+                ItemStack item = event.getView()
+                        .getTopInventory().getItem(raw);
+                if (item != null
+                        && item.getType()
+                        == Material.PLAYER_HEAD) {
+                    ItemMeta im = item.getItemMeta();
+                    if (im != null
+                            && im.getDisplayName() != null) {
+                        String targetName = im
+                                .getDisplayName()
+                                .replaceAll(
+                                        "§[0-9a-fk-orA-FK-OR]",
+                                        "");
+                        openUserDetail(p, targetName);
+                        return;
+                    }
+                }
+            }
+
+            // 上一页
+            if (raw == 45) {
+                int cur = getUserMgmtPage(p);
+                if (cur > 1) {
+                    openUserManagement(p, cur - 1);
+                }
+                return;
+            }
+
+            // 下一页
+            if (raw == 51) {
+                int cur = getUserMgmtPage(p);
+                int total = Math.max(1,
+                        (getUserMgmtTotalUsers()
+                                + UMGMT_PAGE_SIZE - 1)
+                                / UMGMT_PAGE_SIZE);
+                if (cur < total) {
+                    openUserManagement(p, cur + 1);
+                }
+                return;
+            }
+
+            // 搜索
+            if (raw == 46) {
+                p.closeInventory();
+                p.sendMessage("§e请输入要搜索的玩家名:");
+                plugin.getCDK().requestInput(
+                        p, "search_user", "");
+                return;
+            }
+
+            // 返回
+            if (raw == 53) {
+                openAdmin(p);
+                return;
+            }
+
+            return;
+        }
+
+        // ===== 用户详情面板（新增功能） =====
+        if (title.startsWith("§e§l管理: ")) {
+            event.setCancelled(true);
+            String targetName = title
+                    .replaceAll("§[0-9a-fk-orA-FK-OR]", "")
+                    .replace("管理: ", "").trim();
+
+            // 返回
+            if (raw == 22) {
+                openUserManagement(p,
+                        getUserMgmtPage(p));
+                return;
+            }
+
+            // 积分操作
+            if (raw == 10) {
+                if (event.isLeftClick()
+                        && !event.isRightClick()) {
+                    p.closeInventory();
+                    p.sendMessage("§e§l[积分操作] §f对 §a"
+                            + targetName + " §f增加积分");
+                    p.sendMessage(
+                            "§7输入 §a+数字 §7增加积分");
+                    plugin.getCDK().requestInput(
+                            p, "points", targetName);
+                } else if (event.isRightClick()
+                        && !event.isLeftClick()) {
+                    p.closeInventory();
+                    p.sendMessage("§e§l[积分操作] §f对 §a"
+                            + targetName + " §f减少积分");
+                    p.sendMessage(
+                            "§7输入 §c-数字 §7减少积分");
+                    plugin.getCDK().requestInput(
+                            p, "points", targetName);
+                }
+                return;
+            }
+
+            // 邮箱
+            if (raw == 11) {
+                p.closeInventory();
+                p.sendMessage("§e设置 §a" + targetName
+                        + " §e的邮箱:");
+                plugin.getCDK().requestInput(
+                        p, "set_email", targetName);
+                return;
+            }
+
+            // 设置密码
+            if (raw == 12) {
+                p.closeInventory();
+                p.sendMessage("§e设置 §a" + targetName
+                        + " §e的新密码:");
+                plugin.getCDK().requestInput(
+                        p, "set_pass", targetName);
+                return;
+            }
+
+            // 雪球菜单
+            if (raw == 14) {
+                Player target = Bukkit.getPlayerExact(
+                        targetName);
+                if (target != null) {
+                    plugin.giveMenuSnowball(target);
+                    p.sendMessage("§a已向 §e" + targetName
+                            + " §a发放菜单雪球");
+                } else {
+                    p.sendMessage("§c玩家不在线");
+                }
+                return;
+            }
+
+            // 删除用户
+            if (raw == 16) {
+                openDeleteConfirm(p, targetName);
+                return;
+            }
+
+            // 债券余额（查询）
+            if (raw == 20) {
+                int bondBal = plugin.getBonds()
+                        .getBonds(targetName);
+                p.sendMessage("§e§l[债券查询] §f"
+                        + targetName + " §7当前债券: §e"
+                        + bondBal + " §6枚");
+                return;
+            }
+
+            // 债券操作
+            if (raw == 21) {
+                if (event.isLeftClick()
+                        && !event.isRightClick()) {
+                    p.closeInventory();
+                    p.sendMessage("§e§l[债券操作] §f对 §a"
+                            + targetName + " §f给予债券");
+                    p.sendMessage(
+                            "§7输入 §a+数字 §7给予债券");
+                    plugin.getCDK().requestInput(
+                            p, "bond", targetName);
+                } else if (event.isRightClick()
+                        && !event.isLeftClick()) {
+                    p.closeInventory();
+                    p.sendMessage("§e§l[债券操作] §f对 §a"
+                            + targetName + " §f扣除债券");
+                    p.sendMessage(
+                            "§7输入 §c-数字 §7扣除债券");
+                    plugin.getCDK().requestInput(
+                            p, "bond", targetName);
+                }
+                return;
+            }
+
+            // 全局白名单
+            if (raw == 23) {
+                AreaProtection ap =
+                        plugin.getAreaProtection();
+                if (ap == null) {
+                    p.sendMessage("§c区域防护未加载");
+                    return;
+                }
+                boolean isW = ap
+                        .isPlayerGlobalWhitelisted(
+                                targetName);
+                if (event.isLeftClick() && !isW) {
+                    ap.addPlayerToGlobalWhitelist(
+                            targetName);
+                    p.sendMessage("§a已将 §e" + targetName
+                            + " §a加入全局白名单");
+                    openUserDetail(p, targetName);
+                } else if (event.isRightClick() && isW) {
+                    ap.removePlayerFromGlobalWhitelist(
+                            targetName);
+                    p.sendMessage("§c已将 §e" + targetName
+                            + " §c移出全局白名单");
+                    openUserDetail(p, targetName);
+                }
+                return;
+            }
+
+            // 区域白名单管理
+            if (raw == 24) {
+                openAreaWhitelistPanel(p, targetName);
+                return;
+            }
+
+            return;
+        }
+
+        // ===== 区域白名单面板 =====
+        if (title.startsWith("§b§l区域白名单: ")) {
+            event.setCancelled(true);
+            String targetName = title
+                    .replaceAll("§[0-9a-fk-orA-FK-OR]", "")
+                    .replace("区域白名单: ", "").trim();
+
+            AreaProtection ap =
+                    plugin.getAreaProtection();
+            if (ap == null) {
+                p.sendMessage("§c区域防护未加载");
+                return;
+            }
+
+            // 返回
+            if (raw == 26) {
+                openUserDetail(p, targetName);
+                return;
+            }
+
+            // 全局白名单（slot 4）
+            if (raw == 4) {
+                boolean isG = ap
+                        .isPlayerGlobalWhitelisted(
+                                targetName);
+                if (event.isLeftClick() && !isG) {
+                    ap.addPlayerToGlobalWhitelist(
+                            targetName);
+                    p.sendMessage("§a已加入全局白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                } else if (event.isRightClick() && isG) {
+                    ap.removePlayerFromGlobalWhitelist(
+                            targetName);
+                    p.sendMessage("§c已移出全局白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                }
+                return;
+            }
+
+            // 各区域白名单（slot 9-17）
+            if (raw >= 9 && raw <= 17) {
+                ItemStack item = event.getView()
+                        .getTopInventory().getItem(raw);
+                if (item == null) return;
+                ItemMeta im = item.getItemMeta();
+                if (im == null) return;
+                String areaName = im.getDisplayName()
+                        .replaceAll(
+                                "§[0-9a-fk-orA-FK-OR]", "");
+
+                if (event.isLeftClick()) {
+                    if (ap.isPlayerAreaWhitelisted(
+                            areaName, targetName)) {
+                        p.sendMessage("§c已在该区域白名单中");
+                        return;
+                    }
+                    ap.addPlayerToAreaWhitelist(
+                            areaName, targetName);
+                    p.sendMessage("§a已加入「"
+                            + areaName + "」白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                } else if (event.isRightClick()) {
+                    if (!ap.isPlayerAreaWhitelisted(
+                            areaName, targetName)) {
+                        p.sendMessage("§c不在该区域白名单中");
+                        return;
+                    }
+                    ap.removePlayerFromAreaWhitelist(
+                            areaName, targetName);
+                    p.sendMessage("§c已移出「"
+                            + areaName + "」白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                }
+                return;
+            }
+
+
+            if (raw >= 9 && raw <= 17) {
+                ItemStack item = event.getView()
+                        .getTopInventory().getItem(raw);
+                if (item == null) return;
+                ItemMeta im = item.getItemMeta();
+                if (im == null) return;
+                String areaName = im.getDisplayName()
+                        .replaceAll(
+                                "§[0-9a-fk-orA-FK-OR]", "");
+
+                if (event.isLeftClick()) {
+                    if (ap.isPlayerAreaWhitelisted(
+                            areaName, targetName)) {
+                        p.sendMessage("§c已在该区域白名单中");
+                        return;
+                    }
+                    ap.addPlayerToAreaWhitelist(
+                            areaName, targetName);
+                    p.sendMessage("§a已加入「"
+                            + areaName + "」白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                } else if (event.isRightClick()) {
+                    if (!ap.isPlayerAreaWhitelisted(
+                            areaName, targetName)) {
+                        p.sendMessage("§c不在该区域白名单中");
+                        return;
+                    }
+                    ap.removePlayerFromAreaWhitelist(
+                            areaName, targetName);
+                    p.sendMessage("§c已移出「"
+                            + areaName + "」白名单");
+                    openAreaWhitelistPanel(p, targetName);
+                }
+                return;
+            }
+        }
+
     }
 
 
@@ -2098,11 +2422,14 @@ public class GUIManager implements Listener {
                 "points", 0)).intValue();
         String email = (String) user.getOrDefault(
                 "email", "");
+
+        // ===== 原有按钮 =====
         g.setItem(4, mkItem(Material.NAME_TAG,
                 "§e" + target));
         g.setItem(10, mkItem(Material.EMERALD,
-                "§a积分: " + pts,
-                "§7点击设置积分"));
+                "§a§l积分: " + pts + "分",
+                "§7左键: 增加积分",
+                "§7右键: 减少积分"));
         g.setItem(11, mkItem(Material.PAPER,
                 "§e邮箱: "
                         + (email.isEmpty() ? "无" : email)));
@@ -2110,15 +2437,118 @@ public class GUIManager implements Listener {
                 "§e设置密码"));
         g.setItem(16, mkItem(Material.BARRIER,
                 "§c删除用户", "§7二次验证删除"));
-        // 雪球菜单检测（slot 14）
         g.setItem(14, mkItem(
                 Material.SNOWBALL,
                 "§e§l雪球菜单",
                 "§7点击为该玩家发放菜单雪球"));
 
+        // ===== 新增：债券余额查询（复制现有接口） =====
+        int bondBal = plugin.getBonds().getBonds(target);
+        g.setItem(20, mkItem(Material.SUGAR,
+                "§e§l债券余额: " + bondBal + "枚",
+                "§7点击查看详细债券记录"));
+
+        // ===== 新增：债券操作（支持直接增减） =====
+        g.setItem(21, mkItem(Material.GOLD_INGOT,
+                "§6§l债券操作",
+                "§7左键: 给予债券",
+                "§7右键: 扣除债券"));
+
+        // ===== 新增：区域保护 - 全局白名单 =====
+        AreaProtection areaProt = plugin.getAreaProtection();
+        boolean isGlobalWhite = areaProt != null
+                && areaProt.isPlayerGlobalWhitelisted(target);
+        g.setItem(23, mkItem(
+                isGlobalWhite
+                        ? Material.LIME_BANNER
+                        : Material.RED_BANNER,
+                "§a§l全局白名单",
+                "§7当前状态: "
+                        + (isGlobalWhite ? "§a已在白名单" : "§c未在白名单"),
+                "",
+                "§a左键: 添加到全局白名单",
+                "§c右键: 从全局白名单移除"));
+
+        // ===== 新增：区域保护 - 区域白名单 =====
+        g.setItem(24, mkItem(Material.MAP,
+                "§b§l区域白名单管理",
+                "§7管理该玩家的区域白名单",
+                "§e点击打开区域白名单面板"));
+
+        // ===== 返回按钮 =====
         g.setItem(22, mkItem(Material.ARROW, "§7返回"));
         p.openInventory(g);
     }
+
+
+
+    /**
+     * 打开区域白名单管理面板
+     * 显示该玩家在各区域白名单中的状态
+     * 支持直接添加/移除
+     */
+    public void openAreaWhitelistPanel(
+            Player p, String target) {
+        Inventory g = Bukkit.createInventory(
+                null, 27, "§b§l区域白名单: " + target);
+        fillBg(g);
+
+        AreaProtection areaProt = plugin.getAreaProtection();
+        if (areaProt == null) {
+            g.setItem(13, mkItem(Material.BARRIER,
+                    "§7区域防护未加载"));
+            p.openInventory(g);
+            return;
+        }
+
+        // 全局白名单状态
+        boolean isGlobalWhite =
+                areaProt.isPlayerGlobalWhitelisted(target);
+        g.setItem(4, mkItem(
+                isGlobalWhite
+                        ? Material.LIME_BANNER
+                        : Material.RED_BANNER,
+                "§e§l全局白名单",
+                "§7状态: "
+                        + (isGlobalWhite ? "§a已在白名单" : "§c未在白名单"),
+                "",
+                "§a左键添加  §c右键移除"));
+
+        // 遍历所有已配置的区域
+        Set<String> allAreas = areaProt.getAllAreaNames();
+        int slot = 9;
+        for (String areaName : allAreas) {
+            if (slot >= 18) break;
+
+            boolean inArea = areaProt
+                    .isPlayerAreaWhitelisted(areaName, target);
+
+            Material mat = inArea
+                    ? Material.LIME_WOOL
+                    : Material.RED_WOOL;
+            String status = inArea
+                    ? "§a已在白名单"
+                    : "§c未在白名单";
+
+            g.setItem(slot, mkItem(mat,
+                    "§e" + areaName,
+                    "§7状态: " + status,
+                    "",
+                    "§a左键添加  §c右键移除"));
+            slot++;
+        }
+
+        if (allAreas.isEmpty()) {
+            g.setItem(13, mkItem(Material.BARRIER,
+                    "§7暂无配置的区域"));
+        }
+
+        // 返回按钮
+        g.setItem(26, mkItem(Material.ARROW,
+                "§7返回"));
+        p.openInventory(g);
+    }
+
 
     /**
      * 打开账号请求面板

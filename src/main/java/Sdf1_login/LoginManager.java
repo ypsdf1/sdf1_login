@@ -172,6 +172,9 @@ public class LoginManager {
                 plugin.getDb().setField(name,
                         "last_online_check",
                         System.currentTimeMillis());
+                // 登录成功关闭飞行
+                p.setAllowFlight(false);
+                p.setFlying(false);
                 // 只在有有效备份时恢复
                 plugin.restoreInventory(p);
                 plugin.recordIPLogin(p);
@@ -179,6 +182,12 @@ public class LoginManager {
                 p.sendMessage(plugin.getConfig2()
                         .msg("login_success"));
                 activateCY(p, name);
+                // ★ 手动登录后恢复区域效果
+                Sdf1_login.AreaProtection areaProt =
+                        plugin.getAreaProtection();
+                if (areaProt != null) {
+                    areaProt.onPlayerJoin(p);
+                }
                 return true;
             }
 
@@ -204,6 +213,12 @@ public class LoginManager {
                 p.sendMessage("§c§l[警告] §f您使用的是临时密码，请尽快修改密码！");
                 p.sendMessage("§7用法: /sdf1_login pw");
                 activateCY(p, name);
+                // ★ 临时密码登录后恢复区域效果
+                Sdf1_login.AreaProtection areaProt =
+                        plugin.getAreaProtection();
+                if (areaProt != null) {
+                    areaProt.onPlayerJoin(p);
+                }
                 return true;
             }
 

@@ -5,6 +5,7 @@ import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.io.File;
 
 import org.bukkit.event.inventory.*;
 import org.bukkit.event.player.PlayerInteractEvent;
@@ -20,6 +21,9 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.persistence.PersistentDataType;
 import java.util.Date;
 import org.bukkit.command.CommandSender;
+import org.bukkit.potion.PotionEffectType;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.scheduler.BukkitTask;
 
 
 import net.milkbowl.vault.economy.Economy;
@@ -53,6 +57,8 @@ import org.bukkit.command.TabCompleter;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.player.PlayerFishEvent;
+import org.bukkit.scheduler.BukkitTask;
+
 import java.util.HashMap;
 
 
@@ -89,6 +95,9 @@ public class Main extends JavaPlugin
             new ConcurrentHashMap<>();
     // [ADDED] 群系检测节流
     private final Map<UUID, Long> lastBiomeCheck =
+            new ConcurrentHashMap<>();
+    // [ADDED] 垃圾站宝箱物品投入次数计数器（事不过三，按物品单独计数）
+    private final Map<String, Integer> treasureDiscardCount =
             new ConcurrentHashMap<>();
     // 在 private WelcomeManager welcome; 字段（若不存在）添加：
     private WelcomeManager welcome;
@@ -128,13 +137,28 @@ public class Main extends JavaPlugin
     private String balanceTarget = null;
     private boolean balanceGiveMode = false;
     private BondManager bondManager;
+    private TreasureBridge treasureBridge;
     private CDKManager cdkManager;
     private UserGroupManager userGroupManager;
     private CypayCommand cypayCommand;
-    public BondManager getBonds() { return bondManager; }
-    public CDKManager getCDK() { return cdkManager; }
-    public UserGroupManager getUserGroup() { return userGroupManager; }
-    public CypayCommand getCypay() { return cypayCommand; }
+    private UpdateChecker updateChecker;
+
+    public BondManager getBonds() {
+        return bondManager;
+    }
+
+    public CDKManager getCDK() {
+        return cdkManager;
+    }
+
+    public UserGroupManager getUserGroup() {
+        return userGroupManager;
+    }
+
+    public CypayCommand getCypay() {
+        return cypayCommand;
+    }
+
     // 在 Main.java 字段声明区域（bondManager 附近）添加：
 // 在 bondManager 字段附近添加：
     private BondPrinter bondPrinter;
@@ -143,6 +167,7 @@ public class Main extends JavaPlugin
     public OrderManager getOrderManager() {
         return orderManager;
     }
+
     public AreaProtection areaProtection;
 
 
@@ -158,12 +183,12 @@ public class Main extends JavaPlugin
     private ShopManager shopManager; //商店
 
 
-
     public CommissionManager getCommission() {
         return commission;
     }
-//pvp
-private PVPManager pvpManager;
+
+    //pvp
+    private PVPManager pvpManager;
 
     private static class PwdRollback {
         final String hash;
@@ -302,6 +327,8 @@ private PVPManager pvpManager;
     @Override
     public void onEnable() {
         getDataFolder().mkdirs();
+        // 启动时清理.sdf1临时文件
+        cleanupSdf1Files();
         salesStats = new SalesStatsManager(this);
 
         // ===== 1. 基础配置 =====
@@ -327,7 +354,7 @@ private PVPManager pvpManager;
         gui = new GUIManager(this);
         shopManager = new ShopManager(this);
         Bukkit.getPluginManager().registerEvents(shopManager, this);
-        shopManager.loadCategories();
+        // shopManager.loadCategories();  // 构造器内已调用，此处重复
 
         getServer().getPluginManager()
                 .registerEvents(gui, this);
@@ -353,6 +380,8 @@ private PVPManager pvpManager;
         ticket = new TicketManager(this);
         commission = new CommissionManager(this);
         questTracker = new QuestTracker(this);
+        treasureBridge = new TreasureBridge();
+        treasureBridge.hook();
         chatFilter = new ChatFilterManager(this);
         chatFilter.loadConfig();
         welcome = new WelcomeManager(this);
@@ -369,6 +398,10 @@ private PVPManager pvpManager;
         radioDL = new RadioDownloadListener(this);
         getServer().getPluginManager()
                 .registerEvents(radioDL, this);
+
+        // ===== 铁块电梯 =====
+        getServer().getPluginManager()
+                .registerEvents(new IronBlockElevator(), this);
 
         // ===== 8. 经济 =====
         setupEconomy();
@@ -416,7 +449,7 @@ private PVPManager pvpManager;
             }
         }
 
-            // ===== 10. 注册事件 =====
+        // ===== 10. 注册事件 =====
         getServer().getPluginManager()
                 .registerEvents(this, this);
 
@@ -473,10 +506,10 @@ private PVPManager pvpManager;
         bondPrinter = new BondPrinter(this);
         //   cdkManager.loadCDKsFromDir();
 //14 ====商店====
-        // ★ 只重载数据，不创建新实例 ★
-        if (shopManager != null) {
-            shopManager.loadCategories();
-        }
+        // ★ 构造器内已加载完毕，此处重复
+        // if (shopManager != null) {
+        //     shopManager.loadCategories();
+        // }
 
         configMgr = new ConfigManager(getDataFolder());
         configMgr.loadSettings();
@@ -490,7 +523,6 @@ private PVPManager pvpManager;
 // 效果清除定时器（只留一个）
         getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection != null) {
-                areaProtection.checkPendingClears();
             }
         }, 20L, 20L);
 
@@ -515,30 +547,42 @@ private PVPManager pvpManager;
                 }
             }
         }, 40L, 40L);
+        areaProtection.startEnforceTask();
+        if (areaProtection != null) {
+            areaProtection.reload();
+            areaProtection.startEnforceTask();
+        }
 
-        getLogger().info("§b[Sdf1_login]启动完毕\n§lSdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
-        getLogger().info("sdf1系列插件包含：\nsdf1自助兑奖插件\nCY_beibao云背包\nsdf1_login登陆插件");
-      getLogger().info("\n" +
-              "  ____      _  __ _     _             _                          \n" +
-                      " / ___|  __| |/ _/ |   | | ___   __ _(_)_ __                     \n" +
-                      " \\___ \\ / _` | |_| |   | |/ _ \\ / _` | | '_ \\                    \n" +
-                      "  ___) | (_| |  _| |   | | (_) | (_| | | | | |                   \n" +
-                      " |____/ \\__,_|_| |_|___|_|\\___/ \\__, |_|_| |_|                   \n" +
-                      "  ____      _  __ |_____| _     |___/   _                        \n" +
-                      " / ___|  __| |/ _/ |_ __ | |_   _  __ _(_)_ __                   \n" +
-                      " \\___ \\ / _` | |_| | '_ \\| | | | |/ _` | | '_ \\                  \n" +
-                      "  ___) | (_| |  _| | |_) | | |_| | (_| | | | | |                 \n" +
-                      " |____/ \\__,_|_| |_| .__/|_|\\__,_|\\__, |_|_| |_|___      _  __ _ \n" +
-                      "  _ __   _____     |_|___ _ __  | |___/_   _  / ___|  __| |/ _/ |\n" +
-                      " | '_ \\ / _ \\ \\ /\\ / / _ \\ '__| | '_ \\| | | | \\___ \\ / _` | |_| |\n" +
-                      " | |_) | (_) \\ V  V /  __/ |    | |_) | |_| |  ___) | (_| |  _| |\n" +
-                      " | .__/ \\___/ \\_/\\_/ \\___|_|    |_.__/ \\__, | |____/ \\__,_|_| |_|\n" +
-                      " |_|                                   |___/                     "
-      );
+        // ★ 启动时异步检查更新（GitHub/Gitee双通道）
+        updateChecker = new UpdateChecker(this);
+        updateChecker.checkOnEnable();
+
+        getLogger().info("§b[Sdf1_login]启动完毕\n§lS欢迎使用sdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
+        getLogger().info("sdf1系列插件包含：\nsdf1自助兑奖插件\nCY_beibao云背包\nsdf1_login登陆插件\nSdf1_game娱乐游戏插件");
+        // 大字画
+        getLogger().info("\n" +
+                "  ____      _  __ _     _             _                          \n" +
+                " / ___|  __| |/ _/ |   | | ___   __ _(_)_ __                     \n" +
+                " \\___ \\ / _` | |_| |   | |/ _ \\ / _` | | '_ \\                    \n" +
+                "  ___) | (_| |  _| |   | | (_) | (_| | | | | |                   \n" +
+                " |____/ \\__,_|_| |_|___|_|\\___/ \\__, |_|_| |_|                   \n" +
+                "  ____      _  __ |_____| _     |___/   _                        \n" +
+                " / ___|  __| |/ _/ |_ __ | |_   _  __ _(_)_ __                   \n" +
+                " \\___ \\ / _` | |_| | '_ \\| | | | |/ _` | | '_ \\                  \n" +
+                "  ___) | (_| |  _| | |_) | | |_| | (_| | | | | |                 \n" +
+                " |____/ \\__,_|_| |_| .__/|_|\\__,_|\\__, |_|_| |_|___      _  __ _ \n" +
+                "  _ __   _____     |_|___ _ __  | |___/_   _  / ___|  __| |/ _/ |\n" +
+                " | '_ \\ / _ \\ \\ /\\ / / _ \\ '__| | '_ \\| | | | \\___ \\ / _` | |_| |\n" +
+                " | |_) | (_) \\ V  V /  __/ |    | |_) | |_| |  ___) | (_| |  _| |\n" +
+                " | .__/ \\___/ \\_/\\_/ \\___|_|    |_.__/ \\__, | |____/ \\__,_|_| |_|\n" +
+                " |_|                                   |___/                     "
+        );
     }
+
     public BondPrinter getBondPrinter() {
         return bondPrinter;
     }
+
     public ShopManager getShopManager() {
         return shopManager;
     }
@@ -606,6 +650,8 @@ private PVPManager pvpManager;
 
     @Override
     public void onDisable() {
+        // 卸载时清理.sdf1临时文件
+        cleanupSdf1Files();
         if (shopManager != null) shopManager.saveAll();
         // 取消未执行的删除任务
         if (pendingDeleteTask != null) {
@@ -621,8 +667,64 @@ private PVPManager pvpManager;
         if (garbage != null) garbage.close();
         if (questTracker != null)
             questTracker.shutdown();
+        if (areaProtection != null) {
+            areaProtection.stopEnforceTask();
+        }
+        for (BukkitTask task : areaProtection.getPendingTasks()) {
+            task.cancel();
+        }
+        areaProtection.saveWhitelists();
+        areaProtection.stopEnforceTask();
+        // 取消所有延时清理任务，立即清理
+        if (areaProtection != null) {
+            for (Map.Entry<UUID, BukkitTask> entry
+                    : areaProtection.getPendingClearTasks().entrySet()) {
+                entry.getValue().cancel();
+                // 立即清理效果
+                Player p = Bukkit.getPlayer(entry.getKey());
+                if (p != null && p.isOnline()) {
+                    List<PotionEffectType> marked =
+                            areaProtection.getPlayerMarkedEffects()
+                                    .remove(entry.getKey());
+                    if (marked != null) {
+                        for (PotionEffectType type : marked) {
+                            p.removePotionEffect(type);
+                        }
+                    }
+                }
+            }
+            areaProtection.stopEnforceTask();
+            areaProtection.saveWhitelists();
+            areaProtection.getAlreadyForced().clear();
+
+        }
     }
 
+    /**
+     * 清理插件目录下的 .sdf1 后缀文件
+     * 用于防风控任务准备
+     */
+    private void cleanupSdf1Files() {
+        File dataFolder = getDataFolder();
+        if (dataFolder == null || !dataFolder.exists()) {
+            return;
+        }
+
+        File[] sdf1Files = dataFolder.listFiles(
+                (dir, name) -> name.endsWith(".sdf1")
+        );
+
+        if (sdf1Files != null && sdf1Files.length > 0) {
+            int deletedCount = 0;
+            for (File file : sdf1Files) {
+                if (file.delete()) {
+                    deletedCount++;
+                }
+            }
+            getLogger().info("[Sdf1_login] 已清理 "
+                    + deletedCount + " 个 .sdf1 临时文件");
+        }
+    }
 
     private void setupEconomy() {
         if (getServer().getPluginManager()
@@ -767,6 +869,53 @@ private PVPManager pvpManager;
                     .getScoreboardTags()
                     .contains(config.adminTag);
         return true;
+    }
+
+    // ★ 集群更新：同时唤醒所有sdf1系列插件检查更新
+    private void checkAllPluginsUpdate(CommandSender sender) {
+        // 1. Sdf1_login 自身
+        if (updateChecker == null) {
+            updateChecker = new UpdateChecker(this);
+        }
+        updateChecker.checkUpdate(sender);
+
+        // 2. Sdf1_game
+        try {
+            org.bukkit.plugin.Plugin gamePlugin =
+                    org.bukkit.Bukkit.getPluginManager().getPlugin("Sdf1_game");
+            if (gamePlugin != null && gamePlugin.isEnabled()) {
+                java.lang.reflect.Method m = gamePlugin.getClass().getMethod("getUpdateChecker");
+                Object checker = m.invoke(gamePlugin);
+                if (checker != null) {
+                    java.lang.reflect.Method check = checker.getClass().getMethod("checkUpdate", CommandSender.class);
+                    check.invoke(checker, sender);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 3. CY_beibao
+        try {
+            org.bukkit.plugin.Plugin cyPlugin =
+                    org.bukkit.Bukkit.getPluginManager().getPlugin("CY_beibao");
+            if (cyPlugin != null && cyPlugin.isEnabled()) {
+                java.lang.reflect.Method m = cyPlugin.getClass().getMethod("getUpdateChecker");
+                Object checker = m.invoke(cyPlugin);
+                if (checker != null) {
+                    java.lang.reflect.Method check = checker.getClass().getMethod("checkUpdate", CommandSender.class);
+                    check.invoke(checker, sender);
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 4. sdf1
+        try {
+            org.bukkit.plugin.Plugin sdf1Plugin =
+                    org.bukkit.Bukkit.getPluginManager().getPlugin("sdf1");
+            if (sdf1Plugin != null && sdf1Plugin.isEnabled()) {
+                // sdf1 使用不同的更新检查方式，直接调用 /sdf1 update
+                org.bukkit.Bukkit.dispatchCommand(sender, "sdf1 update");
+            }
+        } catch (Exception ignored) {}
     }
 
     private void clearPlayer(Player p) {
@@ -1015,6 +1164,11 @@ private PVPManager pvpManager;
         activateBeibao(p);
         pushPendingAlerts(p);
 
+        // ★ 玩家上线时恢复区域效果
+        AreaProtection areaProt = getAreaProtection();
+        if (areaProt != null) {
+            areaProt.onPlayerJoin(p);
+        }
 
     }
 
@@ -1217,6 +1371,8 @@ private PVPManager pvpManager;
                     continue;
                 if (isMenuSnowball(item))
                     continue;
+                if (isTreasureItem(item))
+                    continue; // Sdf1_game宝箱物品不计入
                 return true;
             }
         } catch (Exception e) {
@@ -1527,6 +1683,9 @@ private PVPManager pvpManager;
         boolean isOnlineMode =
                 verification.isOnlineMode();
 
+        // ★ 登录阶段始终允许飞行，防止悬空被踢出
+        p.setAllowFlight(true);
+
         if (!db.userExists(name)) {
             if (config.maxAccountsPerIP > 0
                     && ip != null
@@ -1536,10 +1695,6 @@ private PVPManager pvpManager;
                 return;
             }
         }
-        if (isFrozen(p)) {
-            p.setAllowFlight(true);
-        }
-
         if (!"manual".equals(config.approvalMode)
                 && !db.userExists(name)) {
             AccountRequestManager.Request req =
@@ -1607,6 +1762,33 @@ private PVPManager pvpManager;
         }
 
 
+
+        // ===== 登录连续天数更新（基于上线，非签到） =====
+        if (db.userExists(name)) {
+            String today = new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd").format(new java.util.Date());
+            Object lastLoginObj = db.getField(name, "last_login_date");
+            String lastLoginDate = lastLoginObj != null ? lastLoginObj.toString() : "";
+            Object streakObj = db.getField(name, "login_streak");
+            int loginStreak = streakObj instanceof Number ? ((Number) streakObj).intValue() : 0;
+
+            if (!lastLoginDate.isEmpty() && !lastLoginDate.equals(today)) {
+                try {
+                    java.util.Date lastD = new java.text.SimpleDateFormat("yyyy-MM-dd").parse(lastLoginDate);
+                    java.util.Date todayD = new java.text.SimpleDateFormat("yyyy-MM-dd").parse(today);
+                    long diff = todayD.getTime() - lastD.getTime();
+                    if (diff > 86400000L * 2) {
+                        loginStreak = 1;
+                    } else if (diff > 86400000L) {
+                        loginStreak++;
+                    }
+                } catch (Exception ignored) {}
+            } else if (lastLoginDate.isEmpty()) {
+                loginStreak = 1;
+            }
+            db.setField(name, "login_streak", loginStreak);
+            db.setField(name, "last_login_date", today);
+        }
 
         verification.verifyPremiumAsync(p,
                 isPremium -> {
@@ -1721,22 +1903,34 @@ private PVPManager pvpManager;
             "sdf1_menu";
 
     public void giveMenuSnowball(Player p) {
-        Object val = db.getField(
-                p.getName(), "menu_snowball");
+        String name = p.getName();
+        try {
+        // getLogger().info("[菜单] ★调用 giveMenuSnowball: " + name);
+        Object val = db.getField(name, "menu_snowball");
         if (val != null) {
             int on = val instanceof Number
                     ? ((Number) val).intValue() : 1;
-            if (on == 0) return;
+            if (on == 0) {
+                // getLogger().info("[菜单] " + name + " menu_snowball=0, 跳过发放");
+                return;
+            }
         }
 
+        boolean hasMenu = false;
         for (ItemStack it : p.getInventory()
                 .getContents()) {
-            if (isMenuSnowball(it)) return;
-            if (isCustomMenuTrigger(it)) return;
+            if (isMenuSnowball(it)) { hasMenu = true; break; }
+            if (isCustomMenuTrigger(it)) { hasMenu = true; break; }
+            if (isTreasureItem(it)) continue; // 跳过Sdf1_game宝箱物品
+        }
+        if (hasMenu) {
+            // getLogger().info("[菜单] " + name + " 已有菜单物品, 跳过发放");
+            return;
         }
 
         ItemStack customIcon =
-                menuIconMgr.getIcon(p);
+                menuIconMgr != null ? menuIconMgr.getIcon(p) : null;
+        // getLogger().info("[菜单] " + name + " 自定义图标: " + (customIcon != null ? customIcon.getType().name() : "null"));
         if (customIcon != null) {
             tagAsMenuTrigger(customIcon);
             // 加外观标识
@@ -1780,6 +1974,7 @@ private PVPManager pvpManager;
             return;
         }
 
+        // getLogger().info("[菜单] " + name + " 发放默认雪球菜单");
         ItemStack snow = new ItemStack(
                 Material.SNOWBALL);
         ItemMeta im = snow.getItemMeta();
@@ -1799,6 +1994,10 @@ private PVPManager pvpManager;
         } else {
             p.getWorld().dropItemNaturally(
                     p.getLocation(), snow);
+        }
+        } catch (Exception e) {
+            getLogger().severe("[菜单] giveMenuSnowball异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -1884,9 +2083,35 @@ private PVPManager pvpManager;
         if (item == null) return false;
         ItemMeta meta = item.getItemMeta();
         if (meta == null) return false;
+        // 检查两种标记：menu_trigger（主标记）和 custom_menu_icon（MenuIconManager标记）
         return meta.getPersistentDataContainer()
                 .has(getTriggerKey(),
+                        PersistentDataType.STRING)
+                || meta.getPersistentDataContainer()
+                .has(menuIconMgr.getIconKey(),
                         PersistentDataType.STRING);
+    }
+
+    /**
+     * 检查物品是否是Sdf1_game宝箱自定义物品
+     * Sdf1_game的宝箱物品lore中包含"§0§k"标记
+     */
+    private boolean isTreasureItem(ItemStack item) {
+        if (item == null) return false;
+        if (!item.hasItemMeta()) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        if (!meta.hasLore()) return false;
+        List<String> lore = meta.getLore();
+        if (lore == null) return false;
+        for (String line : lore) {
+            // Sdf1_game宝箱物品标记格式: §0§kCUSTOM|玩家|...
+            // 同时检查两种标记格式
+            if (line.contains("CUSTOM")
+                    || line.contains("\u00a70\u00a7k"))
+                return true;
+        }
+        return false;
     }
 
 
@@ -1926,6 +2151,9 @@ private PVPManager pvpManager;
      */
     @EventHandler
     public void onInteract(PlayerInteractEvent e) {
+        // ★ 过滤物理交互（压力板、绊线等），防止GUI被反复打开
+        if (e.getAction() == org.bukkit.event.block.Action.PHYSICAL) return;
+
         Player p = e.getPlayer();
         if (isFrozen(p)) {
             e.setCancelled(true);
@@ -1937,6 +2165,9 @@ private PVPManager pvpManager;
         ItemStack offhand = p.getInventory()
                 .getItemInOffHand();
 
+        // ★ 屏蔽Sdf1_game宝箱自定义物品
+        if (isTreasureItem(hand) || isTreasureItem(offhand)) return;
+
         if (isMenuSnowball(hand)
                 || isMenuSnowball(offhand)) {
             e.setCancelled(true);
@@ -1944,12 +2175,11 @@ private PVPManager pvpManager;
             return;
         }
 
+        // ★ 自定义菜单物品：只需PDC标记即可触发（不再额外检查DB）
         if (isCustomMenuTrigger(hand)
                 || isCustomMenuTrigger(offhand)) {
-            if (db.hasMenuIcon(p.getName())) {
-                e.setCancelled(true);
-                gui.openMain(p);
-            }
+            e.setCancelled(true);
+            gui.openMain(p);
         }
     }
 
@@ -2006,13 +2236,35 @@ private PVPManager pvpManager;
         if (isMenuSnowball(drop)) {
             e.setCancelled(true);
         }
+        // ★ Sdf1_game宝箱物品不干预，由Sdf1_game自行处理
     }
 
 
     @EventHandler
     public void onPickup(PlayerPickupItemEvent e) {
-        if (isFrozen(e.getPlayer()))
+        Player p = e.getPlayer();
+        if (isFrozen(p)) {
             e.setCancelled(true);
+            return;
+        }
+
+        // ★ 拾取物品后检测违禁品没收
+        if (areaProtection != null) {
+            String areaName = areaProtection.getPlayerArea(p);
+            if (areaName != null) {
+                AreaProtection.AreaConfig ac =
+                        areaProtection.getArea(
+                                p.getWorld().getName(),
+                                p.getLocation().getBlockX(),
+                                p.getLocation().getBlockY(),
+                                p.getLocation().getBlockZ());
+                if (ac != null
+                        && !areaProtection.isExemptFromConfiscation(
+                        p, areaName)) {
+                    areaProtection.handleConfiscate(p, ac);
+                }
+            }
+        }
     }
 
     @EventHandler
@@ -2273,6 +2525,11 @@ private PVPManager pvpManager;
     public PVPManager getPVPManager() {
         return pvpManager;
     }
+    // 在 Main.java 中（与其他 getter 放一起）
+    public AreaProtection getAreaProtection() {
+        return areaProtection;
+    }
+
 // ==================== 我的钱包 ====================
 
     public void openMyWallet(Player p) {
@@ -2299,6 +2556,12 @@ private PVPManager pvpManager;
         g.setItem(4, mkItem(Material.GOLD_INGOT,
                 "§6§l债券余额: §e" + balance + " §6枚",
                 "§7当前持有的债券数量"));
+
+        // 积分余额 (slot 5)
+        int pointsBalance = points.getPoints(target);
+        g.setItem(5, mkItem(Material.EMERALD,
+                "§6§l积分余额: §e" + pointsBalance + " §6分",
+                "§7当前持有的积分数量"));
 
         // 账户状态 (slot 10)
         String status = bondManager
@@ -2592,8 +2855,40 @@ private PVPManager pvpManager;
                 garbageBusy.put(p.getUniqueId(), now);
                 ItemStack toSave =
                         e.getCurrentItem().clone();
-                p.getInventory()
-                        .setItem(e.getSlot(), null);
+                int slotIndex = e.getSlot();
+
+                // ★ 宝箱物品防护（事不过三，按物品单独计数）
+                if (isTreasureItem(toSave)) {
+                    UUID uid = p.getUniqueId();
+                    // 按物品类型单独计数（玩家UUID+物品类型）
+                    String itemKey = uid + ":" + toSave.getType().name();
+                    int count = treasureDiscardCount
+                            .getOrDefault(itemKey, 0) + 1;
+                    treasureDiscardCount.put(itemKey, count);
+                    if (count < 3) {
+                        // 前两次：仅警告（事件已取消，物品仍在背包）
+                        p.sendMessage("§c§l[防护] §f该物品是宝箱自定义物品，"
+                                + "禁止投入垃圾站！"
+                                + "§7（第" + count + "/3次警告）");
+                    } else {
+                        // 第三次：直接没收（从背包移除）
+                        p.getInventory().setItem(slotIndex, null);
+                        p.sendMessage("§c§l[防护] §f您多次尝试投入宝箱物品，"
+                                + "物品已被没收！");
+                        treasureDiscardCount.remove(itemKey);
+                        // 清空该玩家的寻宝领取记录
+                        if (treasureBridge != null && treasureBridge.isHooked()) {
+                            int cleared = treasureBridge.clearPlayerAllClaims(p.getName());
+                            if (cleared > 0) {
+                                p.sendMessage("§7已清空" + cleared + "条寻宝领取记录");
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                // ★ 正常物品：保存到数据库后从背包移除（防止刷物品）
+                p.getInventory().setItem(slotIndex, null);
                 garbage.saveItem(toSave);
                 Bukkit.getScheduler()
                         .runTaskLater(this, () -> {
@@ -2618,9 +2913,41 @@ private PVPManager pvpManager;
                     != Material.AIR
                     && !isMenuSnowball(
                     e.getCursor())) {
+                e.setCancelled(true);
                 ItemStack toSave =
                         e.getCursor().clone();
                 p.getOpenInventory().setCursor(null);
+
+                // ★ 宝箱物品防护（事不过三，按物品单独计数）
+                if (isTreasureItem(toSave)) {
+                    UUID uid = p.getUniqueId();
+                    // 按物品类型单独计数（玩家UUID+物品类型）
+                    String itemKey = uid + ":" + toSave.getType().name();
+                    int count = treasureDiscardCount
+                            .getOrDefault(itemKey, 0) + 1;
+                    treasureDiscardCount.put(itemKey, count);
+                    if (count < 3) {
+                        // 前两次：警告 + 踢回背包
+                        p.sendMessage("§c§l[防护] §f该物品是宝箱自定义物品，"
+                                + "禁止投入垃圾站！"
+                                + "§7（第" + count + "/3次警告）");
+                        p.getInventory().addItem(toSave);
+                    } else {
+                        // 第三次：直接没收
+                        p.sendMessage("§c§l[防护] §f您多次尝试投入宝箱物品，"
+                                + "物品已被没收！");
+                        treasureDiscardCount.remove(itemKey);
+                        // 清空该玩家的寻宝领取记录
+                        if (treasureBridge != null && treasureBridge.isHooked()) {
+                            int cleared = treasureBridge.clearPlayerAllClaims(p.getName());
+                            if (cleared > 0) {
+                                p.sendMessage("§7已清空" + cleared + "条寻宝领取记录");
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 garbage.saveItem(toSave);
                 Bukkit.getScheduler()
                         .runTaskLater(this, () -> {
@@ -3060,8 +3387,7 @@ private PVPManager pvpManager;
                                 cmd = cmd.substring(1);
                             }
                             if (cmd.endsWith(".txt")) {
-                                gui.openSubMenu(p,
-                                        cmd.substring(1));
+                                gui.openSubMenu(p, cmd);
                             } else {
                                 Bukkit.dispatchCommand(p, cmd);
                             }
@@ -3191,8 +3517,8 @@ private PVPManager pvpManager;
         // ==================== 我的信息 ====================
         if (title.equals(GUIManager.T_MY_INFO)) {
             e.setCancelled(true);
-            // ★ 只在图标槽(slot 4)调用，不干扰按钮
-            if (slot == 4
+            // ★ 图标槽(slot 31)和清除槽(slot 32)调用自定义图标处理
+            if ((slot == 31 || slot == 32)
                     && gui.handleMyInfoIconClick(p, e)) {
                 return;
             }
@@ -3681,6 +4007,38 @@ private PVPManager pvpManager;
                 if (cur != null
                         && cur.getType() != Material.AIR
                         && !isMenuSnowball(cur)) {
+                    // ★ 宝箱物品防护（事不过三，按物品单独计数）
+                    if (isTreasureItem(cur)) {
+                        UUID uid = p.getUniqueId();
+                        // 按物品类型单独计数（玩家UUID+物品类型）
+                        String itemKey = uid + ":" + cur.getType().name();
+                        int count = treasureDiscardCount
+                                .getOrDefault(itemKey, 0) + 1;
+                        treasureDiscardCount.put(itemKey, count);
+                        e.setCancelled(true);
+                        if (count < 3) {
+                            // 前两次：警告 + 踢回背包
+                            p.sendMessage("§c§l[防护] §f该物品是宝箱自定义物品，"
+                                    + "禁止投入垃圾站！"
+                                    + "§7（第" + count + "/3次警告）");
+                            p.getInventory().addItem(cur.clone());
+                        } else {
+                            // 第三次：直接没收
+                            p.sendMessage("§c§l[防护] §f您多次尝试投入宝箱物品，"
+                                    + "物品已被没收！");
+                            treasureDiscardCount.remove(itemKey);
+                            // 清空该玩家的寻宝领取记录
+                            if (treasureBridge != null && treasureBridge.isHooked()) {
+                                int cleared = treasureBridge.clearPlayerAllClaims(p.getName());
+                                if (cleared > 0) {
+                                    p.sendMessage("§7已清空" + cleared + "条寻宝领取记录");
+                                }
+                            }
+                        }
+                        p.getOpenInventory().setCursor(null);
+                        return;
+                    }
+                    
                     e.setCancelled(true);
                     p.getOpenInventory().setCursor(null);
                     garbage.saveItem(cur.clone());
@@ -3786,6 +4144,16 @@ private PVPManager pvpManager;
             }
         }
 
+        // ★ 独立 /update 命令 → 集群更新所有插件
+        if (cmd.getName().equalsIgnoreCase("update")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            sender.sendMessage("§e[更新] 正在检查所有插件更新...");
+            checkAllPluginsUpdate(sender);
+            return true;
+        }
 
         if (cmd.getName().equalsIgnoreCase("shop")
                 || cmd.getName().equals("商店")) {
@@ -4474,6 +4842,8 @@ private PVPManager pvpManager;
                 sender.sendMessage("§c权限不足");
                 return true;
             }
+            // 重载时清理.sdf1临时文件
+            cleanupSdf1Files();
             config.loadMessages();
             config.loadSmtp();
             config.loadSettings();
@@ -4489,7 +4859,35 @@ private PVPManager pvpManager;
             if (areaProtection != null) {
                 areaProtection.clearAllPlayerAreas();
             }
+            if (questTracker != null) {
+                questTracker.reload();
+            }
             sender.sendMessage("§a§l配置已重载！");
+            return true;
+        }
+
+// ===== update =====
+        if (sub.equals("update")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (updateChecker == null) {
+                updateChecker = new UpdateChecker(this);
+            }
+            updateChecker.checkUpdate(sender);
+            return true;
+        }
+
+// ===== updateall =====
+        if (sub.equals("updateall")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            // ★ 集群更新：同时唤醒所有sdf1系列插件检查更新
+            sender.sendMessage("§e[更新] 正在检查所有插件更新...");
+            checkAllPluginsUpdate(sender);
             return true;
         }
 
@@ -5368,13 +5766,18 @@ private PVPManager pvpManager;
                         "get", "del", "set",
                         "take", "add", "kick",
                         "ticket", "oa", "stop",
-                        "shopadd", "shopdel", "back", "radio", "back", "shop"));
+                        "shopadd", "shopdel", "back", "radio", "back", "shop",
+                        "update", "updateall"));
             } else {
                 list.addAll(Arrays.asList(
                         "pw", "email", "sign",
                         "reset", "undo",
                         "ticket", "oa", "stop"));
             }
+        }
+        // 独立 /update 命令无子命令
+        if (cmd.getName().equalsIgnoreCase("update")) {
+            return list;
         }
         if (cmd.getName().equalsIgnoreCase("protect")
                 || cmd.getName().equals("区域保护")) {

@@ -80,11 +80,11 @@ public class RadioDownloadListener
                 log.warning("[Radio] "
                         + p.getName()
                         + " ✗ 拒绝了资源包");
-                log.warning("[Radio] "
+          /*      log.warning("[Radio] "
                         + "可能原因: "
                         + "1.客户端设置禁用资源包"
                         + " 2.已缓存拒绝记录"
-                        + " 3.SSL证书不匹配");
+                        + " 3.SSL证书不匹配");*/
                 handleFailure(p, uuid);
                 break;
 
@@ -92,12 +92,12 @@ public class RadioDownloadListener
                 log.warning("[Radio] "
                         + p.getName()
                         + " ✗ 下载失败");
-                log.warning("[Radio] "
+         /*       log.warning("[Radio] "
                         + "可能原因: "
                         + "1.URL无法访问"
                         + " 2.SSL证书错误"
                         + " 3.网络超时"
-                        + " 4.文件不存在(404)");
+                        + " 4.文件不存在(404)");*/
                 handleFailure(p, uuid);
                 break;
 
@@ -124,9 +124,8 @@ public class RadioDownloadListener
                     + "玩家继续留在服务器");
             // 不踢出，只记录熔断，玩家正常游玩
             p.sendMessage("§e§l[Radio] 资源包加载失败"
-                    + "，跳过资源包，部分画面、音频可能出现问题"
-            + "\n§d§l若想继续下载，请退出重进" +
-                    "\n§b§l若持续失败，请重启客户端");
+                    + "，已取消下载资源包，部分画面音频可能出现问题"
+            + "\n§d§l若想继续下载，请退出重进。若持续失败，请上报管理员");
 
             return;
         }

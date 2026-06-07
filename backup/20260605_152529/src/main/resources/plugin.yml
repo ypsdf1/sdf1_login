@@ -1,0 +1,104 @@
+name: Sdf1_login
+version: 1.0
+main: Sdf1_login.Main
+api-version: '1.21'
+commands:
+  sdf1_login:
+    description: Sdf1_login主命令
+    usage: /sdf1_login
+  reg:
+    description: 注册
+    usage: /reg <密码>
+  login:
+    description: 登录
+    usage: /login <密码>
+  l:
+    description: 登录快捷版
+    usage: /l <密码>
+  注册:
+    description: 注册(中文)
+    usage: /注册 <密码>
+  登录:
+    description: 登录(中文)
+    usage: /登录 <密码>
+  玩家信息:
+    description: 打开面板(中文)
+    usage: /玩家信息
+  改密码:
+    description: 修改密码(中文)
+    usage: /改密码 <旧密码> <新密码> <确认新密码>
+  设置邮箱:
+    description: 设置邮箱(中文)
+    usage: /设置邮箱 <邮箱地址>
+  撤销:
+    description: 撤销操作(中文)
+    usage: /撤销
+  删除:
+    description: 删除玩家(中文)
+    usage: /删除 <玩家> <密码>
+  找回密码:
+    description: 找回密码(中文)
+    usage: /找回密码
+  签到:
+    description: 每日签到(中文)
+    usage: /签到
+  #oa:
+  #  description: 申请删除账号
+  #  usage: /oa [玩家名]
+  删除账号:
+    description: 申请删除账号(中文)
+    usage: /删除账号 [玩家名]
+  通过:
+    description: 批准OA请求(中文)
+    usage: /通过 <编号>
+  拒绝:
+    description: 拒绝OA请求(中文)
+    usage: /拒绝 <编号> [理由]
+  accept:
+    description: 批准OA请求
+    usage: /accept <编号>
+  deny:
+    description: 拒绝OA请求
+    usage: /deny <编号> [理由]
+  email:
+    description: 绑定邮箱
+    usage: /email <邮箱>
+  绑定:
+    description: 绑定邮箱(中文)
+    usage: /绑定 <邮箱>
+  绑定邮箱:
+    description: 绑定邮箱
+    usage: /绑定邮箱
+  chat:
+    description: 聊天过滤管理
+    usage: /chat
+  recycle:
+    description: 打开垃圾回收站
+    usage: /recycle
+  垃圾清理:
+    description: 手动清理掉落物
+    usage: /垃圾清理
+  menu:
+    description: 雪球菜单开关控制
+    usage: /menu <开/关>
+  pvp :
+    description: PVP榜单
+    usage: /pvp
+  cypay :
+    description: 草原探险债券
+    usage: /cypay
+  printer :
+    description: 打印债券流水
+    usage: /printer
+  shop :
+    description: 游戏商人
+    usage: /shop
+  商店:
+    description: 打开商店
+    usage: /商店
+  #testorder:
+  #  description: 测试订单中心
+  #  usage: /testorder
+  protect:
+    description: 区域保护
+    usage: /protect

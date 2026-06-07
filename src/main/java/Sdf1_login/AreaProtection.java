@@ -21,6 +21,11 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import java.sql.*;
+import org.bukkit.event.entity.*;
+import org.bukkit.event.player.*;
+import org.bukkit.GameMode;
+import org.bukkit.event.EventPriority;
+
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -30,21 +35,20 @@ import org.bukkit.Bukkit;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.HashSet;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.event.entity.EntitySpawnEvent;
+import org.bukkit.entity.Item;
+
 
 
 
 public class AreaProtection implements Listener {
 
     private final Main plugin;
-    private final Map<UUID, Long> lastLeaveTime
-            = new HashMap<>();
-    private final Map<UUID, List<PotionEffectType>> pendingClear
-            = new HashMap<>();
-    private final Map<UUID, List<PotionEffectType>> activeEffects
-            = new HashMap<>();
+    public List<String[]> giveEffects = new ArrayList<>();
     private final Map<UUID, Set<String>> playerAreas
             = new HashMap<>();
-    private final File areaDir;
     private final Map<String, AreaConfig> areas =
             new ConcurrentHashMap<>();
     private Connection dbConnection;
@@ -72,6 +76,12 @@ public class AreaProtection implements Listener {
     private final Set<UUID> selecting =
             ConcurrentHashMap.newKeySet();
     public boolean denyRaid = false;
+    // ===== 统一文件夹 =====
+    private final File rootDir;
+    private final File whitelistDir;
+    private final File globalWhitelistFile;
+    private final File oldDbFile;
+    private final File newDbFile;
 
     // 边框显示
     private final Map<UUID, Integer> displayTaskIds =
@@ -82,20 +92,410 @@ public class AreaProtection implements Listener {
             = new HashMap<>();
     private final Map<UUID, Long> protectedEntities
             = new ConcurrentHashMap<>();
-    // 记录每个玩家当前所在的区域名
-    private final Map<String, String> playerCurrentArea
-            = new HashMap<>();
+    // 区域给予的效果记录（贴标）
+    private final Map<UUID, List<PotionEffectType>> playerAppliedEffects = new HashMap<>();
+    // 延时清理任务
+    private static final long MOVE_DEBOUNCE_MS = 100;
+    // 新：全部改为线程安全
+    private final Map<UUID, String> playerCurrentArea
+            = new ConcurrentHashMap<>();
+    private final Map<UUID, List<PotionEffectType>> playerMarkedEffects
+            = new ConcurrentHashMap<>();
+    private final Map<UUID, BukkitTask> pendingClearTask
+            = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingClearArea
+            = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastMoveProcess
+            = new ConcurrentHashMap<>();
+    // 防止传送时重复处理
+    private final Set<UUID> teleporting
+            = ConcurrentHashMap.newKeySet();
+    // 待清理的效果列表（与延时任务配合）
+    private final Map<UUID, List<PotionEffectType>> pendingClearEffects
+            = new ConcurrentHashMap<>();
 
+
+
+// ==================== 强制游戏模式 ====================
+
+    /**
+     * 监听玩家尝试切换游戏模式
+     * 如果在强制游戏模式区域且不在豁免名单中，则取消切换
+     */
+    // 防止递归的标记
+    private final Set<UUID> modeSwitching
+            = ConcurrentHashMap.newKeySet();
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onGameModeChange(
+            PlayerGameModeChangeEvent event) {
+        if (event.isCancelled()) return;
+
+        Player p = event.getPlayer();
+        UUID uid = p.getUniqueId();
+
+        if (modeSwitching.contains(uid)) return;
+
+        String areaName = playerCurrentArea.get(uid);
+        if (areaName == null) return;
+
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) return;
+        if (ac.enforceGameMode == null
+                || ac.enforceGameMode.isEmpty()) return;
+        if (isExemptFromGameMode(p, areaName)) return;
+
+        event.setCancelled(true);
+
+        modeSwitching.add(uid);
+        try {
+            GameMode target = GameMode.valueOf(
+                    ac.enforceGameMode);
+            if (p.getGameMode() != target) {
+                p.setGameMode(target);
+            }
+        } finally {
+            modeSwitching.remove(uid);
+        }
+
+        // ★ 切换后发一次中文提示
+        p.sendMessage(formatAreaMsg(
+                "&c该区域强制 " + ac.enforceGameMode
+                        + " 模式，无法切换"));
+    }
+
+    public Set<UUID> getAlreadyForced() {
+        return alreadyForced;
+    }
+
+
+    // ==================== 定时强制游戏模式 ====================
+
+    private BukkitTask enforceTask;
+
+    /**
+     * 启动定时强制任务
+     * 每秒检查一次所有在线玩家
+     */
+    private BukkitTask enforceTask1;
+
+    // 记录上次强制模式的玩家（避免重复发消息）
+    private final Set<UUID> alreadyForced
+            = ConcurrentHashMap.newKeySet();
+
+    public void startEnforceTask() {
+        if (enforceTask != null) {
+            enforceTask.cancel();
+        }
+        enforceTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    UUID uid = p.getUniqueId();
+                    String areaName =
+                            playerCurrentArea.get(uid);
+                    if (areaName == null) {
+                        // 不在任何区域，清除标记
+                        alreadyForced.remove(uid);
+                        continue;
+                    }
+
+                    AreaConfig ac = areas.get(areaName);
+                    if (ac == null) continue;
+                    if (ac.enforceGameMode == null
+                            || ac.enforceGameMode
+                            .isEmpty()) continue;
+                    if (isExemptFromGameMode(
+                            p, areaName)) {
+                        alreadyForced.remove(uid);
+                        continue;
+                    }
+
+                    GameMode target =
+                            GameMode.valueOf(
+                                    ac.enforceGameMode);
+                    if (p.getGameMode() != target) {
+                        modeSwitching.add(uid);
+                        try {
+                            p.setGameMode(target);
+                        } finally {
+                            modeSwitching.remove(uid);
+                        }
+
+                        // ★ 只在玩家已被强制过时才发消息
+                        // 首次不发，后续才提醒
+                        if (alreadyForced.contains(uid)) {
+                            p.sendMessage(formatAreaMsg(
+                                    "&c该区域强制 "
+                                            + ac.enforceGameMode
+                                            + " 模式，无法切换"));
+                        }
+                        alreadyForced.add(uid);
+                    } else {
+                        // 模式一致，清除标记
+                        alreadyForced.remove(uid);
+                    }
+                }
+            }
+        }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    public void stopEnforceTask() {
+        if (enforceTask != null) {
+            enforceTask.cancel();
+            enforceTask = null;
+        }
+    }
+
+
+
+    /**
+     * 检查玩家是否豁免于游戏模式强制
+     * 豁免条件：全局白名单 / 区域白名单 / 模式排除名单
+     */
+    private boolean isExemptFromGameMode(
+            Player p, String areaName) {
+        String name = p.getName();
+
+      /*  if (p.isOp()) {
+            plugin.getLogger().info(
+                    "[防护-调试] 豁免原因: OP, 玩家=" + name);
+            return true;
+        }*/
+        if (globalPlayerWhitelist.contains(name)) {
+          /*  plugin.getLogger().info(
+                    "[防护-调试] 豁免原因: 全局白名单, 玩家="
+                            + name);*/
+            return true;
+        }
+        Set<String> aw =
+                areaPlayerWhitelist.get(areaName);
+        if (aw != null && aw.contains(name)) {
+         /*   plugin.getLogger().info(
+                    "[防护-调试] 豁免原因: 区域白名单, 玩家="
+                            + name + " 区域=" + areaName);*/
+            return true;
+        }
+        AreaConfig ac = areas.get(areaName);
+        if (ac != null && ac.modeExempt.contains(name)) {
+          /*  plugin.getLogger().info(
+                    "[防护-调试] 豁免原因: 模式排除名单, 玩家="
+                            + name);*/
+            return true;
+        }
+      /*  plugin.getLogger().info(
+                "[防护-调试] 无豁免, 玩家=" + name);*/
+        return false;
+    }
+
+    /**
+     * 玩家进入区域时，如果该区域强制游戏模式，
+     * 则立即设置（排除豁免玩家）
+     */
+    private void applyEnforcedGameMode(Player p,
+                                       String areaName) {
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) {
+        /*    plugin.getLogger().info(
+                    "[防护-调试] applyMode: ac=null, area="
+                            + areaName);*/
+            return;
+        }
+        if (ac.enforceGameMode == null
+                || ac.enforceGameMode.isEmpty()) {
+        /*    plugin.getLogger().info(
+                    "[防护-调试] applyMode: 未配置强制模式, area="
+                            + areaName);*/
+            return;
+        }
+
+        boolean exempt = isExemptFromGameMode(
+                p, areaName);
+      /*  plugin.getLogger().info(
+                "[防护-调试] applyMode: 玩家=" + p.getName()
+                        + " 区域=" + areaName
+                        + " 强制=" + ac.enforceGameMode
+                        + " 当前=" + p.getGameMode()
+                        + " 豁免=" + exempt
+                        + " OP=" + p.isOp()
+                        + " 全白=" + globalPlayerWhitelist
+                        .contains(p.getName()));*/
+
+        if (exempt) return;
+
+        try {
+            GameMode target = GameMode.valueOf(
+                    ac.enforceGameMode);
+            if (p.getGameMode() != target) {
+                p.setGameMode(target);
+             /*   plugin.getLogger().info(
+                        "[防护] 强制切换 " + p.getName()
+                                + " → " + ac.enforceGameMode);*/
+            }
+        } catch (Exception e) {
+         /*  plugin.getLogger().warning(
+                    "[防护] 强制模式失败: "
+                            + e.getMessage());*/
+        }
+    }
 
     public AreaProtection(Main plugin) {
         this.plugin = plugin;
-        this.areaDir = new File(plugin.getDataFolder(), "区域防护");
-        if (!areaDir.exists()) areaDir.mkdirs();
+
+        // 统一根目录
+        rootDir = new File(plugin.getDataFolder(), "区域防护");
+        if (!rootDir.exists()) rootDir.mkdirs();
+
+        // 白名单子目录
+        whitelistDir = new File(rootDir, "whitelists");
+        if (!whitelistDir.exists()) whitelistDir.mkdirs();
+        globalWhitelistFile = new File(
+                whitelistDir, "全局白名单.txt");
+
+        // 数据库迁移
+        oldDbFile = new File(
+                plugin.getDataFolder(), "area_effects.db");
+        newDbFile = new File(rootDir, "area_effects.db");
+        migrateDatabase();
+
+        // 初始化
         initDatabase();
         writeDefaultConfig();
         loadAllAreas();
         loadWhitelists();
+        recoverPendingEffects();
     }
+    public void recoverPendingEffects() {
+        try {
+            // 1. 遍历所有在线玩家（而不是遍历DB记录）
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                UUID uid = p.getUniqueId();
+                String playerName = p.getName();
+
+                // 2. 获取玩家当前所在区域
+                AreaConfig currentAc = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+
+                // 3. 获取该玩家在DB中的所有历史记录
+                List<String> recordedAreas =
+                        getPlayerAreas(uid);
+
+                // 4. 清理不在当前区域的旧记录
+                for (String recordedArea : recordedAreas) {
+                    if (currentAc == null
+                            || !currentAc.name
+                            .equals(recordedArea)) {
+                        // 玩家不在这个区域了 → 清DB
+                        removePlayerEffects(
+                                uid, recordedArea);
+                        plugin.getLogger().info(
+                                "[防护] 重连: " + playerName
+                                        + " 不在" + recordedArea
+                                        + ", 清理旧记录");
+                    }
+                }
+
+                // 5. 如果在区域中 → 恢复/给予效果
+                if (currentAc != null) {
+                    plugin.getLogger().info(
+                            "[防护] 重连: " + playerName
+                                    + " 在" + currentAc.name
+                                    + ", 恢复效果");
+                    applyRegionEffects(p, uid,
+                            currentAc.name, currentAc);
+                } else {
+                    plugin.getLogger().info(
+                            "[防护] 重连: " + playerName
+                                    + " 不在任何区域, 跳过");
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[防护] 恢复效果失败: "
+                            + e.getMessage());
+        }
+    }
+
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        Player p = event.getPlayer();
+        UUID uid = p.getUniqueId();
+
+        // 取消延时清理任务
+        if (pendingClearTask.containsKey(uid)) {
+            pendingClearTask.get(uid).cancel();
+            pendingClearTask.remove(uid);
+            pendingClearArea.remove(uid);
+            pendingClearEffects.remove(uid);
+        }
+
+        // 清标记
+        playerMarkedEffects.remove(uid);
+        playerCurrentArea.remove(uid);
+    }
+
+    /**
+     * 玩家上线时恢复区域效果
+     * 如果玩家在有效果的区域中，恢复药水效果
+     */
+    public void onPlayerJoin(Player p) {
+        if (p == null || !p.isOnline()) return;
+        UUID uid = p.getUniqueId();
+        String playerName = p.getName();
+
+        // 获取玩家当前所在区域
+        AreaConfig currentAc = getArea(
+                p.getWorld().getName(),
+                p.getLocation().getBlockX(),
+                p.getLocation().getBlockY(),
+                p.getLocation().getBlockZ());
+
+        if (currentAc != null) {
+            plugin.getLogger().info(
+                    "[防护] 上线: " + playerName
+                            + " 在" + currentAc.name
+                            + ", 恢复效果");
+            applyRegionEffects(p, uid,
+                    currentAc.name, currentAc);
+        }
+    }
+
+
+// ==================== 数据库迁移 ====================
+
+    /**
+     * 如果旧位置有 db 文件，移到新位置
+     * 如果新位置已有，不动
+     * 如果旧位置也没有，在新位置创建
+     */
+
+     private void migrateDatabase() {
+     if (newDbFile.exists()) {
+     if (oldDbFile.exists()
+     && !oldDbFile.equals(newDbFile)) {
+     oldDbFile.delete();
+     }
+     return;
+     }
+     if (oldDbFile.exists()
+     && !oldDbFile.equals(newDbFile)) {
+     try {
+     java.nio.file.Files.move(
+     oldDbFile.toPath(),
+     newDbFile.toPath(),
+     java.nio.file.StandardCopyOption
+     .REPLACE_EXISTING);
+     } catch (Exception e) {
+     plugin.getLogger().warning(
+     "[防护] 迁移数据库失败: "
+     + e.getMessage());
+     }
+     }
+     }
+
 
     // 保存玩家进入区域时给予的效果
     private void savePlayerEffects(UUID uid, String playerName,
@@ -238,7 +638,7 @@ public class AreaProtection implements Listener {
 
 
     private void writeDefaultConfig() {
-        File f = new File(areaDir, "末地保护区.txt");
+        File f = new File(rootDir, "末地保护区.txt");
         if (f.exists()) return;
 
         String endWorld = "world_the_end";
@@ -282,29 +682,128 @@ public class AreaProtection implements Listener {
     public void reload() {
         loadAllAreas();
         loadWhitelists();
-        recoverPendingEffects();
-        plugin.getLogger().info("[防护] 已重载 "
-                + areas.size() + " 个区域");
+        // 强制输出醒目的中文日志
+        plugin.getLogger().info("========================================");
+        plugin.getLogger().info("[防护] 已重载 " + areas.size() + " 个区域");
+        plugin.getLogger().info("[防护] 已重载白名单");
+        plugin.getLogger().info("========================================");
     }
 
-    // ==================== 加载 ====================
+// ==================== 消息格式化 ====================
+
+    /**
+     * 格式化区域消息
+     * 1. & → §（颜色符号转换）
+     * 2. <br> 和 \n → 换行
+     * 3. <b>内容</b> → §l内容§r（加粗）
+     * 4. 自动添加 [区域防护] 前缀
+     */
+    private String formatAreaMsg(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+
+        String msg = raw;
+
+        // & → §
+        for (int i = 0; i <= 9; i++) {
+            msg = msg.replace("&" + i, "§" + i);
+        }
+        for (char c : "abcdefklnor".toCharArray()) {
+            msg = msg.replace("&" + c, "§" + c);
+        }
+
+        // 换行
+        msg = msg.replace("<br>", "\n");
+        msg = msg.replace("\\n", "\n");
+
+        // HTML → Minecraft格式（栈式解析，支持嵌套）
+        msg = convertHtmlTags(msg);
+
+        // 前缀
+        msg = "§c§l【区域防护】§r " + msg;
+
+        return msg;
+    }
+
+    /**
+     * 栈式HTML标签解析
+     * 处理 <u><b>text</b> rest</u> 这样的嵌套标签
+     * 内层关闭时重新应用外层格式
+     */
+    private String convertHtmlTags(String msg) {
+        StringBuilder sb = new StringBuilder();
+        java.util.Deque<Character> stack =
+                new ArrayDeque<>();
+        int i = 0;
+
+        while (i < msg.length()) {
+            if (msg.charAt(i) == '<'
+                    && i + 1 < msg.length()) {
+                if (msg.charAt(i + 1) == '/') {
+                    // 关闭标签 </x>
+                    int end = msg.indexOf('>', i);
+                    if (end < 0) {
+                        sb.append(msg.charAt(i));
+                        i++;
+                        continue;
+                    }
+                    String tag = msg.substring(i + 2, end)
+                            .trim().toLowerCase();
+                    char code = htmlToMc(tag);
+                    if (code != 0 && !stack.isEmpty()
+                            && stack.peek() == code) {
+                        stack.pop();
+                        if (!stack.isEmpty()) {
+                            // 重置后重新应用外层格式
+                            sb.append("§r");
+                            for (char c : stack) {
+                                sb.append("§").append(c);
+                            }
+                        } else {
+                            sb.append("§r");
+                        }
+                    }
+                    i = end + 1;
+                } else {
+                    // 开放标签 <x>
+                    int end = msg.indexOf('>', i);
+                    if (end < 0) {
+                        sb.append(msg.charAt(i));
+                        i++;
+                        continue;
+                    }
+                    String tag = msg.substring(i + 1, end)
+                            .trim().toLowerCase();
+                    char code = htmlToMc(tag);
+                    if (code != 0) {
+                        stack.push(code);
+                        sb.append("§").append(code);
+                    }
+                    i = end + 1;
+                }
+            } else {
+                sb.append(msg.charAt(i));
+                i++;
+            }
+        }
+        return sb.toString();
+    }
+
+    private char htmlToMc(String tag) {
+        switch (tag) {
+            case "b": return 'l';
+            case "i": return 'o';
+            case "u": return 'n';
+            case "s": return 'm';
+            default: return 0;
+        }
+    }
+
+// =============== 加载 ====================
 
     public void loadAllAreas() {
-        // 验证所有区域的和平白名单
-        plugin.getLogger().info("====== 区域解析验证 ======");
-        for (Map.Entry<String, AreaConfig> entry : areas.entrySet()) {
-            AreaConfig ac = entry.getValue();
-            plugin.getLogger().info("[验证] " + entry.getKey()
-                    + " peaceMode=" + ac.peaceMode
-                    + " peaceWhitelist=" + ac.peaceWhitelist
-                    + " enforceGameMode=" + ac.enforceGameMode
-                    + " modeExempt=" + ac.modeExempt);
-        }
-        plugin.getLogger().info("====== 验证结束 ======");
-
         areas.clear();
-        File[] files = areaDir.listFiles(
-                (d, n) -> n.endsWith(".txt"));
+        File[] files = rootDir.listFiles(
+                (File d, String n) -> n.endsWith(".txt"));
         if (files == null) return;
         for (File f : files) {
             try {
@@ -314,20 +813,16 @@ public class AreaProtection implements Listener {
                 areas.put(name, ac);
             } catch (Exception e) {
                 plugin.getLogger().warning(
-                        "[防护] 加载失败: "
-                                + f.getName());
-
+                        "[防护] 加载失败: " + f.getName());
             }
-
         }
-        plugin.getLogger().info(
-                "[防护] 共加载 " + areas.size() + " 个区域");
     }
+
+
     private void initDatabase() {
         try {
-            File dbFile = new File(plugin.getDataFolder(), "area_effects.db");
             dbConnection = DriverManager.getConnection(
-                    "jdbc:sqlite:" + dbFile.getAbsolutePath());
+                    "jdbc:sqlite:" + newDbFile.getAbsolutePath());
             Statement stmt = dbConnection.createStatement();
             stmt.executeUpdate(
                     "CREATE TABLE IF NOT EXISTS player_effects ("
@@ -338,15 +833,71 @@ public class AreaProtection implements Listener {
                             + "effect_type TEXT NOT NULL,"
                             + "effect_level INTEGER DEFAULT 0,"
                             + "effect_duration INTEGER DEFAULT 999,"
-                            + "enter_time INTEGER NOT NULL"
-                            + ")");
+                            + "enter_time INTEGER NOT NULL)");
             stmt.executeUpdate(
                     "CREATE INDEX IF NOT EXISTS idx_uuid "
                             + "ON player_effects(uuid)");
             stmt.close();
-            plugin.getLogger().info("[防护] SQLite数据库初始化完成");
         } catch (SQLException e) {
-            plugin.getLogger().severe("[防护] 数据库初始化失败: " + e.getMessage());
+            plugin.getLogger().severe(
+                    "[防护] 数据库初始化失败: "
+                            + e.getMessage());
+        }
+    }
+
+
+// ==================== 效果名称中英文映射 ====================
+
+    /**
+     * 将中文效果名转为 Bukkit 能识别的英文名
+     */
+    private String resolveEffectName(String name) {
+        if (name == null) return null;
+        String n = name.trim();
+        // 如果已经是英文或命名空间格式，直接用
+        if (n.contains(":")
+                || n.equals(n.toUpperCase())) {
+            return n;
+        }
+        // 中文 → 英文映射
+        switch (n) {
+            case "伤害吸收": return "ABSORPTION";
+            case "生命提升": return "HEALTH_BOOST";
+            case "抗性提升": return "DAMAGE_RESISTANCE";
+            case "抗火": return "FIRE_RESISTANCE";
+            case "夜视": return "NIGHT_VISION";
+            case "力量": return "INCREASE_DAMAGE";
+            case "速度": return "SPEED";
+            case "急迫": return "FAST_DIGGING";
+            case "跳跃提升": return "JUMP";
+            case "再生": return "REGENERATION";
+            case "生命恢复": return "REGENERATION";
+            case "治疗": return "HEAL";
+            case "瞬间治疗": return "HEAL";
+            case "伤害药水": return "HARM";
+            case "瞬间伤害": return "HARM";
+            case "虚弱": return "WEAKNESS";
+            case "中毒": return "POISON";
+            case "缓慢": return "SLOW";
+            case "挖掘疲劳": return "SLOW_DIGGING";
+            case "失明": return "BLINDNESS";
+            case "隐身": return "INVISIBILITY";
+            case "发光": return "GLOWING";
+            // 村庄英雄
+            case "村庄英雄": return "HERO_OF_THE_VILLAGE";
+            case "幸运": return "LUCK";
+            case "不幸": return "UNLUCK";
+            case "水下呼吸": return "WATER_BREATHING";
+            case "水下速掘": return "DOLPHINS_GRACE";
+            case "缓降": return "LEVITATION";
+            case "漂浮": return "LEVITATION";
+            case "饱和": return "SATURATION";
+            // 无效效果
+            case "伤害": return "HARM";
+            case "治疗药水": return "HEAL";
+            default:
+                // 尝试直接用英文匹配
+                return n;
         }
     }
 
@@ -427,9 +978,9 @@ public class AreaProtection implements Listener {
                 for (int i = 0; i < line.length(); i++) {
                     hex.append(String.format("U+%04X ", (int) line.charAt(i)));
                 }
-                plugin.getLogger().info("[暴力调试] 行=[" + line
+            /*    plugin.getLogger().info("[暴力调试] 行=[" + line
                         + "] 长度=" + line.length()
-                        + " 字符码=" + hex.toString());
+                        + " 字符码=" + hex.toString());*/
             }
 // ===== 兜底扫描：确保和平白名单一定能解析 =====
             if (line.indexOf("白名单") >= 0
@@ -606,14 +1157,55 @@ public class AreaProtection implements Listener {
                 ac.peaceMode = true;
                 plugin.getLogger().info("[解析] 和平模式已识别");
 
-        } else if (line.startsWith("效果")) {
+            } else if (line.startsWith("效果")) {
                 String rest = line.substring(2).trim();
+                // 去掉前导冒号、空格
                 while (rest.length() > 0
                         && (rest.charAt(0) == ':'
                         || rest.charAt(0) == '：'
                         || rest.charAt(0) == ' '
                         || rest.charAt(0) == '\t')) {
                     rest = rest.substring(1);
+                }
+                if (!rest.isEmpty()) {
+                    String[] parts = rest.split("\\s+");
+                    // 第一个是效果名（可能是中文）
+                    String effName = parts[0];
+                    int effLv = 1;
+                    int effDur = 999;
+                    if (parts.length >= 2) {
+                        try {
+                            effLv = Integer.parseInt(parts[1]);
+                        } catch (NumberFormatException ignored) {}
+                    }
+                    if (parts.length >= 3) {
+                        try {
+                            effDur = Integer.parseInt(parts[2]);
+                        } catch (NumberFormatException ignored) {}
+                    }
+
+                    // ★ 用映射方法转为英文名
+                    String resolved = resolveEffectName(effName);
+                    plugin.getLogger().info("[防护] 解析效果: "
+                            + effName + " → " + resolved
+                            + " 等级=" + effLv
+                            + " 时长=" + effDur);
+
+                    ac.giveEffects.add(new String[]{
+                            resolved,
+                            String.valueOf(effLv),
+                            String.valueOf(effDur)});
+                    // ★ 加日志确认解析结果
+                    PotionEffectType checkType =
+                            resolveEffectType(effName);
+                    plugin.getLogger().info("[防护] 解析效果: "
+                            + effName + " → type="
+                            + (checkType != null
+                            ? checkType.getName()
+                            : "NULL(失败)")
+                            + " 等级=" + effLv
+                            + " 时长=" + effDur);
+
 
                 }
                 if (!rest.isEmpty()) {
@@ -645,12 +1237,33 @@ public class AreaProtection implements Listener {
                 ac.confiscateMsg = line.substring(
                         "没收提示:".length()).trim();
             } else if (line.startsWith("进入提示:")) {
-                ac.enterMsg = line.substring(
-                        "进入提示:".length()).trim();
+                String raw = line.substring("进入提示:".length()).trim();
+                ac.enterMsg = raw;
+
+                // ★ 调试：打印原文和Unicode
+                StringBuilder hex = new StringBuilder();
+                for (int i = 0; i < raw.length(); i++) {
+                    hex.append(String.format("U+%04X ",
+                            (int) raw.charAt(i)));
+                }
+                plugin.getLogger().info(
+                        "[防护-解析] ★★★进入提示原文=[" + raw
+                                + "] 长度=" + raw.length()
+                                + " Unicode=" + hex.toString());
             } else if (line.startsWith("离开提示:")) {
-                ac.leaveMsg = line.substring(
-                        "离开提示:".length()).trim();
-            } else if (line.startsWith("惩罚命令:")) {
+                String raw = line.substring("离开提示:".length()).trim();
+                ac.leaveMsg = raw;
+
+                StringBuilder hex = new StringBuilder();
+                for (int i = 0; i < raw.length(); i++) {
+                    hex.append(String.format("U+%04X ",
+                            (int) raw.charAt(i)));
+                }
+                plugin.getLogger().info(
+                        "[防护-解析] ★★★离开提示原文=[" + raw
+                                + "] 长度=" + raw.length()
+                                + " Unicode=" + hex.toString());
+        } else if (line.startsWith("惩罚命令:")) {
                 ac.punishCommands.add(line.substring(
                         "惩罚命令:".length()).trim());
             } else if (line.startsWith("强制游戏模式:")
@@ -938,127 +1551,58 @@ public class AreaProtection implements Listener {
         return HOSTILE_TYPES.contains(typeName);
     }
 
-    // ==================== 白/黑名单持久化 ====================
+    // ==================== 白名单持久化 ====================
 
-    private File getWhitelistFile(String type, String area) {
-        String fileName = type + "_" + area + ".txt";
-        return new File(areaDir, "_whitelists/" + fileName);
-    }
+    /**
+     * 保存白名单到文件
+     * 路径：区域防护/whitelists/全局白名单.txt
+     * 路径：区域防护/whitelists/区域名.txt
+     */
+    public void saveWhitelists() {
+        try {
+            // 1. 保存全局白名单
+            PrintWriter pwGlobal = new PrintWriter(
+                    new OutputStreamWriter(
+                            new FileOutputStream(globalWhitelistFile),
+                            StandardCharsets.UTF_8));
+            for (String name : globalPlayerWhitelist) {
+                pwGlobal.println(name);
+            }
+            pwGlobal.close();
 
-    private void loadWhitelists() {
-        File wlDir = new File(areaDir, "_whitelists");
-        if (!wlDir.exists()) wlDir.mkdirs();
+            // 2. 删除旧的区域白名单文件（防止残留）
+            File[] oldFiles = whitelistDir.listFiles(
+                    (d, n) -> n.endsWith(".txt")
+                            && !n.equals("全局白名单.txt"));
+            if (oldFiles != null) {
+                for (File f : oldFiles) f.delete();
+            }
 
-        // 读全局玩家白名单
-        File f = new File(wlDir, "global_player.txt");
-        if (f.exists()) {
-            try {
-                BufferedReader br = new BufferedReader(
-                        new InputStreamReader(
-                                new FileInputStream(f),
+            // 3. 保存各区域白名单
+            for (Map.Entry<String, Set<String>> entry
+                    : areaPlayerWhitelist.entrySet()) {
+                String name = entry.getKey();
+                File areaFile = new File(
+                        whitelistDir, name + ".txt");
+                PrintWriter pwArea = new PrintWriter(
+                        new OutputStreamWriter(
+                                new FileOutputStream(areaFile),
                                 StandardCharsets.UTF_8));
-                String line;
-                while ((line = br.readLine()) != null) {
-                    line = line.trim();
-                    if (!line.isEmpty())
-                        globalPlayerWhitelist.add(line.toLowerCase());
+                for (String playerName : entry.getValue()) {
+                    pwArea.println(playerName);
                 }
-                br.close();
-            } catch (IOException ignored) {
+                pwArea.close();
             }
-        }
 
-        // 读全局物品黑名单
-        f = new File(wlDir, "global_item.txt");
-        if (f.exists()) {
-            try {
-                BufferedReader br = new BufferedReader(
-                        new InputStreamReader(
-                                new FileInputStream(f),
-                                StandardCharsets.UTF_8));
-                String line;
-                while ((line = br.readLine()) != null) {
-                    line = line.trim();
-                    if (!line.isEmpty())
-                        globalItemBlacklist.add(line.toUpperCase());
-                }
-                br.close();
-            } catch (IOException ignored) {
-            }
-        }
-
-        // 读区域白名单
-        for (String area : areas.keySet()) {
-            loadAreaWhitelist(area, "player", areaPlayerWhitelist);
-            loadAreaWhitelist(area, "item", areaItemBlacklist);
+            plugin.getLogger().info("[防护] 白名单已保存");
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[防护] 保存白名单失败: "
+                            + e.getMessage());
         }
     }
 
-    private void loadAreaWhitelist(String area, String type,
-                                   Map<String, Set<String>> map) {
-        File wlDir = new File(areaDir, "_whitelists");
-        File f = new File(wlDir, area + "_" + type + ".txt");
-        if (!f.exists()) return;
-        try {
-            Set<String> set = map.computeIfAbsent(
-                    area, k -> ConcurrentHashMap.newKeySet());
-            BufferedReader br = new BufferedReader(
-                    new InputStreamReader(
-                            new FileInputStream(f),
-                            StandardCharsets.UTF_8));
-            String line;
-            while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (!line.isEmpty()) set.add(line.toLowerCase());
-            }
-            br.close();
-        } catch (IOException ignored) {
-        }
-    }
 
-    private void saveGlobalWhitelist() {
-        File wlDir = new File(areaDir, "_whitelists");
-        if (!wlDir.exists()) wlDir.mkdirs();
-        try {
-            PrintWriter pw = new PrintWriter(
-                    new OutputStreamWriter(
-                            new FileOutputStream(
-                                    new File(wlDir, "global_player.txt")),
-                            StandardCharsets.UTF_8));
-            for (String s : globalPlayerWhitelist)
-                pw.println(s);
-            pw.close();
-        } catch (IOException ignored) {
-        }
-        try {
-            PrintWriter pw = new PrintWriter(
-                    new OutputStreamWriter(
-                            new FileOutputStream(
-                                    new File(wlDir, "global_item.txt")),
-                            StandardCharsets.UTF_8));
-            for (String s : globalItemBlacklist)
-                pw.println(s);
-            pw.close();
-        } catch (IOException ignored) {
-        }
-    }
-
-    private void saveAreaWhitelist(String area, String type,
-                                   Set<String> set) {
-        File wlDir = new File(areaDir, "_whitelists");
-        if (!wlDir.exists()) wlDir.mkdirs();
-        try {
-            PrintWriter pw = new PrintWriter(
-                    new OutputStreamWriter(
-                            new FileOutputStream(
-                                    new File(wlDir,
-                                            area + "_" + type + ".txt")),
-                            StandardCharsets.UTF_8));
-            for (String s : set) pw.println(s);
-            pw.close();
-        } catch (IOException ignored) {
-        }
-    }
 
     // ==================== 区域检测 ====================
 
@@ -1179,7 +1723,7 @@ public class AreaProtection implements Listener {
         playerCurrentArea.clear();
     }
     private void saveModeExempt(AreaConfig ac) {
-        File file = new File(areaDir, ac.name + ".txt");
+        File file = new File(rootDir, ac.name + ".txt");
         if (!file.exists()) return;
 
         try {
@@ -1235,56 +1779,561 @@ public class AreaProtection implements Listener {
 
     // ==================== 事件监听 ====================
     @EventHandler
-    public void onPlayerMove(PlayerMoveEvent e) {
-        Player p = e.getPlayer();
-        Location from = e.getFrom();
-        Location to = e.getTo();
+    public void onPlayerMove(PlayerMoveEvent event) {
+        Player p = event.getPlayer();
+        UUID uid = p.getUniqueId();
+        Location to = event.getTo();
         if (to == null) return;
 
-        // 获取当前位置的区域
-        AreaConfig toArea = getArea(
-                to.getWorld().getName(),
-                to.getBlockX(), to.getBlockY(),
-                to.getBlockZ());
+        Location from = event.getFrom();
+        if (from.getBlockX() == to.getBlockX()
+                && from.getBlockZ() == to.getBlockZ()) {
+            return;
+        }
 
-        // 获取上一tick位置的区域
-        AreaConfig fromArea = getArea(
-                from.getWorld().getName(),
-                from.getBlockX(), from.getBlockY(),
-                from.getBlockZ());
+        // 防抖
+        Long lastTime = lastMoveProcess.get(uid);
+        long now = System.currentTimeMillis();
+        if (lastTime != null
+                && now - lastTime < MOVE_DEBOUNCE_MS) {
+            return;
+        }
+        lastMoveProcess.put(uid, now);
 
-        // 用 playerCurrentArea 追踪区域变化
-        String toAreaName = (toArea != null) ? toArea.name : null;
-        String lastAreaName = playerCurrentArea.get(p.getName());
+        // 检测区域
+        String oldArea = playerCurrentArea.get(uid);
+        String newArea = null;
+        String forcedMode = null;
 
-        if (toAreaName != null) {
-            if (!toAreaName.equals(lastAreaName)) {
-                // 进入了新区域
-                // 先离开旧区域
-                if (lastAreaName != null) {
-                    AreaConfig oldAc = areas.get(lastAreaName);
-                    if (oldAc != null) {
-                        handleLeave(p, oldAc);
+        for (Map.Entry<String, AreaConfig> entry
+                : areas.entrySet()) {
+            AreaConfig ac = entry.getValue();
+            if (!ac.world.equals(to.getWorld().getName()))
+                continue;
+            int px = to.getBlockX();
+            int pz = to.getBlockZ();
+            int py = to.getBlockY();
+            int minX = Math.min(ac.x1, ac.x2);
+            int maxX = Math.max(ac.x1, ac.x2);
+            int minZ = Math.min(ac.z1, ac.z2);
+            int maxZ = Math.max(ac.z1, ac.z2);
+            if (px >= minX && px <= maxX
+                    && pz >= minZ && pz <= maxZ
+                    && py >= ac.yMin && py <= ac.yMax) {
+                newArea = entry.getKey();
+                forcedMode = ac.enforceGameMode;
+                break;
+            }
+        }
+
+     /*   plugin.getLogger().info(
+               "[防护-移动] " + p.getName()
+                        + " 旧=[" + oldArea
+                        + "] 新=[" + newArea + "]"
+                        + " areas.size=" + areas.size()
+                        + " world=" + to.getWorld().getName());*/
+
+        // ===== 2. 区域没变 =====
+        if (Objects.equals(oldArea, newArea)) {
+            if (newArea != null) {
+                AreaConfig ac = areas.get(newArea);
+                if (ac != null) {
+                    // ★ 每次移动都清除指定效果
+                    clearBadEffects(p, ac);
+
+                    // ★ 每次移动都强制游戏模式
+                    if (ac.enforceGameMode != null
+                            && !ac.enforceGameMode.isEmpty()
+                            && !isExemptFromGameMode(p, newArea)) {
+                        GameMode target =
+                                GameMode.valueOf(ac.enforceGameMode);
+                        if (p.getGameMode() != target) {
+                            p.setGameMode(target);
+                        }
                     }
                 }
-                // 进入新区域
-                handleEnter(p, toArea);
-                playerCurrentArea.put(p.getName(), toAreaName);
             }
-            // 在同一区域内 → 调用 handleInside（持续检查）
-            handleInside(p, toArea);
-        } else {
-            // 不在任何区域内
-            if (lastAreaName != null) {
-                // 离开了区域
-                AreaConfig oldAc = areas.get(lastAreaName);
-                if (oldAc != null) {
-                    handleLeave(p, oldAc);
+            return;
+        }
+
+        // 离开旧区域
+        if (oldArea != null) {
+          /*  plugin.getLogger().info(
+                "[防护-移动-离开] ★★★开始离开处理:
+                            + oldArea);*/
+
+            AreaConfig oldAc = areas.get(oldArea);
+
+            // 离开提示
+            if (oldAc != null && oldAc.leaveMsg != null
+                    && !oldAc.leaveMsg.isEmpty()) {
+                p.sendMessage(formatAreaMsg(oldAc.leaveMsg));
+            }
+
+            // 收标
+            List<PotionEffectType> marked =
+                    playerMarkedEffects.remove(uid);
+
+        /*    plugin.getLogger().info(
+                    "[防护-移动-离开] ★★★收标: "
+                            + (marked != null ? marked.size() : "null"));*/
+
+            if (marked != null) {
+                for (PotionEffectType t : marked) {
+                    plugin.getLogger().info(
+                            "[防护-移动-离开] 标记项: " + t.getName());
                 }
-                playerCurrentArea.remove(p.getName());
+            }
+
+            // 取消旧延时
+            if (pendingClearTask.containsKey(uid)) {
+                pendingClearTask.get(uid).cancel();
+                pendingClearTask.remove(uid);
+                pendingClearArea.remove(uid);
+                pendingClearEffects.remove(uid);
+                plugin.getLogger().info(
+                        "[防护-移动-离开] 取消旧延时");
+            }
+
+            // 创建延时清理
+            if (marked != null && !marked.isEmpty()) {
+                String clearArea = oldArea;
+                UUID clearUid = uid;
+                List<PotionEffectType> toClear =
+                        new ArrayList<>(marked);
+                pendingClearArea.put(uid, clearArea);
+                pendingClearEffects.put(uid, toClear);
+             /*   plugin.getLogger().info(
+                        "[防护-移动-离开] ★★★创建延时任务: "
+                                + toClear.size() + "个");*/
+
+                BukkitTask task = new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                    /*    plugin.getLogger().info(
+                                "[防护-移动-清理] ★★★延时触发!");*/
+                        pendingClearTask.remove(clearUid);
+                        pendingClearArea.remove(clearUid);
+
+                        Player online =
+                                Bukkit.getPlayer(clearUid);
+
+                        plugin.getLogger().info(
+                                "[防护-移动-清理] 在线="
+                                        + (online != null && online.isOnline())
+                                        + " 效果数=" + toClear.size());
+
+                        if (online == null || !online.isOnline()) {
+                            removePlayerEffects(
+                                    clearUid, clearArea);
+                            return;
+                        }
+
+                        int cleared = 0;
+                        for (PotionEffectType type : toClear) {
+                            PotionEffect eff =
+                                    online.getPotionEffect(type);
+                 /*           plugin.getLogger().info(
+                                    "[防护-移动-清理] 检查: "
+                                            + type.getName()
+                                            + " 身上=" + (eff != null));*/
+                            if (eff != null) {
+                                online.removePotionEffect(type);
+                                cleared++;
+                            }
+                        }
+                        removePlayerEffects(clearUid, clearArea);
+                        plugin.getLogger().info(
+                                "[防护-移动-清理] + cleared" + toClear.size());
+                    }
+                }.runTaskLater(plugin, 100L); // 5秒 = 100 tick
+                pendingClearTask.put(uid, task);
+            }
+        }
+
+
+        // 进入新区域
+        if (newArea != null) {
+            if (pendingClearTask.containsKey(uid)) {
+                pendingClearTask.get(uid).cancel();
+                pendingClearTask.remove(uid);
+                String oldP = pendingClearArea.remove(uid);
+                if (oldP != null) {
+                    diffEffects(p, uid, oldP, newArea);
+                }
+            }
+
+            AreaConfig newAc = areas.get(newArea);
+            if (newAc != null) {
+                if (newAc.enterMsg != null
+                        && !newAc.enterMsg.isEmpty()) {
+                    p.sendMessage(
+                            formatAreaMsg(newAc.enterMsg));
+                }
+                applyRegionEffects(p, uid, newArea, newAc);
+                // 清除效果
+                clearBadEffects(p, newAc);
+
+            }
+// ===== 清除指定效果 =====
+            if (newAc.clearEffects != null
+                    && !newAc.clearEffects.isEmpty()) {
+                for (String effName : newAc.clearEffects) {
+                    PotionEffectType type =
+                            resolveEffectType(effName);
+                    if (type != null && p.getPotionEffect(type) != null) {
+                        p.removePotionEffect(type);
+                        plugin.getLogger().info(
+                                "[防护] ★清除效果: " + effName
+                                        + " 玩家=" + p.getName());
+                    }
+                }
+            }
+
+// ===== 清除负面效果（clearBadEffects 已在上方处理） =====
+            // clearAllBadEffects 仅清除负面+中性效果，不清除正面效果
+            // 此处不再单独处理，统一由上方 clearBadEffects() 负责
+
+            if (forcedMode != null
+                    && !isExemptFromGameMode(p, newArea)) {
+                GameMode target =
+                        GameMode.valueOf(forcedMode);
+                if (p.getGameMode() != target) {
+                    p.setGameMode(target);
+                }
+            }
+        }
+
+        if (newArea != null) {
+            playerCurrentArea.put(uid, newArea);
+        } else {
+            playerCurrentArea.remove(uid);
+        }
+    }
+// ===== 清理袭击生物 =====
+
+    // 需要清理的袭击生物类型
+    private static final Set<String> RAID_MOBS = new HashSet<>(Arrays.asList(
+            "VEX",
+            "EVOKER",
+            "PILLAGER",
+            "VINDICATOR",
+            "WITCH",
+            "RAVAGER",
+            "PILLAGER"
+    ));
+
+    @EventHandler
+    public void onEntitySpawn(EntitySpawnEvent event) {
+        Entity entity = event.getEntity();
+        Location loc = entity.getLocation();
+
+        // 检查是否在防护区域内
+        AreaConfig ac = getArea(
+                loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac == null) return;
+
+        // 禁止袭击：取消袭击事件
+        if (ac.denyRaid) {
+            // 清理袭击生物
+            String typeName = entity.getType().name();
+            if (RAID_MOBS.contains(typeName)) {
+                event.setCancelled(true);
+                plugin.getLogger().info(
+                        "[防护] ★清理袭击生物: " + typeName
+                                + " 区域=" + ac.name);
+            }
+        }
+
+        // 没收物品检测
+        if (ac.confiscateItems != null
+                && !ac.confiscateItems.isEmpty()) {
+            if (entity instanceof Item) {
+                Item item = (Item) entity;
+                String itemType = item.getItemStack()
+                        .getType().name();
+                if (ac.confiscateItems.contains(itemType)) {
+                    event.setCancelled(true);
+                    plugin.getLogger().info(
+                            "[防护] 没收违禁掉落物: "
+                                    + itemType);
+                }
             }
         }
     }
+
+
+    /**
+     * 进入区域时发放效果
+     * 流程：查DB → 有记录跳过写入 → 无记录写入DB
+     *       → 给效果 → 贴标
+     */
+    private void applyRegionEffects(Player p, UUID uid,
+                                    String areaName, AreaConfig ac) {
+    /*    plugin.getLogger().info(
+                "[防护-贴标] ★★★方法被调用! 玩家="
+                        + p.getName() + " 区域=" + areaName
+                        + " ac=" + (ac != null)
+                        + " 效果配置数="
+                        + (ac != null ? ac.giveEffects.size() : "null"));*/
+
+        if (ac == null || ac.giveEffects.isEmpty()) return;
+        if (ac.giveEffects.isEmpty()) return;
+        // 查DB：该玩家在此区域是否已有效果记录
+        List<String> dbEffects =
+                getPlayerEffectNames(uid, areaName);
+
+        if (dbEffects.isEmpty()) {
+            // 无记录 → 写入DB
+            for (String[] eff : ac.giveEffects) {
+                PotionEffectType t =
+                        resolveEffectType(eff[0]);
+                if (t == null) continue;
+                saveSingleEffect(uid, p.getName(),
+                        areaName, t.getName());
+            }
+            plugin.getLogger().info(
+                    "[防护] DB写入, 玩家=" + p.getName()
+                            + " 区域=" + areaName);
+        } else {
+            plugin.getLogger().info(
+                    "[防护] DB已有记录, 跳过写入, 玩家="
+                            + p.getName()
+                            + " 区域=" + areaName);
+        }
+
+        // 给效果 + 贴标
+        List<PotionEffectType> applied = new ArrayList<>();
+        for (String[] eff : ac.giveEffects) {
+            try {
+                PotionEffectType type =
+                        resolveEffectType(eff[0]);
+                if (type == null) continue;
+                int lv = Integer.parseInt(eff[1]) - 1;
+                int dur = Integer.parseInt(eff[2]) * 20;
+
+                PotionEffect existing =
+                        p.getPotionEffect(type);
+                if (existing != null
+                        && existing.getAmplifier() >= lv) {
+                    continue;
+                }
+                p.addPotionEffect(
+                        new PotionEffect(type, dur, lv));
+                applied.add(type);
+            } catch (Exception ignored) {
+            }
+        }
+
+        // 贴标
+        // 新代码（合并，不覆盖）：
+        List<PotionEffectType> existingMarks =
+                playerMarkedEffects.get(uid);
+        if (existingMarks != null && !existingMarks.isEmpty()) {
+            // 已有标记，合并新增的
+            for (PotionEffectType t : applied) {
+                if (!existingMarks.contains(t)) {
+                    existingMarks.add(t);
+                }
+            }
+          /*  plugin.getLogger().info(
+                    "[防护-贴标] 合并标记: "
+                            + existingMarks.size()
+                            + " 个, 玩家=" + p.getName());*/
+        } else {
+            // 无标记，新建
+            playerMarkedEffects.put(uid, applied);
+        /*    plugin.getLogger().info(
+                    "[防护-贴标] 新建标记: "
+                            + applied.size()
+                            + " 个, 玩家=" + p.getName());*/
+        }
+    }
+
+        /**
+         * 离开区域时，延时5秒清理效果
+         * 流程：收标 → 5秒后清效果 → 确认清空 → 清DB
+         */
+    private void scheduleEffectClear(Player p, UUID uid,
+                                     String areaName) {
+        // 收标
+        List<PotionEffectType> marked =
+                playerAppliedEffects.remove(uid);
+
+        plugin.getLogger().info(
+                "[防护] 收标 " + (marked != null ? marked.size() : 0)
+                        + " 个, 玩家=" + p.getName()
+                        + " 区域=" + areaName);
+
+        // 启动5秒延时
+        pendingClearArea.put(uid, areaName);
+        BukkitTask task = new BukkitRunnable() {
+            @Override
+            public void run() {
+                pendingClearTask.remove(uid);
+                pendingClearArea.remove(uid);
+                pendingClearEffects.remove(uid);
+
+                // 清除效果
+                if (marked != null) {
+                    for (PotionEffectType type : marked) {
+                        p.removePotionEffect(type);
+                    }
+                }
+
+                // 确认清空后清DB
+                removePlayerEffects(uid, areaName);
+                plugin.getLogger().info(
+                        "[防护] 5秒已到, 清除 "
+                                + (marked != null ? marked.size() : 0)
+                                + " 个效果 + DB, 玩家="
+                                + p.getName()
+                                + " 区域=" + areaName);
+            }
+        }.runTaskLater(plugin, 100L); // 5秒 = 100 tick
+
+        pendingClearTask.put(uid, task);
+    }
+    public Set<String> getAllAreaNames() {
+        return areas.keySet();
+    }
+
+    /**
+     * 5秒内进了新区域：
+     * 清除旧区域有、新区域没有的效果
+     */
+    private void diffEffects(Player p, UUID uid,
+                             String oldAreaName, String newAreaName) {
+        AreaConfig oldAc = areas.get(oldAreaName);
+        AreaConfig newAc = areas.get(newAreaName);
+        if (oldAc == null || newAc == null) return;
+
+        // ★ 从 pendingClearEffects 获取旧标记
+        List<PotionEffectType> oldMarked =
+                pendingClearEffects.remove(uid);
+
+        if (oldMarked == null || oldMarked.isEmpty()) {
+            plugin.getLogger().info(
+                    "[防护-跨区域] 无待清理效果");
+            return;
+        }
+
+        // 新区域的效果集合
+        Set<PotionEffectType> newTypes = new HashSet<>();
+        if (newAc != null) {
+            for (String[] eff : newAc.giveEffects) {
+                PotionEffectType t =
+                        resolveEffectType(eff[0]);
+                if (t != null) newTypes.add(t);
+            }
+        }
+
+        int cleared = 0;
+        for (PotionEffectType type : oldMarked) {
+            if (!newTypes.contains(type)) {
+                p.removePotionEffect(type);
+                cleared++;
+                plugin.getLogger().info(
+                        "[防护-跨区域] 清除: "
+                                + type.getName());
+            } else {
+                plugin.getLogger().info(
+                        "[防护-跨区域] 保留: "
+                                + type.getName()
+                                + " (新区域也有)");
+            }
+        }
+
+        removePlayerEffects(uid, oldAreaName);
+        plugin.getLogger().info(
+                "[防护-跨区域] 完成: 清除"
+                        + cleared + "/" + oldMarked.size()
+                        + " 个, " + oldAreaName
+                        + " → " + newAreaName);
+    }
+
+// ===== DB 辅助方法（简化版）=====
+
+    /**
+     * 查询玩家在某个区域的效果记录（返回英文名列表）
+     */
+    private List<String> getPlayerEffectNames(
+            UUID uid, String areaName) {
+        List<String> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = dbConnection.prepareStatement(
+                    "SELECT effect_type FROM player_effects "
+                            + "WHERE uuid=? AND area_name=?");
+            ps.setString(1, uid.toString());
+            ps.setString(2, areaName);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                list.add(rs.getString("effect_type"));
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning(
+                    "[防护] 查询效果失败: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /**
+     * 写入单条效果记录
+     */
+    private void saveSingleEffect(UUID uid,
+                                  String playerName, String areaName,
+                                  String effectType) {
+        try {
+            PreparedStatement ps = dbConnection.prepareStatement(
+                    "INSERT INTO player_effects "
+                            + "(uuid, player_name, area_name, "
+                            + "effect_type, effect_level, "
+                            + "effect_duration, enter_time) "
+                            + "VALUES (?,?,?,?,?,?,?)");
+            ps.setString(1, uid.toString());
+            ps.setString(2, playerName);
+            ps.setString(3, areaName);
+            ps.setString(4, effectType);
+            ps.setInt(5, 0);
+            ps.setInt(6, 999);
+            ps.setLong(7, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning(
+                    "[防护] 写入效果失败: " + e.getMessage());
+        }
+    }
+
+    // ==================== 违禁品没收 ====================
+
+    /**
+     * 检查玩家是否豁免于没收
+     * 全局白名单 / 区域白名单 / modeExempt / OP 都跳过
+     */
+    public boolean isExemptFromConfiscation(
+            Player p, String areaName) {
+        String name = p.getName();
+
+        if (globalPlayerWhitelist.contains(name))
+            return true;
+
+        Set<String> areaWl =
+                areaPlayerWhitelist.get(areaName);
+        if (areaWl != null && areaWl.contains(name))
+            return true;
+
+        AreaConfig ac = areas.get(areaName);
+        if (ac != null && ac.modeExempt.contains(name))
+            return true;
+
+        return false;
+    }
+
 
     private String getChineseGameMode(GameMode mode) {
         switch (mode) {
@@ -1298,13 +2347,6 @@ public class AreaProtection implements Listener {
 
     private void handleEnter(Player p, AreaConfig ac) {
         UUID uid = p.getUniqueId();
-
-        // 进入提示
-        if (ac.enterMsg != null && !ac.enterMsg.isEmpty()) {
-            p.sendTitle("§c§l" + ac.name,
-                    "§e" + ac.enterMsg, 10, 60, 20);
-            p.sendMessage("§c§l[区域防护] §f" + ac.enterMsg);
-        }
 
         // 清除负面效果
         clearBadEffects(p, ac);
@@ -1329,7 +2371,7 @@ public class AreaProtection implements Listener {
 
         removePlayerEffects(uid, ac.name);
         if (!given.isEmpty()) {
-            savePlayerEffects(uid, p.getName(), ac.name, given);
+          //  savePlayerEffects(uid, p.getName(), ac.name, given);
         }
 
         // 白名单检查（最先执行）
@@ -1452,95 +2494,96 @@ public class AreaProtection implements Listener {
         switch (clean) {
             // 负面
             case "缓慢":
-                return PotionEffectType.getByName("slowness");
+                return resolveEffectType("slowness");
             case "挖掘疲劳":
-                return PotionEffectType.getByName("mining_fatigue");
+                return resolveEffectType("mining_fatigue");
             case "瞬间伤害":
-                return PotionEffectType.getByName("instant_damage");
+                return resolveEffectType("instant_damage");
             case "反胃":
-                return PotionEffectType.getByName("nausea");
+                return resolveEffectType("nausea");
             case "失明":
-                return PotionEffectType.getByName("blindness");
+                return resolveEffectType("blindness");
             case "饥饿":
-                return PotionEffectType.getByName("hunger");
+                return resolveEffectType("hunger");
             case "虚弱":
-                return PotionEffectType.getByName("weakness");
+                return resolveEffectType("weakness");
             case "中毒":
-                return PotionEffectType.getByName("poison");
+                return resolveEffectType("poison");
             case "凋零":
-                return PotionEffectType.getByName("wither");
+                return resolveEffectType("wither");
             case "飘浮":
-                return PotionEffectType.getByName("levitation");
+                return resolveEffectType("levitation");
             case "霉运":
-                return PotionEffectType.getByName("unluck");
+                return resolveEffectType("unluck");
             case "黑暗":
-                return PotionEffectType.getByName("darkness");
+                return resolveEffectType("darkness");
             case "蓄风":
-                return PotionEffectType.getByName("wind_charged");
+                return resolveEffectType("wind_charged");
             case "盘丝":
-                return PotionEffectType.getByName("weaving");
+                return resolveEffectType("weaving");
             case "渗浆":
-                return PotionEffectType.getByName("oozing");
+                return resolveEffectType("oozing");
             case "寄生":
-                return PotionEffectType.getByName("infested");
+                return resolveEffectType("infested");
             // 中性
             case "不祥之兆":
             case "不祥征兆":
-                return PotionEffectType.getByName("bad_omen");
+                return resolveEffectType("bad_omen");
             case "袭击之兆":
             case "袭击征兆":
-                return PotionEffectType.getByName("raid_omen");
+                return resolveEffectType("raid_omen");
             case "试炼之兆":
             case "试炼征兆":
-                return PotionEffectType.getByName("trial_omen");
+                return resolveEffectType("trial_omen");
             // 正面
             case "迅捷":
-                return PotionEffectType.getByName("speed");
+                return resolveEffectType("speed");
             case "急迫":
-                return PotionEffectType.getByName("haste");
+                return resolveEffectType("haste");
             case "力量":
-                return PotionEffectType.getByName("strength");
+                return resolveEffectType("strength");
             case "瞬间治疗":
-                return PotionEffectType.getByName("instant_health");
+                return resolveEffectType("instant_health");
             case "跳跃提升":
-                return PotionEffectType.getByName("jump_boost");
+                return resolveEffectType("jump_boost");
             case "生命恢复":
-                return PotionEffectType.getByName("regeneration");
+                return resolveEffectType("regeneration");
             case "抗性提升":
-                return PotionEffectType.getByName("resistance");
+                return resolveEffectType("resistance");
             case "抗火":
-                return PotionEffectType.getByName("fire_resistance");
+                return resolveEffectType("fire_resistance");
             case "水下呼吸":
-                return PotionEffectType.getByName("water_breathing");
+                return resolveEffectType("water_breathing");
             case "隐身":
-                return PotionEffectType.getByName("invisibility");
+                return resolveEffectType("invisibility");
             case "夜视":
-                return PotionEffectType.getByName("night_vision");
+                return resolveEffectType("night_vision");
             case "发光":
-                return PotionEffectType.getByName("glowing");
+                return resolveEffectType("glowing");
             case "生命提升":
-                return PotionEffectType.getByName("health_boost");
+                return resolveEffectType("health_boost");
             case "伤害吸收":
-                return PotionEffectType.getByName("absorption");
+                return resolveEffectType("absorption");
             case "饱和":
-                return PotionEffectType.getByName("saturation");
+                return resolveEffectType("saturation");
             case "幸运":
-                return PotionEffectType.getByName("luck");
+                return resolveEffectType("luck");
             case "村庄英雄":
-                return PotionEffectType.getByName("hero_of_the_village");
+                return resolveEffectType("hero_of_the_village");
             case "缓降":
-                return PotionEffectType.getByName("slow_falling");
+                return resolveEffectType("slow_falling");
             case "潮涌能量":
-                return PotionEffectType.getByName("conduit_power");
+                return resolveEffectType("conduit_power");
             case "海豚的恩惠":
-                return PotionEffectType.getByName("dolphins_grace");
+                return resolveEffectType("dolphins_grace");
             case "致命中毒":
-                return PotionEffectType.getByName("poison");
+                return resolveEffectType("poison");
             default:
                 break;
         }
 
-        // 兜底：直接用原版英文ID查
+
+// 兜底：直接用原版英文ID查（★ 注意是 PotionEffectType.getByName，不是 resolveEffectType）
         PotionEffectType fallback = PotionEffectType.getByName(clean);
         if (fallback != null) return fallback;
         fallback = PotionEffectType.getByName(clean.toLowerCase());
@@ -1548,6 +2591,7 @@ public class AreaProtection implements Listener {
 
         plugin.getLogger().warning("[防护] 无法识别效果: " + name);
         return null;
+
     }
 
 
@@ -1576,94 +2620,9 @@ public class AreaProtection implements Listener {
         }
     }
 
-    private void handleLeave(Player p, AreaConfig ac) {
-        UUID uid = p.getUniqueId();
-
-        if (ac.leaveMsg != null && !ac.leaveMsg.isEmpty()) {
-            p.sendTitle("§a§l离开区域", "§e" + ac.leaveMsg, 10, 40, 10);
-            p.sendMessage("§a§l[区域防护] §f" + ac.leaveMsg);
-        }
-
-        List<PotionEffectType> given = getPlayerEffects(uid, ac.name);
-
-        plugin.getLogger().info("[防护] " + p.getName()
-                + " 离开" + ac.name
-                + " DB效果数=" + given.size());
-
-        if (!given.isEmpty()) {
-            lastLeaveTime.put(uid, System.currentTimeMillis());
-            pendingClear.put(uid, new ArrayList<>(given));
-         plugin.getLogger().info("[防护] 已记录待清除 lastLeaveTime="
-                    + lastLeaveTime.containsKey(uid)
-                    + " pendingClear数量="
-                    + pendingClear.get(uid).size());
-        }
-
-        cancelBorder(p);
-    }
-
-    public void recoverPendingEffects() {
-        List<String[]> pending = getAllPendingEffects();
-        if (pending.isEmpty()) return;
-
-        plugin.getLogger().info("[防护] 恢复"
-                + pending.size() + "条未处理的效果记录");
-
-        for (String[] row : pending) {
-            String uuidStr = row[0];
-            String playerName = row[1];
-            String areaName = row[2];
-            String effectName = row[3];
-
-            UUID uid = UUID.fromString(uuidStr);
-            Player p = Bukkit.getPlayer(uid);
-
-            // 玩家不在线，直接清理DB
-            if (p == null || !p.isOnline()) {
-                plugin.getLogger().info("[防护] "
-                        + playerName + "不在线，清理DB记录");
-                removePlayerEffects(uid, areaName);
-                continue;
-            }
-
-            // 玩家在线，检查当前是否还在该区域
-            AreaConfig ac = areas.get(areaName);
-            if (ac == null) {
-                removePlayerEffects(uid, areaName);
-                continue;
-            }
-
-            AreaConfig currentArea = getArea(
-                    p.getWorld().getName(),
-                    p.getLocation().getBlockX(),
-                    p.getLocation().getBlockY(),
-                    p.getLocation().getBlockZ());
-
-            if (currentArea == null
-                    || !currentArea.name.equals(areaName)) {
-                // 不在原来区域了，清除效果
-                PotionEffectType type = PotionEffectType
-                        .getByName(effectName);
-                if (type != null) {
-                    p.removePotionEffect(type);
-                    plugin.getLogger().info("[防护] "
-                            + playerName + " 重连后清除: "
-                            + effectName);
-                }
-                removePlayerEffects(uid, areaName);
-            } else {
-                // 还在原来区域，重新给予效果
-                PotionEffectType type = PotionEffectType
-                        .getByName(effectName);
-                if (type != null) {
-                    p.addPotionEffect(new PotionEffect(
-                            type, 999 * 20, 0));
-                    plugin.getLogger().info("[防护] "
-                            + playerName + " 重连后重新给予: "
-                            + effectName);
-                }
-            }
-        }
+    public Map<UUID, List<PotionEffectType>>
+    getPendingClearEffects() {
+        return pendingClearEffects;
     }
 
     public void onPlayerOffline(UUID uid, String playerName,
@@ -1679,74 +2638,9 @@ public class AreaProtection implements Listener {
         }
         // 清除DB记录
         removePlayerEffects(uid, areaName);
-        lastLeaveTime.remove(uid);
-        pendingClear.remove(uid);
         plugin.getLogger().info("[防护] " + playerName
                 + " 下线，已清除" + given.size()
                 + "个效果并清理DB");
-    }
-
-
-    public void checkPendingClears() {
-        long now = System.currentTimeMillis();
-        Iterator<Map.Entry<UUID, Long>> it =
-                lastLeaveTime.entrySet().iterator();
-        /*plugin.getLogger().info("[防护] checkPendingClears执行"
-                + " 待处理=" + lastLeaveTime.size());*/
-        while (it.hasNext()) {
-            Map.Entry<UUID, Long> entry = it.next();
-            UUID uid = entry.getKey();
-            long leaveTime = entry.getValue();
-
-            if (now - leaveTime < 15000) continue;
-
-            Player p = Bukkit.getPlayer(uid);
-            if (p == null || !p.isOnline()) {
-                it.remove();
-                pendingClear.remove(uid);
-                continue;
-            }
-
-            List<PotionEffectType> toClear = pendingClear.get(uid);
-            if (toClear == null || toClear.isEmpty()) {
-                it.remove();
-                continue;
-            }
-
-            AreaConfig currentArea = getArea(
-                    p.getWorld().getName(),
-                    p.getLocation().getBlockX(),
-                    p.getLocation().getBlockY(),
-                    p.getLocation().getBlockZ());
-
-            if (currentArea == null) {
-                // 不在任何区域：只清除DB记录的效果，不动玩家其他效果
-                for (PotionEffectType type : toClear) {
-                    p.removePotionEffect(type);
-                }
-                removeAllPlayerEffects(uid);
-                plugin.getLogger().info("[防护] " + p.getName()
-                        + " 全清效果: " + toClear);
-            } else {
-                // 在新区域：只清新区域没有的效果
-                List<PotionEffectType> newGiven =
-                        getPlayerEffects(uid, currentArea.name);
-                if (newGiven == null) newGiven = new ArrayList<>();
-
-                for (PotionEffectType type : toClear) {
-                    if (!newGiven.contains(type)) {
-                        p.removePotionEffect(type);
-                    }
-                }
-                // 清除旧区域DB记录
-                removePlayerEffects(uid,"");
-                plugin.getLogger().info("[防护] " + p.getName()
-                        + " 在新区域, 清除旧效果");
-            }
-
-            it.remove();
-            pendingClear.remove(uid);
-        }
     }
 
     @EventHandler
@@ -1754,11 +2648,18 @@ public class AreaProtection implements Listener {
         Location from = e.getFrom();
         Location to = e.getTo();
         if (to == null) return;
-        // 忽略同世界内短距离传送（如骑马、矿车）
+
         if (from.getWorld() == to.getWorld()
                 && from.distance(to) < 5) return;
 
         Player p = e.getPlayer();
+        UUID uid = p.getUniqueId();
+
+        // 标记传送中
+        teleporting.add(uid);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            teleporting.remove(uid);
+        }, 5L);
 
         AreaConfig fromArea = getArea(
                 from.getWorld().getName(),
@@ -1769,45 +2670,219 @@ public class AreaProtection implements Listener {
                 to.getBlockX(), to.getBlockY(),
                 to.getBlockZ());
 
-        // 从区域内传送到区域外
-        if (fromArea != null && toArea == null) {
-            handleLeave(p, fromArea);
-        }
-        // 从区域外传送到区域内
-        else if (fromArea == null && toArea != null) {
-      //      plugin.getLogger().info("[防护] 触发handleEnter");
-            handleEnter(p, toArea);
-        }
+        String fromName = fromArea != null
+                ? fromArea.name : null;
+        String toName = toArea != null
+                ? toArea.name : null;
 
-        // 从一个区域传送到另一个区域
-        else if (fromArea != null && toArea != null
-                && !fromArea.name.equals(toArea.name)) {
-            handleLeave(p, fromArea);
-            handleEnter(p, toArea);
-        }
-    }
+    /*    plugin.getLogger().info(
+              "[防护-传送] ★★★进入onTeleport: "
+                        + p.getName()
+                        + " [" + fromName + "] → [" + toName + "]"
+                        + " teleporting=" + teleporting.contains(uid));*/
 
-    public void handleInside(Player p, AreaConfig ac) {
-        clearBadEffects(p, ac);
-
-        // 和平模式
-        if (ac.peaceMode) {
-            banHostilesWithWhitelist(p, ac);
-        } else if (ac.denyRaid) {
-            banRaidMobs(p, ac);
+        if (Objects.equals(fromName, toName)) {
+          /*  plugin.getLogger().info(
+                    "[防护-传送] 区域相同, 跳过");*/
+            return;
         }
 
-        // 游戏模式：每次都强制切换（排除全白/区白/豁免/OP）
-        if (ac.enforceGameMode != null) {
-            if (!isPlayerExemptFromModeChange(p, ac)) {
-                GameMode target = GameMode.valueOf(ac.enforceGameMode);
+        // ===== 离开旧区域 =====
+        if (fromName != null) {
+          /*  plugin.getLogger().info(
+                    "[防护-传送-离开] ★★★开始离开处理: "
+                            + fromName);*/
+
+            // 收标
+            List<PotionEffectType> marked =
+                    playerMarkedEffects.remove(uid);
+
+        /*    plugin.getLogger().info(
+                    "[防护-传送-离开] ★★★收标结果: "
+                            + (marked != null ? marked.size() : "null"));*/
+
+            if (marked != null) {
+                for (PotionEffectType t : marked) {
+                  /*  plugin.getLogger().info(
+                            "[防护-传送-离开] 标记项: "
+                                    + t.getName());*/
+                }
+            } else {
+              /*  plugin.getLogger().info(
+                        "[防护-传送-离开] ★★标记为null! "
+                                + "尝试其他key查找...");*/
+                // 遍历查找可能的标记
+                for (Map.Entry<UUID, List<PotionEffectType>> entry
+                        : playerMarkedEffects.entrySet()) {
+                    if (entry.getKey().equals(uid)) {
+                       /* plugin.getLogger().info(
+                                "[防护-传送-离开] 找到标记! 效果数="
+                                        + entry.getValue().size());*/
+                    }
+                }
+               /* plugin.getLogger().info(
+                        "[防护-传送-离开] playerMarkedEffects大小="
+                                + playerMarkedEffects.size());*/
+            }
+
+            // 取消旧延时
+            if (pendingClearTask.containsKey(uid)) {
+                pendingClearTask.get(uid).cancel();
+                pendingClearTask.remove(uid);
+                pendingClearArea.remove(uid);
+                pendingClearEffects.remove(uid);
+            }
+
+            // 创建5秒延时清理
+            if (marked != null && !marked.isEmpty()) {
+                String clearArea = fromName;
+                UUID clearUid = uid;
+                List<PotionEffectType> toClear =
+                        new ArrayList<>(marked);
+                pendingClearArea.put(uid, clearArea);
+                pendingClearEffects.put(uid, toClear);
+
+            /*    plugin.getLogger().info(
+                        "[防护-传送-离开] ★★★创建延时任务: "
+                                + toClear.size() + "个效果");*/
+
+                BukkitTask task = new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                       /* plugin.getLogger().info(
+                                "[防护-传送-清理] ★★★延时触发!");*/
+                        pendingClearTask.remove(clearUid);
+                        pendingClearArea.remove(clearUid);
+
+                        Player online =
+                                Bukkit.getPlayer(clearUid);
+/*
+                        plugin.getLogger().info(
+                                "[防护-传送-清理] 在线="
+                                        + (online != null && online.isOnline())
+                                        + " 效果数=" + toClear.size()
+                                        + " 区域=" + clearArea);*/
+
+                        if (online == null
+                                || !online.isOnline()) {
+                            plugin.getLogger().info(
+                                    "[防护-传送-清理] 玩家不在线, 清DB");
+                            removePlayerEffects(
+                                    clearUid, clearArea);
+                            return;
+                        }
+
+                        int cleared = 0;
+                        for (PotionEffectType type : toClear) {
+                            PotionEffect eff =
+                                    online.getPotionEffect(type);
+                         /*   plugin.getLogger().info(
+                                    "[防护-传送-清理] 检查: "
+                                            + type.getName()
+                                            + " 身上=" + (eff != null));*/
+                            if (eff != null) {
+                                online.removePotionEffect(type);
+                                cleared++;
+                            }
+                        }
+                        removePlayerEffects(clearUid, clearArea);
+                        plugin.getLogger().info(
+                                "[防护-传送-清理] ★★★完成: 清除"
+                                        + cleared + "/" + toClear.size());
+                    }
+                }.runTaskLater(plugin, 100L); // 5秒 = 100 tick
+                pendingClearTask.put(uid, task);
+
+            }
+
+            // 离开提示
+            if (fromArea != null && fromArea.leaveMsg != null
+                    && !fromArea.leaveMsg.isEmpty()) {
+                p.sendMessage(formatAreaMsg(fromArea.leaveMsg));
+            }
+        }
+
+        // ===== 进入新区域 =====
+        if (toName != null) {
+          /*  plugin.getLogger().info(
+                    "[防护-传送-进入] ★★★开始进入处理: "
+                            + toName);*/
+
+            // 取消旧延时
+            if (pendingClearTask.containsKey(uid)) {
+                pendingClearTask.get(uid).cancel();
+                pendingClearTask.remove(uid);
+                String oldP = pendingClearArea.remove(uid);
+                plugin.getLogger().info(
+                        "[防护-传送-进入] 取消旧延时, 旧区域="
+                                + oldP);
+                if (oldP != null) {
+                    diffEffects(p, uid, oldP, toName);
+                }
+            }
+
+            // 进入提示
+            if (toArea != null && toArea.enterMsg != null
+                    && !toArea.enterMsg.isEmpty()) {
+                p.sendMessage(formatAreaMsg(toArea.enterMsg));
+            }
+
+            // 发放效果
+            if (toArea != null) {
+            /*    plugin.getLogger().info(
+                        "[防护-传送-进入] 调用applyRegionEffects");*/
+                applyRegionEffects(p, uid, toName, toArea);
+// 清除效果
+                clearBadEffects(p, toArea);
+
+                // ★ 没收违禁品（使用统一的handleConfiscate）
+                if (!isExemptFromConfiscation(p, toName)) {
+                    handleConfiscate(p, toArea);
+                }
+            }
+
+            // 强制模式
+            if (toArea != null && toArea.enforceGameMode != null
+                    && !toArea.enforceGameMode.isEmpty()
+                    && !isExemptFromGameMode(p, toName)) {
+                GameMode target = GameMode.valueOf(
+                        toArea.enforceGameMode);
                 if (p.getGameMode() != target) {
                     p.setGameMode(target);
                 }
             }
         }
 
+        // 更新记录
+        if (toName != null) {
+            playerCurrentArea.put(uid, toName);
+        } else {
+            playerCurrentArea.remove(uid);
+        }
+    }
+
+
+    public Map<UUID, BukkitTask> getPendingClearTasks() {
+        return pendingClearTask;
+    }
+
+    public Map<UUID, List<PotionEffectType>>
+    getPlayerMarkedEffects() {
+        return playerMarkedEffects;
+    }
+
+    public void handleInside(Player p, AreaConfig ac) {
+        clearBadEffects(p, ac);
+
+        if (ac.peaceMode) {
+            banHostilesWithWhitelist(p, ac);
+        } else if (ac.denyRaid) {
+            banRaidMobs(p, ac);
+        }
+
+        // 全白或区白 → 跳过所有限制性规则（包括没收）
         if (isPlayerWhitelisted(p.getName(), ac)) return;
+
         handleConfiscate(p, ac);
     }
 
@@ -1839,6 +2914,16 @@ public class AreaProtection implements Listener {
         return areas.keySet();
     }
 
+    /**
+     * 获取玩家当前所在区域名
+     */
+    public String getPlayerArea(Player p) {
+        return playerCurrentArea.get(p.getUniqueId());
+    }
+
+    public Collection<BukkitTask> getPendingTasks() {
+        return pendingClearTask.values();
+    }
 
 
     // 判断是否为远程攻击敌对生物
@@ -2157,6 +3242,70 @@ public class AreaProtection implements Listener {
                 it.remove();
         }
     }
+    public void loadWhitelists() {
+        globalPlayerWhitelist.clear();
+        areaPlayerWhitelist.clear();
+
+        if (!whitelistDir.exists()) {
+            whitelistDir.mkdirs();
+            return;
+        }
+
+        try {
+            // 加载全局白名单
+            if (globalWhitelistFile.exists()) {
+                List<String> lines =
+                        java.nio.file.Files.readAllLines(
+                                globalWhitelistFile.toPath(),
+                                StandardCharsets.UTF_8);
+                for (String line : lines) {
+                    String name = line.trim();
+                    if (!name.isEmpty()
+                            && !name.startsWith("#")) {
+                        globalPlayerWhitelist.add(name);
+                    }
+                }
+            }
+
+            // 加载各区域白名单
+            File[] files = whitelistDir.listFiles(
+                    (File d, String n) -> n.endsWith(".txt")
+                            && !n.equals("全局白名单.txt"));
+            if (files != null) {
+                for (File f : files) {
+                    String areaName = f.getName()
+                            .replace(".txt", "");
+                    Set<String> set =
+                            ConcurrentHashMap.newKeySet();
+                    List<String> lines =
+                            java.nio.file.Files.readAllLines(
+                                    f.toPath(),
+                                    StandardCharsets.UTF_8);
+                    for (String line : lines) {
+                        String name = line.trim();
+                        if (!name.isEmpty()
+                                && !name.startsWith("#")) {
+                            set.add(name);
+                        }
+                    }
+                    if (!set.isEmpty()) {
+                        areaPlayerWhitelist.put(
+                                areaName, set);
+                    }
+                }
+            }
+
+            plugin.getLogger().info(
+                    "[防护] 白名单加载完成，全局: "
+                            + globalPlayerWhitelist.size()
+                            + "，区域数: "
+                            + areaPlayerWhitelist.size());
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[防护] 加载白名单失败: "
+                            + e.getMessage());
+        }
+    }
 
 
     @EventHandler
@@ -2302,7 +3451,6 @@ public class AreaProtection implements Listener {
     }
 
     // ==================== 管理命令 ====================
-
     public boolean handleCommand(CommandSender sender,
                                  String[] args) {
         args = smartReorderArgs(args);
@@ -2311,8 +3459,76 @@ public class AreaProtection implements Listener {
             return true;
         }
         String sub = args[0].toLowerCase();
+// ===== 诊断命令 =====
+        if (sub.equals("sdf1debug")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            UUID uid = p.getUniqueId();
 
-        // 工具
+            sender.sendMessage("§e===== 调试信息 =====");
+            sender.sendMessage("§7当前区域: "
+                    + playerCurrentArea.get(uid));
+            sender.sendMessage("§7标记效果数: "
+                    + (playerMarkedEffects.containsKey(uid)
+                    ? playerMarkedEffects.get(uid).size()
+                    : "无标记"));
+            sender.sendMessage("§7待清理任务: "
+                    + pendingClearTask.containsKey(uid));
+            sender.sendMessage("§7区域数: " + areas.size());
+
+            if (playerMarkedEffects.containsKey(uid)) {
+                List<PotionEffectType> marked =
+                        playerMarkedEffects.get(uid);
+                for (PotionEffectType type : marked) {
+                    sender.sendMessage("§7  标记: "
+                            + type.getName()
+                            + " 身上有="
+                            + (p.getPotionEffect(type) != null));
+                }
+            }
+            return true;
+        }
+
+// ===== 强制清理命令（测试用）=====
+        if (sub.equals("testclear")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            UUID uid = p.getUniqueId();
+
+            List<PotionEffectType> marked =
+                    playerMarkedEffects.remove(uid);
+            if (marked != null) {
+                for (PotionEffectType type : marked) {
+                    p.removePotionEffect(type);
+                }
+                sender.sendMessage("§a已强制清理 "
+                        + marked.size() + " 个效果");
+            } else {
+                sender.sendMessage("§c无标记效果可清理");
+            }
+
+            // 取消延时任务
+            if (pendingClearTask.containsKey(uid)) {
+                pendingClearTask.get(uid).cancel();
+                pendingClearTask.remove(uid);
+                pendingClearArea.remove(uid);
+                pendingClearEffects.remove(uid);
+                sender.sendMessage("§a已取消延时任务");
+            }
+
+            removePlayerEffects(uid,
+                    playerCurrentArea.getOrDefault(uid, ""));
+            sender.sendMessage("§aDB已清理");
+            return true;
+        }
+
+        // ===== 工具 =====
         if (sub.equals("工具") || sub.equals("wand")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -2323,17 +3539,14 @@ public class AreaProtection implements Listener {
             ItemMeta meta = tool.getItemMeta();
             meta.setDisplayName("§a§l区域选择工具");
             meta.setLore(Arrays.asList(
-                    "§7左键: 位置1",
-                    "§7右键: 位置2"));
+                    "§7左键: 位置1", "§7右键: 位置2"));
             tool.setItemMeta(meta);
             p.getInventory().addItem(tool);
-            p.sendMessage("§a§l[防护] §f已获取选择工具（旋风棒）");
-            p.sendMessage("§7左键方块=位置1，右键方块=位置2");
+            p.sendMessage("§a§l[防护] §f已获取选择工具");
             return true;
         }
 
-
-        // 创建
+        // ===== 创建 =====
         if (sub.equals("创建") || sub.equals("create")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -2352,7 +3565,7 @@ public class AreaProtection implements Listener {
                 return true;
             }
             String areaName = args[1];
-            File f = new File(areaDir, areaName + ".txt");
+            File f = new File(rootDir, areaName + ".txt");
             if (f.exists()) {
                 p.sendMessage("§c区域已存在");
                 return true;
@@ -2373,217 +3586,194 @@ public class AreaProtection implements Listener {
                         + "," + l2.getBlockZ());
                 pw.println("高度范围: 0-255");
                 pw.println();
-                pw.println("# 没收物品: 蘑菇,毒蘑菇");
                 pw.println("# 禁止放置方块");
                 pw.println("# 禁止破坏方块");
                 pw.println("# 禁止PVP");
-                pw.println("# 禁止摔伤");
-                pw.println("# 禁止饥饿");
-                pw.println("# 禁止一切伤害");
-                pw.println("# 禁止丢弃物品");
-                pw.println("# 禁止末影珍珠");
-                pw.println("# 禁止使用弓箭");
-                pw.println("# 禁止骑乘");
-                pw.println("# 禁止袭击");
-                pw.println("# 禁止药水");
-                pw.println("# 禁止爆炸");
-                pw.println("# 禁止使用物品: 蘑菇,毒蘑菇");
                 pw.println("# 效果: 夜视 1 999");
                 pw.println("# 进入提示: 欢迎来到保护区");
                 pw.println("# 离开提示: 已离开保护区");
-                pw.println("# 没收提示: 你的违禁品已被没收");
-                pw.println("# 通报批评: {player} 在保护区违规！");
-                pw.println("# 惩罚命令: ban {player} 60s 违规");
                 pw.close();
-                p.sendMessage("§a§l[防护] §f区域 " + areaName + " 已创建");
+                p.sendMessage("§a§l[防护] §f区域 "
+                        + areaName + " 已创建");
                 loadAllAreas();
             } catch (IOException ex) {
                 p.sendMessage("§c创建失败");
             }
             return true;
         }
-// ===== 和平白名单：addname / removename =====
+
+        // ===== 和平白名单 =====
         if (sub.equals("addname")) {
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别: "
+                            + args[1] + " 或 " + args[2]);
                     return true;
                 }
-                String areaName = parsed[0];
-                String creatureName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                AreaConfig ac = areas.get(areaName);
+                AreaConfig ac = areas.get(parsed[0]);
                 if (ac == null) {
-                    sender.sendMessage("§c区域不存在: " + areaName);
+                    sender.sendMessage("§c区域不存在");
                     return true;
                 }
-                if (ac.peaceWhitelist.contains(creatureName)) {
-                    sender.sendMessage("§e" + creatureName + " 已在 " + areaName + " 和平白名单中");
-                    return true;
-                }
-                ac.peaceWhitelist.add(creatureName);
-                savePeaceWhitelist(ac);
-                sender.sendMessage("§a已添加: " + creatureName + " → " + areaName + " 和平白名单");
+                ac.peaceWhitelist.add(parsed[1]);
+                saveAreaConfig(ac);
+                sender.sendMessage("§a已添加: "
+                        + parsed[1] + " → "
+                        + parsed[0] + " 和平白名单");
                 return true;
             }
-            sender.sendMessage("§c用法: /protect addname <区域/名字> <区域/名字>");
+            sender.sendMessage("§c用法: /protect addname "
+                    + "<区域> <名字>");
             return true;
         }
-
-
         if (sub.equals("removename")) {
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别");
                     return true;
                 }
-                String areaName = parsed[0];
-                String creatureName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                AreaConfig ac = areas.get(areaName);
+                AreaConfig ac = areas.get(parsed[0]);
                 if (ac == null) {
-                    sender.sendMessage("§c区域不存在: " + areaName);
+                    sender.sendMessage("§c区域不存在");
                     return true;
                 }
-                if (!ac.peaceWhitelist.contains(creatureName)) {
-                    sender.sendMessage("§e" + creatureName + " 不在 " + areaName + " 和平白名单中");
-                    return true;
-                }
-                ac.peaceWhitelist.remove(creatureName);
-                savePeaceWhitelist(ac);
-                sender.sendMessage("§a已移除: " + creatureName + " ← " + areaName + " 和平白名单");
+                ac.peaceWhitelist.remove(parsed[1]);
+                saveAreaConfig(ac);
+                sender.sendMessage("§a已移除: "
+                        + parsed[1] + " ← " + parsed[0]);
                 return true;
             }
-            sender.sendMessage("§c用法: /protect removename <区域/名字> <区域/名字>");
+            sender.sendMessage("§c用法: /protect removename "
+                    + "<区域> <名字>");
             return true;
         }
-
-
         if (sub.equals("listname")) {
             if (args.length < 2) {
-                sender.sendMessage("§c用法: /protect listname <区域>");
+                sender.sendMessage(
+                        "§c用法: /protect listname <区域>");
                 return true;
             }
-            String areaName = args[1];
-            AreaConfig ac = areas.get(areaName);
+            AreaConfig ac = areas.get(args[1]);
             if (ac == null) {
-                sender.sendMessage("§c区域不存在: " + areaName);
+                sender.sendMessage("§c区域不存在");
                 return true;
             }
-            sender.sendMessage("§a" + areaName + " 和平白名单:");
+            sender.sendMessage("§a" + args[1]
+                    + " 和平白名单:");
             if (ac.peaceWhitelist.isEmpty()) {
                 sender.sendMessage("§7  (空)");
             } else {
-                for (String name : ac.peaceWhitelist) {
-                    sender.sendMessage("§7  - " + name);
+                for (String n : ac.peaceWhitelist) {
+                    sender.sendMessage("§7  - " + n);
                 }
             }
             return true;
         }
 
-// ===== 模式排除：addwhite / removewhite =====
+        // ===== 模式排除 =====
         if (sub.equals("addwhite")) {
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别");
                     return true;
                 }
-                String areaName = parsed[0];
-                String playerName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                AreaConfig ac = areas.get(areaName);
+                AreaConfig ac = areas.get(parsed[0]);
                 if (ac == null) {
-                    sender.sendMessage("§c区域不存在: " + areaName);
+                    sender.sendMessage("§c区域不存在");
                     return true;
                 }
-                Set<String> global = globalWhitelist.get("global");
-                if (global != null && global.contains(playerName.toLowerCase())) {
-                    sender.sendMessage("§c" + playerName + " 已在全局白名单中，不需要添加到模式排除");
-                    return true;
-                }
-                Set<String> areaWl = areaWhitelist.get(areaName);
-                if (areaWl != null && areaWl.contains(playerName.toLowerCase())) {
-                    sender.sendMessage("§c" + playerName + " 已在" + areaName + "白名单中，不需要添加到模式排除");
-                    return true;
-                }
-                if (ac.modeExempt.contains(playerName)) {
-                    sender.sendMessage("§c" + playerName + " 已在" + areaName + "模式排除名单中");
-                    return true;
-                }
-                ac.modeExempt.add(playerName);
-                saveModeExempt(ac);
-                sender.sendMessage("§a已添加: " + playerName + " → " + areaName + " 模式排除名单");
+                ac.modeExempt.add(parsed[1]);
+                saveAreaConfig(ac);
+                sender.sendMessage("§a已添加: "
+                        + parsed[1] + " → "
+                        + parsed[0] + " 模式排除");
                 return true;
             }
-            sender.sendMessage("§c用法: /protect addwhite <区域/玩家> <区域/玩家>");
+            sender.sendMessage("§c用法: /protect addwhite "
+                    + "<区域> <玩家>");
             return true;
         }
-
         if (sub.equals("removewhite")) {
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别");
                     return true;
                 }
-                String areaName = parsed[0];
-                String playerName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                AreaConfig ac = areas.get(areaName);
+                AreaConfig ac = areas.get(parsed[0]);
                 if (ac == null) {
-                    sender.sendMessage("§c区域不存在: " + areaName);
+                    sender.sendMessage("§c区域不存在");
                     return true;
                 }
-                if (!ac.modeExempt.contains(playerName)) {
-                    sender.sendMessage("§c" + playerName + " 不在 " + areaName + " 模式排除名单中");
-                    return true;
-                }
-                ac.modeExempt.remove(playerName);
-                saveModeExempt(ac);
-                sender.sendMessage("§a已移除: " + playerName + " ← " + areaName + " 模式排除名单");
+                ac.modeExempt.remove(parsed[1]);
+                saveAreaConfig(ac);
+                sender.sendMessage("§a已移除: "
+                        + parsed[1] + " ← "
+                        + parsed[0] + " 模式排除");
                 return true;
             }
-            sender.sendMessage("§c用法: /protect removewhite <区域/玩家> <区域/玩家>");
+            sender.sendMessage("§c用法: /protect removewhite "
+                    + "<区域> <玩家>");
             return true;
         }
-
         if (sub.equals("listwhite")) {
             if (args.length < 2) {
-                sender.sendMessage("§c用法: /protect listwhite <区域>");
+                sender.sendMessage(
+                        "§c用法: /protect listwhite <区域>");
                 return true;
             }
-            String areaName = args[1];
-            AreaConfig ac = areas.get(areaName);
+            AreaConfig ac = areas.get(args[1]);
             if (ac == null) {
-                sender.sendMessage("§c区域不存在: " + areaName);
+                sender.sendMessage("§c区域不存在");
                 return true;
             }
-            sender.sendMessage("§a" + areaName + " 模式排除名单:");
+            sender.sendMessage("§a" + args[1]
+                    + " 模式排除名单:");
             if (ac.modeExempt.isEmpty()) {
                 sender.sendMessage("§7  (空)");
             } else {
-                for (String name : ac.modeExempt) {
-                    sender.sendMessage("§7  - " + name);
+                for (String n : ac.modeExempt) {
+                    sender.sendMessage("§7  - " + n);
                 }
             }
             return true;
         }
 
-
-
-        // 列表
+        // ===== 列表 =====
         if (sub.equals("列表") || sub.equals("list")) {
+            if (args.length == 2) {
+                if (args[1].equalsIgnoreCase("global")) {
+                    sender.sendMessage("§a全局白名单:");
+                    if (globalPlayerWhitelist.isEmpty()) {
+                        sender.sendMessage("§7  (空)");
+                    } else {
+                        for (String n
+                                : globalPlayerWhitelist) {
+                            sender.sendMessage("§7  - " + n);
+                        }
+                    }
+                    return true;
+                }
+                String an = args[1];
+                Set<String> wl =
+                        areaPlayerWhitelist.get(an);
+                sender.sendMessage("§a" + an + " 白名单:");
+                if (wl == null || wl.isEmpty()) {
+                    sender.sendMessage("§7  (空)");
+                } else {
+                    for (String n : wl) {
+                        sender.sendMessage("§7  - " + n);
+                    }
+                }
+                return true;
+            }
             if (areas.isEmpty()) {
                 sender.sendMessage("§7暂无区域");
             } else {
@@ -2592,91 +3782,151 @@ public class AreaProtection implements Listener {
                         : areas.entrySet()) {
                     sender.sendMessage("§a  " + en.getKey()
                             + " §7规则:"
-                            + en.getValue().ruleCount() + "条");
+                            + en.getValue().ruleCount()
+                            + "条");
                 }
             }
             return true;
         }
 
-        // 重载
+        // ===== 重载 =====
         if (sub.equals("重载") || sub.equals("reload")) {
             reload();
-            sender.sendMessage("§a已重载 " + areas.size() + " 个区域");
+            sender.sendMessage("§a已重载 "
+                    + areas.size() + " 个区域");
             return true;
         }
-// ===== list：列出白名单 =====
-        if (sub.equals("list")) {
+
+        // ===== 物品黑名单 =====
+        if (sub.equals("additem")) {
             if (args.length == 2) {
-                String areaName = resolveAreaName(args[1]);
-                if (areaName == null || areaName.equalsIgnoreCase("global")) {
-                    sender.sendMessage("§a全局白名单:");
-                    Set<String> wl = globalWhitelist.get("global");
-                    if (wl == null || wl.isEmpty()) {
-                        sender.sendMessage("§7  (空)");
-                    } else {
-                        for (String name : wl) {
-                            sender.sendMessage("§7  - " + name);
-                        }
-                    }
+                String itemName = args[1].toUpperCase();
+                if (Material.matchMaterial(itemName)
+                        == null) {
+                    sender.sendMessage(
+                            "§c无效物品ID: " + args[1]);
                     return true;
                 }
-                if (!areaName.equals(args[1])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                Set<String> wl = areaWhitelist.get(areaName);
-                sender.sendMessage("§a" + areaName + " 白名单:");
-                if (wl == null || wl.isEmpty()) {
-                    sender.sendMessage("§7  (空)");
+                globalItemBlacklist.add(itemName);
+                sender.sendMessage("§a已全局加黑: "
+                        + itemName);
+                return true;
+            }
+            if (args.length == 3) {
+                String r1 = resolveAreaName(args[1]);
+                String r2 = resolveAreaName(args[2]);
+                String areaName;
+                String itemName;
+                if (r1 != null) {
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else if (r2 != null) {
+                    areaName = r2;
+                    itemName = args[1].toUpperCase();
                 } else {
-                    for (String name : wl) {
-                        sender.sendMessage("§7  - " + name);
-                    }
+                    areaName = "global";
+                    itemName = args[1].toUpperCase();
+                }
+                if (Material.matchMaterial(itemName)
+                        == null) {
+                    sender.sendMessage(
+                            "§c无效物品ID: " + itemName);
+                    return true;
+                }
+                if (areaName.equalsIgnoreCase("global")) {
+                    globalItemBlacklist.add(itemName);
+                    sender.sendMessage("§a已全局加黑: "
+                            + itemName);
+                } else {
+                    areaItemBlacklist
+                            .computeIfAbsent(areaName,
+                                    k -> ConcurrentHashMap
+                                            .newKeySet())
+                            .add(itemName);
+                    sender.sendMessage("§a已加黑: "
+                            + itemName + " → " + areaName);
                 }
                 return true;
             }
-            sender.sendMessage("§a全局白名单:");
-            Set<String> wl = globalWhitelist.get("global");
-            if (wl == null || wl.isEmpty()) {
-                sender.sendMessage("§7  (空)");
-            } else {
-                for (String name : wl) {
-                    sender.sendMessage("§7  - " + name);
-                }
-            }
+            sender.sendMessage("§c用法: /protect additem "
+                    + "<区域/物品> <区域/物品>");
             return true;
         }
-
-
-// ===== listitem：列出黑名单物品 =====
+        if (sub.equals("removeitem")) {
+            if (args.length == 2) {
+                String itemName = args[1].toUpperCase();
+                if (!globalItemBlacklist
+                        .contains(itemName)) {
+                    sender.sendMessage(
+                            "§c全局黑名单中没有: "
+                                    + itemName);
+                    return true;
+                }
+                globalItemBlacklist.remove(itemName);
+                sender.sendMessage("§a已移除: " + itemName);
+                return true;
+            }
+            if (args.length == 3) {
+                String r1 = resolveAreaName(args[1]);
+                String r2 = resolveAreaName(args[2]);
+                String areaName;
+                String itemName;
+                if (r1 != null) {
+                    areaName = r1;
+                    itemName = args[2].toUpperCase();
+                } else if (r2 != null) {
+                    areaName = r2;
+                    itemName = args[1].toUpperCase();
+                } else {
+                    areaName = "global";
+                    itemName = args[1].toUpperCase();
+                }
+                if (areaName.equalsIgnoreCase("global")) {
+                    globalItemBlacklist.remove(itemName);
+                } else {
+                    Set<String> list =
+                            areaItemBlacklist.get(areaName);
+                    if (list != null) {
+                        list.remove(itemName);
+                    }
+                }
+                sender.sendMessage("§a已移除: "
+                        + itemName);
+                return true;
+            }
+            sender.sendMessage("§c用法: /protect removeitem "
+                    + "<区域/物品> <区域/物品>");
+            return true;
+        }
         if (sub.equals("listitem")) {
             if (args.length < 2) {
-                // 全局黑名单
-                sender.sendMessage("§a§l===== 全局物品黑名单 =====");
+                sender.sendMessage(
+                        "§a全局物品黑名单:");
                 if (globalItemBlacklist.isEmpty()) {
                     sender.sendMessage("§7（空）");
                 } else {
-                    for (String item : globalItemBlacklist) {
+                    for (String item
+                            : globalItemBlacklist) {
                         sender.sendMessage("§f- " + item);
                     }
                 }
                 return true;
             }
-            // 区域黑名单
-            String area = args[1];
-            if (!validateArea(sender, area)) return true;
-            Set<String> list = areaItemBlacklist.get(area);
-            sender.sendMessage("§a§l===== " + area + " 物品黑名单 =====");
+            Set<String> list =
+                    areaItemBlacklist.get(args[1]);
+            sender.sendMessage("§a" + args[1]
+                    + " 物品黑名单:");
             if (list == null || list.isEmpty()) {
                 sender.sendMessage("§7（空）");
-                return true;
-            }
-            for (String item : list) {
-                sender.sendMessage("§f- " + item);
+            } else {
+                for (String item : list) {
+                    sender.sendMessage("§f- " + item);
+                }
             }
             return true;
         }
 
-// ===== expand 扩大选区 =====
+        // ===== expand 扩建 =====
         if (sub.equals("expand")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -2698,40 +3948,30 @@ public class AreaProtection implements Listener {
                     amount = Integer.parseInt(args[1]);
                 } catch (NumberFormatException ignored) {}
             }
-
-            // 获取区域当前边界
             int minX = Math.min(ac.x1, ac.x2);
             int maxX = Math.max(ac.x1, ac.x2);
             int minZ = Math.min(ac.z1, ac.z2);
             int maxZ = Math.max(ac.z1, ac.z2);
-
-            // 根据面朝方向扩建
             float yaw = p.getLocation().getYaw();
             String dir = yawToDir(yaw);
-            switch (dir) {
-                case "北": minZ -= amount; break;
-                case "南": maxZ += amount; break;
-                case "东": maxX += amount; break;
-                case "西": minX -= amount; break;
-            }
-
-            // 写回配置文件
+            if (dir.equals("北")) minZ -= amount;
+            else if (dir.equals("南")) maxZ += amount;
+            else if (dir.equals("东")) maxX += amount;
+            else if (dir.equals("西")) minX -= amount;
             ac.x1 = minX;
             ac.x2 = maxX;
             ac.z1 = minZ;
             ac.z2 = maxZ;
             saveAreaConfig(ac);
-
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
-                    + " §f已向 §e" + dir + " §f扩建 §e" + amount + "§f格");
-            p.sendMessage("§7新范围: X(" + minX + "~" + maxX
-                    + ") Z(" + minZ + "~" + maxZ + ")");
+                    + " §f向 §e" + dir + " §f扩建 §e"
+                    + amount + "§f格");
             return true;
         }
 
-
-// ===== contraction 收缩选区 =====
-        if (sub.equals("contraction") || sub.equals("contract")) {
+        // ===== contract 收缩 =====
+        if (sub.equals("contraction")
+                || sub.equals("contract")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
@@ -2752,46 +3992,39 @@ public class AreaProtection implements Listener {
                     amount = Integer.parseInt(args[1]);
                 } catch (NumberFormatException ignored) {}
             }
-
             int minX = Math.min(ac.x1, ac.x2);
             int maxX = Math.max(ac.x1, ac.x2);
             int minZ = Math.min(ac.z1, ac.z2);
             int maxZ = Math.max(ac.z1, ac.z2);
-
             float yaw = p.getLocation().getYaw();
             String dir = yawToDir(yaw);
-            switch (dir) {
-                case "北": minZ += amount; break;
-                case "南": maxZ -= amount; break;
-                case "东": maxX -= amount; break;
-                case "西": minX += amount; break;
-            }
-
+            if (dir.equals("北")) minZ += amount;
+            else if (dir.equals("南")) maxZ -= amount;
+            else if (dir.equals("东")) maxX -= amount;
+            else if (dir.equals("西")) minX += amount;
             if (minX > maxX || minZ > maxZ) {
-                p.sendMessage("§c收缩过度，区域已无效");
+                p.sendMessage("§c收缩过度");
                 return true;
             }
-
             ac.x1 = minX;
             ac.x2 = maxX;
             ac.z1 = minZ;
             ac.z2 = maxZ;
             saveAreaConfig(ac);
-
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
-                    + " §f已向 §e" + dir + " §f收缩 §e" + amount + "§f格");
-            p.sendMessage("§7新范围: X(" + minX + "~" + maxX
-                    + ") Z(" + minZ + "~" + maxZ + ")");
+                    + " §f向 §e" + dir + " §f收缩 §e"
+                    + amount + "§f格");
             return true;
         }
 
-        // 删除
+        // ===== 删除 =====
         if (sub.equals("删除") || sub.equals("delete")) {
             if (args.length < 2) {
-                sender.sendMessage("§e用法: /protect 删除 <名>");
+                sender.sendMessage(
+                        "§e用法: /protect 删除 <名>");
                 return true;
             }
-            File f = new File(areaDir, args[1] + ".txt");
+            File f = new File(rootDir, args[1] + ".txt");
             if (f.exists()) {
                 f.delete();
                 areas.remove(args[1]);
@@ -2802,263 +4035,98 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== add 玩家白名单 =====
+        // ===== add 加白名单 =====
         if (sub.equals("add")) {
             if (args.length == 2) {
-                String playerName = args[1];
-                if (!playerExists(playerName)) {
-                    sender.sendMessage("§c玩家不存在: " + playerName);
+                String name = args[1];
+                if (globalPlayerWhitelist.contains(name)) {
+                    sender.sendMessage("§e" + name
+                            + " 已在全局白名单中");
                     return true;
                 }
-                Set<String> wl = globalWhitelist
-                        .computeIfAbsent("global", k -> new HashSet<>());
-                if (wl.contains(playerName.toLowerCase())) {
-                    sender.sendMessage("§e" + playerName + " 已在全局白名单中");
-                    return true;
-                }
-                wl.add(playerName.toLowerCase());
-                saveGlobalWhitelist();
-                sender.sendMessage("§a已全局加白: " + playerName);
+                globalPlayerWhitelist.add(name);
+                saveWhitelists();
+                sender.sendMessage("§a已全局加白: " + name);
                 return true;
             }
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别");
                     return true;
                 }
                 String areaName = parsed[0];
                 String playerName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                if (!playerExists(playerName)) {
-                    sender.sendMessage("§c玩家不存在: " + playerName);
-                    return true;
-                }
                 if (areaName.equalsIgnoreCase("global")) {
-                    Set<String> wl = globalWhitelist
-                            .computeIfAbsent("global", k -> new HashSet<>());
-                    if (wl.contains(playerName.toLowerCase())) {
-                        sender.sendMessage("§e" + playerName + " 已在全局白名单中");
-                        return true;
-                    }
-                    wl.add(playerName.toLowerCase());
-                    saveGlobalWhitelist();
-                    sender.sendMessage("§a已全局加白: " + playerName);
+                    globalPlayerWhitelist.add(playerName);
+                    saveWhitelists();
+                    sender.sendMessage("§a已全局加白: "
+                            + playerName);
                 } else {
-                    Set<String> wl = areaWhitelist
-                            .computeIfAbsent(areaName, k -> new HashSet<>());
-                    if (wl.contains(playerName.toLowerCase())) {
-                        sender.sendMessage("§e" + playerName + " 已在 " + areaName + " 白名单中");
-                        return true;
-                    }
-                    wl.add(playerName.toLowerCase());
-                    saveAreaWhitelist(areaName, "whitelist", wl);
-                    sender.sendMessage("§a已加白: " + playerName + " → " + areaName);
+                    Set<String> wl = areaPlayerWhitelist
+                            .computeIfAbsent(areaName,
+                                    k -> ConcurrentHashMap
+                                            .newKeySet());
+                    wl.add(playerName);
+                    saveWhitelists();
+                    sender.sendMessage("§a已加白: "
+                            + playerName + " → " + areaName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect add <区域/玩家> <区域/玩家>");
+            sender.sendMessage("§c用法: /protect add "
+                    + "<区域/玩家> <区域/玩家>");
             return true;
         }
 
-// remove 命令
+        // ===== remove 移除白名单 =====
         if (sub.equals("remove")) {
             if (args.length == 2) {
-                String playerName = args[1];
-                Set<String> wl = globalWhitelist.get("global");
-                if (wl == null || !wl.contains(playerName.toLowerCase())) {
-                    sender.sendMessage("§e" + playerName + " 不在全局白名单中");
+                String name = args[1];
+                if (!globalPlayerWhitelist.contains(name)) {
+                    sender.sendMessage("§e" + name
+                            + " 不在全局白名单中");
                     return true;
                 }
-                wl.remove(playerName.toLowerCase());
-                saveGlobalWhitelist();
-                sender.sendMessage("§a已从全局白名单移除: " + playerName);
+                globalPlayerWhitelist.remove(name);
+                saveWhitelists();
+                sender.sendMessage("§a已从全局白名单移除: "
+                        + name);
                 return true;
             }
             if (args.length == 3) {
-                String[] parsed = parseAreaAndTarget(args[1], args[2]);
+                String[] parsed = parseAreaAndTarget(
+                        args[1], args[2]);
                 if (parsed == null) {
-                    sender.sendMessage("§c无法识别区域名: " + args[1] + " 或 " + args[2]);
+                    sender.sendMessage("§c无法识别");
                     return true;
                 }
                 String areaName = parsed[0];
                 String playerName = parsed[1];
-                if (!areaName.equals(args[1]) && !areaName.equals(args[2])) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
                 if (areaName.equalsIgnoreCase("global")) {
-                    Set<String> wl = globalWhitelist.get("global");
-                    if (wl == null || !wl.contains(playerName.toLowerCase())) {
-                        sender.sendMessage("§e" + playerName + " 不在全局白名单中");
-                        return true;
-                    }
-                    wl.remove(playerName.toLowerCase());
-                    saveGlobalWhitelist();
-                    sender.sendMessage("§a已从全局白名单移除: " + playerName);
+                    globalPlayerWhitelist.remove(playerName);
+                    saveWhitelists();
+                    sender.sendMessage("§a已移除: "
+                            + playerName);
                 } else {
-                    Set<String> wl = areaWhitelist.get(areaName);
-                    if (wl == null || !wl.contains(playerName.toLowerCase())) {
-                        sender.sendMessage("§e" + playerName + " 不在 " + areaName + " 白名单中");
-                        return true;
+                    Set<String> wl =
+                            areaPlayerWhitelist.get(areaName);
+                    if (wl != null) {
+                        wl.remove(playerName);
                     }
-                    wl.remove(playerName.toLowerCase());
-                    saveAreaWhitelist(areaName, "whitelist", wl);
-                    sender.sendMessage("§a已从 " + areaName + " 白名单移除: " + playerName);
+                    saveWhitelists();
+                    sender.sendMessage("§a已从 " + areaName
+                            + " 移除: " + playerName);
                 }
                 return true;
             }
-            sender.sendMessage("§c用法: /protect remove <区域/玩家> <区域/玩家>");
+            sender.sendMessage("§c用法: /protect remove "
+                    + "<区域/玩家> <区域/玩家>");
             return true;
         }
 
-
-        if (sub.equals("additem")) {
-            if (args.length == 2) {
-                String itemName = args[1].toUpperCase();
-                if (Material.matchMaterial(itemName) == null) {
-                    sender.sendMessage("§c无效的物品ID: " + args[1]);
-                    return true;
-                }
-                globalItemBlacklist.add(itemName);
-                saveGlobalWhitelist();
-                sender.sendMessage("§a已全局加黑: " + itemName);
-                return true;
-            }
-            if (args.length == 3) {
-                // 先尝试两边都解析区域名
-                String r1 = resolveAreaName(args[1]);
-                String r2 = resolveAreaName(args[2]);
-
-                String areaName = null;
-                String itemName = null;
-
-                if (r1 != null && r2 == null) {
-                    // arg1是区域名，arg2是物品
-                    areaName = r1;
-                    itemName = args[2].toUpperCase();
-                } else if (r2 != null && r1 == null) {
-                    // arg2是区域名，arg1是物品
-                    areaName = r2;
-                    itemName = args[1].toUpperCase();
-                } else if (r1 != null && r2 != null) {
-                    // 两边都是区域名，第一个优先
-                    areaName = r1;
-                    itemName = args[2].toUpperCase();
-                } else {
-                    // 都不是区域名，默认arg1是物品，arg2是区域名
-                    // 也尝试 arg1 当区域名模糊匹配
-                    itemName = args[1].toUpperCase();
-                    areaName = r2 != null ? r2 : "global";
-                }
-
-                // 验证物品ID
-                if (Material.matchMaterial(itemName) == null) {
-                    // 再试一次：可能 arg2 才是物品
-                    itemName = args[2].toUpperCase();
-                    if (areaName.equals(args[2])) {
-                        areaName = r1 != null ? r1 : "global";
-                    }
-                    if (Material.matchMaterial(itemName) == null) {
-                        sender.sendMessage("§c无效的物品ID: " + args[1] + " 和 " + args[2]);
-                        return true;
-                    }
-                }
-
-                // 纠正提示
-                if (r1 != null && !r1.equals(args[1]) && areaName.equals(r1)) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                if (r2 != null && !r2.equals(args[2]) && areaName.equals(r2)) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-
-                if (areaName.equalsIgnoreCase("global")) {
-                    globalItemBlacklist.add(itemName);
-                    saveGlobalWhitelist();
-                    sender.sendMessage("§a已全局加黑: " + itemName);
-                } else {
-                    areaItemBlacklist
-                            .computeIfAbsent(areaName, k -> ConcurrentHashMap.newKeySet())
-                            .add(itemName);
-                    saveAreaWhitelist(areaName, "item",
-                            areaItemBlacklist.get(areaName));
-                    sender.sendMessage("§a已加黑: " + itemName + " → " + areaName);
-                }
-                return true;
-            }
-            sender.sendMessage("§c用法: /protect additem <区域/物品> <区域/物品>");
-            return true;
-        }
-
-        if (sub.equals("removeitem")) {
-            if (args.length == 2) {
-                String itemName = args[1].toUpperCase();
-                if (!globalItemBlacklist.contains(itemName)) {
-                    sender.sendMessage("§c全局黑名单中没有: " + itemName);
-                    return true;
-                }
-                globalItemBlacklist.remove(itemName);
-                saveGlobalWhitelist();
-                sender.sendMessage("§a已从全局黑名单移除: " + itemName);
-                return true;
-            }
-            if (args.length == 3) {
-                String r1 = resolveAreaName(args[1]);
-                String r2 = resolveAreaName(args[2]);
-
-                String areaName = null;
-                String itemName = null;
-
-                if (r1 != null && r2 == null) {
-                    areaName = r1;
-                    itemName = args[2].toUpperCase();
-                } else if (r2 != null && r1 == null) {
-                    areaName = r2;
-                    itemName = args[1].toUpperCase();
-                } else if (r1 != null && r2 != null) {
-                    areaName = r1;
-                    itemName = args[2].toUpperCase();
-                } else {
-                    itemName = args[1].toUpperCase();
-                    areaName = "global";
-                }
-
-                // 纠正提示
-                if (r1 != null && !r1.equals(args[1]) && areaName.equals(r1)) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-                if (r2 != null && !r2.equals(args[2]) && areaName.equals(r2)) {
-                    sender.sendMessage("§7区域名已自动纠正为: §f" + areaName);
-                }
-
-                if (areaName.equalsIgnoreCase("global")) {
-                    if (!globalItemBlacklist.contains(itemName)) {
-                        sender.sendMessage("§c全局黑名单中没有: " + itemName);
-                        return true;
-                    }
-                    globalItemBlacklist.remove(itemName);
-                    saveGlobalWhitelist();
-                    sender.sendMessage("§a已从全局黑名单移除: " + itemName);
-                } else {
-                    Set<String> list = areaItemBlacklist.get(areaName);
-                    if (list == null || !list.contains(itemName)) {
-                        sender.sendMessage("§c" + areaName + " 黑名单中没有: " + itemName);
-                        return true;
-                    }
-                    list.remove(itemName);
-                    saveAreaWhitelist(areaName, "item", list);
-                    sender.sendMessage("§a已从 " + areaName + " 黑名单移除: " + itemName);
-                }
-                return true;
-            }
-            sender.sendMessage("§c用法: /protect removeitem <区域/物品> <区域/物品>");
-            return true;
-        }
-
-
-        // ===== on 显示边框 =====
+        // ===== on/off/tempon 边框 =====
         if (sub.equals("on")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -3075,23 +4143,20 @@ public class AreaProtection implements Listener {
                 return true;
             }
             showBorder(p, ac, false);
-            p.sendMessage("§a§l[防护] §f已显示 " + ac.name + " 边框");
+            p.sendMessage("§a§l[防护] §f已显示 "
+                    + ac.name + " 边框");
             return true;
         }
-
-        // ===== off 关闭边框 =====
         if (sub.equals("off")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
             }
-            Player p = (Player) sender;
-            cancelBorder(p);
-            p.sendMessage("§a§l[防护] §f已关闭边框显示");
+            cancelBorder((Player) sender);
+            ((Player) sender).sendMessage(
+                    "§a§l[防护] §f已关闭边框显示");
             return true;
         }
-
-        // ===== tempon 临时显示边框 =====
         if (sub.equals("tempon")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -3116,6 +4181,8 @@ public class AreaProtection implements Listener {
         showHelp(sender);
         return true;
     }
+
+
     private String[] parseAreaAndTarget(String arg1, String arg2) {
         String r1 = resolveAreaName(arg1);
         if (r1 != null) {
@@ -3170,7 +4237,7 @@ public class AreaProtection implements Listener {
         return "东";
     }
     private void saveAreaConfig(AreaConfig ac) {
-        File f = new File(areaDir, ac.name + ".txt");
+        File f = new File(rootDir, ac.name + ".txt");
         if (!f.exists()) return;
         try {
             List<String> lines = new ArrayList<>();
@@ -3218,10 +4285,64 @@ public class AreaProtection implements Listener {
         s.sendMessage("§a/protect list <区域> §7列出区域白名单");
         s.sendMessage("§a/protect listitem §7列出全局物品黑名单");
         s.sendMessage("§a/protect listitem <区域> §7列出区域物品黑名单");
+        s.sendMessage("§b§l欢迎游玩草原探险服务器");
+        s.sendMessage("§b§l服务器ip：mc2.ypshidifu.cn\n端口30679");
+        s.sendMessage("");
 
     }
+// ==================== 白名单管理公共方法 ====================
+
+    // ==================== 白名单操作 ====================
+
+    public boolean isPlayerGlobalWhitelisted(
+            String playerName) {
+        return globalPlayerWhitelist.contains(playerName);
+    }
+
+    public boolean addPlayerToGlobalWhitelist(
+            String playerName) {
+        boolean ok = globalPlayerWhitelist.add(playerName);
+        if (ok) saveWhitelists();
+        return ok;
+    }
+
+    public boolean removePlayerFromGlobalWhitelist(
+            String playerName) {
+        boolean ok = globalPlayerWhitelist.remove(playerName);
+        if (ok) saveWhitelists();
+        return ok;
+    }
+
+    public boolean isPlayerAreaWhitelisted(
+            String areaName, String playerName) {
+        Set<String> wl =
+                areaPlayerWhitelist.get(areaName);
+        return wl != null && wl.contains(playerName);
+    }
+
+    public boolean addPlayerToAreaWhitelist(
+            String areaName, String playerName) {
+        Set<String> set = areaPlayerWhitelist
+                .computeIfAbsent(areaName,
+                        k -> ConcurrentHashMap.newKeySet());
+        boolean ok = set.add(playerName);
+        if (ok) saveWhitelists();
+        return ok;
+    }
+
+    public boolean removePlayerFromAreaWhitelist(
+            String areaName, String playerName) {
+        Set<String> wl =
+                areaPlayerWhitelist.get(areaName);
+        boolean ok = wl != null && wl.remove(playerName);
+        if (ok) saveWhitelists();
+        return ok;
+    }
+
+
 
     public int handleConfiscate(Player p, AreaConfig ac) {
+        if (isPlayerWhitelisted(p.getName(), ac)) return 0;
         Set<String> allItems = new HashSet<>(ac.confiscateItems);
         allItems.addAll(globalItemBlacklist);
         Set<String> areaList = areaItemBlacklist.get(ac.name);
@@ -3270,6 +4391,11 @@ public class AreaProtection implements Listener {
                     && !ac.confiscateMsg.isEmpty())
                     ? ac.confiscateMsg
                     : "你携带了违禁品，已被没收";
+            // ★ 替换变量
+            msg = msg.replace("{player}", p.getName())
+                    .replace("{area}", ac.name)
+                    .replace("{count}", String.valueOf(totalRemoved))
+                    .replace("{items}", confiscatedNames);
             p.sendMessage("§c§l[区域防护] §f" + msg);
             p.sendMessage("§7没收物品: " + confiscatedNames);
 
@@ -3563,7 +4689,7 @@ public class AreaProtection implements Listener {
 
 
     private void savePeaceWhitelist(AreaConfig ac) {
-        File file = new File(areaDir, ac.name + ".txt");
+        File file = new File(rootDir, ac.name + ".txt");
         if (!file.exists()) return;
 
         try {

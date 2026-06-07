@@ -21,6 +21,8 @@ public class BondManager {
     public static final String TX_DAILY_SIGN   = "daily_sign";
     public static final String TX_FREEZE       = "freeze";
     public static final String TX_UNFREEZE     = "unfreeze";
+    public static final String TX_TICKET_REWARD = "ticket_reward";
+    public static final String TX_TICKET_SERVICE = "ticket_service";
 
 
     public static final int MAX_WATER_DAYS = 14;

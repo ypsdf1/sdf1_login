@@ -37,6 +37,8 @@ public class BondPrinter {
         TYPE_NAMES.put("daily_sign", "签到奖励");
         TYPE_NAMES.put("freeze", "冻结");
         TYPE_NAMES.put("unfreeze", "解冻");
+        TYPE_NAMES.put("ticket_reward", "工单奖励");
+        TYPE_NAMES.put("ticket_service", "工单服务奖励");
 
     }
 

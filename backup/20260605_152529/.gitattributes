@@ -1,0 +1,5 @@
+*.md text=auto encoding=UTF-8
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary

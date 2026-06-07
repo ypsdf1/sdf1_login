@@ -1,5 +1,5 @@
 name: Sdf1_login
-version: 1.0
+version: 2.1
 main: Sdf1_login.Main
 api-version: '1.21'
 commands:
@@ -102,3 +102,6 @@ commands:
   protect:
     description: 区域保护
     usage: /protect
+  update:
+    description: 检查所有插件更新(集群控制)
+    usage: /update
