@@ -16,6 +16,7 @@ import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 
@@ -48,6 +49,11 @@ public class GUIManager implements Listener {
             "§6§l任务中心";
     private final Map<UUID, Integer> userMgmtPages = new HashMap<>();
     private static final int UMGMT_PAGE_SIZE = 45;
+
+    // ★ 宝箱物品拦截计数（事不过三）
+    private final ConcurrentHashMap<String, Integer>
+            treasureMenuBlockCount =
+            new ConcurrentHashMap<>();
 
 
 
@@ -1571,6 +1577,11 @@ public class GUIManager implements Listener {
                              Inventory topInv,
                              ItemStack item, int removeSlot) {
 
+        // ★ 拦截宝箱自定义物品（事不过三原则）
+        if (handleTreasureItemBlock(p, item)) {
+            return;
+        }
+
         int amount = item.getAmount();
         removeSnowballFromInventory(p); //没收雪球菜单
         // 1. 从来源移除
@@ -1694,6 +1705,75 @@ public class GUIManager implements Listener {
         putIconPlaceholder(topInv);
         p.sendMessage("§c已清除菜单图标");
         p.updateInventory();
+    }
+
+
+    /** ★ 检测宝箱自定义物品（lore 含 §0§k 或 CUSTOM 标记） */
+    boolean isTreasureCustomItem(ItemStack item) {
+        if (item == null) return false;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        List<String> lore = meta.getLore();
+        if (lore == null) return false;
+        for (String line : lore) {
+            if (line.contains("\u00a70\u00a7k")
+                    || line.contains("CUSTOM")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 宝箱自定义物品拦截（事不过三原则）
+     * @param player 玩家
+     * @param item 要存入的物品
+     * @return true表示已拦截（调用方应return），false表示未拦截（继续原逻辑）
+     */
+    public boolean handleTreasureItemBlock(Player player, ItemStack item) {
+        if (!isTreasureCustomItem(item)) {
+            return false; // 不是宝箱物品，不拦截
+        }
+
+        String key = player.getUniqueId() + ":" + item.getType().name();
+        int count = treasureMenuBlockCount.getOrDefault(key, 0) + 1;
+        treasureMenuBlockCount.put(key, count);
+
+        if (count < 3) {
+            // 第1次或第2次：警告
+            player.sendMessage("§c§l[宝箱物品] §e该物品是宝箱自定义物品，无法存入菜单！");
+            player.sendMessage("§c§l[宝箱物品] §e第" + count + "/3次警告，第三次将没收物品！");
+            return true;
+        } else {
+            // 第3次：没收物品
+            // 1. 从玩家背包移除该物品
+            boolean removed = false;
+            for (int i = 0; i < player.getInventory().getSize(); i++) {
+                ItemStack invItem = player.getInventory().getItem(i);
+                if (invItem != null && invItem.isSimilar(item)) {
+                    player.getInventory().setItem(i, null);
+                    removed = true;
+                    break;
+                }
+            }
+            // 2. 如果背包没找到，可能在光标上（普通点击/拖拽场景）
+            if (!removed) {
+                org.bukkit.inventory.InventoryView view = player.getOpenInventory();
+                ItemStack cursor = view.getCursor();
+                if (cursor != null && cursor.isSimilar(item)) {
+                    view.setCursor(null);
+                    removed = true;
+                }
+            }
+            // 3. 清零计数器
+            treasureMenuBlockCount.remove(key);
+            // 4. 发送没收提示
+            player.sendMessage("§c§l[宝箱物品] §e你多次尝试存入宝箱物品，物品已被没收！");
+            player.sendMessage("§c§l[宝箱物品] §c事不过三，这是第三次警告！");
+            // 5. 记录日志
+            plugin.getLogger().warning("[宝箱物品] 玩家 " + player.getName() + " 第三次尝试存入宝箱物品，物品已没收: " + item.getType().name());
+            return true;
+        }
     }
 
 

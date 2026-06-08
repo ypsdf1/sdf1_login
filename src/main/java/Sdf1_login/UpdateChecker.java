@@ -55,6 +55,10 @@ public class UpdateChecker {
     private static final String GITEE_API =
             "https://gitee.com/api/v5/repos/" + GITEE_OWNER + "/" + GITEE_REPO + "/releases/latest";
 
+    // 第三路备选：宝塔静态HTML
+    private static final String FALLBACK_HTML =
+            "https://caoyuan.ypshidifu.cn/update_check.html";
+
     // 仓库页面链接
     private static final String GITHUB_LINK =
             "https://github.com/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases";
@@ -202,37 +206,47 @@ public class UpdateChecker {
         } else if (ge != null && ge.isSuccess()) {
             chosen = ge;
         } else {
-            // 双通道均失败
-            failCount++;
-            StringBuilder sb = new StringBuilder();
-            if (gh != null && gh.error != null) {
-                sb.append("§7GitHub: §c").append(gh.error);
+            // ★ 双通道均失败，尝试第三路备选（宝塔静态HTML）
+            plugin.getLogger().info("[Sdf1_login] GitHub/Gitee 均失败，尝试第三路备选 BaoTa...");
+            CheckResult fbResult = tryFallbackChannel();
+            if (fbResult != null && fbResult.isSuccess()) {
+                chosen = fbResult;
+                plugin.getLogger().info("[Sdf1_login] 第三路备选 BaoTa 检查成功: " + fbResult.version);
+            } else {
+                failCount++;
+                StringBuilder sb = new StringBuilder();
+                if (gh != null && gh.error != null) {
+                    sb.append("§7GitHub: §c").append(gh.error);
+                }
+                if (ge != null && ge.error != null) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append("§7Gitee:  §c").append(ge.error);
+                }
+                if (fbResult != null && fbResult.error != null) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append("§7BaoTa:  §c").append(fbResult.error);
+                }
+                if (failCount >= TRIP_THRESHOLD) {
+                    circuitTripped = true;
+                    plugin.getLogger().warning(
+                            "[Sdf1_login] 更新检测已熔断，连续失败" + failCount + "次");
+                    scheduleRetry();
+                }
+                if (sender != null) {
+                    final String msg = sb.toString();
+                    final boolean tripped = circuitTripped;
+                    final int fc = failCount;
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        sender.sendMessage("§c§l[更新] 检测失败");
+                        sender.sendMessage(msg);
+                        sender.sendMessage("§e失败次数: " + fc + "/" + TRIP_THRESHOLD);
+                        if (tripped) {
+                            sender.sendMessage("§c已熔断，2分钟后自动重试，或重启服务器重置");
+                        }
+                    });
+                }
+                return;
             }
-            if (ge != null && ge.error != null) {
-                if (sb.length() > 0) sb.append("\n");
-                sb.append("§7Gitee:  §c").append(ge.error);
-            }
-            if (failCount >= TRIP_THRESHOLD) {
-                circuitTripped = true;
-                plugin.getLogger().warning(
-                        "[Sdf1_login] 更新检测已熔断，连续失败" + failCount + "次");
-                // 熔断后安排2分钟后重试
-                scheduleRetry();
-            }
-            if (sender != null) {
-                final String msg = sb.toString();
-                final boolean tripped = circuitTripped;
-                final int fc = failCount;
-                Bukkit.getScheduler().runTask(plugin, () -> {
-                    sender.sendMessage("§c§l[更新] 检测失败");
-                    sender.sendMessage(msg);
-                    sender.sendMessage("§e失败次数: " + fc + "/" + TRIP_THRESHOLD);
-                    if (tripped) {
-                        sender.sendMessage("§c已熔断，2分钟后自动重试，或重启服务器重置");
-                    }
-                });
-            }
-            return;
         }
 
         // 至少一个通道成功
@@ -314,6 +328,81 @@ public class UpdateChecker {
 
     // ========== HTTP 请求 ==========
 
+    /**
+     * 第三路备选：从宝塔静态HTML解析版本信息
+     * HTML中用 <!--UPDATE_DATA 包裹结构化数据：
+     * pluginName|version|downloadLink
+     */
+    private CheckResult tryFallbackChannel() {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(FALLBACK_HTML);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-Plugin-UpdateChecker/1.0");
+            conn.setConnectTimeout(TIMEOUT_MS);
+            conn.setReadTimeout(TIMEOUT_MS);
+            conn.setInstanceFollowRedirects(true);
+
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                return new CheckResult(null, "BaoTa", FALLBACK_HTML,
+                        "BaoTa: HTTP " + code);
+            }
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            reader.close();
+
+            // 解析 <!--UPDATE_DATA ... UPDATE_DATA--> 块
+            String html = sb.toString();
+
+            // ★ 去除 Cloudflare 注入的 CDN-CGI 链接（<a href=...>...</a>）
+            html = html.replaceAll("<a\\s[^>]*>[^<]*</a>", "");
+
+            int start = html.indexOf("<!--UPDATE_DATA");
+            int end = html.indexOf("UPDATE_DATA-->");
+            if (start < 0 || end < 0 || end <= start) {
+                return new CheckResult(null, "BaoTa", FALLBACK_HTML,
+                        "BaoTa: 无法解析更新数据块");
+            }
+            String block = html.substring(start, end);
+
+            // 逐行查找匹配当前插件名的记录
+            String[] lines = block.split("\n");
+            for (String l : lines) {
+                l = l.trim();
+                // 跳过空行、注释标记行、HTML注入标签
+                if (l.isEmpty() || l.startsWith("<!--") || l.startsWith("<")) continue;
+                if (l.startsWith("Sdf1_login|")) {
+                    // 格式: Sdf1_login|1.0|https://...
+                    String[] parts = l.split("\\|");
+                    if (parts.length >= 2) {
+                        String ver = parts[1].trim();
+                        String link = parts.length >= 3 ? parts[2].trim() : GITHUB_LINK;
+                        return new CheckResult(ver, "BaoTa", link, null);
+                    }
+                }
+            }
+
+            return new CheckResult(null, "BaoTa", FALLBACK_HTML,
+                    "BaoTa: 未找到 Sdf1_login 的版本信息");
+
+        } catch (java.net.SocketTimeoutException e) {
+            return new CheckResult(null, "BaoTa", FALLBACK_HTML, "BaoTa: 连接超时");
+        } catch (Exception e) {
+            return new CheckResult(null, "BaoTa", FALLBACK_HTML,
+                    "BaoTa: " + e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
     private static class CheckResult {
         final String version;
         final String source;
@@ -340,9 +429,10 @@ public class UpdateChecker {
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                            + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                            + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
             conn.setRequestProperty("Accept", "*/*");
-            conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9");
+            conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
+            conn.setRequestProperty("Connection", "keep-alive");
             conn.setConnectTimeout(TIMEOUT_MS);
             conn.setReadTimeout(TIMEOUT_MS);
             conn.setInstanceFollowRedirects(true);
@@ -353,7 +443,10 @@ public class UpdateChecker {
                 return new CheckResult(null, sourceName, link, sourceName + ": 未找到 (HTTP 404)");
             }
             if (code == 403) {
-                return new CheckResult(null, sourceName, link, sourceName + ": 被限流 (HTTP 403)");
+                String errBody = "";
+                try { BufferedReader er = new BufferedReader(new InputStreamReader(conn.getErrorStream())); StringBuilder eb = new StringBuilder(); String el; while ((el = er.readLine()) != null) eb.append(el); er.close(); errBody = eb.toString(); } catch (Exception ignored) {}
+                String detail = errBody.isEmpty() ? "" : " | " + errBody.substring(0, Math.min(errBody.length(), 200));
+                return new CheckResult(null, sourceName, link, sourceName + ": 被限流 (HTTP 403)" + detail);
             }
             if (code != 200) {
                 return new CheckResult(null, sourceName, link, sourceName + ": HTTP " + code);

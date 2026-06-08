@@ -1494,7 +1494,12 @@ public class AreaProtection implements Listener {
                 // 没名字或不在白名单，传送虚空
                 Location voidLoc = ent.getLocation().clone();
                 voidLoc.setY(ent.getWorld().getMinHeight() - 50);
-                ent.teleport(voidLoc);
+                // 末影人受伤害会自动传送回来，所以直接移除实体
+                if ("ENDERMAN".equals(ent.getType().name())) {
+                    ent.remove();
+                } else {
+                    ent.teleport(voidLoc);
+                }
                 banished++;
             /*    plugin.getLogger().info("[和平] "
                         + ent.getType().name()
@@ -1518,7 +1523,12 @@ public class AreaProtection implements Listener {
             // 没有保护期且不在白名单，传送虚空
             Location voidLoc = ent.getLocation().clone();
             voidLoc.setY(ent.getWorld().getMinHeight() - 50);
-            ent.teleport(voidLoc);
+            // 末影人受伤害会自动传送回来，直接移除
+            if ("ENDERMAN".equals(ent.getType().name())) {
+                ent.remove();
+            } else {
+                ent.teleport(voidLoc);
+            }
             banished++;
            /* plugin.getLogger().info("[和平] "
                     + ent.getType().name()
@@ -1544,7 +1554,8 @@ public class AreaProtection implements Listener {
             "ILLUSIONER", "VEX",
             "PHANTOM", "SHULKER", "WARDEN", "BREEZE",
             "PIGLIN", "PIGLIN_BRUTE", "ZOGLIN",
-            "ZOMBIFIED_PIGLIN", "ENDER_DRAGON"
+            "ZOMBIFIED_PIGLIN", "ENDER_DRAGON",
+            "ENDERMAN", "WITHER"
     ));
 
     private boolean isHostile(String typeName) {

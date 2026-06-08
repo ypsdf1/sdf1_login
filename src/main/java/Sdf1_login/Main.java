@@ -3976,6 +3976,11 @@ public class Main extends JavaPlugin
             if (toIconSlot) {
                 ItemStack dragged =
                         e.getOldCursor().clone();
+                // ★ 拦截宝箱自定义物品（事不过三原则）
+                if (gui.handleTreasureItemBlock(p, dragged)) {
+                    e.setCancelled(true);
+                    return;
+                }
                 String b64 = gui.serializeItem(dragged);
                 if (b64 != null) {
                     db.saveMenuIcon(p.getName(), b64,
