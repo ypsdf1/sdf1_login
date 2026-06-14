@@ -87,6 +87,15 @@ switch ($action) {
     case 'list_reset_requests':
         adminListResetRequests();
         break;
+    case 'list_online_players':
+        adminListOnlinePlayers();
+        break;
+    case 'list_active_players':
+        adminListActivePlayers();
+        break;
+    case 'get_stats_ex':
+        adminGetStatsEx();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -610,4 +619,74 @@ function adminRejectReset() {
     $stmt->execute();
 
     success(null, '已驳回该请求');
+}
+
+// ===== 获取在线玩家列表 =====
+function adminListOnlinePlayers() {
+    requireAdminSession();
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
+
+    $stmt = $db->query("SELECT player_name, login_time FROM online_players ORDER BY login_time DESC");
+    $players = [];
+    while ($row = $stmt->fetchArray(SQLITE3_ASSOC)) {
+        $players[] = $row;
+    }
+
+    success($players);
+}
+
+// ===== 获取活跃玩家（最近24小时登录过） =====
+function adminListActivePlayers() {
+    requireAdminSession();
+
+    $db = getDB();
+    $cutoff = time() - 86400; // 24小时前
+
+    $stmt = $db->prepare("SELECT player_name, last_login_time, total_online_time FROM users WHERE last_login_time >= :cutoff ORDER BY last_login_time DESC");
+    $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
+    $result = $stmt->execute();
+
+    $players = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $hours = round(($row['total_online_time'] ?? 0) / 3600, 1);
+        $players[] = [
+            'player_name' => $row['player_name'],
+            'last_login_time' => $row['last_login_time'],
+            'total_online_time' => $row['total_online_time'],
+            'hours_online' => $hours
+        ];
+    }
+
+    success($players);
+}
+
+// ===== 扩展统计（含在线/活跃玩家） =====
+function adminGetStatsEx() {
+    requireAdminSession();
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
+
+    // 在线玩家数
+    $onlineResult = $db->query("SELECT COUNT(*) as cnt FROM online_players");
+    $onlineCount = $onlineResult->fetchArray(SQLITE3_ASSOC)['cnt'];
+
+    // 活跃玩家（24小时内）
+    $cutoff = time() - 86400;
+    $activeResult = $db->prepare("SELECT COUNT(*) as cnt FROM users WHERE last_login_time >= :cutoff");
+    $activeResult->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
+    $activeResult->execute();
+    $activeCount = $activeResult->fetchArray(SQLITE3_ASSOC)['cnt'];
+
+    // 总用户
+    $userResult = $db->query("SELECT COUNT(*) as cnt FROM users");
+    $userCount = $userResult->fetchArray(SQLITE3_ASSOC)['cnt'];
+
+    success([
+        'total_users' => $userCount,
+        'online_count' => $onlineCount,
+        'active_count_24h' => $activeCount
+    ]);
 }

@@ -1322,11 +1322,27 @@ function notifySync() {
     $secret = getParam('secret');
     if (!$secret || $secret !== SECRET_KEY) error('认证失败');
 
-    // 写入同步通知文件
+    // ★ 获取最新交易ID
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+    $txId = getParam('tx_id', 0);
+    
+    // 写入同步通知文件（包含交易ID）
     $notifyFile = __DIR__ . '/../../sync_notify.txt';
-    file_put_contents($notifyFile, time());
+    $notifyData = json_encode(['time' => time(), 'tx_id' => (int)$txId]);
+    file_put_contents($notifyFile, $notifyData, LOCK_EX);
 
-    success([], '已通知插件同步');
+    // ★ 方式1: 直接HTTP回调通知Java插件拉取交易
+    $callbackPort = CALLBACK_PORT ?? 8080; // 默认端口
+    $callbackUrl = "http://127.0.0.1:" . $callbackPort . "/api/pull_pending_transactions?secret=" . SECRET_KEY;
+    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
+    
+    // ★ 方式2: 如果回环不通，也尝试通过Web URL触发
+    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . WEBSUB_DIR;
+    $notifyUrl2 = $baseUrl . "api/sync.php?action=notify_sync&secret=" . SECRET_KEY . "&tx_id=" . $txId;
+    @file_get_contents($notifyUrl2, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
+
+    success(['tx_id' => (int)$txId], '已通知插件立即同步交易数据');
 }
 
 // ===== 发送邮箱验证码 =====

@@ -217,15 +217,20 @@ function shopBuy($token) {
         'player' => $player
     ], '购买成功');
 
-    // ★ 立即通知Java插件拉取交易（两种方式：HTTP回调 + URL）
-    // 方式1：直接HTTP请求到Java插件
+    // ★ 立即通知Java插件拉取交易（3种方式）
+    // 方式1：直接HTTP请求到Java插件（回调端口）
     $notifyUrl = "http://127.0.0.1:" . CALLBACK_PORT . "/api/notify_sync?secret=" . SECRET_KEY . "&tx_id=" . $txId;
     @file_get_contents($notifyUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
     
-    // 方式2：如果本地回环不通，也尝试通过Web URL触发
+    // 方式2：通过Web URL触发（如果回环不通）
     $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . WEBSUB_DIR;
     $notifyUrl2 = $baseUrl . "/api/sync.php?action=notify_sync&secret=" . SECRET_KEY . "&tx_id=" . $txId;
     @file_get_contents($notifyUrl2, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
+    
+    // 方式3：写入通知文件（供插件文件系统检测）
+    $notifyFile = __DIR__ . '/../db/tx_notify.json';
+    $notifyData = json_encode(['tx_id' => (int)$txId, 'time' => time()], JSON_UNESCAPED_UNICODE);
+    @file_put_contents($notifyFile, $notifyData, LOCK_EX);
 }
 
 // ===== Weblogin Token验证（用于商城购买）=====

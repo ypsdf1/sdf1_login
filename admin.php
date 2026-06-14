@@ -11,8 +11,8 @@
         .header { background:linear-gradient(135deg,#1a1e2e,#0d1117); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
         .header h1 { font-size:18px; color:var(--accent); }
         .main { display:flex; min-height:calc(100vh - 52px); }
-        .sidebar { width:200px; background:var(--card); border-right:1px solid var(--border); padding:12px 0; flex-shrink:0; }
-        .si { padding:10px 20px; cursor:pointer; color:var(--dim); transition:all 0.2s; font-size:13px; }
+        .sidebar { width:200px; background:var(--card); border-right:1px solid var(--border); padding:12px 0; flex-shrink:0; overflow-y:auto; max-height:calc(100vh - 52px); }
+        .si { padding:10px 20px; cursor:pointer; color:var(--dim); transition:all 0.2s; font-size:13px; display:flex; align-items:center; gap:8px; }
         .si:hover { background:rgba(88,166,255,0.1); color:var(--text); }
         .si.active { color:var(--accent); border-right:3px solid var(--accent); background:rgba(88,166,255,0.05); }
         .content { flex:1; padding:20px; overflow-y:auto; max-height:calc(100vh - 52px); }
@@ -40,29 +40,52 @@
         .toast.ok { background:var(--green); color:#fff; }
         .toast.err { background:var(--red); color:#fff; }
         @keyframes sIn { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
-        .tabs { display:flex; gap:4px; margin-bottom:12px; }
+        .tabs { display:flex; gap:4px; margin-bottom:12px; flex-wrap:wrap; }
         .tab { padding:6px 14px; background:var(--bg); border:1px solid var(--border); border-radius:4px; cursor:pointer; font-size:12px; color:var(--dim); }
         .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
         .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
         .tag-used { background:rgba(248,81,73,0.2); color:var(--red); }
         .tag-unused { background:rgba(63,185,80,0.2); color:var(--green); }
-        @media(max-width:768px) { .sidebar{display:none;} .stats{grid-template-columns:repeat(2,1fr);} }
+        .player-online { color:var(--green) !important; font-weight:bold; }
+        .hamburger { display:none; background:none; border:none; color:var(--text); font-size:24px; cursor:pointer; }
+        .sidebar-overlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999; }
+        @media(max-width:768px) {
+            .hamburger { display:block; }
+            .sidebar { position:fixed; left:-200px; top:52px; bottom:0; z-index:1000; transition:left 0.3s; }
+            .sidebar.open { left:0; }
+            .sidebar-overlay.show { display:block; }
+            .stats { grid-template-columns:repeat(2,1fr); }
+            .table { font-size:11px; }
+        }
+        .theme-picker { display:flex; gap:8px; align-items:center; margin-top:8px; }
+        .color-btn { width:30px; height:30px; border-radius:4px; cursor:pointer; border:2px solid transparent; transition:all 0.2s; }
+        .color-btn:hover { border-color:var(--accent); transform:scale(1.1); }
+        .color-input { padding:7px 10px; background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text); font-size:13px; flex:1; }
     </style>
 </head>
 <body>
 <div class="header">
-    <h1>⚙️ SDF1 管理后台</h1>
-    <div><button class="btn btn-red" onclick="doLogout()">登出</button></div>
+    <div style="display:flex;align-items:center;gap:12px">
+        <button class="hamburger" onclick="toggleSidebar()">☰</button>
+        <h1>⚙️ SDF1 管理后台</h1>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+        <button class="btn btn-yellow" onclick="showThemePicker()">🎨 主题</button>
+        <button class="btn btn-red" onclick="doLogout()">登出</button>
+    </div>
 </div>
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
 <div class="main">
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="si active" data-p="dashboard" onclick="go('dashboard')">📊 总览</div>
         <div class="si" data-p="bonds" onclick="go('bonds')">💰 债券管理</div>
         <div class="si" data-p="shop" onclick="go('shop')">🛒 商品管理</div>
         <div class="si" data-p="cdk" onclick="go('cdk')">🎁 CDK管理</div>
         <div class="si" data-p="transactions" onclick="go('transactions')">📋 流水记录</div>
         <div class="si" data-p="token" onclick="go('token')">🔑 Token生成</div>
-        <div class="si" data-p="users" onclick="go('users')">👥 用户管理</div>
+        <div class="si" data-p="users" onclick="go('users')">👥 全部用户</div>
+        <div class="si" data-p="online" onclick="go('online')">🟢 在线玩家</div>
+        <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
     </div>
     <div class="content" id="C"></div>
@@ -71,10 +94,20 @@
 <script>
 const A = 'api/admin.php';
 let page = 'dashboard';
+let onlineInterval = null;
+
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+    document.getElementById('sidebarOverlay').classList.toggle('show');
+}
 
 function go(p) {
     page = p;
     document.querySelectorAll('.si').forEach(e => e.classList.toggle('active', e.dataset.p === p));
+    // 移动端关闭侧边栏
+    if (window.innerWidth <= 768) toggleSidebar();
+    // 停止之前的定时器
+    if (onlineInterval) clearInterval(onlineInterval);
     const c = document.getElementById('C');
     if (p==='dashboard') loadDashboard(c);
     else if (p==='bonds') loadBonds(c);
@@ -83,6 +116,8 @@ function go(p) {
     else if (p==='transactions') loadTx(c);
     else if (p==='token') loadToken(c);
     else if (p==='users') loadUsers(c);
+    else if (p==='online') loadOnlinePlayers(c);
+    else if (p==='active') loadActivePlayers(c);
     else if (p==='reset_requests') loadResetRequests(c);
 }
 
@@ -97,18 +132,21 @@ function go(p) {
 // ===== 总览 =====
 async function loadDashboard(el) {
     el.innerHTML = '<div class="empty">加载中...</div>';
-    const r = await api('admin.php?action=stats');
+    const r = await api('admin.php?action=get_stats_ex');
     if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
     const d = r.data;
     el.innerHTML = `
         <div class="stats">
             <div class="stat"><div class="v">${d.total_users}</div><div class="l">注册用户</div></div>
-            <div class="stat"><div class="v">${d.total_players}</div><div class="l">债券账户</div></div>
-            <div class="stat"><div class="v" style="color:var(--green)">${d.total_bonds}</div><div class="l">全服债券</div></div>
-            <div class="stat"><div class="v">${d.total_shop_items}</div><div class="l">商品数</div></div>
-            <div class="stat"><div class="v">${d.total_cdk}</div><div class="l">CDK总数</div></div>
-            <div class="stat"><div class="v" style="color:var(--yellow)">${d.unused_cdk}</div><div class="l">未使用CDK</div></div>
-            <div class="stat"><div class="v">${d.total_transactions}</div><div class="l">交易流水</div></div>
+            <div class="stat"><div class="v" style="color:var(--green)">${d.online_count}</div><div class="l">在线玩家</div></div>
+            <div class="stat"><div class="v" style="color:var(--yellow)">${d.active_count_24h}</div><div class="l">24h活跃</div></div>
+        </div>
+        <div class="card">
+            <h2>快捷统计</h2>
+            <div class="stats">
+                <div class="stat"><div class="v">${d.all_users || '-'}</div><div class="l">总用户</div></div>
+                <div class="stat"><div class="v" style="color:var(--green)">${d.online || 0}</div><div class="l">在线</div></div>
+            </div>
         </div>`;
 }
 
@@ -208,7 +246,6 @@ async function doAddShop() {
 }
 
 async function editStock(id, current) {
-    // 使用模态框替代prompt()
     const newStock = await showModal('修改库存', '当前库存: ' + current + ' (-1=无限, 0=售罄)', current);
     if (newStock === null) return;
     const r = await postApi('shop_update', {id, stock: parseInt(newStock)});
@@ -331,13 +368,10 @@ async function doGenToken() {
     const player = document.getElementById('tPlayer').value;
     const purpose = document.getElementById('tPurpose').value;
     const expire = parseInt(document.getElementById('tExpire').value);
-    // 通过sync API创建token（因为admin API的createToken需要PHP端直接调用）
-    // 这里直接调用PHP内部函数
     const r = await fetch(A, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({action: 'gen_token', player, purpose, expire})
     });
-    // 如果admin API不支持gen_token，用备选方案
     const res = await r.json();
     const div = document.getElementById('tResult');
     if (res.success) {
@@ -347,29 +381,36 @@ async function doGenToken() {
             <button class="btn btn-blue" onclick="navigator.clipboard.writeText('${res.data.token}');toast('已复制','ok')">复制</button>
         </div>`;
     } else {
-        div.innerHTML = `<p style="color:var(--red)">${res.message||'生成失败，请联系开发者添加gen_token接口'}</p>`;
+        div.innerHTML = `<p style="color:var(--red)">${res.message||'生成失败'}</p>`;
     }
 }
 
-// ===== 用户管理 =====
+// ===== 全部用户 =====
 async function loadUsers(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
     const r = await api('admin.php?action=list_users');
     const users = r.data || [];
+    
+    // 加载在线玩家数据
+    const onlineR = await api('admin.php?action=list_online_players');
+    const onlinePlayers = onlineR.success ? new Set(onlineR.data.map(p => p.player_name.toLowerCase())) : new Set();
+    
     el.innerHTML = `
         <div class="card">
-            <h2>用户管理 <span style="color:var(--dim);font-size:12px">(${users.length}个用户)</span></h2>
+            <h2>全部用户 <span style="color:var(--dim);font-size:12px">(${users.length}个用户${onlinePlayers.size > 0 ? '| 在线: '+onlinePlayers.size : ''})</span></h2>
             <div class="form-row" style="margin-bottom:12px">
                 <input id="userSearch" placeholder="搜索玩家名..." oninput="filterUsers()" style="flex:1">
             </div>
             <table class="table" id="userTable">
                 <tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>积分</th><th>在线时长</th><th>邮箱</th><th>操作</th></tr>
                 ${users.map(u => {
+                    const isOnline = onlinePlayers.has((u.player_name||'').toLowerCase());
+                    const playerNameClass = isOnline ? 'player-online' : '';
                     const regTime = u.register_time ? new Date(u.register_time*1000).toLocaleString() : '-';
                     const loginTime = u.last_login_time ? new Date(u.last_login_time*1000).toLocaleString() : '-';
                     const hours = Math.floor((u.total_online_time||0)/3600);
                     return `<tr data-name="${(u.player_name||'').toLowerCase()}">
-                        <td><b>${u.player_name}</b></td>
+                        <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}</td>
                         <td>${regTime}</td>
                         <td>${loginTime}</td>
                         <td>${u.points||0}</td>
@@ -382,6 +423,61 @@ async function loadUsers(el) {
                 }).join('')}
             </table>
             ${users.length === 0 ? '<div class="empty">暂无用户数据，确保插件已同步用户数据</div>' : ''}
+        </div>`;
+}
+
+// ===== 在线玩家 =====
+async function loadOnlinePlayers(el) {
+    el.innerHTML = '<div class="card">加载中...</div>';
+    loadOnlinePlayersData(el);
+    // 每10秒刷新一次
+    onlineInterval = setInterval(() => loadOnlinePlayersData(el), 10000);
+}
+
+async function loadOnlinePlayersData(el) {
+    const r = await api('admin.php?action=list_online_players');
+    if (!r.success) return;
+    const players = r.data || [];
+    el.innerHTML = `
+        <div class="card">
+            <h2>在线玩家 <span style="color:var(--dim);font-size:12px">(${players.length}人在线)</span></h2>
+            <table class="table">
+                <tr><th>玩家名</th><th>登录时间</th><th>在线时长</th></tr>
+                ${players.map(p => {
+                    const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
+                    const minsOnline = Math.floor((Date.now()/1000 - p.login_time)/60);
+                    return `<tr>
+                        <td class="player-online">🟢 ${p.player_name}</td>
+                        <td>${loginTime}</td>
+                        <td>${minsOnline}分钟</td>
+                    </tr>`;
+                }).join('')}
+            </table>
+            ${players.length === 0 ? '<div class="empty">暂无在线玩家</div>' : ''}
+        </div>`;
+}
+
+// ===== 活跃用户（24小时） =====
+async function loadActivePlayers(el) {
+    el.innerHTML = '<div class="card">加载中...</div>';
+    const r = await api('admin.php?action=list_active_players');
+    if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
+    const players = r.data || [];
+    el.innerHTML = `
+        <div class="card">
+            <h2>24小时活跃用户 <span style="color:var(--dim);font-size:12px">(${players.length}人)</span></h2>
+            <table class="table">
+                <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th></tr>
+                ${players.map(p => {
+                    const loginTime = p.last_login_time ? new Date(p.last_login_time*1000).toLocaleString() : '-';
+                    return `<tr>
+                        <td class="player-online">${p.player_name}</td>
+                        <td>${loginTime}</td>
+                        <td>${p.hours_online}小时</td>
+                    </tr>`;
+                }).join('')}
+            </table>
+            ${players.length === 0 ? '<div class="empty">暂无活跃用户</div>' : ''}
         </div>`;
 }
 
@@ -496,18 +592,6 @@ function confirmAction(msg) {
     });
 }
 
-async function adminSendReset(player, email) {
-    const emailInput = await showModal('发送重置密码链接', '为玩家 ' + player + ' 发送重置密码邮件', email);
-    if (!emailInput) return;
-    if (!emailInput.includes('@')) { toast('请输入有效邮箱', 'err'); return; }
-    const r = await fetch('api/sync.php?action=admin_send_reset_link', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({token: '', player, email: emailInput})
-    });
-    const data = await r.json();
-    toast(data.message, data.success ? 'ok' : 'err');
-}
-
 // ===== 通用 =====
 async function api(url) { const r=await fetch('api/' + url); return await r.json(); }
 async function postApi(action, data) {
@@ -548,6 +632,57 @@ function showModal(title, message, defaultValue) {
         overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
     });
 }
+
+// ===== 主题选择器 =====
+function showThemePicker() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:2000';
+    overlay.innerHTML = `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
+            <h3 style="margin-bottom:12px">🎨 选择背景颜色</h3>
+            <div class="theme-picker">
+                <div class="color-btn" style="background:#0d1117" onclick="setTheme('#0d1117')"></div>
+                <div class="color-btn" style="background:#1a1e2e" onclick="setTheme('#1a1e2e')"></div>
+                <div class="color-btn" style="background:#0f4c75" onclick="setTheme('#0f4c75')"></div>
+                <div class="color-btn" style="background:#1b2631" onclick="setTheme('#1b2631')"></div>
+                <div class="color-btn" style="background:#2c3e50" onclick="setTheme('#2c3e50')"></div>
+                <div class="color-btn" style="background:#23272a" onclick="setTheme('#23272a')"></div>
+            </div>
+            <div style="margin-top:16px">
+                <input type="text" id="customColor" placeholder="或输入十六进制颜色代码，如 #1a237e" class="color-input">
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                <button class="btn" id="themeCancel">取消</button>
+                <button class="btn btn-blue" id="themeConfirm" onclick="applyCustomColor()">应用</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('themeCancel').onclick = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+}
+
+function setTheme(color) {
+    document.documentElement.style.setProperty('--bg', color);
+    document.body.style.background = color;
+    localStorage.setItem('sdf1_theme', color);
+    toast('主题已应用', 'ok');
+}
+
+function applyCustomColor() {
+    const color = document.getElementById('customColor').value.trim();
+    if (color && /^#[0-9A-Fa-f]{6}$/.test(color)) {
+        setTheme(color);
+        document.querySelector('[id="themeCancel"]').click();
+    } else {
+        toast('请输入有效的十六进制颜色代码，如 #1a237e', 'err');
+    }
+}
+
+// 加载保存的主题
+(function() {
+    const savedTheme = localStorage.getItem('sdf1_theme');
+    if (savedTheme) setTheme(savedTheme);
+})();
 </script>
 </body>
 </html>
