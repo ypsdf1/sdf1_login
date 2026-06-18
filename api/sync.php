@@ -116,6 +116,9 @@ switch ($action) {
     case 'sync_online_players':
         syncOnlinePlayers();
         break;
+    case 'sync_player_ips':
+        syncPlayerIps();
+        break;
     case 'pull_shop':
         pullShop();
         break;
@@ -126,7 +129,10 @@ switch ($action) {
         syncWebloginToken();
         break;
     case 'validate_weblogin_token':
-        validateWebloginToken();
+        apiValidateWebloginToken();
+        break;
+    case 'push_player_login_status':
+        pushPlayerLoginStatus();
         break;
     case 'sync_token':
         syncToken();
@@ -173,11 +179,20 @@ switch ($action) {
     case 'notify_sync':
         notifySync();
         break;
+    case 'request_immediate_sync':
+        requestImmediateSync();
+        break;
+    case 'resend_pending':
+        resendPendingTransactions();
+        break;
     case 'send_email_code':
         sendEmailCode();
         break;
     case 'verify_email_code':
         verifyEmailCode();
+        break;
+    case 'get_player_email':
+        getPlayerEmail();
         break;
     case 'fix_stock':
         fixStock();
@@ -534,31 +549,221 @@ function fixTimestamps() {
 
 // ===== 插件同步在线玩家列表 =====
 function syncOnlinePlayers() {
-    $secret = getParam('secret');
-    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    $db = getDB();
 
+    // ★ 尝试从三个来源读取 secret 和 players
+    $rawInput = null;
+
+    // 1) 先从 $_GET/$_POST 读
+    $secret = getParam('secret');
     $players = getParam('players');
-    if (!$players || !is_array($players)) {
-        error('缺少players数据');
+
+    // 2) 如果 PHP 解析了 x-www-form-urlencoded，$_POST 会有数据
+    // 3) 如果是 application/json，$_POST 为空，需要从 $_SERVER['HTTP_RAW_POST_DATA'] 或 php://input 读取
+
+    if (!$secret && isset($_POST['secret'])) {
+        $secret = $_POST['secret'];
+    }
+    if (($players === null || !is_array($players)) && isset($_POST['players'])) {
+        $pVal = $_POST['players'];
+        // 表单提交的 players 可能是 URL 编码的字符串
+        if (is_string($pVal)) {
+            $pVal = json_decode($pVal, true);
+        }
+        if (is_array($pVal)) $players = $pVal;
+    }
+
+    // 4) 如果还没有，手动解析 php://input
+    if (!$secret || !$players) {
+        static $_syncCached = false;
+        if (!$_syncCached) {
+            $_syncCached = true;
+            $rawInput = file_get_contents('php://input');
+            if ($rawInput) {
+                // 先试 JSON
+                $jsonParsed = json_decode($rawInput, true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($jsonParsed)) {
+                    if (!isset($secret) && isset($jsonParsed['secret'])) $secret = $jsonParsed['secret'];
+                    if (!isset($players) && isset($jsonParsed['players'])) {
+                        $players = $jsonParsed['players'];
+                    }
+                } else {
+                    // 不是 JSON，解析为表单
+                    parse_str($rawInput, $formVars);
+                    if (!isset($secret) && isset($formVars['secret'])) $secret = $formVars['secret'];
+                    if (!isset($players) && isset($formVars['players'])) {
+                        $pVal = $formVars['players'];
+                        if (is_string($pVal)) {
+                            $pVal = json_decode($pVal, true);
+                        }
+                        if (is_array($pVal)) $players = $pVal;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    if ($players === null || !is_array($players)) {
+        @error_log("[syncOnlinePlayers] FAIL: invalid players data, type=" . gettype($players) . ", content=" . var_export($players, true));
+        error('缺少players数据 (received=' . var_export($players, true) . ' | type=' . gettype($players) . ')');
     }
 
     $db = getDB();
+    // ★ 设置更高的 busy_timeout 防止 "database is locked" 错误
+    $db->exec('PRAGMA busy_timeout=10000');
     $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER NOT NULL)");
 
-    // 清空旧数据
+    $now = time();
+    $playerCount = count($players);
+
+    // ★ Debug: 记录接收到的玩家数据
+    $playerNames = array_map(function($p) { return $p['name'] ?? '?'; }, $players);
+    $playerTimes = array_map(function($p) { return $p['login_time'] ?? 0; }, $players);
+    @error_log("[syncOnlinePlayers] Received $playerCount players: " . implode(', ', $playerNames));
+    @error_log("[syncOnlinePlayers] Login times: " . implode(', ', $playerTimes) . " | Server time: $now");
+
+    // ★ 删除所有旧记录，然后重新插入（避免残留旧数据）
     $db->exec("DELETE FROM online_players");
 
-    // 插入新数据
-    $now = time();
+    // ★ 逐条插入，不用事务（避免锁问题）
+    $synced = 0;
     foreach ($players as $player) {
         if (empty($player['name'])) continue;
-        $stmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:name, :time)");
-        $stmt->bindValue(':name', $player['name'], SQLITE3_TEXT);
-        $stmt->bindValue(':time', $player['login_time'] ?? $now, SQLITE3_INTEGER);
-        $stmt->execute();
+        $name = $player['name'];
+        $loginTime = isset($player['login_time']) ? (int)$player['login_time'] : $now;
+        try {
+            $stmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:name, :time)");
+            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmt->bindValue(':time', $loginTime, SQLITE3_INTEGER);
+            $stmt->execute();
+            $synced++;
+        } catch (Exception $e) {
+            @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
+        }
     }
 
-    success(['synced' => count($players)], "同步了" . count($players) . "个在线玩家");
+    // ★ 验证：查询刚插入的数据
+    $verifyStmt = $db->query("SELECT COUNT(*) as cnt FROM online_players");
+    $verifyRow = $verifyStmt->fetchArray(SQLITE3_ASSOC);
+    @error_log("[syncOnlinePlayers] Synced $synced/$playerCount, DB now has " . ($verifyRow['cnt'] ?? 0) . " records");
+
+    success(['synced' => $synced, 'server_time' => $now], "同步了" . $synced . "个在线玩家");
+}
+
+// ===== 同步所有玩家IP到PHP端（带变更检测） =====
+function syncPlayerIps() {
+    $db = getDB();
+
+    // ★ 解析参数
+    $secret = getParam('secret');
+    $players = getParam('players');
+
+    if (!$secret && isset($_POST['secret'])) {
+        $secret = $_POST['secret'];
+    }
+    if (($players === null || !is_array($players)) && isset($_POST['players'])) {
+        $pVal = $_POST['players'];
+        if (is_string($pVal)) {
+            $pVal = json_decode($pVal, true);
+        }
+        if (is_array($pVal)) $players = $pVal;
+    }
+
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    if ($players === null || !is_array($players)) {
+        error('缺少players数据');
+    }
+
+    // 创建IP变更日志表（用于追踪IP变化）
+    $db->exec("CREATE TABLE IF NOT EXISTS player_ip_changes (
+        player_name TEXT PRIMARY KEY,
+        old_ip TEXT DEFAULT '',
+        new_ip TEXT NOT NULL,
+        changed_at INTEGER NOT NULL,
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    // 创建IP归属地缓存表（用于避免重复查询API）
+    $db->exec("CREATE TABLE IF NOT EXISTS player_ip_locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
+        location TEXT DEFAULT '',
+        updated_at INTEGER DEFAULT 0,
+        UNIQUE(player_name, ip_address)
+    )");
+
+    // 批量更新玩家的IP到online_players表（带变更检测）
+    $now = time();
+    $changedCount = 0;
+    $skippedCount = 0;
+
+    foreach ($players as $player) {
+        if (empty($player['name']) || empty($player['ip'])) {
+            continue;
+        }
+
+        $playerName = $player['name'];
+        $newIp = $player['ip'];
+
+        // 检查该玩家是否有历史IP记录
+        $stmt = $db->prepare("SELECT old_ip, synced_at FROM player_ip_changes WHERE player_name = :player");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+
+        $hasChanged = false;
+        if (!$row) {
+            // 首次记录该玩家IP
+            $hasChanged = true;
+        } elseif ($row['old_ip'] !== $newIp) {
+            // IP发生变化
+            $hasChanged = true;
+        }
+
+        if ($hasChanged) {
+            // 记录IP变更
+            $stmt = $db->prepare("INSERT OR REPLACE INTO player_ip_changes (player_name, old_ip, new_ip, changed_at, synced_at) VALUES (:player, :old, :new, :time, :synced)");
+            $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $stmt->bindValue(':old', $row ? $row['old_ip'] : '', SQLITE3_TEXT);
+            $stmt->bindValue(':new', $newIp, SQLITE3_TEXT);
+            $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+            $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+            $stmt->execute();
+
+            // online_players 表没有 ip_address 列，直接插入（login_time 会自动同步）
+            $stmt2 = $db->prepare("SELECT player_name FROM online_players WHERE player_name = :player");
+            $stmt2->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $result2 = $stmt2->execute();
+            if (!$result2->fetchArray()) {
+                // 不存在，先插入
+                $stmt3 = $db->prepare("INSERT INTO online_players (player_name, login_time) VALUES (:name, :time)");
+                $stmt3->bindValue(':name', $playerName, SQLITE3_TEXT);
+                $stmt3->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt3->execute();
+            }
+
+            // 更新在线玩家IP（不实时更新online_players，因为IP归属由PHP端查询）
+            $changedCount++;
+
+            // 如果之前已同步过(synced_at != 0)，标记为待重新查询
+            if ($row && $row['synced_at'] > 0) {
+                // 重置synced_at，让PHP端的IP查询逻辑重新查询API
+                $stmtReset = $db->prepare("UPDATE player_ip_changes SET synced_at = 0 WHERE player_name = :player");
+                $stmtReset->bindValue(':player', $playerName, SQLITE3_TEXT);
+                $stmtReset->execute();
+            }
+        } else {
+            $skippedCount++;
+        }
+    }
+
+    success([
+        'changed' => $changedCount,
+        'skipped' => $skippedCount,
+        'total' => count($players)
+    ], "同步IP: {$changedCount}个变更, {$skippedCount}个跳过");
 }
 
 // ===== 插件拉取商品 =====
@@ -674,7 +879,7 @@ function syncToken() {
     success(['token' => substr($newToken, 0, 8) . '...'], "Token已同步");
 }
 
-// ===== 插件推送Web登录Token =====
+// ===== 验证Web登录Token（不消费，仅验证有效性）=====
 function syncWebloginToken() {
     // 支持两种认证方式：SECRET_KEY（插件直接调用）或 token（通用认证）
     $secret = getParam('secret');
@@ -717,59 +922,148 @@ function syncWebloginToken() {
     success(['player' => $player], "Web登录Token已同步");
 }
 
-// ===== Web端验证登录Token =====
-function validateWebloginToken() {
+// ===== 验证Web登录Token（用于前端登录页面API）=====
+function apiValidateWebloginToken() {
     $webToken = getParam('web_token');
-    if (!$webToken) error('缺少web_token参数');
+    if (!$webToken) {
+        error('缺少web_token参数');
+    }
 
     $db = getDB();
-    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
-
-    $stmt = $db->prepare("SELECT * FROM weblogin_tokens WHERE web_token = :token");
-    $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
-    $result = $stmt->execute();
-    $row = $result->fetchArray(SQLITE3_ASSOC);
-
-    if (!$row) {
-        error('无效的登录Token');
-    }
-
-    $createdAt = (int)$row['created_at'];
-    $expireSeconds = (int)$row['expire_seconds'];
-    $now = time();
-
-    if ($now - $createdAt > $expireSeconds) {
-        // Token已过期，删除
-        $delStmt = $db->prepare("DELETE FROM weblogin_tokens WHERE web_token = :token");
-        $delStmt->bindValue(':token', $webToken, SQLITE3_TEXT);
-        $delStmt->execute();
-        error('登录Token已过期');
-    }
-
-    $player = $row['player_name'];
-
-    // ★ 不删除Token - 保持有效供后续API调用（player.php需要token鉴权）
-    // Token会在过期时间后自动失效
-
-    // ★ 不自动创建登录确认记录 - 等待用户在Web端输入密码验证通过后再创建
-    // 登录确认记录会在verify_web_password端点中创建
-
-    // 查询玩家信息（users表可能不存在，安全降级）
-    $userData = ['player_name' => $player];
     try {
-        $stmt2 = $db->prepare("SELECT * FROM users WHERE player_name = :player");
-        $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
-        $result2 = $stmt2->execute();
-        $userRow = $result2->fetchArray(SQLITE3_ASSOC);
-        if ($userRow) $userData = $userRow;
+        $stmt = $db->prepare("SELECT * FROM weblogin_tokens WHERE web_token = :token");
+        $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+
+        if (!$row) {
+            error('无效的登录Token');
+        }
+
+        $createdAt = (int)$row['created_at'];
+        $expireSeconds = (int)$row['expire_seconds'];
+        if (time() - $createdAt > $expireSeconds) {
+            error('登录Token已过期');
+        }
+
+        success(['player' => $row['player_name']], 'Token有效');
     } catch (Exception $e) {
-        // users表不存在或查询失败，仅返回玩家名
+        error('Token验证失败: ' . $e->getMessage());
+    }
+}
+
+// ===== 推送玩家登录状态到PHP（Java插件调用）=====
+function pushPlayerLoginStatus() {
+    // 优先从GET参数读取（Java端使用GET请求）
+    if (isset($_GET['secret'])) {
+        $secret = $_GET['secret'];
+    } elseif (isset($_POST['secret'])) {
+        $secret = $_POST['secret'];
+    } else {
+        $secret = getParam('secret');
+    }
+    
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
     }
 
-    success([
-        'player' => $player,
-        'user_data' => $userData
-    ], "登录成功");
+    if (isset($_GET['player'])) {
+        $player = $_GET['player'];
+    } elseif (isset($_POST['player'])) {
+        $player = $_POST['player'];
+    } else {
+        $player = getParam('player');
+    }
+
+    if (isset($_GET['web_token'])) {
+        $webToken = $_GET['web_token'];
+    } elseif (isset($_POST['web_token'])) {
+        $webToken = $_POST['web_token'];
+    } else {
+        $webToken = getParam('web_token');
+    }
+
+    $expireSeconds = 600;
+    if (isset($_GET['expire_seconds'])) {
+        $expireSeconds = (int)$_GET['expire_seconds'];
+    } elseif (isset($_POST['expire_seconds'])) {
+        $expireSeconds = (int)$_POST['expire_seconds'];
+    } else {
+        $val = getParam('expire_seconds');
+        $expireSeconds = $val ? (int)$val : 600;
+    }
+
+    $isOnline = 0;
+    if (isset($_GET['online'])) {
+        $isOnline = (int)$_GET['online'];
+    } elseif (isset($_POST['online'])) {
+        $isOnline = (int)$_POST['online'];
+    } else {
+        $val = getParam('online');
+        $isOnline = $val ? (int)$val : 0;
+    }
+
+    $isRegistered = 0;
+    if (isset($_GET['registered'])) {
+        $isRegistered = (int)$_GET['registered'];
+    } elseif (isset($_POST['registered'])) {
+        $isRegistered = (int)$_POST['registered'];
+    } else {
+        $val = getParam('registered');
+        $isRegistered = $val ? (int)$val : 0;
+    }
+
+    if (!$player || !$webToken) {
+        @error_log("[pushPlayerLoginStatus] FAIL: missing player or web_token. player=" . var_export($player, true) . ", web_token=" . var_export($webToken, true));
+        error('缺少player或web_token参数');
+    }
+
+    @error_log("[pushPlayerLoginStatus] SUCCESS: player=$player, token=" . substr($webToken, 0, 20) . "..., online=$isOnline, registered=$isRegistered, expire=$expireSeconds");
+
+    $db = getDB();
+
+    // 1. 同步weblogin_tokens表（登录页面需要的token）
+    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds) VALUES (:player, :token, :time, :expire)");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
+    $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+    $stmt->bindValue(':expire', $expireSeconds, SQLITE3_INTEGER);
+    $stmt->execute();
+    @error_log("[pushPlayerLoginStatus] Token stored: player=$player, created_at=$now, expire=$expireSeconds");
+
+    // 2. 如果玩家在游戏中已登录，更新online_players表
+    if ($isOnline) {
+        $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
+        $updateStmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:player, :time)");
+        $updateStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $updateStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $updateStmt->execute();
+
+        // 3. 同时更新web_session_log，标记Web会话活跃
+        $db->exec("CREATE TABLE IF NOT EXISTS web_session_log (player_name TEXT PRIMARY KEY, login_time INTEGER NOT NULL, ip_address TEXT DEFAULT '')");
+        $sessionStmt = $db->prepare("INSERT OR REPLACE INTO web_session_log (player_name, login_time, ip_address) VALUES (:player, :time, :ip)");
+        $sessionStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $sessionStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $sessionStmt->bindValue(':ip', 'plugin_sync', SQLITE3_TEXT);
+        $sessionStmt->execute();
+
+        // 如果已注册，更新users表的last_login_time
+        if ($isRegistered) {
+            try {
+                $db->exec("CREATE TABLE IF NOT EXISTS users (player_name TEXT PRIMARY KEY, last_login_time INTEGER DEFAULT 0)");
+                $userStmt = $db->prepare("UPDATE users SET last_login_time = :time WHERE player_name = :player");
+                $userStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                $userStmt->bindValue(':player', $player, SQLITE3_TEXT);
+                $userStmt->execute();
+            } catch (Exception $e) {
+                // users表可能不存在或其他错误，忽略
+            }
+        }
+    }
+
+    success(['player' => $player], '玩家登录状态已同步');
 }
 
 // ===== 插件轮询Web登录确认（SECRET_KEY认证）=====
@@ -919,6 +1213,8 @@ function webLoginRequest() {
 
     $requestId = $db->lastInsertRowID();
 
+    debugLog("webLoginRequest: 新请求", ['player' => $player, 'request_id' => $requestId]);
+
     success([
         'request_id' => $requestId,
         'player' => $player,
@@ -936,38 +1232,50 @@ function checkWebLoginResult() {
     }
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT * FROM web_login_requests WHERE id = :id AND player_name = :player");
-    $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $result = $stmt->execute();
-    $row = $result->fetchArray(SQLITE3_ASSOC);
+    try {
+        $stmt = $db->prepare("SELECT * FROM web_login_requests WHERE id = :id AND player_name = :player");
+        $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
 
-    if (!$row) {
-        error('请求不存在');
-    }
+        if (!$row) {
+            // 请求不存在，可能已被清理
+            debugLog("checkWebLoginResult: 请求不存在", ['player' => $player, 'request_id' => $requestId]);
+            success([
+                'status' => 'pending',
+                'message' => '请求已过期，请刷新页面重试'
+            ]);
+            return;
+        }
 
-    if ($row['status'] === 'pending') {
-        // 还在等待
-        success([
-            'status' => 'pending',
-            'message' => '等待游戏服务器验证...'
-        ]);
-    } elseif ($row['status'] === 'success') {
-        // 验证成功
-        $resultData = json_decode($row['result'], true);
-        success([
-            'status' => 'success',
-            'player' => $player,
-            'user_data' => $resultData ?? ['player_name' => $player],
-            'message' => '登录成功'
-        ]);
-    } else {
-        // 验证失败
-        $resultData = json_decode($row['result'], true);
-        success([
-            'status' => 'failed',
-            'message' => $resultData['error'] ?? '密码错误'
-        ]);
+        debugLog("checkWebLoginResult: 查询结果", ['player' => $player, 'request_id' => $requestId, 'status' => $row['status']]);
+
+        if ($row['status'] === 'pending') {
+            // 还在等待
+            success([
+                'status' => 'pending',
+                'message' => '等待游戏服务器验证...'
+            ]);
+        } elseif ($row['status'] === 'success') {
+            // 验证成功
+            $resultData = json_decode($row['result'], true);
+            success([
+                'status' => 'success',
+                'player' => $player,
+                'user_data' => $resultData ?? ['player_name' => $player],
+                'message' => '登录成功'
+            ]);
+        } else {
+            // 验证失败
+            $resultData = json_decode($row['result'], true);
+            success([
+                'status' => 'failed',
+                'message' => $resultData['error'] ?? '密码错误'
+            ]);
+        }
+    } catch (Exception $e) {
+        error('数据库查询失败: ' . $e->getMessage());
     }
 }
 
@@ -1006,57 +1314,69 @@ function checkPendingWebLogins() {
 
 // ===== 插件写回密码验证结果（SECRET_KEY认证）=====
 function completeWebLoginRequest() {
-    $secret = getParam('secret');
+    // 优先从GET参数读取（Java端使用GET请求）
+    $secret = isset($_GET['secret']) ? $_GET['secret'] : (isset($_POST['secret']) ? $_POST['secret'] : getParam('secret'));
+    
     if (!$secret || $secret !== SECRET_KEY) {
         error('密钥验证失败', 403);
     }
 
-    $requestId = getParam('request_id');
-    $player = getParam('player');
-    $result = getParam('result'); // JSON字符串
+    $requestId = isset($_GET['request_id']) ? $_GET['request_id'] : (isset($_POST['request_id']) ? $_POST['request_id'] : getParam('request_id'));
+    $player = isset($_GET['player']) ? $_GET['player'] : (isset($_POST['player']) ? $_POST['player'] : getParam('player'));
+    $result = isset($_GET['result']) ? $_GET['result'] : (isset($_POST['result']) ? $_POST['result'] : getParam('result'));
+
+    debugLog("completeWebLoginRequest: 收到结果", ['request_id' => $requestId, 'player' => $player, 'result_raw' => $result]);
 
     if (!$requestId || !$player) {
         error('缺少request_id或player参数');
     }
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT id FROM web_login_requests WHERE id = :id AND player_name = :player");
-    $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $row = $stmt->execute()->fetchArray();
+    try {
+        $stmt = $db->prepare("SELECT id FROM web_login_requests WHERE id = :id AND player_name = :player");
+        $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $row = $stmt->execute()->fetchArray();
 
-    if (!$row) {
-        error('请求不存在');
+        if (!$row) {
+            debugLog("completeWebLoginRequest: 请求不存在", ['request_id' => $requestId, 'player' => $player]);
+            error('请求不存在');
+        }
+
+        // 判断验证结果
+        $resultData = json_decode($result, true);
+        $status = isset($resultData['success']) && $resultData['success'] ? 'success' : 'failed';
+
+        $updateStmt = $db->prepare("UPDATE web_login_requests SET status = :status, result = :result, result_time = :time WHERE id = :id");
+        $updateStmt->bindValue(':status', $status, SQLITE3_TEXT);
+        $updateStmt->bindValue(':result', $result, SQLITE3_TEXT);
+        $updateStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $updateStmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+        $updateStmt->execute();
+
+        debugLog("completeWebLoginRequest: 更新成功", ['request_id' => $requestId, 'status' => $status]);
+
+        // 如果验证成功，写入web_login_confirmations和web_login_verified
+        if ($status === 'success') {
+            $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
+            $confirmStmt = $db->prepare("INSERT OR REPLACE INTO web_login_confirmations (player_name, confirmed_at, consumed) VALUES (:player, :time, 0)");
+            $confirmStmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $confirmStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $confirmStmt->execute();
+
+            // ★ 记录Web登录验证成功，供玩家进游戏时自动登录（持久化）
+            $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+            $verifiedStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
+            $verifiedStmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $verifiedStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $verifiedStmt->execute();
+        }
+
+        success(['status' => $status], "结果已写入");
+    } catch (Exception $e) {
+        debugLog("completeWebLoginRequest: 数据库异常", ['error' => $e->getMessage()]);
+        error('数据库错误: ' . $e->getMessage());
     }
-
-    // 判断验证结果
-    $resultData = json_decode($result, true);
-    $status = isset($resultData['success']) && $resultData['success'] ? 'success' : 'failed';
-
-    $updateStmt = $db->prepare("UPDATE web_login_requests SET status = :status, result = :result, result_time = :time WHERE id = :id");
-    $updateStmt->bindValue(':status', $status, SQLITE3_TEXT);
-    $updateStmt->bindValue(':result', $result, SQLITE3_TEXT);
-    $updateStmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    $updateStmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
-    $updateStmt->execute();
-
-    // 如果验证成功，写入web_login_confirmations和web_login_verified
-    if ($status === 'success') {
-        $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
-        $confirmStmt = $db->prepare("INSERT OR REPLACE INTO web_login_confirmations (player_name, confirmed_at, consumed) VALUES (:player, :time, 0)");
-        $confirmStmt->bindValue(':player', $player, SQLITE3_TEXT);
-        $confirmStmt->bindValue(':time', time(), SQLITE3_INTEGER);
-        $confirmStmt->execute();
-
-        // ★ 记录Web登录验证成功，供玩家进游戏时自动登录（持久化）
-        $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
-        $verifiedStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
-        $verifiedStmt->bindValue(':player', $player, SQLITE3_TEXT);
-        $verifiedStmt->bindValue(':time', time(), SQLITE3_INTEGER);
-        $verifiedStmt->execute();
-    }
-
-    success(['status' => $status], "结果已写入");
 }
 
 // ===== 插件推送玩家密码凭证（SECRET_KEY认证）=====
@@ -1166,14 +1486,33 @@ function webAccessCheck() {
     $password = getParam('password');
     $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
-    if (!$webToken) error('缺少web_token');
+    if (!$webToken) {
+        @error_log("[web_access_check] FAIL: no web_token provided");
+        error('缺少web_token');
+    }
 
-    debugLog("web_access_check: 开始验证", [
-        'token' => substr($webToken, 0, 16) . '...',
-        'action' => $accessAction,
-        'ip' => $ipAddress,
-        'has_password' => !empty($password)
-    ]);
+    // ★ Debug: 记录完整的token信息
+    @error_log("[web_access_check] Token: " . substr($webToken, 0, 20) . "... (len=" . strlen($webToken) . ")");
+    @error_log("[web_access_check] Action: $accessAction, IP: $ipAddress");
+
+    // ★ 检查weblogin_tokens表是否存在及数据
+    $db = getDB();
+    try {
+        $countStmt = $db->query("SELECT COUNT(*) as cnt FROM weblogin_tokens");
+        $countRow = $countStmt->fetchArray(SQLITE3_ASSOC);
+        @error_log("[web_access_check] weblogin_tokens table has " . ($countRow['cnt'] ?? 0) . " records");
+
+        // 列出所有token（前20个字符）
+        $listStmt = $db->query("SELECT player_name, substr(web_token, 1, 20) as token_prefix, created_at, expire_seconds FROM weblogin_tokens ORDER BY created_at DESC LIMIT 10");
+        while ($row = $listStmt->fetchArray(SQLITE3_ASSOC)) {
+            $age = time() - $row['created_at'];
+            $expire = $row['expire_seconds'];
+            $isExpired = $age > $expire ? 'EXPIRED' : 'valid';
+            @error_log("[web_access_check] DB token: player=" . $row['player_name'] . ", token=" . $row['token_prefix'] . "..., age=${age}s, expire=${expire}s, status=$isExpired");
+        }
+    } catch (Exception $e) {
+        @error_log("[web_access_check] DB query error: " . $e->getMessage());
+    }
 
     $result = validateWebAccess($webToken, $accessAction, $password, $ipAddress);
 
@@ -1187,6 +1526,13 @@ function webAccessCheck() {
     ]);
 
     if ($result['ok']) {
+        // 记录 session 日志（保存 IP 地址）
+        $sessionToken = logWebSession(
+            $result['player'] ?? '',
+            $ipAddress,
+            $result['session'] ?? ''
+        );
+
         success([
             'player' => $result['player'] ?? '',
             'mode' => $result['mode'] ?? '',
@@ -1264,10 +1610,14 @@ function pullPendingTransactions() {
         $ids[] = (int)$row['id'];
     }
 
-    // 立即标记为processing（防止5秒后重复拉取）
+        // 立即标记为processing（防止5秒后重复拉取）
     if ($hasProcessedAt && !empty($ids)) {
         $idList = implode(',', $ids);
-        $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+        try {
+            $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+        } catch (Exception $e) {
+            // 数据库锁定异常，忽略（下一个请求会清理）
+        }
     }
 
     success(['transactions' => $transactions, 'count' => count($transactions)]);
@@ -1345,14 +1695,85 @@ function notifySync() {
     success(['tx_id' => (int)$txId], '已通知插件立即同步交易数据');
 }
 
+// ===== 客户端请求立即同步（玩家购物/CDK后调用）=====
+function requestImmediateSync() {
+    // ★ 不需要secret验证，前端玩家直接调用
+    $player = getParam('player');
+    if (!$player) error('缺少player参数');
+
+    $db = getDB();
+    // 记录同步请求（Java插件会轮询这个表）
+    $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+
+    success(['sync_requested' => true], '已请求立即同步');
+}
+
+// ===== 补发pending交易（Java重拉未确认交易）=====
+function resendPendingTransactions() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+
+    // 恢复超时processing交易
+    $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 120));
+
+    $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC");
+    $result = $stmt->execute();
+    $transactions = [];
+    $ids = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $transactions[] = $row;
+        $ids[] = (int)$row['id'];
+    }
+
+    // 重新标记为processing
+    if (!empty($ids)) {
+        $idList = implode(',', $ids);
+        $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+    }
+
+    success(['transactions' => $transactions, 'count' => count($transactions), 'resend' => true], '已补发' . count($transactions) . '笔pending交易');
+}
+
+// ===== 邮箱脱敏工具 =====
+function maskEmail($email) {
+    if (empty($email)) return '';
+    $parts = explode('@', $email);
+    if (count($parts) !== 2) return '**@' . ($parts[0] ?? '*');
+    return '**@' . $parts[1];
+}
+
 // ===== 发送邮箱验证码 =====
 function sendEmailCode() {
     $player = getParam('player');
-    $email = getParam('email');
 
     if (!$player) error('缺少player参数');
-    if (!$email) error('缺少email参数');
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) error('邮箱格式不正确');
+
+    // ★ 安全检查：玩家必须已注册
+    if (!isPlayerRegistered($player)) {
+        error('玩家未在游戏中注册，请先在游戏中使用 /register 注册账号');
+    }
+
+    // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
+    $db = getDB();
+    $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$row || !$row['email'] || $row['email'] === '') {
+        error('该玩家尚未绑定邮箱，请先在游戏中完成邮箱绑定');
+    }
+
+    // ★ 邮箱只读：不允许前端传入，直接取数据库的值
+    $email = $row['email'];
+    $maskedEmail = maskEmail($email);
 
     // 使用config.php中的SMTP配置
     $smtpHost = SMTP_HOST;
@@ -1370,7 +1791,6 @@ function sendEmailCode() {
     $expireTime = time() + 300; // 5分钟有效
 
     // 存储验证码到数据库
-    $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS email_codes (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, email TEXT NOT NULL, code TEXT NOT NULL, expire_at INTEGER NOT NULL, used INTEGER DEFAULT 0, created_at INTEGER NOT NULL)");
 
     // 清理过期验证码
@@ -1383,7 +1803,7 @@ function sendEmailCode() {
     $checkStmt->bindValue(':time', time(), SQLITE3_INTEGER);
     $checkResult = $checkStmt->execute();
     if ($checkResult->fetchArray()) {
-        error('验证码已发送，请查看邮箱（5分钟内有效）');
+        error('验证码已发送至 ' . $maskedEmail . '，请查看邮箱（5分钟内有效）');
     }
 
     // 插入新验证码
@@ -1416,10 +1836,10 @@ function sendEmailCode() {
         $sent = smtpSendEmail($smtpHost, $smtpPort, $smtpUser, $smtpPass, $email, $subject, $htmlBody, $headers, SMTP_USE_SSL);
 
         if ($sent) {
-            success(['player' => $player, 'email' => $email, 'code' => $code], '验证码已发送到邮箱');
+            success(['player' => $player, 'masked_email' => $maskedEmail], '验证码已发送至 ' . $maskedEmail);
         } else {
             // SMTP失败，返回验证码供调试
-            success(['player' => $player, 'email' => $email, 'code' => $code], '邮件发送中（验证码：' . $code . '）');
+            success(['player' => $player, 'masked_email' => $maskedEmail, 'code' => $code], '邮件发送中（验证码：' . $code . '）');
         }
     } catch (Exception $e) {
         error('邮件发送失败：' . $e->getMessage());
@@ -1429,12 +1849,10 @@ function sendEmailCode() {
 // ===== 验证邮箱验证码 =====
 function verifyEmailCode() {
     $player = getParam('player');
-    $email = getParam('email');
     $code = getParam('code');
     $webToken = getParam('web_token');
 
     if (!$player) error('缺少player参数');
-    if (!$email) error('缺少email参数');
     if (!$code) error('缺少验证码');
     if (!$webToken) error('缺少web_token');
 
@@ -1443,16 +1861,27 @@ function verifyEmailCode() {
         error('玩家未在游戏中注册，请先在游戏中使用 /register 注册账号');
     }
 
-    // 验证web_token
-    $tokenInfo = validateToken($webToken);
+    // ★ 验证token（weblogin token或普通token都可以）
+    $tokenInfo = validateTokenSilent($webToken);
     if (!$tokenInfo) error('无效的登录token');
     
     // 验证玩家名是否匹配
     if ($tokenInfo['player'] !== $player) error('玩家名不匹配');
 
+    // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
     $db = getDB();
+    $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$row || !$row['email'] || $row['email'] === '') {
+        error('该玩家尚未绑定邮箱');
+    }
+
+    $email = $row['email'];
     
-    // 查找未使用且未过期的验证码
+    // 查找未使用且未过期的验证码（只验证该玩家自己的邮箱记录）
     $stmt = $db->prepare("SELECT * FROM email_codes WHERE player_name = :player AND email = :email AND code = :code AND expire_at > :time AND used = 0");
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
     $stmt->bindValue(':email', $email, SQLITE3_TEXT);
@@ -1493,6 +1922,33 @@ function verifyEmailCode() {
         'session' => $sessionToken,
         'mode' => 'email_verified'
     ], '邮箱验证成功');
+}
+
+// ===== 获取玩家绑定的邮箱（脱敏） =====
+function getPlayerEmail() {
+    $player = getParam('player');
+    if (!$player) error('缺少player参数');
+
+    // 检查玩家是否注册
+    if (!isPlayerRegistered($player)) {
+        error('玩家未注册');
+    }
+
+    $db = getDB();
+    $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$row || !$row['email'] || $row['email'] === '') {
+        success(['email' => '', 'masked_email' => ''], '未绑定邮箱');
+    }
+
+    $email = $row['email'];
+    success([
+        'email' => $email,
+        'masked_email' => maskEmail($email)
+    ], '获取成功');
 }
 
 // ===== 修复库存数据（stock=0→-1） =====
@@ -1840,11 +2296,9 @@ function checkPendingWebRegisterRequests() {
     }
 
     $db = getDB();
-    // ★ 不再使用 CREATE TABLE IF NOT EXISTS，表结构已在 initTables 中创建
     try {
         $db->exec("SELECT id FROM web_register_requests LIMIT 0");
     } catch (Exception $e) {
-        // 表不存在则创建（仅首次）
         $db->exec("CREATE TABLE IF NOT EXISTS web_register_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player_name TEXT NOT NULL,
@@ -1858,10 +2312,8 @@ function checkPendingWebRegisterRequests() {
         )");
     }
 
-    // 清理30分钟前的过期请求（防止永久堆积）
     $db->exec("DELETE FROM web_register_requests WHERE created_at < " . (time() - 1800));
 
-    // 获取所有pending请求
     $stmt = $db->prepare("SELECT id, player_name, password_hash, salt, email, ip_address, created_at FROM web_register_requests WHERE status = 'pending' ORDER BY created_at ASC");
     $result = $stmt->execute();
 
@@ -1872,10 +2324,16 @@ function checkPendingWebRegisterRequests() {
         $ids[] = (int)$row['id'];
     }
 
-    // 立即标记为processing（防止重复拉取）
+    // 使用事务标记为processing
     if (!empty($ids)) {
-        $idList = implode(',', $ids);
-        $db->exec("UPDATE web_register_requests SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+        try {
+            $db->exec('BEGIN TRANSACTION');
+            $idList = implode(',', $ids);
+            $db->exec("UPDATE web_register_requests SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+            $db->exec('COMMIT');
+        } catch (Exception $e) {
+            try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+        }
     }
 
     success(['requests' => $requests, 'count' => count($requests)]);

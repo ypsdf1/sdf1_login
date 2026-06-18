@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>SDF1 - 管理后台</title>
     <style>
         :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; }
@@ -83,7 +86,7 @@
         <div class="si" data-p="cdk" onclick="go('cdk')">🎁 CDK管理</div>
         <div class="si" data-p="transactions" onclick="go('transactions')">📋 流水记录</div>
         <div class="si" data-p="token" onclick="go('token')">🔑 Token生成</div>
-        <div class="si" data-p="users" onclick="go('users')">👥 全部用户</div>
+        <div class="si" data-p="users" onclick="go('users')">👥 用户管理</div>
         <div class="si" data-p="online" onclick="go('online')">🟢 在线玩家</div>
         <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
@@ -91,8 +94,37 @@
     <div class="content" id="C"></div>
 </div>
 
-<script>
+<script data-cfasync="false">
+// ★ 全局错误处理器：捕获所有未处理异常
+window.onerror = function(msg, src, line, col, err) {
+    console.error('[GlobalError]', msg, 'at', src, 'line', line + ':' + col, err);
+    return false;
+};
+window.addEventListener('unhandledrejection', function(e) {
+    console.error('[UnhandledPromise]', e.reason);
+});
+
+// ★ 强制清除Service Worker缓存（防止旧JS缓存）
+if ('caches' in window) {
+    caches.keys().then(names => names.forEach(n => caches.delete(n)));
+}
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister()));
+}
+
 const A = 'api/admin.php';
+const _BUILD_TS = 1750220000; // 版本号，用于缓存失效
+console.log('[INIT] Admin panel loaded, build:', _BUILD_TS);
+
+// ★ 自检：验证新代码是否加载
+setTimeout(() => {
+    const ok = typeof lazyLoadUsersPage === 'function' && typeof batchQueryIpLocations === 'function';
+    console.log('[INIT] Code check:', ok ? '✓ All functions present' : '✗ Missing functions - possible old cache');
+    if (!ok) {
+        console.error('[INIT] WARNING: Old JavaScript may be cached. Please press Ctrl+Shift+R to force refresh.');
+    }
+}, 200);
+
 let page = 'dashboard';
 let onlineInterval = null;
 
@@ -118,36 +150,108 @@ function go(p) {
     else if (p==='users') loadUsers(c);
     else if (p==='online') loadOnlinePlayers(c);
     else if (p==='active') loadActivePlayers(c);
-    else if (p==='reset_requests') loadResetRequests(c);
 }
 
 // 检查登录状态
 (async function(){
-    const r = await fetch(A+'?action=status');
-    const d = await r.json();
-    if (!d.data.logged_in) { location.href='admin_login.php'; return; }
-    go('dashboard');
+    try {
+        const s = await fetch('api/admin.php?action=status', {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const d = await s.text().then(text => {
+            text = text.replace(/^\uFEFF/, '').trim();
+            if (!text) throw new Error('Empty response');
+            try { return JSON.parse(text); } catch(e) {
+                console.error('Status API returned invalid JSON:', text.substring(0, 200));
+                throw new Error('服务器返回无效JSON: ' + text.substring(0, 50));
+            }
+        });
+        if (!d.data || !d.data.logged_in) {
+            location.href='admin_login.php'; 
+            return;
+        }
+        go('dashboard');
+    } catch (e) {
+        console.error('Login check failed:', e);
+        const c = document.getElementById('C');
+        if (c) c.innerHTML = '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--red)">服务器连接失败</h2><p style="color:var(--dim);margin-top:8px">请确保 api/admin.php 文件存在且可访问</p><p style="color:var(--red);margin-top:8px">错误: ' + e.message + '</p></div>';
+    }
 })();
 
 // ===== 总览 =====
 async function loadDashboard(el) {
-    el.innerHTML = '<div class="empty">加载中...</div>';
-    const r = await api('admin.php?action=get_stats_ex');
-    if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
-    const d = r.data;
-    el.innerHTML = `
-        <div class="stats">
-            <div class="stat"><div class="v">${d.total_users}</div><div class="l">注册用户</div></div>
-            <div class="stat"><div class="v" style="color:var(--green)">${d.online_count}</div><div class="l">在线玩家</div></div>
-            <div class="stat"><div class="v" style="color:var(--yellow)">${d.active_count_24h}</div><div class="l">24h活跃</div></div>
-        </div>
-        <div class="card">
-            <h2>快捷统计</h2>
-            <div class="stats">
-                <div class="stat"><div class="v">${d.all_users || '-'}</div><div class="l">总用户</div></div>
-                <div class="stat"><div class="v" style="color:var(--green)">${d.online || 0}</div><div class="l">在线</div></div>
-            </div>
-        </div>`;
+    el.innerHTML = '<div class="card" style="text-align:center;padding:40px">加载中...</div>';
+    try {
+        // 先检查登录状态
+        const s = await fetch('api/admin.php?action=status', {
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        }).then(r => r.text().then(t => { try { return JSON.parse(t.replace(/^\uFEFF/,'').trim()); } catch(e) { console.error('Status JSON error:', t.substring(0,200)); throw e; } }));
+        if (!s.success || !s.data || !s.data.logged_in) {
+            el.innerHTML = '<div class="card" style="text-align:center;padding:40px"><h2>请先登录</h2><p style="color:var(--dim);margin-top:8px">尚未登录管理后台</p><p style="color:var(--dim);margin-top:4px">如已登录，请清除浏览器缓存后重试</p><p style="color:var(--red);margin-top:4px">调试: ' + JSON.stringify(s) + '</p></div>';
+            return;
+        }
+        const [statsR, onlineR] = await Promise.all([
+            fetch('api/admin.php?action=get_stats_ex', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(r => r.text().then(t => { 
+                    console.log('[Stats] Response:', t.substring(0, 200)); 
+                    try { 
+                        return JSON.parse(t.replace(/^\uFEFF/,'').trim()); 
+                    } catch(e) { 
+                        console.error('Stats JSON error:', t.substring(0,500)); 
+                        return {success:false,message:'JSON parse error: ' + t.substring(0, 100)}; 
+                    } 
+                })),
+            fetch('api/admin.php?action=list_online_players', { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                .then(r => r.text().then(t => { 
+                    try { 
+                        return JSON.parse(t.replace(/^\uFEFF/,'').trim()); 
+                    } catch(e) { 
+                        console.error('Online JSON error:', t.substring(0,200)); 
+                        return {success:false,message:'JSON parse error'}; 
+                    } 
+                }))
+        ]);
+        let statsHtml = '';
+        if (statsR.success && statsR.data) {
+            const d = statsR.data;
+            statsHtml = `
+                <div class="stats">
+                    <div class="stat"><div class="v">${d.total_users ?? 0}</div><div class="l">注册用户</div></div>
+                    <div class="stat"><div class="v" style="color:var(--green)">${d.online_count ?? 0}</div><div class="l">在线玩家</div></div>
+                    <div class="stat"><div class="v" style="color:var(--yellow)">${d.active_count_24h ?? 0}</div><div class="l">24h活跃</div></div>
+                    <div class="stat"><div class="v" style="color:var(--purple)">${d.total_bonds ?? '-'}</div><div class="l">债券总和</div></div>
+                    <div class="stat"><div class="v" style="color:#3fb950">${d.today_registered ?? '-'}</div><div class="l">今日注册</div></div>
+                </div>`;
+        } else {
+            statsHtml = `<div class="card" style="text-align:center;padding:20px"><p style="color:var(--red)">统计数据加载失败: ${statsR.message || 'unknown'}</p></div>`;
+        }
+        
+        // 在线玩家列表
+        let onlineHtml = '';
+        if (onlineR.success && onlineR.data && onlineR.data.length > 0) {
+            const players = onlineR.data;
+            onlineHtml = `
+                <div class="card">
+                    <h2>实时在线玩家 <span style="color:var(--dim);font-size:12px">(${players.length}人)</span></h2>
+                    <table class="table">
+                        <tr><th>玩家名</th><th>登录时间</th><th>在线时长</th></tr>
+                        ${players.map(p => {
+                            const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
+                            const mins = Math.floor((Date.now()/1000 - p.login_time)/60);
+                            return `<tr><td class="player-online">🟢 ${p.player_name}</td><td>${loginTime}</td><td>${mins}分钟</td></tr>`;
+                        }).join('')}
+                    </table>
+                </div>`;
+        } else {
+            onlineHtml = '<div class="card"><h2>实时在线玩家 <span style="color:var(--dim);font-size:12px">(0人)</span></h2><div class="empty">暂无在线玩家，请确认 Java 插件已推送在线数据</div></div>';
+        }
+        
+        el.innerHTML = statsHtml + onlineHtml;
+    } catch (e) {
+        el.innerHTML = '<div class="card" style="color:var(--red);text-align:center">加载失败: '+e.message+'</div>';
+    }
 }
 
 // ===== 债券管理 =====
@@ -195,7 +299,7 @@ async function doDeduct() {
 async function doQueryBond() {
     const player = document.getElementById('qPlayer').value.trim();
     if (!player) return;
-    const r = await api('balance.php?action=query&player='+encodeURIComponent(player));
+    const r = await jsonApi('balance.php?action=query&player='+encodeURIComponent(player));
     const div = document.getElementById('qResult');
     if (r.success) div.innerHTML=`<div class="card" style="margin-top:8px"><p>债券: <b style="color:var(--green)">${r.data.bonds}</b> | 积分: <b style="color:var(--purple)">${r.data.points}</b></p></div>`;
     else div.innerHTML=`<p style="color:var(--red);margin-top:8px">${r.message}</p>`;
@@ -203,7 +307,7 @@ async function doQueryBond() {
 
 // ===== 商品管理 =====
 async function loadShop(el) {
-    const r = await api('shop.php?action=list');
+    const r = await jsonApi('shop.php?action=list');
     const items = r.data || [];
     el.innerHTML = `
         <div class="card">
@@ -262,7 +366,7 @@ async function removeShop(id) {
 
 // ===== CDK管理 =====
 async function loadCDK(el) {
-    const r = await api('cdk.php?action=list');
+    const r = await jsonApi('cdk.php?action=list');
     const list = r.data || [];
     el.innerHTML = `
         <div class="card">
@@ -316,7 +420,7 @@ async function loadTx(el) {
 async function loadAllTx(tab) {
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     if(tab)tab.classList.add('active');
-    const r = await api('admin.php?action=all_tx&limit=100');
+    const r = await jsonApi('admin.php?action=all_tx&limit=100');
     const div = document.getElementById('txContent');
     if (!r.success) { div.innerHTML=r.message; return; }
     const txs = r.data||[];
@@ -335,7 +439,7 @@ function loadPlayerTxTab(tab) {
 async function loadPlayerTx() {
     const player = document.getElementById('txPlayer').value.trim();
     if (!player) return;
-    const r = await api('admin.php?action=player_tx&player='+encodeURIComponent(player)+'&limit=100');
+    const r = await jsonApi('admin.php?action=player_tx&player='+encodeURIComponent(player)+'&limit=100');
     const div = document.getElementById('ptxResult');
     if (!r.success) { div.innerHTML='<p style="color:var(--red)">'+r.message+'</p>'; return; }
     const txs = r.data||[];
@@ -385,48 +489,742 @@ async function doGenToken() {
     }
 }
 
-// ===== 全部用户 =====
+// ===== 用户管理 =====
 async function loadUsers(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
-    const r = await api('admin.php?action=list_users');
-    const users = r.data || [];
-    
-    // 加载在线玩家数据
-    const onlineR = await api('admin.php?action=list_online_players');
-    const onlinePlayers = onlineR.success ? new Set(onlineR.data.map(p => p.player_name.toLowerCase())) : new Set();
-    
+    // ★ 不再调用 list_users（非分页），直接用轻量级接口获取在线状态
+    // 分页数据由 lazyLoadUsersPage 单独获取
+    try {
+        const onlineR = await jsonApi('admin.php?action=list_online_names');
+        const onlineMap = {};
+        const onlineSet = new Set();
+        if (onlineR.success && onlineR.data) {
+            onlineR.data.forEach(name => {
+                onlineMap[name.toLowerCase()] = true;
+                onlineSet.add(name.toLowerCase());
+            });
+        }
+        renderUserTabs(el, [], onlineSet, onlineMap);
+    } catch(e) {
+        renderUserTabs(el, [], new Set(), {});
+    }
+}
+
+// 用户管理缓存
+let cachedUsersData = null;
+let cachedOnlineSet = null;
+let cachedOnlineMap = null;
+
+function reRenderAllUsers() {
+    // 从其他标签切回来时，重新加载最新数据
+    if (cachedUsersData !== null) {
+        const el = document.getElementById('C');
+        if (!el) return;
+        loadUsers(el); // 重新加载数据
+    }
+}
+
+function renderUserTabs(el, users, onlineSet, onlineMap) {
+    const onlineCount = onlineSet.size;
     el.innerHTML = `
         <div class="card">
-            <h2>全部用户 <span style="color:var(--dim);font-size:12px">(${users.length}个用户${onlinePlayers.size > 0 ? '| 在线: '+onlinePlayers.size : ''})</span></h2>
-            <div class="form-row" style="margin-bottom:12px">
-                <input id="userSearch" placeholder="搜索玩家名..." oninput="filterUsers()" style="flex:1">
+            <h2>用户管理</h2>
+            <div class="tabs" id="userTabs">
+                <div class="tab active" data-tab="all" onclick="renderAllUsers(this)">全部用户</div>
+                <div class="tab" data-tab="online" onclick="renderOnlineUsers(this)">在线玩家</div>
+                <div class="tab" data-tab="sameip" onclick="loadSameIpTab(this)">同IP玩家</div>
+                <div class="tab" data-tab="active1h" onclick="loadActiveTab(this, 3600)">1小时活跃</div>
+                <div class="tab" data-tab="active1d" onclick="loadActiveTab(this, 86400)">1天活跃</div>
+                <div class="tab" data-tab="active1w" onclick="loadActiveTab(this, 604800)">1周活跃</div>
             </div>
-            <table class="table" id="userTable">
-                <tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>积分</th><th>在线时长</th><th>邮箱</th><th>操作</th></tr>
-                ${users.map(u => {
-                    const isOnline = onlinePlayers.has((u.player_name||'').toLowerCase());
-                    const playerNameClass = isOnline ? 'player-online' : '';
-                    const regTime = u.register_time ? new Date(u.register_time*1000).toLocaleString() : '-';
-                    const loginTime = u.last_login_time ? new Date(u.last_login_time*1000).toLocaleString() : '-';
-                    const hours = Math.floor((u.total_online_time||0)/3600);
-                    return `<tr data-name="${(u.player_name||'').toLowerCase()}">
-                        <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}</td>
-                        <td>${regTime}</td>
+            <div id="userTabContent"><div class="empty">点击标签页加载</div></div>
+        </div>`;
+    // 默认显示全部用户
+    const allTab = el.querySelector('#userTabs .tab[data-tab="all"]');
+    renderAllUsers(allTab, users, onlineSet, onlineMap);
+}
+
+// 注意：上面的缓存变量和 reRenderAllUsers() 已在第454-465行定义，这里不再重复
+function renderAllUsers(tab, users, onlineSet, onlineMap) {
+    if (!tab) return;
+    document.querySelectorAll('#userTabs .tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    
+    // 缓存数据
+    cachedUsersData = users;
+    cachedOnlineSet = onlineSet;
+    cachedOnlineMap = onlineMap;
+
+    const div = document.getElementById('userTabContent');
+    
+    // 懒加载模式：初始只加载前50条，其余通过滚动/搜索加载
+    const loadPage = 1;
+    const limit = 50;
+    const search = (window.currentSearch || '').toLowerCase();
+    
+    div.innerHTML = `
+        <div class="form-row" style="margin-bottom:12px">
+            <input id="userSearch" placeholder="搜索玩家名..." oninput="handleUserSearch()" style="flex:1">
+            <button class="btn btn-blue" onclick="doLazyLoadSearch()">搜索</button>
+        </div>
+        <div id="userLazyContainer">
+            <div class="empty">加载中...</div>
+        </div>
+        <div id="userLazyLoadMore" style="text-align:center;padding:16px">
+            <button class="btn btn-blue" onclick="doLazyLoadMore()">加载更多</button>
+        </div>`;
+    
+    lazyLoadUsersPage(loadPage, limit, search, onlineSet);
+}
+
+// 用户懒加载状态
+let lazyLoadState = {
+    currentPage: 1,
+    totalPages: 1,
+    isLoading: false,
+    hasMore: true,
+    currentSearch: ''
+};
+let isFirstLoad = true; // ★ 标记是否为首次加载
+
+function lazyLoadUsersPage(page, limit, search, onlineSet) {
+    if (lazyLoadState.isLoading) return;
+    lazyLoadState.isLoading = true;
+    lazyLoadState.currentPage = page;
+    lazyLoadState.currentSearch = search;
+    lazyLoadState.currentPage = page;
+    
+    // 搜索模式：不限制条数，一次加载全部
+    // 浏览模式：每批15-20个
+    const batchSize = search ? 200 : 20;
+    
+    const queryParams = {
+        action: 'list_users_paginated',
+        page: page,
+        limit: batchSize,
+        _t: Date.now(), // ★ 缓存失效：每次请求带时间戳
+        ...(search ? { search: encodeURIComponent(search) } : {})
+    };
+    const queryString = new URLSearchParams(queryParams).toString();
+    
+    console.log('[LazyLoad] Fetching users page ' + page + ': api/admin.php?' + queryString);
+    
+    // 设置超时时间（IP查询可能需要较长时间）
+    const timeoutMs = 15000;
+    
+    // 使用fetch的timeout（AbortController）
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    fetch('api/admin.php?' + queryString, { 
+        credentials: 'same-origin',
+        signal: controller.signal,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+        .finally(() => clearTimeout(timeoutId))
+        .then(r => {
+            clearTimeout(timeoutId);
+            console.log('[LazyLoad] Response status: ' + r.status);
+            // 先获取text再解析JSON，防止r.json()直接崩溃
+            return r.text().then(text => {
+                console.log('[LazyLoad] Raw response (' + text.length + ' bytes): ' + text.substring(0, 200));
+                // 清理可能的BOM或不可见字符
+                text = text.replace(/^\uFEFF/, '').trim();
+                if (!text) throw new Error('Empty response');
+                try {
+                    const parsed = JSON.parse(text);
+                    console.log('[LazyLoad] JSON parsed OK, keys:', Object.keys(parsed));
+                    return parsed;
+                } catch(e) {
+                    console.error('[LazyLoad] JSON parse error:', e.message, 'text preview:', text.substring(0, 200));
+                    throw new Error('服务器返回无效JSON: ' + text.substring(0, 50));
+                }
+            });
+        })
+        .then(r => {
+            console.log('[LazyLoad] ★★★ 进入第二个then块, r:', typeof r, r ? Object.keys(r).join(',') : 'null');
+            lazyLoadState.isLoading = false;
+            
+            try {
+            if (!r || !r.success) {
+                console.log('[LazyLoad] 请求失败或无success字段:', r);
+                document.getElementById('userLazyContainer').innerHTML = '<div class="empty">加载失败: ' + (r?.message || '未知错误') + '</div>';
+                return;
+            }
+            
+            const users = r.data || [];
+            const pag = r.pagination || {};
+            lazyLoadState.totalPages = pag.total_pages || 1;
+            lazyLoadState.hasMore = pag.has_more || false;
+            
+            // ★ 收集所有需要查询的IP（未缓存 + 查询失败 + 查询中）
+            console.log('[LazyLoad] Backend uncached_ips:', JSON.stringify(r.uncached_ips || []));
+            console.log('[LazyLoad] Users count:', users.length);
+            users.forEach(u => {
+                console.log('[LazyLoad] User:', u.player_name, 'IP:', u.ip_address, 'Location:', u.ip_location);
+            });
+
+            const allQueryIps = new Set();
+            // 1. 后端返回的未缓存IP
+            const uncachedIps = r.uncached_ips || [];
+            uncachedIps.forEach(ip => {
+                const valid = /^\d+\.\d+\.\d+\.\d+$/.test(ip);
+                console.log('[LazyLoad] Uncached IP:', ip, 'valid:', valid);
+                if (valid) allQueryIps.add(ip);
+            });
+            // 2. 前端发现的需要查询的IP（查询失败/查询中.../短杠位置）
+            users.forEach(u => {
+                const loc = u.ip_location;
+                const ip = u.ip_address;
+                const needQuery = loc === '查询失败' || loc === '-' || loc === '查询中...' || !loc;
+                const ipValid = ip && ip !== '-' && /^\d+\.\d+\.\d+\.\d+$/.test(ip);
+                console.log('[LazyLoad] User:', u.player_name, 'IP:', ip, 'Location:', JSON.stringify(loc), 'needQuery:', needQuery, 'ipValid:', ipValid);
+                if (needQuery && ipValid) {
+                    console.log('[LazyLoad] ★ Adding IP to query:', ip);
+                    allQueryIps.add(ip);
+                }
+            });
+            // 3. 批量查询
+            const queryIps = Array.from(allQueryIps);
+            console.log('[LazyLoad] Total IPs to query:', queryIps.length, queryIps);
+
+            // ★ 渲染表格后再统一扫描DOM中的"查询中..."IP（解决uncached_ips为空的问题）
+
+            if (page === 1) {
+                // 第一页：清空并显示新数据
+                const div = document.getElementById('userLazyContainer');
+                div.innerHTML = `
+                    <table class="table" id="lazyUserTable">
+                        <tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>积分</th><th>在线时长</th><th>邮箱</th><th>IP地址</th><th>IP属地</th><th>操作</th></tr>
+                    </table>`;
+                // ★ 首次加载完成后，标记为非首次
+                if (isFirstLoad) {
+                    isFirstLoad = false;
+                    console.log('[LazyLoad] First load completed');
+                }
+            }
+            
+            const table = document.getElementById('lazyUserTable');
+            
+            if (users.length === 0 && page === 1) {
+                table.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--dim)">暂无用户数据</td></tr>';
+                document.getElementById('userLazyLoadMore').style.display = 'none';
+                return;
+            }
+            
+            if (users.length === 0) {
+                document.getElementById('userLazyLoadMore').style.display = 'none';
+                return;
+            }
+            
+            // 追加用户行
+            users.forEach(u => {
+                const isOnline = onlineSet && onlineSet.has((u.player_name || '').toLowerCase());
+                const playerNameClass = isOnline ? 'player-online' : '';
+                const regTime = u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-';
+                const loginTime = u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-';
+                const hours = Math.floor((u.total_online_time || 0) / 3600);
+                const ip = u.ip_address || '-';
+                const ipLoc = u.ip_location || '-';
+                
+                const tr = document.createElement('tr');
+                tr.setAttribute('data-name', (u.player_name || '').toLowerCase());
+                tr.innerHTML = `
+                    <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}</td>
+                    <td>${regTime}</td>
+                    <td>${loginTime}</td>
+                    <td>${u.points || 0}</td>
+                    <td>${hours}h</td>
+                    <td>${u.email || '-'}</td>
+                    <td style="font-size:12px;font-family:monospace">${ip}</td>
+                    <td style="font-size:12px">${ipLoc}</td>
+                    <td>
+                        <button class="btn btn-blue" onclick="showUserInfoAndReset('${u.player_name}','${u.email || ''}')">查看 & 重置密码</button>
+                    </td>`;
+                table.querySelector('tbody')?.appendChild(tr) || table.appendChild(tr);
+            });
+            
+            // ★ 表格渲染完成后，扫描DOM中的"查询中..."IP并批量查询
+            // （后端uncached_ips可能为空，但前端仍需查询未缓存的IP）
+            setTimeout(() => {
+                const domQueryIps = new Set();
+                // 先加入后端和前端收集的IP
+                queryIps.forEach(ip => domQueryIps.add(ip));
+                // 再扫描DOM表格中的"查询中..."和"查询失败"
+                document.querySelectorAll('#lazyUserTable tr[data-name]').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 8) {
+                        const locText = cells[7].textContent.trim(); // IP属地列 (第8列)
+                        const ipText = cells[6].textContent.trim(); // IP地址列 (第7列)
+                        if ((locText === '查询中...' || locText === '查询失败' || locText === '⚠️ 重试中...') 
+                            && /^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+                            domQueryIps.add(ipText);
+                        }
+                    }
+                });
+                const finalIps = Array.from(domQueryIps);
+                console.log('[LazyLoad] ★ DOM scan found', finalIps.length, 'IPs to query:', finalIps);
+                if (finalIps.length > 0) {
+                    batchQueryIpLocations(finalIps);
+                }
+            }, 500); // 延迟500ms确保DOM渲染完成
+            
+            // ★ 3秒后自动重试：检查是否仍有"查询中..."的IP
+            setTimeout(() => {
+                const retryIps = [];
+                document.querySelectorAll('#lazyUserTable tr[data-name]').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 8) {
+                        const locText = cells[7].textContent.trim();
+                        const ipText = cells[6].textContent.trim();
+                        if ((locText === '查询中...' || locText === '查询失败' || locText === '⚠️ 重试中...') 
+                            && /^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+                            retryIps.push(ipText);
+                        }
+                    }
+                });
+                if (retryIps.length > 0) {
+                    console.log('[LazyLoad] ★ Retry: still', retryIps.length, 'IPs need query:', retryIps);
+                    batchQueryIpLocations(retryIps);
+                } else {
+                    console.log('[LazyLoad] ✓ No more "查询中..." IPs');
+                }
+            }, 3000);
+            
+            // 更新加载更多按钮
+            const loadMoreDiv = document.getElementById('userLazyLoadMore');
+            if (lazyLoadState.hasMore) {
+                loadMoreDiv.style.display = 'block';
+                loadMoreDiv.innerHTML = `<button class="btn btn-blue" onclick="doLazyLoadMore()">加载更多 (还有${lazyLoadState.totalPages - lazyLoadState.currentPage}页)</button>`;
+            } else {
+                loadMoreDiv.style.display = 'block';
+                loadMoreDiv.innerHTML = '<p style="color:var(--dim);font-size:12px">已加载全部内容 (共' + (pag.total || 0) + '人)</p>';
+            }
+            
+            // ★ 更新未缓存IP的显示状态
+            if (uncachedIps.length > 0) {
+                updateUncachedIpDisplay(uncachedIps);
+            }
+            } catch(innerErr) {
+                console.error('[LazyLoad] ★★★ 内部处理异常:', innerErr.message, innerErr.stack);
+                lazyLoadState.isLoading = false;
+                document.getElementById('userLazyContainer').innerHTML = '<div class="empty">数据处理异常: ' + innerErr.message + '</div>';
+            }
+        })
+        .catch(e => {
+            clearTimeout(timeoutId);
+            lazyLoadState.isLoading = false;
+            document.getElementById('userLazyContainer').innerHTML = '<div class="empty">加载失败: ' + (e.name === 'AbortError' ? '请求超时，请重试' : e.message) + '</div>';
+        });
+}
+
+// ★ 批量查询未缓存的IP归属地（串行，避免并发问题）
+function batchQueryIpLocations(ips) {
+    if (!ips || ips.length === 0) {
+        console.log('[BatchIP] Empty IP list, skipping');
+        return;
+    }
+
+    // 去重
+    const uniqueIps = [...new Set(ips)];
+    console.log('[BatchIP] Starting batch query for ' + uniqueIps.length + ' IPs:', uniqueIps);
+
+    const batchSize = 3;
+    let idx = 0;
+    let batchNum = 0;
+
+    function queryNext() {
+        if (idx >= uniqueIps.length) {
+            console.log('[BatchIP] ✓ All ' + batchNum + ' batches completed');
+            return;
+        }
+        const batch = uniqueIps.slice(idx, idx + batchSize);
+        idx += batchSize;
+        batchNum++;
+
+        console.log('[BatchIP] Batch #' + batchNum + ' requesting:', batch);
+
+        const startTime = Date.now();
+        fetch('api/admin.php', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify({
+                action: 'batch_query_ips',
+                ips: batch
+            })
+        })
+        .then(r => {
+            console.log('[BatchIP] Batch #' + batchNum + ' HTTP status:', r.status, 'time:', (Date.now() - startTime) + 'ms');
+            return r.text();
+        })
+        .then(text => {
+            console.log('[BatchIP] Batch #' + batchNum + ' raw response:', text.substring(0, 500));
+            try {
+                const r = JSON.parse(text);
+                if (r.success && r.data) {
+                    console.log('[BatchIP] Batch #' + batchNum + ' parsed results:', JSON.stringify(r.data));
+                    updateIpLocationDisplay(r.data);
+                } else {
+                    console.error('[BatchIP] Batch #' + batchNum + ' failed:', r.message || 'unknown');
+                }
+            } catch(e) {
+                console.error('[BatchIP] Batch #' + batchNum + ' JSON parse error:', e, 'text:', text.substring(0, 200));
+            }
+            // 串行：等当前批次完成后再查下一批
+            setTimeout(queryNext, 300);
+        })
+        .catch(e => {
+            console.error('[BatchIP] Batch #' + batchNum + ' fetch error:', e);
+            setTimeout(queryNext, 300);
+        });
+    }
+
+    queryNext();
+}
+
+// ★ 更新未缓存IP的显示状态（显示"查询中..."）
+function updateUncachedIpDisplay(ips) {
+    const table = document.getElementById('lazyUserTable');
+    if (!table) return;
+    
+    const rows = table.querySelectorAll('tr[data-name]');
+    rows.forEach(row => {
+        const ipCell = row.querySelector('td:nth-child(7)'); // IP地址列
+        const locCell = row.querySelector('td:nth-child(8)'); // IP属地列
+        if (ipCell && locCell) {
+            const ip = ipCell.textContent.trim();
+            if (ips.includes(ip)) {
+                locCell.textContent = '查询中...';
+                locCell.style.color = 'var(--yellow)';
+            }
+        }
+    });
+}
+
+// ★ 更新IP归属地显示
+function updateIpLocationDisplay(ipLocationMap) {
+    const table = document.getElementById('lazyUserTable');
+    if (!table) return;
+    
+    const rows = table.querySelectorAll('tr[data-name]');
+    rows.forEach(row => {
+        const ipCell = row.querySelector('td:nth-child(7)'); // IP地址列
+        const locCell = row.querySelector('td:nth-child(8)'); // IP属地列
+        if (ipCell && locCell) {
+            const ip = ipCell.textContent.trim();
+            const currentLoc = locCell.textContent.trim();
+            
+            // 只更新有效的IP归属地，不更新"查询失败"等无效值
+            if (ipLocationMap[ip] && ipLocationMap[ip] !== '查询失败' && ipLocationMap[ip] !== '-') {
+                locCell.textContent = ipLocationMap[ip];
+                locCell.style.color = ''; // 恢复默认颜色
+            } else if (ipLocationMap[ip] === '查询失败') {
+                // 如果还是查询失败，显示为黄色提示
+                locCell.textContent = '⚠️ 重试中...';
+                locCell.style.color = 'var(--yellow)';
+            }
+        }
+    });
+}
+
+function doLazyLoadMore() {
+    if (!lazyLoadState.hasMore || lazyLoadState.isLoading) return;
+    lazyLoadState.currentPage++;
+    const queryParams = {
+        action: 'list_users_paginated',
+        page: lazyLoadState.currentPage,
+        limit: 20,
+        _t: Date.now(),
+        ...(lazyLoadState.currentSearch ? { search: encodeURIComponent(lazyLoadState.currentSearch) } : {})
+    };
+    const queryString = new URLSearchParams(queryParams).toString();
+    
+    console.log('[LazyLoad More] Loading page ' + lazyLoadState.currentPage + ': api/admin.php?' + queryString);
+    
+    const loadMoreDiv = document.getElementById('userLazyLoadMore');
+    loadMoreDiv.innerHTML = '<span style="color:var(--dim)">加载中...</span>';
+    
+    // 设置30秒超时（IP查询需要时间）
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    
+    fetch('api/admin.php?' + queryString, { 
+        credentials: 'same-origin',
+        signal: controller.signal,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+        .finally(() => clearTimeout(timeoutId))
+        .then(r => {
+            clearTimeout(timeoutId);
+            console.log('[LazyLoad More] Response status: ' + r.status);
+            return r.text().then(text => {
+                console.log('[LazyLoad More] Raw response (' + text.length + ' bytes)');
+                text = text.replace(/^\uFEFF/, '').trim();
+                if (!text) throw new Error('Empty response');
+                try {
+                    return JSON.parse(text);
+                } catch(e) {
+                    console.error('[LazyLoad More] JSON parse error:', e.message, text.substring(0, 200));
+                    throw new Error('服务器返回无效JSON');
+                }
+            });
+        })
+        .then(r => {
+            console.log('[LazyLoad More] ★ Parsed OK, success:', r.success, 'data count:', r.data?.length);
+            lazyLoadState.isLoading = false;
+            
+            if (!r.success || !r.data || r.data.length === 0) {
+                console.log('[LazyLoad More] No more data');
+                lazyLoadState.hasMore = false;
+                document.getElementById('userLazyLoadMore').innerHTML = '<p style="color:var(--dim);font-size:12px">已加载全部内容</p>';
+                return;
+            }
+            
+            const users = r.data;
+            const pag = r.pagination || {};
+            lazyLoadState.totalPages = pag.total_pages || 1;
+            lazyLoadState.hasMore = pag.has_more || false;
+
+            // ★ 收集需要查询的IP（与lazyLoadUsersPage一致）
+            const moreQueryIps = new Set();
+            // 1. 后端返回的未缓存IP
+            const moreUncachedIps = r.uncached_ips || [];
+            console.log('[LazyLoad More] Backend uncached_ips:', JSON.stringify(moreUncachedIps));
+            moreUncachedIps.forEach(ip => {
+                if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) moreQueryIps.add(ip);
+            });
+            // 2. 前端发现的需要查询的IP
+            users.forEach(u => {
+                const needQuery = u.ip_location === '查询失败' || u.ip_location === '-' || u.ip_location === '查询中...' || !u.ip_location;
+                const ipValid = u.ip_address && u.ip_address !== '-' && /^\d+\.\d+\.\d+\.\d+$/.test(u.ip_address);
+                if (needQuery && ipValid) {
+                    console.log('[LazyLoad More] User IP needs query:', u.ip_address, 'location:', u.ip_location);
+                    moreQueryIps.add(u.ip_address);
+                }
+            });
+            // 3. 批量查询
+            const moreQueryList = Array.from(moreQueryIps);
+            console.log('[LazyLoad More] Total IPs to query:', moreQueryList.length, moreQueryList);
+            if (moreQueryList.length > 0) {
+                batchQueryIpLocations(moreQueryList);
+            }
+            
+            const table = document.getElementById('lazyUserTable');
+            const onlineSet = cachedOnlineSet;
+            
+            users.forEach(u => {
+                const isOnline = onlineSet && onlineSet.has((u.player_name || '').toLowerCase());
+                const playerNameClass = isOnline ? 'player-online' : '';
+                const regTime = u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-';
+                const loginTime = u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-';
+                const hours = Math.floor((u.total_online_time || 0) / 3600);
+                const ip = u.ip_address || '-';
+                const ipLoc = u.ip_location || '-';
+                
+                const tr = document.createElement('tr');
+                tr.setAttribute('data-name', (u.player_name || '').toLowerCase());
+                tr.innerHTML = `
+                    <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}</td>
+                    <td>${regTime}</td>
+                    <td>${loginTime}</td>
+                    <td>${u.points || 0}</td>
+                    <td>${hours}h</td>
+                    <td>${u.email || '-'}</td>
+                    <td style="font-size:12px;font-family:monospace">${ip}</td>
+                    <td style="font-size:12px">${ipLoc}</td>
+                    <td>
+                        <button class="btn btn-blue" onclick="showUserInfoAndReset('${u.player_name}','${u.email || ''}')">查看 & 重置密码</button>
+                    </td>`;
+                table.querySelector('tbody')?.appendChild(tr) || table.appendChild(tr);
+            });
+            
+            // ★ 表格渲染完成后，扫描DOM中的"查询中..."IP并批量查询
+            setTimeout(() => {
+                const domQueryIps = new Set();
+                moreQueryList.forEach(ip => domQueryIps.add(ip));
+                document.querySelectorAll('#lazyUserTable tr[data-name]').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 8) {
+                        const locText = cells[7].textContent.trim();
+                        const ipText = cells[6].textContent.trim();
+                        if ((locText === '查询中...' || locText === '查询失败' || locText === '⚠️ 重试中...') 
+                            && /^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+                            domQueryIps.add(ipText);
+                        }
+                    }
+                });
+                const finalIps = Array.from(domQueryIps);
+                console.log('[LazyLoad More] ★ DOM scan found', finalIps.length, 'IPs to query:', finalIps);
+                if (finalIps.length > 0) {
+                    batchQueryIpLocations(finalIps);
+                }
+            }, 500);
+            
+            // ★ 3秒后自动重试
+            setTimeout(() => {
+                const retryIps = [];
+                document.querySelectorAll('#lazyUserTable tr[data-name]').forEach(row => {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 8) {
+                        const locText = cells[7].textContent.trim();
+                        const ipText = cells[6].textContent.trim();
+                        if ((locText === '查询中...' || locText === '查询失败' || locText === '⚠️ 重试中...') 
+                            && /^\d+\.\d+\.\d+\.\d+$/.test(ipText)) {
+                            retryIps.push(ipText);
+                        }
+                    }
+                });
+                if (retryIps.length > 0) {
+                    console.log('[LazyLoad More] ★ Retry:', retryIps.length, 'IPs still need query:', retryIps);
+                    batchQueryIpLocations(retryIps);
+                }
+            }, 3000);
+            
+            const loadMoreDiv = document.getElementById('userLazyLoadMore');
+            if (lazyLoadState.hasMore) {
+                loadMoreDiv.innerHTML = `<button class="btn btn-blue" onclick="doLazyLoadMore()">加载更多 (还有${lazyLoadState.totalPages - lazyLoadState.currentPage}页)</button>`;
+            } else {
+                loadMoreDiv.innerHTML = '<p style="color:var(--dim);font-size:12px">已加载全部内容 (共' + (pag.total || 0) + '人)</p>';
+            }
+        })
+        .catch(e => {
+            console.error('[LazyLoad More] ★ Error:', e.name, e.message);
+            clearTimeout(timeoutId);
+            lazyLoadState.isLoading = false;
+            document.getElementById('userLazyLoadMore').innerHTML = '<button class="btn btn-red" onclick="doLazyLoadMore()">加载失败，点击重试</button>';
+        });
+}
+
+function handleUserSearch() {
+    // 防抖：200ms后触发搜索
+    if (window.userSearchTimer) clearTimeout(window.userSearchTimer);
+    window.userSearchTimer = setTimeout(() => {
+        doLazyLoadSearch();
+    }, 200);
+}
+
+function doLazyLoadSearch() {
+    const searchInput = document.getElementById('userSearch');
+    const search = searchInput ? searchInput.value.trim() : '';
+    window.currentSearch = search;
+    
+    // 重置分页状态
+    lazyLoadState.currentPage = 1;
+    lazyLoadState.totalPages = 1;
+    lazyLoadState.hasMore = true;
+    lazyLoadState.currentSearch = search;
+    
+    lazyLoadUsersPage(1, 50, search, cachedOnlineSet);
+}
+
+// ===== 活跃用户（独立标签页）=====
+async function loadActivePlayers(el) {
+    el.innerHTML = '<div class="card">加载中...</div>';
+    const r = await jsonApi('admin.php?action=list_active_players');
+    if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
+    const players = r.data || [];
+    el.innerHTML = `
+        <div class="card">
+            <h2>24小时活跃用户 <span style="color:var(--dim);font-size:12px">(${players.length}人)</span></h2>
+            <table class="table">
+                <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th></tr>
+                ${players.map(p => {
+                    const loginTime = p.last_login_time ? new Date(p.last_login_time*1000).toLocaleString() : '-';
+                    return `<tr>
+                        <td class="player-online">${p.player_name}</td>
                         <td>${loginTime}</td>
-                        <td>${u.points||0}</td>
-                        <td>${hours}h</td>
-                        <td>${u.email||'-'}</td>
-                        <td>
-                            <button class="btn btn-blue" onclick="adminSendReset('${u.player_name}','${u.email||''}')">重置密码</button>
-                        </td>
+                        <td>${p.hours_online}小时</td>
                     </tr>`;
                 }).join('')}
             </table>
-            ${users.length === 0 ? '<div class="empty">暂无用户数据，确保插件已同步用户数据</div>' : ''}
+            ${players.length === 0 ? '<div class="empty">暂无活跃用户</div>' : ''}
         </div>`;
 }
 
-// ===== 在线玩家 =====
+// ===== 活跃用户（标签页内）=====
+function loadActiveTab(tab, seconds) {
+    if (!tab) return;
+    document.querySelectorAll('#userTabs .tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    
+    const div = document.getElementById('userTabContent');
+    div.innerHTML = '<div class="empty">加载中...</div>';
+    
+    const label = seconds === 3600 ? '1小时' : seconds === 86400 ? '1天' : '1周';
+    const r = jsonApi('admin.php?action=list_active_players&period=' + seconds);
+    r.then(res => {
+        if (!res.success) { div.innerHTML='<div class="card" style="border-color:var(--red)">'+res.message+'</div>'; return; }
+        const players = res.data || [];
+        
+        // 统计同IP玩家
+        const ipCountMap = {};
+        players.forEach(p => {
+            const ip = p.ip_address || '-';
+            if (ip !== '-') ipCountMap[ip] = (ipCountMap[ip] || 0) + 1;
+        });
+        
+        div.innerHTML = `
+            <h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">${label}内活跃用户 <span style="color:var(--dim)">(${players.length}人)</span></h3>
+            <table class="table">
+                <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th><th>IP地址</th><th>IP属地</th></tr>
+                ${players.map(p => {
+                    const loginTime = p.last_login_time ? new Date(p.last_login_time*1000).toLocaleString() : '-';
+                    const ip = p.ip_address || '-';
+                    const ipLoc = p.ip_location || '-';
+                    const isShared = (ipCountMap[ip] || 0) > 1;
+                    const ipStyle = isShared ? 'color:var(--yellow);font-weight:700' : '';
+                    const ipBadge = isShared ? ` <span style="font-size:10px;background:var(--yellow);color:#000;padding:1px 4px;border-radius:3px">同IP${ipCountMap[ip]}人</span>` : '';
+                    return `<tr>
+                        <td>${p.player_name}</td>
+                        <td>${loginTime}</td>
+                        <td>${p.hours_online}h</td>
+                        <td style="font-size:12px;font-family:monospace;${ipStyle}">${ip}${ipBadge}</td>
+                        <td style="font-size:12px">${ipLoc}</td>
+                    </tr>`;
+                }).join('')}
+            </table>
+            ${players.length === 0 ? '<div class="empty">暂无活跃用户</div>' : ''}`;
+    }).catch(e => {
+        div.innerHTML = '<div class="card" style="border-color:var(--red)">加载失败: ' + e.message + '</div>';
+    });
+}
+
+// ===== 同IP玩家标签页 =====
+async function loadSameIpTab(tab) {
+    if (!tab) return;
+    document.querySelectorAll('#userTabs .tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    
+    const div = document.getElementById('userTabContent');
+    div.innerHTML = '<div class="empty">加载中...</div>';
+    
+    const r = await jsonApi('admin.php?action=list_same_ip');
+    if (!r.success || !r.data || r.data.length === 0) {
+        div.innerHTML = '<div class="card"><h3>同IP玩家</h3><p style="color:var(--dim)">暂无同IP多玩家记录</p></div>';
+        return;
+    }
+    
+    const groups = r.data;
+    let html = `<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">同IP多玩家 <span style="color:var(--dim)">(${groups.length}个IP组)</span></h3>`;
+    groups.forEach(g => {
+        html += `<div class="card" style="margin-bottom:12px">`;
+        html += `<h4 style="color:var(--yellow);margin-bottom:8px">🌐 ${g.ip} <span style="font-size:12px;color:var(--dim)">(${g.player_count}人 | ${g.ip_location || '-'})</span></h4>`;
+        html += `<table class="table">`;
+        html += `<tr><th>玩家名</th><th>IP属地</th><th>最后登录时间</th></tr>`;
+        g.players.forEach(p => {
+            const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
+            html += `<tr><td>${p.player_name}</td><td style="font-size:12px">${p.ip_location || '-'}</td><td>${loginTime}</td></tr>`;
+        });
+        html += `</table></div>`;
+    });
+    div.innerHTML = html;
+}
+
+// ===== 在线玩家（独立标签页）=====
 async function loadOnlinePlayers(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
     loadOnlinePlayersData(el);
@@ -435,21 +1233,28 @@ async function loadOnlinePlayers(el) {
 }
 
 async function loadOnlinePlayersData(el) {
-    const r = await api('admin.php?action=list_online_players');
-    if (!r.success) return;
+    const r = await jsonApi('admin.php?action=list_online_players');
+    if (!r.success) { el.innerHTML = '<div class="card">加载失败: ' + r.message + '</div>'; return; }
     const players = r.data || [];
     el.innerHTML = `
         <div class="card">
             <h2>在线玩家 <span style="color:var(--dim);font-size:12px">(${players.length}人在线)</span></h2>
             <table class="table">
-                <tr><th>玩家名</th><th>登录时间</th><th>在线时长</th></tr>
+                <tr><th>玩家名</th><th>登录时间</th><th>在线时长</th><th>IP地址</th><th>IP属地</th></tr>
                 ${players.map(p => {
                     const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
                     const minsOnline = Math.floor((Date.now()/1000 - p.login_time)/60);
+                    const ip = p.ip_address || '-';
+                    const ipLoc = p.ip_location || '-';
+                    const isShared = p.ip_is_shared;
+                    const ipStyle = isShared ? 'color:var(--yellow);font-weight:700' : '';
+                    const ipBadge = isShared ? ` <span style="font-size:10px;background:var(--yellow);color:#000;padding:1px 4px;border-radius:3px">同IP多人</span>` : '';
                     return `<tr>
                         <td class="player-online">🟢 ${p.player_name}</td>
                         <td>${loginTime}</td>
                         <td>${minsOnline}分钟</td>
+                        <td style="font-size:12px;font-family:monospace;${ipStyle}">${ip}${ipBadge}</td>
+                        <td style="font-size:12px">${ipLoc}</td>
                     </tr>`;
                 }).join('')}
             </table>
@@ -460,7 +1265,7 @@ async function loadOnlinePlayersData(el) {
 // ===== 活跃用户（24小时） =====
 async function loadActivePlayers(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
-    const r = await api('admin.php?action=list_active_players');
+    const r = await jsonApi('admin.php?action=list_active_players');
     if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
     const players = r.data || [];
     el.innerHTML = `
@@ -482,6 +1287,57 @@ async function loadActivePlayers(el) {
 }
 
 // ===== 发送重置密码链接（管理员后台） =====
+async function showUserInfoAndReset(player, email) {
+    const res = await jsonApi('register.php?action=query&player='+encodeURIComponent(player));
+    let infoHtml = '';
+    if (res.success) {
+        const d = res.data;
+        const regTime = d.register_time ? new Date(d.register_time*1000).toLocaleString() : '-';
+        const loginTime = d.last_login_time ? new Date(d.last_login_time*1000).toLocaleString() : '-';
+        const hours = Math.floor((d.total_online_time||0)/3600);
+        infoHtml = `<div style="background:rgba(88,166,255,0.1);border:1px solid var(--accent);border-radius:8px;padding:12px;margin-bottom:12px;font-size:13px">
+            <p><b>玩家:</b> ${d.player_name}</p>
+            <p><b>注册:</b> ${regTime} | <b>最后登录:</b> ${loginTime}</p>
+            <p><b>积分:</b> ${d.points||0} | <b>礼包阶段:</b> ${d.gift_stage||0} | <b>在线时长:</b> ${hours}h</p>
+            <p><b>邮箱:</b> ${d.email||'-'}</p>
+        </div>`;
+    }
+    
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:2000';
+    overlay.innerHTML = `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:500px;max-width:90%">
+            <h3 style="margin-bottom:12px">查看 & 重置密码 - ${player}</h3>
+            <div id="userInfoPanel">${infoHtml}</div>
+            <div style="margin-top:12px">
+                <label style="color:var(--dim);font-size:12px">绑定邮箱</label>
+                <input type="text" id="resetPlayerEmail" value="${email}" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;box-sizing:border-box">
+            </div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                <button class="btn" id="userInfoCancel">关闭</button>
+                <button class="btn btn-blue" id="userInfoReset">发送重置链接</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById('userInfoCancel').onclick = () => overlay.remove();
+    document.getElementById('userInfoReset').onclick = async () => {
+        const emailInput = document.getElementById('resetPlayerEmail').value.trim();
+        overlay.remove();
+        const r = await fetch('api/sync.php?action=send_reset_password_link', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({player})
+        });
+        const data = await r.json();
+        if (data.success) {
+            toast('重置链接已发送到邮箱: ' + data.data.email, 'ok');
+        } else {
+            toast(data.message, 'err');
+        }
+        loadUsers(document.getElementById('C'));
+    };
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+}
+
 async function adminSendReset(player, email) {
     const emailInput = await showModal('发送重置密码链接', '为玩家 ' + player + ' 发送重置密码邮件', email);
     if (!emailInput) return;
@@ -498,18 +1354,10 @@ async function adminSendReset(player, email) {
     }
 }
 
-function filterUsers() {
-    const search = document.getElementById('userSearch').value.toLowerCase();
-    const rows = document.querySelectorAll('#userTable tr[data-name]');
-    rows.forEach(r => {
-        r.style.display = r.dataset.name.includes(search) ? '' : 'none';
-    });
-}
-
 // ===== 密码重置审核 =====
 async function loadResetRequests(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
-    const r = await api('admin.php?action=list_reset_requests');
+    const r = await jsonApi('admin.php?action=list_reset_requests');
     const requests = r.data || [];
     
     if (requests.length === 0) {
@@ -592,11 +1440,42 @@ function confirmAction(msg) {
     });
 }
 
-// ===== 通用 =====
-async function api(url) { const r=await fetch('api/' + url); return await r.json(); }
+// ===== 通用 API 调用（直接返回 JSON）=====
+function jsonApi(path) {
+    console.log('[API] Fetching: ' + path);
+    return fetch(path.startsWith('api/') ? path : ('api/' + path), {
+        credentials: 'same-origin',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text().then(t => {
+            try { return JSON.parse(t.replace(/^\uFEFF/,'').trim()); } catch(e) {
+                console.error('Invalid JSON from ' + path + ':', t.substring(0, 200));
+                return { success: false, message: '服务器返回无效JSON: ' + t.substring(0, 50) };
+            }
+        });
+    })
+    .catch(e => {
+        console.error('Fetch error:', e);
+        return { success: false, message: '网络错误: ' + e.message };
+    });
+}
 async function postApi(action, data) {
-    const r = await fetch(A, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action,...data})});
-    return await r.json();
+    const r = await fetch(A, {
+        method:'POST',
+        credentials: 'same-origin',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action,...data})
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const text = await r.text();
+    try {
+        return JSON.parse(text);
+    } catch(e) {
+        console.error('Invalid JSON from POST api:', text.substring(0, 200));
+        return { success: false, message: '服务器返回无效JSON: ' + text.substring(0, 50) };
+    }
 }
 function toast(msg,type='ok') {
     const t=document.createElement('div'); t.className='toast '+type; t.textContent=msg;
@@ -638,7 +1517,7 @@ function showThemePicker() {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:2000';
     overlay.innerHTML = `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:500px;max-width:90%">
             <h3 style="margin-bottom:12px">🎨 选择背景颜色</h3>
             <div class="theme-picker">
                 <div class="color-btn" style="background:#0d1117" onclick="setTheme('#0d1117')"></div>
@@ -649,15 +1528,24 @@ function showThemePicker() {
                 <div class="color-btn" style="background:#23272a" onclick="setTheme('#23272a')"></div>
             </div>
             <div style="margin-top:16px">
-                <input type="text" id="customColor" placeholder="或输入十六进制颜色代码，如 #1a237e" class="color-input">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">R</span>
+                    <input type="number" id="rgbR" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">G</span>
+                    <input type="number" id="rgbG" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">B</span>
+                    <input type="number" id="rgbB" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                    <span style="color:var(--dim);font-size:11px">或</span>
+                    <input type="text" id="customColor" placeholder="#1a237e" class="color-input" style="flex:1;min-width:120px">
+                </div>
             </div>
             <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
                 <button class="btn" id="themeCancel">取消</button>
-                <button class="btn btn-blue" id="themeConfirm" onclick="applyCustomColor()">应用</button>
+                <button class="btn btn-blue" onclick="applyCustomColor()">应用</button>
             </div>
         </div>`;
     document.body.appendChild(overlay);
-    document.getElementById('themeCancel').onclick = () => overlay.remove();
+    overlay.querySelector('#themeCancel').onclick = () => overlay.remove();
     overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 }
 
@@ -669,12 +1557,46 @@ function setTheme(color) {
 }
 
 function applyCustomColor() {
-    const color = document.getElementById('customColor').value.trim();
-    if (color && /^#[0-9A-Fa-f]{6}$/.test(color)) {
+    let rVal = document.getElementById('rgbR').value.trim();
+    let gVal = document.getElementById('rgbG').value.trim();
+    let bVal = document.getElementById('rgbB').value.trim();
+    const hexVal = document.getElementById('customColor').value.trim();
+    
+    let color = null;
+    
+    // 优先检查十六进制
+    if (hexVal) {
+        if (/^[0-9A-Fa-f]{6}$/.test(hexVal)) {
+            color = '#' + hexVal;
+        } else if (/^#[0-9A-Fa-f]{6}$/.test(hexVal)) {
+            color = hexVal;
+        } else {
+            toast('请输入有效的十六进制颜色，如 1a237e 或 #1a237e', 'err');
+            return;
+        }
+    }
+    // 否则检查 RGB 三个输入框 - 如果某个为空则自动补 0
+    else if (rVal !== '' || gVal !== '' || bVal !== '') {
+        if (rVal === '') rVal = 0;
+        if (gVal === '') gVal = 0;
+        if (bVal === '') bVal = 0;
+        const r = parseInt(rVal);
+        const g = parseInt(gVal);
+        const b = parseInt(bVal);
+        if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+            color = 'rgb(' + r + ',' + g + ',' + b + ')';
+        } else {
+            toast('RGB 值必须在 0-255 之间', 'err');
+            return;
+        }
+    } else {
+        toast('请输入十六进制颜色（如 1a237e）或填写任意一个 RGB 值', 'err');
+        return;
+    }
+    
+    if (color) {
         setTheme(color);
         document.querySelector('[id="themeCancel"]').click();
-    } else {
-        toast('请输入有效的十六进制颜色代码，如 #1a237e', 'err');
     }
 }
 

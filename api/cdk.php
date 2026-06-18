@@ -8,9 +8,10 @@
  * POST ?action=batch     - 批量生成CDK（需管理token）
  */
 // 防止任何输出污染JSON响应
-ob_start();
+while (ob_get_level() > 0) { ob_end_clean(); }
 require_once __DIR__ . '/../core.php';
-ob_end_clean();
+// 再次确保清理前置输出
+while (ob_get_level() > 0) { ob_end_clean(); }
 
 $action = getParam('action', 'exchange');
 $token = getParam('token');
@@ -47,20 +48,20 @@ function cdkExchange($token) {
 
     // ★ 双保险验证：CDK兑换需要密码确认
     $isPreview = true;
+    $validated = false;
 
     if ($token) {
         // 先检查是否为普通管理token
         $tokenInfo = validateToken($token);
         if ($tokenInfo && ($tokenInfo['purpose'] === 'admin' || $tokenInfo['purpose'] === 'all')) {
             $isPreview = false;
-            if (validateToken($token)) {
-                validateAndUseToken($token);
-            }
+            $validated = true;
         } else {
             // weblogin token → 走双保险验证
             $accessResult = validateWebAccess($token, 'cdk', $password, $ipAddress);
-            if ($accessResult['ok']) {
+            if ($accessResult['ok'] || $accessResult['mode'] === 'full_verified') {
                 $isPreview = false;
+                $validated = true;
                 $player = $accessResult['player'];
             } elseif ($accessResult['mode'] === 'need_password') {
                 jsonResponse([
@@ -73,6 +74,11 @@ function cdkExchange($token) {
                 error($accessResult['message'], 401);
             }
         }
+    }
+
+    // 如果没有token也不是管理token，返回预览
+    if (!$validated) {
+        $isPreview = true;
     }
 
     $db = getDB();
@@ -159,12 +165,17 @@ function cdkExchange($token) {
         'balance_after' => $newBalance
     ], 'CDK兑换成功');
 
-    // ★ 立即通知Java插件拉取交易
-    $notifyUrl = "http://127.0.0.1:" . CALLBACK_PORT . "/api/notify_sync?secret=" . SECRET_KEY;
-    @file_get_contents($notifyUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
-    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . WEBSUB_DIR;
-    $notifyUrl2 = $baseUrl . "/api/sync.php?action=notify_sync&secret=" . SECRET_KEY;
-    @file_get_contents($notifyUrl2, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
+    // ★ 写入sync_requests触发Java立即拉取
+    $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+    $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+    $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
+    $stmt2->execute();
+
+    // ★ 通过HTTP回调通知Java插件立即拉取交易
+    $cbPort = defined('CALLBACK_PORT') ? CALLBACK_PORT : 9090;
+    $callbackUrl = 'http://127.0.0.1:' . $cbPort . '/notify_sync';
+    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
 }
 
 // ===== 创建CDK =====

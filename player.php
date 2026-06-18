@@ -11,8 +11,14 @@
             --green: #3fb950; --red: #f85149; --yellow: #d29922;
             --purple: #bc8cff;
         }
+        .light-theme {
+            --bg: #f6f8fa; --card: #ffffff; --border: #d0d7de;
+            --text: #1f2328; --dim: #656d76; --accent: #0969da;
+            --green: #1a7f37; --red: #cf222e; --yellow: #9a6700;
+            --purple: #8250df;
+        }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; min-height: 100vh; transition: background 0.3s, color 0.3s; }
         .header {
             background: linear-gradient(135deg, #1a1e2e 0%, #0d1117 100%);
             border-bottom: 1px solid var(--border);
@@ -30,7 +36,7 @@
         .main { display: flex; gap: 0; min-height: calc(100vh - 56px); }
         .sidebar {
             width: 220px; background: var(--card); border-right: 1px solid var(--border);
-            padding: 12px 0; flex-shrink: 0;
+            padding: 12px 0; flex-shrink: 0; transition: background 0.3s;
         }
         .sidebar-item {
             padding: 10px 20px; cursor: pointer; color: var(--dim);
@@ -89,7 +95,7 @@
         .modal-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.6); display: flex; justify-content: center;
-            align-items: center; z-index: 100; display: none;
+            align-items: center; z-index: 999; display: none;
         }
         .modal {
             background: var(--card); border: 1px solid var(--border); border-radius: 12px;
@@ -123,6 +129,7 @@
         <div class="status">
             <span id="previewBadge" class="preview-badge" style="display:none">预览模式</span>
             <span id="playerInfo" style="margin-left:12px;color:var(--dim)"></span>
+            <button class="btn btn-yellow" onclick="showThemePicker()" style="margin-left:16px;font-size:12px;padding:4px 8px">🎨 主题</button>
         </div>
     </div>
 
@@ -155,6 +162,9 @@
     let TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('sdf1_token') || '';
     let IS_PREVIEW = !TOKEN;
     let currentPlayer = localStorage.getItem('sdf1_player') || new URLSearchParams(location.search).get('login') || '';
+    let tokenPollTimer = null; // ★ 新增：token轮询定时器（用于续期检查）
+    let AUTH_TOKEN = TOKEN; // ★ 使用独立的认证token，避免localStorage被意外覆盖
+    let authVerified = false; // ★ 记录是否已通过首次验证
     let currentPage = 'shop';
     let AUTHENTICATED = false;
     let NEED_PASSWORD = false;
@@ -166,8 +176,11 @@
             localStorage.setItem('sdf1_token', urlToken);
             TOKEN = urlToken;
             IS_PREVIEW = false;
-            const cleanUrl = location.pathname + location.search;
-            window.history.replaceState({}, '', cleanUrl);
+            // ★ 从URL中移除token参数，避免URL暴露
+            const params = new URLSearchParams(location.search);
+            params.delete('token');
+            const newUrl = location.pathname + (params.toString() ? '?' + params.toString() : '');
+            window.history.replaceState({}, '', newUrl);
         }
 
         // ★ 安全机制：没有token → 进入游客模式（预览）
@@ -207,7 +220,16 @@
                 currentPlayer = data.data.player || currentPlayer;
                 localStorage.setItem('sdf1_player', currentPlayer);
                 document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer;
+                authVerified = true; // ★ 标记已通过验证
                 if (callback) callback({ok: true, mode: data.data.mode});
+                // ★ 如果不需要密码，直接加载商品页
+                if (typeof NEED_PASSWORD !== 'undefined' && !NEED_PASSWORD) {
+                    setTimeout(() => {
+                        switchPage('shop');
+                        // ★ Token跟随Java端配置过期时间自动过期，不续费
+                        // startTokenPolling() 不再调用，仅保留变量声明
+                    }, 100);
+                }
             } else if (data.need_password) {
                 NEED_PASSWORD = true;
                 currentPlayer = data.player || currentPlayer;
@@ -338,6 +360,32 @@
         }
     }
 
+    async function loadBoundEmail() {
+        try {
+            const url = new URL(API + 'sync.php', location.href);
+            url.searchParams.set('action', 'get_player_email');
+            url.searchParams.set('player', currentPlayer);
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            });
+            const data = await res.json();
+            if (data.success && data.data) {
+                document.getElementById('authEmail').value = data.data.masked_email || data.data.email || '';
+                if (data.data.masked_email) {
+                    document.getElementById('authEmail').placeholder = '已绑定邮箱';
+                } else {
+                    document.getElementById('authEmail').placeholder = '未绑定邮箱';
+                }
+            } else {
+                document.getElementById('authEmail').value = '未绑定邮箱';
+                document.getElementById('authEmail').placeholder = '未绑定邮箱';
+            }
+        } catch (e) {
+            document.getElementById('authEmail').value = '加载失败';
+        }
+    }
+
     function showPasswordModal(message) {
         document.getElementById('modalTitle').textContent = '安全验证';
         document.getElementById('modalBody').innerHTML = `
@@ -352,7 +400,9 @@
                 <div style="text-align:right;margin-top:4px"><a href="javascript:void(0)" onclick="showResetPasswordModal()" style="color:var(--accent);font-size:12px">忘记密码？</a></div>
             </div>
             <div id="authEmailTab" style="display:none">
-                <div class="row"><label>绑定邮箱</label><input type="email" id="authEmail" placeholder="输入注册时绑定的邮箱"></div>
+                <div class="row"><label>绑定邮箱</label>
+                    <input type="text" id="authEmail" readonly style="background:#21262d;cursor:not-allowed;opacity:0.7" placeholder="加载中...">
+                </div>
                 <div class="row" style="display:flex;gap:8px">
                     <div style="flex:1"><label>验证码</label><input type="text" id="authCode" placeholder="6位验证码" maxlength="6"></div>
                     <div style="display:flex;align-items:flex-end"><button class="btn btn-blue" id="sendCodeBtn" onclick="sendEmailCode()" style="white-space:nowrap">发送验证码</button></div>
@@ -363,7 +413,10 @@
         document.getElementById('authPassword').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
         document.getElementById('authCode').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
         document.getElementById('modalOverlay').style.display = 'flex';
-        setTimeout(() => document.getElementById('authPassword').focus(), 100);
+        setTimeout(() => {
+            document.getElementById('authPassword').focus();
+            loadBoundEmail();
+        }, 100);
         switchAuthTab('password');
     }
 
@@ -378,8 +431,6 @@
     }
 
     async function sendEmailCode() {
-        const email = document.getElementById('authEmail').value.trim();
-        if (!email) { document.getElementById('authError').textContent = '请输入邮箱'; return; }
         const btn = document.getElementById('sendCodeBtn');
         btn.disabled = true;
         btn.textContent = '发送中...';
@@ -390,11 +441,12 @@
             const res = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player: currentPlayer, email: email, web_token: TOKEN})
+                body: JSON.stringify({player: currentPlayer, web_token: TOKEN})
             });
             const data = await res.json();
             if (data.success) {
-                document.getElementById('authError').innerHTML = '<span style="color:var(--green)">验证码已发送到邮箱</span>';
+                const maskedEmail = data.data.masked_email || '**@*';
+                document.getElementById('authError').innerHTML = '<span style="color:var(--green)">验证码已发送至 ' + maskedEmail + '</span>';
                 let countdown = 60;
                 const timer = setInterval(() => {
                     btn.textContent = countdown + '秒后重发';
@@ -471,9 +523,7 @@
     }
 
     async function doEmailAuth() {
-        const email = document.getElementById('authEmail').value.trim();
         const code = document.getElementById('authCode').value.trim();
-        if (!email) { document.getElementById('authError').textContent = '请输入邮箱'; return; }
         if (!code || code.length !== 6) { document.getElementById('authError').textContent = '请输入6位验证码'; return; }
         document.getElementById('authError').textContent = '验证中...';
         try {
@@ -482,7 +532,7 @@
             const res = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player: currentPlayer, email: email, code: code, web_token: TOKEN})
+                body: JSON.stringify({player: currentPlayer, code: code, web_token: TOKEN})
             });
             const data = await res.json();
             if (data.success) {
@@ -561,10 +611,61 @@
         });
         document.querySelector('.sidebar').style.display = 'block';
         const c = document.getElementById('content');
+        if (!c) return;
         if (page === 'shop') renderShop(c);
         else if (page === 'cdk') renderCDK(c);
         else if (page === 'balance') renderBalance(c);
         else if (page === 'account') renderAccount(c);
+    }
+
+    // ★ 新增：Token轮询检查（不续期，只检查是否被Java端主动销毁）
+    function startTokenPolling() {
+        if (tokenPollTimer) clearInterval(tokenPollTimer);
+        
+        // 每1分钟检查一次token是否仍然有效
+        tokenPollTimer = setInterval(() => {
+            if (TOKEN && !IS_PREVIEW && authVerified) {
+                checkTokenValidity();
+            }
+        }, 60 * 1000); // 1分钟
+    }
+
+    // ★ 检查token有效性（不续期，只检查）
+    async function checkTokenValidity() {
+        if (!TOKEN || IS_PREVIEW) return;
+        
+        try {
+            const url = new URL(API + 'sync.php', location.href);
+            url.searchParams.set('action', 'web_access_check');
+            url.searchParams.set('web_token', TOKEN);
+            url.searchParams.set('access_action', 'view');
+            
+            const res = await fetch(url);
+            const data = await res.json();
+            
+            if (!data.success) {
+                // Token可能已失效或过期
+                if (data.need_password || data.need_game_login || data.need_register) {
+                    // 需要进一步验证，不视为token无效
+                    return;
+                }
+                
+                // Token确实无效（可能被Java端主动销毁）
+                console.log('[Token] Token验证失败:', data.message);
+                TOKEN = '';
+                AUTHENTICATED = false;
+                localStorage.removeItem('sdf1_token');
+                localStorage.removeItem('sdf1_player');
+                currentPlayer = '';
+                IS_PREVIEW = true;
+                authVerified = false;
+                document.getElementById('playerInfo').textContent = '游客模式';
+                document.getElementById('previewBadge').style.display = 'inline';
+                showLoginPrompt();
+            }
+        } catch (e) {
+            console.log('[Token] Token检查异常:', e.message);
+        }
     }
 
     async function api(endpoint, params = {}) {
@@ -573,6 +674,18 @@
         Object.entries(params).forEach(([k,v]) => url.searchParams.set(k, v));
         const res = await fetch(url);
         return await res.json();
+    }
+
+    // 通知Java插件立即同步数据
+    async function notifyJavaSync() {
+        try {
+            const url = new URL(API + 'sync.php', location.href);
+            url.searchParams.set('action', 'request_immediate_sync');
+            url.searchParams.set('player', currentPlayer);
+            await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        } catch(e) {
+            // 静默失败，不影响用户体验
+        }
     }
 
     // ===== 商城 =====
@@ -638,7 +751,14 @@
         if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
         closeModal();
         toast(data.message, data.success ? 'success' : 'error');
-        if (data.success) switchPage('shop');
+        if (data.success) {
+            // 购买成功 → 通知Java插件立即同步 + 刷新当前页
+            setTimeout(() => {
+                notifyJavaSync();
+                document.getElementById('balanceResult')?.parentElement && switchPage('balance');
+                setTimeout(() => switchPage('shop'), 500);
+            }, 500);
+        }
     }
 
     // ===== CDK =====
@@ -669,7 +789,10 @@
         const data = await res.json();
         if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
         if (data.success) {
-            document.getElementById('cdkResult').innerHTML = `<div class="card" style="border-color:var(--green)"><h2 style="color:var(--green)">兑换成功!</h2><p>获得 ${data.data.amount} 债券</p><p>当前余额: ${data.data.balance_after} 债券</p></div>`;
+            document.getElementById('cdkResult').innerHTML = `<div class="card" style="border-color:var(--green)"><h2 style="color:var(--green)">兑换成功!</h2><p>获得 ${data.data.amount} 债券</p><p>当前余额: ${data.data.balance_after} 债券</p><p style="color:var(--dim);font-size:12px;margin-top:8px">数据已同步，请刷新页面查看最新余额</p></div>`;
+            // CDK兑换成功后 → 通知Java同步 + 3秒刷新余额
+            setTimeout(() => notifyJavaSync(), 500);
+            setTimeout(() => doQueryBalance(), 3000);
         } else {
             document.getElementById('cdkResult').innerHTML = `<div class="card" style="border-color:var(--red)"><h2 style="color:var(--red)">兑换失败</h2><p>${data.message}</p></div>`;
         }
@@ -677,37 +800,37 @@
 
     // ===== 余额 =====
     function renderBalance(el) {
+        if (!currentPlayer) {
+            el.innerHTML = '<div class="card"><h2>余额查询</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">请先登录游戏</p></div></div>';
+            return;
+        }
         el.innerHTML = `
             <div class="card">
                 <h2>余额查询</h2>
-                ${IS_PREVIEW ? '<div class="preview-badge" style="margin-bottom:12px">预览模式 - 需要token才能查询</div>' : ''}
-                <div style="margin-top:12px">
-                    <label style="color:var(--dim);font-size:13px">玩家名</label>
-                    <div style="display:flex;gap:8px;margin-top:4px">
-                        <input type="text" id="queryPlayer" value="${currentPlayer}" style="flex:1;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px">
-                        <button class="btn btn-primary" onclick="doQueryBalance()">查询</button>
-                    </div>
-                </div>
                 <div id="balanceResult" style="margin-top:16px"></div>
             </div>`;
+        doQueryBalance();
     }
 
     async function doQueryBalance() {
-        const player = document.getElementById('queryPlayer').value.trim();
-        if (!player) { toast('请输入玩家名', 'error'); return; }
-        const url = new URL(API + 'balance.php', location.href);
-        url.searchParams.set('action', 'query');
-        url.searchParams.set('player', player);
-        if (TOKEN) url.searchParams.set('token', TOKEN);
-        const res = await fetch(url);
-        const data = await res.json();
-        const div = document.getElementById('balanceResult');
-        if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
-        if (data.success) {
-            const d = data.data;
-            div.innerHTML = `<div class="stat-row"><div class="stat-box"><div class="value" style="color:var(--green)">${d.bonds}</div><div class="label">债券</div></div><div class="stat-box"><div class="value" style="color:var(--purple)">${d.points}</div><div class="label">积分</div></div></div><div style="text-align:center;color:var(--dim);font-size:12px;margin-top:8px">数据${d.freshness || '状态未知'} | 以游戏内实际数据为准</div>`;
-        } else {
-            div.innerHTML = `<div class="card" style="border-color:var(--red)">${data.message}</div>`;
+        if (!currentPlayer) return;
+        try {
+            const url = new URL(API + 'balance.php', location.href);
+            url.searchParams.set('action', 'query');
+            url.searchParams.set('player', currentPlayer);
+            if (TOKEN) url.searchParams.set('token', TOKEN);
+            const res = await fetch(url);
+            const data = await res.json();
+            const div = document.getElementById('balanceResult');
+            if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
+            if (data.success) {
+                const d = data.data;
+                div.innerHTML = `<div class="stat-row"><div class="stat-box"><div class="value" style="color:var(--green)">${d.bonds}</div><div class="label">债券</div></div><div class="stat-box"><div class="value" style="color:var(--purple)">${d.points}</div><div class="label">积分</div></div></div><div style="text-align:center;color:var(--dim);font-size:12px;margin-top:8px">数据${d.freshness || '状态未知'} | 以游戏内实际数据为准</div>`;
+            } else {
+                div.innerHTML = `<div class="card" style="border-color:var(--red)">${data.message}</div>`;
+            }
+        } catch(e) {
+            document.getElementById('balanceResult').innerHTML = '<div class="card" style="border-color:var(--red)">查询失败: '+e.message+'</div>';
         }
     }
 
@@ -717,24 +840,21 @@
             el.innerHTML = `<div class="card"><h2>账号信息</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">游客模式下无法查看账号信息</p><p style="color:var(--dim);font-size:12px">请先登录游戏获取Web访问令牌</p></div></div>`;
             return;
         }
+        if (!currentPlayer) {
+            el.innerHTML = '<div class="card"><h2>账号信息</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">请先登录游戏</p></div></div>';
+            return;
+        }
         el.innerHTML = `
             <div class="card">
                 <h2>账号信息</h2>
-                <div style="margin-top:12px">
-                    <label style="color:var(--dim);font-size:13px">玩家名</label>
-                    <div style="display:flex;gap:8px;margin-top:4px">
-                        <input type="text" id="accountPlayer" value="${currentPlayer}" style="flex:1;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px">
-                        <button class="btn btn-primary" onclick="doQueryAccount()">查询</button>
-                    </div>
-                </div>
                 <div id="accountResult" style="margin-top:16px"></div>
             </div>`;
+        doQueryAccount();
     }
 
     async function doQueryAccount() {
-        const player = document.getElementById('accountPlayer').value.trim();
-        if (!player) { toast('请输入玩家名', 'error'); return; }
-        const res = await api('register.php', {action: 'query', player: player, token: TOKEN});
+        if (!currentPlayer) return;
+        const res = await api('register.php', {action: 'query', player: currentPlayer, token: TOKEN});
         const div = document.getElementById('accountResult');
         if (res.success) {
             const d = res.data;
@@ -754,6 +874,124 @@
         document.body.appendChild(t);
         setTimeout(() => t.remove(), 3000);
     }
+
+    // ===== 主题切换 =====
+    function toggleLightTheme() {
+        document.body.classList.toggle('light-theme');
+        const isLight = document.body.classList.contains('light-theme');
+        localStorage.setItem('sdf1_player_theme', isLight ? 'light' : 'dark');
+        toast(isLight ? '浅色主题' : '深色主题', 'success');
+    }
+
+    function showThemePicker() {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:2000';
+        overlay.id = 'themePickerOverlay';
+        overlay.innerHTML = `
+            <div id="themePickerModal" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:500px;max-width:90%;position:relative">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <h3 style="margin:0">🎨 选择背景颜色</h3>
+                    <button onclick="document.getElementById('themePickerOverlay').remove()" style="background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer">✕</button>
+                </div>
+                <div class="theme-picker" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#0d1117;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#0d1117')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#1a1e2e;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#1a1e2e')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#0f4c75;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#0f4c75')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#1b2631;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#1b2631')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#2c3e50;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#2c3e50')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#23272a;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#23272a')"></div>
+                    <div class="color-btn" style="width:36px;height:36px;border-radius:6px;background:#ffffff;border:2px solid var(--border);cursor:pointer" onclick="setPlayerTheme('#ffffff')"></div>
+                </div>
+                <div style="margin-top:16px">
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">R</span>
+                        <input type="number" id="rgbR" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">G</span>
+                        <input type="number" id="rgbG" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">B</span>
+                        <input type="number" id="rgbB" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:11px">或</span>
+                        <input type="text" id="customColor" placeholder="#1a237e" class="color-input" style="flex:1;min-width:120px">
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                    <button class="btn" onclick="document.getElementById('themePickerOverlay').remove()">取消</button>
+                    <button class="btn btn-blue" onclick="applyPlayerCustomColor()">应用</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    function setPlayerTheme(color) {
+        document.documentElement.style.setProperty('--bg', color);
+        document.body.style.background = color;
+        localStorage.setItem('sdf1_player_bg', color);
+        toast('背景颜色已应用', 'success');
+    }
+
+    // 浅色主题下的卡片/边框颜色也自动调整
+    document.querySelectorAll('.light-theme').forEach(el => {});
+
+    // 自动切换card/border颜色配合自定义背景
+    function applyBgToTheme(bgColor) {
+        // 如果背景是浅色，自动切换card颜色
+        document.body.classList.add('light-theme');
+        document.body.style.background = bgColor;
+        document.documentElement.style.setProperty('--bg', bgColor);
+    }
+
+    function applyPlayerCustomColor() {
+        let rVal = document.getElementById('rgbR').value.trim();
+        let gVal = document.getElementById('rgbG').value.trim();
+        let bVal = document.getElementById('rgbB').value.trim();
+        const hexVal = document.getElementById('customColor').value.trim();
+        
+        let color = null;
+        
+        if (hexVal) {
+            if (/^[0-9A-Fa-f]{6}$/.test(hexVal)) {
+                color = '#' + hexVal;
+            } else if (/^#[0-9A-Fa-f]{6}$/.test(hexVal)) {
+                color = hexVal;
+            } else {
+                toast('请输入有效的十六进制颜色，如 1a237e 或 #1a237e', 'err');
+                return;
+            }
+        }
+        else if (rVal !== '' || gVal !== '' || bVal !== '') {
+            if (rVal === '') rVal = 0;
+            if (gVal === '') gVal = 0;
+            if (bVal === '') bVal = 0;
+            const r = parseInt(rVal);
+            const g = parseInt(gVal);
+            const b = parseInt(bVal);
+            if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+                color = 'rgb(' + r + ',' + g + ',' + b + ')';
+            } else {
+                toast('RGB 值必须在 0-255 之间', 'err');
+                return;
+            }
+        }
+        else {
+            toast('请输入十六进制颜色（如 1a237e）或填写任意一个 RGB 值', 'err');
+            return;
+        }
+        
+        if (color) {
+            setPlayerTheme(color);
+            document.querySelector('[onclick*="overlay.remove"]').click();
+        }
+    }
+
+    // 加载保存的主题
+    (function() {
+        const savedBg = localStorage.getItem('sdf1_player_bg');
+        if (savedBg) {
+            document.documentElement.style.setProperty('--bg', savedBg);
+            document.body.style.background = savedBg;
+        }
+    })();
 
     function closeModal() {
         document.getElementById('modalOverlay').style.display = 'none';

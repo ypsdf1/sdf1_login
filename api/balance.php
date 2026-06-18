@@ -34,45 +34,52 @@ function balanceQuery($token) {
     $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     if (!$player) error('缺少player');
 
-    // ★ 安全验证：余额查询只需token验证即可（view级别）
+    // ★ 安全验证：必须验证token且token对应的玩家必须与查询的玩家匹配
     $tokenInfo = null;
+    $queriedPlayer = $player; // 最终查询的玩家名
 
     // 1. 检查是否为管理后台session
     if (session_status() === PHP_SESSION_NONE) session_start();
-    if (isset($_SESSION['admin_auth']) && $_SESSION['admin_auth']) {
-        $tokenInfo = ['player' => $player, 'purpose' => 'admin'];
+    $isAdmin = isset($_SESSION['admin_auth']) && $_SESSION['admin_auth'];
+
+    if ($isAdmin) {
+        // 管理员：可以查任意玩家
+        $tokenInfo = ['player' => null, 'purpose' => 'admin'];
     } elseif ($token) {
-        // 2. 检查token
-        // 先检查是否为普通管理token
-        $tokenInfo = validateToken($token);
-        if ($tokenInfo && ($tokenInfo['purpose'] === 'admin' || $tokenInfo['purpose'] === 'all')) {
-            // admin token，直接通过
-        } else {
-            // weblogin token → 走安全验证（view级别，可快速重连）
-            $accessResult = validateWebAccess($token, 'view', $password, $ipAddress);
-            if ($accessResult['ok']) {
-                $player = $accessResult['player'];
-                $tokenInfo = ['player' => $player, 'purpose' => 'weblogin'];
-            } elseif ($accessResult['mode'] === 'need_password') {
-                jsonResponse([
-                    'success' => false,
-                    'need_password' => true,
-                    'player' => $accessResult['player'],
-                    'message' => $accessResult['message']
-                ], 401);
+        // 2. 验证token并获取token对应的玩家名
+        $tempTokenInfo = validateToken($token);
+        if ($tempTokenInfo) {
+            $tokenPlayer = $tempTokenInfo['player'];
+            $tokenPurpose = $tempTokenInfo['purpose'] ?? '';
+
+            if ($tokenPurpose === 'admin' || $tokenPurpose === 'all') {
+                // 管理员token：可以查任意玩家
+                $tokenInfo = $tempTokenInfo;
+            } elseif ($tokenPlayer === $player) {
+                // 普通token：只能查自己的余额
+                // 进一步验证weblogin token的访问权限
+                $accessResult = validateWebAccess($token, 'view', $password, $ipAddress);
+                if ($accessResult['ok']) {
+                    $queriedPlayer = $accessResult['player'];
+                    $tokenInfo = ['player' => $queriedPlayer, 'purpose' => 'weblogin'];
+                } elseif ($accessResult['mode'] === 'need_password') {
+                    jsonResponse([
+                        'success' => false,
+                        'need_password' => true,
+                        'player' => $accessResult['player'],
+                        'message' => $accessResult['message']
+                    ], 401);
+                } else {
+                    error($accessResult['message'], 401);
+                }
             } else {
-                error($accessResult['message'], 401);
+                error('无权查询其他玩家余额', 403);
             }
+        } else {
+            error('无效token，请先登录', 401);
         }
-    }
-
-    if (!$tokenInfo) {
-        error('查询余额需要有效token', 401);
-    }
-
-    // 权限检查：只能查自己的余额，除非是管理员
-    if ($tokenInfo['player'] !== $player && $tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all') {
-        error('无权查询其他玩家余额');
+    } else {
+        error('查询余额需要有效token，请先登录', 401);
     }
 
     // 查询债券余额（从Web端的债券缓存表）

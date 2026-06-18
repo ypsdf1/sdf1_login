@@ -1,0 +1,7 @@
+*.bak*
+*.bak2
+*.clean_lock
+*.db
+*.db-journal
+*.db-wal
+*.db-shm

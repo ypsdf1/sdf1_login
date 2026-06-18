@@ -6,10 +6,10 @@
  * GET ?action=categories        - 分类列表（无需token，公开接口）
  */
 // 防止任何输出污染JSON响应
-ob_start();
+while (ob_get_level() > 0) { ob_end_clean(); }
 require_once __DIR__ . '/../core.php';
-// 清理可能的前置输出
-ob_end_clean();
+// 再次确保清理前置输出
+while (ob_get_level() > 0) { ob_end_clean(); }
 
 $action = getParam('action', 'list');
 $token = getParam('token');
@@ -217,20 +217,18 @@ function shopBuy($token) {
         'player' => $player
     ], '购买成功');
 
-    // ★ 立即通知Java插件拉取交易（3种方式）
-    // 方式1：直接HTTP请求到Java插件（回调端口）
-    $notifyUrl = "http://127.0.0.1:" . CALLBACK_PORT . "/api/notify_sync?secret=" . SECRET_KEY . "&tx_id=" . $txId;
-    @file_get_contents($notifyUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
-    
-    // 方式2：通过Web URL触发（如果回环不通）
-    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . WEBSUB_DIR;
-    $notifyUrl2 = $baseUrl . "/api/sync.php?action=notify_sync&secret=" . SECRET_KEY . "&tx_id=" . $txId;
-    @file_get_contents($notifyUrl2, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 2]]));
-    
-    // 方式3：写入通知文件（供插件文件系统检测）
-    $notifyFile = __DIR__ . '/../db/tx_notify.json';
-    $notifyData = json_encode(['tx_id' => (int)$txId, 'time' => time()], JSON_UNESCAPED_UNICODE);
-    @file_put_contents($notifyFile, $notifyData, LOCK_EX);
+    // ★ 立即请求Java插件拉取pending交易
+    $db2 = getDB();
+    $db2->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+    $stmt2 = $db2->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+    $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+    $stmt2->execute();
+
+    // ★ 通过HTTP回调通知Java插件立即拉取交易
+    $cbPort = defined('CALLBACK_PORT') ? CALLBACK_PORT : 9090;
+    $callbackUrl = 'http://127.0.0.1:' . $cbPort . '/notify_sync';
+    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
 }
 
 // ===== Weblogin Token验证（用于商城购买）=====

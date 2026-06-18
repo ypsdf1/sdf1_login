@@ -198,16 +198,37 @@ function registerQuery($token) {
         $row['last_login_time'] = (int)($row['last_login_time'] / 1000);
     }
 
-    // 有token才返回完整信息
-    $tokenInfo = null;
-    if ($token) {
-        $tokenInfo = validateToken($token);
-    }
-
-    if ($tokenInfo) {
-        success($row);
-    } else {
+    // ★ 严格校验：必须有有效token且token对应的玩家必须与查询的玩家匹配（除非是管理员token）
+    if (!$token) {
         // 无token：隐藏敏感信息
         preview($row, '预览模式 - 部分信息已隐藏');
+        return;
+    }
+
+    $tokenInfo = validateToken($token);
+    if (!$tokenInfo) {
+        error('无效token，请先登录', 401);
+    }
+
+    $tokenPurpose = $tokenInfo['purpose'] ?? '';
+
+    if ($tokenPurpose === 'admin' || $tokenPurpose === 'all') {
+        // 管理员token：返回完整信息
+        success($row);
+    } elseif ($tokenInfo['player'] === $player) {
+        // 普通token：只能查自己的完整信息
+        success($row);
+    } else {
+        // 不是自己的账号，返回脱敏信息
+        $maskedRow = [
+            'player_name' => $row['player_name'],
+            'register_time' => $row['register_time'],
+            'last_login_time' => $row['last_login_time'],
+            'email' => '***',
+            'points' => 0,
+            'gift_stage' => 0,
+            'total_online_time' => 0
+        ];
+        preview($maskedRow, '预览模式 - 您只能查看自己的账号信息');
     }
 }

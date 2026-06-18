@@ -33,15 +33,15 @@ function getDB() {
         // 确保db目录存在
         $dbDir = dirname(DB_PATH);
         if (!is_dir($dbDir)) {
-            mkdir($dbDir, 0755, true);
+            @mkdir($dbDir, 0755, true);
         }
         $db = new SQLite3(DB_PATH);
         $db->enableExceptions(true);
+        // 减少 PRAGMA 调用，避免可能的锁问题
         $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA busy_timeout=10000');
+        $db->exec('PRAGMA busy_timeout=15000');  // 数据库锁等待15秒
         $db->exec('PRAGMA synchronous=NORMAL');
-        $db->exec('PRAGMA cache_size=-64000');
-        $db->exec('PRAGMA temp_store=MEMORY');
+        $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
         initTables($db);
         migrateDatabase($db); // 迁移旧数据库
     }
@@ -271,11 +271,90 @@ function initTables(SQLite3 $db) {
             processed_at INTEGER DEFAULT 0
         )");
 
+        // ★ 玩家IP变更历史表（admin.php 批量查IP用）
+        $db->exec("CREATE TABLE IF NOT EXISTS player_ip_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT NOT NULL,
+            new_ip TEXT NOT NULL,
+            changed_at INTEGER NOT NULL
+        )");
+
+        // ★ IP归属地缓存表（admin.php IP查询用）
+        $db->exec("CREATE TABLE IF NOT EXISTS player_ip_locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ip_address TEXT NOT NULL,
+            location TEXT DEFAULT '',
+            updated_at INTEGER DEFAULT 0,
+            UNIQUE(ip_address)
+        )");
+
+        // ★ 创建索引以提高查询性能
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_changes_player ON player_ip_changes(player_name)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_changes_time ON player_ip_changes(changed_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_session_log_player ON web_session_log(player_name)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_session_log_time ON web_session_log(login_time)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_locations_ip ON player_ip_locations(ip_address)");
+
         $db->exec('COMMIT');
     } catch (Exception $e) {
         $db->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// ===== IP归属地格式校验（统一函数，所有脚本共用） =====
+// 支持格式：
+//   标准：广东省广州市 移动、北京市 海淀区 电信
+//   无后缀：湖北武汉 移通、广东广州 联通
+//   直辖市：北京市 海淀区、上海 移动
+//   自治区：广西南宁 移动、内蒙古呼和浩特市 移动
+//   自治州：四川省凉山州 移通
+function isValidIpLocationFormat($loc) {
+    if (!$loc || $loc === '' || $loc === '-' || $loc === '--' || $loc === 'NULL') return false;
+    if ($loc === '内网IP' || $loc === '查询失败' || $loc === '查询中') return false;
+    if (stripos($loc, 'China') === 0) return false;
+    if (strpos($loc, '中国 - -') === 0 || strpos($loc, '中国 -  -') === 0) return false;
+    if (preg_match('/^中国\s*$/u', $loc) || preg_match('/^中国\s+[^\s省市区州盟]+$/u', $loc)) return false;
+    if (strpos($loc, ' ') === false) return false;
+
+    // ★ 拆分为"位置部分"和"运营商部分"（以第一个空格分隔）
+    $parts = explode(' ', $loc, 2);
+    $locationPart = trim($parts[0]);
+    $operatorPart = trim($parts[1] ?? '');
+
+    // 位置部分不能为空
+    if (empty($locationPart)) return false;
+
+    // 直辖市特殊处理（4个直辖市名称只有2个字）
+    $directControlledCities = ['北京', '天津', '上海', '重庆'];
+    foreach ($directControlledCities as $city) {
+        if ($locationPart === $city || $locationPart === $city . '市') {
+            return true; // "北京 移动" 或 "北京市 海淀区" 都有效
+        }
+    }
+
+    // ★ 有后缀格式验证
+    // 城市级后缀：武汉市、凉山州、呼和浩特市、朝阳区、安新县 → 直接有效
+    if (preg_match('/(市|州|盟|地区|区|县)$/', $locationPart)) {
+        return true;
+    }
+    // 省级后缀：广东省、湖北省 → 必须同时有城市级后缀（广东省广州市 ✅，湖北省 ❌）
+    if (preg_match('/(省|自治区|内蒙古)$/', $locationPart)) {
+        // 检查"省"后面是否还有城市名（如"广东省广州市"中的"广州市"）
+        if (preg_match('/(省|自治区|内蒙古)(.*?(市|州|盟|地区|区|县))$/', $locationPart)) {
+            return true; // "广东省广州市"、"四川省凉山州" → 有效
+        }
+        return false; // "湖北省"、"广东省" → 只有省份无城市，无效
+    }
+
+    // ★ 无后缀格式：如"湖北武汉"、"广东广州"、"四川凉山"
+    // 省份名(2-3字) + 城市名(2-4字)，至少4字
+    // 匹配：湖北武汉、广东广州、四川凉山、山东济南、河北石家庄
+    if (preg_match('/^[\x{4e00}-\x{9fa5}]{2,3}[\x{4e00}-\x{9fa5}]{2,4}$/u', $locationPart) && mb_strlen($locationPart) >= 4) {
+        return true;
+    }
+
+    return false;
 }
 
 // ===== Token操作 =====
@@ -311,6 +390,33 @@ function validateToken($token) {
         'created_at' => $row['created_at'],
         'expires_at' => $row['expires_at']
     ];
+}
+
+/**
+ * 验证weblogin token（游戏内登录token，用于web登录流程）
+ */
+function validateWebloginToken($webToken) {
+    $db = getDB();
+    try {
+        $stmt = $db->prepare("SELECT * FROM weblogin_tokens WHERE web_token = :token");
+        $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        if (!$row) return false;
+
+        $createdAt = (int)$row['created_at'];
+        $expireSeconds = (int)$row['expire_seconds'];
+        if (time() - $createdAt > $expireSeconds) return false;
+
+        return [
+            'player' => $row['player_name'],
+            'purpose' => 'weblogin',
+            'created_at' => $createdAt,
+            'expires_at' => $createdAt + $expireSeconds
+        ];
+    } catch (Exception $e) {
+        return false;
+    }
 }
 
 /**
@@ -440,7 +546,9 @@ function requireToken($purpose = 'general') {
 }
 
 function requireAdminSession() {
-    session_start();
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
     if (!isset($_SESSION['admin_auth']) || !$_SESSION['admin_auth']) {
         error('未登录管理后台', 401);
     }
@@ -452,14 +560,18 @@ function adminLogin($password) {
     if ($password !== ADMIN_PASS) {
         return false;
     }
-    session_start();
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
     $_SESSION['admin_auth'] = true;
     $_SESSION['admin_login_time'] = time();
     return true;
 }
 
 function isAdminLoggedIn() {
-    session_start();
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
     return isset($_SESSION['admin_auth']) && $_SESSION['admin_auth'];
 }
 
@@ -687,14 +799,17 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
     $row = $result->fetchArray(SQLITE3_ASSOC);
 
     if (!$row) {
-        debugLog("validateWebAccess: 无效的登录Token", ['token' => substr($webToken, 0, 16) . '...']);
+        @error_log("[validateWebAccess] DENIED: token not found in DB. Token prefix: " . substr($webToken, 0, 20) . "...");
         return ['ok' => false, 'mode' => 'denied', 'message' => '无效的登录Token'];
     }
 
     $createdAt = (int)$row['created_at'];
     $expireSeconds = (int)$row['expire_seconds'];
+    $age = time() - $createdAt;
+    @error_log("[validateWebAccess] FOUND: player=" . $row['player_name'] . ", age=${age}s, expire=${expireSeconds}s");
+
     if (time() - $createdAt > $expireSeconds) {
-        debugLog("validateWebAccess: 登录Token已过期", ['player' => $row['player_name'], 'created' => $createdAt, 'expire' => $expireSeconds]);
+        @error_log("[validateWebAccess] DENIED: token expired. Age: $age, Expire: $expireSeconds");
         return ['ok' => false, 'mode' => 'denied', 'message' => '登录Token已过期'];
     }
 
@@ -719,13 +834,13 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         $isOnline = false;
     }
     
-    // ★ 如果 online_players 表没有数据，再检查 web_session_log（5分钟内的Web会话视为在线）
+    // ★ 如果 online_players 表没有数据，再检查 web_session_log（1分钟内的Web会话视为在线）
     if (!$isOnline) {
         try {
-            $fiveMinutesAgo = time() - 300;
+            $oneMinuteAgo = time() - 60;
             $sessionStmt = $db->prepare("SELECT 1 FROM web_session_log WHERE player_name = :player AND login_time > :time");
             $sessionStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $sessionStmt->bindValue(':time', $fiveMinutesAgo, SQLITE3_INTEGER);
+            $sessionStmt->bindValue(':time', $oneMinuteAgo, SQLITE3_INTEGER);
             $sessionResult = $sessionStmt->execute();
             $sessionRow = $sessionResult->fetchArray();
             if ($sessionRow) {

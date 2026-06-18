@@ -22,7 +22,7 @@ define('GAME_LOGIN_DB', 'D:/服务器/插件/login.db');
 define('GAME_SHOP_DIR', 'D:/服务器/插件/shop/');
 
 // ===== Web子目录路径（如 /plugin 或 /test1，根目录则留空） =====
-define('WEBSUB_DIR', '/test1');
+define('WEBSUB_DIR', '/plugin');
 
 // ===== Java插件回调端口 =====
 define('CALLBACK_PORT', 9090);

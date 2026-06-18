@@ -53,35 +53,30 @@
 <body>
     <div class="login-card">
         <h1>SDF1 Web登录</h1>
-        <p class="subtitle" id="subtitle">选择登录方式</p>
+        <p class="subtitle" id="subtitle">Token验证中...</p>
 
-        <!-- Token登录（自动） -->
-        <div id="tokenSection" style="display:none">
+        <!-- Token验证状态 -->
+        <div id="tokenSection">
             <div id="statusBox" class="status-box loading">
                 <span class="spinner"></span> 正在验证登录Token...
             </div>
         </div>
 
-        <!-- 密码登录（手动） -->
+        <!-- 密码验证（Token通过后显示） -->
         <div id="passwordSection" style="display:none">
             <div id="pwdStatusBox" class="status-box" style="display:none"></div>
             <div style="text-align:left;margin-bottom:16px">
                 <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">玩家名</label>
-                <input type="text" id="playerName" placeholder="输入游戏内玩家名" maxlength="16"
-                    style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                <input type="text" id="playerName" placeholder="玩家名" readonly
+                    style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box;opacity:0.7">
             </div>
             <div style="text-align:left;margin-bottom:20px">
-                <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">密码</label>
+                <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">游戏内密码</label>
                 <input type="password" id="password" placeholder="输入游戏内密码" maxlength="32"
                     style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                <p style="color:var(--dim);font-size:12px;margin-top:8px;text-align:left">密码由游戏服务器验证，Web端不存储密码</p>
             </div>
-            <button class="btn btn-primary" style="width:100%" onclick="doPasswordLogin()">登录</button>
-            <p style="color:var(--dim);font-size:12px;margin-top:12px">密码由游戏服务器验证，Web端不存储密码</p>
-        </div>
-
-        <!-- 切换按钮 -->
-        <div style="margin-top:20px;text-align:center">
-            <button id="switchBtn" class="btn btn-dim" style="font-size:12px;padding:8px 16px;display:none" onclick="switchMode()">切换登录方式</button>
+            <button class="btn btn-primary" style="width:100%" onclick="doPasswordLogin()">登录到Web端</button>
         </div>
 
         <div class="actions" id="actions" style="display:none"></div>
@@ -93,45 +88,30 @@
     const actionsDiv = document.getElementById('actions');
     const tokenSection = document.getElementById('tokenSection');
     const passwordSection = document.getElementById('passwordSection');
-    const switchBtn = document.getElementById('switchBtn');
+    const subtitle = document.getElementById('subtitle');
     const pwdStatusBox = document.getElementById('pwdStatusBox');
-    let currentMode = TOKEN ? 'token' : 'password';
 
-    function switchMode() {
-        if (currentMode === 'token') {
-            currentMode = 'password';
-            tokenSection.style.display = 'none';
-            passwordSection.style.display = 'block';
-            switchBtn.textContent = '使用Token登录';
-            document.getElementById('subtitle').textContent = '输入玩家名和密码登录';
-        } else {
-            currentMode = 'token';
-            tokenSection.style.display = 'block';
-            passwordSection.style.display = 'none';
-            switchBtn.textContent = '使用密码登录';
-            document.getElementById('subtitle').textContent = '通过游戏内Token安全登录Web端';
-        }
+    // ===== 安全拦截：无Token则拒绝访问 =====
+    if (!TOKEN) {
+        document.body.innerHTML = `
+            <div style="text-align:center;padding:60px 20px;">
+                <h1 style="color:#f85149;margin-bottom:20px">🚫 访问被拒绝</h1>
+                <p style="color:var(--dim);font-size:16px;line-height:1.8">
+                    Web登录必须通过游戏内Token验证。<br>
+                    请在游戏中执行 <b style="color:var(--accent)">/sdf1_login weblogin</b> 或 <b>/web</b><br>
+                    然后点击上方链接登录Web端。
+                </p>
+            </div>
+        `;
+        console.error('[登录页面] 无Token访问被拒绝');
+        throw new Error('NoToken');
     }
 
-    // 初始化
-    if (TOKEN) {
-        // 有Token → 直接Token登录
-        tokenSection.style.display = 'block';
-        passwordSection.style.display = 'none';
-        document.getElementById('subtitle').textContent = '通过游戏内Token安全登录Web端';
-        switchBtn.style.display = 'inline-block';
-        switchBtn.textContent = '使用密码登录';
-        doTokenLogin();
-    } else {
-        // 无Token → 显示密码登录
-        tokenSection.style.display = 'none';
-        passwordSection.style.display = 'block';
-        document.getElementById('subtitle').textContent = '输入玩家名和密码登录';
-        switchBtn.style.display = 'inline-block';
-        switchBtn.textContent = '使用Token登录';
-    }
+    // ===== 有Token → 验证Token =====
+    tokenSection.style.display = 'block';
+    doTokenLogin();
 
-    // ===== Token登录 =====
+    // ===== Token验证 =====
     async function doTokenLogin() {
         try {
             const apiUrl = './api/sync.php?action=validate_weblogin_token';
@@ -141,9 +121,7 @@
                 body: JSON.stringify({web_token: TOKEN})
             });
             const text = await res.text();
-            // ★ 调试：把PHP返回的内容全部打印出来
-            console.log('doTokenLogin response:', text);
-            console.log('doTokenLogin status:', res.status);
+            
             let data;
             try {
                 data = JSON.parse(text);
@@ -161,10 +139,18 @@
                 localStorage.setItem('sdf1_token', TOKEN);
                 localStorage.setItem('sdf1_login_time', Date.now());
 
+                // Token验证成功 → 显示密码输入框
                 statusBox.className = 'status-box success';
-                statusBox.innerHTML = '✅ 登录成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">游戏内将自动登录</small>';
-                actionsDiv.style.display = 'flex';
-                actionsDiv.innerHTML = '<a href="player.php?login=' + encodeURIComponent(player) + '&token=' + TOKEN + '" class="btn btn-primary">进入玩家商城</a>';
+                statusBox.innerHTML = '✅ Token验证成功!<br><br>欢迎, <span class="player-name">' + player + '</span>';
+                
+                // 延迟1.5秒后切换到密码输入
+                setTimeout(() => {
+                    tokenSection.style.display = 'none';
+                    passwordSection.style.display = 'block';
+                    subtitle.textContent = '验证玩家身份';
+                    document.getElementById('playerName').value = player;
+                    document.getElementById('password').focus();
+                }, 1500);
             } else {
                 statusBox.className = 'status-box error';
                 statusBox.innerHTML = '❌ 登录失败<br><br>' + (data.message || 'Token无效或已过期');
@@ -182,13 +168,11 @@
         const player = document.getElementById('playerName').value.trim();
         const password = document.getElementById('password').value;
 
-        if (!player) { showPwdError('请输入玩家名'); return; }
         if (!password) { showPwdError('请输入密码'); return; }
-        if (!/^[a-zA-Z0-9_]{3,16}$/.test(player)) { showPwdError('玩家名格式不正确'); return; }
 
         pwdStatusBox.className = 'status-box loading';
         pwdStatusBox.style.display = 'block';
-        pwdStatusBox.innerHTML = '<span class="spinner"></span> 正在提交登录请求...';
+        pwdStatusBox.innerHTML = '<span class="spinner"></span> 正在验证密码...';
 
         try {
             // 1. 提交登录请求
@@ -222,31 +206,37 @@
 
                 try {
                     const pollRes = await fetch(apiUrl + '?action=check_web_login_result&player=' + encodeURIComponent(player) + '&request_id=' + requestId);
-                    const pollData = await pollRes.json();
+                    const pollText = await pollRes.text();
+                    const pollData = JSON.parse(pollText);
+
+                    console.log('[poll] status:', pollData.status || pollData.data?.status, 'data:', JSON.stringify(pollData.data).substring(0, 100));
 
                     if (pollData.success && pollData.data) {
                         const result = pollData.data;
 
                         if (result.status === 'success') {
                             clearInterval(pollInterval);
-                            // 登录成功
-                            const fakeToken = 'webpwd_' + Date.now();
-                            localStorage.setItem('sdf1_player', player);
-                            localStorage.setItem('sdf1_token', fakeToken);
-                            localStorage.setItem('sdf1_login_time', Date.now());
-
+                            // 登录成功 → 进入玩家商城
                             pwdStatusBox.className = 'status-box success';
-                            pwdStatusBox.innerHTML = '✅ 登录成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">游戏内将自动登录</small>';
-                            actionsDiv.style.display = 'flex';
-                            actionsDiv.innerHTML = '<a href="player.php?login=' + encodeURIComponent(player) + '&token=' + fakeToken + '" class="btn btn-primary">进入玩家商城</a>';
+                            pwdStatusBox.innerHTML = '✅ 登录成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">正在跳转...</small>';
+
+                            // ★ token已存入localStorage，直接跳转player.php（不带token参数，避免URL暴露）
+                            setTimeout(() => {
+                                window.location.href = 'player.php?login=' + encodeURIComponent(player);
+                            }, 500);
                         } else if (result.status === 'failed') {
                             clearInterval(pollInterval);
                             showPwdError(result.message || '密码错误');
                         }
                         // status === 'pending' → 继续轮询
+                    } else if (pollData.data && pollData.data.status === 'pending') {
+                        // 仍在pending状态，可能是请求过期，继续轮询
+                        console.log('[poll] 请求pending或过期，继续等待...');
+                    } else {
+                        console.warn('[poll] 轮询响应异常:', JSON.stringify(pollData).substring(0, 200));
                     }
                 } catch (pollErr) {
-                    // 轮询出错，继续尝试
+                    console.error('[poll] 轮询异常:', pollErr);
                 }
             }, 1000);
 
@@ -264,9 +254,6 @@
     // 回车提交
     document.getElementById('password').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') doPasswordLogin();
-    });
-    document.getElementById('playerName').addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') document.getElementById('password').focus();
     });
     </script>
 </body>
