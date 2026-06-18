@@ -567,3 +567,4 @@ http-port=443
 ## 4. 下载地址
 - GitHub：[https://github.com/ypsdf1/sdf1_login](https://github.com/ypsdf1/sdf1_login)
 - Gitee：[https://gitee.com/nihaoshidifu/sdf1_login](https://gitee.com/nihaoshidifu/sdf1_login)
+- gitcode: [https://gitcode.com/ypsdf1/Sdf1_login](https://gitcode.com/ypsdf1/Sdf1_login)

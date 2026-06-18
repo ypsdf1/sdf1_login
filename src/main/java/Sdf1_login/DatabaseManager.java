@@ -390,6 +390,23 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * 更新玩家密码凭证（salt + hash），用于Web重新注册时同步
+     */
+    public void updatePassword(String name, String hash, String salt) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE users SET password_hash = ?, password_salt = ? WHERE player_name = ?");
+            ps.setString(1, hash);
+            ps.setString(2, salt);
+            ps.setString(3, name);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     // ========== 临时密码管理 ==========
 
     public void clearTempPassword(String name) {

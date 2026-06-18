@@ -920,8 +920,8 @@ public class ShopManager implements Listener {
                             && !n.equals("coupons.md"));
         }
         if (allMd == null) {
-            // plugin.getLogger().warning(
-            //         "[Shop] shop目录为空");
+          plugin.getLogger().warning(
+                 "[Shop] shop目录为空");
             return;
         }
 
@@ -1372,7 +1372,7 @@ public class ShopManager implements Listener {
         for (ShopCategory cat : categories)
             saveCategory(cat);
     }
-    private ItemStack getShopStack(
+    public ItemStack getShopStack(
             ShopItem item, int amount) {
         // 优先级1: 手动捕获的NBT数据
         ItemStack cached =

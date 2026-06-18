@@ -356,6 +356,9 @@ public class ChatInputManager {
                         state.targetPlayer)) {
                     db.deleteUser(
                             state.targetPlayer);
+                    if (plugin.webManager != null) {
+                        plugin.webManager.deleteWebUser(state.targetPlayer);
+                    }
                     p.sendMessage("§a已删除 "
                             + state.targetPlayer);
                     Player tgt =

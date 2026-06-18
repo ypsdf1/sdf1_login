@@ -1,0 +1,3827 @@
+package Sdf1_login;
+
+import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.scheduler.BukkitRunnable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.net.ssl.*;
+import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Web通信管理器 - 插件与PHP后端的桥梁
+ *
+ * 功能：
+ * 1. Token生成和管理（一次性，10分钟有效期）
+ * 2. 商城数据同步（推送shop/*.md到Web，从Web拉取商品）
+ * 3. CDK验证（插件发CDK到Web验证，根据结果充值）
+ * 4. 余额查询
+ * 5. 注册账号同步到Web端
+ * 6. 定时同步任务
+ */
+public class WebManager {
+
+    private static final Logger log = LoggerFactory.getLogger(WebManager.class);
+    private final Main plugin;
+    private final ConfigManager config;
+
+    // Token存储：token -> [playerName, purpose, createdAt]
+    private final ConcurrentHashMap<String, String[]> tokenStore = new ConcurrentHashMap<>();
+
+    // ★ 已处理的Web登录请求跟踪：reqId -> 处理时间戳（毫秒）
+    // 避免PHP未正确更新状态时，Java反复验证同一个请求
+    private final ConcurrentHashMap<String, Long> processedWebLoginRequests = new ConcurrentHashMap<>();
+    private static final long PROCESSED_REQUEST_EXPIRE_MS = 60000; // 60秒后允许重新处理
+
+    // ★ 本地Web登录验证状态：playerName -> 验证时间戳（毫秒）
+    // Java验证成功后立即记录，玩家进游戏时直接检查，无需再轮询PHP
+    private final ConcurrentHashMap<String, Long> verifiedWebLogins = new ConcurrentHashMap<>();
+    private static final long VERIFIED_LOGIN_EXPIRE_MS = 300000; // 5分钟过期
+
+    // 默认配置
+    private String webBaseUrl = "https://caoyuan.ypshidifu.cn/plugin";
+    private boolean enabled = false;
+    private int tokenExpireSeconds = 600; // 10分钟
+    private int syncIntervalMinutes = 5;
+    private String secretKey = "sdf1_web_comm_2026_ypshidifu";
+    private int callbackPort = 9090; // PHP回调端口
+
+    // 嵌入式HTTP服务器（接收PHP回调）
+    private java.net.ServerSocket callbackServer;
+    private Thread callbackThread;
+
+    // 全员下线状态跟踪
+    private boolean allPlayersOffline = false;
+    private long lastOnlineCheckTime = 0;
+    private boolean syncAfterAllOffline = false;
+    private boolean lastSyncDone = false;  // 标记"全员下线最后同步"是否已执行，防止重复
+
+    // ★ Web登录Token冷却：playerName -> 上次生成时间戳（毫秒）
+    private final ConcurrentHashMap<String, Long> webloginTokenTimestamps = new ConcurrentHashMap<>();
+    private static final long WEBLOGIN_TOKEN_COOLDOWN_MS = 10000; // 10秒冷却
+
+    public WebManager(Main plugin) {
+        this.plugin = plugin;
+        this.config = plugin.getConfig2();
+        initSSL();
+        loadConfig();
+    }
+
+    /**
+     * 绕过SSL证书验证，解决PKIX等证书错误
+     * 使用TLS 1.2+以确保与Cloudflare兼容
+     */
+    private void initSSL() {
+        final TrustManager[] trustAllCerts = new TrustManager[]{
+                new X509TrustManager() {
+                    public X509Certificate[] getAcceptedIssuers() {
+                        return null;
+                    }
+
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {
+                    }
+
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {
+                    }
+                }
+        };
+
+        // 尝试所有可用的 TLS 版本，按优先级从高到低
+        String[] tlsVersions = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1", "TLS"};
+        for (String version : tlsVersions) {
+            try {
+                SSLContext sc = SSLContext.getInstance(version);
+                sc.init(null, trustAllCerts, new SecureRandom());
+                HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
+                HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+                plugin.getLogger().info("[Web通信] SSL已初始化(" + version + ", 信任所有证书)");
+                return;
+            } catch (Exception e) {
+                plugin.getLogger().info("[Web通信] " + version + "不可用，尝试下一个版本");
+            }
+        }
+
+        plugin.getLogger().warning("[Web通信] 所有TLS版本均不可用，SSL初始化失败");
+    }
+
+    // ==================== 配置加载 ====================
+
+    private void loadConfig() {
+        enabled = Boolean.parseBoolean(getConfigValue("web通信-启用", "false"));
+        webBaseUrl = getConfigValue("web通信-地址", webBaseUrl);
+        tokenExpireSeconds = Integer.parseInt(getConfigValue("web通信-Token有效期秒", "600"));
+        syncIntervalMinutes = Integer.parseInt(getConfigValue("web通信-同步间隔分钟", "5"));
+        callbackPort = Integer.parseInt(getConfigValue("web通信-回调端口", "9090"));
+        secretKey = getConfigValue("web通信-密钥", secretKey);
+    }
+
+    /**
+     * 重载后端设置（仅Web通信相关配置）
+     */
+    public void reloadWebConfig() {
+        loadConfig();
+        plugin.getLogger().info("[Web通信] Web后端配置已重载: 地址=" + webBaseUrl + " 密钥=" + secretKey);
+        plugin.getLogger().warning("\n" +
+                "                                          _                                                                          \n" +
+                "                                         | |                                                                         \n" +
+                " __      _____  ___ ___  _ __ ___   ___  | |_ ___                                                                    \n" +
+                " \\ \\ /\\ / / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                                   \n" +
+                "  \\ V  V /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                                  \n" +
+                "   \\_/\\_/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                  _                                                \n" +
+                "                                             | |                   (_)                                               \n" +
+                "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __     \n" +
+                "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|    \n" +
+                " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |       \n" +
+                "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_|_|_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_| __ \\_/ \\___|_|       \n" +
+                "                     __/ |    (_)     _                 |__ \\                 | |   (_)   | (_)/ _|                  \n" +
+                "  ___  ___ _ ____   |___/ _ __ _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __  \n" +
+                " / __|/ _ \\ '__\\ \\ / / _ \\ '__| | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\ \n" +
+                " \\__ \\  __/ |   \\ V /  __/ |  | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |\n" +
+                " |___/\\___|_|    \\_/ \\___|_|  |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|\n" +
+                "                                | |                             __/ | |                                              \n" +
+                "                  _       ____  |_|_    ________ ___           |___/|_|                                              \n" +
+                "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                                \n" +
+                "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                               \n" +
+                " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                               \n" +
+                " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                                \n" +
+                " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                                 \n" +
+                " | |                                                                                                                 \n" +
+                " |_|                                                                                                                 ");
+    }
+
+    private String getConfigValue(String key, String def) {
+        try {
+            File file = new File(plugin.getDataFolder(), "插件设置.txt");
+            if (!file.exists()) return def;
+            BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.startsWith("#") || line.isEmpty()) continue;
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                String k = line.substring(0, eq).trim();
+                String v = line.substring(eq + 1).trim();
+                if (k.equals(key)) {
+                    reader.close();
+                    return v;
+                }
+            }
+            reader.close();
+        } catch (Exception e) {
+        }
+        return def;
+    }
+
+    // ==================== 启动/停止 ====================
+
+    public void start() {
+        if (!enabled) {
+            plugin.getLogger().info("[Web通信] 未启用，在插件设置.txt中设置 web通信-启用=true");
+            return;
+        }
+        plugin.getLogger().info("[Web通信] 已启用，地址: " + webBaseUrl);
+
+        // 初始化sync_requests表和加载SQLite驱动
+        try {
+            Class.forName("org.sqlite.JDBC");
+            File dataFolder = plugin.getDataFolder();
+            File dbFile = new File(dataFolder, "web_sync.db");
+            if (!dbFile.exists()) {
+                dbFile.createNewFile();
+            }
+            Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+            Statement stmt = conn.createStatement();
+            stmt.execute("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+            stmt.execute("CREATE TABLE IF NOT EXISTS sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT, action TEXT, created_at INTEGER NOT NULL)");
+            stmt.close();
+            conn.close();
+            plugin.getLogger().info("[Web通信] sqlite驱动已加载，sync_requests表已初始化");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] sync_requests表初始化失败: " + e.getMessage());
+        }
+
+        // 清理过期Token
+        cleanExpiredTokens();
+
+        // ★ 启动后延迟30秒执行首次全量同步
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                syncUserRegistrations();
+                pushWebLoginCredentials();
+                syncOnlinePlayers();
+                syncShopData();
+                syncBondBalances();
+                syncAllPlayerIps();
+                // 首次同步只打一次，后续由调度器静默执行
+                plugin.getLogger().info("[Web通信] 首次全量同步完成");
+
+            }
+        }.runTaskLaterAsynchronously(plugin, 20L * 10);
+
+        // ★ 启动Web登录轮询（每5秒检查一次）
+        startWebLoginPolling();
+
+        // ★ 启动Web注册请求轮询（每30~90秒随机间隔）
+        startWebRegisterPolling();
+
+        // ★ 启动嵌入式HTTP服务器接收PHP回调
+        startCallbackServer();
+
+        // ★ 启动实时同步调度器（静默运行）
+        scheduleNextSync();
+        startActiveSync();
+
+        plugin.getLogger().info("[Web通信] 实时同步调度器已启动（60~90秒随机，无人停止，有人恢复）");
+        plugin.getLogger().info("[Web通信] PHP回调服务器已启动，端口: " + callbackPort);
+    }
+
+    public void shutdown() {
+        stop();
+        // 关闭回调服务器
+        if (callbackServer != null) {
+            try {
+                callbackServer.close();
+            } catch (IOException e) {
+            }
+            plugin.getLogger().info("[Web通信] PHP回调服务器已关闭");
+        }
+        plugin.getLogger().info("[Web通信] Web通信管理器已关闭");
+    }
+
+    public void stop() {
+        // 保存待同步数据
+    }
+
+    /**
+     * 启动嵌入式HTTP服务器接收PHP回调
+     */
+    private void startCallbackServer() {
+        new Thread(() -> {
+            try {
+                callbackServer = new java.net.ServerSocket(callbackPort);
+                plugin.getLogger().info("[Web通信] 回调服务器监听端口: " + callbackPort);
+                while (true) {
+                    java.net.Socket socket = callbackServer.accept();
+                    socket.setSoTimeout(5000);
+                    // 在新线程处理，避免阻塞
+                    new Thread(() -> {
+                        try {
+                            handleCallback(socket);
+                        } catch (Exception e) {
+                            // 静默处理
+                        }
+                    }).start();
+                }
+            } catch (IOException e) {
+                plugin.getLogger().warning("[Web通信] 回调服务器启动失败: " + e.getMessage());
+            }
+        }, "web-callback-server").start();
+    }
+
+    /**
+     * 处理PHP回调请求
+     */
+    private void handleCallback(java.net.Socket socket) throws IOException {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
+            // 读取HTTP请求
+            StringBuilder request = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                request.append(line).append("\n");
+            }
+            if (request.length() == 0) return;
+
+            // 解析请求行：POST /register_callback HTTP/1.1 或 POST /api/notify_sync HTTP/1.1
+            String methodLine = request.toString().split("\n")[0];
+            boolean isNotifySync = methodLine.contains("notify_sync");
+
+            // 如果是 notify_sync 请求，立即触发交易拉取（先处理，再处理注册回调，避免阻塞）
+            if (isNotifySync) {
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        requestImmediateTransactionPull();
+                    }
+                }.runTaskAsynchronously(plugin);
+            }
+
+            // 如果不是notify_sync，处理注册回调
+            if (!isNotifySync) {
+                // 解析content-length
+                int contentLength = 0;
+                for (String headerLine : request.toString().split("\n")) {
+                    if (headerLine.toLowerCase().startsWith("content-length:")) {
+                        contentLength = Integer.parseInt(headerLine.split(":")[1].trim());
+                    }
+                }
+
+                // 读取请求体（JSON）
+                byte[] buf = new byte[contentLength];
+                if (contentLength > 0) {
+                    socket.getInputStream().read(buf, 0, contentLength);
+                }
+                String body = new String(buf, StandardCharsets.UTF_8);
+
+                // 解析JSON
+                String playerId = extractJsonString(body, "player");
+                if (playerId == null || playerId.isEmpty()) {
+                    sendCallbackResponse(socket, "{\"success\":false,\"message\":\"missing_player\"}");
+                    return;
+                }
+
+                plugin.getLogger().info("[Web通信] 收到PHP回调：注册请求待处理 - " + playerId);
+
+                // 在主线程处理注册请求
+                final String fName = playerId;
+                DatabaseManager dbMgr = plugin.getDb();
+                if (dbMgr == null) return;
+
+                // 检查玩家是否已注册
+                Object existing = dbMgr.getField(fName, "password_salt");
+                if (existing != null && !((String) existing).isEmpty()) {
+                    // 已注册，直接返回成功
+                    plugin.getLogger().info("[Web通信] 玩家 " + fName + " 已注册，回调跳过");
+                    sendCallbackResponse(socket, "{\"success\":true,\"message\":\"already_registered\"}");
+                    return;
+                }
+
+                // 从PHP拉取注册数据
+                String pullUrl = webBaseUrl + "/api/sync.php?action=check_player_registered&player="
+                        + java.net.URLEncoder.encode(fName, "UTF-8") + "&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                URL url = new URL(pullUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
+
+                int code = conn.getResponseCode();
+                if (code != 200) {
+                    plugin.getLogger().warning("[Web通信] PHP拉取注册数据失败: HTTP " + code);
+                    sendCallbackResponse(socket, "{\"success\":false,\"message\":\"pull_failed\"}");
+                    return;
+                }
+
+                BufferedReader pullReader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                StringBuilder pullSb = new StringBuilder();
+                while ((line = pullReader.readLine()) != null) pullSb.append(line);
+                pullReader.close();
+
+                String pullJson = pullSb.toString();
+                if (!pullJson.contains("\"success\":true")) {
+                    plugin.getLogger().warning("[Web通信] PHP返回非success: " + pullJson.substring(0, Math.min(200, pullJson.length())));
+                    sendCallbackResponse(socket, "{\"success\":false,\"message\":\"invalid_response\"}");
+                    return;
+                }
+
+                // 解析数据
+                int dataStart = pullJson.indexOf("\"data\":");
+                if (dataStart < 0) return;
+                int dataObjStart = dataStart + 7;
+                int dataObjEnd = findMatchingBracket(pullJson, dataObjStart);
+                if (dataObjEnd < 0) return;
+                String dataJson = pullJson.substring(dataObjStart, dataObjEnd);
+
+                String passwordHash = extractJsonString(dataJson, "password_hash");
+                String salt = extractJsonString(dataJson, "salt");
+                String email = extractJsonString(dataJson, "email");
+
+                if (passwordHash == null || salt == null) {
+                    plugin.getLogger().warning("[Web通信] PHP返回数据无密码凭证");
+                    sendCallbackResponse(socket, "{\"success\":false,\"message\":\"no_credentials\"}");
+                    return;
+                }
+
+                // 创建用户
+                dbMgr.createUser(fName, passwordHash, salt);
+                plugin.getLogger().info("[Web通信] 回调创建用户成功: " + fName);
+
+                // 确认PHP端注册完成
+                String confirmUrl = webBaseUrl + "/api/sync.php?action=complete_web_register_request&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                        + "&request_id=0"
+                        + "&result=success";
+                URL confirmUrlObj = new URL(confirmUrl);
+                HttpURLConnection confirmConn = (HttpURLConnection) confirmUrlObj.openConnection();
+                confirmConn.setRequestMethod("POST");
+                confirmConn.setConnectTimeout(5000);
+                confirmConn.setReadTimeout(5000);
+                confirmConn.getResponseCode();
+
+                // 返回成功
+                sendCallbackResponse(socket, "{\"success\":true,\"message\":\"user_created\"}");
+            }
+        } catch (IOException e) {
+            plugin.getLogger().warning("[Web通信] 回调处理异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 发送HTTP回调响应
+     */
+    private void sendCallbackResponse(java.net.Socket socket, String response) throws IOException {
+        String httpResponse = "HTTP/1.1 200 OK\r\n"
+                + "Content-Type: application/json; charset=UTF-8\r\n"
+                + "Content-Length: " + response.length() + "\r\n"
+                + "Connection: close\r\n"
+                + "\r\n"
+                + response;
+        socket.getOutputStream().write(httpResponse.getBytes(StandardCharsets.UTF_8));
+        socket.getOutputStream().flush();
+    }
+
+    // ==================== Token管理 ====================
+
+    /**
+     * 生成一次性Token
+     *
+     * @param playerName 玩家名
+     * @param purpose    用途（shop/bond/cdk/admin/sync/all）
+     * @return token字符串
+     */
+    public String generateToken(String playerName, String purpose) {
+        String token = UUID.randomUUID().toString().replace("-", "")
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        long now = System.currentTimeMillis();
+        tokenStore.put(token, new String[]{playerName, purpose, String.valueOf(now)});
+        return token;
+    }
+
+    /**
+     * 验证Token
+     */
+    public boolean validateToken(String token) {
+        String[] info = tokenStore.get(token);
+        if (info == null) return false;
+
+        long created = Long.parseLong(info[2]);
+        long now = System.currentTimeMillis();
+        long expireMs = (long) tokenExpireSeconds * 1000;
+
+        if (now - created > expireMs) {
+            tokenStore.remove(token);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 使用并销毁Token（一次性）
+     */
+    public String[] useToken(String token) {
+        String[] info = tokenStore.get(token);
+        if (info == null) return null;
+
+        long created = Long.parseLong(info[2]);
+        long now = System.currentTimeMillis();
+        long expireMs = (long) tokenExpireSeconds * 1000;
+
+        if (now - created > expireMs) {
+            tokenStore.remove(token);
+            return null;
+        }
+
+        tokenStore.remove(token);
+        return info;
+    }
+
+    private void cleanExpiredTokens() {
+        long now = System.currentTimeMillis();
+        long expireMs = (long) tokenExpireSeconds * 1000;
+        tokenStore.entrySet().removeIf(e -> {
+            long created = Long.parseLong(e.getValue()[2]);
+            return now - created > expireMs;
+        });
+    }
+
+    // ==================== 字段：同步调度 ====================
+
+    private volatile boolean activeSyncRunning = false;
+    private volatile boolean activeSyncStopped = false;
+    private volatile long nextSyncTime = 0;
+
+    private void scheduleNextSync() {
+        long interval = 60000L + (long) (Math.random() * 30000); // 60~90秒
+        nextSyncTime = System.currentTimeMillis() + interval;
+    }
+
+    // 交易同步请求触发器：立即触发一次拉取
+    private volatile boolean pendingTransactionPullRequested = false;
+    private volatile long lastTransactionPullTime = 0;
+    private static final long MIN_PULL_INTERVAL_MS = 5000; // 最小拉取间隔5秒，防止过于频繁
+
+    private void requestImmediateTransactionPull() {
+        long now = System.currentTimeMillis();
+        if (now - lastTransactionPullTime < MIN_PULL_INTERVAL_MS) {
+            pendingTransactionPullRequested = true;
+            return;
+        }
+        lastTransactionPullTime = now;
+        pendingTransactionPullRequested = false;
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                pullPendingTransactions();
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    private void startActiveSync() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (activeSyncStopped) return;
+
+                // ★ 新增：检查sync_requests表（来自PHP端的即时同步请求）
+                try {
+                    File dataFolder = plugin.getDataFolder();
+                    File dbFile = new File(dataFolder, "web_sync.db");
+                    if (dbFile.exists()) {
+                        Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+                        Statement stmt = conn.createStatement();
+                        ResultSet rs = stmt.executeQuery("SELECT player_name FROM sync_requests LIMIT 10");
+                        boolean hasRequest = false;
+                        StringBuilder players = new StringBuilder();
+                        while (rs.next()) {
+                            hasRequest = true;
+                            String player = rs.getString("player_name");
+                            if (players.length() > 0) players.append(",");
+                            players.append(player);
+                            // 删除已处理的请求
+                            stmt.execute("DELETE FROM sync_requests WHERE player_name = '" + player + "'");
+                            // 记录同步日志
+                            stmt.execute("INSERT INTO sync_log (player_name, action, created_at) VALUES ('" + player + "', 'immediate_sync', " + System.currentTimeMillis() / 1000 + ")");
+                        }
+                        rs.close();
+                        stmt.close();
+                        conn.close();
+                        
+                        if (hasRequest) {
+                            plugin.getLogger().info("[Web通信] 收到即时同步请求: " + players.toString());
+                            // 执行同步
+                            pullPendingTransactions();
+                            pullShopStock();
+                            pullBondChanges();
+                            syncOnlinePlayers();
+                            pushWebLoginCredentials();
+                            syncUserRegistrations();
+                            syncAllPlayerIps();
+                        }
+                    }
+                } catch (Exception e) {
+                    // 静默忽略（表可能还未创建或sqlite驱动未加载）
+                }
+
+                boolean hasOnlinePlayers = !Bukkit.getOnlinePlayers().isEmpty();
+
+                if (!hasOnlinePlayers) {
+                    if (!allPlayersOffline) {
+                        allPlayersOffline = true;
+                        lastOnlineCheckTime = System.currentTimeMillis();
+                        syncAfterAllOffline = true;
+                    } else if (syncAfterAllOffline && !lastSyncDone && (System.currentTimeMillis() - lastOnlineCheckTime > 60000)) {
+                        // 最后一轮同步（只执行一次，玩家重新上线自动恢复）
+                        allPlayersOffline = false;
+                        syncAfterAllOffline = false;
+                        lastSyncDone = true;
+                        lastOnlineCheckTime = System.currentTimeMillis();
+                        pullPendingTransactions();
+                        pullShopStock();
+                        pullBondChanges();
+                        syncOnlinePlayers();
+                        pushWebLoginCredentials();
+                        syncUserRegistrations();
+                        plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步，调度器继续运行（玩家上线自动恢复）");
+                        plugin.getLogger().warning("\n" +
+                                "                                          _                                                                          \n" +
+                                "                                         | |                                                                         \n" +
+                                " __      _____  ___ ___  _ __ ___   ___  | |_ ___                                                                    \n" +
+                                " \\ \\ /\\ / / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                                   \n" +
+                                "  \\ V  V /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                                  \n" +
+                                "   \\_/\\_/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                  _                                                \n" +
+                                "                                             | |                   (_)                                               \n" +
+                                "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __     \n" +
+                                "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|    \n" +
+                                " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |       \n" +
+                                "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_|_|_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_| __ \\_/ \\___|_|       \n" +
+                                "                     __/ |    (_)     _                 |__ \\                 | |   (_)   | (_)/ _|                  \n" +
+                                "  ___  ___ _ ____   |___/ _ __ _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __  \n" +
+                                " / __|/ _ \\ '__\\ \\ / / _ \\ '__| | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\ \n" +
+                                " \\__ \\  __/ |   \\ V /  __/ |  | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |\n" +
+                                " |___/\\___|_|    \\_/ \\___|_|  |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|\n" +
+                                "                                | |                             __/ | |                                              \n" +
+                                "                  _       ____  |_|_    ________ ___           |___/|_|                                              \n" +
+                                "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                                \n" +
+                                "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                               \n" +
+                                " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                               \n" +
+                                " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                                \n" +
+                                " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                                 \n" +
+                                " | |                                                                                                                 \n" +
+                                " |_|                                                                                                                 ");
+                    }
+                    return;
+                }
+
+                allPlayersOffline = false;
+                activeSyncStopped = false;
+                syncAfterAllOffline = false;
+                lastSyncDone = false;  // 玩家上线，允许下次全员下线时触发最后同步
+
+                if (System.currentTimeMillis() < nextSyncTime) {
+                    return;
+                }
+                if (activeSyncRunning) return;
+                activeSyncRunning = true;
+
+                try {
+                    pullPendingTransactions();
+                    pullShopStock();
+                    pullBondChanges();
+                    syncOnlinePlayers();
+                    pushWebLoginCredentials();
+                    syncUserRegistrations();
+                    syncAllPlayerIps();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web通信] 全量同步异常: " + e.getMessage());
+                } finally {
+                    activeSyncRunning = false;
+                    scheduleNextSync();
+                }
+
+                checkSyncNotify();
+            }
+        }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
+    }
+
+    // ==================== Token同步到Web ====================
+
+    /**
+     * 将本地生成的Token批量注册到PHP数据库
+     * 使用SECRET_KEY认证，不需要token（解决鸡生蛋问题）
+     */
+    private void syncTokensToWeb(List<String[]> tokens) {
+        if (tokens == null || tokens.isEmpty()) return;
+        // 同步执行，确保token注册到PHP后端
+        try {
+            StringBuilder jsonArr = new StringBuilder("[");
+            boolean first = true;
+            for (String[] t : tokens) {
+                if (!first) jsonArr.append(",");
+                first = false;
+                jsonArr.append("{");
+                jsonArr.append("\"token\":\"").append(escapeJson(t[0])).append("\",");
+                jsonArr.append("\"player\":\"").append(escapeJson(t[1])).append("\",");
+                jsonArr.append("\"purpose\":\"").append(escapeJson(t[2])).append("\",");
+                jsonArr.append("\"expire_seconds\":").append(tokenExpireSeconds);
+                jsonArr.append("}");
+            }
+            jsonArr.append("]");
+
+            String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"tokens\":" + jsonArr + "}";
+
+            URL url = new URL(webBaseUrl + "/api/sync.php?action=receive_token");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+            conn.setDoOutput(true);
+
+            OutputStream os = conn.getOutputStream();
+            os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            if (code >= 200 && code < 300) {
+                InputStream is = conn.getInputStream();
+                if (is != null) {
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                    plugin.getLogger().info("[Web通信] Token注册成功");
+                }
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] Token注册失败: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        }
+    }
+
+    /**
+     * 包装方法：生成token并自动同步到Web
+     *
+     * @return 生成的token
+     */
+    private String generateAndSyncToken(String playerName, String purpose) {
+        String token = generateToken(playerName, purpose);
+        List<String[]> batch = new ArrayList<>();
+        batch.add(new String[]{token, playerName, purpose});
+        syncTokensToWeb(batch);
+        return token;
+    }
+
+    // ==================== HTTP请求 ====================
+
+    /**
+     * 发送GET请求
+     */
+    public String httpGet(String endpoint, Map<String, String> params) {
+        try {
+            StringBuilder urlStr = new StringBuilder(webBaseUrl + "/" + endpoint);
+            if (params != null && !params.isEmpty()) {
+                urlStr.append("?");
+                for (Map.Entry<String, String> e : params.entrySet()) {
+                    urlStr.append(java.net.URLEncoder.encode(e.getKey(), "UTF-8"));
+                    urlStr.append("=");
+                    urlStr.append(java.net.URLEncoder.encode(e.getValue(), "UTF-8"));
+                    urlStr.append("&");
+                }
+                urlStr.setLength(urlStr.length() - 1);
+            }
+
+            URL url = new URL(urlStr.toString());
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
+            conn.setInstanceFollowRedirects(true);
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (is == null) {
+                plugin.getLogger().warning("[Web通信] GET响应为空: " + endpoint + " (HTTP " + code + ")");
+                return null;
+            }
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+
+            String result = sb.toString();
+            if (code < 200 || code >= 300) {
+                plugin.getLogger().warning("[Web通信] GET请求失败: " + endpoint + " (HTTP " + code + ") " + result);
+            }
+            return result;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] GET请求异常: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 发送POST请求（JSON body）
+     */
+    public String httpPost(String endpoint, String jsonBody) {
+        return httpPostWithRetry(endpoint, jsonBody, 3);
+    }
+    
+    /**
+     * HTTP POST 带重试机制（处理 SSL 握手失败和网络超时）
+     */
+    private String httpPostWithRetry(String endpoint, String jsonBody, int maxRetries) {
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                URL url = new URL(webBaseUrl + "/" + endpoint);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(15000);
+                conn.setDoOutput(true);
+
+                OutputStream os = conn.getOutputStream();
+                os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                os.close();
+
+                int code = conn.getResponseCode();
+                InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+                if (is == null) {
+                    if (attempt < maxRetries) {
+                        plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + endpoint + " (HTTP " + code + ")");
+                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                        continue;
+                    }
+                    plugin.getLogger().warning("[Web通信] POST响应为空: " + endpoint + " (HTTP " + code + ")");
+                    return null;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                conn.disconnect();
+
+                String result = sb.toString();
+                if (code < 200 || code >= 300) {
+                    plugin.getLogger().warning("[Web通信] POST请求失败: " + endpoint + " (HTTP " + code + ") " + result.substring(0, Math.min(200, result.length())));
+                    if (attempt < maxRetries) {
+                        plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + endpoint);
+                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                        continue;
+                    }
+                }
+                return result;
+            } catch (javax.net.ssl.SSLHandshakeException e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] SSL握手异常，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] SSL握手最终失败: " + endpoint + " - " + e.getMessage());
+                }
+            } catch (java.net.SocketTimeoutException e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] 连接超时，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] 连接超时最终失败: " + endpoint + " - " + e.getMessage());
+                }
+            } catch (Exception e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] 请求异常，重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] 请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 发送POST请求（带token）
+     */
+    public String httpPostWithToken(String endpoint, String token, Map<String, Object> data) {
+        return httpPostWithTokenWithRetry(endpoint, token, data, 3);
+    }
+    
+    /**
+     * HTTP POST with Token 带重试机制
+     */
+    private String httpPostWithTokenWithRetry(String endpoint, String token, Map<String, Object> data, int maxRetries) {
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                StringBuilder urlStr = new StringBuilder(webBaseUrl + "/" + endpoint);
+                if (token != null) {
+                    // 检查URL是否已包含?参数，用&连接避免双问号
+                    urlStr.append(urlStr.indexOf("?") >= 0 ? "&" : "?");
+                    urlStr.append("token=").append(java.net.URLEncoder.encode(token, "UTF-8"));
+                }
+
+                String json = mapToJson(data);
+                URL url = new URL(urlStr.toString());
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(15000);
+                conn.setDoOutput(true);
+
+                OutputStream os = conn.getOutputStream();
+                os.write(json.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                os.close();
+
+                int code = conn.getResponseCode();
+                InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+                if (is == null) {
+                    if (attempt < maxRetries) {
+                        plugin.getLogger().info("[Web通信] POST+Token重试 " + attempt + "/" + maxRetries + ": " + endpoint + " (HTTP " + code + ")");
+                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                        continue;
+                    }
+                    plugin.getLogger().warning("[Web通信] POST+Token响应为空: " + endpoint + " (HTTP " + code + ")");
+                    return null;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                conn.disconnect();
+
+                String result = sb.toString();
+                if (code < 200 || code >= 300) {
+                    plugin.getLogger().warning("[Web通信] POST+Token请求失败: " + endpoint + " (HTTP " + code + ") " + result);
+                    if (attempt < maxRetries) {
+                        plugin.getLogger().info("[Web通信] POST+Token重试 " + attempt + "/" + maxRetries + ": " + endpoint);
+                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                        continue;
+                    }
+                }
+                return result;
+            } catch (javax.net.ssl.SSLHandshakeException e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] POST+Token SSL握手异常，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] POST+Token SSL握手最终失败: " + endpoint + " - " + e.getMessage());
+                }
+            } catch (java.net.SocketTimeoutException e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] POST+Token连接超时，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] POST+Token连接超时最终失败: " + endpoint + " - " + e.getMessage());
+                }
+            } catch (Exception e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] POST+Token请求异常，重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] POST+Token请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                }
+            }
+        }
+        return null;
+    }
+
+    // ==================== JSON工具 ====================
+
+    /**
+     * 简单Map转JSON（不依赖第三方库）
+     */
+    private String mapToJson(Map<String, Object> map) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Object> e : map.entrySet()) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("\"").append(escapeJson(e.getKey())).append("\":");
+            Object v = e.getValue();
+            if (v == null) {
+                sb.append("null");
+            } else if (v instanceof Number || v instanceof Boolean) {
+                sb.append(v);
+            } else if (v instanceof Map) {
+                sb.append(mapToJson((Map<String, Object>) v));
+            } else if (v instanceof List) {
+                sb.append(listToJson((List<?>) v));
+            } else if (v instanceof Object[]) {
+                sb.append(listToJson(Arrays.asList((Object[]) v)));
+            } else {
+                sb.append("\"").append(escapeJson(v.toString())).append("\"");
+            }
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    private String listToJson(List<?> list) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (Object item : list) {
+            if (!first) sb.append(",");
+            first = false;
+            if (item == null) {
+                sb.append("null");
+            } else if (item instanceof Map) {
+                sb.append(mapToJson((Map<String, Object>) item));
+            } else if (item instanceof Number || item instanceof Boolean) {
+                sb.append(item);
+            } else {
+                sb.append("\"").append(escapeJson(item.toString())).append("\"");
+            }
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    }
+
+    private String escapeUrl(String s) {
+        if (s == null) return "";
+        try {
+            return java.net.URLEncoder.encode(s, StandardCharsets.UTF_8.toString());
+        } catch (Exception e) {
+            return s;
+        }
+    }
+
+    /**
+     * 简单JSON解析（提取字段值）
+     */
+    public static Map<String, Object> parseJson(String json) {
+        // 简易JSON解析器，支持嵌套对象和数组
+        Map<String, Object> result = new HashMap<>();
+        if (json == null || json.isEmpty()) return result;
+
+        json = json.trim();
+        if (json.startsWith("{")) json = json.substring(1);
+        if (json.endsWith("}")) json = json.substring(0, json.length() - 1);
+
+        int depth = 0;
+        StringBuilder key = new StringBuilder();
+        StringBuilder value = new StringBuilder();
+        boolean inKey = true;
+        boolean inString = false;
+
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+
+            if (inString) {
+                if (c == '\\' && i + 1 < json.length()) {
+                    value.append(c).append(json.charAt(++i));
+                } else if (c == '"') {
+                    inString = false;
+                    value.append(c);
+                } else {
+                    value.append(c);
+                }
+                continue;
+            }
+
+            if (c == '"') {
+                inString = true;
+                value.append(c);
+            } else if (c == ':' && depth == 0 && inKey) {
+                inKey = false;
+                key = new StringBuilder(value.toString().replaceAll("^\"|\"$", ""));
+                value = new StringBuilder();
+            } else if (c == ',' && depth == 0) {
+                addParsedEntry(result, key.toString(), value.toString());
+                key = new StringBuilder();
+                value = new StringBuilder();
+                inKey = true;
+            } else if (c == '{' || c == '[') {
+                depth++;
+                value.append(c);
+            } else if (c == '}' || c == ']') {
+                depth--;
+                value.append(c);
+            } else {
+                value.append(c);
+            }
+        }
+        if (key.length() > 0 || value.length() > 0) {
+            addParsedEntry(result, key.toString(), value.toString());
+        }
+        return result;
+    }
+
+    private static void addParsedEntry(Map<String, Object> map, String key, String value) {
+        key = key.replaceAll("^\"|\"$", "").trim();
+        if (key.isEmpty()) return;
+        value = value.trim();
+
+        if (value.equals("null")) {
+            map.put(key, null);
+            return;
+        }
+        if (value.equals("true")) {
+            map.put(key, true);
+            return;
+        }
+        if (value.equals("false")) {
+            map.put(key, false);
+            return;
+        }
+
+        // 尝试数字
+        try {
+            map.put(key, Integer.parseInt(value));
+            return;
+        } catch (NumberFormatException ignored) {
+        }
+        try {
+            map.put(key, Double.parseDouble(value));
+            return;
+        } catch (NumberFormatException ignored) {
+        }
+
+        // 字符串（去掉引号）
+        String cleaned = value.replaceAll("^\"|\"$", "")
+                .replace("\\\"", "\"")
+                .replace("\\n", "\n")
+                .replace("\\\\", "\\");
+        map.put(key, cleaned);
+    }
+
+    // ==================== 业务功能 ====================
+
+    /**
+     * 1. 同步商城数据到Web端
+     * 读取shop/*.md文件，解析后推送到Web API
+     */
+    public void syncShopData() {
+        if (!enabled) return;
+
+        plugin.getLogger().info("[Web通信] 开始同步商城数据...");
+
+        try {
+            // 生成同步Token并注册到PHP
+            String token = generateAndSyncToken("system", "sync");
+            // 读取shop目录下的md文件
+            File shopDir = new File(plugin.getDataFolder(), "shop");
+            if (!shopDir.exists()) {
+                plugin.getLogger().info("[Web通信] shop目录不存在，跳过同步");
+                return;
+            }
+
+            List<Map<String, Object>> items = new ArrayList<>();
+            File[] mdFiles = shopDir.listFiles((d, n) -> n.endsWith(".md"));
+            if (mdFiles == null || mdFiles.length == 0) {
+                plugin.getLogger().info("[Web通信] 无商品文件");
+                return;
+            }
+
+            for (File mdFile : mdFiles) {
+                String categoryName = mdFile.getName().replace(".md", "");
+                List<Map<String, Object>> catItems = parseMdShopFile(mdFile, categoryName);
+                items.addAll(catItems);
+            }
+
+            if (items.isEmpty()) {
+                plugin.getLogger().info("[Web通信] 解析后无商品");
+                return;
+            }
+
+            // 构建请求数据
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("items", items);
+
+            String json = mapToJson(body);
+            String response = httpPostWithToken("api/sync.php?action=sync_shop", token, body);
+
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().info("[Web通信] 商城同步成功: " + items.size() + "个商品");
+                } else {
+                    plugin.getLogger().warning("[Web通信] 商城同步失败: " + result.get("message"));
+                }
+            } else {
+                plugin.getLogger().warning("[Web通信] 商城同步请求失败");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 商城同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 解析md商品文件
+     * 格式: | ID | 品名 | 材质 | 购入价 | 售出价 | 库存 | 本小时销量 | 总销量 |
+     */
+    private List<Map<String, Object>> parseMdShopFile(File file, String category) {
+        List<Map<String, Object>> items = new ArrayList<>();
+        try {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
+            String line;
+            boolean inTable = false;
+
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.startsWith("#")) {
+                    inTable = false;
+                    continue;
+                } // 分类标题
+                if (line.contains("---")) {
+                    inTable = true;
+                    continue;
+                } // 表头分隔符
+                if (line.startsWith("|") && inTable) {
+                    String[] parts = line.split("\\|");
+                    if (parts.length >= 9) {
+                        String id = parts[1].trim();
+                        if (id.isEmpty() || id.equals("ID")) continue;
+
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("id", id);
+                        item.put("category", category);
+                        item.put("display_name", parts[2].trim());
+                        item.put("material", parts[3].trim());
+                        item.put("buy_price", safeInt(parts[4].trim()));
+                        item.put("sell_price", safeInt(parts[5].trim()));
+                        item.put("stock", safeInt(parts[6].trim()));
+                        item.put("hourly_sales", safeInt(parts[7].trim()));
+                        item.put("total_sales", safeInt(parts[8].trim()));
+                        items.add(item);
+                    }
+                }
+            }
+            reader.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 解析商品文件失败: " + file.getName());
+        }
+        return items;
+    }
+
+    /**
+     * 2. CDK验证
+     * 插件发送CDK码到Web验证，返回验证结果
+     *
+     * @return "success:金额:余额前:余额后" 或 "fail:原因"
+     */
+    public String verifyCDK(String code, String playerName) {
+        if (!enabled) return "fail:Web通信未启用";
+
+        try {
+            String token = generateAndSyncToken(playerName, "cdk");
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("code", code);
+            body.put("player", playerName);
+
+            String response = httpPostWithToken("api/cdk.php?action=exchange", token, body);
+            if (response == null) return "fail:请求失败";
+
+            Map<String, Object> result = parseJson(response);
+            Boolean success = (Boolean) result.get("success");
+            if (Boolean.TRUE.equals(success)) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) result.get("data");
+                if (data != null) {
+                    int amount = data.get("amount") != null ? ((Number) data.get("amount")).intValue() : 0;
+                    int balanceAfter = data.get("balance_after") != null ? ((Number) data.get("balance_after")).intValue() : 0;
+                    return "success:" + amount + ":" + balanceAfter;
+                }
+            }
+
+            String msg = result.get("message") != null ? result.get("message").toString() : "验证失败";
+            return "fail:" + msg;
+        } catch (Exception e) {
+            return "fail:" + e.getMessage();
+        }
+    }
+
+    /**
+     * 3. 查询余额
+     *
+     * @return 债券余额，-1表示查询失败
+     */
+    public int queryBalance(String playerName) {
+        if (!enabled) return -1;
+
+        try {
+            String token = generateAndSyncToken(playerName, "bond");
+
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "query");
+            params.put("player", playerName);
+            params.put("token", token);
+
+            String response = httpGet("api/balance.php", params);
+            if (response == null) return -1;
+
+            Map<String, Object> result = parseJson(response);
+            Boolean success = (Boolean) result.get("success");
+            if (Boolean.TRUE.equals(success)) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) result.get("data");
+                if (data != null && data.get("bonds") != null) {
+                    return ((Number) data.get("bonds")).intValue();
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 余额查询失败: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    /**
+     * 4. 注册账号到Web端
+     */
+    public void syncRegistration(String playerName, String passwordHash, String salt, String email, String ip) {
+        if (!enabled) return;
+
+        try {
+            String token = generateAndSyncToken(playerName, "register");
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("player", playerName);
+            body.put("password_hash", passwordHash);
+            body.put("salt", salt);
+            body.put("email", email != null ? email : "");
+            body.put("ip", ip != null ? ip : "");
+
+            String response = httpPostWithToken("api/register.php?action=register", token, body);
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().info("[Web通信] 注册同步成功: " + playerName);
+                } else {
+                    plugin.getLogger().warning("[Web通信] 注册同步失败: " + result.get("message"));
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 注册同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 5. 推送债券余额快照到Web端
+     */
+    public void syncBondBalances() {
+        if (!enabled) return;
+
+        try {
+            BondManager bondMgr = plugin.getBonds();
+            if (bondMgr == null) return;
+
+            List<String> allPlayers = bondMgr.getAllPlayerNames();
+            if (allPlayers.isEmpty()) return;
+
+            Map<String, Object> bonds = new LinkedHashMap<>();
+            for (String name : allPlayers) {
+                bonds.put(name, bondMgr.getBonds(name));
+            }
+
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("bonds", bonds);
+
+            String response = httpPostWithToken("api/sync.php?action=sync_bonds", token, body);
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    // 静默
+                } else {
+                    plugin.getLogger().warning("[Web通信] 债券同步失败: " + result.get("message"));
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 债券同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 6. 推送注册数据到Web端
+     */
+    public void syncUserRegistrations() {
+        if (!enabled) return;
+
+        try {
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr == null) return;
+
+            List<Map<String, Object>> users = dbMgr.getAllUsers();
+            if (users.isEmpty()) return;
+
+            List<Map<String, Object>> syncData = new ArrayList<>();
+            for (Map<String, Object> user : users) {
+                Map<String, Object> u = new LinkedHashMap<>();
+                u.put("player_name", user.get("player_name"));
+                u.put("register_time", user.get("register_time"));
+                u.put("last_login_time", user.get("last_login_time"));
+                u.put("email", user.get("email"));
+                u.put("points", user.get("points"));
+                u.put("gift_stage", user.get("gift_stage"));
+                u.put("total_online_time", user.get("total_online_time"));
+                syncData.add(u);
+            }
+
+            // ★ 同步前不打印任何日志，只有失败时才打印warning
+
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("users", syncData);
+
+            String response = httpPostWithToken("api/sync.php?action=sync_login", token, body);
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (!Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().warning("[Web通信] 用户注册同步失败: " + response);
+                }
+            } else {
+                plugin.getLogger().warning("[Web通信] 用户注册同步无响应");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 注册同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Java插件主动通知Web端删除用户
+     */
+    public void deleteWebUser(String playerName) {
+        if (!enabled) return;
+        try {
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("player_name", playerName);
+            String response = httpPostWithToken("api/sync.php?action=delete_user", token, body);
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().info("[Web通信] 用户 " + playerName + " 已从Web端彻底删除");
+                } else {
+                    plugin.getLogger().warning("[Web通信] 删除用户 " + playerName + " 失败: " + response);
+                }
+            } else {
+                plugin.getLogger().warning("[Web通信] 删除用户 " + playerName + " 无响应");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 删除用户异常: " + e.getMessage());
+        }
+    }
+
+    // ==================== 本地Web登录验证状态 ====================
+
+    /**
+     * 检查玩家是否已通过Web密码验证（本地状态）
+     * Java验证成功后立即记录，玩家进游戏时直接检查
+     */
+    public boolean isWebLoginVerified(String playerName) {
+        Long verifiedTime = verifiedWebLogins.get(playerName);
+        if (verifiedTime == null) return false;
+
+        // 检查是否过期（5分钟）
+        if (System.currentTimeMillis() - verifiedTime > VERIFIED_LOGIN_EXPIRE_MS) {
+            verifiedWebLogins.remove(playerName);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 清除玩家的Web登录验证状态（玩家成功登录后调用）
+     */
+    public void clearWebLoginVerified(String playerName) {
+        verifiedWebLogins.remove(playerName);
+    }
+
+    /**
+     * 同步在线玩家列表到PHP端（用于Web登录状态检查）
+     */
+    public void syncOnlinePlayers() {
+        if (!enabled) return;
+
+        try {
+            java.util.Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
+            List<Map<String, Object>> playersData = new ArrayList<>();
+
+            for (Player p : onlinePlayers) {
+                Map<String, Object> playerInfo = new LinkedHashMap<>();
+                playerInfo.put("name", p.getName());
+                playerInfo.put("login_time", System.currentTimeMillis() / 1000);
+                playersData.add(playerInfo);
+            }
+
+            // ★ 使用表单格式发送（PHP会自动解析application/x-www-form-urlencoded到$_POST）
+            String playersJson = buildPlayersJsonArray(playersData);
+            String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+
+            // ★ Debug: 打印完整body
+            plugin.getLogger().info("[Web通信] 在线玩家同步 body: " + formBody.substring(0, Math.min(500, formBody.length())));
+
+            URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_online_players");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
+            conn.setDoOutput(true);
+
+            OutputStream os = conn.getOutputStream();
+            os.write(formBody.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (is != null) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                String response = sb.toString();
+                
+                // ★ 修复：HTTP 200 不一定是成功，需要检查响应内容是否为有效 JSON
+                if (code == 200 && response.contains("\"success\":true")) {
+                    plugin.getLogger().info("[Web通信] 在线玩家同步成功: " + playersData.size() + "人");
+                } else if (response.contains("Fatal error") || response.contains("Warning") || response.contains("<br")) {
+                    // PHP 返回了错误信息，虽然 HTTP 200
+                    plugin.getLogger().warning("[Web通信] PHP返回错误: HTTP " + code + " - " + response.substring(0, Math.min(200, response.length())));
+                } else {
+                    plugin.getLogger().warning("[Web通信] 在线玩家同步异常: HTTP " + code + " - " + response.substring(0, Math.min(200, response.length())));
+                }
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 在线玩家同步异常: " + e.getMessage());
+        }
+    }
+
+    // IP变更缓存：playerName -> [ip, syncFlag]
+    // syncFlag: "0"=已同步, "1"=待同步
+    private final ConcurrentHashMap<String, String[]> ipCache = new ConcurrentHashMap<>();
+
+    /**
+     * 获取玩家IP（从login.db读取last_ip）
+     */
+    private String getPlayerIpFromDb(String playerName) {
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr == null) return null;
+        Object val = dbMgr.getField(playerName, "last_ip");
+        return val != null ? String.valueOf(val) : null;
+    }
+
+    /**
+     * 同步玩家IP到PHP端（当IP发生变化时）
+     */
+    private void syncPlayerIpToWeb(String playerName, String ip) {
+        if (!enabled || ip == null || ip.isEmpty()) return;
+
+        String[] cached = ipCache.get(playerName);
+        boolean hasChanged = false;
+
+        if (cached == null) {
+            hasChanged = true;
+            ipCache.put(playerName, new String[]{ip, "1"});
+        } else {
+            String prevIp = cached[0];
+            String prevSync = cached[1];
+            if (!prevIp.equals(ip) || !"0".equals(prevSync)) {
+                hasChanged = true;
+                ipCache.put(playerName, new String[]{ip, "1"});
+            }
+        }
+
+        if (!hasChanged) return;
+
+        // 构建players数据
+        Map<String, Object> playerInfo = new LinkedHashMap<>();
+        playerInfo.put("name", playerName);
+        playerInfo.put("ip", ip);
+
+        List<Map<String, Object>> playersData = new ArrayList<>();
+        playersData.add(playerInfo);
+
+        String playersJson = buildPlayersJsonArrayWithIp(playersData);
+        String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_online_players");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(10000);
+                    conn.setDoOutput(true);
+
+                    OutputStream os = conn.getOutputStream();
+                    os.write(formBody.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    os.close();
+
+                    int code = conn.getResponseCode();
+                    if (code == 200) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
+                        if (sb.toString().contains("\"success\":true")) {
+                            // 标记为已同步，下次有变化才会再推
+                            ipCache.put(playerName, new String[]{ip, "0"});
+                        }
+                    }
+                    conn.disconnect();
+                } catch (Exception e) {
+                    // 静默忽略
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * ★ 同步所有玩家IP到PHP端（全量同步，带变更检测）
+     * 在定时同步调度时调用，对比login.db中玩家IP是否有变化
+     * 只有IP变化的玩家才会被推送到PHP端
+     */
+    public void syncAllPlayerIps() {
+        if (!enabled) return;
+
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr == null) return;
+
+        // 获取所有玩家名称和当前IP
+        List<Map<String, Object>> allUsers = dbMgr.getAllUsers();
+        if (allUsers.isEmpty()) return;
+
+        // 收集需要同步的玩家
+        List<Map<String, Object>> needSync = new ArrayList<>();
+        ConcurrentHashMap<String, String> newSnapshot = new ConcurrentHashMap<>();
+
+        for (Map<String, Object> user : allUsers) {
+            String name = (String) user.get("player_name");
+            if (name == null || name.isEmpty()) continue;
+
+            String ip = (String) user.get("ip_address");
+            if (ip == null) ip = "";
+
+            // 获取玩家当前IP（从login.db的ip_address或register_ip）
+            // ip_address 是玩家登录后Java记录的最新IP
+            String currentIp = dbMgr.getField(name, "ip_address") != null ? String.valueOf(dbMgr.getField(name, "ip_address")) : null;
+            if (currentIp == null || currentIp.isEmpty()) {
+                // 如果 ip_address 为空，尝试 register_ip
+                currentIp = (String) user.get("register_ip");
+            }
+            if (currentIp == null || currentIp.isEmpty()) {
+                currentIp = "";
+            }
+            // 如果 IP 是空字符串，跳过
+            if (currentIp.isEmpty()) continue;
+
+            String[] cached = ipCache.get(name);
+            if (cached != null && "0".equals(cached[1]) && currentIp.equals(cached[0])) {
+                // IP已同步且未变化，跳过
+                continue;
+            }
+
+            Map<String, Object> pInfo = new LinkedHashMap<>();
+            pInfo.put("name", name);
+            pInfo.put("ip", currentIp);
+            needSync.add(pInfo);
+        }
+
+        if (needSync.isEmpty()) return;
+
+        // 构建JSON并推送到PHP端
+        String playersJson = "[";
+        for (int i = 0; i < needSync.size(); i++) {
+            Map<String, Object> p = needSync.get(i);
+            if (i > 0) playersJson += ",";
+            playersJson += "{\"name\":\"" + escapeJson((String) p.get("name")) + "\",\"ip\":\"" + escapeJson((String) p.get("ip")) + "\"}";
+        }
+        playersJson += "]";
+
+        String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_player_ips");
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(10000);
+                    conn.setDoOutput(true);
+
+                    OutputStream os = conn.getOutputStream();
+                    os.write(formBody.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    os.close();
+
+                    int code = conn.getResponseCode();
+                    InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+                    if (is != null) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) sb.append(line);
+                        reader.close();
+                        String resp = sb.toString();
+                        if (code == 200 && resp.contains("\"success\":true")) {
+                            plugin.getLogger().info("[Web通信] 全量同步" + needSync.size() + "个玩家IP到PHP端");
+                            // 标记为已同步
+                            for (Map<String, Object> p : needSync) {
+                                String name = (String) p.get("name");
+                                String ip = (String) p.get("ip");
+                                if (name != null && ip != null) {
+                                    ipCache.put(name, new String[]{ip, "0"});
+                                }
+                            }
+                        } else {
+                            plugin.getLogger().warning("[Web通信] 同步IP到PHP失败: HTTP " + code + " - " + resp.substring(0, Math.min(200, resp.length())));
+                        }
+                    }
+                    conn.disconnect();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web通信] 同步玩家IP异常: " + e.getMessage());
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    private String buildPlayersJsonArray(List<Map<String, Object>> playersData) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < playersData.size(); i++) {
+            Map<String, Object> p = playersData.get(i);
+            if (i > 0) sb.append(",");
+            sb.append("{").append("\"name\":\"").append(escapeJson((String)p.get("name"))).append("\"");
+            sb.append(",\"login_time\":").append(String.valueOf(p.getOrDefault("login_time", System.currentTimeMillis()/1000)));
+            sb.append("}");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String buildPlayersJsonArrayWithIp(List<Map<String, Object>> playersData) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < playersData.size(); i++) {
+            Map<String, Object> p = playersData.get(i);
+            if (i > 0) sb.append(",");
+            sb.append("{").append("\"name\":\"").append(escapeJson((String)p.get("name"))).append("\"");
+            sb.append(",\"login_time\":").append(String.valueOf(p.getOrDefault("login_time", System.currentTimeMillis()/1000)));
+            sb.append("}");
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    /**
+     * 7. 推送玩家密码凭证到Web端（用于Web登录双保险验证）
+     */
+    public void pushWebLoginCredentials() {
+        if (!enabled) return;
+
+        try {
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr == null) return;
+
+            List<Map<String, Object>> allUsers = dbMgr.getAllUsers();
+            if (allUsers.isEmpty()) return;
+
+            List<Map<String, Object>> credentials = new ArrayList<>();
+            for (Map<String, Object> user : allUsers) {
+                String name = (String) user.get("player_name");
+                String hash = (String) user.get("password_hash");
+                String salt = (String) user.get("password_salt");
+                String tempHash = (String) user.get("temp_password");
+                Object tempExpireObj = user.get("temp_pw_expire");
+                long tempExpire = tempExpireObj != null ? ((Number) tempExpireObj).longValue() : 0;
+
+                if (name != null && hash != null && salt != null && !hash.isEmpty() && !salt.isEmpty()) {
+                    Map<String, Object> cred = new LinkedHashMap<>();
+                    cred.put("player_name", name);
+                    cred.put("password_hash", hash);
+                    cred.put("salt", salt);
+                    // ★ 如果有临时密码，也推送
+                    if (tempHash != null && !tempHash.isEmpty()) {
+                        cred.put("temp_password_hash", tempHash);
+                        cred.put("temp_pw_expire", tempExpire);
+                    }
+                    credentials.add(cred);
+                }
+            }
+
+            if (credentials.isEmpty()) return;
+
+            String secretKey = this.secretKey;
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("secret", secretKey);
+            body.put("players", credentials);
+
+            String jsonBody = mapToJson(body);
+            String response = httpPost("api/sync.php?action=push_web_credentials", jsonBody);
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().info("[Web通信] 密码凭证同步成功: " + credentials.size() + "人");
+                } else {
+                    plugin.getLogger().warning("[Web通信] 密码凭证同步失败: " + response);
+                }
+            } else {
+                plugin.getLogger().warning("[Web通信] 密码凭证同步无响应");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 密码凭证同步异常: " + e.getMessage());
+        }
+    }
+
+    // ==================== 工具方法 ====================
+
+    private int safeInt(String s) {
+        try {
+            s = s.trim();
+            if (s.equals("-")) return -1;
+            if (s.equals("无限") || s.equals("∞")) return -1;
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    // ==================== webshop / weblogin ====================
+
+    /**
+     * /sdf1_login webshop - 生成token并从Web拉取商城数据
+     */
+    public void handleWebShop(Player sender) {
+        if (!enabled) {
+            sender.sendMessage("§c[Web] Web通信未启用");
+            return;
+        }
+
+        String playerName = sender.getName();
+        sender.sendMessage("§7[WebShop] 正在从Web拉取商城数据...");
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    // 生成webshop专用Token并注册到PHP
+                    String token = generateAndSyncToken(playerName, "webshop");
+
+                    // 拉取商城数据
+                    Map<String, String> params = new LinkedHashMap<>();
+                    params.put("action", "list");
+                    params.put("token", token);
+
+                    String response = httpGet("api/shop.php", params);
+                    if (response == null) {
+                        Bukkit.getScheduler().runTask(plugin, () ->
+                                sender.sendMessage("§c[WebShop] 请求失败，无法连接Web服务器"));
+                        return;
+                    }
+
+                    Map<String, Object> result = parseJson(response);
+                    Boolean success = (Boolean) result.get("success");
+
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (Boolean.TRUE.equals(success)) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> data = (Map<String, Object>) result.get("data");
+                            if (data != null) {
+                                @SuppressWarnings("unchecked")
+                                List<Map<String, Object>> items = (List<Map<String, Object>>) data.get("items");
+                                if (items != null && !items.isEmpty()) {
+                                    sender.sendMessage("§a§l===== Web商城 =====");
+                                    for (Map<String, Object> item : items) {
+                                        String name = item.get("display_name") != null ? item.get("display_name").toString() : "未知";
+                                        Object buyObj = item.get("buy_price");
+                                        int buyPrice = buyObj != null ? ((Number) buyObj).intValue() : 0;
+                                        int stock = item.get("stock") != null ? ((Number) item.get("stock")).intValue() : -1;
+                                        String stockStr = stock == -2 ? "§a无限" : (stock == -1 ? "§c下架" : (stock == 0 ? "§7售罄" : "§e" + stock));
+                                        sender.sendMessage("§e" + name + " §7- §6" + buyPrice + "§7债券 | 库存: " + stockStr);
+                                    }
+                                    sender.sendMessage("§7共 " + items.size() + " 件商品 | Token: " + token.substring(0, 8) + "...");
+                                } else {
+                                    sender.sendMessage("§7[WebShop] Web端暂无商品数据");
+                                }
+                            }
+                        } else {
+                            String msg = result.get("message") != null ? result.get("message").toString() : "未知错误";
+                            sender.sendMessage("§c[WebShop] 拉取失败: " + msg);
+                        }
+                    });
+                } catch (Exception e) {
+                    Bukkit.getScheduler().runTask(plugin, () ->
+                            sender.sendMessage("§c[WebShop] 异常: " + e.getMessage()));
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * /sdf1_login weblogin - 生成Web登录Token，支持Web端登录
+     * 玩家可以在游戏中执行此命令，获取token后在Web端使用
+     * 也可以在登录时自动生成（由Main.java的登录事件调用）
+     */
+    public void handleWebLogin(Player sender) {
+        if (!enabled) {
+            sender.sendMessage("§c[Web] Web通信未启用");
+            return;
+        }
+
+        String playerName = sender.getName();
+        long now = System.currentTimeMillis();
+
+        // ★ 检查10秒冷却
+        Long lastTime = webloginTokenTimestamps.get(playerName);
+        if (lastTime != null && (now - lastTime) < WEBLOGIN_TOKEN_COOLDOWN_MS) {
+            long remaining = (WEBLOGIN_TOKEN_COOLDOWN_MS - (now - lastTime)) / 1000;
+            sender.sendMessage("§c[Web] 请勿频繁获取Token，请等待 " + remaining + " 秒后再试");
+            return;
+        }
+        webloginTokenTimestamps.put(playerName, now);
+
+        // 生成weblogin专用Token
+        String token = generateToken(playerName, "weblogin");
+
+        // ★ 使用push_player_login_status端点，带上online=0（玩家当前不在游戏里执行/weblogin，只是要token）
+        // 实际上玩家就在游戏里，所以online=1
+        boolean isRegistered = plugin.getDb().userExists(playerName);
+        boolean syncSuccess = false;
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
+                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                    + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                    + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
+                    + "&expire_seconds=" + tokenExpireSeconds
+                    + "&online=1"
+                    + "&registered=" + (isRegistered ? "1" : "0");
+
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(12000);
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (is != null) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                String response = sb.toString();
+                plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
+                if (response.contains("\"success\":true")) {
+                    syncSuccess = true;
+                }
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 同步Web登录Token失败: " + e.getMessage());
+        }
+
+        if (syncSuccess) {
+            sender.sendMessage("§a§l===== Web登录 =====");
+            sender.sendMessage("§e请点击链接登录Web端:");
+            sender.sendMessage("§b" + webBaseUrl + "/login.php?token=" + token);
+            sender.sendMessage("§7有效期: " + tokenExpireSeconds + "秒 | 一次性使用");
+        } else {
+            sender.sendMessage("§c[Web] Token同步失败，请检查Web后端是否可访问");
+            sender.sendMessage("§7当前后端地址: " + webBaseUrl);
+        }
+    }
+
+    /**
+     * /sdf1_login web reload - 重载Web后端设置
+     */
+    public void handleWebReload(Player sender) {
+        sender.sendMessage("§a[Web] Web后端配置已重载: 地址=" + webBaseUrl);
+        sender.sendMessage("§a[Web] 已重新读取: 插件设置.txt");
+    }
+
+    /**
+     * 自动生成URL（用于返回给前端）
+     */
+    public String getWebLoginUrl(String token) {
+        return webBaseUrl + "/login.php?token=" + token;
+    }
+
+    /**
+     * 玩家登录时自动生成Web登录Token并推送登录状态
+     * 由Main.java的PlayerJoinEvent调用
+     * 使用push_player_login_status端点，带上online=1让PHP知道玩家已在线
+     */
+    public void autoGenerateWebLoginToken(Player player) {
+        if (!enabled) return;
+
+        String playerName = player.getName();
+        // 生成weblogin专用Token
+        String token = generateToken(playerName, "weblogin");
+
+        // ★ 生成token时检查login.db并推送注册状态给PHP
+        boolean isRegistered = plugin.getDb().userExists(playerName);
+
+        // ★ 使用push_player_login_status端点，推送玩家在线状态+token到PHP
+        boolean syncSuccess = false;
+        try {
+            // 用GET请求，所有参数通过URL传递
+            String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
+                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                    + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                    + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
+                    + "&expire_seconds=" + tokenExpireSeconds
+                    + "&online=1"
+                    + "&registered=" + (isRegistered ? "1" : "0");
+
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(12000);
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            if (is != null) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                String response = sb.toString();
+                plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
+                if (response.contains("\"success\":true")) {
+                    syncSuccess = true;
+                }
+            }
+            conn.disconnect();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 推送玩家登录状态失败: " + e.getMessage());
+        }
+
+        // 延迟5秒发送消息，与登录消息一起打印，避免刷屏
+        final boolean[] syncSuccessHolder = {syncSuccess};
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                if (player.isOnline()) {
+                    if (syncSuccessHolder[0]) {
+                        player.sendMessage("§7[Web] §e请点击链接登录Web端:");
+                        player.sendMessage("§b" + webBaseUrl + "/login.php?token=" + token);
+                    } else {
+                        player.sendMessage("§c[Web] Token同步失败，请检查Web后端: " + webBaseUrl);
+                    }
+                    player.sendMessage("§7[Web] 使用 §e/sdf1_login weblogin §7可重新获取");
+                }
+            }
+        }.runTaskLater(plugin, 100L);
+    }
+
+    /**
+     * Web端验证登录Token
+     * 由PHP后端调用（通过插件主动拉取）
+     *
+     * @param token 登录Token
+     * @return 玩家名，null表示无效
+     */
+    public String validateWebLoginToken(String token) {
+        String[] info = useToken(token);
+        if (info == null) return null;
+        if (!"weblogin".equals(info[1])) return null;
+        return info[0]; // playerName
+    }
+
+    // ==================== 命令处理 ====================
+
+    /**
+     * 处理 /sdf1_login web 命令
+     */
+    public boolean handleCommand(Player sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage("§e用法: /sdf1_login web <子命令>");
+            sender.sendMessage("§7  sync - 手动同步商城数据");
+            sender.sendMessage("§7  token <玩家> <用途> - 生成Token");
+            sender.sendMessage("§7  status - 查看通信状态");
+            sender.sendMessage("§7  cdk <兑换码> - 测试CDK验证");
+            sender.sendMessage("§7  webshop - 从Web拉取商城数据");
+            sender.sendMessage("§7  weblogin - 生成Web登录Token");
+            return true;
+        }
+
+        String sub = args[1].toLowerCase();
+
+        switch (sub) {
+            case "sync":
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        syncShopData();
+                        syncBondBalances();
+                        syncUserRegistrations();
+                    }
+                }.runTaskAsynchronously(plugin);
+                sender.sendMessage("§a[Web] 同步任务已启动...");
+                break;
+
+            case "token":
+                if (args.length < 4) {
+                    sender.sendMessage("§c用法: /sdf1_login web token <玩家> <用途>");
+                    return true;
+                }
+                String target = args[2];
+                String purpose = args[3];
+                String token = generateAndSyncToken(target, purpose);
+                sender.sendMessage("§a[Web] Token已生成:");
+                sender.sendMessage("§e" + token);
+                sender.sendMessage("§7用途: " + purpose + " | 有效期: " + tokenExpireSeconds + "秒");
+                break;
+
+            case "status":
+                sender.sendMessage("§e[Web] 通信状态:");
+                sender.sendMessage("§7  启用: " + (enabled ? "§a是" : "§c否"));
+                sender.sendMessage("§7  地址: " + webBaseUrl);
+                sender.sendMessage("§7  Token有效期: " + tokenExpireSeconds + "秒");
+                sender.sendMessage("§7  同步间隔: " + syncIntervalMinutes + "分钟");
+                sender.sendMessage("§7  活跃Token数: " + tokenStore.size());
+                break;
+
+            case "cdk":
+                if (args.length < 3) {
+                    sender.sendMessage("§c用法: /sdf1_login web cdk <兑换码>");
+                    return true;
+                }
+                String cdkCode = args[2];
+                String cdkPlayer = sender.getName();
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        String result = verifyCDK(cdkCode, cdkPlayer);
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            if (result.startsWith("success:")) {
+                                String[] parts = result.split(":");
+                                sender.sendMessage("§a[Web] CDK验证成功! 债券: +" + parts[1]);
+                            } else {
+                                sender.sendMessage("§c[Web] CDK验证失败: " + result.substring(5));
+                            }
+                        });
+                    }
+                }.runTaskAsynchronously(plugin);
+                sender.sendMessage("§7[Web] 正在验证CDK...");
+                break;
+
+            case "webshop":
+                handleWebShop(sender);
+                break;
+
+            case "weblogin":
+                handleWebLogin(sender);
+                break;
+
+            case "reload":
+                handleWebReload(sender);
+                break;
+
+            default:
+                sender.sendMessage("§c未知子命令: " + sub);
+                break;
+        }
+        return true;
+    }
+
+    // ==================== Getter ====================
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public String getWebBaseUrl() {
+        return webBaseUrl;
+    }
+
+    public int getTokenExpireSeconds() {
+        return tokenExpireSeconds;
+    }
+
+    public String getSecretKey() {
+        return secretKey;
+    }
+
+    // ==================== Web登录轮询 ====================
+
+    /**
+     * 启动Web登录轮询任务
+     * 每5秒轮询PHP后端，获取已通过Web验证的玩家，自动登录游戏
+     * 登录轮询保持较短间隔，提升玩家登录体验
+     * 使用异步线程处理，避免Web响应慢导致游戏卡死
+     */
+    public void startWebLoginPolling() {
+        if (!enabled) return;
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                    try {
+                        pollWebLoginConfirmations();
+                        pollWebLoginRequests();
+                    } catch (Exception e) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                            plugin.getLogger().warning("[Web登录轮询] 异步执行异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                            lastPollWebLoginExceptionLog = now;
+                        }
+                    }
+                });
+            }
+        }.runTaskTimer(plugin, 100L, 100L); // 5秒一次（100 ticks）
+
+        plugin.getLogger().info("[Web通信] Web登录轮询已启动（每5秒，保障登录体验）");
+    }
+
+    /**
+     * 轮询Token登录确认
+     * 获取已通过WebToken验证的玩家列表，自动登录游戏
+     * 注意：此方法在异步线程中执行，不要在方法内创建BukkitRunnable
+     */
+    private void pollWebLoginConfirmations() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=check_web_login_confirmations&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            int code = conn.getResponseCode();
+            if (code != 200) return;
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+
+            // 解析JSON响应
+            String json = sb.toString();
+            if (!json.contains("\"success\":true")) return;
+
+            // 简单解析玩家名列表
+            int dataStart = json.indexOf("\"data\":");
+            if (dataStart < 0) return;
+            String dataStr = json.substring(dataStart + 7);
+            int arrEnd = findMatchingBracket(dataStr, 0);
+            if (arrEnd < 0) return;
+            String arrStr = dataStr.substring(0, arrEnd + 1);
+
+            // 提取每个player_name
+            java.util.List<String> players = new java.util.ArrayList<>();
+            int idx = 0;
+            while (true) {
+                int nameStart = arrStr.indexOf("\"player_name\":\"", idx);
+                if (nameStart < 0) break;
+                nameStart += 15;
+                int nameEnd = arrStr.indexOf("\"", nameStart);
+                if (nameEnd < 0) break;
+                players.add(arrStr.substring(nameStart, nameEnd));
+                idx = nameEnd + 1;
+            }
+
+            if (!players.isEmpty()) {
+                plugin.getLogger().info("[Web登录轮询] 发现 " + players.size() + " 个未消费的登录确认: " + players);
+            }
+
+            // 在主线程处理每个玩家的自动登录
+            for (String playerName : players) {
+                final String name = playerName;
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    plugin.getLogger().info("[Web登录轮询] 尝试处理玩家 " + name + " 的自动登录");
+                    boolean ok = plugin.handleWebLoginConfirmation(name);
+                    if (ok) {
+                        plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 通过WebToken验证，已自动登录");
+                    } else {
+                        plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 未在线，跳过自动登录");
+                    }
+                });
+            }
+        } catch (Exception e) {
+            long now = System.currentTimeMillis();
+            if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                plugin.getLogger().warning("[Web登录确认轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                lastPollWebLoginExceptionLog = now;
+            }
+        }
+    }
+
+    /**
+     * 轮询密码登录请求
+     * 获取Web端提交的密码登录请求，本地验证密码，写回结果
+     * 注意：此方法在异步线程中执行，不要在方法内创建BukkitRunnable
+     */
+    private void pollWebLoginRequests() {
+        try {
+            // ★ 定期清理已处理请求记录和已验证登录状态（避免内存泄漏）
+            if (processedWebLoginRequests.size() > 100) {
+                long now = System.currentTimeMillis();
+                processedWebLoginRequests.entrySet().removeIf(entry ->
+                        (now - entry.getValue()) > PROCESSED_REQUEST_EXPIRE_MS
+                );
+            }
+            if (verifiedWebLogins.size() > 0) {
+                long now = System.currentTimeMillis();
+                verifiedWebLogins.entrySet().removeIf(entry ->
+                        (now - entry.getValue()) > VERIFIED_LOGIN_EXPIRE_MS
+                );
+            }
+            String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_logins&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            int code = conn.getResponseCode();
+            if (code != 200) return;
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+
+            String json = sb.toString();
+            if (!json.contains("\"success\":true")) return;
+
+            // 解析请求列表
+            int dataStart = json.indexOf("\"data\":");
+            if (dataStart < 0) return;
+            String dataStr = json.substring(dataStart + 7);
+            int arrEnd = findMatchingBracket(dataStr, 0);
+            if (arrEnd < 0) return;
+            String arrStr = dataStr.substring(0, arrEnd + 1);
+
+            // ★ 逐个提取 {...} 对象，用 parseJson 解析，避免手动截取密码出错
+        //    plugin.getLogger().info("[Web密码验证] 待解析数组: " + (arrStr.length() > 200 ? arrStr.substring(0, 200) + "..." : arrStr));
+            int idx = 0;
+            while (true) {
+                int objStart = arrStr.indexOf("{", idx);
+                if (objStart < 0) break;
+                int objEnd = findMatchingBracket(arrStr, objStart);
+                if (objEnd < 0) break;
+                String objStr = arrStr.substring(objStart, objEnd + 1);
+                idx = objEnd + 1;
+
+                Map<String, Object> obj = parseJson(objStr);
+                if (obj == null || obj.isEmpty()) continue;
+
+                String reqId = String.valueOf(obj.get("id"));
+                String playerName = (String) obj.get("player_name");
+                String password = (String) obj.get("password");
+
+                if (reqId == null || playerName == null || password == null) continue;
+
+                // ★ 检查是否已处理过此请求（防止PHP未更新状态时重复验证）
+                Long processedTime = processedWebLoginRequests.get(reqId);
+                if (processedTime != null && (System.currentTimeMillis() - processedTime) < PROCESSED_REQUEST_EXPIRE_MS) {
+                    // 已在60秒内处理过，跳过
+                    continue;
+                }
+
+                plugin.getLogger().info("[Web密码验证] 收到请求 reqId=" + reqId + " player=" + playerName + " pwdLen=" + password.length());
+
+                // 标记为已处理
+                processedWebLoginRequests.put(reqId, System.currentTimeMillis());
+
+                // 在主线程验证密码
+                final String fReqId = reqId;
+                final String fName = playerName;
+                final String fPwd = password;
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    try {
+                        String result = plugin.handleWebPasswordVerify(fName, fPwd);
+
+                        // ★ 验证成功后，立即记录本地登录状态（不依赖PHP）
+                        if ("\"success\"".equals(result)) {
+                            verifiedWebLogins.put(fName, System.currentTimeMillis());
+                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态");
+                        }
+
+                        // 异步将结果写回PHP（供Web端查询）
+                        sendWebLoginResult(fReqId, fName, result);
+                    } catch (Exception e) {
+                        // 静默处理
+                    }
+                });
+            }
+        } catch (Exception e) {
+            long now = System.currentTimeMillis();
+            if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                plugin.getLogger().warning("[Web密码登录轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                lastPollWebLoginExceptionLog = now;
+            }
+        }
+    }
+
+    /**
+     * 将密码验证结果写回PHP后端
+     * 使用GET请求传所有参数（避免POST body解析问题），同时增加重试机制
+     */
+    private void sendWebLoginResult(String reqId, String playerName, String result) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                // 将result转换为JSON对象格式 {"success": true/false, "status": "..."}
+                String resultJson;
+                if ("\"success\"".equals(result)) {
+                    resultJson = "{\"success\":true,\"status\":\"success\"}";
+                } else if ("\"not_registered\"".equals(result)) {
+                    resultJson = "{\"success\":false,\"status\":\"not_registered\"}";
+                } else {
+                    resultJson = "{\"success\":false,\"status\":\"failed\"}";
+                }
+
+                // 使用GET请求，所有参数通过URL传递，避免POST body解析问题
+                // 最多重试3次，每次间隔2秒
+                boolean sent = false;
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    try {
+                        String resultEncoded = java.net.URLEncoder.encode(resultJson, "UTF-8");
+                        String urlStr = webBaseUrl + "/api/sync.php?action=complete_web_login_request"
+                                + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                                + "&request_id=" + reqId
+                                + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                                + "&result=" + resultEncoded;
+                        
+                        URL url = new URL(urlStr);
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("GET");
+                        conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                        conn.setConnectTimeout(10000);
+                        conn.setReadTimeout(10000);
+                        
+                        int code = conn.getResponseCode();
+                        conn.disconnect();
+                        
+                        if (code >= 200 && code < 300) {
+                            sent = true;
+                            plugin.getLogger().info("[Web密码验证] 结果已发送: reqId=" + reqId + " result=" + result + " (第" + (attempt + 1) + "次尝试)");
+                            break;
+                        } else {
+                            plugin.getLogger().warning("[Web密码验证] HTTP " + code + ": reqId=" + reqId + " player=" + playerName);
+                        }
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[Web密码验证] 第" + (attempt + 1) + "次尝试异常: reqId=" + reqId + " " + e.getMessage());
+                    }
+                    // 重试前等待
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
+                }
+                
+                if (!sent) {
+                    plugin.getLogger().warning("[Web密码验证] 发送结果失败，已重试3次: reqId=" + reqId + " player=" + playerName);
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 查找匹配的右括号位置（支持 [] 和 {}）
+     * 根据 start 位置的字符自动选择匹配对：
+     * '[' → 匹配 ']'
+     * '{' → 匹配 '}'
+     */
+    private int findMatchingBracket(String s, int start) {
+        if (start < 0 || start >= s.length()) return -1;
+        char open = s.charAt(start);
+        char close;
+        if (open == '[') close = ']';
+        else if (open == '{') close = '}';
+        else return -1;
+
+        int depth = 0;
+        boolean inString = false;
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inString) {
+                if (c == '\\' && i + 1 < s.length()) {
+                    i++;
+                    continue;
+                }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == open) depth++;
+            else if (c == close) {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    // ==================== 新增功能 ====================
+
+    // 日志控制：避免频繁打印
+    private long lastPullTransactionsLog = 0;
+    private long lastPullShopStockLog = 0;
+    private long lastPullBondChangesLog = 0;
+    private long lastPollRegisterRequestsLog = 0;
+    private long lastPollWebLoginExceptionLog = 0;
+    private static final long LOG_INTERVAL = 60000; // 1分钟内不重复打印相同日志
+
+    /**
+     * 拉取待处理的交易（Web购买/充值）
+     */
+    private void pullPendingTransactions() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=pull_pending_transactions&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    URL url = new URL(urlStr);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+
+                    int code = conn.getResponseCode();
+                    if (code != 200) {
+                        plugin.getLogger().warning("[Web交易] HTTP状态码: " + code + "，3秒后重试...");
+                        try { Thread.sleep(3000); } catch (InterruptedException ie) {}
+                        conn.disconnect();
+                        // ★ 修复：重试需要重新创建连接
+                        conn = (HttpURLConnection) url.openConnection();
+                        code = conn.getResponseCode();
+                        if (code != 200) {
+                            plugin.getLogger().warning("[Web交易] HTTP重试后状态码: " + code + "，跳过本轮交易拉取");
+                            return;
+                        }
+                    }
+
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+
+                    String json = sb.toString();
+                    if (!json.contains("\"success\":true")) {
+                        plugin.getLogger().warning("[Web交易] 响应不含success:true: " + json.substring(0, Math.min(200, json.length())));
+                        return;
+                    }
+
+                    plugin.getLogger().info("[Web交易] PHP响应长度: " + json.length());
+
+                    // 解析交易列表
+                    int dataStart = json.indexOf("\"transactions\":");
+                    if (dataStart < 0) {
+                        plugin.getLogger().warning("[Web交易] 响应不含transactions字段");
+                        return;
+                    }
+                    String dataStr = json.substring(dataStart + 15);
+                    int arrEnd = findMatchingBracket(dataStr, 0);
+                    if (arrEnd < 0) {
+                        plugin.getLogger().warning("[Web交易] 找不到transactions数组结束括号");
+                        return;
+                    }
+                    String arrStr = dataStr.substring(0, arrEnd + 1);
+                    plugin.getLogger().info("[Web交易] transactions数组内容: " + (arrStr.length() > 500 ? arrStr.substring(0, 500) + "..." : arrStr));
+
+                    // 提取每个交易
+                    int idx = 0;
+                    int txCount = 0;
+                    while (true) {
+                        int idStart = arrStr.indexOf("\"id\":", idx);
+                        if (idStart < 0) break;
+                        idStart += 5;
+                        int idEnd = arrStr.indexOf(",", idStart);
+                        if (idEnd < 0) break;
+                        String txId = arrStr.substring(idStart, idEnd).trim();
+
+                        int nameStart = arrStr.indexOf("\"player_name\":\"", idEnd);
+                        if (nameStart < 0) break;
+                        nameStart += 15;
+                        int nameEnd = arrStr.indexOf("\"", nameStart);
+                        if (nameEnd < 0) break;
+                        String playerName = arrStr.substring(nameStart, nameEnd);
+
+                        int typeStart = arrStr.indexOf("\"type\":\"", nameEnd);
+                        if (typeStart < 0) break;
+                        typeStart += 8;
+                        int typeEnd = arrStr.indexOf("\"", typeStart);
+                        if (typeEnd < 0) break;
+                        String type = arrStr.substring(typeStart, typeEnd);
+
+                        int amountStart = arrStr.indexOf("\"amount\":", typeEnd);
+                        if (amountStart < 0) break;
+                        amountStart += 9;
+                        int amountEnd = arrStr.indexOf(",", amountStart);
+                        if (amountEnd < 0) break;
+                        String amount = arrStr.substring(amountStart, amountEnd).trim();
+
+                        // 提取detail字段（处理嵌套JSON，支持转义引号\"）
+                        String detail = "";
+                        int detailStart = arrStr.indexOf("\"detail\":", amountEnd);
+                        if (detailStart >= 0) {
+                            detailStart += 9;
+                            // 跳过空格
+                            while (detailStart < arrStr.length() && arrStr.charAt(detailStart) == ' ') detailStart++;
+                            if (detailStart < arrStr.length() && arrStr.charAt(detailStart) == '"') {
+                                detailStart++;
+                                // 查找匹配的闭合引号（跳过转义的\"）
+                                int detailEnd = -1;
+                                for (int i = detailStart; i < arrStr.length(); i++) {
+                                    char c = arrStr.charAt(i);
+                                    if (c == '\\' && i + 1 < arrStr.length() && arrStr.charAt(i + 1) == '"') {
+                                        i++; // 跳过转义字符
+                                        continue;
+                                    }
+                                    if (c == '"') {
+                                        detailEnd = i;
+                                        break;
+                                    }
+                                }
+                                if (detailEnd > detailStart) {
+                                    detail = arrStr.substring(detailStart, detailEnd);
+                                    // 反转义：JSON中的 \" 还原为 "
+                                    detail = detail.replace("\\\"", "\"");
+                                }
+                            }
+                        }
+
+                        idx = amountEnd + 1;
+                        txCount++;
+
+                        plugin.getLogger().info("[Web交易] 提取交易 #" + txCount + ": ID=" + txId + ", 玩家=" + playerName + ", 类型=" + type + ", 金额=" + amount);
+
+                        // 在主线程处理交易
+                        final String fTxId = txId;
+                        final String fName = playerName;
+                        final String fType = type;
+                        final int fAmount = Integer.parseInt(amount);
+                        final String fDetail = detail;
+                        plugin.getLogger().info("[Web交易] 准备处理交易 #" + txCount + ": " + fName + " " + fType + " " + fAmount);
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            try {
+                                processWebTransaction(fTxId, fName, fType, fAmount, fDetail);
+                            } catch (Exception e) {
+                                plugin.getLogger().warning("[Web通信] 处理交易异常: " + e.getMessage());
+                                e.printStackTrace();
+                            }
+                        });
+                    }
+                    plugin.getLogger().info("[Web交易] 本轮共提取 " + txCount + " 个交易");
+                } catch (Exception e) {
+                    // 静默处理
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 处理Web交易
+     */
+    private void processWebTransaction(String txId, String playerName, String type, int amount, String detail) {
+        plugin.getLogger().info("[Web交易] 处理交易: ID=" + txId + ", 玩家=" + playerName + ", 类型=" + type + ", 金额=" + amount + ", 详情=" + detail);
+        boolean txSuccess = false;
+        String errorMsg = "";
+        try {
+            if (type.equals("shop_buy")) {
+                // Web购买商品：先检查冻结 + 余额
+                if (plugin.getBondManager().isFrozen(playerName)) {
+                    plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 账户已冻结");
+                    confirmTransaction(txId);
+                    return;
+                }
+                int balance = plugin.getBondManager().getBonds(playerName);
+                if (balance < amount) {
+                    plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 余额不足 (有" + balance + ", 需" + amount + ")");
+                    confirmTransaction(txId);
+                    return;
+                }
+
+                // 解析detail获取商品信息
+                String itemId = "";
+                int itemCount = 1;
+                try {
+                    if (detail != null && !detail.isEmpty()) {
+                        // 简单JSON解析: {"item_id":"XXX","amount":N}
+                        int itemIdStart = detail.indexOf("\"item_id\":\"") + 11;
+                        if (itemIdStart > 10) {
+                            int itemIdEnd = detail.indexOf("\"", itemIdStart);
+                            if (itemIdEnd > itemIdStart) {
+                                itemId = detail.substring(itemIdStart, itemIdEnd);
+                            }
+                        }
+                        int amountFieldStart = detail.indexOf("\"amount\":");
+                        if (amountFieldStart >= 0) {
+                            amountFieldStart += 9;
+                            int amountFieldEnd = detail.indexOf(",", amountFieldStart);
+                            if (amountFieldEnd < 0) amountFieldEnd = detail.indexOf("}", amountFieldStart);
+                            if (amountFieldEnd > amountFieldStart) {
+                                itemCount = Integer.parseInt(detail.substring(amountFieldStart, amountFieldEnd).trim());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易] 解析商品详情失败: " + detail);
+                }
+
+                plugin.getLogger().info("[Web交易] 商品ID: " + itemId + ", 数量: " + itemCount);
+
+                // ★ 关键修复：type=shop_buy时，PHP的amount是消费金额，Java应该扣除
+                // 但PHP的交易记录amount字段对shop_buy是消费金额，对cdk_redeem是充值金额
+                // 这里Java收到的amount参数已经是PHP传来的正确值
+                boolean ok = plugin.getBondManager().deductBonds(playerName, amount,
+                        "web_shop", itemId, "Web商城", "Web购买商品 " + itemId + " x" + itemCount);
+                if (ok) {
+                    plugin.getLogger().info("[Web交易] 扣除成功: 玩家 " + playerName + " 购买商品 " + itemId + " x" + itemCount + "，金额: " + amount);
+                    log.info("[草原探险]MC草原探险服务器欢迎您，服务器ip：mc2.ypshidifu.cn，端口：30679");
+
+                    // 发货给玩家
+                    Player player = plugin.getServer().getPlayer(playerName);
+                    if (player != null && player.isOnline()) {
+                        plugin.getLogger().info("[Web交易] 玩家在线，立即发货");
+                        dispatchItemByMaterialOrId(player, itemId, itemCount);
+                    } else {
+                        plugin.getLogger().info("[Web交易] 玩家离线，保存到离线邮件");
+                        saveOfflineItem(playerName, itemId, itemCount);
+                    }
+                } else {
+                    plugin.getLogger().warning("[Web交易] 扣除失败: 玩家 " + playerName + " 余额不足 (当前余额: " + plugin.getBondManager().getBonds(playerName) + ")");
+                }
+                confirmTransaction(txId);
+            } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("recharge") || type.equals("admin_give")) {
+                // 管理员充值：增加债券（充值不受冻结限制）
+                plugin.getBondManager().addBonds(playerName, amount, "web_recharge", "", "Web后台", "管理员充值");
+                plugin.getLogger().info("[Web交易] 玩家 " + playerName + " 管理员充值，金额: " + amount);
+                confirmTransaction(txId);
+            } else if (type.equals("cdk_redeem")) {
+                // CDK兑换：增加债券（不受冻结限制）
+                plugin.getBondManager().addBonds(playerName, amount, "web_cdk", "", "Web商城", "CDK兑换");
+                plugin.getLogger().info("[Web交易] 玩家 " + playerName + " CDK兑换，金额: " + amount);
+                txSuccess = true;
+                confirmTransaction(txId);
+            } else {
+                plugin.getLogger().warning("[Web交易] 未知交易类型: " + type + "，跳过");
+                confirmTransaction(txId);
+            }
+        } catch (Exception e) {
+            errorMsg = e.getMessage();
+            plugin.getLogger().warning("[Web交易] 处理交易失败: " + e.getMessage());
+            e.printStackTrace();
+            // ★ 失败不confirm，交由重试机制处理
+        } finally {
+            if (txSuccess) {
+                plugin.getLogger().info("[Web交易] 交易 #" + txId + " 处理成功");
+            } else if (!errorMsg.isEmpty()) {
+                plugin.getLogger().warning("[Web交易] 交易 #" + txId + " 处理异常: " + errorMsg + "，将在下一轮定时同步中重试");
+            }
+        }
+    }
+
+    /**
+     * 发放商品给在线玩家
+     */
+    private void dispatchItem(Player player, String itemId, int amount) {
+        try {
+            plugin.getLogger().info("[Web交易] 发放商品: " + itemId + " x" + amount + " 给 " + player.getName());
+
+            // 使用ShopManager获取商品并发放
+            if (plugin.getShopManager() != null) {
+                ShopItem shopItem = plugin.getShopManager().findItemById(itemId);
+                if (shopItem != null) {
+                    ItemStack itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
+                    if (itemStack == null) {
+                        plugin.getLogger().warning("[Web交易] 无法创建商品堆叠: " + itemId);
+                        player.sendMessage("§c[Web商城] §f无法发放商品: " + itemId);
+                        return;
+                    }
+                    HashMap<Integer, ItemStack> leftover = player.getInventory().addItem(itemStack);
+                    if (!leftover.isEmpty()) {
+                        // 背包满了，掉落到地上
+                        for (ItemStack drop : leftover.values()) {
+                            player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                        }
+                    }
+                    player.sendMessage("§a[Web商城] §f成功购买商品: " + shopItem.getDisplayName() + " x" + amount);
+                    plugin.getLogger().info("[Web交易] 商品发放成功");
+                } else {
+                    plugin.getLogger().warning("[Web交易] 商品不存在: " + itemId);
+                    player.sendMessage("§c[Web商城] §f商品不存在: " + itemId);
+                }
+            } else {
+                plugin.getLogger().warning("[Web交易] ShopManager未初始化");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 发放商品失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * 通过Material名称或商品ID发放商品（兼容PHP传Material名称的情况）
+     */
+    private void dispatchItemByMaterialOrId(Player player, String itemId, int amount) {
+        try {
+            plugin.getLogger().info("[Web交易] 发放商品(材料匹配): " + itemId + " x" + amount + " 给 " + player.getName());
+
+            if (plugin.getShopManager() != null) {
+                org.bukkit.inventory.ItemStack itemStack = null;
+
+                // 方式1: 按Material名称查找
+                try {
+                    org.bukkit.Material material = org.bukkit.Material.getMaterial(itemId.toUpperCase());
+                    if (material != null) {
+                        // 遍历所有商品，找第一个匹配的
+                     /*   for (org.bukkit.inventory.ItemStack drop : java.util.Collections.emptySet()) {
+                            // 跳过空循环，仅用于导入
+                        }*/
+                        for (Sdf1_login.ShopCategory cat : plugin.getShopManager().getCategories()) {
+                            for (Sdf1_login.ShopItem item : cat.getItems()) {
+                                if (item.getMaterial() == material) {
+                                    itemStack = plugin.getShopManager().getShopStack(item, amount);
+                                    break;
+                                }
+                            }
+                            if (itemStack != null) break;
+                        }
+                        if (itemStack != null) {
+                            plugin.getLogger().info("[Web交易] 通过Material找到商品并创建堆栈成功");
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易] Material查找失败: " + e.getMessage());
+                }
+
+                // 方式2: 按商品ID查找（如果Material查找失败）
+                if (itemStack == null) {
+                    Sdf1_login.ShopItem shopItem = plugin.getShopManager().findItemById(itemId);
+                    if (shopItem != null) {
+                        itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
+                    }
+                }
+
+                if (itemStack != null) {
+                    java.util.HashMap<Integer, org.bukkit.inventory.ItemStack> leftover = player.getInventory().addItem(itemStack);
+                    if (!leftover.isEmpty()) {
+                        for (org.bukkit.inventory.ItemStack drop : leftover.values()) {
+                            player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                        }
+                    }
+                    // 从Stack中获取displayName
+                    String displayName = itemId;
+                    if (itemStack.hasItemMeta() && itemStack.getItemMeta() != null) {
+                        if (itemStack.getItemMeta().hasDisplayName()) {
+                            displayName = itemStack.getItemMeta().getDisplayName();
+                        }
+                    }
+                    player.sendMessage("§a[Web商城] §f成功购买商品: " + displayName + " x" + amount);
+                    plugin.getLogger().info("[Web交易] 商品发放成功");
+                } else {
+                    plugin.getLogger().warning("[Web交易] 商品不存在: " + itemId + "（Material或ID均无匹配）");
+                    player.sendMessage("§c[Web商城] §f商品不存在: " + itemId);
+                }
+            } else {
+                plugin.getLogger().warning("[Web交易] ShopManager未初始化");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 发放商品失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * 保存离线商品到数据库（待玩家上线后发放）
+     */
+    private void saveOfflineItem(String playerName, String itemId, int amount) {
+        try {
+            plugin.getLogger().info("[Web交易] 保存离线商品: " + itemId + " x" + amount + " 给 " + playerName);
+
+            // 直接保存到数据库
+            saveItemToDatabase(playerName, itemId, amount);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 保存离线商品失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * 保存商品到数据库（备用方案）
+     */
+    private void saveItemToDatabase(String playerName, String itemId, int amount) {
+        String sql = "INSERT INTO pending_items (player_name, item_id, amount, created_at) VALUES (?, ?, ?, ?)";
+        try {
+            java.sql.PreparedStatement ps = plugin.getDb().getDb().prepareStatement(sql);
+            ps.setString(1, playerName);
+            ps.setString(2, itemId);
+            ps.setInt(3, amount);
+            ps.setLong(4, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+            plugin.getLogger().info("[Web交易] 商品已保存到待发放列表，等待玩家上线领取");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 保存商品到数据库失败: " + e.getMessage());
+            plugin.getLogger().warning("[Web交易] 商品发放失败，玩家: " + playerName + ", 商品: " + itemId + " x" + amount);
+        }
+    }
+
+    /**
+     * 确认交易已处理
+     */
+    private void confirmTransaction(String txId) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
+                    URL url = new URL(webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8"));
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    conn.setDoOutput(true);
+                    OutputStream os = conn.getOutputStream();
+                    os.write(bodyJson.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    os.close();
+                    conn.getResponseCode();
+                } catch (Exception e) {
+                    // 静默处理
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 拉取Web端修改的商品库存
+     */
+    private void pullShopStock() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=pull_shop_stock&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    URL url = new URL(urlStr);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+
+                    int code = conn.getResponseCode();
+                    if (code != 200) return;
+
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+
+                    String json = sb.toString();
+                    if (!json.contains("\"success\":true")) return;
+
+                    // 解析商品库存列表
+                    int dataStart = json.indexOf("\"items\":");
+                    if (dataStart < 0) return;
+                    String dataStr = json.substring(dataStart + 8);
+                    int arrEnd = findMatchingBracket(dataStr, 0);
+                    if (arrEnd < 0) return;
+                    String arrStr = dataStr.substring(0, arrEnd + 1);
+
+                    // 更新本地商品库存
+                    updateLocalShopStock(arrStr);
+
+                } catch (Exception e) {
+                    // 静默处理
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 更新本地商品库存
+     */
+    private void updateLocalShopStock(String itemsJson) {
+        try {
+            File shopDir = new File(plugin.getDataFolder(), "shop");
+            if (!shopDir.exists()) return;
+
+            File[] mdFiles = shopDir.listFiles((d, n) -> n.endsWith(".md"));
+            if (mdFiles == null) return;
+
+            // 解析Web端返回的库存数据
+            // 格式: [{"id":"ITEM_ID","stock":100,"last_sync":1234567890}, ...]
+            // 解析JSON提取id和stock
+            Map<String, Integer> webStock = new HashMap<>();
+            int idx = 0;
+            while (true) {
+                int idStart = itemsJson.indexOf("\"id\":\"", idx);
+                if (idStart < 0) break;
+                idStart += 6;
+                int idEnd = itemsJson.indexOf("\"", idStart);
+                if (idEnd < 0) break;
+                String itemId = itemsJson.substring(idStart, idEnd);
+
+                int stockStart = itemsJson.indexOf("\"stock\":", idEnd);
+                if (stockStart < 0) break;
+                stockStart += 8;
+                int stockEnd = itemsJson.indexOf(",", stockStart);
+                if (stockEnd < 0) stockEnd = itemsJson.indexOf("}", stockStart);
+                if (stockEnd < 0) break;
+                String stockStr = itemsJson.substring(stockStart, stockEnd).trim();
+                // 去除可能的引号
+                stockStr = stockStr.replace("\"", "");
+
+                try {
+                    int stock = Integer.parseInt(stockStr);
+                    webStock.put(itemId, stock);
+                } catch (NumberFormatException e) {
+                    // 忽略无效值
+                }
+
+                idx = stockEnd + 1;
+            }
+
+            if (webStock.isEmpty()) return;
+
+            // 更新每个md文件中的库存
+            int updatedCount = 0;
+            for (File mdFile : mdFiles) {
+                List<String> lines = new ArrayList<>();
+                BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(new FileInputStream(mdFile), StandardCharsets.UTF_8));
+                String line;
+                while ((line = reader.readLine()) != null) lines.add(line);
+                reader.close();
+
+                boolean modified = false;
+                for (int i = 0; i < lines.size(); i++) {
+                    String l = lines.get(i).trim();
+                    if (!l.startsWith("|") || l.contains("---")) continue;
+
+                    String[] cols = l.split("\\|");
+                    if (cols.length < 7) continue;
+
+                    String itemId = cols[1].trim();
+                    if (!webStock.containsKey(itemId)) continue;
+
+                    int newStock = webStock.get(itemId);
+                    String oldStock = cols[6].trim();
+                    // 始终用数字写入md文件，不写"无限"字符串（防止parseTableRow的Integer.parseInt失败）
+                    String newStockStr = String.valueOf(newStock);
+                    // 兼容旧文件中的"无限"文本：转为-1用于比较
+                    int oldStockNum;
+                    try {
+                        oldStockNum = Integer.parseInt(oldStock);
+                    } catch (NumberFormatException e) {
+                        oldStockNum = ("无限".equals(oldStock) || "∞".equals(oldStock)) ? -1 : 0;
+                    }
+                    // 不要把Web端的0库存覆盖到游戏的无限库存(-1)
+                    if (newStock == 0 && oldStockNum == -1) continue;
+
+                    if (oldStockNum != newStock) {
+                        cols[6] = " " + newStockStr + " ";
+                        lines.set(i, String.join("|", cols));
+                        modified = true;
+                        updatedCount++;
+                    }
+                }
+
+                if (modified) {
+                    BufferedWriter writer = new BufferedWriter(
+                            new OutputStreamWriter(new FileOutputStream(mdFile), StandardCharsets.UTF_8));
+                    for (String l : lines) {
+                        writer.write(l);
+                        writer.newLine();
+                    }
+                    writer.close();
+                }
+            }
+
+            // 重新加载商店分类
+            if (updatedCount > 0) {
+                plugin.getShopManager().loadCategories();
+
+                long now = System.currentTimeMillis();
+                if (now - lastPullShopStockLog > LOG_INTERVAL) {
+                    plugin.getLogger().info("[Web通信] 已同步Web端商品库存，更新了 " + updatedCount + " 个商品");
+                    lastPullShopStockLog = now;
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 更新商品库存失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 检查同步通知文件
+     */
+    private void checkSyncNotify() {
+        try {
+            File notifyFile = new File(plugin.getDataFolder(), "../sync_notify.txt");
+            if (notifyFile.exists()) {
+                long notifyTime = Long.parseLong(new String(java.nio.file.Files.readAllBytes(notifyFile.toPath())).trim());
+                long now = System.currentTimeMillis();
+
+                // 如果通知时间在5分钟内，执行同步
+                if (now - notifyTime < 300000) {
+                    // 有人在线才响应通知
+                    if (!Bukkit.getOnlinePlayers().isEmpty()) {
+                        syncShopData();
+                        syncBondBalances();
+                        pushWebLoginCredentials();
+                        pullPendingTransactions();
+                        pullShopStock();
+                        syncOnlinePlayers();
+                        // 删除通知文件
+                        notifyFile.delete();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // 静默处理
+        }
+    }
+
+    /**
+     * 拉取Web端债券变化
+     */
+    private void pullBondChanges() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=pull_bonds&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    URL url = new URL(urlStr);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+
+                    int code = conn.getResponseCode();
+                    if (code != 200) return;
+
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+
+                    String json = sb.toString();
+                    if (!json.contains("\"success\":true")) return;
+
+                    // 解析债券变化
+                    int dataStart = json.indexOf("\"bonds\":");
+                    if (dataStart < 0) return;
+                    String dataStr = json.substring(dataStart + 8);
+                    int arrEnd = findMatchingBracket(dataStr, 0);
+                    if (arrEnd < 0) return;
+                    String arrStr = dataStr.substring(0, arrEnd + 1);
+
+                    // 更新本地债券数据
+                    updateLocalBondData(arrStr);
+
+                } catch (Exception e) {
+                    // 静默处理
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 更新本地债券数据
+     */
+    private void updateLocalBondData(String bondsJson) {
+        try {
+            // 解析Web端返回的债券数据
+            // 格式: [{"player_name":"PLAYER","amount":100,"updated_at":123456}, ...]
+
+            // 简单JSON解析（手动解析，不依赖外部库）
+            int idx = 0;
+            while (idx < bondsJson.length()) {
+                // 找到下一个 {
+                int start = bondsJson.indexOf('{', idx);
+                if (start == -1) break;
+                int end = bondsJson.indexOf('}', start);
+                if (end == -1) break;
+
+                String item = bondsJson.substring(start, end + 1);
+                idx = end + 1;
+
+                // 提取 player_name
+                String playerName = extractJsonString(item, "player_name");
+                if (playerName == null) continue;
+
+                // 提取 amount
+                int amountStart = item.indexOf("\"amount\":");
+                if (amountStart == -1) continue;
+                int amountValStart = amountStart + 9;
+                int amountValEnd = amountValStart;
+                while (amountValEnd < item.length() && (Character.isDigit(item.charAt(amountValEnd)) || item.charAt(amountValEnd) == '-')) {
+                    amountValEnd++;
+                }
+                int newAmount = Integer.parseInt(item.substring(amountValStart, amountValEnd));
+
+                // 更新本地债券数据
+                BondManager bondMgr = plugin.getBonds();
+                if (bondMgr != null) {
+                    int currentAmount = bondMgr.getBonds(playerName);
+                    if (currentAmount != newAmount) {
+                        // 只在Web端数据更新时才同步（避免覆盖游戏内操作）
+                        // 注意：这里使用setBonds直接设置值，不记录reason
+                        bondMgr.setBonds(playerName, newAmount);
+                        plugin.getLogger().info("[Web通信] 同步Web端债券: " + playerName + " " + currentAmount + " → " + newAmount);
+                    }
+                }
+            }
+
+            // 减少日志打印频率：1分钟内不重复打印
+            long now = System.currentTimeMillis();
+            if (now - lastPullBondChangesLog > LOG_INTERVAL) {
+                plugin.getLogger().info("[Web通信] 已同步Web端债券数据");
+                lastPullBondChangesLog = now;
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 更新债券数据失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从JSON字符串中提取字符串值
+     */
+    private String extractJsonString(String json, String key) {
+        String search = "\"" + key + "\":\"";
+        int start = json.indexOf(search);
+        if (start == -1) return null;
+        start += search.length();
+        int end = json.indexOf("\"", start);
+        if (end == -1) return null;
+        return json.substring(start, end);
+    }
+
+    // ==================== Web注册请求轮询 ====================
+
+    /**
+     * 启动Web注册请求轮询任务
+     * 每30~90秒随机间隔轮询PHP后端，获取Web端提交的注册请求，创建游戏账号
+     * 使用异步线程处理，避免Web响应慢导致游戏卡死
+     */
+    public void startWebRegisterPolling() {
+        if (!enabled) return;
+
+        // 启动注册请求轮询
+        scheduleRegisterRequestPoll();
+
+        plugin.getLogger().info("[Web通信] Web注册请求轮询已启动（30~90秒随机间隔，静默运行）");
+    }
+
+    /**
+     * 调度注册请求轮询任务
+     * 使用随机间隔避免与其他轮询任务同时执行
+     */
+    private void scheduleRegisterRequestPoll() {
+        // ★ 注册请求轮询：有玩家在线时3-5秒（快速响应Web注册），无玩家在线时30秒（节省资源）
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                // 异步执行轮询，避免阻塞主线程
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                    try {
+                        pollWebRegisterRequests();
+                    } catch (Exception e) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastPollRegisterRequestsLog > LOG_INTERVAL) {
+                            plugin.getLogger().warning("[Web注册轮询] 异步执行异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                            lastPollRegisterRequestsLog = now;
+                        }
+                    }
+                });
+            }
+        }.runTaskTimer(plugin, 20L * 3, 20L * 3); // 初始3秒，每3秒轮询
+    }
+
+    /**
+     * 轮询Web端提交的注册请求
+     * 获取待处理的注册请求，在游戏端创建账号并确认
+     * 注意：此方法在异步线程中执行，不要在方法内创建BukkitRunnable
+     */
+    private void pollWebRegisterRequests() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_register_requests&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(3000); // 缩短超时到3秒
+            conn.setReadTimeout(3000);
+
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                plugin.getLogger().warning("[Web注册轮询] HTTP状态码: " + code);
+                return;
+            }
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+
+            String json = sb.toString();
+            if (!json.contains("\"success\":true")) {
+                plugin.getLogger().warning("[Web注册轮询] 响应不含success:true: " + json.substring(0, Math.min(200, json.length())));
+                return;
+            }
+
+            // 解析注册请求列表
+            // 格式: {"success":true,"data":{"requests":[{...}],"count":N}}
+            int countStart = json.indexOf("\"count\":");
+            if (countStart < 0) return;
+            int countValStart = countStart + 8;
+            int countValEnd = countValStart;
+            while (countValEnd < json.length() && Character.isDigit(json.charAt(countValEnd))) countValEnd++;
+            int count = Integer.parseInt(json.substring(countValStart, countValEnd));
+
+            if (count == 0) {
+                // 没有待处理请求，静默返回（不再每次都调用checkAndSyncCompletedRegistrations）
+                return;
+            }
+
+            plugin.getLogger().info("[Web注册] 发现 " + count + " 个待处理的Web注册请求");
+
+            // 提取每个请求的详细信息
+            int requestsStart = json.indexOf("\"requests\":[");
+            if (requestsStart < 0) return;
+            int arrStart = requestsStart + 12; // len of "requests":[
+            int arrEnd = findMatchingBracket(json, arrStart - 1);
+            if (arrEnd < 0) return;
+            String arrStr = json.substring(arrStart, arrEnd);
+
+            // 逐个处理注册请求
+            int idx = 0;
+            while (idx < arrStr.length()) {
+                int objStart = arrStr.indexOf('{', idx);
+                if (objStart == -1) break;
+                int objEnd = arrStr.indexOf('}', objStart);
+                if (objEnd == -1) break;
+
+                String item = arrStr.substring(objStart, objEnd + 1);
+
+                // 提取字段
+                String reqId = extractJsonNumber(item, "id");
+                String playerName = extractJsonString(item, "player_name");
+                String passwordHash = extractJsonString(item, "password_hash");
+                String salt = extractJsonString(item, "salt");
+                String email = extractJsonString(item, "email");
+                String ipAddress = extractJsonString(item, "ip_address");
+
+                if (reqId == null || playerName == null || passwordHash == null || salt == null) {
+                    idx = objEnd + 1;
+                    continue;
+                }
+
+                plugin.getLogger().info("[Web注册] 处理Web注册请求: " + playerName + " (ID:" + reqId + ")");
+
+                // 在主线程创建游戏账号
+                final String fReqId = reqId;
+                final String fName = playerName;
+                final String fHash = passwordHash;
+                final String fSalt = salt;
+                final String fEmail = email != null ? email : "";
+                final String fIp = ipAddress != null ? ipAddress : "";
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    try {
+                        // 检查玩家是否已注册
+                        DatabaseManager dbMgr = plugin.getDb();
+                        if (dbMgr == null) {
+                            plugin.getLogger().warning("[Web注册] DatabaseManager未初始化");
+                            sendWebRegisterResult(fReqId, "failed", "插件数据库未初始化");
+                            return;
+                        }
+
+                        // 检查是否已存在 — 如果已存在，用Web端的新salt+hash更新（玩家可能在Web重新注册）
+                        Object existing = dbMgr.getField(fName, "password_salt");
+                        if (existing != null && !((String) existing).isEmpty()) {
+                            plugin.getLogger().info("[Web注册] 玩家 " + fName + " 已注册，更新密码凭证");
+                            try {
+                                // 用Java原生的hash+salt更新（覆盖旧密码，保留login.db中的数据一致性）
+                                dbMgr.updatePassword(fName, fHash, fSalt);
+                                plugin.getLogger().info("[Web注册] 密码凭证更新成功: " + fName);
+                            } catch (Exception e) {
+                                plugin.getLogger().warning("[Web注册] 更新密码凭证失败: " + fName + " - " + e.getMessage());
+                                sendWebRegisterResult(fReqId, "failed", "更新密码失败: " + e.getMessage());
+                                return;
+                            }
+                        } else {
+                            // 创建用户
+                            dbMgr.createUser(fName, fHash, fSalt);
+                            plugin.getLogger().info("[Web注册] 游戏账号创建成功: " + fName);
+                        }
+
+                        // ★ 如果玩家当前在线，自动登录
+                        Player onlinePlayer = Bukkit.getPlayer(fName);
+                        if (onlinePlayer != null && onlinePlayer.isOnline()) {
+                            plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前在线，执行自动登录");
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                plugin.autoLogin(onlinePlayer, "web_register");
+                                onlinePlayer.sendMessage("§a[Sdf1_login] §fWeb注册成功，已自动登录！");
+                            });
+                        } else {
+                            plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前不在线");
+                        }
+
+                        // 同步注册到Web端
+                        syncRegistration(fName, fHash, fSalt, fIp, fEmail);
+
+                        // 同步密码凭证到Web端
+                        pushWebLoginCredentials();
+
+                        // 确认注册完成
+                        sendWebRegisterResult(fReqId, "success", "");
+
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[Web注册] 创建游戏账号失败: " + fName + " - " + e.getMessage());
+                        sendWebRegisterResult(fReqId, "failed", e.getMessage());
+                    }
+                });
+
+                idx = objEnd + 1;
+            }
+
+        } catch (Exception e) {
+            long now = System.currentTimeMillis();
+            if (now - lastPollRegisterRequestsLog > LOG_INTERVAL) {
+                plugin.getLogger().warning("[Web注册轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                lastPollRegisterRequestsLog = now;
+            }
+        }
+    }
+
+    /**
+     * 检查已完成的注册请求，将未同步到Java本地的用户补全
+     * 修改：不再复用check_pending_web_register_requests（只返回pending/processing），
+     * 而是调用新的check_completed_web_register_requests接口来查询completed状态的请求
+     */
+    private void checkAndSyncCompletedRegistrations() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=check_completed_web_register_requests&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            int code = conn.getResponseCode();
+            if (code != 200) return;
+
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+
+            String json = sb.toString();
+            if (!json.contains("\"success\":true")) return;
+
+            // 解析所有请求
+            int requestsStart = json.indexOf("\"requests\":[");
+            if (requestsStart < 0) return;
+            int arrStart = requestsStart + 12;
+            int arrEnd = findMatchingBracket(json, arrStart - 1);
+            if (arrEnd < 0) return;
+            String arrStr = json.substring(arrStart, arrEnd);
+
+            // 逐个检查
+            int idx = 0;
+            int syncedCount = 0;
+            while (idx < arrStr.length()) {
+                int objStart = arrStr.indexOf('{', idx);
+                if (objStart == -1) break;
+                int objEnd = arrStr.indexOf('}', objStart);
+                if (objEnd == -1) break;
+
+                String item = arrStr.substring(objStart, objEnd + 1);
+
+                String reqId = extractJsonNumber(item, "id");
+                String playerName = extractJsonString(item, "player_name");
+                String passwordHash = extractJsonString(item, "password_hash");
+                String salt = extractJsonString(item, "salt");
+                String email = extractJsonString(item, "email");
+                String ipAddress = extractJsonString(item, "ip_address");
+                String status = extractJsonString(item, "status");
+
+                if (playerName == null || passwordHash == null || salt == null) {
+                    idx = objEnd + 1;
+                    continue;
+                }
+
+                // 检查Java本地是否已有该用户
+                final String fName = playerName;
+                DatabaseManager dbMgr = plugin.getDb();
+                if (dbMgr == null) break;
+
+                Object existing = dbMgr.getField(fName, "password_hash");
+                if (existing != null && !((String) existing).isEmpty()) {
+                    // 本地已有，跳过
+                    idx = objEnd + 1;
+                    continue;
+                }
+
+                // Java本地没有，需要补全
+                final String fReqId = reqId;
+                final String fHash = passwordHash;
+                final String fSalt = salt;
+                final String fEmail = email != null ? email : "";
+                final String fIp = ipAddress != null ? ipAddress : "";
+
+                plugin.getLogger().info("[Web注册] 发现未同步用户: " + fName + "，正在补全到本地数据库");
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    try {
+                        dbMgr.createUser(fName, fHash, fSalt);
+                        plugin.getLogger().info("[Web注册] 补全成功: " + fName);
+
+                        Player onlinePlayer = Bukkit.getPlayer(fName);
+                        if (onlinePlayer != null && onlinePlayer.isOnline()) {
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                plugin.autoLogin(onlinePlayer, "web_register");
+                                onlinePlayer.sendMessage("§a[Sdf1_login] §fWeb注册成功，已自动登录！");
+                            });
+                        }
+
+                        syncRegistration(fName, fHash, fSalt, fIp, fEmail);
+                        pushWebLoginCredentials();
+                        if (fReqId != null) {
+                            sendWebRegisterResult(fReqId, "success", "补全同步");
+                        }
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[Web注册] 补全用户失败: " + fName + " - " + e.getMessage());
+                    }
+                });
+
+                syncedCount++;
+                idx = objEnd + 1;
+            }
+
+            if (syncedCount > 0) {
+                plugin.getLogger().info("[Web注册] 本次补全同步 " + syncedCount + " 个用户");
+            }
+
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web注册同步] 检查已完成注册异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从JSON字符串中提取数值
+     */
+    private String extractJsonNumber(String json, String key) {
+        String search = "\"" + key + "\":";
+        int start = json.indexOf(search);
+        if (start == -1) return null;
+        start += search.length();
+        // 跳过空白字符
+        while (start < json.length() && (json.charAt(start) == ' ' || json.charAt(start) == '\t')) start++;
+        int end = start;
+        while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-' || json.charAt(end) == '+'))
+            end++;
+        if (end == start) return null;
+        return json.substring(start, end);
+    }
+
+    /**
+     * 将注册结果写回PHP后端
+     */
+    private void sendWebRegisterResult(String reqId, String result, String errorMsg) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String bodyJson = "{\"request_id\":" + reqId
+                            + ",\"result\":\"" + escapeJson(result) + "\""
+                            + ",\"error\":\"" + escapeJson(errorMsg) + "\"}";
+                    URL url = new URL(webBaseUrl + "/api/sync.php?action=complete_web_register_request&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8"));
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    conn.setDoOutput(true);
+                    OutputStream os = conn.getOutputStream();
+                    os.write(bodyJson.getBytes(StandardCharsets.UTF_8));
+                    os.flush();
+                    os.close();
+                    conn.getResponseCode();
+                } catch (Exception e) {
+                    // 静默处理
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    // ==================== 邮件验证码功能 ====================
+
+    /**
+     * 生成6位随机验证码
+     */
+    public String generateVerificationCode() {
+        int code = (int) (Math.random() * 900000) + 100000;
+        return String.valueOf(code);
+    }
+
+    /**
+     * 玩家加入游戏时，同步PHP后端的用户数据到Java本地数据库
+     * 由Main.java的PlayerJoinEvent调用
+     */
+    public void syncUserOnJoin(final String playerName) {
+        if (!enabled) return;
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                // 第一步：检查玩家是否在PHP后端已注册（查询users表）
+                String urlStr = webBaseUrl + "/api/sync.php?action=check_player_registered&player="
+                        + java.net.URLEncoder.encode(playerName, "UTF-8") + "&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                URL url = new URL(urlStr);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+
+                int code = conn.getResponseCode();
+                if (code != 200) return;
+
+                BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+
+                String json = sb.toString();
+                if (!json.contains("\"success\":true")) return;
+
+                // 解析响应：{"success":true,"message":"ok","data":{"registered":true,...}}
+                int dataStart = json.indexOf("\"data\":");
+                if (dataStart < 0) return;
+                int dataObjStart = dataStart + 7;
+                int dataObjEnd = findMatchingBracket(json, dataObjStart);
+                if (dataObjEnd < 0) return;
+                String dataJson = json.substring(dataObjStart, dataObjEnd);
+
+                // 检查registered字段
+                boolean registered = dataJson.contains("\"registered\":true");
+                if (!registered) {
+                    // PHP后端无注册记录
+                    plugin.getLogger().info("[Web注册] 玩家 " + playerName + " 在PHP后端未注册");
+                    return;
+                }
+
+                // 提取用户信息
+                String email = extractJsonString(dataJson, "email");
+                String passwordHash = extractJsonString(dataJson, "password_hash");
+                String salt = extractJsonString(dataJson, "salt");
+                long registerTime = Long.parseLong(extractJsonNumber(dataJson, "register_time") != null ? extractJsonNumber(dataJson, "register_time") : "0");
+                long lastLoginTime = Long.parseLong(extractJsonNumber(dataJson, "last_login_time") != null ? extractJsonNumber(dataJson, "last_login_time") : "0");
+                int points = Integer.parseInt(extractJsonNumber(dataJson, "points") != null ? extractJsonNumber(dataJson, "points") : "0");
+                int giftStage = Integer.parseInt(extractJsonNumber(dataJson, "gift_stage") != null ? extractJsonNumber(dataJson, "gift_stage") : "0");
+                int totalOnlineTime = Integer.parseInt(extractJsonNumber(dataJson, "total_online_time") != null ? extractJsonNumber(dataJson, "total_online_time") : "0");
+
+                plugin.getLogger().info("[Web注册] 玩家在PHP后端已注册: " + playerName + ", 有密码凭证:" + !extractJsonString(dataJson, "password_hash").isEmpty());
+
+                // 在主线程操作Java本地数据库
+                final String fEmail = email != null ? email : "";
+                final String fHash = passwordHash != null ? passwordHash : "";
+                final String fSalt = salt != null ? salt : "";
+                final long fRegisterTime = registerTime;
+                final long fLastLoginTime = lastLoginTime;
+                final int fPoints = points;
+                final int fGiftStage = giftStage;
+                final int fTotalOnlineTime = totalOnlineTime;
+                final String fName = playerName;
+
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr == null) return;
+
+                    // 检查Java本地是否已有该用户
+                    Object existing = dbMgr.getField(fName, "password_hash");
+                    if (existing != null && !((String) existing).isEmpty()) {
+                        plugin.getLogger().info("[Web注册] 玩家 " + fName + " 已在Java本地存在，无需同步");
+                        return;
+                    }
+
+                    // Java本地没有用户，PHP后端有注册记录
+                    // 如果PHP后端有密码凭证，直接创建用户
+                    if (!fHash.isEmpty() && !fSalt.isEmpty()) {
+                        dbMgr.createUser(fName, fHash, fSalt);
+                        plugin.getLogger().info("[Web注册] 用户 " + fName + " 已从PHP后端同步注册数据到Java本地（含密码凭证）");
+                    } else {
+                        // PHP后端没有密码凭证，可能是通过register.php的webRegister()直接注册的
+                        // 需要等待Java插件通过pollWebRegisterRequests()轮询后创建用户
+                        // 或者玩家在游戏中使用/register命令注册
+                        plugin.getLogger().info("[Web注册] 用户 " + fName + " 在PHP后端已注册但无密码凭证，等待Java插件同步");
+                    }
+
+                    // 更新用户基本信息（注册时间和最后登录时间等）
+                    if (fRegisterTime > 0) {
+                        dbMgr.setField(fName, "register_time", String.valueOf(fRegisterTime));
+                    }
+                    if (fLastLoginTime > 0) {
+                        dbMgr.setField(fName, "last_login_time", String.valueOf(fLastLoginTime));
+                    }
+                    if (fPoints > 0) {
+                        dbMgr.setField(fName, "points", String.valueOf(fPoints));
+                    }
+                    if (fGiftStage > 0) {
+                        dbMgr.setField(fName, "gift_stage", String.valueOf(fGiftStage));
+                    }
+                    if (fTotalOnlineTime > 0) {
+                        dbMgr.setField(fName, "total_online_time", String.valueOf(fTotalOnlineTime));
+                    }
+                    if (!fEmail.isEmpty()) {
+                        dbMgr.setField(fName, "email", fEmail);
+                    }
+
+                    // 如果玩家在线，自动登录
+                    Player onlinePlayer = Bukkit.getPlayer(fName);
+                    if (onlinePlayer != null && onlinePlayer.isOnline()) {
+                        plugin.autoLogin(onlinePlayer, "web_sync");
+                        onlinePlayer.sendMessage("§a[Sdf1_login] §fWeb注册数据已同步，正在为你自动登录...");
+                    }
+                });
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web注册同步] 玩家 " + playerName + " 加入时同步异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                e.printStackTrace();
+            }
+        });
+    }
+
+    /**
+     * 延迟推送指定玩家的密码凭证到Web端（已废弃，不再使用）
+     *
+     * @deprecated 改用 pull_player_credentials API
+     */
+    @Deprecated
+    private void pushWebLoginCredentialsDelayed(final String playerName) {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                // 调用PHP端获取密码凭证
+                String urlStr = webBaseUrl + "/api/sync.php?action=push_web_credentials&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                URL url = new URL(urlStr);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(8000);
+                conn.setReadTimeout(8000);
+
+                // 构建请求体
+                String postData = "players=" + java.net.URLEncoder.encode(
+                        "[{\"player_name\":\"" + playerName + "\",\"temp_only\":true}]", "UTF-8");
+
+                java.io.OutputStream os = conn.getOutputStream();
+                os.write(postData.getBytes("UTF-8"));
+                os.flush();
+                os.close();
+
+                int code = conn.getResponseCode();
+                if (code == 200) {
+                    BufferedReader reader = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                    plugin.getLogger().info("[Web凭证] 玩家 " + playerName + " 的密码凭证已推送到PHP后端");
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web凭证] 推送玩家 " + playerName + " 的密码凭证失败: " + e.getMessage());
+            }
+        });
+    }
+}

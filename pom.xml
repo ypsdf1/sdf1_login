@@ -59,6 +59,7 @@
                 <configuration>
                     <source>25</source>
                     <target>25</target>
+                    <encoding>UTF-8</encoding>
                 </configuration>
             </plugin>
         </plugins>

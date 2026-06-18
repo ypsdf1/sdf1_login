@@ -1,36 +1,12 @@
 package Sdf1_login;
 
 
-import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.io.File;
-
-import org.bukkit.event.inventory.*;
-import org.bukkit.event.player.PlayerInteractEvent;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
-import java.util.UUID;
-import java.util.LinkedHashMap;
-import java.util.concurrent.ConcurrentHashMap;
-import org.bukkit.NamespacedKey;
-import org.bukkit.persistence.PersistentDataType;
-import java.util.Date;
-import org.bukkit.command.CommandSender;
-import org.bukkit.potion.PotionEffectType;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.scheduler.BukkitTask;
-
-
 import net.milkbowl.vault.economy.Economy;
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.Sound;
+import org.bukkit.*;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandExecutor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -39,28 +15,25 @@ import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
-import org.bukkit.event.player.PlayerDropItemEvent;
-import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerMoveEvent;
-import org.bukkit.event.player.PlayerPickupItemEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.*;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandExecutor;
-import org.bukkit.command.CommandSender;
-import org.bukkit.command.TabCompleter;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.event.entity.EntityDeathEvent;
-import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.util.HashMap;
-
+import java.io.File;
+import java.net.InetSocketAddress;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 
 public class Main extends JavaPlugin
@@ -100,7 +73,8 @@ public class Main extends JavaPlugin
     private final Map<String, Integer> treasureDiscardCount =
             new ConcurrentHashMap<>();
     // 在 private WelcomeManager welcome; 字段（若不存在）添加：
-    private WelcomeManager welcome;
+    public WelcomeManager welcome;
+    public WebManager webManager;
     private final Set<String> pendingAdminAuth =
             new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
     /*
@@ -189,6 +163,9 @@ public class Main extends JavaPlugin
 
     //pvp
     private PVPManager pvpManager;
+
+
+
 
     private static class PwdRollback {
         final String hash;
@@ -386,6 +363,10 @@ public class Main extends JavaPlugin
         chatFilter.loadConfig();
         welcome = new WelcomeManager(this);
 
+        // ===== 5.5 Web通信管理器 =====
+        webManager = new WebManager(this);
+        webManager.start();
+
         // ===== 6. 垃圾箱 =====
         garbage = new GarbageManager(this);
         garbage.init();
@@ -558,7 +539,6 @@ public class Main extends JavaPlugin
         updateChecker.checkOnEnable();
 
         getLogger().info("§b[Sdf1_login]启动完毕\n§lS欢迎使用sdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
-        getLogger().info("sdf1系列插件包含：\nsdf1自助兑奖插件\nCY_beibao云背包\nsdf1_login登陆插件\nSdf1_game娱乐游戏插件");
         // 大字画
         getLogger().info("\n" +
                 "  ____      _  __ _     _             _                          \n" +
@@ -696,7 +676,9 @@ public class Main extends JavaPlugin
             areaProtection.stopEnforceTask();
             areaProtection.saveWhitelists();
             areaProtection.getAlreadyForced().clear();
-
+        }
+        if (webManager != null) {
+            webManager.shutdown();
         }
     }
 
@@ -747,13 +729,27 @@ public class Main extends JavaPlugin
                 while (it.hasNext()) {
                     Map.Entry<UUID, Long> entry =
                             it.next();
+
+                    Player p = Bukkit.getPlayer(
+                            entry.getKey());
+                    if (p == null || !p.isOnline()) {
+                        it.remove();
+                        continue;
+                    }
+
+                    // ★ 检查Web登录验证状态（在超时踢出前检查）
+                    if (webManager != null && webManager.isWebLoginVerified(p.getName())) {
+                        getLogger().info("[Web登录] 玩家 " + p.getName() + " 已通过Web密码验证（超时检查中），自动登录");
+                        webManager.clearWebLoginVerified(p.getName());
+                        autoLogin(p, "web_password");
+                        it.remove();
+                        continue;
+                    }
+
                     if (now - entry.getValue()
                             > config.loginTimeout
                             * 1000L) {
-                        Player p = Bukkit.getPlayer(
-                                entry.getKey());
-                        if (p != null && p.isOnline()
-                                && !loggedIn.contains(
+                        if (!loggedIn.contains(
                                 p.getName()))
                             p.kickPlayer(config.msg(
                                     "login_timeout"));
@@ -781,6 +777,16 @@ public class Main extends JavaPlugin
                         it.remove();
                         continue;
                     }
+
+                    // ★ 检查Web登录验证状态（Java验证成功后立即记录）
+                    if (webManager != null && webManager.isWebLoginVerified(p.getName())) {
+                        getLogger().info("[Web登录] 玩家 " + p.getName() + " 已通过Web密码验证（登录提醒中），自动登录");
+                        webManager.clearWebLoginVerified(p.getName());
+                        autoLogin(p, "web_password");
+                        it.remove();
+                        continue;
+                    }
+
                     // 已注册→提示登录，未注册→提示注册
                     if (db.userExists(p.getName()))
                         p.sendMessage(config.msg(
@@ -1170,6 +1176,54 @@ public class Main extends JavaPlugin
             areaProt.onPlayerJoin(p);
         }
 
+    }
+
+    /**
+     * Web端密码验证入口
+     * PHP后端只做消息转发，密码校验必须在Java本地完成（login.db）
+     */
+    public String handleWebPasswordVerify(String playerName, String password) {
+        getLogger().info("[Web密码验证] 开始验证 player=" + playerName + " pwdLen=" + (password != null ? password.length() : 0));
+        if (db.userExists(playerName)) {
+            getLogger().info("[Web密码验证] 玩家存在，获取盐值");
+            String salt = (String) db.getField(playerName, "password_salt");
+            String storedHash = (String) db.getField(playerName, "password_hash");
+            getLogger().info("[Web密码验证] DB中存储的hash=" + storedHash + " salt=" + salt);
+            if (salt != null) {
+                getLogger().info("[Web密码验证] 盐值获取成功，saltLen=" + salt.length());
+                String hash = PasswordUtils.hash(password, salt);
+                getLogger().info("[Web密码验证] 计算hash=" + hash + "  存储hash=" + storedHash + " 是否匹配=" + hash.equals(storedHash));
+                // ★ 与 /login 保持一致：先查主密码，再查临时密码
+                if (db.checkPassword(playerName, hash)) {
+                    getLogger().info("[Web密码验证] ★ 主密码验证成功");
+                    return "\"success\"";
+                }
+                getLogger().info("[Web密码验证] 主密码不匹配，检查临时密码...");
+                if (db.checkPasswordOrTemp(playerName, hash)) {
+                    getLogger().info("[Web密码验证] ★ 临时密码验证成功");
+                    return "\"success\"";
+                }
+                getLogger().info("[Web密码验证] 临时密码也不匹配，密码验证失败");
+            } else {
+                getLogger().warning("[Web密码验证] 盐值为null!");
+            }
+        } else {
+            getLogger().warning("[Web密码验证] 玩家不存在: " + playerName);
+            return "\"not_registered\"";
+        }
+        return "\"failed\"";
+    }
+
+    /**
+     * 处理Web登录确认（Token验证通过后的自动登录）
+     */
+    public boolean handleWebLoginConfirmation(String playerName) {
+        Player p = Bukkit.getPlayer(playerName);
+        if (p != null && p.isOnline()) {
+            autoLogin(p, "web_token");
+            return true;
+        }
+        return false;
     }
 
     private void activateBeibao(Player p) {
@@ -1653,6 +1707,24 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         String ip = getPlayerIP(p);
+
+        // 登录时自动生成Web登录Token
+        if (webManager != null) {
+            webManager.autoGenerateWebLoginToken(p);
+            // 加入时同步PHP后端的注册数据到Java本地
+            if (!db.userExists(name)) {
+                webManager.syncUserOnJoin(name);
+            }
+
+            // ★ 检查本地Web登录验证状态（Java验证成功后立即记录）
+            if (webManager.isWebLoginVerified(name)) {
+                getLogger().info("[Web登录] 玩家 " + name + " 已通过Web密码验证，自动登录");
+                webManager.clearWebLoginVerified(name);
+                autoLogin(p, "web_password");
+                return;
+            }
+        }
+
         // 强制重发资源包（清掉客户端拒绝记录）
         Bukkit.getScheduler()
                 .runTaskLater(this, () -> {
@@ -4136,6 +4208,9 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§e/protect removewhite <玩家> §7移除模式排除玩家");
                 sender.sendMessage("§e/protect listname <区域> §7查看和平白名单");
                 sender.sendMessage("§e/protect listwhite §7查看模式排除名单");
+                sender.sendMessage("§a§l欢迎游玩草原探险服务器");
+                sender.sendMessage("§a§l服务器ip：mc2.ypshidifu.cn");
+                sender.sendMessage("§a§lJava免输端口，基岩版30679");
 
                 return true;
             }
@@ -4156,6 +4231,9 @@ public class Main extends JavaPlugin
                 return true;
             }
             sender.sendMessage("§e[更新] 正在检查所有插件更新...");
+            sender.sendMessage("§a§l欢迎游玩草原探险服务器");
+            sender.sendMessage("§a§l服务器ip：mc2.ypshidifu.cn");
+            sender.sendMessage("§a§lJava免输端口，基岩版30679");
             checkAllPluginsUpdate(sender);
             return true;
         }
@@ -4186,6 +4264,32 @@ public class Main extends JavaPlugin
             }
             return shopManager.handleCommand(sender, args);
         }
+        // ★ weblogin 子命令 - 生成Web登录Token
+        if (sub.equals("weblogin")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (webManager == null) {
+                sender.sendMessage("§cWeb通信未初始化");
+                return true;
+            }
+            webManager.handleWebLogin((Player) sender);
+            return true;
+        }
+        // ★ 独立 /web 和 /控制台 命令 - 跟 /sdf1_login weblogin 一样
+        if (cmdName.equals("web") || cmdName.equals("控制台")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (webManager == null) {
+                sender.sendMessage("§cWeb通信未初始化");
+                return true;
+            }
+            webManager.handleWebLogin((Player) sender);
+            return true;
+        }
         // set
         if (sub.equals("set")) {
             if (!isAdmin(sender)) {
@@ -4203,13 +4307,31 @@ public class Main extends JavaPlugin
                 return true;
             }
             String salt = (String) db.getField(tgt, "password_salt");
+            if (salt == null || salt.trim().isEmpty()) {
+                sender.sendMessage("§c玩家密码盐值缺失，无法设置临时密码");
+                return true;
+            }
+            salt = salt.trim();
+            // 清理所有非 Base64 字符（反斜杠、引号等）
+            salt = salt.replaceAll("[^A-Za-z0-9+/=]", "");
+            if (salt.isEmpty()) {
+                sender.sendMessage("§c玩家密码盐值格式非法，无法设置临时密码");
+                return true;
+            }
             String hash = PasswordUtils.hash(tempPwd, salt);
+            // ★ 只设置临时密码，不覆盖主密码
             db.setField(tgt, "temp_password", hash);
             db.setField(tgt, "temp_pw_expire",
                     System.currentTimeMillis() + 300000L);
             db.setField(tgt, "temp_pw_used", 0);
+            sender.sendMessage("§a已为 " + tgt + " 设置临时密码: " + tempPwd);
 
-            // ★ 立即发邮件（踢人之前）
+            // ★ 推送密码凭证到 Web 端（含临时密码）
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                webManager.pushWebLoginCredentials();
+            });
+
+            // ★ 立即发邮件和推送密码到 Web
             String emailAddr = (String) db.getField(tgt, "email");
             if (emailAddr != null && !emailAddr.isEmpty()) {
                 // 获取最近登录信息
@@ -4235,7 +4357,7 @@ public class Main extends JavaPlugin
 
                 Bukkit.getScheduler().runTaskAsynchronously(this,
                         () -> {
-                            // ★ 发送临时密码邮件（带登录信息）
+                            // ★ 发送临时密码邮件
                             boolean sent = email.sendTempPassword(
                                     to, fName, pwd);
                             // ★ 额外发送安全通知邮件
@@ -4263,6 +4385,13 @@ public class Main extends JavaPlugin
             } else {
                 sender.sendMessage("§7该玩家未绑定邮箱，跳过邮件通知");
             }
+
+            // ★ 推送新密码到 Web 端
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                webManager.pushWebLoginCredentials();
+            });
+
+            // ★ 删除重复的推送（已在上面推送过）
 
             // 踢人
             Player tp = Bukkit.getPlayer(tgt);
@@ -4698,6 +4827,20 @@ public class Main extends JavaPlugin
         if (!cmdName.equals("sdf1_login"))
             return false;
 
+        // ★ /sdf1_login reload: 重载全部设置
+        if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            reloadConfig();
+            if (areaProtection != null) areaProtection.reload();
+            if (webManager != null) webManager.reloadWebConfig();
+            sender.sendMessage("§a[§2Sdf1_login§a] 插件全部设置已重载");
+
+            return true;
+        }
+
         if (args.length == 0) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage(
@@ -4742,6 +4885,9 @@ public class Main extends JavaPlugin
                     pendingDeleteTask = null;
                     if (name == null) return;
                     db.deleteUser(name);
+                    if (webManager != null) {
+                        webManager.deleteWebUser(name);
+                    }
                     getLogger().info(
                             "[Sdf1_login] 已删除: " + name);
                     Player tp = Bukkit.getPlayer(name);
@@ -4777,6 +4923,9 @@ public class Main extends JavaPlugin
             pendingDeleteName = null;
             pendingDeleteTask = null;
             db.deleteUser(name);
+            if (webManager != null) {
+                webManager.deleteWebUser(name);
+            }
             sender.sendMessage("§a已立即删除: " + name);
             Player tp = Bukkit.getPlayer(name);
             if (tp != null && tp.isOnline())
@@ -5013,6 +5162,11 @@ public class Main extends JavaPlugin
                 recordPasswordChange(p2.getName(), oldHash, salt);
                 db.setField(p2.getName(), "password_hash", newHash);
                 db.setField(p2.getName(), "password_salt", newSalt);
+                // ★ 同步密码到Web端（异步推送，不阻塞主线程）
+                final Main self = this;
+                Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                    webManager.pushWebLoginCredentials();
+                });
                 if (!mainOk && tempOk)
                     db.clearTempPassword(p2.getName());
                 // pw 命令改密码成功后
@@ -5287,13 +5441,18 @@ public class Main extends JavaPlugin
                                 "password_same"));
                         return true;
                     }
-                    recordPasswordChange(
-                            p2.getName(),
-                            oldHash, salt);
-                    db.setField(p2.getName(),
-                            "password_hash", newHash);
-                    db.setField(p2.getName(),
-                            "password_salt", newSalt);
+                recordPasswordChange(
+                        p2.getName(),
+                        oldHash, salt);
+                db.setField(p2.getName(),
+                        "password_hash", newHash);
+                db.setField(p2.getName(),
+                        "password_salt", newSalt);
+                // ★ 同步密码到Web端（异步推送，不阻塞主线程）
+                final Main self2 = this;
+                Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                    self2.webManager.pushWebLoginCredentials();
+                });
                     if (!mainOk && tempOk) {
                         db.clearTempPassword(
                                 p2.getName());

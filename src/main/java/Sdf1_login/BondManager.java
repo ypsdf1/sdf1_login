@@ -277,7 +277,8 @@ public class BondManager {
         logTransaction(player, type, amount,
                 targetPlayer, operator, reason,
                 before, after);
-        logLegacy(player, -amount);
+        // 记录扣除流水，use positive amount, UI uses type to determine sign
+        logLegacy(player, amount);
         return true;
     }
 

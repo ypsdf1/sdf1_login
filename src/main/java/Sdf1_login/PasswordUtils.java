@@ -19,7 +19,12 @@ public class PasswordUtils {
         try {
             MessageDigest md =
                     MessageDigest.getInstance("SHA-256");
-            md.update(Base64.getDecoder().decode(salt));
+            // 清理非 Base64 字符，防止数据库中转义字符导致解析错误
+            String cleanSalt = salt.replaceAll("[^A-Za-z0-9+/=]", "");
+            if (cleanSalt.isEmpty()) {
+                throw new IllegalArgumentException("Invalid salt: " + salt);
+            }
+            md.update(Base64.getDecoder().decode(cleanSalt));
             byte[] hash =
                     md.digest(password.getBytes("UTF-8"));
             return Base64.getEncoder().encodeToString(hash);

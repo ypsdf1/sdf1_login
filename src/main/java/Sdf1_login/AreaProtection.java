@@ -1639,15 +1639,42 @@ public class AreaProtection implements Listener {
                 && z >= minZ && z <= maxZ;
     }
 
-    // ==================== 白名单检查 ====================
+    // ===== 统一白名单检查（供所有事件处理器使用）=====
 
+    /**
+     * 检查玩家是否在任意白名单中（全局白名单 + 区域白名单）
+     * 这是所有白名单判断的唯一入口
+     */
     private boolean isPlayerWhitelisted(String player,
                                         AreaConfig ac) {
-        if (globalPlayerWhitelist.contains(
-                player.toLowerCase()))
+        String lowerName = player.toLowerCase();
+        // 1. 全局白名单
+        if (globalPlayerWhitelist.contains(lowerName))
             return true;
+        // 2. 区域白名单
+        if (ac != null) {
+            Set<String> areaList =
+                    areaPlayerWhitelist.get(ac.name);
+            if (areaList != null
+                    && areaList.contains(lowerName))
+                return true;
+        }
+        return false;
+    }
+
+    /**
+     * 快速检查：仅全局白名单（不带 AreaConfig）
+     */
+    private boolean isGlobalWhite(String player) {
+        return globalPlayerWhitelist.contains(player.toLowerCase());
+    }
+
+    /**
+     * 快速检查：仅区域白名单
+     */
+    private boolean isAreaWhite(String player, String areaName) {
         Set<String> areaList =
-                areaPlayerWhitelist.get(ac.name);
+                areaPlayerWhitelist.get(areaName);
         return areaList != null
                 && areaList.contains(player.toLowerCase());
     }
@@ -2414,14 +2441,15 @@ public class AreaProtection implements Listener {
     private boolean isPlayerExemptFromModeChange(
             Player p, AreaConfig ac) {
      //   if (p.isOp()) return true;
-        Set<String> global = globalWhitelist.get("global");
-        if (global != null
-                && global.contains(p.getName().toLowerCase())) {
+        String lower = p.getName().toLowerCase();
+        // 1. 全局白名单
+        if (globalPlayerWhitelist.contains(lower)) {
             return true;
         }
-        Set<String> areaWl = areaWhitelist.get(ac.name);
+        // 2. 区域白名单
+        Set<String> areaWl = areaPlayerWhitelist.get(ac.name);
         if (areaWl != null
-                && areaWl.contains(p.getName().toLowerCase())) {
+                && areaWl.contains(lower)) {
             return true;
         }
         if (ac.modeExempt.contains(p.getName())) {
@@ -4449,20 +4477,11 @@ public class AreaProtection implements Listener {
             if (!(e.getDamager() instanceof Player)) return;
             Player p = (Player) e.getDamager();
 
-            Set<String> global = globalWhitelist.get("global");
-            if (global != null
-                    && global.contains(p.getName().toLowerCase())) {
-                return;
-            }
-
+            // ★ 统一白名单检查（globalPlayerWhitelist + areaPlayerWhitelist）
             AreaConfig ac = findFrameArea(entity);
             if (ac == null || !ac.denyItemFrame) return;
 
-            Set<String> areaWl = areaWhitelist.get(ac.name);
-            if (areaWl != null
-                    && areaWl.contains(p.getName().toLowerCase())) {
-                return;
-            }
+            if (isPlayerWhitelisted(p.getName(), ac)) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -4498,22 +4517,12 @@ public class AreaProtection implements Listener {
 
         Player p = e.getPlayer();
 
-        // 全局白放行
-        Set<String> global = globalWhitelist.get("global");
-        if (global != null
-                && global.contains(p.getName().toLowerCase())) {
-            return;
-        }
-
+        // ★ 使用统一的白名单检查方法（globalPlayerWhitelist + areaPlayerWhitelist）
         AreaConfig ac = findFrameArea(clicked);
         if (ac == null || !ac.denyItemFrame) return;
 
-        // 区域白放行
-        Set<String> areaWl = areaWhitelist.get(ac.name);
-        if (areaWl != null
-                && areaWl.contains(p.getName().toLowerCase())) {
-            return;
-        }
+        // 统一白名单检查
+        if (isPlayerWhitelisted(p.getName(), ac)) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -4564,22 +4573,13 @@ public class AreaProtection implements Listener {
             if (!(e.getDamager() instanceof Player)) return;
             Player p = (Player) e.getDamager();
 
-            // 全局白放行
-            Set<String> gwl = globalWhitelist.get("global");
-            if (gwl != null
-                    && gwl.contains(p.getName().toLowerCase())) {
-                return;
-            }
-
             AreaConfig ac = findFrameArea(entity);
-            if (ac == null || !ac.denyItemFrame) return;
+            if (ac == null) return;
 
-            // 区域白放行
-            Set<String> awl = areaWhitelist.get(ac.name);
-            if (awl != null
-                    && awl.contains(p.getName().toLowerCase())) {
-                return;
-            }
+            // ★ 使用统一的白名单检查方法
+            if (isPlayerWhitelisted(p.getName(), ac)) return;
+
+            if (!ac.denyItemFrame) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -4638,22 +4638,11 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        // 全局白放行
-        Set<String> gwl = globalWhitelist.get("global");
-        if (gwl != null
-                && gwl.contains(shooter.getName().toLowerCase())) {
-            return;
-        }
-
+        // ★ 统一白名单检查（globalPlayerWhitelist + areaPlayerWhitelist）
         AreaConfig ac = findFrameArea(hit);
         if (ac == null || !ac.denyItemFrame) return;
 
-        // 区域白放行
-        Set<String> awl = areaWhitelist.get(ac.name);
-        if (awl != null
-                && awl.contains(shooter.getName().toLowerCase())) {
-            return;
-        }
+        if (isPlayerWhitelisted(shooter.getName(), ac)) return;
 
         e.setCancelled(true);
         shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
