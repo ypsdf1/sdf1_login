@@ -172,6 +172,10 @@ public class LoginManager {
                 plugin.getDb().setField(name,
                         "last_online_check",
                         System.currentTimeMillis());
+                // ★ 立即同步在线状态到PHP
+                if (plugin.webManager != null) {
+                    plugin.webManager.syncOnlinePlayers();
+                }
                 // 登录成功关闭飞行
                 p.setAllowFlight(false);
                 p.setFlying(false);

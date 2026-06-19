@@ -186,6 +186,16 @@ public class WebManager {
 
     // ==================== 启动/停止 ====================
 
+    // ★ 注册交易监听器（需在BondManager初始化后调用）
+    public void registerTransactionListener(BondManager bondMgr) {
+        if (bondMgr == null) return;
+        bondMgr.addTransactionListener((playerName, type, amount) -> {
+            plugin.getLogger().info("[Web交易即时] 检测到交易: " + playerName + " " + type + " " + amount + "，立即推送");
+            requestImmediateTransactionSync();
+        });
+        plugin.getLogger().info("[Web通信] 交易即时推送监听器已注册");
+    }
+
     public void start() {
         if (!enabled) {
             plugin.getLogger().info("[Web通信] 未启用，在插件设置.txt中设置 web通信-启用=true");
@@ -224,6 +234,7 @@ public class WebManager {
                 syncOnlinePlayers();
                 syncShopData();
                 syncBondBalances();
+                syncBondTransactions();
                 syncAllPlayerIps();
                 // 首次同步只打一次，后续由调度器静默执行
                 plugin.getLogger().info("[Web通信] 首次全量同步完成");
@@ -243,6 +254,9 @@ public class WebManager {
         // ★ 启动实时同步调度器（静默运行）
         scheduleNextSync();
         startActiveSync();
+
+        // ★ 启动交易高频轮询（每5秒检查PHP端是否有待处理交易）
+        startTransactionPolling();
 
         plugin.getLogger().info("[Web通信] 实时同步调度器已启动（60~90秒随机，无人停止，有人恢复）");
         plugin.getLogger().info("[Web通信] PHP回调服务器已启动，端口: " + callbackPort);
@@ -540,6 +554,39 @@ public class WebManager {
         }.runTaskAsynchronously(plugin);
     }
 
+    // ★ 交易即时推送触发器：交易发生后立即推送交易记录到PHP
+    private volatile long lastImmediateTxSyncTime = 0;
+    private static final long MIN_IMMEDIATE_TX_SYNC_MS = 3000; // 最小间隔3秒，防止频繁推送
+    private volatile boolean pendingImmediateTxSync = false;
+
+    private void requestImmediateTransactionSync() {
+        long now = System.currentTimeMillis();
+        if (now - lastImmediateTxSyncTime < MIN_IMMEDIATE_TX_SYNC_MS) {
+            // 间隔太短，标记待处理
+            pendingImmediateTxSync = true;
+            return;
+        }
+        lastImmediateTxSyncTime = now;
+        pendingImmediateTxSync = false;
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    syncBondTransactions();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易即时] 推送异常: " + e.getMessage());
+                }
+                // 检查是否有待处理的推送
+                if (pendingImmediateTxSync) {
+                    pendingImmediateTxSync = false;
+                    Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+                        try { syncBondTransactions(); } catch (Exception e) {}
+                    }, 40L); // 2秒后执行
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
     private void startActiveSync() {
         new BukkitRunnable() {
             @Override
@@ -605,6 +652,7 @@ public class WebManager {
                         syncOnlinePlayers();
                         pushWebLoginCredentials();
                         syncUserRegistrations();
+                        syncBondTransactions();
                         plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步，调度器继续运行（玩家上线自动恢复）");
                         plugin.getLogger().warning("\n" +
                                 "                                          _                                                                          \n" +
@@ -654,6 +702,7 @@ public class WebManager {
                     syncOnlinePlayers();
                     pushWebLoginCredentials();
                     syncUserRegistrations();
+                    syncBondTransactions();
                     syncAllPlayerIps();
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web通信] 全量同步异常: " + e.getMessage());
@@ -663,6 +712,65 @@ public class WebManager {
                 }
 
                 checkSyncNotify();
+            }
+        }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
+    }
+
+    /**
+     * 交易高频轮询：每5秒检查PHP端是否有待处理交易
+     * 检测到pending交易时立即拉取，不等60-90秒的全量同步
+     */
+    /**
+     * 交易高频轮询：每5秒检查PHP端是否有待处理交易
+     * ★ 修复：移除activeSyncStopped检查，即使无在线玩家也要轮询（管理员可能在Web后台操作）
+     * 支持MC服务器和Web服务器不在同一台机器的场景
+     */
+    private void startTransactionPolling() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                // ★ 不再检查activeSyncStopped，即使无在线玩家也要轮询Web交易
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_transactions&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    URL url = new URL(urlStr);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    int code = conn.getResponseCode();
+                    if (code != 200) {
+                        plugin.getLogger().warning("[Web交易轮询] HTTP状态码: " + code);
+                        conn.disconnect();
+                        return;
+                    }
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                    StringBuilder sb = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) sb.append(line);
+                    reader.close();
+                    conn.disconnect();
+
+                    String resp = sb.toString();
+                    // 快速解析 "pending":N
+                    int idx = resp.indexOf("\"pending\":");
+                    if (idx >= 0) {
+                        idx += 10;
+                        int end = resp.indexOf("}", idx);
+                        if (end < 0) end = resp.length();
+                        String val = resp.substring(idx, end).replaceAll("[^0-9]", "");
+                        int pending = Integer.parseInt(val);
+                        if (pending > 0) {
+                            plugin.getLogger().info("[Web交易轮询] 检测到 " + pending + " 笔待处理交易，立即拉取");
+                            pullPendingTransactions();
+                        }
+                    } else {
+                        plugin.getLogger().warning("[Web交易轮询] 响应格式异常: " + resp.substring(0, Math.min(200, resp.length())));
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易轮询] 异常: " + e.getMessage());
+                }
             }
         }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
     }
@@ -892,7 +1000,11 @@ public class WebManager {
                     urlStr.append("token=").append(java.net.URLEncoder.encode(token, "UTF-8"));
                 }
 
-                String json = mapToJson(data);
+                // ★ 在JSON body中也带上secretKey，作为token失效时的回退认证
+                Map<String, Object> bodyWithSecret = new LinkedHashMap<>(data);
+                bodyWithSecret.put("secret", secretKey);
+
+                String json = mapToJson(bodyWithSecret);
                 URL url = new URL(urlStr.toString());
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
@@ -1377,6 +1489,106 @@ public class WebManager {
         }
     }
 
+    // ==================== 游戏内交易记录同步到Web ====================
+
+    /**
+     * 推送游戏内交易记录（bond_transaction）到PHP端
+     * 使用 last_synced_tx_time 追踪已同步的最晚时间，增量推送
+     * 注意：shop_buy合并逻辑会UPDATE已有记录的时间，所以用时间追踪能确保合并后的记录也被同步
+     */
+    private volatile long lastSyncedTxTime = 0;
+
+    public void syncBondTransactions() {
+        if (!enabled) return;
+
+        try {
+            BondManager bondMgr = plugin.getBonds();
+            if (bondMgr == null) return;
+
+            // 读取上次同步的最晚时间
+            loadLastSyncedTxTime();
+
+            // 获取增量交易记录
+            List<Map<String, Object>> txs = bondMgr.getTransactionsAfterTime(lastSyncedTxTime);
+            if (txs.isEmpty()) return;
+
+            // 生成同步token
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("transactions", txs);
+
+            String response = httpPostWithToken("api/sync.php?action=sync_transactions", token, body);
+            plugin.getLogger().info("[Web交易同步] PHP响应: " + (response != null ? response.substring(0, Math.min(500, response.length())) : "null"));
+            if (response != null) {
+                Map<String, Object> result = parseJson(response);
+                Boolean success = (Boolean) result.get("success");
+                plugin.getLogger().info("[Web交易同步] parseJson结果: success=" + result.get("success") + ", data类型=" + (result.get("data") != null ? result.get("data").getClass().getSimpleName() : "null") + ", message=" + result.get("message"));
+                if (Boolean.TRUE.equals(success)) {
+                    // 更新已同步的最晚时间
+                    long maxTime = lastSyncedTxTime;
+                    for (Map<String, Object> tx : txs) {
+                        long t = ((Number) tx.get("time")).longValue();
+                        if (t > maxTime) maxTime = t;
+                    }
+                    if (maxTime > lastSyncedTxTime) {
+                        lastSyncedTxTime = maxTime;
+                        saveLastSyncedTxTime(maxTime);
+                    }
+                    // data可能是Map（解析正确）也可能是String（parseJson解析嵌套JSON失败），安全处理
+                    int synced = txs.size();
+                    Object dataObj = result.get("data");
+                    if (dataObj instanceof Map) {
+                        Object syncedVal = ((Map<?, ?>) dataObj).get("synced");
+                        if (syncedVal instanceof Number) {
+                            synced = ((Number) syncedVal).intValue();
+                        }
+                    }
+                    plugin.getLogger().info("[Web交易同步] 同步了 " + synced + " 笔游戏交易到PHP端 (发送了" + txs.size() + "笔)");
+                } else {
+                    plugin.getLogger().warning("[Web交易同步] 游戏交易同步失败: " + result.get("message"));
+                }
+            } else {
+                plugin.getLogger().warning("[Web交易同步] PHP响应为空");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 游戏交易同步异常: " + e.getMessage());
+        }
+    }
+
+    private void loadLastSyncedTxTime() {
+        if (lastSyncedTxTime > 0) return;
+        try {
+            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            if (!dbFile.exists()) return;
+            java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+            java.sql.Statement st = conn.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
+            java.sql.ResultSet rs = st.executeQuery("SELECT value FROM sync_state WHERE key='last_synced_tx_time'");
+            if (rs.next()) {
+                lastSyncedTxTime = rs.getLong("value");
+            }
+            rs.close(); st.close(); conn.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 读取last_synced_tx_time失败: " + e.getMessage());
+        }
+    }
+
+    private void saveLastSyncedTxTime(long time) {
+        try {
+            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+            java.sql.Statement st = conn.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
+            java.sql.PreparedStatement ps = conn.prepareStatement(
+                    "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_synced_tx_time', ?)");
+            ps.setLong(1, time);
+            ps.executeUpdate();
+            ps.close(); st.close(); conn.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 保存last_synced_tx_time失败: " + e.getMessage());
+        }
+    }
+
     /**
      * 6. 推送注册数据到Web端
      */
@@ -1477,27 +1689,81 @@ public class WebManager {
 
     /**
      * 同步在线玩家列表到PHP端（用于Web登录状态检查）
+     * 注意：推送所有在线玩家（包括未登录的），PHP端通过 web_login_verified 判断是否已认证
      */
     public void syncOnlinePlayers() {
-        if (!enabled) return;
+        if (!enabled) {
+            plugin.getLogger().warning("[Web通信] syncOnlinePlayers: enabled=false, 跳过");
+            return;
+        }
 
         try {
             java.util.Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
+            java.util.Set<String> loggedInPlayers = plugin.getLoggedIn(); // ★ 只推送已登录的玩家
             List<Map<String, Object>> playersData = new ArrayList<>();
 
             for (Player p : onlinePlayers) {
+                // ★ 关键：只有真正输入密码登录的玩家才推送到PHP
+                if (!loggedInPlayers.contains(p.getName())) continue;
                 Map<String, Object> playerInfo = new LinkedHashMap<>();
                 playerInfo.put("name", p.getName());
                 playerInfo.put("login_time", System.currentTimeMillis() / 1000);
                 playersData.add(playerInfo);
             }
 
-            // ★ 使用表单格式发送（PHP会自动解析application/x-www-form-urlencoded到$_POST）
             String playersJson = buildPlayersJsonArray(playersData);
-            String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+            plugin.getLogger().info("[Web通信] ★ syncOnlinePlayers: 在线=" + onlinePlayers.size() + " 已登录=" + loggedInPlayers.size() + " 推送=" + playersData.size() + " 玩家=" + loggedInPlayers);
 
-            // ★ Debug: 打印完整body
-            plugin.getLogger().info("[Web通信] 在线玩家同步 body: " + formBody.substring(0, Math.min(500, formBody.length())));
+            // ★ 策略：优先GET（与push_player_login_status一致），确保数据到达PHP
+            // GET请求更可靠，不会被Web服务器/WAF拦截POST body
+            String getUrl = webBaseUrl + "/api/sync.php?action=sync_online_players"
+                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                    + "&players=" + java.net.URLEncoder.encode(playersJson, "UTF-8");
+
+            URL url = new URL(getUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
+
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            String response = "";
+            if (is != null) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                response = sb.toString();
+            }
+            conn.disconnect();
+
+            if (code == 200 && response.contains("\"success\":true")) {
+                plugin.getLogger().info("[Web通信] ★ 在线玩家同步成功(GET): " + playersData.size() + "人");
+            } else {
+                plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): HTTP " + code + " - " + response.substring(0, Math.min(300, response.length())));
+                // GET失败时回退到POST
+                tryPostSync(playersJson, playersData.size());
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] syncOnlinePlayers异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            // 异常时尝试POST
+            try {
+                String playersJson = buildPlayersJsonArray(new ArrayList<>());
+                tryPostSync(playersJson, 0);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * POST方式同步在线玩家（备用方案）
+     */
+    private void tryPostSync(String playersJson, int count) {
+        try {
+            String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+            plugin.getLogger().info("[Web通信] 尝试POST同步: " + count + "人");
 
             URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_online_players");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -1515,27 +1781,24 @@ public class WebManager {
 
             int code = conn.getResponseCode();
             InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            String response = "";
             if (is != null) {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
                 StringBuilder sb = new StringBuilder();
                 String line;
                 while ((line = reader.readLine()) != null) sb.append(line);
                 reader.close();
-                String response = sb.toString();
-                
-                // ★ 修复：HTTP 200 不一定是成功，需要检查响应内容是否为有效 JSON
-                if (code == 200 && response.contains("\"success\":true")) {
-                    plugin.getLogger().info("[Web通信] 在线玩家同步成功: " + playersData.size() + "人");
-                } else if (response.contains("Fatal error") || response.contains("Warning") || response.contains("<br")) {
-                    // PHP 返回了错误信息，虽然 HTTP 200
-                    plugin.getLogger().warning("[Web通信] PHP返回错误: HTTP " + code + " - " + response.substring(0, Math.min(200, response.length())));
-                } else {
-                    plugin.getLogger().warning("[Web通信] 在线玩家同步异常: HTTP " + code + " - " + response.substring(0, Math.min(200, response.length())));
-                }
+                response = sb.toString();
             }
             conn.disconnect();
+
+            if (code == 200 && response.contains("\"success\":true")) {
+                plugin.getLogger().info("[Web通信] POST同步成功: " + count + "人");
+            } else {
+                plugin.getLogger().warning("[Web通信] POST同步也失败: HTTP " + code + " - " + response.substring(0, Math.min(300, response.length())));
+            }
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 在线玩家同步异常: " + e.getMessage());
+            plugin.getLogger().warning("[Web通信] POST同步异常: " + e.getMessage());
         }
     }
 
@@ -2111,6 +2374,7 @@ public class WebManager {
                     public void run() {
                         syncShopData();
                         syncBondBalances();
+                        syncBondTransactions();
                         syncUserRegistrations();
                     }
                 }.runTaskAsynchronously(plugin);
@@ -2740,6 +3004,7 @@ public class WebManager {
                 boolean ok = plugin.getBondManager().deductBonds(playerName, amount,
                         "web_shop", itemId, "Web商城", "Web购买商品 " + itemId + " x" + itemCount);
                 if (ok) {
+                    int newBal = plugin.getBondManager().getBonds(playerName);
                     plugin.getLogger().info("[Web交易] 扣除成功: 玩家 " + playerName + " 购买商品 " + itemId + " x" + itemCount + "，金额: " + amount);
                     log.info("[草原探险]MC草原探险服务器欢迎您，服务器ip：mc2.ypshidifu.cn，端口：30679");
 
@@ -2747,6 +3012,9 @@ public class WebManager {
                     Player player = plugin.getServer().getPlayer(playerName);
                     if (player != null && player.isOnline()) {
                         plugin.getLogger().info("[Web交易] 玩家在线，立即发货");
+                        // ★ 通知玩家购买成功
+                        player.sendMessage("§6[商城] §fWeb购买 §e" + itemId + " x" + itemCount + " §f成功！§c-" + amount + "§f 债券");
+                        player.sendMessage("§6[债券] §f余额: §e" + (newBal + amount) + " §7→ §a" + newBal);
                         dispatchItemByMaterialOrId(player, itemId, itemCount);
                     } else {
                         plugin.getLogger().info("[Web交易] 玩家离线，保存到离线邮件");
@@ -2758,13 +3026,75 @@ public class WebManager {
                 confirmTransaction(txId);
             } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("recharge") || type.equals("admin_give")) {
                 // 管理员充值：增加债券（充值不受冻结限制）
+                int balBefore = plugin.getBondManager().getBonds(playerName);
                 plugin.getBondManager().addBonds(playerName, amount, "web_recharge", "", "Web后台", "管理员充值");
+                int balAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " 管理员充值，金额: " + amount);
+                // ★ 通知在线玩家
+                Player rechargePlayer = plugin.getServer().getPlayer(playerName);
+                if (rechargePlayer != null && rechargePlayer.isOnline()) {
+                    rechargePlayer.sendMessage("§6[债券] §a管理员充值！§f +§a" + amount + "§f 债券");
+                    rechargePlayer.sendMessage("§6[债券] §f余额: §e" + balBefore + " §7→ §a" + balAfter);
+                }
+                txSuccess = true;
+                confirmTransaction(txId);
+            } else if (type.equals("admin_deduct") || type.equals("admin_add")) {
+                // 管理员扣减/增加债券（Web后台操作）
+                int currentBalance = plugin.getBondManager().getBonds(playerName);
+                // ★ 从PHP的detail字段读取PHP计算的新余额（PHP和Java本地余额可能不同步）
+                int newBalance = -1;
+                try {
+                    // detail格式: {"admin_action":"deduct","original":500,"new":400}
+                    int newIdx = detail.indexOf("\"new\":");
+                    if (newIdx >= 0) {
+                        newIdx += 6; // skip "new":
+                        int newEnd = detail.indexOf("}", newIdx);
+                        if (newEnd < 0) newEnd = detail.indexOf(",", newIdx);
+                        if (newEnd > newIdx) {
+                            newBalance = Integer.parseInt(detail.substring(newIdx, newEnd).trim());
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易] 解析detail失败: " + detail);
+                }
+
+                if (newBalance >= 0) {
+                    // PHP已计算好新余额，直接设置
+                    plugin.getBondManager().setBonds(playerName, newBalance);
+                    plugin.getLogger().info("[Web交易] 玩家 " + playerName + " " + (type.equals("admin_deduct") ? "管理员扣减" : "管理员增加") + "，PHP新余额: " + newBalance);
+                } else {
+                    // fallback：用Java本地余额计算
+                    newBalance = type.equals("admin_deduct") ? currentBalance - Math.abs(amount) : currentBalance + amount;
+                    if (newBalance < 0) newBalance = 0;
+                    plugin.getBondManager().setBonds(playerName, newBalance);
+                    plugin.getLogger().info("[Web交易] 玩家 " + playerName + " " + (type.equals("admin_deduct") ? "管理员扣减" : "管理员增加") + "，Java计算新余额: " + newBalance);
+                }
+
+                // ★ 通知在线玩家动账结果
+                Player targetPlayer = plugin.getServer().getPlayer(playerName);
+                if (targetPlayer != null && targetPlayer.isOnline()) {
+                    String actionText = type.equals("admin_deduct") ? "§c扣减" : "§a增加";
+                    String changeText = type.equals("admin_deduct") ? "-" + Math.abs(amount) : "+" + amount;
+                    targetPlayer.sendMessage("§6[债券] §f" + actionText + " §7" + Math.abs(amount) + "§f 债券（Web管理操作）");
+                    targetPlayer.sendMessage("§6[债券] §f余额: §e" + currentBalance + " §7→ §a" + newBalance);
+                }
+
+                txSuccess = true;
                 confirmTransaction(txId);
             } else if (type.equals("cdk_redeem")) {
                 // CDK兑换：增加债券（不受冻结限制）
+                int balanceBefore = plugin.getBondManager().getBonds(playerName);
                 plugin.getBondManager().addBonds(playerName, amount, "web_cdk", "", "Web商城", "CDK兑换");
+                int balanceAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " CDK兑换，金额: " + amount);
+
+                // ★ 通知在线玩家
+                Player cdkPlayer = plugin.getServer().getPlayer(playerName);
+                if (cdkPlayer != null && cdkPlayer.isOnline()) {
+                    cdkPlayer.sendMessage("§6[债券] §aCDK兑换成功！§f +§a" + amount + "§f 债券");
+                    cdkPlayer.sendMessage("§6[债券] §f余额: §e" + balanceBefore + " §7→ §a" + balanceAfter);
+                }
+
                 txSuccess = true;
                 confirmTransaction(txId);
             } else {
@@ -3140,6 +3470,7 @@ public class WebManager {
                     if (!Bukkit.getOnlinePlayers().isEmpty()) {
                         syncShopData();
                         syncBondBalances();
+                        syncBondTransactions();
                         pushWebLoginCredentials();
                         pullPendingTransactions();
                         pullShopStock();

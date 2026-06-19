@@ -474,6 +474,12 @@ public class Main extends JavaPlugin
         // 13 ====cypay债券====
         // 债券系统（独立DB）
         bondManager = new BondManager(this);
+
+        // ★ 注册交易监听器：交易发生后立即同步到Web端
+        if (webManager != null) {
+            webManager.registerTransactionListener(bondManager);
+        }
+
         cdkManager = new CDKManager(this);
         userGroupManager = new UserGroupManager(this);
         cypayCommand = new CypayCommand(this);
@@ -1160,6 +1166,11 @@ public class Main extends JavaPlugin
         db.recordIP(name, ip);
         joinTime.remove(p.getUniqueId());
         recordIPLogin(p);
+
+        // ★ 立即同步在线状态到PHP（不等下次心跳30秒）
+        if (webManager != null) {
+            webManager.syncOnlinePlayers();
+        }
 
         // 只在有有效备份时恢复
         restoreInventory(p);
