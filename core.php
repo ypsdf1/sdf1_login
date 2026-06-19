@@ -273,10 +273,11 @@ function initTables(SQLite3 $db) {
 
         // ★ 玩家IP变更历史表（admin.php 批量查IP用）
         $db->exec("CREATE TABLE IF NOT EXISTS player_ip_changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_name TEXT NOT NULL,
+            player_name TEXT PRIMARY KEY,
+            old_ip TEXT DEFAULT '',
             new_ip TEXT NOT NULL,
-            changed_at INTEGER NOT NULL
+            changed_at INTEGER NOT NULL,
+            synced_at INTEGER DEFAULT 0
         )");
 
         // ★ IP归属地缓存表（admin.php IP查询用）
@@ -285,15 +286,42 @@ function initTables(SQLite3 $db) {
             ip_address TEXT NOT NULL,
             location TEXT DEFAULT '',
             updated_at INTEGER DEFAULT 0,
+            player_name TEXT DEFAULT 'global',
             UNIQUE(ip_address)
+        )");
+
+        // ★ 玩家每日登录记录表（用于计算累计在线天数）
+        $db->exec("CREATE TABLE IF NOT EXISTS player_daily_logins (
+            player_name TEXT NOT NULL,
+            login_date TEXT NOT NULL,
+            first_login INTEGER DEFAULT 0,
+            last_login INTEGER DEFAULT 0,
+            PRIMARY KEY (player_name, login_date)
+        )");
+
+        // ★ 玩家签到记录表（用于计算累计签到天数）
+        $db->exec("CREATE TABLE IF NOT EXISTS player_checkins (
+            player_name TEXT NOT NULL,
+            checkin_date TEXT NOT NULL,
+            checkin_time INTEGER DEFAULT 0,
+            PRIMARY KEY (player_name, checkin_date)
         )");
 
         // ★ 创建索引以提高查询性能
         $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_changes_player ON player_ip_changes(player_name)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_changes_time ON player_ip_changes(changed_at)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_changes_newip ON player_ip_changes(new_ip)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_session_log_player ON web_session_log(player_name)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_session_log_time ON web_session_log(login_time)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_locations_ip ON player_ip_locations(ip_address)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_ip_locations_loc ON player_ip_locations(location)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_daily_logins_player ON player_daily_logins(player_name)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_player_checkins_player ON player_checkins(player_name)");
+
+        // ★ 迁移：确保player_ip_locations表有player_name列
+        try {
+            $db->exec("ALTER TABLE player_ip_locations ADD COLUMN player_name TEXT DEFAULT 'global'");
+        } catch (Exception $e) { /* 列已存在 */ }
 
         $db->exec('COMMIT');
     } catch (Exception $e) {
@@ -370,17 +398,22 @@ function validateToken($token) {
     $result = $stmt->execute();
     $row = $result->fetchArray(SQLITE3_ASSOC);
 
-    if (!$row) return false;
+    if (!$row) {
+        @error_log("[validateToken] Token不存在: " . substr($token, 0, 8) . "...");
+        return false;
+    }
 
     $now = time();
 
     // 检查是否过期
     if ($row['expires_at'] < $now) {
+        @error_log("[validateToken] Token已过期: " . substr($token, 0, 8) . "..., expires_at=" . $row['expires_at'] . ", now=" . $now);
         return false;
     }
 
     // 检查是否已使用
     if ($row['used'] == 1) {
+        @error_log("[validateToken] Token已使用: " . substr($token, 0, 8) . "...");
         return false;
     }
 
@@ -442,7 +475,7 @@ function validateAndUseToken($token) {
 function validateTokenSilent($token) {
     // 先尝试普通token
     $info = validateToken($token);
-    if ($info) return true;
+    if ($info) return $info;
 
     // 再尝试weblogin token
     $db = getDB();
@@ -457,7 +490,12 @@ function validateTokenSilent($token) {
         $expireSeconds = (int)$row['expire_seconds'];
         if (time() - $createdAt > $expireSeconds) return false;
 
-        return true;
+        return [
+            'player' => $row['player_name'],
+            'purpose' => 'weblogin',
+            'created_at' => $createdAt,
+            'expires_at' => $createdAt + $expireSeconds
+        ];
     } catch (Exception $e) {
         return false;
     }
@@ -494,6 +532,9 @@ function cleanExpiredTokens() {
 // ===== JSON响应 =====
 
 function jsonResponse($data, $code = 200) {
+    // ★ 清空所有输出缓冲区（清除Deprecated警告等HTML污染）
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    header('Content-Type: application/json; charset=utf-8');
     http_response_code($code);
     echo json_encode($data, JSON_UNESCAPED_UNICODE);
     exit;
@@ -806,7 +847,7 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
     $createdAt = (int)$row['created_at'];
     $expireSeconds = (int)$row['expire_seconds'];
     $age = time() - $createdAt;
-    @error_log("[validateWebAccess] FOUND: player=" . $row['player_name'] . ", age=${age}s, expire=${expireSeconds}s");
+    @error_log("[validateWebAccess] FOUND: player=" . $row['player_name'] . ", age={$age}s, expire={$expireSeconds}s");
 
     if (time() - $createdAt > $expireSeconds) {
         @error_log("[validateWebAccess] DENIED: token expired. Age: $age, Expire: $expireSeconds");
@@ -822,39 +863,54 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         // 忽略
     }
 
-    // 2. Token有效 → 检查玩家是否在游戏中登录（双重检查机制）
+    // 2. Token有效 → 检查玩家是否在游戏中登录（双重检查机制）— 回档9bae160版本
     $isOnline = false;
+
+    // ★ 详细调试：先查online_players表总数和内容
+    try {
+        $countStmt = $db->query("SELECT COUNT(*) as cnt FROM online_players");
+        $countRow = $countStmt->fetchArray(SQLITE3_ASSOC);
+        $totalOnline = $countRow ? (int)$countRow['cnt'] : 0;
+        
+        $allStmt = $db->query("SELECT player_name FROM online_players");
+        $allNames = [];
+        while ($r = $allStmt->fetchArray(SQLITE3_ASSOC)) {
+            $allNames[] = $r['player_name'];
+        }
+        
+        // 查心跳
+        $hbStmt = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
+        $hbRow = $hbStmt->fetchArray(SQLITE3_ASSOC);
+        $hbLastSeen = $hbRow ? (int)$hbRow['last_seen'] : 0;
+        $hbAgo = $hbLastSeen > 0 ? time() - $hbLastSeen : -1;
+        
+        @error_log("[validateWebAccess] online_players查询: total=$totalOnline, names=" . implode(',', $allNames) . ", heartbeat_ago={$hbAgo}s, searchName=" . $playerName);
+    } catch (Exception $e) {
+        @error_log("[validateWebAccess] online_players查询异常: " . $e->getMessage());
+        $totalOnline = 0;
+        $allNames = [];
+    }
+
+    // 检查1: online_players表（Java插件推送）
     try {
         $onlineStmt = $db->prepare("SELECT 1 FROM online_players WHERE player_name = :player");
         $onlineStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
         $onlineResult = $onlineStmt->execute();
         $onlineRow = $onlineResult->fetchArray();
         $isOnline = ($onlineRow !== false);
+        @error_log("[validateWebAccess] 玩家 " . $playerName . " 在online_players中: " . ($isOnline ? '找到' : '未找到'));
     } catch (Exception $e) {
         $isOnline = false;
+        @error_log("[validateWebAccess] online_players查询异常: " . $e->getMessage());
     }
-    
-    // ★ 如果 online_players 表没有数据，再检查 web_session_log（1分钟内的Web会话视为在线）
-    if (!$isOnline) {
-        try {
-            $oneMinuteAgo = time() - 60;
-            $sessionStmt = $db->prepare("SELECT 1 FROM web_session_log WHERE player_name = :player AND login_time > :time");
-            $sessionStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $sessionStmt->bindValue(':time', $oneMinuteAgo, SQLITE3_INTEGER);
-            $sessionResult = $sessionStmt->execute();
-            $sessionRow = $sessionResult->fetchArray();
-            if ($sessionRow) {
-                $isOnline = true;
-                debugLog("validateWebAccess: 在线状态通过web_session_log确认", ['player' => $playerName]);
-            }
-        } catch (Exception $e) {
-            // web_session_log 表可能不存在，忽略
-        }
-    }
-    
+
+    // 检查2: web_session_log — ★ 不再用于判断在线状态
+    // web_session_log 仅记录会话历史，不决定权限
+    // 在线状态完全由Java插件推送的 online_players 表决定
+
     // 3. 检查玩家注册状态
     $isRegistered = isPlayerRegistered($playerName);
-    
+
     debugLog("validateWebAccess: 状态检查", [
         'player' => $playerName,
         'action' => $action,
@@ -862,8 +918,8 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         'registered' => $isRegistered,
         'ip' => $ipAddress
     ]);
-    
-    // 4. view操作：Token有效，允许Web密码登录（即使游戏里未登录）
+
+    // 4. view操作：Token有效 → 允许Web密码登录（即使游戏里未登录）
     if ($action === 'view') {
         if (!$isRegistered) {
             // ★ 玩家未在游戏中注册 → 允许Web注册，录入注册请求等待插件同步
@@ -872,7 +928,6 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         }
         if (!$isOnline) {
             // 玩家已注册但在游戏中未登录 → 允许Web密码登录
-            // 验证成功后插件会通过轮询web_login_confirmations自动登录游戏
             debugLog("validateWebAccess: 需要密码", ['player' => $playerName]);
             return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => false, 'message' => '请输入游戏登录密码以同步登录游戏'];
         }
@@ -880,11 +935,29 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         debugLog("validateWebAccess: 验证成功", ['player' => $playerName, 'mode' => 'full']);
         return ['ok' => true, 'mode' => 'full', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '验证成功'];
     }
-    
-    // 5. 关键操作（buy/recharge/cdk）：需要玩家在游戏中登录
+
+    // 5. 关键操作（buy/recharge/cdk）：需要玩家在游戏中登录或已通过PHP密码验证
     if (!$isOnline) {
-        debugLog("validateWebAccess: 需要游戏登录", ['player' => $playerName, 'action' => $action]);
-        return ['ok' => false, 'mode' => 'need_game_login', 'player' => $playerName, 'registered' => $isRegistered, 'online' => false, 'message' => '请先在游戏中登录'];
+        // ★ 检查web_login_verified：PHP密码登录成功后5分钟内允许关键操作
+        $isVerified = false;
+        try {
+            $fiveMinAgo = time() - 300;
+            $verifiedStmt = $db->prepare("SELECT 1 FROM web_login_verified WHERE player_name = :player AND verified_at >= :expire");
+            $verifiedStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $verifiedStmt->bindValue(':expire', $fiveMinAgo, SQLITE3_INTEGER);
+            $verifiedResult = $verifiedStmt->execute();
+            $verifiedRow = $verifiedResult->fetchArray();
+            if ($verifiedRow) {
+                $isVerified = true;
+            }
+        } catch (Exception $e) {}
+        if (!$isVerified) {
+            debugLog("validateWebAccess: 需要游戏登录", ['player' => $playerName, 'action' => $action]);
+            return ['ok' => false, 'mode' => 'need_game_login', 'player' => $playerName, 'registered' => $isRegistered, 'online' => false, 'message' => '请先在游戏中登录'];
+        }
+        // PHP密码验证有效，放行
+        $sessionToken = recordWebSession($playerName, $ipAddress);
+        debugLog("validateWebAccess: PHP密码验证放行（关键操作）", ['player' => $playerName, 'action' => $action]);
     }
     
     // 6. 关键操作（buy/recharge/cdk）：需要玩家已注册

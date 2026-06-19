@@ -20,6 +20,13 @@ ini_set('memory_limit', '256M');
 if (function_exists('opcache_reset')) { @opcache_reset(); }
 if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__, true); }
 
+// ★ 注册shutdown函数：确保ob缓冲区在致命错误时也能刷新
+register_shutdown_function(function() {
+    while (ob_get_level() > 0) {
+        @ob_end_flush();
+    }
+});
+
 if (!extension_loaded('sqlite3')) {
     exit(json_encode(['success' => false, 'message' => 'Missing SQLite3'], JSON_UNESCAPED_UNICODE));
 }
@@ -96,6 +103,7 @@ function adminDeduct() {
     requireAdminSession();
     $player = getParam('player');
     $amount = (int)getParam('amount', 0);
+    $reason = getParam('reason', '管理员扣减');
     if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
     if ($amount <= 0) exit(json_encode(['success' => false, 'message' => 'Invalid amount'], JSON_UNESCAPED_UNICODE));
     $db = getDB();
@@ -112,6 +120,22 @@ function adminDeduct() {
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->bindValue(':name', $player, SQLITE3_TEXT);
         $stmt->execute();
+
+        // ★ 写入web_transactions表，供Java插件拉取
+        $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT DEFAULT '', detail TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+        $txStmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:player, :type, :amount, :operator, :reason, :detail, 'pending', :time)");
+        $txStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $txStmt->bindValue(':type', 'admin_deduct', SQLITE3_TEXT);
+        $txStmt->bindValue(':amount', -$amount, SQLITE3_INTEGER);  // 负数表示扣减
+        $txStmt->bindValue(':operator', 'admin', SQLITE3_TEXT);
+        $txStmt->bindValue(':reason', $reason, SQLITE3_TEXT);
+        $txStmt->bindValue(':detail', json_encode(['admin_action' => 'deduct', 'original' => $current, 'new' => $newAmount]), SQLITE3_TEXT);
+        $txStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $txStmt->execute();
+
+        // ★ 通知Java插件立即拉取
+        notifyJavaPluginImmediatePull();
+
         exit(json_encode(['success' => true, 'message' => 'OK', 'remaining' => $newAmount], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
@@ -123,6 +147,7 @@ function adminAddBonds() {
     requireAdminSession();
     $player = getParam('player');
     $amount = (int)getParam('amount', 0);
+    $reason = getParam('reason', '管理员充值');
     if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
     if ($amount <= 0) exit(json_encode(['success' => false, 'message' => 'Invalid amount'], JSON_UNESCAPED_UNICODE));
     $db = getDB();
@@ -138,6 +163,22 @@ function adminAddBonds() {
         $stmt->bindValue(':amount', $newAmount, SQLITE3_INTEGER);
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
+
+        // ★ 写入web_transactions表，供Java插件拉取
+        $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT DEFAULT '', detail TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+        $txStmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:player, :type, :amount, :operator, :reason, :detail, 'pending', :time)");
+        $txStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $txStmt->bindValue(':type', 'admin_add', SQLITE3_TEXT);
+        $txStmt->bindValue(':amount', $amount, SQLITE3_INTEGER);  // 正数表示增加
+        $txStmt->bindValue(':operator', 'admin', SQLITE3_TEXT);
+        $txStmt->bindValue(':reason', $reason, SQLITE3_TEXT);
+        $txStmt->bindValue(':detail', json_encode(['admin_action' => 'add', 'original' => $current, 'new' => $newAmount]), SQLITE3_TEXT);
+        $txStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $txStmt->execute();
+
+        // ★ 通知Java插件立即拉取
+        notifyJavaPluginImmediatePull();
+
         exit(json_encode(['success' => true, 'message' => 'OK', 'new_amount' => $newAmount], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
@@ -234,9 +275,44 @@ function adminAllTx() {
     requireAdminSession();
     $db = getDB();
     try {
-        $result = $db->query("SELECT * FROM web_transactions ORDER BY created_at DESC LIMIT 100");
+        // 合并web_transactions（Web端交易）和game_transactions（游戏内交易）
+        // 统一字段名：source区分来源（web/game）
         $txs = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+
+        // 查询Web端交易
+        try {
+            $result = $db->query("SELECT *, 'web' as source FROM web_transactions ORDER BY created_at DESC LIMIT 100");
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) {
+            // web_transactions表可能不存在，忽略
+        }
+
+        // 查询游戏内交易
+        try {
+            $result = $db->query("SELECT
+                java_id as id,
+                player_name,
+                type,
+                amount,
+                operator,
+                reason,
+                '' as detail,
+                tx_time as created_at,
+                'game' as source,
+                balance_before,
+                balance_after
+                FROM game_transactions ORDER BY tx_time DESC LIMIT 100");
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) {
+            // game_transactions表可能不存在，忽略
+        }
+
+        // 按时间排序（倒序），取前100条
+        usort($txs, function($a, $b) {
+            return ($b['created_at'] ?? 0) - ($a['created_at'] ?? 0);
+        });
+        $txs = array_slice($txs, 0, 100);
+
         exit(json_encode(['success' => true, 'data' => $txs], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
@@ -250,11 +326,46 @@ function adminPlayerTx() {
     if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
     $db = getDB();
     try {
-        $stmt = $db->prepare("SELECT * FROM web_transactions WHERE player_name=:p ORDER BY created_at DESC LIMIT 50");
-        $stmt->bindValue(':p', $player);
-        $result = $stmt->execute();
         $txs = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+
+        // 查询Web端交易
+        try {
+            $stmt = $db->prepare("SELECT *, 'web' as source FROM web_transactions WHERE player_name=:p ORDER BY created_at DESC LIMIT 50");
+            $stmt->bindValue(':p', $player);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) {
+            // web_transactions表可能不存在，忽略
+        }
+
+        // 查询游戏内交易
+        try {
+            $stmt = $db->prepare("SELECT
+                java_id as id,
+                player_name,
+                type,
+                amount,
+                operator,
+                reason,
+                '' as detail,
+                tx_time as created_at,
+                'game' as source,
+                balance_before,
+                balance_after
+                FROM game_transactions WHERE player_name=:p ORDER BY tx_time DESC LIMIT 50");
+            $stmt->bindValue(':p', $player);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) {
+            // game_transactions表可能不存在，忽略
+        }
+
+        // 按时间排序（倒序）
+        usort($txs, function($a, $b) {
+            return ($b['created_at'] ?? 0) - ($a['created_at'] ?? 0);
+        });
+        $txs = array_slice($txs, 0, 50);
+
         exit(json_encode(['success' => true, 'data' => $txs], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
@@ -333,6 +444,24 @@ function adminNotifySync() {
     $player = getParam('player');
     if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
     exit(json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
+}
+
+// ★ 通知Java插件立即拉取交易（管理员操作后调用）
+// PHP和MC服务器可能不在同一台机器，127.0.0.1回调不可靠
+// 交易已写入web_transactions表，通过sync_requests标记让Java快速检测
+function notifyJavaPluginImmediatePull() {
+    $db = getDB();
+    try {
+        // 写入sync_requests标记，Java的activeSync轮询会检测到并立即拉取
+        $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+        $stmt = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+        $stmt->bindValue(':player', '__admin_tx__', SQLITE3_TEXT);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt->execute();
+        @error_log('[Admin] 已写入sync_requests标记');
+    } catch (Exception $e) {
+        @error_log('[Admin] sync_requests写入失败: ' . $e->getMessage());
+    }
 }
 
 function adminSyncNow() {
@@ -428,7 +557,7 @@ function queryIpLocation($ip) {
                     $stmt2 = $db->prepare("DELETE FROM player_ip_locations WHERE ip_address = :ip");
                     $stmt2->bindValue(':ip', $ip, SQLITE3_TEXT);
                     $stmt2->execute();
-                } catch (Exception $e) {}
+                } catch (\Throwable $e) {}
             } else {
                 // 格式正确，直接使用
                 @error_log("[IP_QUERY] Cache hit (database): $ip -> $cachedLoc");
@@ -436,7 +565,7 @@ function queryIpLocation($ip) {
                 return $memCache[$ip];
             }
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         // 表不存在则忽略
     }
     
@@ -966,13 +1095,15 @@ function adminListUsers() {
         if (!empty($playerNames)) {
             $ipMap = batchGetPlayerIps($db, $playerNames);
 
-            // ★ 批量读取数据库缓存（不调API，极快）
+            // ★ 批量读取数据库缓存 + 自动填充缺失IP归属地
             $uniqueIps = array_unique(array_values($ipMap));
             $locCache = [];
             $invalidIps4 = [];
+            $uncachedIps = [];
             try {
                 $validIps = array_filter($uniqueIps, fn($ip) => $ip && $ip !== '-');
                 if (!empty($validIps)) {
+                    // 先读缓存
                     $placeholders = implode(',', array_fill(0, count($validIps), '?'));
                     $locStmt = $db->prepare("SELECT ip_address, location FROM player_ip_locations WHERE ip_address IN ($placeholders) AND location != '查询失败'");
                     $idx = 1;
@@ -992,8 +1123,29 @@ function adminListUsers() {
                         foreach ($invalidIps4 as $dip) { $delS4->bindValue($di4++, $dip, SQLITE3_TEXT); }
                         $delS4->execute();
                     }
+                    // ★ 找出未缓存的IP，逐个查询并写入数据库（限制10个避免超时）
+                    foreach ($validIps as $ip) {
+                        if (!isset($locCache[$ip]) && !in_array($ip, $invalidIps4)) {
+                            $uncachedIps[] = $ip;
+                        }
+                    }
+                    $queryLimit = min(count($uncachedIps), 10);
+                    for ($qi = 0; $qi < $queryLimit; $qi++) {
+                        $ip = $uncachedIps[$qi];
+                        $locData = queryIpLocationWithTimeout($ip, 2);
+                        if ($locData && $locData['location'] && $locData['location'] !== '查询失败' && isValidIpLocationFormat($locData['location'])) {
+                            $locCache[$ip] = $locData['location'];
+                            try {
+                                $insStmt = $db->prepare("INSERT OR REPLACE INTO player_ip_locations (player_name, ip_address, location, updated_at) VALUES ('global', :ip, :loc, :time)");
+                                $insStmt->bindValue(':ip', $ip, SQLITE3_TEXT);
+                                $insStmt->bindValue(':loc', $locData['location'], SQLITE3_TEXT);
+                                $insStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+                                $insStmt->execute();
+                            } catch (\Throwable $e) {}
+                        }
+                    }
                 }
-            } catch (Exception $e) {}
+            } catch (\Throwable $e) {}
 
             foreach ($users as &$user) {
                 $key = strtolower($user['player_name']);
@@ -1012,6 +1164,90 @@ function adminListUsers() {
 }
 
 /**
+ * ★ 智能搜索类型检测
+ * 纯英文/数字 → 玩家名 (name)
+ * IP格式 (x.x.x.x) → IP搜索 (ip)
+ * 日期格式 (2026年6月18日 / 20260618 / 2026-06-18) → 日期搜索 (date)
+ * 省名/地名 → 地区搜索 (region)
+ */
+function detectSearchType($search) {
+    // 1. IP格式检测：x.x.x.x (支持部分匹配如 192.168)
+    if (preg_match('/^\d{1,3}\.\d{1,3}(\.\d{1,3}(\.\d{1,3})?)?$/', $search)) {
+        return 'ip';
+    }
+
+    // 2. 日期格式检测
+    // 中文格式：2026年6月18日、2026年06月18日
+    if (preg_match('/^\d{4}年\d{1,2}月\d{1,2}日$/', $search)) {
+        return 'date';
+    }
+    // 紧凑格式：20260618
+    if (preg_match('/^\d{8}$/', $search)) {
+        return 'date';
+    }
+    // 横线格式：2026-06-18
+    if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $search)) {
+        return 'date';
+    }
+
+    // 3. 地区名检测（省名/市名/区名）
+    $regions = [
+        '北京', '天津', '上海', '重庆',
+        '河北', '山西', '辽宁', '吉林', '黑龙江', '江苏', '浙江', '安徽', '福建', '江西', '山东',
+        '河南', '湖北', '湖南', '广东', '海南', '四川', '贵州', '云南', '陕西', '甘肃', '青海',
+        '台湾', '内蒙古', '广西', '西藏', '宁夏', '新疆',
+        '香港', '澳门',
+        // 常见城市
+        '石家庄', '太原', '呼和浩特', '沈阳', '长春', '哈尔滨', '南京', '杭州', '合肥', '福州',
+        '南昌', '济南', '郑州', '武汉', '长沙', '广州', '南宁', '海口', '成都', '贵阳', '昆明',
+        '拉萨', '西安', '兰州', '西宁', '银川', '乌鲁木齐',
+        '深圳', '珠海', '汕头', '佛山', '东莞', '中山', '惠州', '江门', '湛江', '茂名',
+        '苏州', '无锡', '常州', '宁波', '温州', '嘉兴', '绍兴', '金华', '台州',
+        '厦门', '泉州', '漳州', '青岛', '烟台', '潍坊', '临沂',
+        '洛阳', '开封', '新乡', '南阳', '许昌',
+        '株洲', '岳阳', '常德', '衡阳',
+        '绵阳', '德阳', '宜宾', '泸州',
+    ];
+    foreach ($regions as $region) {
+        if (mb_strpos($search, $region) !== false || $search === $region) {
+            return 'region';
+        }
+    }
+
+    // 4. 默认：纯英文/数字 → 玩家名
+    return 'name';
+}
+
+/**
+ * ★ 日期搜索解析：将搜索文本转换为时间戳范围
+ */
+function parseSearchDate($search) {
+    $year = $month = $day = 0;
+
+    // 中文格式：2026年6月18日
+    if (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $search, $m)) {
+        $year = (int)$m[1]; $month = (int)$m[2]; $day = (int)$m[3];
+    }
+    // 横线格式：2026-06-18
+    elseif (preg_match('/^(\d{4})-(\d{1,2})-(\d{1,2})$/', $search, $m)) {
+        $year = (int)$m[1]; $month = (int)$m[2]; $day = (int)$m[3];
+    }
+    // 紧凑格式：20260618
+    elseif (preg_match('/^(\d{4})(\d{2})(\d{2})$/', $search, $m)) {
+        $year = (int)$m[1]; $month = (int)$m[2]; $day = (int)$m[3];
+    }
+
+    if ($year > 0 && $month > 0 && $day > 0) {
+        $start = mktime(0, 0, 0, $month, $day, $year);
+        $end = mktime(0, 0, 0, $month, $day + 1, $year);
+        if ($start !== false && $end !== false) {
+            return ['start' => $start, 'end' => $end];
+        }
+    }
+    return null;
+}
+
+/**
  * 分页API - 懒加载支持（搜索模式）
  * 搜索时不限制IP查询，一次性返回全部结果
  */
@@ -1022,16 +1258,133 @@ function adminListUsersPaginated() {
         $page = max(1, (int)getParam('page', 1));
         $limit = min(50, max(10, (int)getParam('limit', 20))); // 默认15-20个
         $offset = ($page - 1) * $limit;
-        $search = trim(getParam('search', ''));
+        $search = rawurldecode(trim(getParam('search', '')));
         $includeIp = getParam('includeIp', '1') === '1'; // 默认包含IP，搜索时可设为0
         $isSearchMode = !empty($search); // 是否搜索模式（不限制并发）
-        
+        $regionDebugEnabled = false;
+        $regionDebug = [];
+
+        // ★ 智能搜索：自动识别搜索类型
+        $searchType = 'name'; // 默认：玩家名
+        $searchBound = '';
+        $whereClause = '';
+        $uncachedIps = []; // ★ 确保始终定义
+
+        if ($search) {
+            $searchType = detectSearchType($search);
+
+            if ($searchType === 'ip') {
+                // IP搜索：匹配玩家IP归属地或IP本身
+                $ipSearch = $search;
+                $whereClause = "WHERE player_name IN (SELECT player_name FROM player_ip_changes WHERE new_ip LIKE :ip) OR player_name IN (SELECT player_name FROM player_ip_locations WHERE ip_address LIKE :ip2)";
+                $searchBound = "%$ipSearch%";
+            } elseif ($searchType === 'date') {
+                // 日期搜索：转换为时间戳范围
+                $dateRange = parseSearchDate($search);
+                if ($dateRange) {
+                    $whereClause = "WHERE (last_login_time >= :dateStart AND last_login_time < :dateEnd) OR (register_time >= :dateStart AND register_time < :dateEnd)";
+                } else {
+                    // 日期解析失败，回退到模糊搜索
+                    $searchType = 'name';
+                    $whereClause = "WHERE LOWER(player_name) LIKE :search";
+                    $searchBound = "%" . strtolower($search) . "%";
+                }
+            } elseif ($searchType === 'region') {
+                // ★★★ 地区搜索：使用 SQL JOIN 直接查找（诊断证明可靠）★★★
+                $regionKey = $search;
+                $regionDebug = ['search' => $search, 'tables' => [], 'method' => 'sql_join'];
+
+                // 检查表数据量
+                foreach (['player_ip_locations', 'player_ip_changes', 'web_session_log', 'users'] as $t) {
+                    try {
+                        $cnt = $db->query("SELECT COUNT(*) as c FROM $t")->fetchArray(SQLITE3_ASSOC)['c'];
+                        $regionDebug['tables'][$t] = $cnt;
+                    } catch (\Throwable $e) {
+                        $regionDebug['tables'][$t] = 'error:' . $e->getMessage();
+                    }
+                }
+
+                // ★ 用 SQL JOIN 直接找到匹配地区的玩家名
+                $matchedPlayers = [];
+                try {
+                    $joinSql = "SELECT DISTINCT c.player_name
+                        FROM player_ip_changes c
+                        INNER JOIN player_ip_locations l ON c.new_ip = l.ip_address
+                        WHERE l.location LIKE :region AND c.new_ip != '' AND c.new_ip != '-'
+                        UNION
+                        SELECT DISTINCT w.player_name
+                        FROM web_session_log w
+                        INNER JOIN player_ip_locations l ON w.ip_address = l.ip_address
+                        WHERE l.location LIKE :region2 AND w.ip_address != '' AND w.ip_address != '-'";
+                    $joinStmt = $db->prepare($joinSql);
+                    $joinStmt->bindValue(':region', "%$regionKey%", SQLITE3_TEXT);
+                    $joinStmt->bindValue(':region2', "%$regionKey%", SQLITE3_TEXT);
+                    $joinResult = $joinStmt->execute();
+                    while ($jRow = $joinResult->fetchArray(SQLITE3_ASSOC)) {
+                        $matchedPlayers[] = $jRow['player_name'];
+                    }
+                } catch (\Throwable $e) {
+                    $regionDebug['error'] = $e->getMessage();
+                    @error_log("[REGION_SEARCH] JOIN query error: " . $e->getMessage());
+                }
+
+                $regionDebug['matched'] = count($matchedPlayers);
+                $regionDebug['players'] = array_slice($matchedPlayers, 0, 20);
+
+                // ★ 构建WHERE子句
+                if (!empty($matchedPlayers)) {
+                    $namePlaceholders = implode(',', array_fill(0, count($matchedPlayers), '?'));
+                    $whereClause = "WHERE player_name IN ($namePlaceholders)";
+                    $searchBound = $matchedPlayers;
+                } else {
+                    $whereClause = "WHERE 1=0";
+                    $searchBound = [];
+                }
+
+                // ★ 始终启用调试输出
+                $regionDebugEnabled = true;
+            } else {
+                // 纯文本：按玩家名搜索
+                $whereClause = "WHERE LOWER(player_name) LIKE :search";
+                $searchBound = "%" . strtolower($search) . "%";
+            }
+        }
+
         // 获取所有用户信息（本地查询，极快）
         $sql = "SELECT player_name, register_time, last_login_time, points, total_online_time, email FROM users";
+
         if ($search) {
-            $searchBound = "%" . $search . "%";
-            $stmt = $db->prepare($sql . " WHERE LOWER(player_name) LIKE :search ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
-            $stmt->bindValue(':search', $searchBound, SQLITE3_TEXT);
+            if ($searchType === 'date' && $dateRange) {
+                $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY last_login_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                $stmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
+                $stmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);
+            } elseif ($searchType === 'ip') {
+                $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                $stmt->bindValue(':ip', $searchBound, SQLITE3_TEXT);
+                $stmt->bindValue(':ip2', $searchBound, SQLITE3_TEXT);
+            } elseif ($searchType === 'region') {
+                // ★ 地区搜索：已用PHP两步法获取匹配玩家列表，直接绑定参数
+                try {
+                    $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                    if (!empty($matchedPlayers)) {
+                        $idx = 1;
+                        foreach ($matchedPlayers as $pn) {
+                            $stmt->bindValue($idx++, $pn, SQLITE3_TEXT);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    @error_log('[adminListUsersPaginated] Region search prepare failed: ' . $e->getMessage());
+                    $regionDebug['prepare_error'] = $e->getMessage();
+                    // ★ 不改变 searchType，保持 'region' 以便输出调试信息
+                    // 回退：用简单查询
+                    $whereClause = "WHERE 1=0";
+                    $searchBound = [];
+                    $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                }
+            } else {
+                $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                $stmt->bindValue(':search', $searchBound, SQLITE3_TEXT);
+            }
             $result = $stmt->execute();
         } else {
             $result = $db->query($sql . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
@@ -1042,9 +1395,34 @@ function adminListUsersPaginated() {
         // 获取总数
         $countSql = "SELECT COUNT(*) as cnt FROM users";
         if ($search) {
-            $stmt = $db->prepare($countSql . " WHERE LOWER(player_name) LIKE :search");
-            $stmt->bindValue(':search', $searchBound, SQLITE3_TEXT);
-            $countResult = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+            if ($searchType === 'date' && $dateRange) {
+                $countStmt = $db->prepare($countSql . " " . $whereClause);
+                $countStmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
+                $countStmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);
+            } elseif ($searchType === 'ip') {
+                $countStmt = $db->prepare($countSql . " " . $whereClause);
+                $countStmt->bindValue(':ip', $searchBound, SQLITE3_TEXT);
+                $countStmt->bindValue(':ip2', $searchBound, SQLITE3_TEXT);
+            } elseif ($searchType === 'region') {
+                try {
+                    $countStmt = $db->prepare($countSql . " " . $whereClause);
+                    if (!empty($matchedPlayers)) {
+                        $idx = 1;
+                        foreach ($matchedPlayers as $pn) {
+                            $countStmt->bindValue($idx++, $pn, SQLITE3_TEXT);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    @error_log('[adminListUsersPaginated] Region count prepare failed: ' . $e->getMessage());
+                    $regionDebug['count_prepare_error'] = $e->getMessage();
+                    // ★ 不改变 searchType
+                    $countStmt = $db->query("SELECT 0 as cnt");
+                }
+            } else {
+                $countStmt = $db->prepare($countSql . " " . $whereClause);
+                $countStmt->bindValue(':search', $searchBound, SQLITE3_TEXT);
+            }
+            $countResult = $countStmt->execute()->fetchArray(SQLITE3_ASSOC);
         } else {
             $countResult = $db->query($countSql)->fetchArray(SQLITE3_ASSOC);
         }
@@ -1091,7 +1469,7 @@ function adminListUsersPaginated() {
                         @error_log("[IP_QUERY] Cleaned " . count($invalidIps) . " invalid records from DB on read");
                     }
                 }
-            } catch (Exception $e) {}
+            } catch (\Throwable $e) {}
 
             // 4. 收集未缓存的IP返回给前端（前端后台批量查）+ 刚清理的无效IP也需重新查询
             // ★ 过滤掉"-"和空值，只保留有效IP格式
@@ -1122,7 +1500,7 @@ function adminListUsersPaginated() {
             unset($user);
         }
 
-        exit(json_encode([
+        $response = [
             'success' => true,
             'data' => $users,
             'uncached_ips' => $uncachedIps ?? [], // 未缓存的IP，供前端批量查询
@@ -1133,11 +1511,22 @@ function adminListUsersPaginated() {
                 'total_pages' => $totalPages,
                 'has_more' => $page < $totalPages
             ]
-        ], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+        ];
+        // ★ 地区搜索调试信息（始终附加，帮助诊断）
+        if ($searchType === 'region' || (!empty($regionDebugEnabled))) {
+            $response['_region_debug'] = $regionDebug ?? [];
+        }
+        // ★ 版本标记：用于确认服务器运行的是最新代码
+        $response['_v'] = '20260619-v3';
+        $response['_search_type'] = $searchType;
+        $response['_search'] = $search;
+        exit(json_encode($response, JSON_UNESCAPED_UNICODE));
+    } catch (\Throwable $e) {
         // 错误信息写日志，不暴露给前端
-        @error_log('[adminListUsersPaginated] Error: ' . $e->getMessage());
-        exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+        @error_log('[adminListUsersPaginated] Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+        @error_log('[adminListUsersPaginated] Stack: ' . $e->getTraceAsString());
+        @ob_end_flush();
+        exit(json_encode(['success' => false, 'message' => 'Internal error: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
     }
 }
 
@@ -1149,33 +1538,58 @@ function adminListSameIp() {
         // 从 player_ip_changes 获取所有玩家及其最新 IP
         $stmt = $db->prepare("SELECT LOWER(player_name) as pn, LOWER(new_ip) as ip FROM player_ip_changes ORDER BY changed_at DESC");
         $result = $stmt->execute();
-        $ipPlayerMap = [];
+        $ipPlayerMap = [];      // exact IP → [players]
+        $subnetPlayerMap = [];  // /24 subnet → [players]
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $ip = $row['ip'];
             $player = $row['pn'];
+
+            // 精确IP映射
             if (!isset($ipPlayerMap[$ip])) $ipPlayerMap[$ip] = [];
             if (!in_array($player, $ipPlayerMap[$ip])) {
                 $ipPlayerMap[$ip][] = $player;
             }
+
+            // /24子网映射：取前三段
+            $parts = explode('.', $ip);
+            $subnet = count($parts) === 4 ? $parts[0].'.'.$parts[1].'.'.$parts[2] : $ip;
+            if (!isset($subnetPlayerMap[$subnet])) $subnetPlayerMap[$subnet] = [];
+            if (!in_array($player, $subnetPlayerMap[$subnet])) {
+                $subnetPlayerMap[$subnet][] = $player;
+            }
         }
 
-        // 筛选出同 IP 对应多个玩家的分组
+        // ★ 按/24子网分组（同一子网内的所有玩家视为同一组）
         $groups = [];
-        foreach ($ipPlayerMap as $ip => $players) {
+        foreach ($subnetPlayerMap as $subnet => $players) {
             if (count($players) > 1) {
-                // 获取 IP 归属地
-                $locData = queryIpLocation($ip);
+                // 从该子网内取一个代表IP查归属地
+                $representIp = '';
+                foreach ($ipPlayerMap as $ip => $pArr) {
+                    $parts = explode('.', $ip);
+                    if (count($parts) === 4 && $parts[0].'.'.$parts[1].'.'.$parts[2] === $subnet) {
+                        $representIp = $ip;
+                        break;
+                    }
+                }
+                $locData = queryIpLocation($representIp);
                 $playerDetails = [];
                 foreach ($players as $player) {
+                    // 找该玩家的实际IP
+                    $playerIp = '-';
+                    foreach ($ipPlayerMap as $ip => $pArr) {
+                        if (in_array($player, $pArr)) { $playerIp = $ip; break; }
+                    }
                     $playerDetails[] = [
                         'player_name' => $player,
-                        'ip_address' => $ip,
+                        'ip_address' => $playerIp,
                         'ip_location' => $locData['location'],
                         'login_time' => 0
                     ];
                 }
                 $groups[] = [
-                    'ip' => $ip,
+                    'ip' => $subnet . '.x',
+                    'subnet' => $subnet,
                     'ip_location' => $locData['location'],
                     'player_count' => count($players),
                     'players' => $playerDetails
@@ -1188,6 +1602,7 @@ function adminListSameIp() {
 
         exit(json_encode(['success' => true, 'data' => $groups], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
+        @error_log('[adminListSameIp] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
 }
@@ -1377,7 +1792,7 @@ function adminBatchQueryIps() {
             'remaining' => $remaining,
             'remaining_count' => count($remaining)
         ], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log('[adminBatchQueryIps] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => $e->getMessage()], JSON_UNESCAPED_UNICODE));
     }
@@ -1390,11 +1805,25 @@ function adminBatchQueryIps() {
 function adminListOnlineNames() {
     requireAdminSession();
     $db = getDB();
+    $db->exec('PRAGMA busy_timeout=15000');
     try {
-        $cutoff = time() - 120;
-        $stmt = $db->prepare("SELECT player_name FROM online_players WHERE login_time >= :cutoff");
-        $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
-        $result = $stmt->execute();
+        // ★ 先检查心跳
+        $hbCheck = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
+        $hbRow = $hbCheck ? $hbCheck->fetchArray(SQLITE3_ASSOC) : null;
+        $heartbeatFresh = false;
+        if ($hbRow !== false && isset($hbRow['last_seen']) && $hbRow['last_seen'] > 0) {
+            $lastHb = (int)$hbRow['last_seen'];
+            if ((time() - $lastHb) <= 120) {
+                $heartbeatFresh = true;
+            }
+        }
+
+        if (!$heartbeatFresh) {
+            exit(json_encode(['success' => true, 'data' => []], JSON_UNESCAPED_UNICODE));
+        }
+
+        // ★ 修复：心跳有效时直接查询全部在线玩家（online_players表每次同步全量重建，无需login_time过滤）
+        $result = $db->query("SELECT player_name FROM online_players");
         $names = [];
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $names[] = $row['player_name'];
@@ -1408,14 +1837,28 @@ function adminListOnlineNames() {
 function adminListOnlinePlayers() {
     requireAdminSession();
     $db = getDB();
+    $db->exec('PRAGMA busy_timeout=15000');
     try {
-        // ★ 实时在线玩家：只查询最近2分钟内活跃的（±1分钟误差）
-        $cutoff = time() - 120; // 2分钟窗口
+        // ★ 先检查心跳：如果超过120秒没收到Java推送，返回空列表（防止残留旧数据）
+        $hbCheck = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
+        $hbRow = $hbCheck ? $hbCheck->fetchArray(SQLITE3_ASSOC) : null;
+        $heartbeatFresh = false;
+        if ($hbRow !== false && isset($hbRow['last_seen']) && $hbRow['last_seen'] > 0) {
+            $lastHb = (int)$hbRow['last_seen'];
+            if ((time() - $lastHb) <= 120) {
+                $heartbeatFresh = true;
+            }
+        }
+
+        if (!$heartbeatFresh) {
+            // 心跳过期或无心跳，强制在线人数为0
+            exit(json_encode(['success' => true, 'data' => []], JSON_UNESCAPED_UNICODE));
+        }
+
+        // ★ 修复：心跳有效时直接查询全部在线玩家（online_players表每次同步全量重建，无需login_time过滤）
         $now = time();
 
-        $stmt = $db->prepare("SELECT player_name, login_time FROM online_players WHERE login_time >= :cutoff ORDER BY login_time DESC");
-        $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
-        $result = $stmt->execute();
+        $result = $db->query("SELECT player_name, login_time FROM online_players ORDER BY login_time DESC");
         $players = [];
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $players[] = $row;
@@ -1487,55 +1930,28 @@ function adminListOnlinePlayers() {
 function batchGetPlayerIps($db, $playerNames) {
     $ipMap = [];
 
-    // 1. 从 player_ip_changes 批量获取（★ 优先取有效IP，避免取到"-"）
-    if (!empty($playerNames)) {
-        $placeholders = implode(',', array_fill(0, count($playerNames), '?'));
-        try {
-            // ★ 优先取非"-"的最新IP；如果全是"-"，才取"-"的最新IP
-            $ipStmt = $db->prepare("
-                SELECT p.player_name, p.new_ip AS ip_address
-                FROM player_ip_changes p
-                INNER JOIN (
-                    SELECT player_name,
-                           MAX(CASE WHEN new_ip != '-' AND new_ip != '' THEN changed_at ELSE 0 END) as best_time,
-                           MAX(changed_at) as latest_time
-                    FROM player_ip_changes
-                    WHERE player_name IN ($placeholders)
-                    GROUP BY player_name
-                ) latest ON p.player_name = latest.player_name
-                    AND p.changed_at = CASE WHEN latest.best_time > 0 THEN latest.best_time ELSE latest.latest_time END
-            ");
-            $idx = 1;
-            foreach ($playerNames as $pn) {
-                $ipStmt->bindValue($idx++, $pn, SQLITE3_TEXT);
-            }
-            $ipResult = $ipStmt->execute();
-            while ($row = $ipResult->fetchArray(SQLITE3_ASSOC)) {
-                $key = strtolower($row['player_name']);
-                if (!isset($ipMap[$key])) {
-                    $ipMap[$key] = $row['ip_address'];
-                }
-            }
-        } catch (Exception $e) {
-            // player_ip_changes 表可能不存在，降级为简单查询
-            try {
-                $ipStmt = $db->prepare("SELECT player_name, new_ip AS ip_address FROM player_ip_changes WHERE player_name IN ($placeholders) ORDER BY changed_at DESC");
-                $idx = 1;
-                foreach ($playerNames as $pn) {
-                    $ipStmt->bindValue($idx++, $pn, SQLITE3_TEXT);
-                }
-                $ipResult = $ipStmt->execute();
-                while ($row = $ipResult->fetchArray(SQLITE3_ASSOC)) {
-                    $key = strtolower($row['player_name']);
-                    if (!isset($ipMap[$key])) {
-                        $ipMap[$key] = $row['ip_address'];
-                    }
-                }
-            } catch (Exception $e2) {}
+    if (empty($playerNames)) return $ipMap;
+    $placeholders = implode(',', array_fill(0, count($playerNames), '?'));
+
+    // 1. 从 player_ip_changes 获取最新IP（简单查询，兼容所有SQLite版本）
+    try {
+        $ipStmt = $db->prepare("SELECT player_name, new_ip AS ip_address FROM player_ip_changes WHERE player_name IN ($placeholders) ORDER BY changed_at DESC");
+        $idx = 1;
+        foreach ($playerNames as $pn) {
+            $ipStmt->bindValue($idx++, $pn, SQLITE3_TEXT);
         }
+        $ipResult = $ipStmt->execute();
+        while ($row = $ipResult->fetchArray(SQLITE3_ASSOC)) {
+            $key = strtolower($row['player_name']);
+            if (!isset($ipMap[$key])) {
+                $ipMap[$key] = $row['ip_address'];
+            }
+        }
+    } catch (\Throwable $e) {
+        @error_log("[batchGetPlayerIps] player_ip_changes error: " . $e->getMessage());
     }
-    
-    // 2. 缺失的去 web_session_log 批量补查
+
+    // 2. 缺失的去 web_session_log 补查
     $missing = [];
     foreach ($playerNames as $pn) {
         $key = strtolower($pn);
@@ -1543,24 +1959,11 @@ function batchGetPlayerIps($db, $playerNames) {
             $missing[] = $pn;
         }
     }
-    
+
     if (!empty($missing)) {
         $placeholders2 = implode(',', array_fill(0, count($missing), '?'));
         try {
-            // ★ 同样优先取有效IP
-            $stmt2 = $db->prepare("
-                SELECT w.player_name, w.ip_address
-                FROM web_session_log w
-                INNER JOIN (
-                    SELECT player_name,
-                           MAX(CASE WHEN ip_address != '-' AND ip_address != '' THEN login_time ELSE 0 END) as best_time,
-                           MAX(login_time) as latest_time
-                    FROM web_session_log
-                    WHERE player_name IN ($placeholders2)
-                    GROUP BY player_name
-                ) latest ON w.player_name = latest.player_name
-                    AND w.login_time = CASE WHEN latest.best_time > 0 THEN latest.best_time ELSE latest.latest_time END
-            ");
+            $stmt2 = $db->prepare("SELECT player_name, ip_address FROM web_session_log WHERE player_name IN ($placeholders2) ORDER BY login_time DESC");
             $idx2 = 1;
             foreach ($missing as $mn) {
                 $stmt2->bindValue($idx2++, $mn, SQLITE3_TEXT);
@@ -1572,25 +1975,11 @@ function batchGetPlayerIps($db, $playerNames) {
                     $ipMap[$key] = $row['ip_address'];
                 }
             }
-        } catch (Exception $e) {
-            // 降级为简单查询
-            try {
-                $stmt2 = $db->prepare("SELECT player_name, ip_address FROM web_session_log WHERE player_name IN ($placeholders2) ORDER BY login_time DESC");
-                $idx2 = 1;
-                foreach ($missing as $mn) {
-                    $stmt2->bindValue($idx2++, $mn, SQLITE3_TEXT);
-                }
-                $res2 = $stmt2->execute();
-                while ($row = $res2->fetchArray(SQLITE3_ASSOC)) {
-                    $key = strtolower($row['player_name']);
-                    if (!isset($ipMap[$key])) {
-                        $ipMap[$key] = $row['ip_address'];
-                    }
-                }
-            } catch (Exception $e2) {}
+        } catch (\Throwable $e2) {
+            @error_log("[batchGetPlayerIps] web_session_log error: " . $e2->getMessage());
         }
     }
-    
+
     return $ipMap;
 }
 
@@ -1656,23 +2045,72 @@ function adminListActivePlayers() {
             unset($p);
         }
 
-        exit(json_encode(['success' => true, 'data' => $players], JSON_UNESCAPED_UNICODE));
+        // ★ 同IP去重：/24子网视为同一人，只保留最后活跃的玩家
+        $deduped = [];
+        $seenSubnets = []; // subnet => player_name (保留第一个)
+        foreach ($players as $p) {
+            $ip = $p['ip_address'] ?? '-';
+            if ($ip && $ip !== '-') {
+                $subnet = getSubnet24($ip);
+                if (isset($seenSubnets[$subnet])) {
+                    // 同子网已有玩家，跳过这个（保留先出现的/活跃度最高的）
+                    $p['hidden_by_dedup'] = true;
+                    $p['dedup_group'] = $seenSubnets[$subnet];
+                    continue;
+                }
+                $seenSubnets[$subnet] = $p['player_name'];
+            }
+            $deduped[] = $p;
+        }
+
+        exit(json_encode(['success' => true, 'data' => $deduped, 'total_before_dedup' => count($players)], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[adminListActivePlayers] Error: ' . $e->getMessage());
         exit(json_encode(['success' => true, 'data' => []], JSON_UNESCAPED_UNICODE));
     }
 }
 
+/**
+ * ★ 获取IP的/24子网（如 192.168.1.100 → 192.168.1）
+ * 同一/24子网的设备视为同一人
+ */
+function getSubnet24($ip) {
+    $parts = explode('.', $ip);
+    if (count($parts) === 4) {
+        return $parts[0] . '.' . $parts[1] . '.' . $parts[2];
+    }
+    return $ip; // 非标准IP，原样返回
+}
+
 function adminGetStatsEx() {
     requireAdminSession();
     $db = getDB();
+    $db->exec('PRAGMA busy_timeout=15000');
+
     try {
         $onlineCount = 0;
         try {
-            $stmt = $db->prepare("SELECT COUNT(*) as cnt FROM online_players WHERE login_time >= :cutoff");
-            $stmt->bindValue(':cutoff', time() - 60, SQLITE3_INTEGER);
-            $r = $stmt->execute();
-            if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $onlineCount = (int)($row['cnt'] ?? 0); }
+            // ★ 先检查心跳：如果超过120秒没收到Java推送，清空在线数据（防止残留旧数据）
+            $hbCheck = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
+            $hbRow = $hbCheck ? $hbCheck->fetchArray(SQLITE3_ASSOC) : null;
+            $heartbeatFresh = false;
+            if ($hbRow !== false && isset($hbRow['last_seen']) && $hbRow['last_seen'] > 0) {
+                $lastHb = (int)$hbRow['last_seen'];
+                if ((time() - $lastHb) <= 120) {
+                    $heartbeatFresh = true;
+                }
+            }
+
+            if ($heartbeatFresh) {
+                // ★ 修复：心跳有效时直接查询全部在线玩家（online_players表每次同步全量重建，无需login_time过滤）
+                // 旧代码 login_time >= time()-120 在Java推送间隔>120秒时会过滤掉所有玩家
+                $r = $db->query("SELECT COUNT(*) as cnt FROM online_players");
+                if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $onlineCount = (int)($row['cnt'] ?? 0); }
+            } else {
+                // 心跳过期或无心跳，在线人数为0
+                $onlineCount = 0;
+                @error_log('[adminGetStatsEx] 心跳过期或无心跳，强制在线人数为0');
+            }
         } catch (Exception $e) {
             @error_log('[adminGetStatsEx] online_players error: ' . $e->getMessage());
         }

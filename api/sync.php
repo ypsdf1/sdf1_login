@@ -19,6 +19,18 @@ while (ob_get_level() > 0) {
 }
 ob_start();
 
+// ★ 全局错误/异常处理（确保错误也记录到日志）
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    @error_log("[sync.php ERROR] $errstr in $errfile on line $errline");
+    return true;
+});
+set_exception_handler(function($e) {
+    @error_log("[sync.php EXCEPTION] " . $e->getMessage() . " at " . $e->getTraceAsString());
+    while (ob_get_level() > 0) ob_end_clean();
+    echo json_encode(['success' => false, 'message' => 'PHP异常: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
+    exit;
+});
+
 // debugLog() 函数已在 core.php 中定义，无需重复声明
 
 // ===== SMTP邮件发送函数 =====
@@ -115,6 +127,12 @@ switch ($action) {
         break;
     case 'sync_online_players':
         syncOnlinePlayers();
+        break;
+    case 'sync_daily_logins':
+        syncDailyLogins();
+        break;
+    case 'sync_checkins':
+        syncCheckins();
         break;
     case 'sync_player_ips':
         syncPlayerIps();
@@ -227,19 +245,32 @@ switch ($action) {
     case 'delete_user':
         deleteUser();
         break;
+    case 'sync_transactions':
+        syncTransactions();
+        break;
+    case 'check_pending_transactions':
+        checkPendingTransactions();
+        break;
     default:
         error('未知操作: ' . $action);
 }
 
 // ===== 插件推送商品数据 =====
 function syncShop() {
-    // 验证管理token
+    // ★ 支持token或SECRET_KEY认证
     $token = getParam('token');
-    if (!$token) error('同步需要token');
-
-    $tokenInfo = validateToken($token);
-    if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-        error('同步需要管理权限token');
+    $secret = getParam('secret');
+    if ($token) {
+        $tokenInfo = validateToken($token);
+        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+            if (!($secret && $secret === SECRET_KEY)) {
+                error('同步需要管理权限token或SECRET_KEY');
+            }
+        }
+    } elseif ($secret) {
+        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+    } else {
+        error('同步需要token或SECRET_KEY');
     }
 
     $items = getParam('items');
@@ -285,12 +316,20 @@ function syncShop() {
 
 // ===== 插件推送债券余额 =====
 function syncBonds() {
+    // ★ 支持token或SECRET_KEY认证
     $token = getParam('token');
-    if (!$token) error('同步需要token');
-
-    $tokenInfo = validateToken($token);
-    if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-        error('同步需要管理权限token');
+    $secret = getParam('secret');
+    if ($token) {
+        $tokenInfo = validateToken($token);
+        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+            if (!($secret && $secret === SECRET_KEY)) {
+                error('同步需要管理权限token或SECRET_KEY');
+            }
+        }
+    } elseif ($secret) {
+        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+    } else {
+        error('同步需要token或SECRET_KEY');
     }
 
     $bonds = getParam('bonds');
@@ -316,14 +355,140 @@ function syncBonds() {
     success(['synced' => $count], "同步了{$count}个玩家余额");
 }
 
+// ===== 插件推送游戏内交易记录 =====
+function syncTransactions() {
+    try {
+        // ★ 支持token或SECRET_KEY认证
+        $token = getParam('token');
+        $secret = getParam('secret');
+        if ($token) {
+            $tokenInfo = validateToken($token);
+            if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+                if (!($secret && $secret === SECRET_KEY)) {
+                    @error_log("[syncTransactions] Token验证失败: token=" . substr($token, 0, 8) . "..., info=" . var_export($tokenInfo, true));
+                    error('同步需要管理权限token或SECRET_KEY');
+                }
+            }
+        } elseif ($secret) {
+            if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+        } else {
+            error('同步需要token或SECRET_KEY');
+        }
+
+        $transactions = getParam('transactions');
+        @error_log("[syncTransactions] transactions type=" . gettype($transactions) . ", is_null=" . var_export($transactions === null, true));
+
+        if (!$transactions || !is_array($transactions)) {
+            error('缺少transactions数据 (type=' . gettype($transactions) . ')');
+        }
+
+    @error_log("[syncTransactions] Received " . count($transactions) . " transactions");
+    if (count($transactions) > 0) {
+        @error_log("[syncTransactions] First tx: " . json_encode($transactions[0], JSON_UNESCAPED_UNICODE));
+    }
+
+    $db = getDB();
+    // ★ 设置busy_timeout防止database is locked
+    $db->exec('PRAGMA busy_timeout=10000');
+
+    // 创建game_transactions表，用于存储游戏内交易记录
+    $db->exec("CREATE TABLE IF NOT EXISTS game_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        java_id INTEGER NOT NULL,
+        player_name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        target_player TEXT DEFAULT '',
+        operator TEXT DEFAULT '',
+        reason TEXT DEFAULT '',
+        balance_before INTEGER DEFAULT 0,
+        balance_after INTEGER DEFAULT 0,
+        tx_time INTEGER NOT NULL,
+        synced_at INTEGER NOT NULL,
+        UNIQUE(java_id)
+    )");
+
+    // 索引用于查询加速
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (Exception $e) {}
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (Exception $e) {}
+
+    $now = time();
+    $count = 0;
+    $skipped = 0;
+
+    // ★ 使用事务批量插入，减少锁冲突
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        foreach ($transactions as $tx) {
+            $javaId = (int)($tx['id'] ?? 0);
+            if ($javaId <= 0) { $skipped++; continue; }
+
+            $stmt = $db->prepare("INSERT OR REPLACE INTO game_transactions
+                (java_id, player_name, type, amount, target_player, operator, reason, balance_before, balance_after, tx_time, synced_at)
+                VALUES (:jpid, :name, :type, :amount, :target, :op, :reason, :bfb, :bfa, :time, :synced)");
+            $stmt->bindValue(':jpid', $javaId, SQLITE3_INTEGER);
+            $stmt->bindValue(':name', $tx['player_name'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':type', $tx['type'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':amount', (int)($tx['amount'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':target', $tx['target_player'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':op', $tx['operator'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':reason', $tx['reason'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':bfb', (int)($tx['balance_before'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':bfa', (int)($tx['balance_after'] ?? 0), SQLITE3_INTEGER);
+            // Java端使用毫秒时间戳，PHP端存储秒级时间戳
+            $txTime = (int)($tx['time'] ?? 0);
+            if ($txTime > 1000000000000) {
+                $txTime = intval($txTime / 1000);
+            }
+            $stmt->bindValue(':time', $txTime, SQLITE3_INTEGER);
+            $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+            $stmt->execute();
+            if ($db->changes() > 0) {
+                $count++;
+            } else {
+                $skipped++;
+            }
+        }
+        $db->exec("COMMIT");
+    } catch (Exception $e) {
+        $db->exec("ROLLBACK");
+        @error_log("[syncTransactions] Transaction failed, rolled back: " . $e->getMessage());
+        throw $e;
+    }
+
+    debugLog("sync_transactions: 接收游戏交易记录", [
+        'total' => count($transactions),
+        'inserted' => $count,
+        'skipped_duplicates' => $skipped
+    ]);
+
+    success(['synced' => $count, 'skipped' => $skipped, 'total' => count($transactions)], "同步了{$count}笔游戏交易");
+    } catch (Exception $e) {
+        @error_log("[syncTransactions] EXCEPTION: " . $e->getMessage() . " at " . $e->getTraceAsString());
+        error('syncTransactions异常: ' . $e->getMessage());
+    }
+}
+
 // ===== 插件推送注册数据 =====
 function syncLogin() {
+    // ★ 支持两种认证：token 或 SECRET_KEY（防止token注册超时导致同步失败）
     $token = getParam('token');
-    if (!$token) error('同步需要token');
+    $secret = getParam('secret');
 
-    $tokenInfo = validateToken($token);
-    if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-        error('同步需要管理权限token');
+    if ($token) {
+        $tokenInfo = validateToken($token);
+        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+            // token无效时，检查是否携带了secret
+            if ($secret && $secret === SECRET_KEY) {
+                // secret有效，继续执行
+            } else {
+                error('同步需要管理权限token或SECRET_KEY');
+            }
+        }
+    } elseif ($secret) {
+        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+    } else {
+        error('同步需要token或SECRET_KEY');
     }
 
     $users = getParam('users');
@@ -340,131 +505,94 @@ function syncLogin() {
     $now = time();
     $count = 0;
 
-    foreach ($users as $user) {
-        $name = $user['player_name'] ?? null;
-        if (!$name) continue;
-
-        // Java端使用毫秒时间戳，PHP端存储秒级时间戳
-        $registerTime = (int)($user['register_time'] ?? 0);
-        $lastLoginTime = (int)($user['last_login_time'] ?? 0);
-        if ($registerTime > 1000000000000) { // 如果大于10^12，说明是毫秒级
-            $registerTime = intval($registerTime / 1000);
-        }
-        if ($lastLoginTime > 1000000000000) { // 如果大于10^12，说明是毫秒级
-            $lastLoginTime = intval($lastLoginTime / 1000);
-        }
-
-        $stmt = $db->prepare("INSERT OR REPLACE INTO users (player_name, register_time, last_login_time, email, points, gift_stage, total_online_time) VALUES (:name, :rt, :lt, :email, :pts, :gs, :tot)");
-        $stmt->bindValue(':name', $name, SQLITE3_TEXT);
-        $stmt->bindValue(':rt', $registerTime, SQLITE3_INTEGER);
-        $stmt->bindValue(':lt', $lastLoginTime, SQLITE3_INTEGER);
-        $stmt->bindValue(':email', $user['email'] ?? '', SQLITE3_TEXT);
-        $stmt->bindValue(':pts', (int)($user['points'] ?? 0), SQLITE3_INTEGER);
-        $stmt->bindValue(':gs', (int)($user['gift_stage'] ?? 0), SQLITE3_INTEGER);
-        $stmt->bindValue(':tot', (int)($user['total_online_time'] ?? 0), SQLITE3_INTEGER);
-        $stmt->execute();
-        $count++;
-    }
-
-    // ★ 收集推送的用户名列表，用于后续孤儿清理
-    $namesInSync = array_map(function($u) { return $u['player_name'] ?? null; }, $users);
-    $namesInSync = array_filter($namesInSync, function($n) { return $n !== null; });
-
-    // ★ 清理 users 表中已不存在的用户（游戏内删号后同步）
+    // ★ 所有写操作（INSERT + 清理）包装在一个事务中
+    $db->exec("BEGIN IMMEDIATE");
     try {
-        $stmt = $db->prepare("SELECT player_name FROM users");
-        $result = $stmt->execute();
-        $phpUsers = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-            $phpUsers[] = $row['player_name'];
-        }
-        
-        $orphanedUsers = array_diff($phpUsers, $namesInSync);
-        if (!empty($orphanedUsers)) {
-            $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedUsers));
-            $db->exec("DELETE FROM users WHERE player_name IN ('" . $nameList . "')");
-            debugLog("sync_login: 清理了 " . count($orphanedUsers) . " 个孤立的 users 记录", ['orphaned' => $orphanedUsers]);
-        }
-    } catch (Exception $e) {
-        debugLog("sync_login: 清理孤立 users 记录失败", ['error' => $e->getMessage()]);
-    }
+        foreach ($users as $user) {
+            $name = $user['player_name'] ?? null;
+            if (!$name) continue;
 
-    // ★ 清理 weblogin_credentials 中已不存在的用户（游戏内删号后同步）
-    try {
-        $stmt = $db->prepare("SELECT player_name FROM weblogin_credentials");
-        $result = $stmt->execute();
-        $webCredentials = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-            $webCredentials[] = $row['player_name'];
+            $registerTime = (int)($user['register_time'] ?? 0);
+            $lastLoginTime = (int)($user['last_login_time'] ?? 0);
+            if ($registerTime > 1000000000000) { $registerTime = intval($registerTime / 1000); }
+            if ($lastLoginTime > 1000000000000) { $lastLoginTime = intval($lastLoginTime / 1000); }
+
+            $stmt = $db->prepare("INSERT OR REPLACE INTO users (player_name, register_time, last_login_time, email, points, gift_stage, total_online_time) VALUES (:name, :rt, :lt, :email, :pts, :gs, :tot)");
+            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmt->bindValue(':rt', $registerTime, SQLITE3_INTEGER);
+            $stmt->bindValue(':lt', $lastLoginTime, SQLITE3_INTEGER);
+            $stmt->bindValue(':email', $user['email'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':pts', (int)($user['points'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':gs', (int)($user['gift_stage'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':tot', (int)($user['total_online_time'] ?? 0), SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
         }
-        
+
         $namesInSync = array_map(function($u) { return $u['player_name'] ?? null; }, $users);
-        $orphaned = array_diff($webCredentials, $namesInSync);
-        
-        if (!empty($orphaned)) {
-            $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphaned));
-            $db->exec("DELETE FROM weblogin_credentials WHERE player_name IN ('" . $nameList . "')");
-            debugLog("sync_login: 清理了 " . count($orphaned) . " 个孤立的 weblogin_credentials 记录", ['orphaned' => $orphaned]);
-        }
-    } catch (Exception $e) {
-        debugLog("sync_login: 清理孤立 weblogin_credentials 记录失败", ['error' => $e->getMessage()]);
-    }
+        $namesInSync = array_filter($namesInSync, function($n) { return $n !== null; });
 
-    // ★ 清理 weblogin_tokens 中已不存在的用户（游戏内删号后同步）
-    try {
-        $stmt = $db->prepare("SELECT player_name FROM weblogin_tokens");
-        $result = $stmt->execute();
-        $tokenPlayers = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-            $tokenPlayers[] = $row['player_name'];
+        // 清理 users 表中已不存在的用户
+        try {
+            $stmt = $db->prepare("SELECT player_name FROM users");
+            $result = $stmt->execute();
+            $phpUsers = [];
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $phpUsers[] = $row['player_name'];
+            }
+            
+            $orphanedUsers = array_diff($phpUsers, $namesInSync);
+            if (!empty($orphanedUsers)) {
+                $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedUsers));
+                $db->exec("DELETE FROM users WHERE player_name IN ('" . $nameList . "')");
+                debugLog("sync_login: 清理了 " . count($orphanedUsers) . " 个孤立的 users 记录", ['orphaned' => $orphanedUsers]);
+            }
+        } catch (Exception $e) {
+            debugLog("sync_login: 清理孤立 users 记录失败", ['error' => $e->getMessage()]);
         }
-        
-        $orphanedTokens = array_diff($tokenPlayers, $namesInSync);
-        if (!empty($orphanedTokens)) {
-            $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedTokens));
-            $db->exec("DELETE FROM weblogin_tokens WHERE player_name IN ('" . $nameList . "')");
-            debugLog("sync_login: 清理了 " . count($orphanedTokens) . " 个孤立的 weblogin_tokens 记录", ['orphaned' => $orphanedTokens]);
-        }
-    } catch (Exception $e) {
-        debugLog("sync_login: 清理孤立 weblogin_tokens 记录失败", ['error' => $e->getMessage()]);
-    }
 
-    // ★ 清理 web_login_verified 中已不存在的用户
-    try {
-        $stmt = $db->prepare("SELECT player_name FROM web_login_verified");
-        $result = $stmt->execute();
-        $verifiedPlayers = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-            $verifiedPlayers[] = $row['player_name'];
+        // 清理 weblogin_credentials 中已不存在的用户（游戏内删号后同步）
+        try {
+            $stmt = $db->prepare("SELECT player_name FROM weblogin_credentials");
+            $result = $stmt->execute();
+            $webCredentials = [];
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $webCredentials[] = $row['player_name'];
+            }
+            
+            $namesInSync2 = array_map(function($u) { return $u['player_name'] ?? null; }, $users);
+            $orphaned = array_diff($webCredentials, $namesInSync2);
+            
+            if (!empty($orphaned)) {
+                $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphaned));
+                $db->exec("DELETE FROM weblogin_credentials WHERE player_name IN ('" . $nameList . "')");
+                debugLog("sync_login: 清理了 " . count($orphaned) . " 个孤立的 weblogin_credentials 记录", ['orphaned' => $orphaned]);
+            }
+        } catch (Exception $e) {
+            debugLog("sync_login: 清理孤立 weblogin_credentials 记录失败", ['error' => $e->getMessage()]);
         }
-        
-        $orphanedVerified = array_diff($verifiedPlayers, $namesInSync);
-        if (!empty($orphanedVerified)) {
-            $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedVerified));
-            $db->exec("DELETE FROM web_login_verified WHERE player_name IN ('" . $nameList . "')");
-            debugLog("sync_login: 清理了 " . count($orphanedVerified) . " 个孤立的 web_login_verified 记录", ['orphaned' => $orphanedVerified]);
-        }
-    } catch (Exception $e) {
-        debugLog("sync_login: 清理孤立 web_login_verified 记录失败", ['error' => $e->getMessage()]);
-    }
 
-    // ★ 清理 web_session_log 中已不存在的用户
-    try {
-        $stmt = $db->prepare("SELECT player_name FROM web_session_log");
-        $result = $stmt->execute();
-        $sessionPlayers = [];
-        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-            $sessionPlayers[] = $row['player_name'];
-        }
-        
-        $orphanedSessions = array_diff($sessionPlayers, $namesInSync);
-        if (!empty($orphanedSessions)) {
-            $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedSessions));
-            $db->exec("DELETE FROM web_session_log WHERE player_name IN ('" . $nameList . "')");
-            debugLog("sync_login: 清理了 " . count($orphanedSessions) . " 个孤立的 web_session_log 记录", ['orphaned' => $orphanedSessions]);
-        }
+        // 清理 weblogin_tokens：只清理已过期的
+        try {
+            $expireTime = time() - 600;
+            $db->exec("DELETE FROM weblogin_tokens WHERE created_at < " . $expireTime);
+        } catch (Exception $e) {}
+
+        // 清理 web_login_verified：只清理已过期的
+        try {
+            $expireTime = time() - 600;
+            $db->exec("DELETE FROM web_login_verified WHERE verified_at < " . $expireTime);
+        } catch (Exception $e) {}
+
+        // 清理 web_session_log：只清理过期的
+        try {
+            $expireTime = time() - 600;
+            $db->exec("DELETE FROM web_session_log WHERE login_time < " . $expireTime);
+        } catch (Exception $e) {}
+
+        $db->exec("COMMIT");
     } catch (Exception $e) {
-        debugLog("sync_login: 清理孤立 web_session_log 记录失败", ['error' => $e->getMessage()]);
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
     }
 
     debugLog("sync_login: 同步完成", ['synced_count' => $count, 'cleared_users' => ($orphanedUsers ?? []) ? count($orphanedUsers) : 0]);
@@ -473,12 +601,20 @@ function syncLogin() {
 
 // ===== Java插件主动删除用户 =====
 function deleteUser() {
+    // ★ 支持token或SECRET_KEY认证
     $token = getParam('token');
-    if (!$token) error('删除需要token');
-
-    $tokenInfo = validateToken($token);
-    if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-        error('删除需要管理权限token');
+    $secret = getParam('secret');
+    if ($token) {
+        $tokenInfo = validateToken($token);
+        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+            if (!($secret && $secret === SECRET_KEY)) {
+                error('删除需要管理权限token或SECRET_KEY');
+            }
+        }
+    } elseif ($secret) {
+        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+    } else {
+        error('删除需要token或SECRET_KEY');
     }
 
     $playerName = getParam('player_name');
@@ -549,6 +685,7 @@ function fixTimestamps() {
 
 // ===== 插件同步在线玩家列表 =====
 function syncOnlinePlayers() {
+    global $db;
     $db = getDB();
 
     // ★ 尝试从三个来源读取 secret 和 players
@@ -557,6 +694,15 @@ function syncOnlinePlayers() {
     // 1) 先从 $_GET/$_POST 读
     $secret = getParam('secret');
     $players = getParam('players');
+
+    // ★ 关键修复：如果players是字符串（GET请求或表单提交），尝试JSON解码
+    if ($players !== null && is_string($players)) {
+        $decoded = json_decode($players, true);
+        if (is_array($decoded)) {
+            $players = $decoded;
+            @error_log("[syncOnlinePlayers] players从GET/POST字符串JSON解码成功: " . count($players) . "人");
+        }
+    }
 
     // 2) 如果 PHP 解析了 x-www-form-urlencoded，$_POST 会有数据
     // 3) 如果是 application/json，$_POST 为空，需要从 $_SERVER['HTTP_RAW_POST_DATA'] 或 php://input 读取
@@ -609,12 +755,53 @@ function syncOnlinePlayers() {
         error('缺少players数据 (received=' . var_export($players, true) . ' | type=' . gettype($players) . ')');
     }
 
-    $db = getDB();
+    // ★ 详细日志：记录接收到的原始数据
+    $playerNames = array_map(function($p) { return $p['name'] ?? '?'; }, $players);
+    @error_log("[syncOnlinePlayers] ★★★ 收到推送: " . count($players) . "人 = [" . implode(', ', $playerNames) . "]");
+    @error_log("[syncOnlinePlayers] 原始players数据: " . json_encode($players, JSON_UNESCAPED_UNICODE));
+
     // ★ 设置更高的 busy_timeout 防止 "database is locked" 错误
     $db->exec('PRAGMA busy_timeout=10000');
     $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER NOT NULL)");
+    $db->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+    // ★ 迁移：修复旧表结构（旧行无主键导致INSERT OR REPLACE失效）
+    try {
+        $colCheck = $db->query("PRAGMA table_info(online_player_hb)");
+        $hasPK = false;
+        while ($col = $colCheck->fetchArray(SQLITE3_ASSOC)) {
+            if ($col['pk'] > 0) { $hasPK = true; break; }
+        }
+        if (!$hasPK) {
+            // 读取旧数据
+            $oldVal = 0;
+            $oldRow = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1")->fetchArray(SQLITE3_ASSOC);
+            if ($oldRow) $oldVal = (int)$oldRow['last_seen'];
+            $db->exec("DROP TABLE IF EXISTS online_player_hb");
+            $db->exec("CREATE TABLE online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+            $db->exec("INSERT INTO online_player_hb (id, last_seen) VALUES (1, $oldVal)");
+            @error_log("[syncOnlinePlayers] 迁移online_player_hb表结构完成，旧值: $oldVal");
+        }
+    } catch (Exception $e) {
+        @error_log("[syncOnlinePlayers] 迁移online_player_hb失败: " . $e->getMessage());
+    }
 
     $now = time();
+
+    // ★ 心跳检测：如果超过120秒没收到数据，清空在线表（防止Java推送异常残留旧数据）
+    try {
+        $hbStmt = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
+        $hbRow = $hbStmt->fetchArray(SQLITE3_ASSOC);
+        if ($hbRow !== false && $hbRow['last_seen'] > 0) {
+            $lastHb = (int)$hbRow['last_seen'];
+            if (($now - $lastHb) > 120) {
+                @error_log("[syncOnlinePlayers] Heartbeat stale: " . ($now - $lastHb) . "s > 120s, clearing online_players");
+                $db->exec("DELETE FROM online_players");
+            }
+        }
+    } catch (Exception $e) {
+        // ignore
+    }
+
     $playerCount = count($players);
 
     // ★ Debug: 记录接收到的玩家数据
@@ -623,24 +810,42 @@ function syncOnlinePlayers() {
     @error_log("[syncOnlinePlayers] Received $playerCount players: " . implode(', ', $playerNames));
     @error_log("[syncOnlinePlayers] Login times: " . implode(', ', $playerTimes) . " | Server time: $now");
 
-    // ★ 删除所有旧记录，然后重新插入（避免残留旧数据）
-    $db->exec("DELETE FROM online_players");
+    // ★ 使用事务批量写入，防止 "database is locked"
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        // 删除所有旧记录，然后重新插入（避免残留旧数据）
+        $db->exec("DELETE FROM online_players");
 
-    // ★ 逐条插入，不用事务（避免锁问题）
-    $synced = 0;
-    foreach ($players as $player) {
-        if (empty($player['name'])) continue;
-        $name = $player['name'];
-        $loginTime = isset($player['login_time']) ? (int)$player['login_time'] : $now;
-        try {
-            $stmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:name, :time)");
-            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
-            $stmt->bindValue(':time', $loginTime, SQLITE3_INTEGER);
-            $stmt->execute();
-            $synced++;
-        } catch (Exception $e) {
-            @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
+        // 逐条插入
+        $synced = 0;
+        foreach ($players as $player) {
+            if (empty($player['name'])) continue;
+            $name = $player['name'];
+            $loginTime = isset($player['login_time']) ? (int)$player['login_time'] : $now;
+            try {
+                $stmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:name, :time)");
+                $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+                $stmt->bindValue(':time', $loginTime, SQLITE3_INTEGER);
+                $stmt->execute();
+                $synced++;
+            } catch (Exception $e) {
+                @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
+            }
         }
+
+        // 更新心跳时间戳（使用INSERT OR REPLACE，有主键则更新，无则插入）
+        try {
+            $hbSql = $db->prepare("INSERT OR REPLACE INTO online_player_hb (id, last_seen) VALUES (1, :time)");
+            $hbSql->bindValue(':time', $now, SQLITE3_INTEGER);
+            $hbSql->execute();
+        } catch (Exception $e) {
+            @error_log("[syncOnlinePlayers] heartbeat update error: " . $e->getMessage());
+        }
+
+        $db->exec("COMMIT");
+    } catch (Exception $e) {
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+        @error_log("[syncOnlinePlayers] Transaction failed: " . $e->getMessage());
     }
 
     // ★ 验证：查询刚插入的数据
@@ -649,6 +854,95 @@ function syncOnlinePlayers() {
     @error_log("[syncOnlinePlayers] Synced $synced/$playerCount, DB now has " . ($verifyRow['cnt'] ?? 0) . " records");
 
     success(['synced' => $synced, 'server_time' => $now], "同步了" . $synced . "个在线玩家");
+}
+
+// ===== 同步每日登录记录（Java插件推送） =====
+function syncDailyLogins() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $logins = getParam('logins');
+    if ($logins === null) {
+        // 尝试从POST body解析
+        $raw = file_get_contents('php://input');
+        if ($raw) {
+            $decoded = json_decode($raw, true);
+            if (isset($decoded['logins'])) $logins = $decoded['logins'];
+        }
+    }
+    if ($logins === null || !is_array($logins)) {
+        error('缺少logins数据');
+    }
+
+    $db = getDB();
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        $count = 0;
+        foreach ($logins as $entry) {
+            $name = $entry['name'] ?? '';
+            $date = $entry['date'] ?? date('Y-m-d');
+            $firstLogin = $entry['first_login'] ?? time();
+            $lastLogin = $entry['last_login'] ?? time();
+            if (!$name) continue;
+
+            $stmt = $db->prepare("INSERT OR REPLACE INTO player_daily_logins (player_name, login_date, first_login, last_login) VALUES (:name, :date, :first, :last)");
+            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+            $stmt->bindValue(':first', (int)$firstLogin, SQLITE3_INTEGER);
+            $stmt->bindValue(':last', (int)$lastLogin, SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
+        }
+        $db->exec("COMMIT");
+        success(['synced' => $count], "同步了{$count}条登录记录");
+    } catch (Exception $e) {
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+        @error_log("[syncDailyLogins] Error: " . $e->getMessage());
+        error('同步失败: ' . $e->getMessage());
+    }
+}
+
+// ===== 同步签到记录（Java插件推送） =====
+function syncCheckins() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $checkins = getParam('checkins');
+    if ($checkins === null) {
+        $raw = file_get_contents('php://input');
+        if ($raw) {
+            $decoded = json_decode($raw, true);
+            if (isset($decoded['checkins'])) $checkins = $decoded['checkins'];
+        }
+    }
+    if ($checkins === null || !is_array($checkins)) {
+        error('缺少checkins数据');
+    }
+
+    $db = getDB();
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        $count = 0;
+        foreach ($checkins as $entry) {
+            $name = $entry['name'] ?? '';
+            $date = $entry['date'] ?? date('Y-m-d');
+            $time = $entry['time'] ?? time();
+            if (!$name) continue;
+
+            $stmt = $db->prepare("INSERT OR REPLACE INTO player_checkins (player_name, checkin_date, checkin_time) VALUES (:name, :date, :time)");
+            $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmt->bindValue(':date', $date, SQLITE3_TEXT);
+            $stmt->bindValue(':time', (int)$time, SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
+        }
+        $db->exec("COMMIT");
+        success(['synced' => $count], "同步了{$count}条签到记录");
+    } catch (Exception $e) {
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+        @error_log("[syncCheckins] Error: " . $e->getMessage());
+        error('同步失败: ' . $e->getMessage());
+    }
 }
 
 // ===== 同步所有玩家IP到PHP端（带变更检测） =====
@@ -687,11 +981,11 @@ function syncPlayerIps() {
     // 创建IP归属地缓存表（用于避免重复查询API）
     $db->exec("CREATE TABLE IF NOT EXISTS player_ip_locations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        player_name TEXT NOT NULL,
+        player_name TEXT DEFAULT 'global',
         ip_address TEXT NOT NULL,
         location TEXT DEFAULT '',
         updated_at INTEGER DEFAULT 0,
-        UNIQUE(player_name, ip_address)
+        UNIQUE(ip_address)
     )");
 
     // 批量更新玩家的IP到online_players表（带变更检测）
@@ -699,64 +993,55 @@ function syncPlayerIps() {
     $changedCount = 0;
     $skippedCount = 0;
 
-    foreach ($players as $player) {
-        if (empty($player['name']) || empty($player['ip'])) {
-            continue;
-        }
+    // ★ 事务包装防止 "database is locked"
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        foreach ($players as $player) {
+            if (empty($player['name']) || empty($player['ip'])) {
+                continue;
+            }
 
-        $playerName = $player['name'];
-        $newIp = $player['ip'];
+            $playerName = $player['name'];
+            $newIp = $player['ip'];
 
-        // 检查该玩家是否有历史IP记录
-        $stmt = $db->prepare("SELECT old_ip, synced_at FROM player_ip_changes WHERE player_name = :player");
-        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-        $result = $stmt->execute();
-        $row = $result->fetchArray(SQLITE3_ASSOC);
-
-        $hasChanged = false;
-        if (!$row) {
-            // 首次记录该玩家IP
-            $hasChanged = true;
-        } elseif ($row['old_ip'] !== $newIp) {
-            // IP发生变化
-            $hasChanged = true;
-        }
-
-        if ($hasChanged) {
-            // 记录IP变更
-            $stmt = $db->prepare("INSERT OR REPLACE INTO player_ip_changes (player_name, old_ip, new_ip, changed_at, synced_at) VALUES (:player, :old, :new, :time, :synced)");
+            // 检查该玩家是否有历史IP记录
+            $stmt = $db->prepare("SELECT old_ip, synced_at FROM player_ip_changes WHERE player_name = :player");
             $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $stmt->bindValue(':old', $row ? $row['old_ip'] : '', SQLITE3_TEXT);
-            $stmt->bindValue(':new', $newIp, SQLITE3_TEXT);
-            $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-            $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
-            $stmt->execute();
+            $result = $stmt->execute();
+            $row = $result->fetchArray(SQLITE3_ASSOC);
 
-            // online_players 表没有 ip_address 列，直接插入（login_time 会自动同步）
-            $stmt2 = $db->prepare("SELECT player_name FROM online_players WHERE player_name = :player");
-            $stmt2->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $result2 = $stmt2->execute();
-            if (!$result2->fetchArray()) {
-                // 不存在，先插入
-                $stmt3 = $db->prepare("INSERT INTO online_players (player_name, login_time) VALUES (:name, :time)");
-                $stmt3->bindValue(':name', $playerName, SQLITE3_TEXT);
-                $stmt3->bindValue(':time', $now, SQLITE3_INTEGER);
-                $stmt3->execute();
+            $hasChanged = false;
+            if (!$row) {
+                $hasChanged = true;
+            } elseif ($row['old_ip'] !== $newIp) {
+                $hasChanged = true;
             }
 
-            // 更新在线玩家IP（不实时更新online_players，因为IP归属由PHP端查询）
-            $changedCount++;
+            if ($hasChanged) {
+                $stmt = $db->prepare("INSERT OR REPLACE INTO player_ip_changes (player_name, old_ip, new_ip, changed_at, synced_at) VALUES (:player, :old, :new, :time, :synced)");
+                $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+                $stmt->bindValue(':old', $row ? $row['old_ip'] : '', SQLITE3_TEXT);
+                $stmt->bindValue(':new', $newIp, SQLITE3_TEXT);
+                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+                $stmt->execute();
 
-            // 如果之前已同步过(synced_at != 0)，标记为待重新查询
-            if ($row && $row['synced_at'] > 0) {
-                // 重置synced_at，让PHP端的IP查询逻辑重新查询API
-                $stmtReset = $db->prepare("UPDATE player_ip_changes SET synced_at = 0 WHERE player_name = :player");
-                $stmtReset->bindValue(':player', $playerName, SQLITE3_TEXT);
-                $stmtReset->execute();
+                $changedCount++;
+
+                if ($row && $row['synced_at'] > 0) {
+                    $stmtReset = $db->prepare("UPDATE player_ip_changes SET synced_at = 0 WHERE player_name = :player");
+                    $stmtReset->bindValue(':player', $playerName, SQLITE3_TEXT);
+                    $stmtReset->execute();
+                }
+            } else {
+                $skippedCount++;
             }
-        } else {
-            $skippedCount++;
         }
+
+        $db->exec("COMMIT");
+    } catch (Exception $e) {
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+        @error_log("[syncPlayerIps] Transaction failed: " . $e->getMessage());
     }
 
     success([
@@ -822,25 +1107,34 @@ function receiveToken() {
     }
 
     $db = getDB();
+    $db->exec('PRAGMA busy_timeout=10000');
     $now = time();
     $count = 0;
 
-    foreach ($tokens as $t) {
-        $tokenVal = $t['token'] ?? null;
-        $player = $t['player'] ?? 'system';
-        $purpose = $t['purpose'] ?? 'general';
-        $expireSeconds = (int)($t['expire_seconds'] ?: 600);
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        foreach ($tokens as $t) {
+            $tokenVal = $t['token'] ?? null;
+            $player = $t['player'] ?? 'system';
+            $purpose = $t['purpose'] ?? 'general';
+            $expireSeconds = (int)($t['expire_seconds'] ?: 600);
 
-        if (!$tokenVal) continue;
+            if (!$tokenVal) continue;
 
-        $stmt = $db->prepare("INSERT OR IGNORE INTO tokens (token, player_name, purpose, created_at, expires_at, used) VALUES (:token, :player, :purpose, :created, :expires, 0)");
-        $stmt->bindValue(':token', $tokenVal, SQLITE3_TEXT);
-        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-        $stmt->bindValue(':purpose', $purpose, SQLITE3_TEXT);
-        $stmt->bindValue(':created', $now, SQLITE3_INTEGER);
-        $stmt->bindValue(':expires', $now + $expireSeconds, SQLITE3_INTEGER);
-        $stmt->execute();
-        $count++;
+            $stmt = $db->prepare("INSERT OR IGNORE INTO tokens (token, player_name, purpose, created_at, expires_at, used) VALUES (:token, :player, :purpose, :created, :expires, 0)");
+            $stmt->bindValue(':token', $tokenVal, SQLITE3_TEXT);
+            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $stmt->bindValue(':purpose', $purpose, SQLITE3_TEXT);
+            $stmt->bindValue(':created', $now, SQLITE3_INTEGER);
+            $stmt->bindValue(':expires', $now + $expireSeconds, SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
+        }
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+        @error_log("[receiveToken] Exception: " . $e->getMessage());
+        error('Token注册失败: ' . $e->getMessage());
     }
 
     success(['registered' => $count], "注册了{$count}个Token");
@@ -848,12 +1142,20 @@ function receiveToken() {
 
 // ===== 插件同步Token到PHP数据库（通过已有sync token） =====
 function syncToken() {
+    // ★ 支持token或SECRET_KEY认证
     $token = getParam('token');
-    if (!$token) error('同步需要token');
-
-    $tokenInfo = validateToken($token);
-    if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-        error('同步需要管理权限token');
+    $secret = getParam('secret');
+    if ($token) {
+        $tokenInfo = validateToken($token);
+        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+            if (!($secret && $secret === SECRET_KEY)) {
+                error('同步需要管理权限token或SECRET_KEY');
+            }
+        }
+    } elseif ($secret) {
+        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+    } else {
+        error('同步需要token或SECRET_KEY');
     }
 
     $newToken = getParam('new_token');
@@ -1033,10 +1335,11 @@ function pushPlayerLoginStatus() {
     $stmt->execute();
     @error_log("[pushPlayerLoginStatus] Token stored: player=$player, created_at=$now, expire=$expireSeconds");
 
-    // 2. 如果玩家在游戏中已登录，更新online_players表
+    // 2. 如果玩家在游戏中已登录，更新online_players表（只更新已存在的记录，不凭空插入）
     if ($isOnline) {
         $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
-        $updateStmt = $db->prepare("INSERT OR REPLACE INTO online_players (player_name, login_time) VALUES (:player, :time)");
+        // ★ 只更新已存在的玩家，不插入新玩家（在线状态只由syncOnlinePlayers管理）
+        $updateStmt = $db->prepare("UPDATE online_players SET login_time = :time WHERE player_name = :player");
         $updateStmt->bindValue(':player', $player, SQLITE3_TEXT);
         $updateStmt->bindValue(':time', $now, SQLITE3_INTEGER);
         $updateStmt->execute();
@@ -1048,6 +1351,15 @@ function pushPlayerLoginStatus() {
         $sessionStmt->bindValue(':time', $now, SQLITE3_INTEGER);
         $sessionStmt->bindValue(':ip', 'plugin_sync', SQLITE3_TEXT);
         $sessionStmt->execute();
+
+        // ★ 记录每日登录（游戏内登录也算）
+        $today = date('Y-m-d');
+        $dlStmt = $db->prepare("INSERT OR REPLACE INTO player_daily_logins (player_name, login_date, first_login, last_login) VALUES (:name, :date, :first, :last)");
+        $dlStmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $dlStmt->bindValue(':date', $today, SQLITE3_TEXT);
+        $dlStmt->bindValue(':first', $now, SQLITE3_INTEGER);
+        $dlStmt->bindValue(':last', $now, SQLITE3_INTEGER);
+        $dlStmt->execute();
 
         // 如果已注册，更新users表的last_login_time
         if ($isRegistered) {
@@ -1258,11 +1570,30 @@ function checkWebLoginResult() {
                 'message' => '等待游戏服务器验证...'
             ]);
         } elseif ($row['status'] === 'success') {
-            // 验证成功
+            // 验证成功 → 写入web_login_verified（允许后续player.php直接放行）
+            $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+            $verifiedStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
+            $verifiedStmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $verifiedStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $verifiedStmt->execute();
+            debugLog("checkWebLoginResult: 写入web_login_verified", ['player' => $player]);
+
+            // ★ 生成weblogin_token返回给前端，让player.php可以继续使用
+            $newToken = bin2hex(random_bytes(32));
+            $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
+            $tokenStmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds) VALUES (:player, :token, :time, :expire)");
+            $tokenStmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $tokenStmt->bindValue(':token', $newToken, SQLITE3_TEXT);
+            $tokenStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $tokenStmt->bindValue(':expire', 600, SQLITE3_INTEGER);
+            $tokenStmt->execute();
+            debugLog("checkWebLoginResult: 生成weblogin_token", ['player' => $player]);
+
             $resultData = json_decode($row['result'], true);
             success([
                 'status' => 'success',
                 'player' => $player,
+                'token' => $newToken,
                 'user_data' => $resultData ?? ['player_name' => $player],
                 'message' => '登录成功'
             ]);
@@ -1370,6 +1701,16 @@ function completeWebLoginRequest() {
             $verifiedStmt->bindValue(':player', $player, SQLITE3_TEXT);
             $verifiedStmt->bindValue(':time', time(), SQLITE3_INTEGER);
             $verifiedStmt->execute();
+
+            // ★ 记录每日登录（Web登录也算）
+            $today = date('Y-m-d');
+            $now = time();
+            $dlStmt = $db->prepare("INSERT OR REPLACE INTO player_daily_logins (player_name, login_date, first_login, last_login) VALUES (:name, :date, :first, :last)");
+            $dlStmt->bindValue(':name', $player, SQLITE3_TEXT);
+            $dlStmt->bindValue(':date', $today, SQLITE3_TEXT);
+            $dlStmt->bindValue(':first', $now, SQLITE3_INTEGER);
+            $dlStmt->bindValue(':last', $now, SQLITE3_INTEGER);
+            $dlStmt->execute();
         }
 
         success(['status' => $status], "结果已写入");
@@ -1508,7 +1849,7 @@ function webAccessCheck() {
             $age = time() - $row['created_at'];
             $expire = $row['expire_seconds'];
             $isExpired = $age > $expire ? 'EXPIRED' : 'valid';
-            @error_log("[web_access_check] DB token: player=" . $row['player_name'] . ", token=" . $row['token_prefix'] . "..., age=${age}s, expire=${expire}s, status=$isExpired");
+            @error_log("[web_access_check] DB token: player=" . $row['player_name'] . ", token=" . $row['token_prefix'] . "..., age={$age}s, expire={$expire}s, status={$isExpired}");
         }
     } catch (Exception $e) {
         @error_log("[web_access_check] DB query error: " . $e->getMessage());
@@ -1526,12 +1867,9 @@ function webAccessCheck() {
     ]);
 
     if ($result['ok']) {
-        // 记录 session 日志（保存 IP 地址）
-        $sessionToken = logWebSession(
-            $result['player'] ?? '',
-            $ipAddress,
-            $result['session'] ?? ''
-        );
+        // ★ 修复：移除不存在的 logWebSession() 调用
+        // validateWebAccess 内部已通过 recordWebSession() 记录了 session，这里不需要重复记录
+        // 旧代码调用 logWebSession() 导致 PHP Fatal Error → 返回 HTML 错误页 → player.php 解析 JSON 失败 → 游客模式
 
         success([
             'player' => $result['player'] ?? '',
@@ -1577,6 +1915,35 @@ function webAccessCheck() {
     }
 }
 
+// ===== 轻量级检查：是否有待处理的交易（Java高频轮询用）=====
+function checkPendingTransactions() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $hasTable = false;
+    try {
+        $stmt = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_transactions'");
+        $hasTable = ($stmt && $stmt->fetchArray());
+    } catch (Exception $e) {}
+
+    if (!$hasTable) {
+        success(['pending' => 0], 'no table');
+        return;
+    }
+
+    $count = 0;
+    try {
+        $stmt = $db->query("SELECT COUNT(*) as cnt FROM web_transactions WHERE status = 'pending'");
+        if ($stmt) {
+            $row = $stmt->fetchArray(SQLITE3_ASSOC);
+            $count = (int)($row['cnt'] ?? 0);
+        }
+    } catch (Exception $e) {}
+
+    success(['pending' => $count], $count > 0 ? '有交易待处理' : '无待处理');
+}
+
 // ===== 插件拉取待处理的交易 =====
 function pullPendingTransactions() {
     $secret = getParam('secret');
@@ -1595,29 +1962,34 @@ function pullPendingTransactions() {
         $db->exec("ALTER TABLE web_transactions ADD COLUMN processed_at INTEGER");
     }
 
-    // 先恢复超时的processing交易（超过60秒未确认的恢复为pending）
-    if ($hasProcessedAt) {
-        $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 60));
-    }
-
-    // 获取所有pending的交易
-    $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
-    $result = $stmt->execute();
+    // 获取所有pending的交易 + 标记为processing（原子操作，避免database is locked）
     $transactions = [];
     $ids = [];
-    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $transactions[] = $row;
-        $ids[] = (int)$row['id'];
-    }
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        
+        // 恢复超时的processing交易（超过60秒未确认的恢复为pending）
+        if ($hasProcessedAt) {
+            $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 60));
+        }
+        
+        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
+        $result = $stmt->execute();
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $transactions[] = $row;
+            $ids[] = (int)$row['id'];
+        }
 
         // 立即标记为processing（防止5秒后重复拉取）
-    if ($hasProcessedAt && !empty($ids)) {
-        $idList = implode(',', $ids);
-        try {
+        if (!empty($ids)) {
+            $idList = implode(',', $ids);
             $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
-        } catch (Exception $e) {
-            // 数据库锁定异常，忽略（下一个请求会清理）
         }
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+        @error_log("[pullPendingTransactions] 事务失败: " . $e->getMessage());
+        // 降级：不做标记，直接返回（下一轮会重新拉取）
     }
 
     success(['transactions' => $transactions, 'count' => count($transactions)]);
@@ -1639,14 +2011,21 @@ function confirmTransaction() {
         if ($row['name'] === 'processed_at') { $hasProcessedAt = true; break; }
     }
 
-    if ($hasProcessedAt) {
-        $stmt = $db->prepare("UPDATE web_transactions SET status = 'processed', processed_at = :time WHERE id = :id AND status IN ('pending', 'processing')");
-        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    } else {
-        $stmt = $db->prepare("UPDATE web_transactions SET status = 'processed' WHERE id = :id AND status IN ('pending', 'processing')");
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        if ($hasProcessedAt) {
+            $stmt = $db->prepare("UPDATE web_transactions SET status = 'processed', processed_at = :time WHERE id = :id AND status IN ('pending', 'processing')");
+            $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        } else {
+            $stmt = $db->prepare("UPDATE web_transactions SET status = 'processed' WHERE id = :id AND status IN ('pending', 'processing')");
+        }
+        $stmt->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
+        $stmt->execute();
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+        @error_log("[confirmTransaction] 失败: " . $e->getMessage());
     }
-    $stmt->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
-    $stmt->execute();
 
     success(['tx_id' => $txId], '交易已确认');
 }
@@ -1680,17 +2059,10 @@ function notifySync() {
     // 写入同步通知文件（包含交易ID）
     $notifyFile = __DIR__ . '/../../sync_notify.txt';
     $notifyData = json_encode(['time' => time(), 'tx_id' => (int)$txId]);
-    file_put_contents($notifyFile, $notifyData, LOCK_EX);
+    @file_put_contents($notifyFile, $notifyData, LOCK_EX);
 
-    // ★ 方式1: 直接HTTP回调通知Java插件拉取交易
-    $callbackPort = CALLBACK_PORT ?? 8080; // 默认端口
-    $callbackUrl = "http://127.0.0.1:" . $callbackPort . "/api/pull_pending_transactions?secret=" . SECRET_KEY;
-    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
-    
-    // ★ 方式2: 如果回环不通，也尝试通过Web URL触发
-    $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http') . '://' . $_SERVER['HTTP_HOST'] . WEBSUB_DIR;
-    $notifyUrl2 = $baseUrl . "api/sync.php?action=notify_sync&secret=" . SECRET_KEY . "&tx_id=" . $txId;
-    @file_get_contents($notifyUrl2, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
+    // ★ 不再使用HTTP回调，Java的transactionPolling每5秒轮询check_pending_transactions
+    @error_log('[notifySync] 收到同步通知，tx_id=' . $txId . '，Java轮询会自动拉取');
 
     success(['tx_id' => (int)$txId], '已通知插件立即同步交易数据');
 }
@@ -1720,33 +2092,46 @@ function resendPendingTransactions() {
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
 
-    // 恢复超时processing交易
-    $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 120));
+    // ★ 事务包装防止 "database is locked"
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        // 恢复超时processing交易
+        $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 120));
 
-    $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC");
-    $result = $stmt->execute();
-    $transactions = [];
-    $ids = [];
-    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $transactions[] = $row;
-        $ids[] = (int)$row['id'];
-    }
+        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC");
+        $result = $stmt->execute();
+        $transactions = [];
+        $ids = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $transactions[] = $row;
+            $ids[] = (int)$row['id'];
+        }
 
-    // 重新标记为processing
-    if (!empty($ids)) {
-        $idList = implode(',', $ids);
-        $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+        // 重新标记为processing
+        if (!empty($ids)) {
+            $idList = implode(',', $ids);
+            $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
+        }
+
+        $db->exec("COMMIT");
+    } catch (Exception $e) {
+        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+        @error_log("[resendPendingTransactions] Transaction failed: " . $e->getMessage());
+        error('数据库操作失败: ' . $e->getMessage());
     }
 
     success(['transactions' => $transactions, 'count' => count($transactions), 'resend' => true], '已补发' . count($transactions) . '笔pending交易');
 }
 
 // ===== 邮箱脱敏工具 =====
+// 格式: 123@456.com → xx@456.com（只显示后缀）
 function maskEmail($email) {
     if (empty($email)) return '';
     $parts = explode('@', $email);
     if (count($parts) !== 2) return '**@' . ($parts[0] ?? '*');
-    return '**@' . $parts[1];
+    $domain = $parts[1];
+    // 只显示域名，前面用xx代替
+    return 'xx@' . $domain;
 }
 
 // ===== 发送邮箱验证码 =====

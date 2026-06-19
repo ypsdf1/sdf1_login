@@ -563,10 +563,11 @@ function renderAllUsers(tab, users, onlineSet, onlineMap) {
     const search = (window.currentSearch || '').toLowerCase();
     
     div.innerHTML = `
-        <div class="form-row" style="margin-bottom:12px">
-            <input id="userSearch" placeholder="搜索玩家名..." oninput="handleUserSearch()" style="flex:1">
+        <div class="form-row" style="margin-bottom:4px">
+            <input id="userSearch" placeholder="智能搜索：玩家名 / IP / 日期(2026-06-18) / 地区(广东)" oninput="handleUserSearch()" style="flex:1">
             <button class="btn btn-blue" onclick="doLazyLoadSearch()">搜索</button>
         </div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">支持：纯文本→玩家名 | IP格式→IP搜索 | 日期格式→日期搜索 | 省/市名→地区搜索</div>
         <div id="userLazyContainer">
             <div class="empty">加载中...</div>
         </div>
@@ -1127,17 +1128,26 @@ async function loadActivePlayers(el) {
     const r = await jsonApi('admin.php?action=list_active_players');
     if (!r.success) { el.innerHTML='<div class="card">'+r.message+'</div>'; return; }
     const players = r.data || [];
+    const totalBeforeDedup = r.total_before_dedup || players.length;
+    const dedupCount = totalBeforeDedup - players.length;
+
     el.innerHTML = `
         <div class="card">
-            <h2>24小时活跃用户 <span style="color:var(--dim);font-size:12px">(${players.length}人)</span></h2>
+            <h2>24小时活跃用户 <span style="color:var(--accent);font-size:14px">(${players.length}人)</span>
+                ${dedupCount > 0 ? `<span style="color:var(--yellow);font-size:12px;margin-left:8px">（已隐藏${dedupCount}个同子网用户）</span>` : ''}
+            </h2>
             <table class="table">
-                <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th></tr>
+                <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th><th>IP</th><th>IP属地</th></tr>
                 ${players.map(p => {
                     const loginTime = p.last_login_time ? new Date(p.last_login_time*1000).toLocaleString() : '-';
+                    const ip = p.ip_address || '-';
+                    const ipLoc = p.ip_location || '-';
                     return `<tr>
                         <td class="player-online">${p.player_name}</td>
                         <td>${loginTime}</td>
                         <td>${p.hours_online}小时</td>
+                        <td style="font-size:12px;font-family:monospace">${ip}</td>
+                        <td style="font-size:12px">${ipLoc}</td>
                     </tr>`;
                 }).join('')}
             </table>
@@ -1159,25 +1169,39 @@ function loadActiveTab(tab, seconds) {
     r.then(res => {
         if (!res.success) { div.innerHTML='<div class="card" style="border-color:var(--red)">'+res.message+'</div>'; return; }
         const players = res.data || [];
-        
-        // 统计同IP玩家
-        const ipCountMap = {};
+        const totalBeforeDedup = res.total_before_dedup || players.length;
+        const dedupCount = totalBeforeDedup - players.length;
+
+        // 统计同子网玩家
+        const subnetCountMap = {};
         players.forEach(p => {
             const ip = p.ip_address || '-';
-            if (ip !== '-') ipCountMap[ip] = (ipCountMap[ip] || 0) + 1;
+            if (ip !== '-') {
+                const parts = ip.split('.');
+                const subnet = parts.length === 4 ? parts[0]+'.'+parts[1]+'.'+parts[2] : ip;
+                subnetCountMap[subnet] = (subnetCountMap[subnet] || 0) + 1;
+            }
         });
         
         div.innerHTML = `
-            <h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">${label}内活跃用户 <span style="color:var(--dim)">(${players.length}人)</span></h3>
+            <h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">
+                ${label}内活跃用户 <span style="color:var(--accent)">(${players.length}人)</span>
+                ${dedupCount > 0 ? `<span style="color:var(--yellow);font-size:12px;margin-left:8px">（已隐藏${dedupCount}个同子网用户）</span>` : ''}
+            </h3>
             <table class="table">
                 <tr><th>玩家名</th><th>最后活跃</th><th>总在线时长</th><th>IP地址</th><th>IP属地</th></tr>
                 ${players.map(p => {
                     const loginTime = p.last_login_time ? new Date(p.last_login_time*1000).toLocaleString() : '-';
                     const ip = p.ip_address || '-';
                     const ipLoc = p.ip_location || '-';
-                    const isShared = (ipCountMap[ip] || 0) > 1;
+                    let subnet = '';
+                    if (ip !== '-') {
+                        const parts = ip.split('.');
+                        subnet = parts.length === 4 ? parts[0]+'.'+parts[1]+'.'+parts[2] : ip;
+                    }
+                    const isShared = subnet && (subnetCountMap[subnet] || 0) > 1;
                     const ipStyle = isShared ? 'color:var(--yellow);font-weight:700' : '';
-                    const ipBadge = isShared ? ` <span style="font-size:10px;background:var(--yellow);color:#000;padding:1px 4px;border-radius:3px">同IP${ipCountMap[ip]}人</span>` : '';
+                    const ipBadge = isShared ? ` <span style="font-size:10px;background:var(--yellow);color:#000;padding:1px 4px;border-radius:3px">同网段${subnetCountMap[subnet]}人</span>` : '';
                     return `<tr>
                         <td>${p.player_name}</td>
                         <td>${loginTime}</td>
@@ -1209,15 +1233,15 @@ async function loadSameIpTab(tab) {
     }
     
     const groups = r.data;
-    let html = `<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">同IP多玩家 <span style="color:var(--dim)">(${groups.length}个IP组)</span></h3>`;
+    let html = `<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">同网段玩家 <span style="color:var(--dim)">(${groups.length}个网段组)</span></h3>`;
     groups.forEach(g => {
         html += `<div class="card" style="margin-bottom:12px">`;
-        html += `<h4 style="color:var(--yellow);margin-bottom:8px">🌐 ${g.ip} <span style="font-size:12px;color:var(--dim)">(${g.player_count}人 | ${g.ip_location || '-'})</span></h4>`;
+        html += `<h4 style="color:var(--yellow);margin-bottom:8px">🌐 ${g.subnet || g.ip} <span style="font-size:12px;color:var(--dim)">(${g.player_count}人 | ${g.ip_location || '-'})</span></h4>`;
         html += `<table class="table">`;
-        html += `<tr><th>玩家名</th><th>IP属地</th><th>最后登录时间</th></tr>`;
+        html += `<tr><th>玩家名</th><th>IP地址</th><th>IP属地</th><th>最后登录时间</th></tr>`;
         g.players.forEach(p => {
             const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
-            html += `<tr><td>${p.player_name}</td><td style="font-size:12px">${p.ip_location || '-'}</td><td>${loginTime}</td></tr>`;
+            html += `<tr><td>${p.player_name}</td><td style="font-size:12px;font-family:monospace">${p.ip_address || '-'}</td><td style="font-size:12px">${p.ip_location || '-'}</td><td>${loginTime}</td></tr>`;
         });
         html += `</table></div>`;
     });

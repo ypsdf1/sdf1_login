@@ -148,14 +148,29 @@ function cdkExchange($token) {
         $stmt->execute();
     }
 
-    // 记录流水
-    $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
-    $stmt->bindValue(':reason', "CDK兑换: {$code}", SQLITE3_TEXT);
-    $stmt->bindValue(':detail', json_encode(['code' => $code], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-    $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-    $stmt->execute();
+    // ★ 所有DB操作包装在事务中，防止database is locked
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        // 记录流水
+        $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
+        $stmt->bindValue(':reason', "CDK兑换: {$code}", SQLITE3_TEXT);
+        $stmt->bindValue(':detail', json_encode(['code' => $code], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+
+        // ★ 写入sync_requests触发Java立即拉取（必须在success/exit之前！）
+        $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+        $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+        $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
+        $stmt2->execute();
+
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+    }
 
     success([
         'code' => $code,
@@ -164,18 +179,6 @@ function cdkExchange($token) {
         'balance_before' => $currentBalance,
         'balance_after' => $newBalance
     ], 'CDK兑换成功');
-
-    // ★ 写入sync_requests触发Java立即拉取
-    $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
-    $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
-    $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
-    $stmt2->execute();
-
-    // ★ 通过HTTP回调通知Java插件立即拉取交易
-    $cbPort = defined('CALLBACK_PORT') ? CALLBACK_PORT : 9090;
-    $callbackUrl = 'http://127.0.0.1:' . $cbPort . '/notify_sync';
-    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
 }
 
 // ===== 创建CDK =====

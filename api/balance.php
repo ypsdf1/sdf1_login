@@ -228,28 +228,55 @@ function balanceTransactions($token) {
 
     $db = getDB();
 
+    $txs = [];
+
     if ($player) {
         // 查看指定玩家流水
         if ($tokenInfo['player'] !== $player && $tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all') {
             error('无权查看其他玩家流水');
         }
-        $stmt = $db->prepare("SELECT * FROM web_transactions WHERE player_name = :player ORDER BY created_at DESC LIMIT :limit");
-        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-        $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+        // Web端交易
+        try {
+            $stmt = $db->prepare("SELECT *, 'web' as source FROM web_transactions WHERE player_name = :player ORDER BY created_at DESC LIMIT :limit");
+            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) { /* ignore */ }
+        // 游戏内交易
+        try {
+            $stmt = $db->prepare("SELECT java_id as id, player_name, type, amount, operator, reason, '' as detail, tx_time as created_at, 'game' as source, balance_before, balance_after FROM game_transactions WHERE player_name = :player ORDER BY tx_time DESC LIMIT :limit");
+            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) { /* ignore */ }
     } else {
         // 管理员查看全服流水
         if ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all') {
             error('查看全服流水需要管理员权限');
         }
-        $stmt = $db->prepare("SELECT * FROM web_transactions ORDER BY created_at DESC LIMIT :limit");
-        $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+        // Web端交易
+        try {
+            $stmt = $db->prepare("SELECT *, 'web' as source FROM web_transactions ORDER BY created_at DESC LIMIT :limit");
+            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) { /* ignore */ }
+        // 游戏内交易
+        try {
+            $stmt = $db->prepare("SELECT java_id as id, player_name, type, amount, operator, reason, '' as detail, tx_time as created_at, 'game' as source, balance_before, balance_after FROM game_transactions ORDER BY tx_time DESC LIMIT :limit");
+            $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
+        } catch (Exception $e) { /* ignore */ }
     }
 
-    $txs = [];
-    $result = $stmt->execute();
-    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $txs[] = $row;
-    }
+    // 按时间排序（倒序）
+    usort($txs, function($a, $b) {
+        return ($b['created_at'] ?? 0) - ($a['created_at'] ?? 0);
+    });
+    $txs = array_slice($txs, 0, (int)$limit);
 
     success($txs);
 }

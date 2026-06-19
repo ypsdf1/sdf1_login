@@ -198,14 +198,74 @@ function registerQuery($token) {
         $row['last_login_time'] = (int)($row['last_login_time'] / 1000);
     }
 
+    // ★ 获取债券余额
+    $bonds = 0;
+    try {
+        $bondStmt = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :name");
+        $bondStmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $bondResult = $bondStmt->execute();
+        $bondRow = $bondResult->fetchArray(SQLITE3_ASSOC);
+        if ($bondRow) $bonds = (int)($bondRow['amount'] ?? 0);
+    } catch (Exception $e) {}
+
+    // ★ 获取累计在线天数（不重复日期计数）
+    $totalOnlineDays = 0;
+    try {
+        $odStmt = $db->prepare("SELECT COUNT(DISTINCT login_date) as cnt FROM player_daily_logins WHERE player_name = :name");
+        $odStmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $odResult = $odStmt->execute();
+        $odRow = $odResult->fetchArray(SQLITE3_ASSOC);
+        if ($odRow) $totalOnlineDays = (int)($odRow['cnt'] ?? 0);
+    } catch (Exception $e) {}
+
+    // ★ 获取累计签到天数
+    $totalCheckinDays = 0;
+    try {
+        $ciStmt = $db->prepare("SELECT COUNT(DISTINCT checkin_date) as cnt FROM player_checkins WHERE player_name = :name");
+        $ciStmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $ciResult = $ciStmt->execute();
+        $ciRow = $ciResult->fetchArray(SQLITE3_ASSOC);
+        if ($ciRow) $totalCheckinDays = (int)($ciRow['cnt'] ?? 0);
+    } catch (Exception $e) {}
+
+    // 合并额外数据
+    $row['bonds'] = $bonds;
+    $row['total_online_days'] = $totalOnlineDays;
+    $row['total_checkin_days'] = $totalCheckinDays;
+
+    // 邮箱脱敏
+    if (!empty($row['email'])) {
+        $parts = explode('@', $row['email']);
+        if (count($parts) === 2) {
+            $row['masked_email'] = str_repeat('*', min(strlen($parts[0]), 3)) . '@' . $parts[1];
+        } else {
+            $row['masked_email'] = '***';
+        }
+    } else {
+        $row['masked_email'] = '';
+    }
+
     // ★ 严格校验：必须有有效token且token对应的玩家必须与查询的玩家匹配（除非是管理员token）
     if (!$token) {
         // 无token：隐藏敏感信息
-        preview($row, '预览模式 - 部分信息已隐藏');
+        $previewRow = [
+            'player_name' => $row['player_name'],
+            'register_time' => $row['register_time'],
+            'last_login_time' => $row['last_login_time'],
+            'email' => '',
+            'masked_email' => '',
+            'points' => 0,
+            'gift_stage' => 0,
+            'total_online_time' => 0,
+            'bonds' => 0,
+            'total_online_days' => 0,
+            'total_checkin_days' => 0
+        ];
+        preview($previewRow, '预览模式 - 部分信息已隐藏');
         return;
     }
 
-    $tokenInfo = validateToken($token);
+    $tokenInfo = validateTokenSilent($token);
     if (!$tokenInfo) {
         error('无效token，请先登录', 401);
     }
@@ -224,10 +284,14 @@ function registerQuery($token) {
             'player_name' => $row['player_name'],
             'register_time' => $row['register_time'],
             'last_login_time' => $row['last_login_time'],
-            'email' => '***',
+            'email' => '',
+            'masked_email' => '***',
             'points' => 0,
             'gift_stage' => 0,
-            'total_online_time' => 0
+            'total_online_time' => 0,
+            'bonds' => 0,
+            'total_online_days' => 0,
+            'total_checkin_days' => 0
         ];
         preview($maskedRow, '预览模式 - 您只能查看自己的账号信息');
     }

@@ -182,32 +182,44 @@ function shopBuy($token) {
         ], '预览模式 - 购买不会生效');
     }
 
-    // 实际购买
-    // 更新库存
-    if ($item['stock'] > 0) {
-        $stmt = $db->prepare("UPDATE shop_items SET stock = stock - :amount, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
-        $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
-        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
+    // ★ 实际购买 — 包装在事务中，防止database is locked
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        // 更新库存
+        if ($item['stock'] > 0) {
+            $stmt = $db->prepare("UPDATE shop_items SET stock = stock - :amount, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+            $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
+            $stmt->execute();
+        } else {
+            // 无限库存，只更新销量
+            $stmt = $db->prepare("UPDATE shop_items SET hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+            $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
+            $stmt->execute();
+        }
+
+        // 记录交易
+        $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_buy', :amount, :reason, :detail, 'pending', :time)");
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt->bindValue(':amount', $totalPrice, SQLITE3_INTEGER);
+        $stmt->bindValue(':reason', "购买: {$item['display_name']} x{$amount}", SQLITE3_TEXT);
+        $stmt->bindValue(':detail', json_encode(['item_id' => $itemId, 'amount' => $amount, 'unit_price' => $item['buy_price']], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
-    } else {
-        // 无限库存，只更新销量
-        $stmt = $db->prepare("UPDATE shop_items SET hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
-        $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
-        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
-        $stmt->execute();
+
+        // ★ 写入sync_requests（必须在success/exit之前！）
+        $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+        $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+        $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+
+        $db->exec('COMMIT');
+    } catch (Exception $e) {
+        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+        error('购买失败: ' . $e->getMessage(), 500);
     }
-
-    // 记录交易
-    $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_buy', :amount, :reason, :detail, 'pending', :time)");
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt->bindValue(':amount', $totalPrice, SQLITE3_INTEGER);
-    $stmt->bindValue(':reason', "购买: {$item['display_name']} x{$amount}", SQLITE3_TEXT);
-    $stmt->bindValue(':detail', json_encode(['item_id' => $itemId, 'amount' => $amount, 'unit_price' => $item['buy_price']], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-    $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    $stmt->execute();
-
-    // ★ 记录交易创建
-    $txId = $db->lastInsertRowID();
 
     success([
         'item_id' => $itemId,
@@ -216,19 +228,6 @@ function shopBuy($token) {
         'total_price' => $totalPrice,
         'player' => $player
     ], '购买成功');
-
-    // ★ 立即请求Java插件拉取pending交易
-    $db2 = getDB();
-    $db2->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
-    $stmt2 = $db2->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
-    $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
-    $stmt2->execute();
-
-    // ★ 通过HTTP回调通知Java插件立即拉取交易
-    $cbPort = defined('CALLBACK_PORT') ? CALLBACK_PORT : 9090;
-    $callbackUrl = 'http://127.0.0.1:' . $cbPort . '/notify_sync';
-    @file_get_contents($callbackUrl, false, stream_context_create(['http' => ['method' => 'POST', 'timeout' => 3]]));
 }
 
 // ===== Weblogin Token验证（用于商城购买）=====

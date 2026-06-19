@@ -1,7 +1,35 @@
+<?php
+// ★ 强制缓存失效：用文件修改时间作为版本号
+// 每次修改player.php后，文件时间戳变化 → URL不同 → 浏览器必须获取新内容
+header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('X-Accel-Expires: 0');  // Nginx反代也禁缓存
+
+$BUILD_VERSION = 'v' . filemtime(__FILE__);  // 文件修改时间 = 版本号
+$currentVersion = isset($_GET['_v']) ? $_GET['_v'] : '';
+if ($currentVersion !== $BUILD_VERSION) {
+    // 版本不匹配 → 重定向到带正确版本号的URL（浏览器视为全新请求）
+    // 先移除旧的 _v 参数
+    $params = $_GET;
+    unset($params['_v']);
+    $queryString = http_build_query($params);
+    $path = strtok($_SERVER['REQUEST_URI'], '?');
+    $newUrl = $path . ($queryString ? '?' . $queryString . '&' : '?') . '_v=' . $BUILD_VERSION;
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    header('Location: ' . $newUrl, true, 302);
+    exit;
+}
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SDF1 - 玩家商城</title>
     <style>
@@ -135,10 +163,10 @@
 
     <div class="main">
         <div class="sidebar">
-            <div class="sidebar-item active" data-page="shop" onclick="switchPage('shop')">🛒 商城</div>
+            <div class="sidebar-item active" data-page="dashboard" onclick="switchPage('dashboard')">📊 个人中心</div>
+            <div class="sidebar-item" data-page="shop" onclick="switchPage('shop')">🛒 商城</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
-            <div class="sidebar-item" data-page="account" onclick="switchPage('account')">👤 账号信息</div>
         </div>
 
         <div class="content" id="content">
@@ -158,6 +186,30 @@
     </div>
 
     <script>
+    // ★ 防止bfcache（前进/后退缓存）绕过安全检查
+    window.addEventListener('pageshow', function(e) {
+        if (e.persisted) {
+            // 页面从bfcache恢复 → 强制刷新以获取最新代码
+            console.log('[BFCACHE] Page restored from bfcache, forcing reload');
+            location.reload();
+        }
+    });
+    // ★ 版本检测：强制清除浏览器缓存的旧版JS
+    (function() {
+        const buildVersion = '<?php echo $BUILD_VERSION; ?>';
+        const lastVersion = localStorage.getItem('sdf1_build_version');
+        if (lastVersion && lastVersion !== buildVersion) {
+            // 版本变化 → 清除所有缓存，强制刷新
+            localStorage.removeItem('sdf1_token');
+            localStorage.removeItem('sdf1_player');
+            localStorage.removeItem('sdf1_build_version');
+            localStorage.setItem('sdf1_build_version', buildVersion);
+            console.log('[VERSION] Old version detected, clearing cache and reloading. Old:', lastVersion, 'New:', buildVersion);
+            location.reload();
+            return;
+        }
+        localStorage.setItem('sdf1_build_version', buildVersion);
+    })();
     const API = 'api/';
     let TOKEN = new URLSearchParams(location.search).get('token') || localStorage.getItem('sdf1_token') || '';
     let IS_PREVIEW = !TOKEN;
@@ -165,13 +217,14 @@
     let tokenPollTimer = null; // ★ 新增：token轮询定时器（用于续期检查）
     let AUTH_TOKEN = TOKEN; // ★ 使用独立的认证token，避免localStorage被意外覆盖
     let authVerified = false; // ★ 记录是否已通过首次验证
-    let currentPage = 'shop';
+    let currentPage = 'dashboard';
     let AUTHENTICATED = false;
     let NEED_PASSWORD = false;
 
-    // 初始化
+    // 初始化 — 回档9bae160版本的token处理逻辑
     (function() {
         const urlToken = new URLSearchParams(location.search).get('token');
+
         if (urlToken) {
             localStorage.setItem('sdf1_token', urlToken);
             TOKEN = urlToken;
@@ -222,10 +275,10 @@
                 document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer;
                 authVerified = true; // ★ 标记已通过验证
                 if (callback) callback({ok: true, mode: data.data.mode});
-                // ★ 如果不需要密码，直接加载商品页
+                // ★ 如果不需要密码，直接加载个人中心
                 if (typeof NEED_PASSWORD !== 'undefined' && !NEED_PASSWORD) {
                     setTimeout(() => {
-                        switchPage('shop');
+                        switchPage('dashboard');
                         // ★ Token跟随Java端配置过期时间自动过期，不续费
                         // startTokenPolling() 不再调用，仅保留变量声明
                     }, 100);
@@ -565,30 +618,126 @@
 
     function showLoginPrompt() {
         const c = document.getElementById('content');
+        const urlLogin = new URLSearchParams(location.search).get('login') || currentPlayer || '';
         c.innerHTML = `
             <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;text-align:center;padding:40px">
-                <div style="font-size:64px;margin-bottom:24px">🎮</div>
-                <h2 style="color:var(--text);margin-bottom:12px">欢迎来到SDF1玩家商城</h2>
-                <p style="color:var(--dim);font-size:14px;margin-bottom:32px;max-width:400px">
-                    请先登录游戏获取Web访问令牌<br>
-                    然后通过令牌链接访问此页面
+                <div style="font-size:64px;margin-bottom:24px">🔐</div>
+                <h2 style="color:var(--text);margin-bottom:12px">登录到SDF1玩家商城</h2>
+                <p style="color:var(--dim);font-size:14px;margin-bottom:24px;max-width:400px">
+                    输入游戏内密码登录，无需在游戏里敲指令
                 </p>
-                <div style="background:rgba(59,130,246,0.1);border:1px solid var(--accent);border-radius:8px;padding:20px;margin-bottom:32px;max-width:500px;text-align:left">
-                    <h3 style="color:var(--accent);margin:0 0 12px 0;font-size:16px">📱 如何获取访问令牌？</h3>
-                    <ol style="color:var(--dim);font-size:13px;margin:0;padding-left:20px;line-height:1.8">
-                        <li>登录Minecraft游戏服务器</li>
-                        <li>在聊天栏输入 <code style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:3px">/sdf1_login weblogin</code></li>
-                        <li>复制返回的Web访问链接</li>
-                        <li>在浏览器中打开该链接</li>
-                    </ol>
+                <!-- 密码登录表单 -->
+                <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:24px;width:360px;max-width:100%">
+                    <div style="text-align:left;margin-bottom:16px">
+                        <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">玩家名</label>
+                        <input type="text" id="loginPlayerName" value="${urlLogin}" placeholder="输入玩家名" maxlength="16"
+                            style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                    </div>
+                    <div style="text-align:left;margin-bottom:20px">
+                        <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">游戏内密码</label>
+                        <input type="password" id="loginPassword" placeholder="输入密码" maxlength="32"
+                            style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                    </div>
+                    <div id="loginStatusBox" style="display:none;margin-bottom:16px"></div>
+                    <button id="loginSubmitBtn" class="btn btn-primary" style="width:100%;padding:12px" onclick="doDirectLogin()">登录</button>
+                    <p style="color:var(--dim);font-size:12px;margin-top:12px">密码由游戏服务器验证，Web端不存储密码</p>
                 </div>
-                <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
-                    <button class="btn" onclick="location.reload()" style="padding:12px 24px">🔄 刷新页面</button>
-                    <button class="btn btn-primary" onclick="showGuestMode()" style="padding:12px 24px">👁️ 预览模式</button>
+                <!-- 备用方案 -->
+                <div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:16px;margin-bottom:24px;max-width:400px;text-align:left">
+                    <h3 style="color:var(--accent);margin:0 0 8px 0;font-size:14px">📱 也可以在游戏中获取链接</h3>
+                    <p style="color:var(--dim);font-size:12px;margin:0;line-height:1.6">
+                        在游戏聊天栏输入 <code style="background:rgba(255,255,255,0.1);padding:1px 4px;border-radius:3px">/sdf1_login weblogin</code>
+                    </p>
                 </div>
-                <p style="color:var(--dim);font-size:12px;margin-top:24px">游客模式下可以浏览商品，但无法购买</p>
+                <button class="btn" onclick="showGuestMode()" style="padding:10px 20px;font-size:13px">👁️ 先逛逛（游客模式）</button>
             </div>`;
         document.querySelector('.sidebar').style.display = 'none';
+        // 自动聚焦密码框
+        setTimeout(() => { const pwd = document.getElementById('loginPassword'); if (pwd) pwd.focus(); }, 100);
+    }
+
+    // ★ 直接密码登录（不需要游戏内token）
+    async function doDirectLogin() {
+        const player = document.getElementById('loginPlayerName').value.trim();
+        const password = document.getElementById('loginPassword').value;
+        const statusBox = document.getElementById('loginStatusBox');
+        const submitBtn = document.getElementById('loginSubmitBtn');
+
+        if (!player) { showLoginStatus('请输入玩家名', 'error'); return; }
+        if (!password) { showLoginStatus('请输入密码', 'error'); return; }
+
+        submitBtn.disabled = true;
+        showLoginStatus('正在提交登录请求...', 'loading');
+
+        try {
+            // 1. 提交登录请求
+            const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({player, password})
+            });
+            const reqData = await reqRes.json();
+            if (!reqData.success) {
+                showLoginStatus(reqData.message || '提交失败', 'error');
+                submitBtn.disabled = false;
+                return;
+            }
+            const requestId = reqData.data.request_id;
+            showLoginStatus('等待游戏服务器验证密码...', 'loading');
+
+            // 2. 轮询结果
+            let attempts = 0;
+            const pollInterval = setInterval(async () => {
+                attempts++;
+                if (attempts > 60) {
+                    clearInterval(pollInterval);
+                    showLoginStatus('验证超时，请稍后重试', 'error');
+                    submitBtn.disabled = false;
+                    return;
+                }
+                try {
+                    const pollRes = await fetch(API + 'sync.php?action=check_web_login_result&player=' + encodeURIComponent(player) + '&request_id=' + requestId);
+                    const pollData = await pollRes.json();
+                    if (pollData.success && pollData.data) {
+                        const result = pollData.data;
+                        if (result.status === 'success') {
+                            clearInterval(pollInterval);
+                            showLoginStatus('✅ 登录成功！正在跳转...', 'success');
+                            // 存储token和玩家名
+                            const token = result.token;
+                            localStorage.setItem('sdf1_token', token);
+                            localStorage.setItem('sdf1_player', player);
+                            // 跳转到player.php带token
+                            setTimeout(() => {
+                                window.location.href = 'player.php?login=' + encodeURIComponent(player) + '&token=' + encodeURIComponent(token);
+                            }, 500);
+                        } else if (result.status === 'failed') {
+                            clearInterval(pollInterval);
+                            showLoginStatus('❌ ' + (result.message || '密码错误'), 'error');
+                            submitBtn.disabled = false;
+                        }
+                    }
+                } catch (e) { /* 继续轮询 */ }
+            }, 1000);
+        } catch (e) {
+            showLoginStatus('连接失败: ' + e.message, 'error');
+            submitBtn.disabled = false;
+        }
+    }
+
+    function showLoginStatus(msg, type) {
+        const box = document.getElementById('loginStatusBox');
+        if (!box) return;
+        const colors = { loading: 'var(--accent)', success: 'var(--green)', error: 'var(--red)' };
+        const bgs = { loading: 'rgba(88,166,255,0.1)', success: 'rgba(63,185,80,0.1)', error: 'rgba(248,81,73,0.1)' };
+        box.style.display = 'block';
+        box.style.background = bgs[type] || bgs.loading;
+        box.style.border = '1px solid ' + (colors[type] || colors.loading);
+        box.style.borderRadius = '6px';
+        box.style.padding = '10px 14px';
+        box.style.fontSize = '13px';
+        box.style.color = colors[type] || 'var(--text)';
+        box.innerHTML = type === 'loading' ? '<span style="display:inline-block;width:14px;height:14px;border:2px solid var(--dim);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px"></span> ' + msg : msg;
     }
 
     function showGuestMode() {
@@ -601,7 +750,7 @@
         document.getElementById('playerInfo').textContent = '游客模式';
         document.getElementById('previewBadge').style.display = 'inline';
         document.querySelector('.sidebar').style.display = 'block';
-        switchPage('shop');
+        switchPage('dashboard');
     }
 
     function switchPage(page) {
@@ -612,7 +761,8 @@
         document.querySelector('.sidebar').style.display = 'block';
         const c = document.getElementById('content');
         if (!c) return;
-        if (page === 'shop') renderShop(c);
+        if (page === 'dashboard') renderDashboard(c);
+        else if (page === 'shop') renderShop(c);
         else if (page === 'cdk') renderCDK(c);
         else if (page === 'balance') renderBalance(c);
         else if (page === 'account') renderAccount(c);
@@ -688,36 +838,81 @@
         }
     }
 
-    // ===== 商城 =====
+    // ===== 商城（分类标签页） =====
+    let shopItems = [];
+    let shopCategories = [];
+    let currentShopCat = '';
+
     async function renderShop(el) {
         el.innerHTML = '<div class="empty">加载中...</div>';
         try {
             const res = await api('shop.php', {action: 'list'});
             if (!res.success) { el.innerHTML = '<div class="empty" style="color:var(--red)">' + (res.message || '加载失败') + '</div>'; return; }
-            const items = res.data || [];
-            const categories = [...new Set(items.map(i => i.category))];
-            let html = '<div class="card"><h2>商品列表</h2>';
+            shopItems = res.data || [];
+            shopCategories = [...new Set(shopItems.map(i => i.category))];
+            currentShopCat = shopCategories[0] || '';
+
+            let html = '<div class="card">';
+            html += '<h2>商城</h2>';
             if (res.preview) html += '<div class="preview-badge" style="margin-bottom:12px">预览模式 - 无法购买</div>';
-            if (categories.length === 0) {
+
+            if (shopCategories.length === 0) {
                 html += '<div class="empty">暂无商品</div>';
             } else {
-                categories.forEach(cat => {
-                    html += `<h3 style="color:var(--dim);margin:16px 0 8px;font-size:14px">${cat}</h3>`;
-                    html += '<div class="grid">';
-                    items.filter(i => i.category === cat).forEach(item => {
-                        const matIcon = getMaterialIcon(item.material);
-                        const stockText = item.stock == -1 ? '∞ 无限' : (item.stock == 0 ? '售罄' : item.stock + ' 个');
-                        const stockClass = item.stock == 0 ? 'out' : '';
-                        html += `<div class="item-card" onclick="showBuyModal('${item.id}','${item.display_name.replace(/'/g,"\\'")}',${item.buy_price},${item.stock})"><div class="icon">${matIcon}</div><div class="name">${item.display_name}</div><div class="price">${item.buy_price} 债券</div><div class="stock ${stockClass}">库存: ${stockText}</div></div>`;
-                    });
-                    html += '</div>';
+                // 分类标签
+                html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">';
+                shopCategories.forEach((cat, idx) => {
+                    const active = idx === 0 ? 'color:#fff;background:var(--accent);border-color:var(--accent)' : '';
+                    const catCount = shopItems.filter(i => i.category === cat).length;
+                    html += `<div onclick="switchShopCat('${cat.replace(/'/g,"\\'")}')" style="padding:6px 14px;border:1px solid var(--border);border-radius:16px;cursor:pointer;font-size:13px;transition:all 0.2s;${active}" class="shop-cat-tab" data-cat="${cat}">${cat} <span style="opacity:0.7;font-size:11px">(${catCount})</span></div>`;
                 });
+                html += '</div>';
+
+                // 商品内容区
+                html += '<div id="shopContent"></div>';
             }
+
             html += '</div>';
             el.innerHTML = html;
+
+            // 渲染当前分类的商品
+            renderShopContent();
         } catch (e) {
             el.innerHTML = '<div class="empty" style="color:var(--red)">商城加载失败: ' + e.message + '</div>';
         }
+    }
+
+    function switchShopCat(cat) {
+        currentShopCat = cat;
+        // 更新标签样式
+        document.querySelectorAll('.shop-cat-tab').forEach(tab => {
+            const isActive = tab.dataset.cat === cat;
+            tab.style.background = isActive ? 'var(--accent)' : '';
+            tab.style.color = isActive ? '#fff' : '';
+            tab.style.borderColor = isActive ? 'var(--accent)' : 'var(--border)';
+        });
+        renderShopContent();
+    }
+
+    function renderShopContent() {
+        const contentEl = document.getElementById('shopContent');
+        if (!contentEl) return;
+
+        const items = shopItems.filter(i => i.category === currentShopCat);
+        if (items.length === 0) {
+            contentEl.innerHTML = '<div class="empty" style="padding:20px">该分类暂无商品</div>';
+            return;
+        }
+
+        let html = '<div class="grid">';
+        items.forEach(item => {
+            const matIcon = getMaterialIcon(item.material);
+            const stockText = item.stock == -1 ? '∞ 无限' : (item.stock == 0 ? '售罄' : item.stock + ' 个');
+            const stockClass = item.stock == 0 ? 'out' : '';
+            html += `<div class="item-card" onclick="showBuyModal('${item.id}','${item.display_name.replace(/'/g,"\\'")}',${item.buy_price},${item.stock})"><div class="icon">${matIcon}</div><div class="name">${item.display_name}</div><div class="price">${item.buy_price} 债券</div><div class="stock ${stockClass}">库存: ${stockText}</div></div>`;
+        });
+        html += '</div>';
+        contentEl.innerHTML = html;
     }
 
     function getMaterialIcon(mat) {
@@ -758,6 +953,84 @@
                 document.getElementById('balanceResult')?.parentElement && switchPage('balance');
                 setTimeout(() => switchPage('shop'), 500);
             }, 500);
+        }
+    }
+
+    // ===== 个人中心仪表盘 =====
+    async function renderDashboard(el) {
+        if (IS_PREVIEW || !currentPlayer) {
+            el.innerHTML = `
+                <div class="card" style="text-align:center;padding:48px 20px">
+                    <div style="font-size:64px;margin-bottom:16px">📊</div>
+                    <h2 style="color:var(--accent);margin-bottom:8px">个人中心</h2>
+                    <p style="color:var(--dim);font-size:14px;margin-bottom:20px">游客模式下无法查看个人信息</p>
+                    <p style="color:var(--dim);font-size:12px">请先在游戏内登录，或输入密码登录</p>
+                </div>`;
+            return;
+        }
+
+        el.innerHTML = '<div class="card" style="text-align:center;padding:40px"><div class="empty">加载中...</div></div>';
+
+        try {
+            const res = await api('register.php', {action: 'query', player: currentPlayer, token: TOKEN});
+            if (!res.success) {
+                el.innerHTML = `<div class="card" style="border-color:var(--red)"><h2>加载失败</h2><p style="color:var(--dim);margin-top:8px">${res.message || '未知错误'}</p></div>`;
+                return;
+            }
+            const d = res.data;
+            const loginTime = d.last_login_time ? new Date(d.last_login_time * 1000).toLocaleString() : '暂无';
+            const regTime = d.register_time ? new Date(d.register_time * 1000).toLocaleString() : '暂无';
+            const hours = Math.floor((d.total_online_time || 0) / 3600);
+            const mins = Math.floor(((d.total_online_time || 0) % 3600) / 60);
+            const onlineText = hours > 0 ? `${hours}小时${mins}分钟` : `${mins}分钟`;
+
+            el.innerHTML = `
+                <div class="card" style="margin-bottom:0">
+                    <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px">
+                        <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--purple));display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;font-weight:700">${d.player_name.charAt(0).toUpperCase()}</div>
+                        <div>
+                            <h2 style="margin:0;font-size:20px">${d.player_name}</h2>
+                            <p style="color:var(--dim);font-size:12px;margin-top:2px">注册于 ${regTime}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-top:12px">
+                    <div class="stat-box" style="border-left:3px solid var(--accent)">
+                        <div class="value" style="font-size:24px;color:var(--accent)">📧 ${d.masked_email || '未绑定'}</div>
+                        <div class="label">绑定邮箱</div>
+                    </div>
+                    <div class="stat-box" style="border-left:3px solid var(--green)">
+                        <div class="value" style="font-size:24px;color:var(--green)">${d.bonds ?? 0}</div>
+                        <div class="label">债券余额</div>
+                    </div>
+                    <div class="stat-box" style="border-left:3px solid var(--yellow)">
+                        <div class="value" style="font-size:24px;color:var(--yellow)">${d.points ?? 0}</div>
+                        <div class="label">积分</div>
+                    </div>
+                    <div class="stat-box" style="border-left:3px solid var(--purple)">
+                        <div class="value" style="font-size:24px;color:var(--purple)">${loginTime}</div>
+                        <div class="label">最后登录时间</div>
+                    </div>
+                    <div class="stat-box" style="border-left:3px solid #58a6ff">
+                        <div class="value" style="font-size:24px;color:#58a6ff">${d.total_online_days ?? 0} 天</div>
+                        <div class="label">累计在线天数</div>
+                    </div>
+                    <div class="stat-box" style="border-left:3px solid #3fb950">
+                        <div class="value" style="font-size:24px;color:#3fb950">${d.total_checkin_days ?? 0} 天</div>
+                        <div class="label">累计签到天数</div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top:12px">
+                    <h2>详细信息</h2>
+                    <table class="table" style="margin-top:8px">
+                        <tr><td style="color:var(--dim);width:120px">累计在线时长</td><td>${onlineText}</td></tr>
+                        <tr><td style="color:var(--dim)">礼包阶段</td><td>${d.gift_stage ?? 0}</td></tr>
+                    </table>
+                </div>`;
+        } catch (e) {
+            el.innerHTML = `<div class="card" style="border-color:var(--red)"><h2>加载异常</h2><p style="color:var(--dim);margin-top:8px">${e.message}</p></div>`;
         }
     }
 

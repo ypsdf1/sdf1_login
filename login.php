@@ -70,13 +70,35 @@
                 <input type="text" id="playerName" placeholder="玩家名" readonly
                     style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box;opacity:0.7">
             </div>
-            <div style="text-align:left;margin-bottom:20px">
-                <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">游戏内密码</label>
-                <input type="password" id="password" placeholder="输入游戏内密码" maxlength="32"
-                    style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
-                <p style="color:var(--dim);font-size:12px;margin-top:8px;text-align:left">密码由游戏服务器验证，Web端不存储密码</p>
+            <!-- ★ 切换标签：密码/邮箱 -->
+            <div style="display:flex;gap:8px;margin-bottom:16px">
+                <button class="btn btn-primary" id="tabPassword" onclick="switchLoginTab('password')" style="flex:1">游戏密码</button>
+                <button class="btn btn-dim" id="tabEmail" onclick="switchLoginTab('email')" style="flex:1">邮箱验证码</button>
             </div>
-            <button class="btn btn-primary" style="width:100%" onclick="doPasswordLogin()">登录到Web端</button>
+            <!-- 密码登录 -->
+            <div id="loginPasswordTab">
+                <div style="text-align:left;margin-bottom:20px">
+                    <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">游戏内密码</label>
+                    <input type="password" id="password" placeholder="输入游戏内密码" maxlength="32"
+                        style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                    <p style="color:var(--dim);font-size:12px;margin-top:8px;text-align:left">密码由游戏服务器验证，Web端不存储密码</p>
+                </div>
+                <button class="btn btn-primary" style="width:100%" onclick="doPasswordLogin()">登录到Web端</button>
+            </div>
+            <!-- 邮箱验证码登录 -->
+            <div id="loginEmailTab" style="display:none">
+                <div style="text-align:left;margin-bottom:12px">
+                    <label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">绑定邮箱</label>
+                    <input type="text" id="maskedEmail" readonly placeholder="加载中..."
+                        style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box;opacity:0.7">
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:20px">
+                    <input type="text" id="emailCode" placeholder="6位验证码" maxlength="6"
+                        style="flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
+                    <button class="btn btn-primary" id="sendCodeBtn" onclick="sendEmailCode()" style="white-space:nowrap">发送验证码</button>
+                </div>
+                <button class="btn btn-primary" style="width:100%" onclick="doEmailLogin()">登录到Web端</button>
+            </div>
         </div>
 
         <div class="actions" id="actions" style="display:none"></div>
@@ -139,18 +161,21 @@
                 localStorage.setItem('sdf1_token', TOKEN);
                 localStorage.setItem('sdf1_login_time', Date.now());
 
-                // Token验证成功 → 显示密码输入框
+                // ★ Token验证成功 → 直接跳转到player.php（跳过密码，token本身即身份证明）
                 statusBox.className = 'status-box success';
-                statusBox.innerHTML = '✅ Token验证成功!<br><br>欢迎, <span class="player-name">' + player + '</span>';
-                
-                // 延迟1.5秒后切换到密码输入
+                statusBox.innerHTML = '✅ Token验证成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">正在跳转到玩家商城...</small>';
+
+                // ★ 同时写入web_session_log（让validateWebAccess能识别在线状态）
+                fetch('./api/sync.php?action=web_access_check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({web_token: TOKEN, access_action: 'view'})
+                }).catch(() => {});
+
                 setTimeout(() => {
-                    tokenSection.style.display = 'none';
-                    passwordSection.style.display = 'block';
-                    subtitle.textContent = '验证玩家身份';
-                    document.getElementById('playerName').value = player;
-                    document.getElementById('password').focus();
-                }, 1500);
+                    // ★ 跳转时带上token，确保player.php一定能读到
+                    window.location.href = 'player.php?login=' + encodeURIComponent(player) + '&token=' + encodeURIComponent(TOKEN);
+                }, 800);
             } else {
                 statusBox.className = 'status-box error';
                 statusBox.innerHTML = '❌ 登录失败<br><br>' + (data.message || 'Token无效或已过期');
@@ -220,9 +245,9 @@
                             pwdStatusBox.className = 'status-box success';
                             pwdStatusBox.innerHTML = '✅ 登录成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">正在跳转...</small>';
 
-                            // ★ token已存入localStorage，直接跳转player.php（不带token参数，避免URL暴露）
+                            // ★ token已存入localStorage，跳转player.php带token参数
                             setTimeout(() => {
-                                window.location.href = 'player.php?login=' + encodeURIComponent(player);
+                                window.location.href = 'player.php?login=' + encodeURIComponent(player) + '&token=' + encodeURIComponent(TOKEN);
                             }, 500);
                         } else if (result.status === 'failed') {
                             clearInterval(pollInterval);
@@ -255,6 +280,122 @@
     document.getElementById('password').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') doPasswordLogin();
     });
+    document.getElementById('emailCode').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') doEmailLogin();
+    });
+
+    // ===== 标签切换 =====
+    let currentLoginTab = 'password';
+    function switchLoginTab(tab) {
+        currentLoginTab = tab;
+        document.getElementById('loginPasswordTab').style.display = tab === 'password' ? 'block' : 'none';
+        document.getElementById('loginEmailTab').style.display = tab === 'email' ? 'block' : 'none';
+        document.getElementById('tabPassword').className = tab === 'password' ? 'btn btn-primary' : 'btn btn-dim';
+        document.getElementById('tabEmail').className = tab === 'email' ? 'btn btn-primary' : 'btn btn-dim';
+        document.getElementById('pwdStatusBox').style.display = 'none';
+        // 切到邮箱时加载脱敏邮箱
+        if (tab === 'email') loadMaskedEmail();
+    }
+
+    // ===== 加载脱敏邮箱 =====
+    async function loadMaskedEmail() {
+        const player = document.getElementById('playerName').value;
+        try {
+            const url = new URL('./api/sync.php', location.href);
+            url.searchParams.set('action', 'get_player_email');
+            url.searchParams.set('player', player);
+            const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'} });
+            const data = await res.json();
+            if (data.success && data.data) {
+                document.getElementById('maskedEmail').value = data.data.masked_email || '未绑定邮箱';
+            } else {
+                document.getElementById('maskedEmail').value = '未绑定邮箱';
+            }
+        } catch (e) {
+            document.getElementById('maskedEmail').value = '加载失败';
+        }
+    }
+
+    // ===== 发送邮箱验证码 =====
+    async function sendEmailCode() {
+        const player = document.getElementById('playerName').value;
+        const btn = document.getElementById('sendCodeBtn');
+        btn.disabled = true;
+        btn.textContent = '发送中...';
+        try {
+            const url = new URL('./api/sync.php', location.href);
+            url.searchParams.set('action', 'send_email_code');
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({player: player, web_token: TOKEN})
+            });
+            const data = await res.json();
+            if (data.success) {
+                showPwdSuccess('验证码已发送至 ' + (data.data.masked_email || '**'));
+                let countdown = 60;
+                const timer = setInterval(() => {
+                    btn.textContent = countdown + '秒后重发';
+                    countdown--;
+                    if (countdown <= 0) {
+                        clearInterval(timer);
+                        btn.disabled = false;
+                        btn.textContent = '发送验证码';
+                    }
+                }, 1000);
+            } else {
+                showPwdError(data.message || '发送失败');
+                btn.disabled = false;
+                btn.textContent = '发送验证码';
+            }
+        } catch (e) {
+            showPwdError('连接失败: ' + e.message);
+            btn.disabled = false;
+            btn.textContent = '发送验证码';
+        }
+    }
+
+    // ===== 邮箱验证码登录 =====
+    async function doEmailLogin() {
+        const player = document.getElementById('playerName').value;
+        const code = document.getElementById('emailCode').value.trim();
+        if (!code) { showPwdError('请输入验证码'); return; }
+        if (code.length !== 6) { showPwdError('验证码为6位数字'); return; }
+
+        pwdStatusBox.className = 'status-box loading';
+        pwdStatusBox.style.display = 'block';
+        pwdStatusBox.innerHTML = '<span class="spinner"></span> 正在验证邮箱验证码...';
+
+        try {
+            const url = new URL('./api/sync.php', location.href);
+            url.searchParams.set('action', 'verify_email_code');
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({player: player, code: code, web_token: TOKEN})
+            });
+            const data = await res.json();
+            if (data.success) {
+                localStorage.setItem('sdf1_player', player);
+                localStorage.setItem('sdf1_token', TOKEN);
+                pwdStatusBox.className = 'status-box success';
+                pwdStatusBox.innerHTML = '✅ 邮箱验证成功!<br><br>欢迎, <span class="player-name">' + player + '</span><br><small style="color:var(--dim)">正在跳转...</small>';
+                setTimeout(() => {
+                    window.location.href = 'player.php?login=' + encodeURIComponent(player);
+                }, 500);
+            } else {
+                showPwdError(data.message || '验证失败');
+            }
+        } catch (e) {
+            showPwdError('连接失败: ' + e.message);
+        }
+    }
+
+    function showPwdSuccess(msg) {
+        pwdStatusBox.className = 'status-box success';
+        pwdStatusBox.style.display = 'block';
+        pwdStatusBox.innerHTML = '✅ ' + msg;
+    }
     </script>
 </body>
 </html>
