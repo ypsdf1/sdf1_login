@@ -124,6 +124,7 @@ public class WebManager {
         syncIntervalMinutes = Integer.parseInt(getConfigValue("web通信-同步间隔分钟", "5"));
         callbackPort = Integer.parseInt(getConfigValue("web通信-回调端口", "9090"));
         secretKey = getConfigValue("web通信-密钥", secretKey);
+        plugin.getLogger().info("[Web通信] 后端地址: " + webBaseUrl + " | 启用: " + enabled);
     }
 
     /**
@@ -257,6 +258,9 @@ public class WebManager {
 
         // ★ 启动交易高频轮询（每5秒检查PHP端是否有待处理交易）
         startTransactionPolling();
+
+        // ★ 启动CDK验证轮询（每2秒检查PHP端CDK验证请求）
+        startCdkValidationPolling();
 
         plugin.getLogger().info("[Web通信] 实时同步调度器已启动（60~90秒随机，无人停止，有人恢复）");
         plugin.getLogger().info("[Web通信] PHP回调服务器已启动，端口: " + callbackPort);
@@ -737,8 +741,8 @@ public class WebManager {
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("GET");
                     conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(10000);
                     int code = conn.getResponseCode();
                     if (code != 200) {
                         plugin.getLogger().warning("[Web交易轮询] HTTP状态码: " + code);
@@ -773,6 +777,244 @@ public class WebManager {
                 }
             }
         }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
+    }
+
+    // ==================== CDK验证轮询 ====================
+
+    /**
+     * 每2秒检查PHP端的CDK验证请求，本地验证后推送结果回去
+     * 让Web前端的CDK兑换可以验证Java端(bond.db)中的CDK
+     * 同时拉取sdf1插件的pending远程验证请求，发送到Web后端
+     */
+    private void startCdkValidationPolling() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    // === Part 1: 拉取Web端的CDK验证请求 → 本地验证 ===
+                    pullWebCdkRequestsAndValidate();
+
+                    // === Part 2: 拉取sdf1插件的pending请求 → 发送到Web验证 ===
+                    pullSdf1PendingAndValidateWeb();
+                } catch (Exception e) {
+                    // 静默，避免刷屏
+                }
+            }
+        }.runTaskTimerAsynchronously(plugin, 20L * 2, 20L * 2); // 每2秒检查一次
+        plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
+    }
+
+    /**
+     * Part 1: Web端写cdk_validate_requests → Sdf1_login拉取 → 本地CDKManager.redeem → 写回结果
+     */
+    private void pullWebCdkRequestsAndValidate() {
+        try {
+            String listUrl = webBaseUrl + "/api/sync.php?action=pull_cdk_validate_requests&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            URL url = new URL(listUrl);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "Sdf1-CDKValidator/1.0");
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
+            int respCode = conn.getResponseCode();
+            if (respCode != 200) { conn.disconnect(); return; }
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            reader.close();
+            conn.disconnect();
+
+            String json = sb.toString();
+            if (!json.contains("\"success\":true")) return;
+
+            int reqIdx = json.indexOf("\"requests\":[");
+            if (reqIdx < 0) return;
+            int arrStart = json.indexOf('[', reqIdx);
+            int arrEnd = json.indexOf(']', arrStart);
+            if (arrEnd < 0) return;
+            String arr = json.substring(arrStart, arrEnd + 1);
+            if (arr.equals("[]")) return;
+
+            int pi = 0;
+            while (pi < arr.length()) {
+                int objStart = arr.indexOf('{', pi);
+                if (objStart < 0) break;
+                int objEnd = arr.indexOf('}', objStart);
+                if (objEnd < 0) break;
+                String obj = arr.substring(objStart, objEnd + 1);
+                pi = objEnd + 1;
+
+                String requestId = extractJsonStr(obj, "request_id");
+                String cdkCode = extractJsonStr(obj, "code");
+                String playerName = extractJsonStr(obj, "player_name");
+                if (requestId.isEmpty() || cdkCode.isEmpty()) continue;
+                if (playerName.isEmpty()) playerName = "web_remote";
+
+                // ★ 直接检查sdf1计分板CDK（bond.db只是钱包，不存CDK）
+                String status = "not_found";
+                int amount = 0;
+                try {
+                    Object sdf1Plugin = Bukkit.getPluginManager().getPlugin("sdf1");
+                    if (sdf1Plugin != null) {
+                        plugin.getLogger().info("[CDK远程验证] 调用sdf1检查计分板: " + cdkCode);
+                        java.lang.reflect.Method checkMethod = sdf1Plugin.getClass().getMethod("checkScoreBoardCdk", String.class);
+                        String[] sbResult = (String[]) checkMethod.invoke(sdf1Plugin, cdkCode);
+                        plugin.getLogger().info("[CDK远程验证] sdf1返回: " + (sbResult != null ? String.join(",", sbResult) : "null"));
+                        if (sbResult != null && sbResult.length >= 2 && "success".equals(sbResult[0])) {
+                            status = "success";
+                            amount = Integer.parseInt(sbResult[1]);
+                            plugin.getLogger().info("[CDK远程验证] 计分板CDK匹配: " + cdkCode + " 金额=" + amount);
+                        } else if (sbResult != null && "not_bond".equals(sbResult[0])) {
+                            status = "not_bond";
+                            plugin.getLogger().info("[CDK远程验证] 计分板CDK存在但非债券类型: " + cdkCode);
+                        } else {
+                            plugin.getLogger().info("[CDK远程验证] 计分板CDK未找到: " + cdkCode);
+                        }
+                    } else {
+                        plugin.getLogger().warning("[CDK远程验证] sdf1插件未加载");
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[CDK远程验证] 检查计分板异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                }
+
+                // 推送结果回PHP
+                String pushUrl = webBaseUrl + "/api/sync.php?action=push_cdk_validate_result&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                        + "&request_id=" + java.net.URLEncoder.encode(requestId, "UTF-8")
+                        + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8")
+                        + "&status=" + java.net.URLEncoder.encode(status, "UTF-8")
+                        + "&amount=" + amount;
+                URL pushUrlObj = new URL(pushUrl);
+                HttpURLConnection pushConn = (HttpURLConnection) pushUrlObj.openConnection();
+                pushConn.setRequestMethod("GET");
+                pushConn.setConnectTimeout(8000);
+                pushConn.setReadTimeout(10000);
+                pushConn.getResponseCode();
+                pushConn.disconnect();
+
+                if (!"not_found".equals(status)) {
+                    plugin.getLogger().info("[CDK远程验证] " + cdkCode + " → " + status + " player=" + playerName + (amount > 0 ? " 金额:" + amount : ""));
+                }
+            }
+        } catch (Exception e) {
+            // 静默
+        }
+    }
+
+    /**
+     * Part 2: sdf1插件pending队列 → Sdf1_login拉取 → 发送Web validate_cdk → 结果回传sdf1
+     */
+    private void pullSdf1PendingAndValidateWeb() {
+        try {
+            // 通过反射获取sdf1插件（避免直接依赖Plugin类）
+            Object sdf1Plugin = Bukkit.getPluginManager().getPlugin("sdf1");
+            if (sdf1Plugin == null) return;
+            // 检查是否启用
+            java.lang.reflect.Method isEnabled = sdf1Plugin.getClass().getMethod("isEnabled");
+            if (!(Boolean) isEnabled.invoke(sdf1Plugin)) return;
+
+            // 调用 sdf1.Main.pullPendingCdkValidations()
+            java.lang.reflect.Method pullMethod = sdf1Plugin.getClass().getMethod("pullPendingCdkValidations");
+            Object[][] pendingList = (Object[][]) pullMethod.invoke(sdf1Plugin);
+            if (pendingList == null || pendingList.length == 0) return;
+
+            for (Object[] item : pendingList) {
+                String requestId = (String) item[0];
+                String cdkCode = (String) item[1];
+                String playerName = (String) item[2];
+
+                // ★ 先检查CDK是否存在（只读）
+                String status = "not_found";
+                int amount = 0;
+                try {
+                    String validateUrl = webBaseUrl + "/api/sync.php?action=check_cdk_exists&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                            + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8");
+                    URL vUrl = new URL(validateUrl);
+                    HttpURLConnection vConn = (HttpURLConnection) vUrl.openConnection();
+                    vConn.setRequestMethod("GET");
+                    vConn.setConnectTimeout(8000);
+                    vConn.setReadTimeout(10000);
+                    int vCode = vConn.getResponseCode();
+                    if (vCode == 200) {
+                        BufferedReader vReader = new BufferedReader(new InputStreamReader(vConn.getInputStream(), StandardCharsets.UTF_8));
+                        StringBuilder vSb = new StringBuilder();
+                        String vLine;
+                        while ((vLine = vReader.readLine()) != null) vSb.append(vLine);
+                        vReader.close();
+                        vConn.disconnect();
+
+                        String vJson = vSb.toString();
+                        // ★ 详细日志：PHP返回的原始JSON
+                        plugin.getLogger().info("[CDK-Web验证] PHP原始返回: " + vJson);
+                        String found = extractJsonStr(vJson, "found");
+                        String st = extractJsonStr(vJson, "status");
+                        String am = extractJsonStr(vJson, "amount");
+                        plugin.getLogger().info("[CDK-Web验证] 解析结果: found=" + found + " status=" + st + " amount=" + am);
+
+                        if ("true".equals(found) && "available".equals(st)) {
+                            amount = am.isEmpty() ? 0 : Integer.parseInt(am);
+                            // ★ CDK存在且可用，调用兑换API标记已使用+写流水
+                            // status只在cdk_redeem_remote成功后才设为success
+                            try {
+                                String redeemUrl = webBaseUrl + "/api/sync.php?action=cdk_redeem_remote&secret="
+                                        + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                                        + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8")
+                                        + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8");
+                                URL rUrl = new URL(redeemUrl);
+                                HttpURLConnection rConn = (HttpURLConnection) rUrl.openConnection();
+                                rConn.setRequestMethod("GET");
+                                rConn.setConnectTimeout(5000);
+                                rConn.setReadTimeout(5000);
+                                int rCode = rConn.getResponseCode();
+                                if (rCode == 200) {
+                                    BufferedReader rReader = new BufferedReader(new InputStreamReader(rConn.getInputStream(), StandardCharsets.UTF_8));
+                                    StringBuilder rSb = new StringBuilder();
+                                    String rLine;
+                                    while ((rLine = rReader.readLine()) != null) rSb.append(rLine);
+                                    rReader.close();
+                                    rConn.disconnect();
+                                    String rJson = rSb.toString();
+                                    plugin.getLogger().info("[CDK-Web验证] 兑换结果: " + rJson);
+                                    String rSt = extractJsonStr(rJson, "status");
+                                    if ("success".equals(rSt)) {
+                                        status = "success";
+                                    } else if ("already_used".equals(rSt)) {
+                                        status = "already_used";
+                                    }
+                                } else {
+                                    plugin.getLogger().warning("[CDK-Web验证] cdk_redeem_remote HTTP: " + rCode);
+                                }
+                            } catch (Exception e) {
+                                plugin.getLogger().warning("[CDK-Web验证] 兑换请求失败: " + e.getMessage());
+                            }
+                        } else if ("true".equals(found) && "already_used".equals(st)) {
+                            status = "already_used";
+                        } else {
+                            plugin.getLogger().info("[CDK-Web验证] CDK " + cdkCode + " 在Web端不存在或状态未知");
+                        }
+                    } else {
+                        plugin.getLogger().warning("[CDK-Web验证] HTTP状态码: " + vCode + " CDK=" + cdkCode);
+                        vConn.disconnect();
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[CDK-Web验证] 请求失败: " + e.getMessage());
+                }
+
+                // 回传结果给sdf1
+                java.lang.reflect.Method setResult = sdf1Plugin.getClass().getMethod("setCdkValidationResult", String.class, String.class, int.class);
+                setResult.invoke(sdf1Plugin, requestId, status, amount);
+
+                if (!"not_found".equals(status)) {
+                    plugin.getLogger().info("[CDK-Web验证] " + cdkCode + " → " + status + " player=" + playerName + (amount > 0 ? " 金额:" + amount : ""));
+                }
+            }
+        } catch (Exception e) {
+            // 静默
+        }
     }
 
     // ==================== Token同步到Web ====================
@@ -1138,6 +1380,20 @@ public class WebManager {
         } catch (Exception e) {
             return s;
         }
+    }
+
+    /**
+     * 简单JSON字符串值提取（不依赖第三方库）
+     */
+    private static String extractJsonStr(String json, String key) {
+        int i = json.indexOf("\"" + key + "\"");
+        if (i < 0) return "";
+        int colon = json.indexOf(":", i);
+        int start = json.indexOf("\"", colon + 1);
+        if (start < 0) return "";
+        int end = json.indexOf("\"", start + 1);
+        if (end < 0) return "";
+        return json.substring(start + 1, end);
     }
 
     /**
@@ -1708,6 +1964,13 @@ public class WebManager {
                 Map<String, Object> playerInfo = new LinkedHashMap<>();
                 playerInfo.put("name", p.getName());
                 playerInfo.put("login_time", System.currentTimeMillis() / 1000);
+                // ★ 推送当前IP（从Bukkit Player对象实时获取，不走login.db缓存）
+                try {
+                    java.net.InetSocketAddress addr = p.getAddress();
+                    if (addr != null && addr.getAddress() != null) {
+                        playerInfo.put("ip", addr.getAddress().getHostAddress());
+                    }
+                } catch (Exception ignored) {}
                 playersData.add(playerInfo);
             }
 
@@ -3658,8 +3921,8 @@ public class WebManager {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(3000); // 缩短超时到3秒
-            conn.setReadTimeout(3000);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(10000);
 
             int code = conn.getResponseCode();
             if (code != 200) {

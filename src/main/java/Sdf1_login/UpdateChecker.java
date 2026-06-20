@@ -48,12 +48,16 @@ public class UpdateChecker {
     private static final String GITHUB_REPO = "sdf1_login";
     private static final String GITEE_OWNER = "nihaoshidifu";
     private static final String GITEE_REPO = "sdf1_login";
+    private static final String GYP_OWNER = "youpaishidifu";
+    private static final String GYP_REPO = "Sdf1_login";
 
     // API 地址（使用releases/latest获取最新版本）
     private static final String GITHUB_API =
             "https://api.github.com/repos/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases/latest";
     private static final String GITEE_API =
             "https://gitee.com/api/v5/repos/" + GITEE_OWNER + "/" + GITEE_REPO + "/releases/latest";
+    private static final String GYP_API =
+            "https://git.ypshidifu.cn/api/v1/repos/" + GYP_OWNER + "/" + GYP_REPO + "/releases/latest";
 
     // 第三路备选：宝塔静态HTML
     private static final String FALLBACK_HTML =
@@ -64,6 +68,8 @@ public class UpdateChecker {
             "https://github.com/" + GITHUB_OWNER + "/" + GITHUB_REPO + "/releases";
     private static final String GITEE_LINK =
             "https://gitee.com/" + GITEE_OWNER + "/" + GITEE_REPO + "/releases";
+    private static final String GYP_LINK =
+            "https://git.ypshidifu.cn/" + GYP_OWNER + "/" + GYP_REPO + "/releases";
 
     // 单次请求超时（毫秒）
     private static final int TIMEOUT_MS = 5000;
@@ -157,18 +163,31 @@ public class UpdateChecker {
             plugin.getLogger().info("[Sdf1_login] 启动自动检查更新...");
         }
 
-        // ★ 双通道并行执行，一路成功掐断另一路
+        // ★ 三通道并行执行，一路成功掐断其余
         AtomicBoolean cancelled = new AtomicBoolean(false);
+        AtomicReference<CheckResult> gypResult = new AtomicReference<>();
         AtomicReference<CheckResult> ghResult = new AtomicReference<>();
         AtomicReference<CheckResult> geResult = new AtomicReference<>();
-        CountDownLatch latch = new CountDownLatch(2);
+        CountDownLatch latch = new CountDownLatch(3);
+
+        // 通道0：git.ypshidifu.cn（最高优先级，Gitea格式）
+        Thread gypThread = new Thread(() -> {
+            if (!cancelled.get()) {
+                gypResult.set(tryChannel(GYP_API, "git.ypshidifu.cn", GYP_LINK));
+                if (gypResult.get().isSuccess()) {
+                    cancelled.set(true);
+                }
+            }
+            latch.countDown();
+        });
+        gypThread.setDaemon(true);
 
         // 通道1：GitHub
         Thread ghThread = new Thread(() -> {
             if (!cancelled.get()) {
                 ghResult.set(tryChannel(GITHUB_API, "GitHub", GITHUB_LINK));
                 if (ghResult.get().isSuccess()) {
-                    cancelled.set(true); // 成功则取消另一路
+                    cancelled.set(true);
                 }
             }
             latch.countDown();
@@ -180,34 +199,38 @@ public class UpdateChecker {
             if (!cancelled.get()) {
                 geResult.set(tryChannel(GITEE_API, "Gitee", GITEE_LINK));
                 if (geResult.get().isSuccess()) {
-                    cancelled.set(true); // 成功则取消另一路
+                    cancelled.set(true);
                 }
             }
             latch.countDown();
         });
         geThread.setDaemon(true);
 
+        gypThread.start();
         ghThread.start();
         geThread.start();
 
         try {
-            latch.await(); // 等待两路都完成
+            latch.await();
         } catch (InterruptedException ignored) {
         }
 
+        CheckResult gyp = gypResult.get();
         CheckResult gh = ghResult.get();
         CheckResult ge = geResult.get();
 
-        // 选择成功的结果
+        // 选择成功的结果（优先级：git.ypshidifu.cn > GitHub > Gitee）
         CheckResult chosen = null;
 
-        if (gh != null && gh.isSuccess()) {
+        if (gyp != null && gyp.isSuccess()) {
+            chosen = gyp;
+        } else if (gh != null && gh.isSuccess()) {
             chosen = gh;
         } else if (ge != null && ge.isSuccess()) {
             chosen = ge;
         } else {
             // ★ 双通道均失败，尝试第三路备选（宝塔静态HTML）
-            plugin.getLogger().info("[Sdf1_login] GitHub/Gitee 均失败，尝试第三路备选 BaoTa...");
+            plugin.getLogger().info("[Sdf1_login] git.ypshidifu.cn/GitHub/Gitee 均失败，尝试第三路备选 BaoTa...");
             CheckResult fbResult = tryFallbackChannel();
             if (fbResult != null && fbResult.isSuccess()) {
                 chosen = fbResult;
@@ -215,7 +238,11 @@ public class UpdateChecker {
             } else {
                 failCount++;
                 StringBuilder sb = new StringBuilder();
+                if (gyp != null && gyp.error != null) {
+                    sb.append("§7git.ypshidifu.cn: §c").append(gyp.error);
+                }
                 if (gh != null && gh.error != null) {
+                    if (sb.length() > 0) sb.append("\n");
                     sb.append("§7GitHub: §c").append(gh.error);
                 }
                 if (ge != null && ge.error != null) {
@@ -310,10 +337,15 @@ public class UpdateChecker {
                 sender.sendMessage("§a[Sdf1_login] [更新] 已是最新版本");
             }
 
-            // 显示另一通道的失败原因
-            CheckResult other = (src.equals("GitHub")) ? ge : gh;
-            if (other != null && !other.isSuccess() && other.error != null) {
-                sender.sendMessage("§7[Sdf1_login] [更新] " + other.source + " 不可用: " + other.error);
+            // 显示其他失败通道的错误信息
+            if (gyp != null && !gyp.isSuccess() && gyp.error != null && !src.equals("git.ypshidifu.cn")) {
+                sender.sendMessage("§7[Sdf1_login] [更新] git.ypshidifu.cn 不可用: " + gyp.error);
+            }
+            if (gh != null && !gh.isSuccess() && gh.error != null && !src.equals("GitHub")) {
+                sender.sendMessage("§7[Sdf1_login] [更新] GitHub 不可用: " + gh.error);
+            }
+            if (ge != null && !ge.isSuccess() && ge.error != null && !src.equals("Gitee")) {
+                sender.sendMessage("§7[Sdf1_login] [更新] Gitee 不可用: " + ge.error);
             }
         });
     }

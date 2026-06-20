@@ -1167,9 +1167,15 @@ public class Main extends JavaPlugin
         joinTime.remove(p.getUniqueId());
         recordIPLogin(p);
 
-        // ★ 立即同步在线状态到PHP（不等下次心跳30秒）
+        // ★ 立即同步在线状态到PHP（异步，避免阻塞主线程）
         if (webManager != null) {
-            webManager.syncOnlinePlayers();
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    webManager.syncOnlinePlayers();
+                } catch (Exception e) {
+                    getLogger().warning("[Web通信] 异步syncOnlinePlayers异常: " + e.getMessage());
+                }
+            });
         }
 
         // 只在有有效备份时恢复

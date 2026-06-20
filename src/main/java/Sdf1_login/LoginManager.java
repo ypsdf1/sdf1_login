@@ -172,9 +172,15 @@ public class LoginManager {
                 plugin.getDb().setField(name,
                         "last_online_check",
                         System.currentTimeMillis());
-                // ★ 立即同步在线状态到PHP
+                // ★ 立即同步在线状态到PHP（异步，避免阻塞主线程）
                 if (plugin.webManager != null) {
-                    plugin.webManager.syncOnlinePlayers();
+                    Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                        try {
+                            plugin.webManager.syncOnlinePlayers();
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("[Web通信] 异步syncOnlinePlayers异常: " + e.getMessage());
+                        }
+                    });
                 }
                 // 登录成功关闭飞行
                 p.setAllowFlight(false);
