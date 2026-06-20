@@ -251,6 +251,24 @@ switch ($action) {
     case 'check_pending_transactions':
         checkPendingTransactions();
         break;
+    case 'validate_cdk':
+        validateCdk();
+        break;
+    case 'check_cdk_exists':
+        checkCdkExists();
+        break;
+    case 'cdk_redeem_remote':
+        cdkRedeemRemote();
+        break;
+    case 'pull_cdk_validate_requests':
+        pullCdkValidateRequests();
+        break;
+    case 'migrate_cdk':
+        migrateCdkTable();
+        break;
+    case 'push_cdk_validate_result':
+        pushCdkValidateResult();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -810,6 +828,15 @@ function syncOnlinePlayers() {
     @error_log("[syncOnlinePlayers] Received $playerCount players: " . implode(', ', $playerNames));
     @error_log("[syncOnlinePlayers] Login times: " . implode(', ', $playerTimes) . " | Server time: $now");
 
+    // ★ 确保 player_ip_changes 表存在
+    $db->exec("CREATE TABLE IF NOT EXISTS player_ip_changes (
+        player_name TEXT PRIMARY KEY,
+        old_ip TEXT DEFAULT '',
+        new_ip TEXT NOT NULL,
+        changed_at INTEGER NOT NULL,
+        synced_at INTEGER DEFAULT 0
+    )");
+
     // ★ 使用事务批量写入，防止 "database is locked"
     $db->exec("BEGIN IMMEDIATE");
     try {
@@ -830,6 +857,32 @@ function syncOnlinePlayers() {
                 $synced++;
             } catch (Exception $e) {
                 @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
+            }
+
+            // ★ 如果Java推送了IP，同步更新 player_ip_changes（实时IP来源）
+            $ip = $player['ip'] ?? '';
+            if (!empty($ip)) {
+                try {
+                    // 检查是否已有记录且IP相同
+                    $checkStmt = $db->prepare("SELECT new_ip FROM player_ip_changes WHERE player_name = :name");
+                    $checkStmt->bindValue(':name', $name, SQLITE3_TEXT);
+                    $checkResult = $checkStmt->execute();
+                    $existing = $checkResult->fetchArray(SQLITE3_ASSOC);
+
+                    if (!$existing || $existing['new_ip'] !== $ip) {
+                        $oldIp = $existing ? $existing['new_ip'] : '';
+                        $ipStmt = $db->prepare("INSERT OR REPLACE INTO player_ip_changes (player_name, old_ip, new_ip, changed_at, synced_at) VALUES (:name, :old, :new, :time, :synced)");
+                        $ipStmt->bindValue(':name', $name, SQLITE3_TEXT);
+                        $ipStmt->bindValue(':old', $oldIp, SQLITE3_TEXT);
+                        $ipStmt->bindValue(':new', $ip, SQLITE3_TEXT);
+                        $ipStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                        $ipStmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+                        $ipStmt->execute();
+                        @error_log("[syncOnlinePlayers] IP更新: {$name} {$oldIp}→{$ip}");
+                    }
+                } catch (Exception $e) {
+                    @error_log("[syncOnlinePlayers] IP写入失败 {$name}: " . $e->getMessage());
+                }
             }
         }
 
@@ -2778,4 +2831,399 @@ function completeWebRegisterRequest() {
     }
 
     success(['request_id' => $requestId, 'status' => $status]);
+}
+
+// ===== CDK验证（供sdf1插件调用）=====
+// sdf1插件本地CDK未找到时，请求Web后端验证
+function validateCdk() {
+    $secret = getParam('secret');
+    $code = getParam('code', '');
+    $player = getParam('player', ''); // ★ 必须传player，否则无法加债券
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    if (empty($code)) error('缺少CDK码');
+    if (empty($player)) error('缺少player参数');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS cdk (code TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, used INTEGER DEFAULT 0, used_by TEXT DEFAULT '', created_at INTEGER DEFAULT 0, used_at INTEGER DEFAULT 0)");
+    $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (player_name TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
+
+    try {
+        $stmt = $db->prepare("SELECT code, amount, used, used_by FROM cdk WHERE code = :code");
+        $stmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+
+        if (!$row) {
+            success(['found' => false, 'status' => 'not_found']);
+            return;
+        }
+
+        if ($row['used'] == 1) {
+            success([
+                'found' => true,
+                'status' => 'already_used',
+                'used_by' => $row['used_by'] ?? ''
+            ]);
+            return;
+        }
+
+        // ★ 原子标记：防止并发双重兑换
+        $updateStmt = $db->prepare("UPDATE cdk SET used = 1, used_by = :player, used_at = :time WHERE code = :code AND used = 0");
+        $updateStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $updateStmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $updateStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $updateStmt->execute();
+
+        if ($db->changes() == 0) {
+            // 并发竞争：已被其他请求使用
+            success(['found' => true, 'status' => 'already_used']);
+            return;
+        }
+
+        // ★ CDK有效：加债券 + 写流水 + 写sync_requests
+        $amount = (int)$row['amount'];
+        $now = time();
+
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            // 1. 加债券到bond_cache
+            $chk = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :name");
+            $chk->bindValue(':name', $player, SQLITE3_TEXT);
+            $chkR = $chk->execute();
+            $existing = $chkR->fetchArray(SQLITE3_ASSOC);
+            $curBal = $existing ? (int)$existing['amount'] : 0;
+            $newBal = $curBal + $amount;
+
+            if ($existing) {
+                $u = $db->prepare("UPDATE bond_cache SET amount = :amt, updated_at = :t WHERE player_name = :n");
+                $u->bindValue(':amt', $newBal, SQLITE3_INTEGER);
+                $u->bindValue(':t', $now, SQLITE3_INTEGER);
+                $u->bindValue(':n', $player, SQLITE3_TEXT);
+                $u->execute();
+            } else {
+                $ins = $db->prepare("INSERT INTO bond_cache (player_name, amount, updated_at) VALUES (:n, :amt, :t)");
+                $ins->bindValue(':n', $player, SQLITE3_TEXT);
+                $ins->bindValue(':amt', $newBal, SQLITE3_INTEGER);
+                $ins->bindValue(':t', $now, SQLITE3_INTEGER);
+                $ins->execute();
+            }
+
+            // 2. 写web_transactions流水（completed，因为Java端已标记used）
+            $tx = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem_remote', :amount, :reason, :detail, 'completed', :time)");
+            $tx->bindValue(':player', $player, SQLITE3_TEXT);
+            $tx->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            $tx->bindValue(':reason', "CDK兑换: {$code}", SQLITE3_TEXT);
+            $tx->bindValue(':detail', json_encode(['code' => $code, 'source' => 'web_validate'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $tx->bindValue(':time', $now, SQLITE3_INTEGER);
+            $tx->execute();
+
+            // 3. 写sync_requests触发Java立即拉取
+            $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+            $sr = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+            $sr->bindValue(':player', $player, SQLITE3_TEXT);
+            $sr->bindValue(':time', $now, SQLITE3_INTEGER);
+            $sr->execute();
+
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
+            @error_log("[validateCdk] 事务失败: " . $e->getMessage());
+        }
+
+        @error_log("[validateCdk] 成功: code={$code} player={$player} amount={$amount}");
+        success([
+            'found' => true,
+            'status' => 'success',
+            'amount' => $amount
+        ]);
+    } catch (\Throwable $e) {
+        @error_log('[validateCdk] Error: ' . $e->getMessage());
+        error('验证失败: ' . $e->getMessage());
+    }
+}
+
+// ===== CDK存在性检查（只检查不消耗）=====
+// 供Sdf1_login轮询时判断CDK是否存在于Web，不标记已使用
+function checkCdkExists() {
+    $secret = getParam('secret');
+    $code = getParam('code', '');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    if (empty($code)) error('缺少CDK码');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS cdk (code TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, used INTEGER DEFAULT 0, used_by TEXT DEFAULT '', created_at INTEGER DEFAULT 0, used_at INTEGER DEFAULT 0)");
+
+    try {
+        $stmt = $db->prepare("SELECT code, amount, used, used_by FROM cdk WHERE code = :code");
+        $stmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+
+        // ★ 返回扁平JSON（不用success()包装），found用字符串（Java extractJsonStr只支持字符串值）
+        if (!$row) {
+            jsonResponse(['found' => 'false', 'status' => 'not_found']);
+            return;
+        }
+
+        if ($row['used'] == 1) {
+            jsonResponse([
+                'found' => 'true',
+                'status' => 'already_used',
+                'used_by' => $row['used_by'] ?? ''
+            ]);
+            return;
+        }
+
+        // CDK存在且未使用，只返回信息，不标记已使用
+        // ★ amount必须返回字符串（Java extractJsonStr只解析字符串值，数字会被跳过）
+        @error_log("[checkCdkExists] found: code={$code} amount={$row['amount']}");
+        jsonResponse([
+            'found' => 'true',
+            'status' => 'available',
+            'amount' => (string)$row['amount']
+        ]);
+    } catch (\Throwable $e) {
+        @error_log('[checkCdkExists] Error: ' . $e->getMessage());
+        error('检查失败: ' . $e->getMessage());
+    }
+}
+
+// ===== 远程CDK兑换：标记已使用 + 写流水（不加bond_cache，由Java本地处理） =====
+function cdkRedeemRemote() {
+    $secret = getParam('secret');
+    $code = getParam('code', '');
+    $player = getParam('player', '');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+    if (empty($code)) error('缺少CDK码');
+    if (empty($player)) error('缺少player参数');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS cdk (code TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, used INTEGER DEFAULT 0, used_by TEXT DEFAULT '', created_at INTEGER DEFAULT 0, used_at INTEGER DEFAULT 0)");
+    // ★ web_transactions表结构必须与其他函数一致
+    $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+
+        // 1. 检查CDK是否存在且未使用
+        $stmt = $db->prepare("SELECT code, amount, used FROM cdk WHERE code = :code");
+        $stmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+        if (!$row) {
+            $db->exec('ROLLBACK');
+            jsonResponse(['success' => 'false', 'status' => 'not_found']);
+            return;
+        }
+
+        if ($row['used'] == 1) {
+            $db->exec('ROLLBACK');
+            jsonResponse(['success' => 'true', 'status' => 'already_used']);
+            return;
+        }
+
+        // 2. 原子标记为已使用
+        $updateStmt = $db->prepare("UPDATE cdk SET used = 1, used_by = :player, used_at = :time WHERE code = :code AND used = 0");
+        $updateStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $updateStmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $updateStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $updateStmt->execute();
+
+        if ($db->changes() == 0) {
+            // 并发竞争：已被其他请求使用
+            $db->exec('ROLLBACK');
+            jsonResponse(['success' => 'true', 'status' => 'already_used']);
+            return;
+        }
+
+        // 3. 写入流水记录（与validateCdk格式一致）
+        $amount = (int)$row['amount'];
+        $now = time();
+        $ins = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:player, :type, :amount, :operator, :reason, :detail, :status, :time)");
+        $ins->bindValue(':player', $player, SQLITE3_TEXT);
+        $ins->bindValue(':type', 'cdk_redeem_remote', SQLITE3_TEXT);
+        $ins->bindValue(':amount', $amount, SQLITE3_INTEGER);
+        $ins->bindValue(':operator', '', SQLITE3_TEXT);
+        $ins->bindValue(':reason', "CDK兑换: {$code}", SQLITE3_TEXT);
+        $ins->bindValue(':detail', json_encode(['code' => $code, 'source' => 'game_remote'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $ins->bindValue(':status', 'completed', SQLITE3_TEXT);
+        $ins->bindValue(':time', $now, SQLITE3_INTEGER);
+        $ins->execute();
+
+        $db->exec('COMMIT');
+
+        @error_log("[cdkRedeemRemote] success: code={$code} amount={$amount} player={$player}");
+        jsonResponse([
+            'success' => 'true',
+            'status' => 'success',
+            'amount' => (string)$amount
+        ]);
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $ignored) {}
+        @error_log('[cdkRedeemRemote] Error: ' . $e->getMessage());
+        error('兑换失败: ' . $e->getMessage());
+    }
+}
+
+// ===== Java拉取CDK验证请求 =====
+// ===== CDK表迁移修复 =====
+function migrateCdkTable() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $log = [];
+
+    // 1. 确保cdk_validate_requests表存在且有player_name列
+    $r = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='cdk_validate_requests'");
+    if (!$r) {
+        $db->exec("CREATE TABLE cdk_validate_requests (
+            request_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            player_name TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER NOT NULL
+        )");
+        $log[] = 'Created cdk_validate_requests table';
+    } else {
+        $cols = [];
+        $colResult = $db->query("PRAGMA table_info(cdk_validate_requests)");
+        while ($col = $colResult->fetchArray(SQLITE3_ASSOC)) { $cols[] = $col['name']; }
+        $log[] = 'Existing columns: ' . implode(', ', $cols);
+        if (!in_array('player_name', $cols)) {
+            $db->exec("ALTER TABLE cdk_validate_requests ADD COLUMN player_name TEXT DEFAULT ''");
+            $log[] = 'Added player_name column';
+        } else {
+            $log[] = 'player_name column already exists';
+        }
+    }
+
+    // 2. 确保cdk_validate_results表存在
+    $r2 = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='cdk_validate_results'");
+    if (!$r2) {
+        $db->exec("CREATE TABLE cdk_validate_results (
+            request_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            amount INTEGER DEFAULT 0,
+            message TEXT DEFAULT '',
+            used INTEGER DEFAULT 0,
+            used_by TEXT DEFAULT '',
+            created_at INTEGER NOT NULL
+        )");
+        $log[] = 'Created cdk_validate_results table';
+    } else {
+        $log[] = 'cdk_validate_results table exists';
+    }
+
+    // 3. 确保cdk表存在
+    $r3 = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='cdk'");
+    if (!$r3) {
+        $db->exec("CREATE TABLE cdk (
+            code TEXT PRIMARY KEY,
+            amount INTEGER DEFAULT 0,
+            type TEXT DEFAULT 'bond',
+            used INTEGER DEFAULT 0,
+            used_by TEXT DEFAULT '',
+            created_at INTEGER DEFAULT 0,
+            used_at INTEGER DEFAULT 0
+        )");
+        $log[] = 'Created cdk table';
+    } else {
+        $log[] = 'cdk table exists';
+    }
+
+    success(['log' => $log], '迁移完成');
+}
+
+function pullCdkValidateRequests() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    // ★ 迁移操作用事务包装防锁
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS cdk_validate_requests (
+            request_id TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            player_name TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER NOT NULL
+        )");
+        $colResult = $db->query("PRAGMA table_info(cdk_validate_requests)");
+        $cols = [];
+        while ($col = $colResult->fetchArray(SQLITE3_ASSOC)) { $cols[] = $col['name']; }
+        if (!in_array('player_name', $cols)) {
+            $db->exec('BEGIN IMMEDIATE');
+            $db->exec("ALTER TABLE cdk_validate_requests ADD COLUMN player_name TEXT DEFAULT ''");
+            $db->exec('COMMIT');
+        }
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
+    }
+
+    try {
+        // ★ 返回player_name
+        $result = $db->query("SELECT request_id, code, player_name FROM cdk_validate_requests WHERE status = 'pending' ORDER BY created_at ASC LIMIT 10");
+        $requests = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $requests[] = $row;
+        }
+        success(['requests' => $requests]);
+    } catch (\Throwable $e) {
+        @error_log('[pullCdkValidateRequests] Error: ' . $e->getMessage());
+        error('拉取失败: ' . $e->getMessage());
+    }
+}
+
+// ===== Java推送CDK验证结果 =====
+function pushCdkValidateResult() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $requestId = getParam('request_id', '');
+    $status = getParam('status', 'not_found'); // success / not_found / already_used
+    $code = getParam('code', '');
+    $amount = (int)getParam('amount', 0);
+
+    if (empty($requestId)) error('缺少request_id');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS cdk_validate_results (
+        request_id TEXT PRIMARY KEY,
+        code TEXT NOT NULL,
+        status TEXT NOT NULL,
+        amount INTEGER DEFAULT 0,
+        message TEXT DEFAULT '',
+        used INTEGER DEFAULT 0,
+        used_by TEXT DEFAULT '',
+        created_at INTEGER NOT NULL
+    )");
+
+    try {
+        // ★ BEGIN IMMEDIATE防database is locked
+        $db->exec('BEGIN IMMEDIATE');
+        $now = time();
+        $stmt = $db->prepare("INSERT OR REPLACE INTO cdk_validate_results (request_id, code, status, amount, message, created_at) VALUES (:id, :code, :status, :amount, :msg, :time)");
+        $stmt->bindValue(':id', $requestId, SQLITE3_TEXT);
+        $stmt->bindValue(':code', $code, SQLITE3_TEXT);
+        $stmt->bindValue(':status', $status, SQLITE3_TEXT);
+        $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+        $stmt->bindValue(':msg', '', SQLITE3_TEXT);
+        $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+
+        // 同时标记请求为已完成
+        $stmt2 = $db->prepare("UPDATE cdk_validate_requests SET status = 'done' WHERE request_id = :id");
+        $stmt2->bindValue(':id', $requestId, SQLITE3_TEXT);
+        $stmt2->execute();
+        $db->exec('COMMIT');
+
+        @error_log("[pushCdkValidateResult] request_id={$requestId} code={$code} status={$status} amount={$amount}");
+        success(['request_id' => $requestId]);
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        @error_log('[pushCdkValidateResult] Error: ' . $e->getMessage());
+        error('推送失败: ' . $e->getMessage());
+    }
 }

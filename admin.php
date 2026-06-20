@@ -113,7 +113,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const A = 'api/admin.php';
-const _BUILD_TS = 1750220000; // 版本号，用于缓存失效
+const _BUILD_TS = 1781928829; // 版本号，用于缓存失效
 console.log('[INIT] Admin panel loaded, build:', _BUILD_TS);
 
 // ★ 自检：验证新代码是否加载
@@ -232,15 +232,45 @@ async function loadDashboard(el) {
         let onlineHtml = '';
         if (onlineR.success && onlineR.data && onlineR.data.length > 0) {
             const players = onlineR.data;
+            // 同IP段折叠：按/24子网分组
+            const subnetGroups = {};
+            const subnetOrder = [];
+            players.forEach(p => {
+                const ip = p.ip_address || '-';
+                let subnet = ip;
+                if (ip !== '-') {
+                    const parts = ip.split('.');
+                    if (parts.length === 4) {
+                        subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                    }
+                }
+                if (!subnetGroups[subnet]) {
+                    subnetGroups[subnet] = [];
+                    subnetOrder.push(subnet);
+                }
+                subnetGroups[subnet].push(p);
+            });
+            
+            // 构建显示列表：每组只显示第一个，后面标注折叠数量
+            const displayRows = [];
+            subnetOrder.forEach(subnet => {
+                const group = subnetGroups[subnet];
+                const first = group[0];
+                const hiddenCount = group.length - 1;
+                displayRows.push({player: first, hiddenCount});
+            });
+            
             onlineHtml = `
                 <div class="card">
                     <h2>实时在线玩家 <span style="color:var(--dim);font-size:12px">(${players.length}人)</span></h2>
                     <table class="table">
-                        <tr><th>玩家名</th><th>登录时间</th><th>在线时长</th></tr>
-                        ${players.map(p => {
+                        <tr><th>玩家名</th><th>IP地址</th><th>登录时间</th><th>在线时长</th></tr>
+                        ${displayRows.map(({player: p, hiddenCount}) => {
                             const loginTime = p.login_time ? new Date(p.login_time*1000).toLocaleString() : '-';
                             const mins = Math.floor((Date.now()/1000 - p.login_time)/60);
-                            return `<tr><td class="player-online">🟢 ${p.player_name}</td><td>${loginTime}</td><td>${mins}分钟</td></tr>`;
+                            const ip = p.ip_address || '-';
+                            const suffix = hiddenCount > 0 ? ` <span style="color:var(--yellow);font-size:12px">(折叠同ip段玩家${hiddenCount}名)</span>` : '';
+                            return `<tr><td class="player-online">🟢 ${p.player_name}${suffix}</td><td style="font-size:12px;font-family:monospace">${ip}</td><td>${loginTime}</td><td>${mins}分钟</td></tr>`;
                         }).join('')}
                     </table>
                 </div>`;
@@ -306,21 +336,32 @@ async function doQueryBond() {
 }
 
 // ===== 商品管理 =====
+let _shopItems = [];
+let _shopCategories = [];
+let _currentShopCat = '';
+
 async function loadShop(el) {
     const r = await jsonApi('shop.php?action=list');
-    const items = r.data || [];
+    _shopItems = r.data || [];
+    _shopCategories = [...new Set(_shopItems.map(i => i.category || '默认'))];
+    _currentShopCat = _shopCategories[0] || '';
+
+    let catTabs = '';
+    if (_shopCategories.length > 0) {
+        catTabs = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">';
+        _shopCategories.forEach((cat, idx) => {
+            const active = idx === 0 ? 'color:#fff;background:var(--accent);border-color:var(--accent)' : '';
+            const catCount = _shopItems.filter(i => (i.category || '默认') === cat).length;
+            catTabs += `<div onclick="switchShopCat('${cat.replace(/'/g,"\\'")}')" style="padding:6px 14px;border:1px solid var(--border);border-radius:16px;cursor:pointer;font-size:13px;transition:all 0.2s;${active}" class="shop-cat-tab" data-cat="${cat}">${cat} <span style="opacity:0.7;font-size:11px">(${catCount})</span></div>`;
+        });
+        catTabs += '</div>';
+    }
+
     el.innerHTML = `
         <div class="card">
             <h2>商品管理 <button class="btn btn-blue" style="float:right" onclick="showAddShop()">+ 添加商品</button></h2>
-            <table class="table">
-                <tr><th>ID</th><th>名称</th><th>分类</th><th>购入价</th><th>库存</th><th>销量</th><th>操作</th></tr>
-                ${items.map(i=>`<tr>
-                    <td>${i.id}</td><td>${i.display_name}</td><td>${i.category}</td>
-                    <td>${i.buy_price}</td><td>${i.stock==-1?'∞':i.stock}</td><td>${i.total_sales}</td>
-                    <td><button class="btn btn-yellow" onclick="editStock('${i.id}',${i.stock})">改库存</button>
-                    <button class="btn btn-red" onclick="removeShop('${i.id}')">删除</button></td>
-                </tr>`).join('')}
-            </table>
+            ${catTabs}
+            <div id="shopAdminContent"></div>
         </div>
         <div class="card" id="addShopForm" style="display:none">
             <h2>添加商品</h2>
@@ -332,6 +373,37 @@ async function loadShop(el) {
             <div class="form-row"><label>库存</label><input id="asStock" type="number" value="-1" placeholder="-1无限"></div>
             <button class="btn btn-green" onclick="doAddShop()">确认添加</button>
         </div>`;
+    renderShopAdminContent();
+}
+
+function switchShopCat(cat) {
+    _currentShopCat = cat;
+    document.querySelectorAll('.shop-cat-tab').forEach(tab => {
+        const isActive = tab.dataset.cat === cat;
+        tab.style.background = isActive ? 'var(--accent)' : '';
+        tab.style.color = isActive ? '#fff' : '';
+        tab.style.borderColor = isActive ? 'var(--accent)' : 'var(--border)';
+    });
+    renderShopAdminContent();
+}
+
+function renderShopAdminContent() {
+    const div = document.getElementById('shopAdminContent');
+    if (!div) return;
+    const items = _shopItems.filter(i => (i.category || '默认') === _currentShopCat);
+    if (items.length === 0) {
+        div.innerHTML = '<div class="empty" style="padding:20px">该分类暂无商品</div>';
+        return;
+    }
+    div.innerHTML = `<table class="table">
+        <tr><th>ID</th><th>名称</th><th>分类</th><th>购入价</th><th>库存</th><th>销量</th><th>操作</th></tr>
+        ${items.map(i=>`<tr>
+            <td>${i.id}</td><td>${i.display_name}</td><td>${i.category || '默认'}</td>
+            <td>${i.buy_price}</td><td>${i.stock==-1?'∞':i.stock}</td><td>${i.total_sales}</td>
+            <td><button class="btn btn-yellow" onclick="editStock('${i.id}',${i.stock})">改库存</button>
+            <button class="btn btn-red" onclick="removeShop('${i.id}')">删除</button></td>
+        </tr>`).join('')}
+    </table>`;
 }
 
 function showAddShop() { document.getElementById('addShopForm').style.display='block'; }
@@ -374,7 +446,7 @@ async function loadCDK(el) {
             <div style="display:flex;gap:12px;margin-bottom:12px">
                 <div class="card" style="flex:1;margin:0">
                     <h2>生成CDK</h2>
-                    <div class="form-row"><label>金额</label><input id="cAmount" type="number" value="100"></div>
+                    <div class="form-row"><label>金额</label><input id="cAmount" type="text" value="100" placeholder="固定金额或区间(如100-200)"></div>
                     <div class="form-row"><label>数量</label><input id="cCount" type="number" value="10" min="1" max="100"></div>
                     <button class="btn btn-green" onclick="doBatchCDK()">批量生成</button>
                 </div>
@@ -393,10 +465,34 @@ async function loadCDK(el) {
 }
 
 async function doBatchCDK() {
-    const amount = parseInt(document.getElementById('cAmount').value);
+    const amountStr = document.getElementById('cAmount').value.trim();
     const count = parseInt(document.getElementById('cCount').value);
-    if (!amount||!count) { toast('请填写完整','err'); return; }
-    const r = await postApi('cdk_batch', {amount, count});
+    if (!amountStr||!count) { toast('请填写完整','err'); return; }
+    
+    // 解析金额：支持固定金额或区间
+    let amountData = {};
+    const separators = [',', '，', '-', '－', '/', '／', '~', '～'];
+    let foundSep = null;
+    for (const sep of separators) {
+        if (amountStr.includes(sep)) {
+            foundSep = sep;
+            break;
+        }
+    }
+    if (foundSep) {
+        const parts = amountStr.split(foundSep).map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+        if (parts.length === 2 && parts[0] <= parts[1]) {
+            amountData = {min: parts[0], max: parts[1]};
+        } else {
+            toast('区间格式错误，如100-200','err'); return;
+        }
+    } else {
+        const amount = parseInt(amountStr);
+        if (isNaN(amount) || amount <= 0) { toast('金额必须为正整数','err'); return; }
+        amountData = {amount: amount};
+    }
+    
+    const r = await postApi('cdk_batch', {...amountData, count});
     if (r.success) {
         toast('生成了'+count+'个CDK','ok');
         loadCDK(document.getElementById('C'));
@@ -718,8 +814,34 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
                 return;
             }
             
-            // 追加用户行
-            users.forEach(u => {
+            // ★ 判断是否为日期搜索：日期搜索时折叠同IP段玩家
+            const s = (search || '').toLowerCase();
+            const isDateSearch = /今天|昨日|today|yesterday|今天|当日|前一日/.test(s) || /^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$/.test(s);
+
+            // 追加用户行（日期搜索时按/24子网折叠）
+            let displayUsers = users;
+            if (isDateSearch && users.length > 0) {
+                // 按/24子网分组
+                const subnetMap = {};
+                const subnetOrder = [];
+                users.forEach(u => {
+                    const ip = u.ip_address || '-';
+                    let subnet = ip;
+                    if (ip !== '-') {
+                        const parts = ip.split('.');
+                        if (parts.length === 4) subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                    }
+                    if (!subnetMap[subnet]) { subnetMap[subnet] = []; subnetOrder.push(subnet); }
+                    subnetMap[subnet].push(u);
+                });
+                displayUsers = [];
+                subnetOrder.forEach(sub => {
+                    const group = subnetMap[sub];
+                    displayUsers.push({...group[0], _foldCount: group.length - 1});
+                });
+            }
+
+            displayUsers.forEach(u => {
                 const isOnline = onlineSet && onlineSet.has((u.player_name || '').toLowerCase());
                 const playerNameClass = isOnline ? 'player-online' : '';
                 const regTime = u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-';
@@ -727,11 +849,12 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
                 const hours = Math.floor((u.total_online_time || 0) / 3600);
                 const ip = u.ip_address || '-';
                 const ipLoc = u.ip_location || '-';
-                
+                const foldSuffix = u._foldCount > 0 ? ` <span style="color:var(--yellow);font-size:12px">(同ip段${u._foldCount}名)</span>` : '';
+
                 const tr = document.createElement('tr');
                 tr.setAttribute('data-name', (u.player_name || '').toLowerCase());
                 tr.innerHTML = `
-                    <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}</td>
+                    <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}${foldSuffix}</td>
                     <td>${regTime}</td>
                     <td>${loginTime}</td>
                     <td>${u.points || 0}</td>

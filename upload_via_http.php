@@ -250,7 +250,7 @@ if ($action === 'status') {
 } elseif ($action === 'upload') {
     // 通过 POST 上传文件
     $target = $_POST['target'] ?? '';
-    $allowed = ['api/admin.php', 'api/sync.php', 'core.php', 'config.php'];
+    $allowed = ['api/admin.php', 'api/sync.php', 'api/cdk.php', 'core.php', 'config.php'];
     
     if (!in_array($target, $allowed)) {
         echo "ERROR: Target not allowed. Use: " . implode(', ', $allowed) . "\n";

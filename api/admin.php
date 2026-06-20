@@ -399,9 +399,22 @@ function adminGenToken() {
 function adminGenCDK() {
     requireAdminSession();
     $amount = (int)getParam('amount', 0);
+    $min = (int)getParam('min', 0);
+    $max = (int)getParam('max', 0);
     $count = (int)getParam('count', 0);
-    if (!$amount || !$count) exit(json_encode(['success' => false, 'message' => '缺少amount或count参数'], JSON_UNESCAPED_UNICODE));
-    if ($count > 100) exit(json_encode(['success' => false, 'message' => '单次最多生成100个CDK'], JSON_UNESCAPED_UNICODE));
+    
+    // 验证参数
+    if ($count <= 0 || $count > 100) {
+        exit(json_encode(['success' => false, 'message' => '数量必须在1-100之间'], JSON_UNESCAPED_UNICODE));
+    }
+    
+    if ($min > 0 && $max > 0 && $min <= $max) {
+        // 区间模式
+    } elseif ($amount > 0) {
+        // 固定金额模式
+    } else {
+        exit(json_encode(['success' => false, 'message' => '缺少金额参数(amount或min+max)'], JSON_UNESCAPED_UNICODE));
+    }
 
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS cdk (
@@ -419,9 +432,15 @@ function adminGenCDK() {
         for ($i = 0; $i < $count; $i++) {
             // 生成6位随机CDK码
             $code = strtoupper(substr(str_shuffle('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'), 0, 6));
+            // 根据模式生成金额
+            if ($min > 0 && $max > 0 && $min <= $max) {
+                $genAmount = random_int($min, $max);
+            } else {
+                $genAmount = $amount;
+            }
             $stmt = $db->prepare("INSERT OR IGNORE INTO cdk (code, amount, used, created_at) VALUES (:code, :amount, 0, :time)");
             $stmt->bindValue(':code', $code, SQLITE3_TEXT);
-            $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            $stmt->bindValue(':amount', $genAmount, SQLITE3_INTEGER);
             $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
             $stmt->execute();
             $generated[] = $code;
@@ -1176,7 +1195,15 @@ function detectSearchType($search) {
         return 'ip';
     }
 
-    // 2. 日期格式检测
+    // 2. 日期关键词（中英文）
+    if (in_array($search, ['今天', '今日', '今天', '当日', 'today', 'Today', 'TODAY'])) {
+        return 'date_keyword';
+    }
+    if (in_array($search, ['昨天', '昨日', '前一日', 'yesterday', 'Yesterday', 'YESTERDAY'])) {
+        return 'date_keyword';
+    }
+
+    // 3. 日期格式检测
     // 中文格式：2026年6月18日、2026年06月18日
     if (preg_match('/^\d{4}年\d{1,2}月\d{1,2}日$/', $search)) {
         return 'date';
@@ -1224,8 +1251,15 @@ function detectSearchType($search) {
 function parseSearchDate($search) {
     $year = $month = $day = 0;
 
+    // 中英文关键词：今天/昨天
+    $searchLower = mb_strtolower($search);
+    if (in_array($searchLower, ['今天', '今日', '当日', 'today'])) {
+        $year = (int)date('Y'); $month = (int)date('m'); $day = (int)date('d');
+    } elseif (in_array($searchLower, ['昨天', '昨日', '前一日', 'yesterday'])) {
+        $year = (int)date('Y', strtotime('-1 day')); $month = (int)date('m', strtotime('-1 day')); $day = (int)date('d', strtotime('-1 day'));
+    }
     // 中文格式：2026年6月18日
-    if (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $search, $m)) {
+    elseif (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $search, $m)) {
         $year = (int)$m[1]; $month = (int)$m[2]; $day = (int)$m[3];
     }
     // 横线格式：2026-06-18
@@ -1278,8 +1312,8 @@ function adminListUsersPaginated() {
                 $ipSearch = $search;
                 $whereClause = "WHERE player_name IN (SELECT player_name FROM player_ip_changes WHERE new_ip LIKE :ip) OR player_name IN (SELECT player_name FROM player_ip_locations WHERE ip_address LIKE :ip2)";
                 $searchBound = "%$ipSearch%";
-            } elseif ($searchType === 'date') {
-                // 日期搜索：转换为时间戳范围
+            } elseif ($searchType === 'date' || $searchType === 'date_keyword') {
+                // 日期搜索：转换为时间戳范围（支持"今天""昨天"关键词）
                 $dateRange = parseSearchDate($search);
                 if ($dateRange) {
                     $whereClause = "WHERE (last_login_time >= :dateStart AND last_login_time < :dateEnd) OR (register_time >= :dateStart AND register_time < :dateEnd)";
@@ -1354,7 +1388,7 @@ function adminListUsersPaginated() {
         $sql = "SELECT player_name, register_time, last_login_time, points, total_online_time, email FROM users";
 
         if ($search) {
-            if ($searchType === 'date' && $dateRange) {
+            if (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
                 $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY last_login_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
                 $stmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
                 $stmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);
@@ -1395,7 +1429,7 @@ function adminListUsersPaginated() {
         // 获取总数
         $countSql = "SELECT COUNT(*) as cnt FROM users";
         if ($search) {
-            if ($searchType === 'date' && $dateRange) {
+            if (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
                 $countStmt = $db->prepare($countSql . " " . $whereClause);
                 $countStmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
                 $countStmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);

@@ -1042,7 +1042,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                 <p style="color:var(--dim);font-size:13px;margin-bottom:12px">输入CDK兑换码，获得债券奖励</p>
                 ${IS_PREVIEW ? '<div class="preview-badge" style="margin-bottom:12px">预览模式 - 兑换不会生效</div>' : ''}
                 <div class="cdk-input" style="flex-direction:column;gap:8px">
-                    <input type="text" id="cdkCode" placeholder="请输入CDK兑换码..." maxlength="20">
+                    <input type="text" id="cdkCode" placeholder="请输入CDK兑换码..." maxlength="64">
                     <input type="password" id="cdkPassword" placeholder="输入游戏登录密码" style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
                     <button class="btn btn-green" onclick="doCDKExchange()">兑换</button>
                 </div>
