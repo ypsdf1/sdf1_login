@@ -92,6 +92,8 @@ public class WebManager {
     private final AtomicInteger dbTaskIdGen = new AtomicInteger(0);
     private final AtomicBoolean dbWorkerRunning = new AtomicBoolean(false);
     private Thread dbWorkerThread;
+    // 库存高频拉取去重标志
+    private final AtomicBoolean stockFastPollTaskPending = new AtomicBoolean(false);
 
     public WebManager(Main plugin) {
         this.plugin = plugin;
@@ -1017,20 +1019,24 @@ public class WebManager {
                             }
                         }
 
-                        // ★ 拉取并应用库存，通过DB队列串行化
-                        final long finalServerLastModified = serverLastModified;
-                        submitNormalDbTask("库存高频拉取", () -> {
-                            shopStockPulling = true;
-                            try {
-                                boolean applied = pullShopStockSync();
-                                if (applied && finalServerLastModified > 0) {
-                                    lastKnownShopStockModified = finalServerLastModified;
+                        // ★ 去重检查：如果已有库存高频拉取任务在队列中等待，则跳过本次提交
+                        if (stockFastPollTaskPending.compareAndSet(false, true)) {
+                            // ★ 拉取并应用库存，通过DB队列串行化
+                            final long finalServerLastModified = serverLastModified;
+                            submitNormalDbTask("库存高频拉取", () -> {
+                                shopStockPulling = true;
+                                try {
+                                    boolean applied = pullShopStockSync();
+                                    if (applied && finalServerLastModified > 0) {
+                                        lastKnownShopStockModified = finalServerLastModified;
+                                    }
+                                    // applied=false → 不更新lastKnownShopStockModified → 下次重试
+                                } finally {
+                                    shopStockPulling = false;
+                                    stockFastPollTaskPending.set(false);
                                 }
-                                // applied=false → 不更新lastKnownShopStockModified → 下次重试
-                            } finally {
-                                shopStockPulling = false;
-                            }
-                        });
+                            });
+                        }
                     }
 
                 } catch (Exception e) {
