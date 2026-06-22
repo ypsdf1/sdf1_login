@@ -299,6 +299,12 @@ switch ($action) {
     case 'push_cdk_validate_result':
         pushCdkValidateResult();
         break;
+    case 'sync_lands':
+        syncLands();
+        break;
+    case 'sync_land_shop':
+        syncLandShop();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -420,6 +426,106 @@ function syncServiceProviders() {
         $db->exec("ROLLBACK");
         error('同步失败: ' . $e->getMessage());
     }
+}
+
+// ===== 领地数据同步 =====
+function syncLands() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $landsRaw = getParam('lands');
+    if (!$landsRaw) error('缺少lands参数');
+    $lands = is_array($landsRaw) ? $landsRaw : json_decode($landsRaw, true);
+    if (!is_array($lands)) error('lands格式无效');
+
+    $db = getDB();
+    // 建表
+    $db->exec("CREATE TABLE IF NOT EXISTS web_area_lands (
+        id INTEGER PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        owner TEXT DEFAULT '',
+        world TEXT DEFAULT '',
+        x1 INTEGER DEFAULT 0, z1 INTEGER DEFAULT 0,
+        x2 INTEGER DEFAULT 0, z2 INTEGER DEFAULT 0,
+        y_min INTEGER DEFAULT 0, y_max INTEGER DEFAULT 255,
+        area_size INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
+        (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at)
+        VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced)");
+    $count = 0;
+    foreach ($lands as $land) {
+        $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':name', $land['name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':owner', $land['owner'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':world', $land['world'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':x1', (int)($land['x1'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':z1', (int)($land['z1'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':x2', (int)($land['x2'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':z2', (int)($land['z2'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':ymin', (int)($land['y_min'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':ymax', (int)($land['y_max'] ?? 255), SQLITE3_INTEGER);
+        $stmt->bindValue(':size', (int)($land['area_size'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':created', (int)($land['created_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        $count++;
+    }
+    success("领地同步成功: {$count}个");
+}
+
+// ===== 领地权限商店同步 =====
+function syncLandShop() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $itemsRaw = getParam('items');
+    if (!$itemsRaw) error('缺少items参数');
+    $items = is_array($itemsRaw) ? $itemsRaw : json_decode($itemsRaw, true);
+    if (!is_array($items)) error('items格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_area_shop (
+        id INTEGER PRIMARY KEY,
+        land_id INTEGER NOT NULL,
+        land_name TEXT DEFAULT '',
+        seller TEXT NOT NULL,
+        permission TEXT DEFAULT 'visitor',
+        price INTEGER DEFAULT 0,
+        duration INTEGER DEFAULT 86400,
+        status TEXT DEFAULT 'active',
+        buyer TEXT DEFAULT '',
+        bought_at INTEGER DEFAULT 0,
+        created_at INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_shop
+        (id, land_id, land_name, seller, permission, price, duration, status, buyer, bought_at, created_at, synced_at)
+        VALUES (:id, :land_id, :land_name, :seller, :perm, :price, :dur, :status, :buyer, :bought, :created, :synced)");
+    $count = 0;
+    foreach ($items as $item) {
+        $stmt->bindValue(':id', (int)($item['id'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':land_id', (int)($item['land_id'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':land_name', $item['land_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':seller', $item['seller'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':perm', $item['permission'] ?? 'visitor', SQLITE3_TEXT);
+        $stmt->bindValue(':price', (int)($item['price'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':dur', (int)($item['duration'] ?? 86400), SQLITE3_INTEGER);
+        $stmt->bindValue(':status', $item['status'] ?? 'active', SQLITE3_TEXT);
+        $stmt->bindValue(':buyer', $item['buyer'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':bought', (int)($item['bought_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':created', (int)($item['created_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        $count++;
+    }
+    success("权限商店同步成功: {$count}个");
 }
 
 // ===== 插件推送债券余额 =====

@@ -147,6 +147,81 @@ if ($currentVersion !== $BUILD_VERSION) {
         .toast.success { background: var(--green); color: #fff; }
         .toast.error { background: var(--red); color: #fff; }
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        /* ★ 游客模式C位登录按钮 */
+        .guest-center-login {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 50; pointer-events: none;
+        }
+        .guest-center-login.show { display: flex; justify-content: center; align-items: center; }
+        .guest-center-login .glow-btn {
+            pointer-events: auto;
+            background: linear-gradient(135deg, var(--accent), #79c0ff);
+            color: #fff; border: none; border-radius: 16px;
+            padding: 20px 48px; font-size: 18px; font-weight: 700;
+            cursor: pointer; box-shadow: 0 8px 32px rgba(88,166,255,0.4);
+            animation: glowPulse 2s ease-in-out infinite;
+            transition: all 0.3s; text-decoration: none;
+        }
+        .guest-center-login .glow-btn:hover { transform: scale(1.08); box-shadow: 0 12px 48px rgba(88,166,255,0.6); }
+        @keyframes glowPulse {
+            0%,100% { box-shadow: 0 8px 32px rgba(88,166,255,0.4); }
+            50% { box-shadow: 0 8px 48px rgba(88,166,255,0.7); }
+        }
+        /* ★ 毛玻璃登录弹窗 */
+        .glass-login-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.35);
+            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            z-index: 2000; justify-content: center; align-items: center;
+            animation: glassFadeIn 0.3s ease;
+        }
+        .glass-login-overlay.show { display: flex; }
+        .glass-card {
+            background: rgba(22,27,34,0.88);
+            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(88,166,255,0.25);
+            border-radius: 20px; padding: 36px 32px; width: 400px; max-width: 90%;
+            box-shadow: 0 16px 64px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+            animation: glassSlideUp 0.35s ease;
+            position: relative;
+        }
+        .glass-card .x-btn {
+            position: absolute; top: 12px; right: 16px; background: none; border: none;
+            color: var(--dim); font-size: 22px; cursor: pointer; padding: 4px 8px;
+            border-radius: 6px; transition: all 0.2s; line-height: 1;
+        }
+        .glass-card .x-btn:hover { color: var(--text); background: rgba(255,255,255,0.1); }
+        .glass-card .logo { text-align: center; font-size: 48px; margin-bottom: 16px; }
+        .glass-card h2 { text-align: center; color: var(--text); margin-bottom: 6px; font-size: 20px; }
+        .glass-card .subtitle { text-align: center; color: var(--dim); font-size: 13px; margin-bottom: 24px; }
+        .glass-card input[type=text], .glass-card input[type=password] {
+            width: 100%; padding: 12px 16px; background: rgba(13,17,23,0.6);
+            border: 1px solid rgba(88,166,255,0.2); border-radius: 10px;
+            color: var(--text); font-size: 14px; outline: none; margin-bottom: 12px;
+            transition: border-color 0.2s; box-sizing: border-box;
+        }
+        .glass-card input:focus { border-color: var(--accent); }
+        .glass-card .login-btn {
+            width: 100%; padding: 14px; background: linear-gradient(135deg, var(--accent), #79c0ff);
+            color: #fff; border: none; border-radius: 10px; font-size: 15px;
+            font-weight: 700; cursor: pointer; transition: all 0.2s; margin-top: 4px;
+        }
+        .glass-card .login-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .glass-card .login-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .glass-card .hint { text-align: center; color: var(--dim); font-size: 12px; margin-top: 16px; }
+        .glass-card .hint code {
+            background: rgba(88,166,255,0.1); padding: 1px 5px; border-radius: 4px;
+            color: var(--accent); font-size: 11px;
+        }
+        .glass-card .status-msg {
+            text-align: center; padding: 8px; border-radius: 8px; font-size: 13px;
+            margin-bottom: 12px; display: none;
+        }
+        @keyframes glassFadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes glassSlideUp {
+            from { opacity: 0; transform: translateY(30px) scale(0.95); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
         @media (max-width: 768px) {
             .sidebar { display: none; }
             .grid { grid-template-columns: 1fr; }
@@ -174,6 +249,26 @@ if ($currentVersion !== $BUILD_VERSION) {
 
         <div class="content" id="content">
             <!-- 动态内容 -->
+        </div>
+    </div>
+
+    <!-- ★ 游客模式C位登录按钮 -->
+    <div class="guest-center-login" id="guestCenterLogin">
+        <button class="glow-btn" onclick="openGlassLogin()">🔑 立即登录</button>
+    </div>
+
+    <!-- ★ 毛玻璃登录弹窗 -->
+    <div class="glass-login-overlay" id="glassLoginOverlay" onclick="closeGlassLogin(event)">
+        <div class="glass-card" onclick="event.stopPropagation()">
+            <button class="x-btn" onclick="closeGlassLogin()">&times;</button>
+            <div class="logo">🔐</div>
+            <h2>登录到SDF1</h2>
+            <p class="subtitle">使用游戏内密码登录，无需在游戏里敲指令</p>
+            <div class="status-msg" id="glassLoginStatus"></div>
+            <input type="text" id="glassPlayerName" placeholder="玩家名" maxlength="16" autocomplete="username">
+            <input type="password" id="glassPassword" placeholder="游戏内密码" maxlength="32" autocomplete="current-password">
+            <button class="login-btn" id="glassLoginBtn" onclick="doGlassLogin()">登 录</button>
+            <p class="hint">也可在游戏中输入 <code>/sdf1_login weblogin</code> 获取链接</p>
         </div>
     </div>
 
@@ -317,7 +412,9 @@ if ($currentVersion !== $BUILD_VERSION) {
                 currentPlayer = '';
                 document.getElementById('playerInfo').textContent = '游客模式';
                 document.getElementById('previewBadge').style.display = 'inline';
+                document.querySelector('.guest-center-login').classList.add('show');
                 showLoginPrompt();
+                startGuestLoginTimer();
                 if (callback) callback({ok: false, message: data.message});
             }
         } catch (e) {
@@ -329,7 +426,9 @@ if ($currentVersion !== $BUILD_VERSION) {
             currentPlayer = '';
             document.getElementById('playerInfo').textContent = '游客模式';
             document.getElementById('previewBadge').style.display = 'inline';
+            document.querySelector('.guest-center-login').classList.add('show');
             showLoginPrompt();
+            startGuestLoginTimer();
             if (callback) callback({ok: false, message: e.message});
         }
     }
@@ -753,7 +852,119 @@ if ($currentVersion !== $BUILD_VERSION) {
         document.getElementById('playerInfo').textContent = '游客模式';
         document.getElementById('previewBadge').style.display = 'inline';
         document.querySelector('.sidebar').style.display = 'block';
+        document.querySelector('.guest-center-login').classList.add('show');
         switchPage('dashboard');
+        // ★ 启动60秒定时弹窗
+        startGuestLoginTimer();
+    }
+
+    // ==================== 毛玻璃登录弹窗 ====================
+    let guestLoginTimer = null;
+    let glassLoginDismissed = false;
+
+    function openGlassLogin() {
+        const overlay = document.getElementById('glassLoginOverlay');
+        overlay.classList.add('show');
+        glassLoginDismissed = false;
+        // 停止定时弹窗
+        if (guestLoginTimer) { clearInterval(guestLoginTimer); guestLoginTimer = null; }
+        setTimeout(() => {
+            const nameInput = document.getElementById('glassPlayerName');
+            const savedPlayer = localStorage.getItem('sdf1_player') || currentPlayer || '';
+            if (nameInput) { nameInput.value = savedPlayer; nameInput.focus(); }
+        }, 100);
+    }
+
+    function closeGlassLogin(e) {
+        if (e && e.target !== document.getElementById('glassLoginOverlay')) return;
+        document.getElementById('glassLoginOverlay').classList.remove('show');
+        glassLoginDismissed = true;
+        glassLoginReset();
+        // 重新启动定时弹窗
+        if (IS_PREVIEW) startGuestLoginTimer();
+    }
+
+    function glassLoginReset() {
+        const btn = document.getElementById('glassLoginBtn');
+        const st = document.getElementById('glassLoginStatus');
+        const pwd = document.getElementById('glassPassword');
+        if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
+        if (st) { st.style.display = 'none'; st.textContent = ''; }
+        if (pwd) pwd.value = '';
+    }
+
+    function setGlassStatus(msg, type) {
+        const st = document.getElementById('glassLoginStatus');
+        if (!st) return;
+        const colors = { loading: 'var(--accent)', success: 'var(--green)', error: 'var(--red)' };
+        const bgs = { loading: 'rgba(88,166,255,0.12)', success: 'rgba(63,185,80,0.12)', error: 'rgba(248,81,73,0.12)' };
+        st.style.display = 'block';
+        st.style.background = bgs[type] || bgs.loading;
+        st.style.border = '1px solid ' + (colors[type] || colors.loading);
+        st.style.borderRadius = '8px';
+        st.style.color = colors[type] || 'var(--text)';
+        st.innerHTML = type === 'loading'
+            ? '<span style="display:inline-block;width:14px;height:14px;border:2px solid var(--dim);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px"></span> ' + msg
+            : msg;
+    }
+
+    async function doGlassLogin() {
+        const player = document.getElementById('glassPlayerName').value.trim();
+        const password = document.getElementById('glassPassword').value;
+        const btn = document.getElementById('glassLoginBtn');
+        if (!player) { setGlassStatus('请输入玩家名', 'error'); return; }
+        if (!password) { setGlassStatus('请输入密码', 'error'); return; }
+        btn.disabled = true; btn.textContent = '登录中...';
+        setGlassStatus('正在提交登录请求...', 'loading');
+        try {
+            const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({player, password})
+            });
+            const reqData = await reqRes.json();
+            if (!reqData.success) { setGlassStatus(reqData.message || '提交失败', 'error'); btn.disabled = false; btn.textContent = '登 录'; return; }
+            const requestId = reqData.data.request_id;
+            setGlassStatus('等待游戏服务器验证...', 'loading');
+            let attempts = 0;
+            const pollInterval = setInterval(async () => {
+                attempts++;
+                if (attempts > 60) { clearInterval(pollInterval); setGlassStatus('验证超时，请稍后重试', 'error'); btn.disabled = false; btn.textContent = '登 录'; return; }
+                try {
+                    const pollRes = await fetch(API + 'sync.php?action=check_web_login_result&player=' + encodeURIComponent(player) + '&request_id=' + requestId);
+                    const pollData = await pollRes.json();
+                    if (pollData.success && pollData.data) {
+                        const result = pollData.data;
+                        if (result.status === 'success') {
+                            clearInterval(pollInterval);
+                            setGlassStatus('登录成功！正在跳转...', 'success');
+                            const token = result.token;
+                            localStorage.setItem('sdf1_token', token);
+                            localStorage.setItem('sdf1_player', player);
+                            setTimeout(() => { window.location.href = 'player.php?login=' + encodeURIComponent(player) + '&token=' + encodeURIComponent(token); }, 600);
+                        } else if (result.status === 'failed') {
+                            clearInterval(pollInterval);
+                            setGlassStatus(result.message || '密码错误', 'error');
+                            btn.disabled = false; btn.textContent = '登 录';
+                        }
+                    }
+                } catch (e) { /* 继续轮询 */ }
+            }, 1000);
+        } catch (e) {
+            setGlassStatus('连接失败: ' + e.message, 'error');
+            btn.disabled = false; btn.textContent = '登 录';
+        }
+    }
+
+    // ★ 60秒定时弹窗（游客模式专用）
+    function startGuestLoginTimer() {
+        if (guestLoginTimer) clearInterval(guestLoginTimer);
+        guestLoginTimer = setInterval(() => {
+            if (!IS_PREVIEW) { clearInterval(guestLoginTimer); guestLoginTimer = null; return; }
+            if (!glassLoginDismissed) {
+                openGlassLogin();
+            }
+        }, 60000);
     }
 
     function switchPage(page) {

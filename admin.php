@@ -92,6 +92,7 @@
         <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
+        <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div></div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -152,7 +153,9 @@ function go(p) {
     else if (p==='users') loadUsers(c);
     else if (p==='online') loadOnlinePlayers(c);
     else if (p==='active') loadActivePlayers(c);
+    else if (p==='reset_requests') loadResetRequests(c);
     else if (p==='tickets') loadTickets(c);
+    else if (p==='lands') loadLands(c);
 }
 
 // 检查登录状态
@@ -1716,27 +1719,40 @@ async function doLogout() {
 }
 
 // ===== 模态框输入（替代prompt）=====
-function showModal(title, message, defaultValue) {
+function showModal(title, message, defaultValue, customHtml) {
     return new Promise((resolve) => {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:1000';
-        overlay.innerHTML = `
-            <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
-                <h3 style="margin-bottom:12px">${title}</h3>
-                <p style="color:var(--dim);font-size:13px;margin-bottom:12px">${message}</p>
-                <input type="text" id="modalInput" value="${defaultValue}" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;box-sizing:border-box">
-                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-                    <button class="btn" id="modalCancel">取消</button>
-                    <button class="btn btn-blue" id="modalConfirm">确认</button>
-                </div>
-            </div>`;
+        if (customHtml) {
+            overlay.innerHTML = `
+                <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                        <h3 style="margin:0">${title}</h3>
+                        <span class="modal-close" style="cursor:pointer;font-size:18px;color:var(--dim)" onclick="this.closest('div[style*=fixed]').remove()">✕</span>
+                    </div>
+                    ${customHtml}
+                </div>`;
+        } else {
+            overlay.innerHTML = `
+                <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
+                    <h3 style="margin-bottom:12px">${title}</h3>
+                    <p style="color:var(--dim);font-size:13px;margin-bottom:12px">${message}</p>
+                    <input type="text" id="modalInput" value="${defaultValue}" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;box-sizing:border-box">
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                        <button class="btn" id="modalCancel">取消</button>
+                        <button class="btn btn-blue" id="modalConfirm">确认</button>
+                    </div>
+                </div>`;
+        }
         document.body.appendChild(overlay);
-        const input = document.getElementById('modalInput');
-        input.focus();
-        input.select();
-        input.addEventListener('keydown', e => { if (e.key === 'Enter') { resolve(input.value); overlay.remove(); } });
-        document.getElementById('modalCancel').onclick = () => { overlay.remove(); resolve(null); };
-        document.getElementById('modalConfirm').onclick = () => { resolve(input.value); overlay.remove(); };
+        if (!customHtml) {
+            const input = document.getElementById('modalInput');
+            input.focus();
+            input.select();
+            input.addEventListener('keydown', e => { if (e.key === 'Enter') { resolve(input.value); overlay.remove(); } });
+            document.getElementById('modalCancel').onclick = () => { overlay.remove(); resolve(null); };
+            document.getElementById('modalConfirm').onclick = () => { resolve(input.value); overlay.remove(); };
+        }
         overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
     });
 }
@@ -2224,6 +2240,183 @@ function adminRenderMd(text) {
     }
     return s;
     } catch(e) { console.error('[MD_RENDER] Error:', e); return escAdmHtml(text).replace(/\n/g, '<br>'); }
+}
+
+// ==================== 领地管理 ====================
+async function loadLands(el) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
+    try {
+        const [landsRes, shopRes, configRes] = await Promise.all([
+            fetch('api/land_api.php?action=list_lands').then(r => r.json()),
+            fetch('api/land_api.php?action=list_shop').then(r => r.json()),
+            fetch('api/land_api.php?action=get_config').then(r => r.json())
+        ]);
+
+        let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
+        html += '<h2 style="margin:0;color:var(--fg)">🏡 领地管理</h2>';
+        html += '<div style="display:flex;gap:8px">';
+        html += `<button onclick="showLandConfig()" style="padding:6px 12px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">⚙️ 配置</button>`;
+        html += `<button onclick="loadLands(document.getElementById('C'))" style="padding:6px 12px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px">🔄 刷新</button>`;
+        html += '</div></div>';
+
+        // 配置信息
+        const cfg = configRes.config || {};
+        html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">`;
+        const lands = landsRes.lands || [];
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:var(--accent)">${lands.length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">总领地数</div>
+        </div>`;
+        const shopItems = (shopRes.items || []).filter(i => i.status === 'active' && !i.buyer);
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#4caf50">${shopItems.length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">在售权限</div>
+        </div>`;
+        const pricePerSqM = cfg.land_price_per_sqm || '10';
+        const maxLands = cfg.max_lands || '5';
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#ff9800">${pricePerSqM}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">每平米价格(债券)</div>
+        </div>`;
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#e91e63">${maxLands}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">最大领地数/人</div>
+        </div>`;
+        html += '</div>';
+
+        // 领地列表
+        html += '<h3 style="color:var(--fg);margin-bottom:8px">📍 领地列表</h3>';
+        if (lands.length === 0) {
+            html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无领地数据<br><span style="font-size:11px">Java端会自动同步领地数据到此</span></div>';
+        } else {
+            html += '<div style="overflow-x:auto"><table class="table"><tr>';
+            html += '<th>ID</th><th>名称</th><th>所有者</th><th>世界</th><th>坐标</th><th>面积</th><th>操作</th>';
+            html += '</tr>';
+            for (const l of lands) {
+                const size = l.area_size || Math.abs((l.x2-l.x1+1)*(l.z2-l.z1+1));
+                html += `<tr>
+                    <td>${l.id}</td>
+                    <td><strong>${escAdmHtml(l.name)}</strong></td>
+                    <td>${escAdmHtml(l.owner || '无')}</td>
+                    <td>${escAdmHtml(l.world)}</td>
+                    <td style="font-size:11px">${l.x1},${l.z1} → ${l.x2},${l.z2}</td>
+                    <td>${size} 格²</td>
+                    <td>
+                        <button onclick="changeLandOwner('${escAdmHtml(l.name)}','${escAdmHtml(l.owner)}')" style="padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">改主</button>
+                        <button onclick="deleteLand('${escAdmHtml(l.name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">删除</button>
+                    </td>
+                </tr>`;
+            }
+            html += '</table></div>';
+        }
+
+        // 权限商店
+        html += '<h3 style="color:var(--fg);margin:20px 0 8px">🛒 权限商店</h3>';
+        const allShop = shopRes.items || [];
+        if (allShop.length === 0) {
+            html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无权限商品</div>';
+        } else {
+            html += '<div style="overflow-x:auto"><table class="table"><tr>';
+            html += '<th>ID</th><th>领地</th><th>卖家</th><th>价格</th><th>时长</th><th>状态</th><th>买家</th><th>操作</th>';
+            html += '</tr>';
+            for (const s of allShop) {
+                const dur = s.duration >= 86400 ? Math.floor(s.duration/86400)+'天' : s.duration >= 3600 ? Math.floor(s.duration/3600)+'小时' : Math.floor(s.duration/60)+'分钟';
+                const statusColor = s.status === 'active' ? '#4caf50' : s.status === 'sold' ? '#ff9800' : '#f44336';
+                html += `<tr>
+                    <td>${s.id}</td>
+                    <td>${escAdmHtml(s.land_name)}</td>
+                    <td>${escAdmHtml(s.seller)}</td>
+                    <td style="color:#ff9800">${s.price}💰</td>
+                    <td>${dur}</td>
+                    <td style="color:${statusColor}">${s.status === 'active' ? '在售' : s.status === 'sold' ? '已售' : '已下架'}</td>
+                    <td>${s.buyer ? escAdmHtml(s.buyer) : '-'}</td>
+                    <td>
+                        ${s.status === 'active' ? `<button onclick="deleteShopItem(${s.id})" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">下架</button>` : ''}
+                    </td>
+                </tr>`;
+            }
+            html += '</table></div>';
+        }
+
+        el.innerHTML = html;
+    } catch(e) {
+        console.error('[LANDS] Error:', e);
+        el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+    }
+}
+
+function showLandConfig() {
+    const html = `<div style="padding:16px">
+        <h3 style="margin:0 0 12px;color:var(--fg)">⚙️ 领地配置</h3>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每平米价格(债券)</label>
+            <input id="cfgPrice" type="number" value="10" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每人最大领地数</label>
+            <input id="cfgMaxLands" type="number" value="5" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <button onclick="saveLandConfig()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button>
+    </div>`;
+    showModal('领地配置', '', null, html);
+}
+
+async function saveLandConfig() {
+    const price = document.getElementById('cfgPrice')?.value || '10';
+    const maxLands = document.getElementById('cfgMaxLands')?.value || '5';
+    try {
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=land_price_per_sqm&value=' + encodeURIComponent(price)
+        });
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=max_lands&value=' + encodeURIComponent(maxLands)
+        });
+        document.querySelector('.modal-close')?.click();
+        loadLands(document.getElementById('C'));
+    } catch(e) {
+        alert('保存失败: ' + e.message);
+    }
+}
+
+function changeLandOwner(name, currentOwner) {
+    const newOwner = prompt('领地 [' + name + '] 当前所有者: ' + (currentOwner||'无') + '\n输入新所有者:', currentOwner);
+    if (newOwner === null || newOwner === currentOwner) return;
+    fetch('api/land_api.php?action=update_land_owner', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(newOwner)
+    }).then(r => r.json()).then(d => {
+        if (d.success) loadLands(document.getElementById('C'));
+        else alert('失败: ' + (d.error||''));
+    });
+}
+
+function deleteLand(name) {
+    if (!confirm('确定删除领地 [' + name + '] ?')) return;
+    fetch('api/land_api.php?action=delete_land', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'name=' + encodeURIComponent(name)
+    }).then(r => r.json()).then(d => {
+        if (d.success) loadLands(document.getElementById('C'));
+        else alert('失败: ' + (d.error||''));
+    });
+}
+
+function deleteShopItem(id) {
+    if (!confirm('确定下架商品 #' + id + ' ?')) return;
+    fetch('api/land_api.php?action=delete_shop_item', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'id=' + id
+    }).then(r => r.json()).then(d => {
+        if (d.success) loadLands(document.getElementById('C'));
+        else alert('失败: ' + (d.error||''));
+    });
 }
 </script>
 </body>
