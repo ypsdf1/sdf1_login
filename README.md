@@ -22,9 +22,9 @@
 
 | 前置插件 | 选装类型 |  功能作用 |
 | :--- | :--- | :--- |
-| [CY_beibao](beibao.md) | 可选,推荐 | 云背包，积分商城可购买背包容量 |
+| [CY_beibao](https://wiki.ypshidifu.cn/beibao.md) | 可选,推荐 | 云背包，积分商城可购买背包容量 |
 | EssentialsX | 可选 | 主流经济系统 | 
-| [sdf1](sdf1.md) | 可选,推荐 | CDK兑换系统 |
+| [sdf1](https://wiki.ypshidifu.cn/sdf1.md) | 可选,推荐 | CDK兑换系统 |
 
 
 
