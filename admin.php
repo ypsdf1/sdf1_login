@@ -92,7 +92,7 @@
         <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
-        <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div></div>
+        <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
     </div>
     <div class="content" id="C"></div>
 </div>
