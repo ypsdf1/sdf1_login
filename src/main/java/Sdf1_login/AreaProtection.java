@@ -3372,6 +3372,74 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 根据名称获取领地配置
+     */
+    public AreaConfig getLand(String name) {
+        return areas.get(name);
+    }
+
+    /**
+     * 获取指定玩家拥有的所有领地
+     */
+    public List<AreaConfig> getLandsByOwner(String ownerName) {
+        List<AreaConfig> result = new ArrayList<>();
+        for (AreaConfig ac : areas.values()) {
+            if (ac.owner.equalsIgnoreCase(ownerName)) {
+                result.add(ac);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 删除领地
+     */
+    public void deleteLand(String name) {
+        areas.remove(name);
+        // 删除数据库记录
+        try {
+            if (dbConnection != null && !dbConnection.isClosed()) {
+                PreparedStatement ps = dbConnection.prepareStatement(
+                        "DELETE FROM area_lands WHERE name = ?");
+                ps.setString(1, name);
+                ps.executeUpdate();
+                ps.close();
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 删除领地数据库失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取领地成员列表（白名单）
+     */
+    public Set<String> getLandMembers(String landName) {
+        Set<String> members = areaPlayerWhitelist.get(landName);
+        return members != null ? new HashSet<>(members) : new HashSet<>();
+    }
+
+    /**
+     * 添加领地成员
+     */
+    public void addLandMember(String landName, String playerName) {
+        Set<String> members = areaPlayerWhitelist.computeIfAbsent(
+                landName, k -> ConcurrentHashMap.newKeySet());
+        members.add(playerName.toLowerCase());
+        saveWhitelists();
+    }
+
+    /**
+     * 移除领地成员
+     */
+    public void removeLandMember(String landName, String playerName) {
+        Set<String> members = areaPlayerWhitelist.get(landName);
+        if (members != null) {
+            members.remove(playerName.toLowerCase());
+            saveWhitelists();
+        }
+    }
+
+    /**
      * 获取玩家当前所在区域名
      */
     public String getPlayerArea(Player p) {
@@ -4012,6 +4080,21 @@ public class AreaProtection implements Listener {
             tool.setItemMeta(meta);
             p.getInventory().addItem(tool);
             p.sendMessage("§a§l[防护] §f已获取选择工具");
+            return true;
+        }
+
+        // ===== GUI菜单 =====
+        if (sub.equals("menu") || sub.equals("菜单")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (plugin.areaGUIManager != null) {
+                plugin.areaGUIManager.openMainMenu(p);
+            } else {
+                p.sendMessage("§cGUI管理器未初始化");
+            }
             return true;
         }
 
@@ -5444,6 +5527,7 @@ public class AreaProtection implements Listener {
 
     private void showHelp(CommandSender s) {
         s.sendMessage("§e§l==== 区域防护 ====");
+        s.sendMessage("§a/protect menu §7打开GUI菜单");
         s.sendMessage("§a/protect 工具 §7选地工具");
         s.sendMessage("§a/protect 创建 <名> §7创建区域");
         s.sendMessage("§a/protect 列表 §7区域列表");
@@ -5927,6 +6011,9 @@ public class AreaProtection implements Listener {
         public boolean denyBow = false;
         public boolean denyPotion = false;
         public boolean denyExplosion = false;
+        public boolean denyMove = false;
+        public boolean denyPickup = false;
+        public boolean denyFire = false;
         public boolean enableAnnounce = false;
         public String announceTemplate = "";
         public String confiscateMsg = "";
