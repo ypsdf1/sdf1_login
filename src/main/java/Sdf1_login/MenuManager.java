@@ -83,18 +83,29 @@ public class MenuManager implements Listener {
         return items;
     }
 
-    // ===== 读取菜单.txt =====
+    // ===== 读取菜单.txt（主菜单唯一来源） =====
     public void loadMenu() {
         items.clear();
+
+        // 优先菜单.txt，备选menu.txt
         File f = new File(
                 plugin.getDataFolder(),
                 "菜单.txt");
-        if (!f.exists()) createDefault(f);
+        if (!f.exists()) {
+            File alt = new File(
+                    plugin.getDataFolder(),
+                    "menu.txt");
+            if (alt.exists()) {
+                f = alt;
+            } else {
+                createDefault(f);
+            }
+        }
         parseFile(f);
         plugin.getLogger().info(
-                "[Menu] 加载 "
-                        + items.size()
-                        + " 个菜单项");
+                "[Menu] 加载 " + items.size()
+                        + " 个菜单项 (源: "
+                        + f.getName() + ")");
     }
 
     private void parseFile(File f) {
@@ -372,9 +383,16 @@ public class MenuManager implements Listener {
 
     // ===== 保存 =====
     public void saveMenu() {
+        // 保存到加载源文件
         File f = new File(
                 plugin.getDataFolder(),
                 "菜单.txt");
+        if (!f.exists()) {
+            File alt = new File(
+                    plugin.getDataFolder(),
+                    "menu.txt");
+            if (alt.exists()) f = alt;
+        }
         try (PrintWriter pw = new PrintWriter(
                 new OutputStreamWriter(
                         new FileOutputStream(f),

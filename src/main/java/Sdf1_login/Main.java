@@ -16,6 +16,7 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.ProjectileLaunchEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -2328,6 +2329,63 @@ public class Main extends JavaPlugin
         // ★ Sdf1_game宝箱物品不干预，由Sdf1_game自行处理
     }
 
+    // ★ 防止雪球菜单被投掷出去（弱网兜底 + 防止快乐恶魂投喂）
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onProjectileLaunch(
+            org.bukkit.event.entity.ProjectileLaunchEvent e) {
+        if (e.isCancelled()) return;
+        if (!(e.getEntity()
+                instanceof org.bukkit.entity.Snowball))
+            return;
+        org.bukkit.entity.Snowball sb =
+                (org.bukkit.entity.Snowball) e.getEntity();
+        // 检查发射者（可能是玩家或生物）
+        Object shooter = sb.getShooter();
+        // 如果是玩家发射菜单雪球 → 取消并归还
+        if (shooter instanceof Player) {
+            Player p = (Player) shooter;
+            ItemStack main =
+                    p.getInventory().getItemInMainHand();
+            ItemStack off =
+                    p.getInventory().getItemInOffHand();
+            if (isMenuSnowball(main)
+                    || isMenuSnowball(off)) {
+                e.setCancelled(true);
+                giveMenuSnowball(p);
+                return;
+            }
+        }
+        // 检查雪球的item meta是否携带菜单标记（兜底：恶魂投喂时雪球已被分离）
+        if (sb.hasMetadata("menu_snowball")) {
+            e.setCancelled(true);
+            return;
+        }
+    }
+
+    // ★ 防止任何生物拾取菜单雪球掉落物（防恶魂投喂）
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onEntityPickupItem(
+            org.bukkit.event.entity.EntityPickupItemEvent e) {
+        if (e.isCancelled()) return;
+        ItemStack item = e.getItem().getItemStack();
+        if (isMenuSnowball(item)) {
+            e.setCancelled(true);
+        }
+    }
+
+    // ★ 防止玩家右键实体时交出菜单雪球（防恶魂投喂）
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPlayerInteractEntity(
+            org.bukkit.event.player.PlayerInteractEntityEvent e) {
+        if (e.isCancelled()) return;
+        Player p = e.getPlayer();
+        ItemStack main = p.getInventory().getItemInMainHand();
+        ItemStack off = p.getInventory().getItemInOffHand();
+        if (isMenuSnowball(main) || isMenuSnowball(off)) {
+            e.setCancelled(true);
+        }
+    }
+
 
     @EventHandler
     public void onPickup(PlayerPickupItemEvent e) {
@@ -3097,62 +3155,6 @@ public class Main extends JavaPlugin
         }
 
 
-        // ===== 二级菜单（.txt）—— 移到前面 =====
-        if (title.startsWith("§6§l")
-                && !title.equals(GUIManager.T_MAIN)
-                && !title.equals(GUIManager.T_ADMIN)
-                && !title.equals(GUIManager.T_MY_INFO)
-                && !title.equals(GUIManager.T_INVITE)
-                && !title.equals(
-                GUIManager.T_TASK_CENTER)
-                && !title.equals(
-                GUIManager.T_GIFT_STAGES)
-                && !title.equals("§6§l任务面板")
-                && !title.equals(
-                "§6§l垃圾回收站")) {
-            e.setCancelled(true);
-            if (slot == 49) {
-                gui.openMain(p);
-                return;
-            }
-            // ★ bounds检查 ★
-            if (slot < 45
-                    && slot < e.getInventory()
-                    .getSize()
-                    && e.getCurrentItem() != null) {
-                ItemMeta subLm =
-                        e.getCurrentItem().getItemMeta();
-                if (subLm != null
-                        && subLm.getLore() != null) {
-                    for (String subLn
-                            : subLm.getLore()) {
-                        if (subLn.contains(
-                                "§7指令: §f")) {
-                            String cmd =
-                                    subLn.replace(
-                                            "§7指令: §f",
-                                            "").trim();
-                            if (cmd.isEmpty()
-                                    || cmd.equals("/")
-                                    || cmd.equals(
-                                    "null")) {
-                                p.sendMessage(
-                                        "§c指令为空");
-                                return;
-                            }
-                            p.closeInventory();
-                            if (cmd.startsWith("/"))
-                                cmd = cmd.substring(1);
-                            Bukkit.dispatchCommand(
-                                    p, cmd);
-                            return;
-                        }
-                    }
-                }
-            }
-            return;
-        }
-
         // ===== [DEBUG] 标题追踪 =====
         {
             String dt = title;
@@ -3203,7 +3205,8 @@ public class Main extends JavaPlugin
                                 "§7指令: §f")) {
                             String cmd = subLn
                                     .replace("§7指令: §f", "")
-                                    .trim();
+                                    .trim()
+                                    .replaceAll("\u00A7[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
                             if (cmd.isEmpty()
                                     || cmd.equals("/")
                                     || cmd.equals("null")) {
@@ -3214,7 +3217,12 @@ public class Main extends JavaPlugin
                             if (cmd.startsWith("/")) {
                                 cmd = cmd.substring(1);
                             }
-                            Bukkit.dispatchCommand(p, cmd);
+                            // ★ 子菜单项如果是.txt文件，打开子菜单而非执行命令
+                            if (cmd.endsWith(".txt")) {
+                                gui.openSubMenu(p, cmd);
+                            } else {
+                                Bukkit.dispatchCommand(p, cmd);
+                            }
                             return;
                         }
                     }
@@ -3464,7 +3472,8 @@ public class Main extends JavaPlugin
                     for (String ln : meta.getLore()) {
                         if (ln.contains("§7指令: §f")) {
                             String cmd = ln.replace(
-                                    "§7指令: §f", "").trim();
+                                    "§7指令: §f", "").trim()
+                                    .replaceAll("\u00A7[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
                             if (cmd.isEmpty()
                                     || cmd.equals("/")
                                     || cmd.equals("null")) {
@@ -4280,6 +4289,25 @@ public class Main extends JavaPlugin
                 return true;
             }
             return shopManager.handleCommand(sender, args);
+        }
+        // ★ menu 子命令 - 重载菜单配置
+        if (cmd.getName().equalsIgnoreCase("sdf1_login")
+                && args.length >= 2
+                && args[0].equalsIgnoreCase("menu")
+                && args[1].equalsIgnoreCase("reload")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (menu == null) {
+                sender.sendMessage("§c菜单系统未加载");
+                return true;
+            }
+            menu.loadMenu();
+            sender.sendMessage("§a菜单已重载，共 "
+                    + menu.getItems().size()
+                    + " 个菜单项");
+            return true;
         }
         // ★ weblogin 子命令 - 生成Web登录Token
         if (sub.equals("weblogin")) {
@@ -5948,12 +5976,20 @@ public class Main extends JavaPlugin
                         "take", "add", "kick",
                         "ticket", "oa", "stop",
                         "shopadd", "shopdel", "back", "radio", "back", "shop",
-                        "update", "updateall"));
+                        "update", "updateall", "menu"));
             } else {
                 list.addAll(Arrays.asList(
                         "pw", "email", "sign",
                         "reset", "undo",
                         "ticket", "oa", "stop"));
+            }
+        }
+        // ★ menu reload Tab补全
+        if (cmd.getName().equalsIgnoreCase("sdf1_login")
+                && args.length == 2
+                && args[0].equalsIgnoreCase("menu")) {
+            if (isAdmin(sender)) {
+                list.add("reload");
             }
         }
         // 独立 /update 命令无子命令

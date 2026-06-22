@@ -399,6 +399,8 @@ public class GUIManager implements Listener {
 
     public void openSubMenu(
             Player p, String fileName) {
+        // ★ 剥离MC颜色代码（§f、§7等），防止污染文件名
+        fileName = fileName.replaceAll("\u00A7[0-9a-fk-or]", "").trim();
         String menuTitle =
                 "§6§l" + fileName
                         .replace(".txt", "");
@@ -406,21 +408,153 @@ public class GUIManager implements Listener {
                 null, 54, menuTitle);
         fillBg(g);
 
-        java.io.File f = new java.io.File(
-                plugin.getDataFolder(), fileName);
-        if (!f.exists()) {
-            p.sendMessage("§c文件不存在: "
+        java.io.File dir = plugin.getDataFolder();
+        java.io.File f = null;
+        String cleanName = fileName.trim();
+
+        plugin.getLogger().info(
+                "[Menu] openSubMenu: searching '"
+                        + cleanName + "' in '"
+                        + dir.getAbsolutePath() + "'");
+
+        // ★ 第1步：listFiles遍历匹配
+        java.io.File[] allTxt = dir.listFiles(
+                (d, n) -> n.toLowerCase()
+                        .endsWith(".txt"));
+        if (allTxt != null) {
+            plugin.getLogger().info(
+                    "[Menu] 目录.txt文件数: "
+                            + allTxt.length);
+            for (java.io.File ff : allTxt) {
+                plugin.getLogger().info(
+                        "[Menu]   > " + ff.getName()
+                                + " size=" + ff.length());
+                if (f == null && ff.getName()
+                        .equalsIgnoreCase(cleanName)) {
+                    f = ff;
+                }
+            }
+        } else {
+            plugin.getLogger().warning(
+                    "[Menu] listFiles返回null!");
+        }
+
+        // ★ 第2步：直接构造路径
+        if (f == null) {
+            f = new java.io.File(dir, cleanName);
+            plugin.getLogger().info(
+                    "[Menu] 回退构造路径: "
+                            + f.getAbsolutePath()
+                            + " exists=" + f.exists()
+                            + " size=" + f.length());
+        }
+
+        // ★ 第3步：逐个尝试读取方法（不检查exists，直接试）
+        List<String> lines = null;
+        if (f != null) {
+            // 方法1：NIO UTF-8
+            try {
+                lines = java.nio.file.Files
+                        .readAllLines(f.toPath(),
+                                java.nio.charset
+                                        .StandardCharsets
+                                        .UTF_8);
+                plugin.getLogger().info(
+                        "[Menu] UTF-8读取: "
+                                + lines.size() + "行");
+            } catch (Throwable t) {
+                plugin.getLogger().warning(
+                        "[Menu] UTF-8失败: "
+                                + t.getClass().getSimpleName()
+                                + ": " + t.getMessage());
+            }
+
+            // 方法2：NIO GBK
+            if (lines == null || lines.isEmpty()) {
+                try {
+                    lines = java.nio.file.Files
+                            .readAllLines(f.toPath(),
+                                    java.nio.charset
+                                            .Charset
+                                            .forName("GBK"));
+                    plugin.getLogger().info(
+                            "[Menu] GBK读取: "
+                                    + lines.size() + "行");
+                } catch (Throwable t) {
+                    plugin.getLogger().warning(
+                            "[Menu] GBK失败: "
+                                    + t.getMessage());
+                }
+            }
+
+            // 方法3：FileInputStream原始字节
+            if (lines == null || lines.isEmpty()) {
+                try {
+                    java.io.FileInputStream fis =
+                            new java.io.FileInputStream(f);
+                    byte[] raw = fis.readAllBytes();
+                    fis.close();
+                    if (raw.length > 0) {
+                        plugin.getLogger().info(
+                                "[Menu] 原始字节: "
+                                        + raw.length + "B");
+                        // 尝试UTF-8解码
+                        String content = new String(raw,
+                                java.nio.charset
+                                        .StandardCharsets
+                                        .UTF_8);
+                        java.util.List<String> rawLines =
+                                java.util.Arrays.asList(
+                                        content.split("\\r?\\n"));
+                        lines = rawLines;
+                        plugin.getLogger().info(
+                                "[Menu] 原始读取: "
+                                        + lines.size() + "行");
+                    }
+                } catch (Throwable t) {
+                    plugin.getLogger().warning(
+                            "[Menu] 原始读取失败: "
+                                    + t.getMessage());
+                }
+            }
+        }
+
+        // ★ 打印前5行调试
+        if (lines != null && !lines.isEmpty()) {
+            plugin.getLogger().info(
+                    "[Menu] 最终行数: "
+                            + lines.size());
+            for (int i = 0;
+                 i < Math.min(5, lines.size());
+                 i++) {
+                plugin.getLogger().info(
+                        "[Menu]   L" + (i + 1)
+                                + ": [" + lines.get(i)
+                                + "]");
+            }
+        }
+
+        if (lines == null || lines.isEmpty()) {
+            p.sendMessage("§c§l子菜单读取失败§r §7"
                     + fileName);
+            p.sendMessage("§7文件: "
+                    + (f != null
+                    ? f.getAbsolutePath()
+                    + " (" + f.length() + "B)"
+                    : "null"));
+            p.sendMessage("§7存在: "
+                    + (f != null ? f.exists() : "N/A"));
+            if (allTxt != null) {
+                p.sendMessage("§7目录.txt文件:");
+                for (java.io.File ff : allTxt) {
+                    p.sendMessage("§7  "
+                            + ff.getName()
+                            + " (" + ff.length()
+                            + "B)");
+                }
+            }
             return;
         }
-        try {
-            List<String> lines =
-                    java.nio.file.Files
-                            .readAllLines(
-                                    f.toPath(),
-                                    java.nio.charset
-                                            .StandardCharsets
-                                            .UTF_8);
             List<String[]> items =
                     new ArrayList<>();
             StringBuilder buf =
@@ -484,11 +618,6 @@ public class GUIManager implements Listener {
                 it.setItemMeta(im);
                 g.setItem(i, it);
             }
-        } catch (Exception e) {
-            plugin.getLogger().warning(
-                    "[Menu] 子菜单读取失败: "
-                            + e.getMessage());
-        }
 
         g.setItem(49, mkItem(
                 Material.ARROW,
