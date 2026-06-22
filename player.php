@@ -866,6 +866,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         const overlay = document.getElementById('glassLoginOverlay');
         overlay.classList.add('show');
         glassLoginDismissed = false;
+        // 隐藏C位登录按钮
+        document.querySelector('.guest-center-login').classList.remove('show');
         // 停止定时弹窗
         if (guestLoginTimer) { clearInterval(guestLoginTimer); guestLoginTimer = null; }
         setTimeout(() => {
@@ -880,6 +882,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         document.getElementById('glassLoginOverlay').classList.remove('show');
         glassLoginDismissed = true;
         glassLoginReset();
+        // 重新显示C位登录按钮（如果还是游客模式）
+        if (IS_PREVIEW) document.querySelector('.guest-center-login').classList.add('show');
         // 重新启动定时弹窗
         if (IS_PREVIEW) startGuestLoginTimer();
     }
@@ -961,9 +965,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (guestLoginTimer) clearInterval(guestLoginTimer);
         guestLoginTimer = setInterval(() => {
             if (!IS_PREVIEW) { clearInterval(guestLoginTimer); guestLoginTimer = null; return; }
-            if (!glassLoginDismissed) {
-                openGlassLogin();
-            }
+            // 只要游客模式就弹窗，忽略glassLoginDismissed
+            openGlassLogin();
         }, 60000);
     }
 
