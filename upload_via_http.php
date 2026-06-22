@@ -247,13 +247,14 @@ if ($action === 'status') {
     
     $db->close();
     
-} elseif ($action === 'upload') {
+} elseif ($action === 'upload' || (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK)) {
     // 通过 POST 上传文件
-    $target = $_POST['target'] ?? '';
-    $allowed = ['api/admin.php', 'api/sync.php', 'api/cdk.php', 'core.php', 'config.php'];
+    // 支持 target= 和 path= 两种参数名
+    $target = $_POST['target'] ?? $_POST['path'] ?? '';
+    $allowed = ['api/admin.php', 'api/sync.php', 'api/cdk.php', 'api/ticket.php', 'api/register.php', 'api/shop.php', 'api/balance.php', 'core.php', 'config.php', 'player.php', 'admin.php', 'service.php', 'upload_via_http.php'];
     
     if (!in_array($target, $allowed)) {
-        echo "ERROR: Target not allowed. Use: " . implode(', ', $allowed) . "\n";
+        echo "ERROR: Target not allowed: $target\nAllowed: " . implode(', ', $allowed) . "\n";
         exit;
     }
     

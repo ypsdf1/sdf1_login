@@ -115,6 +115,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         .btn-green:hover { background: #56d364; }
         .btn-red { background: var(--red); color: #fff; }
         .btn-orange { background: var(--yellow); color: #000; }
+        .btn-dim { background: var(--card); color: var(--dim); border: 1px solid var(--border); }
+        .btn-dim:hover { color: var(--text); border-color: var(--accent); }
         .table { width: 100%; border-collapse: collapse; font-size: 13px; }
         .table th { text-align: left; padding: 10px 12px; color: var(--dim); border-bottom: 1px solid var(--border); }
         .table td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -167,6 +169,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="shop" onclick="switchPage('shop')">🛒 商城</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
+            <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
         </div>
 
         <div class="content" id="content">
@@ -766,6 +769,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'cdk') renderCDK(c);
         else if (page === 'balance') renderBalance(c);
         else if (page === 'account') renderAccount(c);
+        else if (page === 'ticket') renderTicket(c);
     }
 
     // ★ 新增：Token轮询检查（不续期，只检查是否被Java端主动销毁）
@@ -958,7 +962,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     // ===== 个人中心仪表盘 =====
     async function renderDashboard(el) {
-        if (IS_PREVIEW || !currentPlayer) {
+        if (IS_PREVIEW || !currentPlayer || (!AUTHENTICATED && NEED_PASSWORD)) {
             el.innerHTML = `
                 <div class="card" style="text-align:center;padding:48px 20px">
                     <div style="font-size:64px;margin-bottom:16px">📊</div>
@@ -1073,7 +1077,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     // ===== 余额 =====
     function renderBalance(el) {
-        if (!currentPlayer) {
+        if (!currentPlayer || (!AUTHENTICATED && NEED_PASSWORD)) {
             el.innerHTML = '<div class="card"><h2>余额查询</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">请先登录游戏</p></div></div>';
             return;
         }
@@ -1109,7 +1113,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     // ===== 账号 =====
     function renderAccount(el) {
-        if (IS_PREVIEW) {
+        if (IS_PREVIEW || (!AUTHENTICATED && NEED_PASSWORD)) {
             el.innerHTML = `<div class="card"><h2>账号信息</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">游客模式下无法查看账号信息</p><p style="color:var(--dim);font-size:12px">请先登录游戏获取Web访问令牌</p></div></div>`;
             return;
         }
@@ -1268,6 +1272,10 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     function closeModal() {
         document.getElementById('modalOverlay').style.display = 'none';
+        // ★ 密码验证被取消 → 清除token，进入游客模式（防止未认证玩家数据泄露）
+        if (NEED_PASSWORD && !AUTHENTICATED) {
+            showGuestMode();
+        }
     }
 
     function confirmModal() {}
@@ -1373,6 +1381,407 @@ if ($currentVersion !== $BUILD_VERSION) {
             document.getElementById('resetError').textContent = '连接失败: ' + e.message;
         }
     }
+
+    // ===== 工单系统 =====
+    let ticketState = { view: 'list', filter: 'all' };
+
+    async function renderTicket(el) {
+        if (IS_PREVIEW || !AUTHENTICATED) {
+            el.innerHTML = `<div class="card"><h2>📋 工单系统</h2><p style="color:var(--dim)">请先登录后使用工单功能</p></div>`;
+            return;
+        }
+        if (ticketState.view === 'list') await renderTicketList(el);
+        else if (ticketState.view === 'create') renderTicketCreate(el);
+        else if (ticketState.view === 'detail') await renderTicketDetail(el, ticketState.ticketId);
+    }
+
+    function renderTicketNav() {
+        const f = ticketState.filter;
+        return `<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-primary" onclick="ticketState.view='create';renderTicket(document.getElementById('content'))" style="font-size:13px">✏️ 提交工单</button>
+            <button class="btn ${f==='all'?'':'btn-dim'}" onclick="ticketState.filter='all';ticketState.view='list';renderTicket(document.getElementById('content'))" style="font-size:12px;padding:5px 12px">全部</button>
+            <button class="btn ${f==='submitted'?'':'btn-dim'}" onclick="ticketState.filter='submitted';ticketState.view='list';renderTicket(document.getElementById('content'))" style="font-size:12px;padding:5px 12px">⏳ 已提交</button>
+            <button class="btn ${f==='replied'?'':'btn-dim'}" onclick="ticketState.filter='replied';ticketState.view='list';renderTicket(document.getElementById('content'))" style="font-size:12px;padding:5px 12px">💬 已回复</button>
+            <button class="btn ${f==='withdrawn'?'':'btn-dim'}" onclick="ticketState.filter='withdrawn';ticketState.view='list';renderTicket(document.getElementById('content'))" style="font-size:12px;padding:5px 12px">🔙 已撤销</button>
+            <button class="btn ${f==='rejected'?'':'btn-dim'}" onclick="ticketState.filter='rejected';ticketState.view='list';renderTicket(document.getElementById('content'))" style="font-size:12px;padding:5px 12px">🚫 已驳回</button>
+        </div>`;
+    }
+
+    async function renderTicketList(el) {
+        el.innerHTML = `<div class="card"><h2>📋 工单系统</h2>${renderTicketNav()}<p style="color:var(--dim)">加载中...</p></div>`;
+        try {
+            const url = new URL(API + 'ticket.php', location.href);
+            url.searchParams.set('action', 'my_list');
+            url.searchParams.set('token', TOKEN);
+            if (ticketState.filter !== 'all') url.searchParams.set('status', ticketState.filter);
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!data.success) { el.innerHTML = `<div class="card"><h2>📋 工单系统</h2><p style="color:var(--red)">${data.message}</p></div>`; return; }
+
+            const list = data.data.list;
+            let html = `<div class="card"><h2>📋 我的工单 (${data.data.total})</h2>${renderTicketNav()}`;
+            if (list.length === 0) {
+                html += `<p style="color:var(--dim);text-align:center;padding:40px 0">暂无工单</p>`;
+            } else {
+                const typeMap = {bug:'🐛 Bug反馈',help:'❓ 求助',report:'📢 举报',apply:'📝 申请',other:'📎 其他'};
+                const statusMap = {submitted:{text:'⏳ 已提交',color:'var(--yellow)'},replied:{text:'💬 已回复',color:'var(--accent)'},completed:{text:'✅ 已完结',color:'var(--green)'},withdrawn:{text:'🔙 已撤销',color:'var(--dim)'},rejected:{text:'🚫 已驳回',color:'var(--red)'}};
+                html += `<div style="display:flex;flex-direction:column;gap:8px">`;
+                for (const t of list) {
+                    const s = statusMap[t.status] || {text: t.status, color: 'var(--dim)'};
+                    const date = new Date(t.created_at * 1000).toLocaleString('zh-CN');
+                    html += `<div onclick="ticketState.view='detail';ticketState.ticketId=${t.id};renderTicket(document.getElementById('content'))" style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:8px;padding:14px 16px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <span style="font-weight:600;font-size:14px">#${t.id} ${escHtml(t.title)}</span>
+                            <span style="color:${s.color};font-size:12px">${s.text}</span>
+                        </div>
+                        <div style="display:flex;gap:16px;font-size:12px;color:var(--dim)">
+                            <span>${typeMap[t.type]||t.type}</span>
+                            <span>${date}</span>
+                            ${t.assigned_to ? '<span>👤 '+escHtml(t.assigned_to)+'</span>' : ''}
+                        </div>
+                    </div>`;
+                }
+                html += `</div>`;
+            }
+            html += `</div>`;
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = `<div class="card"><h2>📋 工单系统</h2><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+        }
+    }
+
+    function renderTicketCreate(el) {
+        const types = [{v:'bug',l:'🐛 Bug反馈'},{v:'help',l:'❓ 求助'},{v:'report',l:'📢 举报'},{v:'apply',l:'📝 申请'},{v:'other',l:'📎 其他'}];
+        let options = types.map(t => `<option value="${t.v}">${t.l}</option>`).join('');
+        el.innerHTML = `<div class="card">
+            <h2>✏️ 提交工单</h2>
+            <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">工单类型</label>
+                <select id="ticketType" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px">${options}</select></div>
+            <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">标题</label>
+                <input id="ticketTitle" placeholder="简要描述您的问题" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px"></div>
+            <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">详细描述</label>
+                <textarea id="ticketDesc" rows="6" placeholder="详细描述您的问题，支持Markdown格式" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;resize:vertical;font-family:monospace"></textarea></div>
+            <p style="color:var(--dim);font-size:12px;margin-bottom:12px">💡 支持标准Markdown语法：**粗体**、*斜体*、\`代码\`、列表、标题等</p>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-primary" onclick="submitTicket()">提交工单</button>
+                <button class="btn" onclick="ticketState.view='list';renderTicket(document.getElementById('content'))">取消</button>
+            </div>
+            <p id="ticketError" style="color:var(--red);margin-top:8px;font-size:13px"></p>
+        </div>`;
+    }
+
+    async function submitTicket() {
+        const type = document.getElementById('ticketType').value;
+        const title = document.getElementById('ticketTitle').value.trim();
+        const desc = document.getElementById('ticketDesc').value.trim();
+        const errEl = document.getElementById('ticketError');
+        if (!title) { errEl.textContent = '请输入标题'; return; }
+        if (!desc) { errEl.textContent = '请输入描述'; return; }
+
+        try {
+            const url = new URL(API + 'ticket.php', location.href);
+            url.searchParams.set('action', 'create');
+            url.searchParams.set('token', TOKEN);
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type, title, description: desc})
+            });
+            const data = await res.json();
+            if (data.success) {
+                ticketState.view = 'list';
+                renderTicket(document.getElementById('content'));
+            } else {
+                errEl.textContent = data.message;
+            }
+        } catch (e) {
+            errEl.textContent = '提交失败: ' + e.message;
+        }
+    }
+
+    async function renderTicketDetail(el, id) {
+        el.innerHTML = `<div class="card"><p style="color:var(--dim)">加载中...</p></div>`;
+        try {
+            const url = new URL(API + 'ticket.php', location.href);
+            url.searchParams.set('action', 'detail');
+            url.searchParams.set('token', TOKEN);
+            url.searchParams.set('id', id);
+            const res = await fetch(url);
+            const data = await res.json();
+            if (!data.success) { el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.message}</p><button class="btn" onclick="ticketState.view='list';renderTicket(document.getElementById('content'))">返回</button></div>`; return; }
+
+            const t = data.data;
+            const typeMap = {bug:'🐛 Bug反馈',help:'❓ 求助',report:'📢 举报',apply:'📝 申请',other:'📎 其他'};
+            const statusMap = {submitted:{text:'⏳ 已提交',color:'var(--yellow)'},replied:{text:'💬 已回复',color:'var(--accent)'},completed:{text:'✅ 已完结',color:'var(--green)'},withdrawn:{text:'🔙 已撤销',color:'var(--dim)'},rejected:{text:'🚫 已驳回',color:'var(--red)'}};
+            const s = statusMap[t.status] || {text: t.status, color: 'var(--dim)'};
+            const date = new Date(t.created_at * 1000).toLocaleString('zh-CN');
+            const canReply = !['withdrawn','rejected','completed'].includes(t.status);
+
+            let html = `<div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2 style="margin:0">#${t.id} ${escHtml(t.title)}</h2>
+                    <span style="color:${s.color};font-size:13px">${s.text}</span>
+                </div>
+                <div style="display:flex;gap:16px;font-size:13px;color:var(--dim);margin-bottom:16px">
+                    <span>${typeMap[t.type]||t.type}</span>
+                    <span>👤 ${escHtml(t.requester)}</span>
+                    <span>📅 ${date}</span>
+                    ${t.assigned_to ? '<span>🧑‍💻 '+escHtml(t.assigned_to)+'</span>' : ''}
+                </div>`;
+
+            // 描述
+            html += `<div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+                <div style="color:var(--dim);font-size:12px;margin-bottom:8px">描述</div>
+                <div style="font-size:14px;line-height:1.6">${renderMarkdown(t.description || '无描述')}</div>
+            </div>`;
+
+            // 驳回原因
+            if (t.reject_reason) {
+                html += `<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);border-radius:8px;padding:16px;margin-bottom:16px">
+                    <div style="color:var(--red);font-size:12px;margin-bottom:8px">🚫 驳回原因</div>
+                    <div style="font-size:14px">${renderMarkdown(t.reject_reason)}</div>
+                </div>`;
+            }
+
+            // 回复列表
+            html += `<div style="margin-bottom:16px"><div style="color:var(--dim);font-size:12px;margin-bottom:8px">💬 回复记录 (${t.replies ? t.replies.length : 0})</div>`;
+            if (t.replies && t.replies.length > 0) {
+                for (const r of t.replies) {
+                    const rDate = new Date(r.created_at * 1000).toLocaleString('zh-CN');
+                    const roleColors = {user:'var(--accent)',admin:'var(--red)',provider:'var(--green)'};
+                    const roleNames = {user:'玩家',admin:'管理员',provider:'服务商'};
+                    const bgColor = r.role === 'admin' ? 'rgba(248,81,73,0.08)' : r.role === 'provider' ? 'rgba(63,185,80,0.08)' : 'rgba(88,166,255,0.08)';
+                    html += `<div style="background:${bgColor};border-radius:8px;padding:12px 16px;margin-bottom:8px">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <span style="font-size:13px"><span style="color:${roleColors[r.role]||'var(--text)'};font-weight:600">${escHtml(r.sender)}</span> <span style="color:var(--dim);font-size:11px">(${roleNames[r.role]||r.role})</span></span>
+                            <span style="color:var(--dim);font-size:11px">${rDate}</span>
+                        </div>
+                        <div style="font-size:14px;line-height:1.6">${renderMarkdown(r.message)}</div>
+                    </div>`;
+                }
+            } else {
+                html += `<p style="color:var(--dim);font-size:13px">暂无回复</p>`;
+            }
+            html += `</div>`;
+
+            // 回复框
+            if (canReply) {
+                html += `<div style="margin-bottom:16px">
+                    <textarea id="ticketReplyMsg" rows="3" placeholder="输入回复内容（支持Markdown）" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;resize:vertical;font-family:monospace"></textarea>
+                    <p id="ticketReplyError" style="color:var(--red);font-size:12px;margin-top:4px"></p>
+                </div>`;
+            }
+
+            // 操作按钮
+            html += `<div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn" onclick="ticketState.view='list';renderTicket(document.getElementById('content'))">← 返回列表</button>`;
+            if (canReply) {
+                html += `<button class="btn btn-primary" onclick="submitTicketReply(${t.id})">发送回复</button>`;
+            }
+            if (t.status === 'submitted' || t.status === 'replied') {
+                html += `<button class="btn" style="color:var(--yellow);border-color:var(--yellow)" onclick="withdrawTicket(${t.id})">撤销工单</button>`;
+            }
+            html += `</div></div>`;
+
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p><button class="btn" onclick="ticketState.view='list';renderTicket(document.getElementById('content'))">返回</button></div>`;
+        }
+    }
+
+    async function submitTicketReply(id) {
+        const msg = document.getElementById('ticketReplyMsg').value.trim();
+        const errEl = document.getElementById('ticketReplyError');
+        if (!msg) { errEl.textContent = '请输入回复内容'; return; }
+
+        try {
+            const url = new URL(API + 'ticket.php', location.href);
+            url.searchParams.set('action', 'reply');
+            url.searchParams.set('token', TOKEN);
+            url.searchParams.set('id', id);
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({message: msg})
+            });
+            const data = await res.json();
+            if (data.success) {
+                renderTicket(document.getElementById('content'));
+            } else {
+                errEl.textContent = data.message;
+            }
+        } catch (e) {
+            errEl.textContent = '发送失败: ' + e.message;
+        }
+    }
+
+    async function withdrawTicket(id) {
+        if (!confirm('确定要撤销此工单吗？')) return;
+        try {
+            const url = new URL(API + 'ticket.php', location.href);
+            url.searchParams.set('action', 'withdraw');
+            url.searchParams.set('token', TOKEN);
+            url.searchParams.set('id', id);
+            const res = await fetch(url);
+            const data = await res.json();
+            if (data.success) {
+                ticketState.view = 'list';
+                renderTicket(document.getElementById('content'));
+            } else {
+                alert(data.message);
+            }
+        } catch (e) {
+            alert('撤销失败: ' + e.message);
+        }
+    }
+
+    // ★ 简易Markdown渲染器
+    function renderInlineMd(text) {
+        let s = text;
+        s = s.replace(/^######\s+(.+)$/, '<h6 style="margin:2px 0;font-size:12px">$1</h6>');
+        s = s.replace(/^#####\s+(.+)$/, '<h5 style="margin:3px 0;font-size:13px">$1</h5>');
+        s = s.replace(/^####\s+(.+)$/, '<h4 style="margin:3px 0 2px;font-size:14px">$1</h4>');
+        s = s.replace(/^###\s+(.+)$/, '<h4 style="margin:4px 0 3px;font-size:14px">$1</h4>');
+        s = s.replace(/^##\s+(.+)$/, '<h3 style="margin:6px 0 4px;font-size:15px">$1</h3>');
+        s = s.replace(/^#\s+(.+)$/, '<h2 style="margin:8px 0 5px;font-size:16px">$1</h2>');
+        s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+        s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+        s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
+        s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:4px 0">');
+        s = s.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent)">$1</a>');
+        return s;
+    }
+
+    function renderMarkdown(text) {
+        if (!text) return '';
+        text = text.replace(/\r/g, '');
+        try {
+        let s = escHtml(text);
+        // 1. 代码块提取保护
+        let cbs = [];
+        s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function(m, lang, code) {
+            let idx = cbs.length;
+            cbs.push('<pre style="background:rgba(88,166,255,0.1);padding:12px;border-radius:6px;overflow-x:auto;font-size:13px;white-space:pre-wrap">' + code.replace(/\n$/, '') + '</pre>');
+            return '\x00CB' + idx + '\x00';
+        });
+        // 2. 行内代码保护
+        s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(88,166,255,0.15);padding:2px 6px;border-radius:3px;font-size:13px">$1</code>');
+        // 3. 引用块处理：提取连续引用行，构建嵌套结构
+        let lines = s.split('\n');
+        let result = [];
+        let bqBuf = [];
+        function flushBq() {
+            if (bqBuf.length === 0) return;
+            let html = '';
+            let openDivs = 0;
+            for (let bi = 0; bi < bqBuf.length; bi++) {
+                let {level, content} = bqBuf[bi];
+                let prevLevel = (bi > 0) ? bqBuf[bi - 1].level : 0;
+                if (level > prevLevel) {
+                    for (let j = prevLevel; j < level; j++) {
+                        let pad = Math.min((j + 1) * 8, 32);
+                        html += '<div style="border-left:3px solid var(--accent);padding:4px 10px;margin:2px 0 2px ' + pad + 'px;background:rgba(255,255,255,0.03)">';
+                        openDivs++;
+                    }
+                } else if (level < prevLevel) {
+                    for (let j = prevLevel; j > level; j--) { html += '</div>'; openDivs--; }
+                } else if (bi > 0) {
+                    html += '<br>';
+                }
+                let text = renderInlineMd(content);
+                if (!text.trim()) text = '&nbsp;';
+                html += text;
+            }
+            for (let j = 0; j < openDivs; j++) html += '</div>';
+            result.push(html);
+            bqBuf = [];
+        }
+        for (let i = 0; i < lines.length; i++) {
+            let m = lines[i].match(/^((?:&gt;[ \t]*)+)(.*)$/);
+            if (m) {
+                bqBuf.push({ level: (m[1].match(/&gt;/g) || []).length, content: m[2] });
+            } else if (bqBuf.length > 0 && !lines[i].trim()) {
+                // ★ 空行在引用块内：向前看下一行是否仍是引用
+                let isContinuation = false;
+                for (let j = i + 1; j < lines.length; j++) {
+                    if (lines[j].trim()) {
+                        isContinuation = /^((?:&gt;[ \t]*)+)(.*)$/.test(lines[j]);
+                        break;
+                    }
+                }
+                if (isContinuation) {
+                    bqBuf.push({ level: bqBuf[bqBuf.length - 1].level, content: '' });
+                } else {
+                    flushBq();
+                }
+            } else {
+                flushBq();
+                result.push(lines[i]);
+            }
+        }
+        flushBq();
+        s = result.join('\n');
+        // 4. 非引用行的MD处理
+        s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+        s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+        s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
+        s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:6px 0">');
+        s = s.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent)">$1</a>');
+        s = s.replace(/^######\s+(.+)$/gm, '<h6 style="margin:4px 0;font-size:12px">$1</h6>');
+        s = s.replace(/^#####\s+(.+)$/gm, '<h5 style="margin:5px 0;font-size:13px">$1</h5>');
+        s = s.replace(/^####\s+(.+)$/gm, '<h4 style="margin:6px 0 4px;font-size:14px">$1</h4>');
+        s = s.replace(/^###\s+(.+)$/gm, '<h4 style="margin:8px 0 4px;font-size:14px">$1</h4>');
+        s = s.replace(/^##\s+(.+)$/gm, '<h3 style="margin:10px 0 6px;font-size:15px">$1</h3>');
+        s = s.replace(/^#\s+(.+)$/gm, '<h2 style="margin:12px 0 8px;font-size:16px">$1</h2>');
+        // 5. 表格
+        let inTable = false;
+        let tableHtml = '';
+        let tLines = s.split('\n');
+        let tResult = [];
+        for (let i = 0; i < tLines.length; i++) {
+            let line = tLines[i].trim();
+            if (line.match(/^\|(.+)\|$/)) {
+                if (line.match(/^\|[\s\-:|]+\|$/)) { inTable = true; continue; }
+                if (!inTable && i + 1 < tLines.length && tLines[i+1].trim().match(/^\|[\s\-:|]+\|$/)) {
+                    inTable = true;
+                    let cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                    tableHtml = '<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:13px"><tr style="background:rgba(88,166,255,0.15)">';
+                    for (let c of cells) tableHtml += '<th style="border:1px solid var(--border);padding:6px 10px;text-align:left">' + c + '</th>';
+                    tableHtml += '</tr>';
+                    continue;
+                }
+                if (inTable) {
+                    let cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                    tableHtml += '<tr>';
+                    for (let c of cells) tableHtml += '<td style="border:1px solid var(--border);padding:6px 10px">' + c + '</td>';
+                    tableHtml += '</tr>';
+                    continue;
+                }
+            }
+            if (inTable && tableHtml) {
+                tableHtml += '</table>';
+                tResult.push(tableHtml);
+                tableHtml = '';
+                inTable = false;
+            }
+            tResult.push(tLines[i]);
+        }
+        if (tableHtml) { tableHtml += '</table>'; tResult.push(tableHtml); }
+        s = tResult.join('\n');
+        // 6. 列表、分割线、换行
+        s = s.replace(/^- (.+)$/gm, '<li style="margin-left:20px;font-size:13px">$1</li>');
+        s = s.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">');
+        s = s.replace(/\n/g, '<br>');
+        // 7. 还原代码块
+        for (let i = 0; i < cbs.length; i++) {
+            s = s.replace('\x00CB' + i + '\x00', cbs[i]);
+        }
+        return s;
+        } catch(e) { console.error('[MD_RENDER] Error:', e); return escHtml(text).replace(/\n/g, '<br>'); }
+    }
+
+function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
     </script>
 </body>
 </html>

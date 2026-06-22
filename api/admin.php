@@ -17,8 +17,8 @@ ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 ini_set('memory_limit', '256M');
 
-if (function_exists('opcache_reset')) { @opcache_reset(); }
-if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__, true); }
+// 仅刷新当前文件的OPcache（不要opcache_reset——会重置整个服务器缓存导致竞态条件）
+if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__); }
 
 // ★ 注册shutdown函数：确保ob缓冲区在致命错误时也能刷新
 register_shutdown_function(function() {
@@ -43,6 +43,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 $action = getParam('action', 'status');
 
+try {
 switch ($action) {
     case 'login':        adminDoLogin(); break;
     case 'logout':       adminDoLogout(); break;
@@ -73,7 +74,14 @@ switch ($action) {
     case 'get_stats_ex':        adminGetStatsEx(); break;
     case 'list_same_ip':        adminListSameIp(); break;
     case 'list_users_paginated': adminListUsersPaginated(); break;
+    case 'cdk_delete':          adminDeleteCDK(); break;
     default:              exit(json_encode(['success' => false, 'message' => 'Unknown action: ' . $action], JSON_UNESCAPED_UNICODE));
+}
+} catch (\Throwable $e) {
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['error' => ['code' => 500, 'message' => 'Internal error: ' . $e->getMessage()]], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 // ===== 各函数定义 =====
@@ -190,15 +198,25 @@ function adminShopUpdate() {
     requireAdminSession();
     $db = getDB();
     try {
-        $stmt = $db->prepare("UPDATE shop_items SET display_name=:dn, buy_price=:bp, sell_price=:sp, stock=:st WHERE id=:id");
-        $stmt->bindValue(':dn', getParam('display_name'));
-        $stmt->bindValue(':bp', getParam('buy_price'));
-        $stmt->bindValue(':sp', getParam('sell_price'));
+        $itemId = getParam('id');
+        if (!$itemId) error('缺少商品ID');
+        $stock = getParam('stock');
+        // ★ 库存改动写入admin_stock（防止Java全量同步覆盖）
+        // admin_stock非NULL时pullShopStock优先返回此值给Java
+        // 前端只发送id和stock，所以只更新stock和admin_stock
+        $stmt = $db->prepare("UPDATE shop_items SET stock=:st, admin_stock=:ast, last_modified=:lm WHERE id=:id");
         $stmt->bindValue(':st', getParam('stock'));
-        $stmt->bindValue(':id', getParam('item_id'));
+        $stmt->bindValue(':ast', $stock, $stock !== null ? SQLITE3_INTEGER : SQLITE3_NULL);
+        $stmt->bindValue(':lm', time(), SQLITE3_INTEGER);
+        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
         $stmt->execute();
-        exit(json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+        $rowsChanged = $db->changes();
+        // ★ 同步通知Java插件立即拉取库存改动
+        if ($rowsChanged > 0) {
+            notifyJavaPluginImmediatePull();
+        }
+        exit(json_encode(['success' => true, 'message' => 'OK', 'updated' => $rowsChanged], JSON_UNESCAPED_UNICODE));
+    } catch (\Throwable $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
@@ -208,17 +226,20 @@ function adminShopAdd() {
     requireAdminSession();
     $db = getDB();
     try {
-        $stmt = $db->prepare("INSERT OR REPLACE INTO shop_items VALUES (:id,:cat,:dn,:mat,:bp,:sp,:st,0,0,0)");
-        $stmt->bindValue(':id', getParam('item_id'));
+        $itemId = getParam('id');
+        if (!$itemId) error('缺少商品ID');
+        $stmt = $db->prepare("INSERT OR REPLACE INTO shop_items (id, category, display_name, material, buy_price, sell_price, stock, hourly_sales, total_sales, last_sync, last_modified) VALUES (:id,:cat,:dn,:mat,:bp,:sp,:st,0,0,0,:lm)");
+        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
         $stmt->bindValue(':cat', getParam('category', 'weapon'));
         $stmt->bindValue(':dn', getParam('display_name', ''));
         $stmt->bindValue(':mat', getParam('material', 'stone_sword'));
         $stmt->bindValue(':bp', getParam('buy_price', 0));
         $stmt->bindValue(':sp', getParam('sell_price', -1));
         $stmt->bindValue(':st', getParam('stock', -1));
+        $stmt->bindValue(':lm', time(), SQLITE3_INTEGER);
         $stmt->execute();
         exit(json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
@@ -228,11 +249,14 @@ function adminShopRemove() {
     requireAdminSession();
     $db = getDB();
     try {
+        $itemId = getParam('id');
+        if (!$itemId) error('缺少商品ID');
         $stmt = $db->prepare("DELETE FROM shop_items WHERE id=:id");
-        $stmt->bindValue(':id', getParam('item_id'));
+        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
         $stmt->execute();
-        exit(json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+        $rowsChanged = $db->changes();
+        exit(json_encode(['success' => true, 'message' => 'OK', 'deleted' => $rowsChanged], JSON_UNESCAPED_UNICODE));
+    } catch (\Throwable $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
@@ -2212,5 +2236,30 @@ function adminGetStatsEx() {
     } catch (Exception $e) {
         @error_log('[adminGetStatsEx] Error: ' . $e->getMessage() . ' ' . $e->getTraceAsString());
         exit(json_encode(['success' => false, 'message' => 'Internal error: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
+    }
+}
+
+// ===== 删除CDK（管理员操作） =====
+function adminDeleteCDK() {
+    requireAdminSession();
+    $code = getParam('code');
+    if (!$code) exit(json_encode(['success' => false, 'message' => '缺少code'], JSON_UNESCAPED_UNICODE));
+    
+    $db = getDB();
+    try {
+        $stmt = $db->prepare("DELETE FROM cdk WHERE code = :code");
+        $stmt->bindValue(':code', strtoupper(trim($code)), SQLITE3_TEXT);
+        $result = $stmt->execute();
+        
+        // 检查是否有行被删除
+        $changes = $db->changes();
+        if ($changes > 0) {
+            exit(json_encode(['success' => true, 'message' => 'CDK已删除'], JSON_UNESCAPED_UNICODE));
+        } else {
+            exit(json_encode(['success' => false, 'message' => 'CDK不存在'], JSON_UNESCAPED_UNICODE));
+        }
+    } catch (Exception $e) {
+        @error_log('[adminDeleteCDK] Error: ' . $e->getMessage());
+        exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
 }

@@ -13,6 +13,7 @@ ob_end_clean();
 $action = getParam('action', 'check');
 $token = getParam('token');
 
+try {
 switch ($action) {
     case 'check':
         registerCheck();
@@ -28,6 +29,10 @@ switch ($action) {
         break;
     default:
         error('未知操作: ' . $action);
+}
+} catch (\Throwable $e) {
+    while (ob_get_level() > 0) ob_end_clean();
+    error('服务器内部错误: ' . $e->getMessage(), 500);
 }
 
 // ===== 检查用户名 =====
@@ -206,7 +211,7 @@ function registerQuery($token) {
         $bondResult = $bondStmt->execute();
         $bondRow = $bondResult->fetchArray(SQLITE3_ASSOC);
         if ($bondRow) $bonds = (int)($bondRow['amount'] ?? 0);
-    } catch (Exception $e) {}
+    } catch (\Throwable $e) {}
 
     // ★ 获取累计在线天数（不重复日期计数）
     $totalOnlineDays = 0;
@@ -216,7 +221,7 @@ function registerQuery($token) {
         $odResult = $odStmt->execute();
         $odRow = $odResult->fetchArray(SQLITE3_ASSOC);
         if ($odRow) $totalOnlineDays = (int)($odRow['cnt'] ?? 0);
-    } catch (Exception $e) {}
+    } catch (\Throwable $e) {}
 
     // ★ 获取累计签到天数
     $totalCheckinDays = 0;
@@ -226,7 +231,7 @@ function registerQuery($token) {
         $ciResult = $ciStmt->execute();
         $ciRow = $ciResult->fetchArray(SQLITE3_ASSOC);
         if ($ciRow) $totalCheckinDays = (int)($ciRow['cnt'] ?? 0);
-    } catch (Exception $e) {}
+    } catch (\Throwable $e) {}
 
     // 合并额外数据
     $row['bonds'] = $bonds;

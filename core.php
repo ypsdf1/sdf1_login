@@ -119,8 +119,18 @@ function initTables(SQLite3 $db) {
             stock INTEGER DEFAULT -1,
             hourly_sales INTEGER DEFAULT 0,
             total_sales INTEGER DEFAULT 0,
-            last_sync INTEGER DEFAULT 0
+            last_sync INTEGER DEFAULT 0,
+            admin_stock INTEGER DEFAULT NULL
         )");
+
+        // ★ 兼容升级：给shop_items加admin_stock字段（已存在则跳过）
+        try {
+            $db->exec("ALTER TABLE shop_items ADD COLUMN admin_stock INTEGER DEFAULT NULL");
+        } catch (\Throwable $e) { /* 字段已存在，忽略 */ }
+        // ★ 兼容升级：给shop_items加last_modified字段（高频轮询检测改动用）
+        try {
+            $db->exec("ALTER TABLE shop_items ADD COLUMN last_modified INTEGER DEFAULT 0");
+        } catch (\Throwable $e) { /* 字段已存在，忽略 */ }
 
         // CDK表
         $db->exec("CREATE TABLE IF NOT EXISTS cdk (
@@ -322,6 +332,40 @@ function initTables(SQLite3 $db) {
         try {
             $db->exec("ALTER TABLE player_ip_locations ADD COLUMN player_name TEXT DEFAULT 'global'");
         } catch (Exception $e) { /* 列已存在 */ }
+
+        // ★ 服务商同步表（Java端推送service_providers到Web.db）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_service_providers (
+            player_name TEXT PRIMARY KEY,
+            role TEXT DEFAULT 'waiter',
+            active INTEGER DEFAULT 1,
+            join_time INTEGER DEFAULT 0
+        )");
+
+        // ★ 工单系统表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            status TEXT DEFAULT 'submitted',
+            requester TEXT NOT NULL,
+            assigned_to TEXT DEFAULT '',
+            title TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            reject_reason TEXT DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )");
+        $db->exec("CREATE TABLE IF NOT EXISTS web_ticket_replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id INTEGER NOT NULL,
+            sender TEXT NOT NULL,
+            role TEXT DEFAULT 'user',
+            message TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_requester ON web_tickets(requester)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_status ON web_tickets(status)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_assigned ON web_tickets(assigned_to)");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_ticket_replies_ticket ON web_ticket_replies(ticket_id)");
 
         $db->exec('COMMIT');
     } catch (Exception $e) {
@@ -536,7 +580,7 @@ function jsonResponse($data, $code = 200) {
     while (ob_get_level() > 0) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
     http_response_code($code);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 

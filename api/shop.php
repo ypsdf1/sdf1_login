@@ -14,6 +14,7 @@ while (ob_get_level() > 0) { ob_end_clean(); }
 $action = getParam('action', 'list');
 $token = getParam('token');
 
+try {
 switch ($action) {
     case 'list':
         shopList($token);
@@ -26,6 +27,10 @@ switch ($action) {
         break;
     default:
         error('未知操作: ' . $action);
+}
+} catch (\Throwable $e) {
+    while (ob_get_level() > 0) ob_end_clean();
+    error('服务器内部错误: ' . $e->getMessage(), 500);
 }
 
 // ===== 商品列表（公开，无需token） =====
@@ -185,9 +190,11 @@ function shopBuy($token) {
     // ★ 实际购买 — 包装在事务中，防止database is locked
     $db->exec('BEGIN IMMEDIATE');
     try {
-        // 更新库存
+        // 更新库存（同时写admin_stock确保Java同步）
         if ($item['stock'] > 0) {
-            $stmt = $db->prepare("UPDATE shop_items SET stock = stock - :amount, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+            $newStock = $item['stock'] - $amount;
+            $stmt = $db->prepare("UPDATE shop_items SET stock = :ns, admin_stock = :ns, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+            $stmt->bindValue(':ns', $newStock, SQLITE3_INTEGER);
             $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
             $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
             $stmt->execute();

@@ -1,3 +1,4 @@
+<?php header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0'); header('Pragma: no-cache'); ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -6,7 +7,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>SDF1 - 管理后台</title>
+    <title>SDF1 - 管理后台 v<?php echo date('ymd_His', filemtime(__FILE__)); ?></title>
     <style>
         :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; }
         * { margin:0; padding:0; box-sizing:border-box; }
@@ -90,6 +91,7 @@
         <div class="si" data-p="online" onclick="go('online')">🟢 在线玩家</div>
         <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
+        <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -113,7 +115,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const A = 'api/admin.php';
-const _BUILD_TS = 1781928829; // 版本号，用于缓存失效
+const _BUILD_TS = 1782098585; // 版本号，用于缓存失效
 console.log('[INIT] Admin panel loaded, build:', _BUILD_TS);
 
 // ★ 自检：验证新代码是否加载
@@ -150,6 +152,7 @@ function go(p) {
     else if (p==='users') loadUsers(c);
     else if (p==='online') loadOnlinePlayers(c);
     else if (p==='active') loadActivePlayers(c);
+    else if (p==='tickets') loadTickets(c);
 }
 
 // 检查登录状态
@@ -237,10 +240,11 @@ async function loadDashboard(el) {
             const subnetOrder = [];
             players.forEach(p => {
                 const ip = p.ip_address || '-';
-                let subnet = ip;
-                if (ip !== '-') {
+                let subnet = '_unknown_' + p.player_name; // 默认每个玩家独立一组
+                // 只有有效IPv4地址才进行子网分组
+                if (ip !== '-' && ip.indexOf('.') !== -1) {
                     const parts = ip.split('.');
-                    if (parts.length === 4) {
+                    if (parts.length === 4 && parts.every(part => part !== '' && !isNaN(part))) {
                         subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
                     }
                 }
@@ -440,6 +444,13 @@ async function removeShop(id) {
 async function loadCDK(el) {
     const r = await jsonApi('cdk.php?action=list');
     const list = r.data || [];
+    const now = Date.now();
+    const threeMinAgo = now - 3 * 60 * 1000;
+    
+    // 计算可撤销的CDK（3分钟内创建且未使用）
+    const recentCDKs = list.filter(c => c.created_at && (c.created_at * 1000) > threeMinAgo && !c.used);
+    const canUndo = recentCDKs.length > 0;
+    
     el.innerHTML = `
         <div class="card">
             <h2>CDK管理</h2>
@@ -448,18 +459,27 @@ async function loadCDK(el) {
                     <h2>生成CDK</h2>
                     <div class="form-row"><label>金额</label><input id="cAmount" type="text" value="100" placeholder="固定金额或区间(如100-200)"></div>
                     <div class="form-row"><label>数量</label><input id="cCount" type="number" value="10" min="1" max="100"></div>
-                    <button class="btn btn-green" onclick="doBatchCDK()">批量生成</button>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-green" onclick="doBatchCDK()">批量生成</button>
+                        ${canUndo ? `<button class="btn btn-red" onclick="undoRecentCDK()">一键撤销 (${recentCDKs.length}个)</button>` : ''}
+                    </div>
                 </div>
             </div>
             <table class="table">
-                <tr><th>兑换码</th><th>金额</th><th>状态</th><th>使用者</th><th>创建时间</th></tr>
-                ${list.map(c=>`<tr>
-                    <td style="font-family:monospace">${c.code}</td>
-                    <td>${c.amount}</td>
-                    <td>${c.used?'<span class="tag tag-used">已使用</span>':'<span class="tag tag-unused">未使用</span>'}</td>
-                    <td>${c.used_by||'-'}</td>
-                    <td>${c.created_at?new Date(c.created_at*1000).toLocaleString():'-'}</td>
-                </tr>`).join('')}
+                <tr><th>兑换码</th><th>金额</th><th>状态</th><th>使用者</th><th>创建时间</th><th>操作</th></tr>
+                ${list.map(c=>{
+                    const deleteBtn = c.used ?
+                        `<span style="color:var(--dim);font-size:12px">-</span>` :
+                        `<button class="btn btn-red" style="padding:2px 8px;font-size:12px" onclick="deleteCDK('${c.code}')">删除</button>`;
+                    return `<tr>
+                        <td style="font-family:monospace">${c.code}</td>
+                        <td>${c.amount}</td>
+                        <td>${c.used?'<span class="tag tag-used">已使用</span>':'<span class="tag tag-unused">未使用</span>'}</td>
+                        <td>${c.used_by||'-'}</td>
+                        <td>${c.created_at?new Date(c.created_at*1000).toLocaleString():'-'}</td>
+                        <td>${deleteBtn}</td>
+                    </tr>`;
+                }).join('')}
             </table>
         </div>`;
 }
@@ -497,6 +517,59 @@ async function doBatchCDK() {
         toast('生成了'+count+'个CDK','ok');
         loadCDK(document.getElementById('C'));
     } else { toast(r.message,'err'); }
+}
+
+// ===== CDK撤销和删除 =====
+async function undoRecentCDK() {
+    if (!confirm('确定要撤销最近3分钟内生成的CDK吗？')) return;
+    
+    const r = await jsonApi('cdk.php?action=list');
+    const list = r.data || [];
+    const now = Date.now();
+    const threeMinAgo = now - 3 * 60 * 1000;
+    
+    // 筛选3分钟内创建且未使用的CDK
+    const recentCDKs = list.filter(c => c.created_at && (c.created_at * 1000) > threeMinAgo && !c.used);
+    
+    if (recentCDKs.length === 0) {
+        toast('没有可撤销的CDK','err');
+        return;
+    }
+    
+    let successCount = 0;
+    let failCount = 0;
+    
+    for (const cdk of recentCDKs) {
+        try {
+            const result = await postApi('cdk_delete', {code: cdk.code});
+            if (result.success) {
+                successCount++;
+            } else {
+                failCount++;
+            }
+        } catch (e) {
+            failCount++;
+        }
+    }
+    
+    if (successCount > 0) {
+        toast(`成功撤销${successCount}个CDK${failCount > 0 ? `，${failCount}个失败` : ''}`, 'ok');
+        loadCDK(document.getElementById('C'));
+    } else {
+        toast('撤销失败', 'err');
+    }
+}
+
+async function deleteCDK(code) {
+    if (!confirm(`确定要删除CDK ${code}吗？`)) return;
+    
+    const r = await postApi('cdk_delete', {code});
+    if (r.success) {
+        toast('CDK已删除', 'ok');
+        loadCDK(document.getElementById('C'));
+    } else {
+        toast(r.message, 'err');
+    }
 }
 
 // ===== 流水 =====
@@ -821,15 +894,18 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
             // 追加用户行（日期搜索时按/24子网折叠）
             let displayUsers = users;
             if (isDateSearch && users.length > 0) {
-                // 按/24子网分组
+                // 按/24子网分组（只对有效IPv4地址进行分组）
                 const subnetMap = {};
                 const subnetOrder = [];
                 users.forEach(u => {
                     const ip = u.ip_address || '-';
-                    let subnet = ip;
-                    if (ip !== '-') {
+                    let subnet = '_unknown_' + u.player_name; // 默认每个玩家独立一组
+                    // 只有有效IPv4地址才进行子网分组
+                    if (ip !== '-' && ip.indexOf('.') !== -1) {
                         const parts = ip.split('.');
-                        if (parts.length === 4) subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                        if (parts.length === 4 && parts.every(part => part !== '' && !isNaN(part))) {
+                            subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                        }
                     }
                     if (!subnetMap[subnet]) { subnetMap[subnet] = []; subnetOrder.push(subnet); }
                     subnetMap[subnet].push(u);
@@ -1295,14 +1371,17 @@ function loadActiveTab(tab, seconds) {
         const totalBeforeDedup = res.total_before_dedup || players.length;
         const dedupCount = totalBeforeDedup - players.length;
 
-        // 统计同子网玩家
+        // 统计同子网玩家（只对有效IPv4地址进行分组）
         const subnetCountMap = {};
         players.forEach(p => {
             const ip = p.ip_address || '-';
-            if (ip !== '-') {
+            // 只有有效IPv4地址才进行子网分组
+            if (ip !== '-' && ip.indexOf('.') !== -1) {
                 const parts = ip.split('.');
-                const subnet = parts.length === 4 ? parts[0]+'.'+parts[1]+'.'+parts[2] : ip;
-                subnetCountMap[subnet] = (subnetCountMap[subnet] || 0) + 1;
+                if (parts.length === 4 && parts.every(part => part !== '' && !isNaN(part))) {
+                    const subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                    subnetCountMap[subnet] = (subnetCountMap[subnet] || 0) + 1;
+                }
             }
         });
         
@@ -1318,9 +1397,12 @@ function loadActiveTab(tab, seconds) {
                     const ip = p.ip_address || '-';
                     const ipLoc = p.ip_location || '-';
                     let subnet = '';
-                    if (ip !== '-') {
+                    // 只有有效IPv4地址才进行子网分组
+                    if (ip !== '-' && ip.indexOf('.') !== -1) {
                         const parts = ip.split('.');
-                        subnet = parts.length === 4 ? parts[0]+'.'+parts[1]+'.'+parts[2] : ip;
+                        if (parts.length === 4 && parts.every(part => part !== '' && !isNaN(part))) {
+                            subnet = parts[0] + '.' + parts[1] + '.' + parts[2];
+                        }
                     }
                     const isShared = subnet && (subnetCountMap[subnet] || 0) > 1;
                     const ipStyle = isShared ? 'color:var(--yellow);font-weight:700' : '';
@@ -1752,6 +1834,397 @@ function applyCustomColor() {
     const savedTheme = localStorage.getItem('sdf1_theme');
     if (savedTheme) setTheme(savedTheme);
 })();
+
+// ===== 工单管理 =====
+let ticketAdminState = { filter: 'all', view: 'list' };
+
+async function loadTickets(el) {
+    ticketAdminState.view = 'list';
+    await loadTicketList(el);
+}
+
+async function loadTicketList(el) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">加载中...</p></div>';
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'list_all');
+        if (ticketAdminState.filter !== 'all') url.searchParams.set('status', ticketAdminState.filter);
+        const res = await fetch(url, {credentials: 'same-origin'});
+        const data = await res.json();
+        if (!data.success) { el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.message}</p></div>`; return; }
+
+        const list = data.data.list;
+        const stats = data.data.stats;
+        const typeMap = {bug:'🐛 Bug',help:'❓ 求助',report:'📢 举报',apply:'📝 申请',other:'📎 其他'};
+        const statusMap = {submitted:{text:'⏳ 已提交',color:'var(--yellow)'},replied:{text:'💬 已回复',color:'var(--accent)'},completed:{text:'✅ 已完结',color:'var(--green)'},withdrawn:{text:'🔙 已撤销',color:'var(--dim)'},rejected:{text:'🚫 已驳回',color:'var(--red)'}};
+        const f = ticketAdminState.filter;
+
+        let html = `<div class="card"><h2>📋 工单管理</h2>
+            <div style="margin-bottom:10px"><button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="adminCreateTicketUI()">➕ 新建工单</button></div>
+            <div class="tabs">
+                <div class="tab ${f==='all'?'active':''}" onclick="ticketAdminState.filter='all';loadTicketList(document.getElementById('C'))">全部 (${stats.all})</div>
+                <div class="tab ${f==='submitted'?'active':''}" onclick="ticketAdminState.filter='submitted';loadTicketList(document.getElementById('C'))">⏳ 已提交 (${stats.submitted||0})</div>
+                <div class="tab ${f==='replied'?'active':''}" onclick="ticketAdminState.filter='replied';loadTicketList(document.getElementById('C'))">💬 已回复 (${stats.replied||0})</div>
+                <div class="tab ${f==='completed'?'active':''}" onclick="ticketAdminState.filter='completed';loadTicketList(document.getElementById('C'))">✅ 已完结 (${stats.completed||0})</div>
+                <div class="tab ${f==='withdrawn'?'active':''}" onclick="ticketAdminState.filter='withdrawn';loadTicketList(document.getElementById('C'))">🔙 已撤销 (${stats.withdrawn||0})</div>
+                <div class="tab ${f==='rejected'?'active':''}" onclick="ticketAdminState.filter='rejected';loadTicketList(document.getElementById('C'))">🚫 已驳回 (${stats.rejected||0})</div>
+            </div>`;
+
+        if (list.length === 0) {
+            html += `<p style="color:var(--dim);text-align:center;padding:30px">暂无工单</p>`;
+        } else {
+            html += `<table class="table"><thead><tr><th>ID</th><th>类型</th><th>标题</th><th>提交者</th><th>处理人</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody>`;
+            for (const t of list) {
+                const s = statusMap[t.status] || {text: t.status, color: 'var(--dim)'};
+                const date = new Date(t.created_at * 1000).toLocaleString('zh-CN');
+                html += `<tr>
+                    <td>#${t.id}</td>
+                    <td>${typeMap[t.type]||t.type}</td>
+                    <td>${escAdmHtml(t.title)}</td>
+                    <td>${escAdmHtml(t.requester)}</td>
+                    <td>${t.assigned_to ? escAdmHtml(t.assigned_to) : '<span style="color:var(--dim)">-</span>'}</td>
+                    <td><span style="color:${s.color}">${s.text}</span></td>
+                    <td style="font-size:11px">${date}</td>
+                    <td>
+                        <button class="btn" style="padding:3px 8px;font-size:11px" onclick="viewAdminTicket(${t.id})">查看</button>
+                        ${t.status !== 'withdrawn' && t.status !== 'rejected' ? `<button class="btn" style="padding:3px 8px;font-size:11px;color:var(--yellow)" onclick="viewAdminTicket(${t.id})">回复</button>` : ''}
+                    </td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+        }
+        html += `</div>`;
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function viewAdminTicket(id) {
+    const c = document.getElementById('C');
+    c.innerHTML = '<div class="card"><p style="color:var(--dim)">加载中...</p></div>';
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'detail');
+        url.searchParams.set('id', id);
+        url.searchParams.set('token', 'admin');
+        const res = await fetch(url, {credentials: 'same-origin'});
+        const data = await res.json();
+        if (!data.success) { c.innerHTML = `<div class="card"><p style="color:var(--red)">${data.message}</p></div>`; return; }
+
+        const t = data.data;
+        const typeMap = {bug:'🐛 Bug反馈',help:'❓ 求助',report:'📢 举报',apply:'📝 申请',other:'📎 其他'};
+        const statusMap = {submitted:{text:'⏳ 已提交',color:'var(--yellow)'},replied:{text:'💬 已回复',color:'var(--accent)'},withdrawn:{text:'🔙 已撤销',color:'var(--dim)'},rejected:{text:'🚫 已驳回',color:'var(--red)'}};
+        const s = statusMap[t.status] || {text: t.status, color: 'var(--dim)'};
+        const date = new Date(t.created_at * 1000).toLocaleString('zh-CN');
+        const canOperate = !['withdrawn','rejected','completed'].includes(t.status);
+
+        let html = `<div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h2 style="margin:0">#${t.id} ${escAdmHtml(t.title)}</h2>
+                <span style="color:${s.color};font-size:13px">${s.text}</span>
+            </div>
+            <div style="font-size:13px;color:var(--dim);margin-bottom:12px">
+                类型: ${typeMap[t.type]||t.type} | 提交者: ${escAdmHtml(t.requester)} | 处理人: ${t.assigned_to ? escAdmHtml(t.assigned_to) : '未分配'} | 时间: ${date}
+            </div>
+            <div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6">${adminRenderMd(t.description || '无描述')}</div>`;
+
+        // 驳回原因
+        if (t.reject_reason) {
+            html += `<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);border-radius:6px;padding:12px;margin-bottom:12px">
+                <div style="color:var(--red);font-size:12px;margin-bottom:4px">🚫 驳回原因</div>
+                <div style="font-size:13px">${adminRenderMd(t.reject_reason)}</div></div>`;
+        }
+
+        // 回复列表
+        html += `<div style="margin-bottom:12px"><div style="font-size:12px;color:var(--dim);margin-bottom:6px">💬 回复记录 (${t.replies ? t.replies.length : 0})</div>`;
+        if (t.replies && t.replies.length > 0) {
+            for (const r of t.replies) {
+                const rDate = new Date(r.created_at * 1000).toLocaleString('zh-CN');
+                const roleColors = {user:'var(--accent)',admin:'var(--red)',provider:'var(--green)'};
+                const roleNames = {user:'玩家',admin:'管理员',provider:'服务商'};
+                const bgColor = r.role === 'admin' ? 'rgba(248,81,73,0.08)' : r.role === 'provider' ? 'rgba(63,185,80,0.08)' : 'rgba(88,166,255,0.08)';
+                html += `<div style="background:${bgColor};border-radius:6px;padding:10px 14px;margin-bottom:6px">
+                    <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+                        <span><b style="color:${roleColors[r.role]||'var(--text)'}">${escAdmHtml(r.sender)}</b> <span style="color:var(--dim)">(${roleNames[r.role]||r.role})</span></span>
+                        <span style="color:var(--dim)">${rDate}</span>
+                    </div>
+                    <div style="font-size:13px;line-height:1.6">${adminRenderMd(r.message)}</div>
+                </div>`;
+            }
+        } else {
+            html += `<p style="color:var(--dim);font-size:12px">暂无回复</p>`;
+        }
+        html += `</div>`;
+
+        // 操作区
+        if (canOperate) {
+            html += `<div style="border-top:1px solid var(--border);padding-top:12px">
+                <div style="margin-bottom:8px"><textarea id="admTicketReply" rows="2" placeholder="输入回复内容（支持Markdown）" style="width:100%;padding:8px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;resize:vertical;font-family:monospace"></textarea></div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                    <button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="adminReplyTicket(${t.id})">💬 回复</button>
+                    <button class="btn" style="padding:5px 14px;font-size:12px;color:var(--red)" onclick="adminRejectTicket(${t.id})">🚫 驳回</button>
+                    <button class="btn" style="padding:5px 14px;font-size:12px;color:var(--green)" onclick="adminCompleteTicket(${t.id})">✅ 完结</button>
+                    <input id="admAssignProvider" placeholder="服务商名" style="padding:5px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;width:120px">
+                    <button class="btn" style="padding:5px 14px;font-size:12px;color:var(--green)" onclick="adminAssignTicket(${t.id})">📤 分配</button>
+                </div>
+                <p id="admTicketErr" style="color:var(--red);font-size:12px;margin-top:6px"></p>
+            </div>`;
+        }
+
+        html += `<div style="margin-top:12px"><button class="btn" style="padding:5px 14px;font-size:12px" onclick="loadTicketList(document.getElementById('C'))">← 返回列表</button></div></div>`;
+        c.innerHTML = html;
+    } catch (e) {
+        c.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function adminReplyTicket(id) {
+    const msg = document.getElementById('admTicketReply').value.trim();
+    const errEl = document.getElementById('admTicketErr');
+    if (!msg) { errEl.textContent = '请输入回复内容'; return; }
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'admin_reply');
+        url.searchParams.set('id', id);
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({message: msg})});
+        const data = await res.json();
+        if (data.success) { viewAdminTicket(id); } else { errEl.textContent = data.message; }
+    } catch (e) { errEl.textContent = '发送失败: ' + e.message; }
+}
+
+async function adminRejectTicket(id) {
+    const reason = prompt('请输入驳回原因:');
+    if (!reason) return;
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'reject');
+        url.searchParams.set('id', id);
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({reason: reason})});
+        const data = await res.json();
+        if (data.success) { loadTicketList(document.getElementById('C')); } else { alert(data.message); }
+    } catch (e) { alert('操作失败: ' + e.message); }
+}
+
+async function adminCompleteTicket(id) {
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'admin_complete');
+        url.searchParams.set('id', id);
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin'});
+        const data = await res.json();
+        if (data.success) { viewAdminTicket(id); } else { alert(data.message); }
+    } catch (e) { alert('操作失败: ' + e.message); }
+}
+
+async function adminAssignTicket(id) {
+    const provider = document.getElementById('admAssignProvider').value.trim();
+    if (!provider) { document.getElementById('admTicketErr').textContent = '请输入服务商名称'; return; }
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'assign');
+        url.searchParams.set('id', id);
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({provider: provider})});
+        const data = await res.json();
+        if (data.success) { viewAdminTicket(id); } else { document.getElementById('admTicketErr').textContent = data.message; }
+    } catch (e) { document.getElementById('admTicketErr').textContent = '分配失败: ' + e.message; }
+}
+
+function adminCreateTicketUI() {
+    const c = document.getElementById('C');
+    let html = `<div class="card"><h2>➕ 新建工单</h2>
+        <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--dim)">类型</label>
+            <select id="admNewType" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px">
+                <option value="bug">🐛 Bug</option>
+                <option value="help">❓ 求助</option>
+                <option value="report">📢 举报</option>
+                <option value="apply">📝 申请</option>
+                <option value="other">📎 其他</option>
+            </select>
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--dim)">标题</label>
+            <input id="admNewTitle" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px" placeholder="工单标题">
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--dim)">描述（支持Markdown）</label>
+            <textarea id="admNewDesc" rows="4" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px;resize:vertical;font-family:monospace" placeholder="工单描述"></textarea>
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--dim)">派发服务商（可选）</label>
+            <input id="admNewProvider" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px" placeholder="服务商玩家名（留空则进入抢单大厅）">
+        </div>
+        <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" style="padding:5px 14px;font-size:12px" onclick="adminSubmitCreateTicket()">创建</button>
+            <button class="btn" style="padding:5px 14px;font-size:12px" onclick="loadTicketList(document.getElementById('C'))">取消</button>
+        </div>
+        <p id="admCreateErr" style="color:var(--red);font-size:12px;margin-top:6px"></p>
+    </div>`;
+    c.innerHTML = html;
+}
+
+async function adminSubmitCreateTicket() {
+    const type = document.getElementById('admNewType').value;
+    const title = document.getElementById('admNewTitle').value.trim();
+    const desc = document.getElementById('admNewDesc').value.trim();
+    const provider = document.getElementById('admNewProvider').value.trim();
+    const errEl = document.getElementById('admCreateErr');
+    if (!title) { errEl.textContent = '请输入标题'; return; }
+    try {
+        const url = new URL('api/ticket.php', location.href);
+        url.searchParams.set('action', 'admin_create');
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({type, title, description: desc, provider})});
+        const data = await res.json();
+        if (data.success) { loadTicketList(document.getElementById('C')); } else { errEl.textContent = data.message; }
+    } catch (e) { errEl.textContent = '创建失败: ' + e.message; }
+}
+
+function escAdmHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function adminProcessInlineMd(text) {
+    let s = text;
+    s = s.replace(/^######\s+(.+)$/, '<h6 style="margin:2px 0;font-size:11px">$1</h6>');
+    s = s.replace(/^#####\s+(.+)$/, '<h5 style="margin:3px 0;font-size:12px">$1</h5>');
+    s = s.replace(/^####\s+(.+)$/, '<h4 style="margin:3px 0 2px;font-size:12px">$1</h4>');
+    s = s.replace(/^###\s+(.+)$/, '<h4 style="margin:4px 0 3px;font-size:13px">$1</h4>');
+    s = s.replace(/^##\s+(.+)$/, '<h3 style="margin:5px 0 3px;font-size:14px">$1</h3>');
+    s = s.replace(/^#\s+(.+)$/, '<h2 style="margin:6px 0 4px;font-size:15px">$1</h2>');
+    s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+    s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
+    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:4px 0">');
+    s = s.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent)">$1</a>');
+    return s;
+}
+
+function adminRenderMd(text) {
+    if (!text) return '';
+    text = text.replace(/\r/g, '');
+    try {
+    let s = escAdmHtml(text);
+    // 1. 代码块提取保护
+    let cbs = [];
+    s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, function(m, lang, code) {
+        let idx = cbs.length;
+        cbs.push('<pre style="background:rgba(88,166,255,0.1);padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;white-space:pre-wrap">' + code.replace(/\n$/, '') + '</pre>');
+        return '\x00CB' + idx + '\x00';
+    });
+    // 2. 行内代码保护
+    s = s.replace(/`([^`]+)`/g, '<code style="background:rgba(88,166,255,0.15);padding:1px 4px;border-radius:2px;font-size:12px">$1</code>');
+    // 3. 引用块处理：先提取连续引用行，构建嵌套结构
+    let lines = s.split('\n');
+    let result = [];
+    let bqBuf = [];
+    function flushBq() {
+        if (bqBuf.length === 0) return;
+        let html = '';
+        let openDivs = 0;
+        for (let bi = 0; bi < bqBuf.length; bi++) {
+            let {level, content} = bqBuf[bi];
+            let prevLevel = (bi > 0) ? bqBuf[bi - 1].level : 0;
+            if (level > prevLevel) {
+                for (let j = prevLevel; j < level; j++) {
+                    let pad = Math.min((j + 1) * 8, 32);
+                    html += '<div style="border-left:3px solid var(--accent);padding:4px 10px;margin:2px 0 2px ' + pad + 'px;background:rgba(255,255,255,0.03)">';
+                    openDivs++;
+                }
+            } else if (level < prevLevel) {
+                for (let j = prevLevel; j > level; j--) { html += '</div>'; openDivs--; }
+            } else if (bi > 0) {
+                html += '<br>';
+            }
+            let text = adminProcessInlineMd(content);
+            if (!text.trim()) text = '&nbsp;';
+            html += text;
+        }
+        for (let j = 0; j < openDivs; j++) html += '</div>';
+        result.push(html);
+        bqBuf = [];
+    }
+    for (let i = 0; i < lines.length; i++) {
+        let m = lines[i].match(/^((?:&gt;[ \t]*)+)(.*)$/);
+        if (m) {
+            bqBuf.push({ level: (m[1].match(/&gt;/g) || []).length, content: m[2] });
+        } else if (bqBuf.length > 0 && !lines[i].trim()) {
+            // ★ 空行在引用块内：向前看下一行是否仍是引用
+            let isContinuation = false;
+            for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim()) {
+                    isContinuation = /^((?:&gt;[ \t]*)+)(.*)$/.test(lines[j]);
+                    break;
+                }
+            }
+            if (isContinuation) {
+                bqBuf.push({ level: bqBuf[bqBuf.length - 1].level, content: '' });
+            } else {
+                flushBq();
+            }
+        } else {
+            flushBq();
+            result.push(lines[i]);
+        }
+    }
+    flushBq();
+    s = result.join('\n');
+    // 4. 非引用行的MD处理（标题、粗体、斜体、图片、链接等）
+    s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+    s = s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    s = s.replace(/\*(.+?)\*/g, '<i>$1</i>');
+    s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:6px 0">');
+    s = s.replace(/(?<!!)\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent)">$1</a>');
+    s = s.replace(/^######\s+(.+)$/gm, '<h6 style="margin:3px 0;font-size:11px">$1</h6>');
+    s = s.replace(/^#####\s+(.+)$/gm, '<h5 style="margin:4px 0;font-size:12px">$1</h5>');
+    s = s.replace(/^####\s+(.+)$/gm, '<h4 style="margin:4px 0 2px;font-size:12px">$1</h4>');
+    s = s.replace(/^###\s+(.+)$/gm, '<h4 style="margin:6px 0 4px;font-size:13px">$1</h4>');
+    s = s.replace(/^##\s+(.+)$/gm, '<h3 style="margin:8px 0 4px;font-size:14px">$1</h3>');
+    s = s.replace(/^#\s+(.+)$/gm, '<h2 style="margin:10px 0 6px;font-size:15px">$1</h2>');
+    // 5. 表格
+    let inTable = false;
+    let tableHtml = '';
+    let tLines = s.split('\n');
+    let tResult = [];
+    for (let i = 0; i < tLines.length; i++) {
+        let line = tLines[i].trim();
+        if (line.match(/^\|(.+)\|$/)) {
+            if (line.match(/^\|[\s\-:|]+\|$/)) { inTable = true; continue; }
+            if (!inTable && i + 1 < tLines.length && tLines[i+1].trim().match(/^\|[\s\-:|]+\|$/)) {
+                inTable = true;
+                let cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                tableHtml = '<table style="border-collapse:collapse;width:100%;margin:6px 0;font-size:12px"><tr style="background:rgba(88,166,255,0.15)">';
+                for (let c of cells) tableHtml += '<th style="border:1px solid var(--border);padding:4px 8px;text-align:left">' + c + '</th>';
+                tableHtml += '</tr>';
+                continue;
+            }
+            if (inTable) {
+                let cells = line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+                tableHtml += '<tr>';
+                for (let c of cells) tableHtml += '<td style="border:1px solid var(--border);padding:4px 8px">' + c + '</td>';
+                tableHtml += '</tr>';
+                continue;
+            }
+        }
+        if (inTable && tableHtml) {
+            tableHtml += '</table>';
+            tResult.push(tableHtml);
+            tableHtml = '';
+            inTable = false;
+        }
+        tResult.push(tLines[i]);
+    }
+    if (tableHtml) { tableHtml += '</table>'; tResult.push(tableHtml); }
+    s = tResult.join('\n');
+    // 6. 列表、分割线、换行
+    s = s.replace(/^- (.+)$/gm, '<li style="margin-left:16px;font-size:12px">$1</li>');
+    s = s.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid var(--border);margin:10px 0">');
+    s = s.replace(/\n/g, '<br>');
+    // 7. 还原代码块
+    for (let i = 0; i < cbs.length; i++) {
+        s = s.replace('\x00CB' + i + '\x00', cbs[i]);
+    }
+    return s;
+    } catch(e) { console.error('[MD_RENDER] Error:', e); return escAdmHtml(text).replace(/\n/g, '<br>'); }
+}
 </script>
 </body>
 </html>

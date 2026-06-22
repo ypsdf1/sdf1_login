@@ -16,6 +16,7 @@ while (ob_get_level() > 0) { ob_end_clean(); }
 $action = getParam('action', 'exchange');
 $token = getParam('token');
 
+try {
 switch ($action) {
     case 'exchange':
         cdkExchange($token);
@@ -34,6 +35,12 @@ switch ($action) {
         break;
     default:
         error('未知操作: ' . $action);
+}
+} catch (\Throwable $e) {
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['error' => ['code' => 500, 'message' => 'Internal error: ' . $e->getMessage()]], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 // ===== CDK兑换 =====
@@ -382,7 +389,7 @@ function validateWebloginTokenForCDK($webToken) {
             'created_at' => $createdAt,
             'expires_at' => $createdAt + $expireSeconds
         ];
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         return false;
     }
 }

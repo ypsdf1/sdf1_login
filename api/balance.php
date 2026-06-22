@@ -13,6 +13,7 @@ ob_end_clean();
 $action = getParam('action', 'query');
 $token = getParam('token');
 
+try {
 switch ($action) {
     case 'query':
         balanceQuery($token);
@@ -25,6 +26,12 @@ switch ($action) {
         break;
     default:
         error('未知操作: ' . $action);
+}
+} catch (\Throwable $e) {
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['error' => ['code' => 500, 'message' => 'Internal error: ' . $e->getMessage()]], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 // ===== 查询余额 =====
@@ -242,7 +249,7 @@ function balanceTransactions($token) {
             $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
             $result = $stmt->execute();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
-        } catch (Exception $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */ }
         // 游戏内交易
         try {
             $stmt = $db->prepare("SELECT java_id as id, player_name, type, amount, operator, reason, '' as detail, tx_time as created_at, 'game' as source, balance_before, balance_after FROM game_transactions WHERE player_name = :player ORDER BY tx_time DESC LIMIT :limit");
@@ -250,7 +257,7 @@ function balanceTransactions($token) {
             $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
             $result = $stmt->execute();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
-        } catch (Exception $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */ }
     } else {
         // 管理员查看全服流水
         if ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all') {
@@ -262,14 +269,14 @@ function balanceTransactions($token) {
             $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
             $result = $stmt->execute();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
-        } catch (Exception $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */ }
         // 游戏内交易
         try {
             $stmt = $db->prepare("SELECT java_id as id, player_name, type, amount, operator, reason, '' as detail, tx_time as created_at, 'game' as source, balance_before, balance_after FROM game_transactions ORDER BY tx_time DESC LIMIT :limit");
             $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
             $result = $stmt->execute();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) $txs[] = $row;
-        } catch (Exception $e) { /* ignore */ }
+        } catch (\Throwable $e) { /* ignore */ }
     }
 
     // 按时间排序（倒序）
