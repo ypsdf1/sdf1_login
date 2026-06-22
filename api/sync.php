@@ -517,8 +517,8 @@ function syncTransactions() {
     )");
 
     // 索引用于查询加速
-    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (Exception $e) {}
-    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (Exception $e) {}
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (\Throwable $e) {}
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (\Throwable $e) {}
 
     $now = time();
     $count = 0;
@@ -558,7 +558,7 @@ function syncTransactions() {
             }
         }
         $db->exec("COMMIT");
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         $db->exec("ROLLBACK");
         @error_log("[syncTransactions] Transaction failed, rolled back: " . $e->getMessage());
         throw $e;
@@ -571,7 +571,7 @@ function syncTransactions() {
     ]);
 
     success(['synced' => $count, 'skipped' => $skipped, 'total' => count($transactions)], "同步了{$count}笔游戏交易");
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log("[syncTransactions] EXCEPTION: " . $e->getMessage() . " at " . $e->getTraceAsString());
         error('syncTransactions异常: ' . $e->getMessage());
     }
@@ -655,7 +655,7 @@ function syncLogin() {
                 $db->exec("DELETE FROM users WHERE player_name IN ('" . $nameList . "')");
                 debugLog("sync_login: 清理了 " . count($orphanedUsers) . " 个孤立的 users 记录", ['orphaned' => $orphanedUsers]);
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             debugLog("sync_login: 清理孤立 users 记录失败", ['error' => $e->getMessage()]);
         }
 
@@ -676,7 +676,7 @@ function syncLogin() {
                 $db->exec("DELETE FROM weblogin_credentials WHERE player_name IN ('" . $nameList . "')");
                 debugLog("sync_login: 清理了 " . count($orphaned) . " 个孤立的 weblogin_credentials 记录", ['orphaned' => $orphaned]);
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             debugLog("sync_login: 清理孤立 weblogin_credentials 记录失败", ['error' => $e->getMessage()]);
         }
 
@@ -684,23 +684,23 @@ function syncLogin() {
         try {
             $expireTime = time() - 600;
             $db->exec("DELETE FROM weblogin_tokens WHERE created_at < " . $expireTime);
-        } catch (Exception $e) {}
+        } catch (\Throwable $e) {}
 
         // 清理 web_login_verified：只清理已过期的
         try {
             $expireTime = time() - 600;
             $db->exec("DELETE FROM web_login_verified WHERE verified_at < " . $expireTime);
-        } catch (Exception $e) {}
+        } catch (\Throwable $e) {}
 
         // 清理 web_session_log：只清理过期的
         try {
             $expireTime = time() - 600;
             $db->exec("DELETE FROM web_session_log WHERE login_time < " . $expireTime);
-        } catch (Exception $e) {}
+        } catch (\Throwable $e) {}
 
         $db->exec("COMMIT");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
     }
 
     debugLog("sync_login: 同步完成", ['synced_count' => $count, 'cleared_users' => ($orphanedUsers ?? []) ? count($orphanedUsers) : 0]);
@@ -739,7 +739,7 @@ function deleteUser() {
             $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
             $stmt->execute();
             $deleted++;
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             // 表可能不存在，跳过
         }
     }
@@ -889,7 +889,7 @@ function syncOnlinePlayers() {
             $db->exec("INSERT INTO online_player_hb (id, last_seen) VALUES (1, $oldVal)");
             @error_log("[syncOnlinePlayers] 迁移online_player_hb表结构完成，旧值: $oldVal");
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log("[syncOnlinePlayers] 迁移online_player_hb失败: " . $e->getMessage());
     }
 
@@ -906,7 +906,7 @@ function syncOnlinePlayers() {
                 $db->exec("DELETE FROM online_players");
             }
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         // ignore
     }
 
@@ -945,7 +945,7 @@ function syncOnlinePlayers() {
                 $stmt->bindValue(':time', $loginTime, SQLITE3_INTEGER);
                 $stmt->execute();
                 $synced++;
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
                 @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
             }
 
@@ -970,7 +970,7 @@ function syncOnlinePlayers() {
                         $ipStmt->execute();
                         @error_log("[syncOnlinePlayers] IP更新: {$name} {$oldIp}→{$ip}");
                     }
-                } catch (Exception $e) {
+                } catch (\Throwable $e) {
                     @error_log("[syncOnlinePlayers] IP写入失败 {$name}: " . $e->getMessage());
                 }
             }
@@ -981,13 +981,13 @@ function syncOnlinePlayers() {
             $hbSql = $db->prepare("INSERT OR REPLACE INTO online_player_hb (id, last_seen) VALUES (1, :time)");
             $hbSql->bindValue(':time', $now, SQLITE3_INTEGER);
             $hbSql->execute();
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log("[syncOnlinePlayers] heartbeat update error: " . $e->getMessage());
         }
 
         $db->exec("COMMIT");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[syncOnlinePlayers] Transaction failed: " . $e->getMessage());
     }
 
@@ -1038,8 +1038,8 @@ function syncDailyLogins() {
         }
         $db->exec("COMMIT");
         success(['synced' => $count], "同步了{$count}条登录记录");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[syncDailyLogins] Error: " . $e->getMessage());
         error('同步失败: ' . $e->getMessage());
     }
@@ -1081,8 +1081,8 @@ function syncCheckins() {
         }
         $db->exec("COMMIT");
         success(['synced' => $count], "同步了{$count}条签到记录");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[syncCheckins] Error: " . $e->getMessage());
         error('同步失败: ' . $e->getMessage());
     }
@@ -1182,8 +1182,8 @@ function syncPlayerIps() {
         }
 
         $db->exec("COMMIT");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[syncPlayerIps] Transaction failed: " . $e->getMessage());
     }
 
@@ -1274,8 +1274,8 @@ function receiveToken() {
             $count++;
         }
         $db->exec('COMMIT');
-    } catch (Exception $e) {
-        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
         @error_log("[receiveToken] Exception: " . $e->getMessage());
         error('Token注册失败: ' . $e->getMessage());
     }
@@ -1392,7 +1392,7 @@ function apiValidateWebloginToken() {
         }
 
         success(['player' => $row['player_name']], 'Token有效');
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         error('Token验证失败: ' . $e->getMessage());
     }
 }
@@ -1533,7 +1533,7 @@ function pushPlayerLoginStatus() {
                     $ipStmt->execute();
                     @error_log("[pushPlayerLoginStatus] IP更新: {$player} {$oldIp}→{$playerIp}");
                 }
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
                 @error_log("[pushPlayerLoginStatus] IP写入失败 {$player}: " . $e->getMessage());
             }
         }
@@ -1555,7 +1555,7 @@ function pushPlayerLoginStatus() {
                 $userStmt->bindValue(':time', $now, SQLITE3_INTEGER);
                 $userStmt->bindValue(':player', $player, SQLITE3_TEXT);
                 $userStmt->execute();
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
                 // users表可能不存在或其他错误，忽略
             }
         }
@@ -1583,35 +1583,32 @@ function checkWebLoginConfirmations() {
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
 
-    // ★ 事务包裹所有写操作
-    $db->exec("BEGIN IMMEDIATE");
+    // ★ 不使用BEGIN IMMEDIATE（纯读+更新，减少锁冲突）
     try {
-    // ★ 清理超过10分钟的过期确认记录
-    $expireTime = time() - 600;
-    $db->exec("DELETE FROM web_login_confirmations WHERE confirmed_at < " . $expireTime);
+        // ★ 清理超过10分钟的过期确认记录
+        $expireTime = time() - 600;
+        $db->exec("DELETE FROM web_login_confirmations WHERE confirmed_at < " . $expireTime);
 
-    // 获取所有未消费且未过期的确认记录
-    $stmt = $db->prepare("SELECT player_name, confirmed_at FROM web_login_confirmations WHERE consumed = 0 AND confirmed_at >= :expire");
-    $stmt->bindValue(':expire', $expireTime, SQLITE3_INTEGER);
-    $result = $stmt->execute();
+        // 获取所有未消费且未过期的确认记录
+        $stmt = $db->prepare("SELECT player_name, confirmed_at FROM web_login_confirmations WHERE consumed = 0 AND confirmed_at >= :expire");
+        $stmt->bindValue(':expire', $expireTime, SQLITE3_INTEGER);
+        $result = $stmt->execute();
 
-    $confirmations = [];
-    $playerNames = [];
-    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $confirmations[] = $row;
-        $playerNames[] = $row['player_name'];
-    }
+        $confirmations = [];
+        $playerNames = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $confirmations[] = $row;
+            $playerNames[] = $row['player_name'];
+        }
 
-    // 标记为已消费（一次性）
-    if (!empty($playerNames)) {
-        $db->exec("UPDATE web_login_confirmations SET consumed = 1 WHERE consumed = 0 AND confirmed_at >= " . $expireTime);
-        // 清理30分钟前的已消费记录
-        $db->exec("DELETE FROM web_login_confirmations WHERE consumed = 1 AND confirmed_at < " . (time() - 1800));
-    }
-
-    $db->exec("COMMIT");
+        // 标记为已消费（一次性）
+        if (!empty($playerNames)) {
+            $db->exec("UPDATE web_login_confirmations SET consumed = 1 WHERE consumed = 0 AND confirmed_at >= " . $expireTime);
+            // 清理30分钟前的已消费记录
+            $db->exec("DELETE FROM web_login_confirmations WHERE consumed = 1 AND confirmed_at < " . (time() - 1800));
+        }
     } catch (\Throwable $e) {
-        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
+        @error_log("[checkWebLoginConfirmations] error: " . $e->getMessage());
     }
 
     success($confirmations);
@@ -1858,7 +1855,7 @@ function checkWebLoginResult() {
                 'message' => $resultData['error'] ?? '密码错误'
             ]);
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         error('数据库查询失败: ' . $e->getMessage());
     }
 }
@@ -1881,17 +1878,15 @@ function checkPendingWebLogins() {
         result_time INTEGER DEFAULT 0
     )");
 
-    // ★ 事务包裹清理操作
-    $db->exec("BEGIN IMMEDIATE");
+    // ★ 只读查询不需要BEGIN IMMEDIATE（避免与其它并发请求抢锁导致500）
+    // 清理10分钟前的过期请求（DELETE即使失败也不影响读取pending）
     try {
-    // 清理10分钟前的过期请求
-    $db->exec("DELETE FROM web_login_requests WHERE request_time < " . (time() - 600));
-    $db->exec("COMMIT");
+        $db->exec("DELETE FROM web_login_requests WHERE request_time < " . (time() - 600));
     } catch (\Throwable $e) {
-        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
+        @error_log("[checkPendingWebLogins] cleanup error: " . $e->getMessage());
     }
 
-    // 获取所有pending请求（只返回id、player_name、password，不返回密码明文给前端）
+    // 获取所有pending请求
     $stmt = $db->prepare("SELECT id, player_name, password FROM web_login_requests WHERE status = 'pending'");
     $result = $stmt->execute();
 
@@ -2115,7 +2110,7 @@ function webAccessCheck() {
             $isExpired = $age > $expire ? 'EXPIRED' : 'valid';
             @error_log("[web_access_check] DB token: player=" . $row['player_name'] . ", token=" . $row['token_prefix'] . "..., age={$age}s, expire={$expire}s, status={$isExpired}");
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log("[web_access_check] DB query error: " . $e->getMessage());
     }
 
@@ -2189,7 +2184,9 @@ function checkPendingTransactions() {
     try {
         $stmt = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_transactions'");
         $hasTable = ($stmt && $stmt->fetchArray());
-    } catch (Exception $e) {}
+    } catch (\Throwable $e) {
+        @error_log("[checkPendingTransactions] table check error: " . $e->getMessage());
+    }
 
     if (!$hasTable) {
         success(['pending' => 0], 'no table');
@@ -2203,7 +2200,9 @@ function checkPendingTransactions() {
             $row = $stmt->fetchArray(SQLITE3_ASSOC);
             $count = (int)($row['cnt'] ?? 0);
         }
-    } catch (Exception $e) {}
+    } catch (\Throwable $e) {
+        @error_log("[checkPendingTransactions] count error: " . $e->getMessage());
+    }
 
     success(['pending' => $count], $count > 0 ? '有交易待处理' : '无待处理');
 }
@@ -2250,8 +2249,8 @@ function pullPendingTransactions() {
             $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
         }
         $db->exec('COMMIT');
-    } catch (Exception $e) {
-        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
         @error_log("[pullPendingTransactions] 事务失败: " . $e->getMessage());
         // 降级：不做标记，直接返回（下一轮会重新拉取）
     }
@@ -2286,8 +2285,8 @@ function confirmTransaction() {
         $stmt->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
         $stmt->execute();
         $db->exec('COMMIT');
-    } catch (Exception $e) {
-        try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
         @error_log("[confirmTransaction] 失败: " . $e->getMessage());
     }
 
@@ -2338,11 +2337,17 @@ function checkShopStockChanged() {
     if (!$secret || $secret !== SECRET_KEY) error('认证失败');
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT MAX(last_modified) as max_lm, SUM(CASE WHEN admin_stock IS NOT NULL THEN 1 ELSE 0 END) as admin_count FROM shop_items");
-    $result = $stmt->execute();
-    $row = $result->fetchArray(SQLITE3_ASSOC);
-    $maxModified = $row['max_lm'] ? (int)$row['max_lm'] : 0;
-    $adminCount = $row['admin_count'] ? (int)$row['admin_count'] : 0;
+    try {
+        $stmt = $db->prepare("SELECT MAX(last_modified) as max_lm, SUM(CASE WHEN admin_stock IS NOT NULL THEN 1 ELSE 0 END) as admin_count FROM shop_items");
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        $maxModified = $row['max_lm'] ? (int)$row['max_lm'] : 0;
+        $adminCount = $row['admin_count'] ? (int)$row['admin_count'] : 0;
+    } catch (\Throwable $e) {
+        @error_log("[checkShopStockChanged] error: " . $e->getMessage());
+        $maxModified = 0;
+        $adminCount = 0;
+    }
 
     // ★ 如果admin_stock非NULL（管理员改了库存但Java还没拉取），强制返回changed=true
     $clientLastModified = (int)getParam('last_modified', 0);
@@ -2423,8 +2428,8 @@ function resendPendingTransactions() {
         }
 
         $db->exec("COMMIT");
-    } catch (Exception $e) {
-        try { $db->exec("ROLLBACK"); } catch (Exception $e2) {}
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[resendPendingTransactions] Transaction failed: " . $e->getMessage());
         error('数据库操作失败: ' . $e->getMessage());
     }
@@ -2535,7 +2540,7 @@ function sendEmailCode() {
             // SMTP失败，返回验证码供调试
             success(['player' => $player, 'masked_email' => $maskedEmail, 'code' => $code], '邮件发送中（验证码：' . $code . '）');
         }
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         error('邮件发送失败：' . $e->getMessage());
     }
 }
@@ -2742,7 +2747,7 @@ function sendResetPasswordLink() {
     try {
         smtpSendEmail($smtpHost, $smtpPort, $smtpUser, $smtpPass, $email, $subject, $htmlBody, $headers, SMTP_USE_SSL);
         success(['player' => $player, 'email' => $email], '重置链接已发送到邮箱');
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         error('邮件发送失败：' . $e->getMessage());
     }
 }
@@ -2895,7 +2900,7 @@ function adminSendResetLink() {
     try {
         smtpSendEmail($smtpHost, $smtpPort, $smtpUser, $smtpPass, $email, $subject, $htmlBody, $headers, SMTP_USE_SSL);
         success(['player' => $player, 'email' => $email], '重置链接已发送到邮箱');
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         error('邮件发送失败：' . $e->getMessage());
     }
 }
@@ -2992,7 +2997,7 @@ function checkPendingWebRegisterRequests() {
     $db = getDB();
     try {
         $db->exec("SELECT id FROM web_register_requests LIMIT 0");
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         $db->exec("CREATE TABLE IF NOT EXISTS web_register_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player_name TEXT NOT NULL,
@@ -3006,10 +3011,13 @@ function checkPendingWebRegisterRequests() {
         )");
     }
 
-    // ★ 事务包裹DELETE+标记processing，防止database is locked
-    $db->exec("BEGIN IMMEDIATE");
+    // ★ 只读查询不需要BEGIN IMMEDIATE（避免与其它并发请求抢锁导致500）
+    // 清理过期请求 + 标记processing（非原子操作也OK，最坏情况是多拉一次）
     try {
-    $db->exec("DELETE FROM web_register_requests WHERE created_at < " . (time() - 1800));
+        $db->exec("DELETE FROM web_register_requests WHERE created_at < " . (time() - 1800));
+    } catch (\Throwable $e) {
+        @error_log("[checkPendingWebRegisterRequests] cleanup error: " . $e->getMessage());
+    }
 
     $stmt = $db->prepare("SELECT id, player_name, password_hash, salt, email, ip_address, created_at FROM web_register_requests WHERE status = 'pending' ORDER BY created_at ASC");
     $result = $stmt->execute();
@@ -3021,14 +3029,14 @@ function checkPendingWebRegisterRequests() {
         $ids[] = (int)$row['id'];
     }
 
-    // 使用事务标记为processing
+    // 标记为processing（允许失败，下次还会拉到）
     if (!empty($ids)) {
+        try {
             $idList = implode(',', $ids);
             $db->exec("UPDATE web_register_requests SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
-    }
-    $db->exec("COMMIT");
-    } catch (\Throwable $e) {
-        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
+        } catch (\Throwable $e) {
+            @error_log("[checkPendingWebRegisterRequests] mark processing error: " . $e->getMessage());
+        }
     }
 
     success(['requests' => $requests, 'count' => count($requests)]);
