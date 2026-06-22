@@ -60,6 +60,17 @@ public class WebManager {
     private String secretKey = "sdf1_web_comm_2026_ypshidifu";
     private int callbackPort = 9090; // PHP回调端口
 
+    // ★ 上次同步快照（用于检测变化，无变化静默）
+    private String lastOnlinePlayersHash = "";
+    private int lastOnlineCount = -1;
+    private int lastLoggedInCount = -1;
+    private String lastShopDataHash = "";
+    private String lastServiceProviderHash = "";
+    private String lastBondBalanceHash = "";
+    private String lastLandDataHash = "";
+    private String lastPushCredentialsHash = "";
+    private String lastUserRegistrationHash = "";
+
     // 嵌入式HTTP服务器（接收PHP回调）
     private java.net.ServerSocket callbackServer;
     private Thread callbackThread;
@@ -136,24 +147,21 @@ public class WebManager {
     private void startDbWorker() {
         dbWorkerRunning.set(true);
         dbWorkerThread = new Thread(() -> {
-            plugin.getLogger().info("[DB队列] 数据库写入队列已启动（单线程串行化）");
             while (dbWorkerRunning.get()) {
                 try {
-                    DbTask task = dbTaskQueue.take(); // 阻塞等待
+                    DbTask task = dbTaskQueue.take();
                     long waitMs = System.currentTimeMillis() - task.createdAt;
-                    if (waitMs > 3000) {
-                        plugin.getLogger().warning("[DB队列] 任务等待过久: " + task + " 等待=" + waitMs + "ms");
+                    if (waitMs > 10000) {
+                        plugin.getLogger().warning("[DB队列] 等待过久: " + task.name + " 等待=" + waitMs + "ms");
                     }
-                    plugin.getLogger().info("[DB队列] 执行: " + task);
                     task.run();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 } catch (Exception e) {
-                    plugin.getLogger().warning("[DB队列] 任务执行异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    plugin.getLogger().warning("[DB队列] 任务异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                 }
             }
-            plugin.getLogger().info("[DB队列] 数据库写入队列已停止");
         }, "sdf1-db-worker");
         dbWorkerThread.setDaemon(true);
         dbWorkerThread.start();
@@ -1816,24 +1824,16 @@ public class WebManager {
     public void syncShopData() {
         if (!enabled) return;
 
-        plugin.getLogger().info("[Web通信] 开始同步商城数据...");
-
         try {
             // 生成同步Token并注册到PHP
             String token = generateAndSyncToken("system", "sync");
             // 读取shop目录下的md文件
             File shopDir = new File(plugin.getDataFolder(), "shop");
-            if (!shopDir.exists()) {
-                plugin.getLogger().info("[Web通信] shop目录不存在，跳过同步");
-                return;
-            }
+            if (!shopDir.exists()) return;
 
             List<Map<String, Object>> items = new ArrayList<>();
             File[] mdFiles = shopDir.listFiles((d, n) -> n.endsWith(".md"));
-            if (mdFiles == null || mdFiles.length == 0) {
-                plugin.getLogger().info("[Web通信] 无商品文件");
-                return;
-            }
+            if (mdFiles == null || mdFiles.length == 0) return;
 
             for (File mdFile : mdFiles) {
                 String categoryName = mdFile.getName().replace(".md", "");
@@ -1841,10 +1841,12 @@ public class WebManager {
                 items.addAll(catItems);
             }
 
-            if (items.isEmpty()) {
-                plugin.getLogger().info("[Web通信] 解析后无商品");
-                return;
-            }
+            if (items.isEmpty()) return;
+
+            // ★ 无变化静默：对比商品数量和内容hash
+            String currentHash = items.size() + ":" + items.hashCode();
+            if (currentHash.equals(lastShopDataHash)) return; // 无变化，跳过
+            lastShopDataHash = currentHash;
 
             // 构建请求数据
             Map<String, Object> body = new LinkedHashMap<>();
@@ -1857,7 +1859,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
-                    plugin.getLogger().info("[Web通信] 商城同步成功: " + items.size() + "个商品");
+                    plugin.getLogger().info("[Web通信] 商城数据变更，已同步: " + items.size() + "个商品");
                 } else {
                     plugin.getLogger().warning("[Web通信] 商城同步失败: " + result.get("message"));
                 }
@@ -1883,10 +1885,12 @@ public class WebManager {
                 providers.add(p);
             }
 
-            if (providers.isEmpty()) {
-                plugin.getLogger().info("[Web通信] 无服务商，跳过同步");
-                return;
-            }
+            if (providers.isEmpty()) return;
+
+            // ★ 无变化静默
+            String currentHash = providers.size() + ":" + providers.hashCode();
+            if (currentHash.equals(lastServiceProviderHash)) return;
+            lastServiceProviderHash = currentHash;
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("data", providers);
@@ -1897,7 +1901,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
-                    plugin.getLogger().info("[Web通信] 服务商同步成功: " + providers.size() + "人");
+                    plugin.getLogger().info("[Web通信] 服务商数据变更，已同步: " + providers.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 服务商同步失败: " + result.get("message"));
                 }
@@ -2067,12 +2071,18 @@ public class WebManager {
         if (!enabled) return;
 
         try {
-            // 从AreaProtection获取领地数据
             AreaProtection areaProtect = plugin.getAreaProtection();
             if (areaProtect == null) return;
 
-            // 1. 同步领地列表
             List<Map<String, Object>> lands = areaProtect.getAllLandsForSync();
+            List<Map<String, Object>> shopItems = areaProtect.getPermissionShopForSync();
+
+            // ★ 无变化静默
+            String currentHash = lands.size() + ":" + lands.hashCode() + "|" + shopItems.size() + ":" + shopItems.hashCode();
+            if (currentHash.equals(lastLandDataHash)) return;
+            lastLandDataHash = currentHash;
+
+            // 1. 同步领地列表
             if (!lands.isEmpty()) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < lands.size(); i++) {
@@ -2101,7 +2111,6 @@ public class WebManager {
             }
 
             // 2. 同步权限商店数据
-            List<Map<String, Object>> shopItems = areaProtect.getPermissionShopForSync();
             if (!shopItems.isEmpty()) {
                 StringBuilder sb = new StringBuilder();
                 for (int i = 0; i < shopItems.size(); i++) {
@@ -2152,6 +2161,11 @@ public class WebManager {
                 bonds.put(name, bondMgr.getBonds(name));
             }
 
+            // ★ 无变化静默：对比债券数据hash
+            String currentHash = bonds.size() + ":" + bonds.hashCode();
+            if (currentHash.equals(lastBondBalanceHash)) return; // 无变化，跳过
+            lastBondBalanceHash = currentHash;
+
             String token = generateAndSyncToken("system", "sync");
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("bonds", bonds);
@@ -2161,7 +2175,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
-                    // 静默
+                    plugin.getLogger().info("[Web通信] 债券余额变更，已同步: " + bonds.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 债券同步失败: " + result.get("message"));
                 }
@@ -2200,11 +2214,9 @@ public class WebManager {
             body.put("transactions", txs);
 
             String response = httpPostWithToken("api/sync.php?action=sync_transactions", token, body);
-            plugin.getLogger().info("[Web交易同步] PHP响应: " + (response != null ? response.substring(0, Math.min(500, response.length())) : "null"));
             if (response != null) {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
-                plugin.getLogger().info("[Web交易同步] parseJson结果: success=" + result.get("success") + ", data类型=" + (result.get("data") != null ? result.get("data").getClass().getSimpleName() : "null") + ", message=" + result.get("message"));
                 if (Boolean.TRUE.equals(success)) {
                     // 更新已同步的最晚时间
                     long maxTime = lastSyncedTxTime;
@@ -2216,7 +2228,6 @@ public class WebManager {
                         lastSyncedTxTime = maxTime;
                         saveLastSyncedTxTime(maxTime);
                     }
-                    // data可能是Map（解析正确）也可能是String（parseJson解析嵌套JSON失败），安全处理
                     int synced = txs.size();
                     Object dataObj = result.get("data");
                     if (dataObj instanceof Map) {
@@ -2225,15 +2236,15 @@ public class WebManager {
                             synced = ((Number) syncedVal).intValue();
                         }
                     }
-                    plugin.getLogger().info("[Web交易同步] 同步了 " + synced + " 笔游戏交易到PHP端 (发送了" + txs.size() + "笔)");
+                    plugin.getLogger().info("[Web交易同步] 推送" + synced + "笔交易到PHP");
                 } else {
-                    plugin.getLogger().warning("[Web交易同步] 游戏交易同步失败: " + result.get("message"));
+                    plugin.getLogger().warning("[Web交易同步] 失败: " + result.get("message"));
                 }
             } else {
                 plugin.getLogger().warning("[Web交易同步] PHP响应为空");
             }
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 游戏交易同步异常: " + e.getMessage());
+            plugin.getLogger().warning("[Web交易同步] 异常: " + e.getMessage());
         }
     }
 
@@ -2297,6 +2308,11 @@ public class WebManager {
                 syncData.add(u);
             }
 
+            // ★ 无变化静默：对比用户数据hash
+            String currentHash = syncData.size() + ":" + syncData.hashCode();
+            if (currentHash.equals(lastUserRegistrationHash)) return; // 无变化，跳过
+            lastUserRegistrationHash = currentHash;
+
             // ★ 同步前不打印任何日志，只有失败时才打印warning
 
             String token = generateAndSyncToken("system", "sync");
@@ -2307,7 +2323,9 @@ public class WebManager {
             if (response != null) {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
-                if (!Boolean.TRUE.equals(success)) {
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.getLogger().info("[Web通信] 用户注册数据变更，已同步: " + syncData.size() + "人");
+                } else {
                     plugin.getLogger().warning("[Web通信] 用户注册同步失败: " + response);
                 }
             } else {
@@ -2401,7 +2419,17 @@ public class WebManager {
             }
 
             String playersJson = buildPlayersJsonArray(playersData);
-            plugin.getLogger().info("[Web通信] ★ syncOnlinePlayers: 在线=" + onlinePlayers.size() + " 已登录=" + loggedInPlayers.size() + " 推送=" + playersData.size() + " 玩家=" + loggedInPlayers);
+            // ★ 无变化静默：仅在在线人数或玩家列表变化时才打印日志
+            String currentHash = playersData.size() + ":" + loggedInPlayers;
+            boolean changed = (onlinePlayers.size() != lastOnlineCount)
+                    || (loggedInPlayers.size() != lastLoggedInCount)
+                    || !currentHash.equals(lastOnlinePlayersHash);
+            if (changed) {
+                plugin.getLogger().info("[Web通信] ★ 在线玩家变化: 在线=" + onlinePlayers.size() + " 已登录=" + loggedInPlayers.size() + " 玩家=" + loggedInPlayers);
+                lastOnlinePlayersHash = currentHash;
+                lastOnlineCount = onlinePlayers.size();
+                lastLoggedInCount = loggedInPlayers.size();
+            }
 
             // ★ 策略：优先GET（与push_player_login_status一致），确保数据到达PHP
             // GET请求更可靠，不会被Web服务器/WAF拦截POST body
@@ -2430,7 +2458,9 @@ public class WebManager {
             conn.disconnect();
 
             if (code == 200 && response.contains("\"success\":true")) {
-                plugin.getLogger().info("[Web通信] ★ 在线玩家同步成功(GET): " + playersData.size() + "人");
+                if (changed) {
+                    plugin.getLogger().info("[Web通信] ★ 在线玩家同步成功: " + playersData.size() + "人");
+                }
             } else {
                 plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): HTTP " + code + " - " + response.substring(0, Math.min(300, response.length())));
                 // GET失败时回退到POST
@@ -2754,6 +2784,11 @@ public class WebManager {
 
             if (credentials.isEmpty()) return;
 
+            // ★ 无变化静默
+            String currentHash = credentials.size() + ":" + credentials.hashCode();
+            if (currentHash.equals(lastPushCredentialsHash)) return;
+            lastPushCredentialsHash = currentHash;
+
             String secretKey = this.secretKey;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("secret", secretKey);
@@ -2765,7 +2800,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
-                    plugin.getLogger().info("[Web通信] 密码凭证同步成功: " + credentials.size() + "人");
+                    plugin.getLogger().info("[Web通信] 密码凭证变更，已同步: " + credentials.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 密码凭证同步失败: " + response);
                 }
