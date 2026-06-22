@@ -88,6 +88,9 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "last_login_ip",
                     "TEXT DEFAULT ''");
+            // UI偏好：1=CLI(默认), 0=GUI
+            safeAdd(st, "ui_mode",
+                    "INTEGER DEFAULT 1");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
@@ -279,6 +282,47 @@ public class DatabaseManager {
             if (db != null && !db.isClosed())
                 db.close();
         } catch (Exception ignored) {
+        }
+    }
+
+    // ==================== UI偏好 ====================
+
+    /**
+     * 获取玩家UI偏好
+     * @return 1=CLI(默认), 0=GUI
+     */
+    public int getUiMode(String playerName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT ui_mode FROM users WHERE player_name=?");
+            ps.setString(1, playerName);
+            ResultSet rs = ps.executeQuery();
+            int mode = 1; // 默认CLI
+            if (rs.next()) {
+                mode = rs.getInt("ui_mode");
+            }
+            rs.close();
+            ps.close();
+            return mode;
+        } catch (SQLException e) {
+            return 1; // 默认CLI
+        }
+    }
+
+    /**
+     * 设置玩家UI偏好
+     * @param mode 1=CLI, 0=GUI
+     */
+    public void setUiMode(String playerName, int mode) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE users SET ui_mode=? WHERE player_name=?");
+            ps.setInt(1, mode);
+            ps.setString(2, playerName);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            // 静默
         }
     }
 // ==================== 菜单图标 ====================

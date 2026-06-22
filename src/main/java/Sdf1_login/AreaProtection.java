@@ -1151,6 +1151,9 @@ public class AreaProtection implements Listener {
                 // 创建迁移完成标记文件，防止重复迁移
                 File marker = new File(rootDir, ".db_migrated");
                 marker.createNewFile();
+                // 创建owner待分配标记文件
+                File ownerMarker = new File(rootDir, ".need_owner_assign");
+                ownerMarker.createNewFile();
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[防护] 迁移过程异常: " + e.getMessage());
@@ -2103,6 +2106,33 @@ public class AreaProtection implements Listener {
         }
         // 控制台视为管理员
         return true;
+    }
+
+    /**
+     * 自动将无owner的txt迁移领地分配给第一个操作的管理员
+     */
+    private void assignUnownedLandsToAdmin(Player admin) {
+        File ownerMarker = new File(rootDir, ".need_owner_assign");
+        if (!ownerMarker.exists()) return;
+
+        String adminName = admin.getName();
+        int assigned = 0;
+
+        for (AreaConfig ac : areas.values()) {
+            if (ac.owner == null || ac.owner.isEmpty()) {
+                ac.owner = adminName;
+                saveAreaToDb(ac);
+                assigned++;
+            }
+        }
+
+        // 删除标记文件
+        ownerMarker.delete();
+
+        if (assigned > 0) {
+            admin.sendMessage("§a§l[防护] 已将 " + assigned + " 个无主领地分配给你");
+            plugin.getLogger().info("[防护] txt迁移领地已分配给管理员: " + adminName + " 共" + assigned + "个");
+        }
     }
 
     private boolean isItemBlacklisted(String itemId,
@@ -3951,11 +3981,12 @@ public class AreaProtection implements Listener {
                 "add", "remove", "additem", "removeitem",
                 "addname", "removename", "listname",
                 "addwhite", "removewhite", "listwhite",
-                "list", "listitem", "创建", "删除", "重载",
-                "工具", "expand", "contraction",
+                "list", "listitem", "创建", "create", "删除", "delete", "重载", "reload",
+                "工具", "wand", "expand", "contraction",
                 "on", "off", "tempon", "modeexempt",
                 "info", "setowner", "addvisitor", "removevisitor",
-                "listvisitors", "transfer", "shop"
+                "listvisitors", "transfer", "shop",
+                "menu", "菜单", "sdf1debug", "testclear"
         ));
 
         String first = original[0].toLowerCase();
@@ -3996,6 +4027,11 @@ public class AreaProtection implements Listener {
             return true;
         }
         String sub = args[0].toLowerCase();
+
+        // ★ 管理员操作时，自动分配无owner的领地
+        if (sender instanceof Player && isAreaAdmin(sender)) {
+            assignUnownedLandsToAdmin((Player) sender);
+        }
 // ===== 诊断命令 =====
         if (sub.equals("sdf1debug")) {
             if (!(sender instanceof Player)) {

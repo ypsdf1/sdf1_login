@@ -420,7 +420,7 @@ public class AreaGUIManager implements Listener {
                 p.sendMessage("§7权限模板功能开发中...");
             } else if (raw == 40) {
                 p.closeInventory();
-                p.sendMessage("§a文档链接: https://docs.sdf1.com/area-protection");
+                p.sendMessage("§a文档链接: https://wiki.ypshidifu.cn");
             } else if (raw == 49) {
                 plugin.getGui().openMain(p);
             }
