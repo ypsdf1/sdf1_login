@@ -45,6 +45,13 @@ import org.bukkit.entity.Item;
 
 public class AreaProtection implements Listener {
 
+    // 三级权限枚举
+    public enum PermissionLevel {
+        ADMIN,    // 管理员：可以做所有事
+        OWNER,    // 领地所有者：可以管理自己的领地
+        VISITOR   // 访客：只能在被授权的领地内活动
+    }
+
     private final Main plugin;
     public List<String[]> giveEffects = new ArrayList<>();
     private final Map<UUID, Set<String>> playerAreas
@@ -360,6 +367,7 @@ public class AreaProtection implements Listener {
         // 初始化
         initDatabase();
         writeDefaultConfig();
+        migrateTxtToDb(); // ★ 迁移txt文件到数据库
         loadAllAreas();
         loadWhitelists();
         recoverPendingEffects();
@@ -802,20 +810,120 @@ public class AreaProtection implements Listener {
 
     public void loadAllAreas() {
         areas.clear();
-        File[] files = rootDir.listFiles(
-                (File d, String n) -> n.endsWith(".txt"));
-        if (files == null) return;
-        for (File f : files) {
-            try {
-                String name = f.getName()
-                        .replace(".txt", "");
-                AreaConfig ac = parseArea(name, f);
-                areas.put(name, ac);
-            } catch (Exception e) {
-                plugin.getLogger().warning(
-                        "[防护] 加载失败: " + f.getName());
+
+        // ★ 优先从数据库加载
+        loadAreasFromDb();
+
+        // ★ 兼容：如果没有从DB加载到数据，回退到txt（未迁移场景）
+        if (areas.isEmpty()) {
+            File[] files = rootDir.listFiles(
+                    (File d, String n) -> n.endsWith(".txt"));
+            if (files != null) {
+                for (File f : files) {
+                    try {
+                        String name = f.getName().replace(".txt", "");
+                        AreaConfig ac = parseArea(name, f);
+                        areas.put(name, ac);
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[防护] 加载失败: " + f.getName());
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * 从数据库加载所有领地配置
+     */
+    private void loadAreasFromDb() {
+        if (dbConnection == null) return;
+        try {
+            Statement stmt = dbConnection.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT * FROM area_lands");
+            int count = 0;
+            while (rs.next()) {
+                AreaConfig ac = new AreaConfig();
+                ac.name = rs.getString("name");
+                ac.world = rs.getString("world");
+                ac.x1 = rs.getInt("x1");
+                ac.z1 = rs.getInt("z1");
+                ac.x2 = rs.getInt("x2");
+                ac.z2 = rs.getInt("z2");
+                ac.yMin = rs.getInt("y_min");
+                ac.yMax = rs.getInt("y_max");
+                ac.confiscateItems = splitToList(rs.getString("confiscate_items"));
+                ac.denyUseItems = splitToList(rs.getString("deny_use_items"));
+                ac.giveEffects = parseEffectsString(rs.getString("give_effects"));
+                ac.clearEffects = splitToList(rs.getString("clear_effects"));
+                ac.clearAllBadEffects = rs.getInt("clear_all_bad") == 1;
+                ac.punishCommands = splitToList(rs.getString("punish_commands"));
+                ac.denyBlockPlace = rs.getInt("deny_block_place") == 1;
+                ac.denyBlockBreak = rs.getInt("deny_block_break") == 1;
+                ac.denyPVP = rs.getInt("deny_pvp") == 1;
+                ac.denyFallDamage = rs.getInt("deny_fall_damage") == 1;
+                ac.denyHunger = rs.getInt("deny_hunger") == 1;
+                ac.denyAllDamage = rs.getInt("deny_all_damage") == 1;
+                ac.denyDrop = rs.getInt("deny_drop") == 1;
+                ac.denyMount = rs.getInt("deny_mount") == 1;
+                ac.denyEnderPearl = rs.getInt("deny_ender_pearl") == 1;
+                ac.denyBow = rs.getInt("deny_bow") == 1;
+                ac.denyPotion = rs.getInt("deny_potion") == 1;
+                ac.denyExplosion = rs.getInt("deny_explosion") == 1;
+                ac.denyRaid = rs.getInt("deny_raid") == 1;
+                ac.denyFireSpread = rs.getInt("deny_fire_spread") == 1;
+                ac.denyAllEffects = rs.getInt("deny_all_effects") == 1;
+                ac.denyItemFrame = rs.getInt("deny_item_frame") == 1;
+                ac.peaceMode = rs.getInt("peace_mode") == 1;
+                ac.peaceModeDuration = rs.getInt("peace_mode_duration") * 1000; // 转毫秒
+                ac.peaceWhitelist = new HashSet<>(splitToList(rs.getString("peace_whitelist")));
+                String gm = rs.getString("enforce_game_mode");
+                ac.enforceGameMode = (gm != null && !gm.isEmpty()) ? gm : null;
+                ac.modeExempt = new HashSet<>(splitToList(rs.getString("mode_exempt")));
+                ac.enterMsg = rs.getString("enter_msg");
+                ac.leaveMsg = rs.getString("leave_msg");
+                ac.confiscateMsg = rs.getString("confiscate_msg");
+                ac.enableAnnounce = rs.getInt("enable_announce") == 1;
+                ac.announceTemplate = rs.getString("announce_template");
+                areas.put(ac.name, ac);
+                count++;
+            }
+            rs.close();
+            stmt.close();
+            if (count > 0) {
+                plugin.getLogger().info("[防护] 从数据库加载" + count + "个领地");
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 从DB加载领地失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 逗号分隔字符串 → List
+     */
+    private List<String> splitToList(String s) {
+        List<String> result = new ArrayList<>();
+        if (s == null || s.isEmpty()) return result;
+        for (String item : s.split(",")) {
+            String trimmed = item.trim();
+            if (!trimmed.isEmpty()) result.add(trimmed);
+        }
+        return result;
+    }
+
+    /**
+     * 解析效果存储字符串 → List<String[]>
+     * 格式: 效果名:等级:秒数|效果名:等级:秒数
+     */
+    private List<String[]> parseEffectsString(String s) {
+        List<String[]> result = new ArrayList<>();
+        if (s == null || s.isEmpty()) return result;
+        for (String part : s.split("\\|")) {
+            String[] pieces = part.split(":");
+            if (pieces.length >= 3) {
+                result.add(new String[]{pieces[0], pieces[1], pieces[2]});
+            }
+        }
+        return result;
     }
 
 
@@ -824,6 +932,8 @@ public class AreaProtection implements Listener {
             dbConnection = DriverManager.getConnection(
                     "jdbc:sqlite:" + newDbFile.getAbsolutePath());
             Statement stmt = dbConnection.createStatement();
+
+            // 效果记录表（原有）
             stmt.executeUpdate(
                     "CREATE TABLE IF NOT EXISTS player_effects ("
                             + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -837,6 +947,90 @@ public class AreaProtection implements Listener {
             stmt.executeUpdate(
                     "CREATE INDEX IF NOT EXISTS idx_uuid "
                             + "ON player_effects(uuid)");
+
+            // ★ 领地主表（替代txt文件存储）
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS area_lands ("
+                            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            + "name TEXT UNIQUE NOT NULL,"
+                            + "owner TEXT NOT NULL DEFAULT '',"
+                            + "world TEXT NOT NULL,"
+                            + "x1 INTEGER NOT NULL,"
+                            + "z1 INTEGER NOT NULL,"
+                            + "x2 INTEGER NOT NULL,"
+                            + "z2 INTEGER NOT NULL,"
+                            + "y_min INTEGER DEFAULT 0,"
+                            + "y_max INTEGER DEFAULT 255,"
+                            + "confiscate_items TEXT DEFAULT '',"
+                            + "deny_use_items TEXT DEFAULT '',"
+                            + "give_effects TEXT DEFAULT '',"
+                            + "clear_effects TEXT DEFAULT '',"
+                            + "clear_all_bad INTEGER DEFAULT 0,"
+                            + "punish_commands TEXT DEFAULT '',"
+                            + "deny_block_place INTEGER DEFAULT 0,"
+                            + "deny_block_break INTEGER DEFAULT 0,"
+                            + "deny_pvp INTEGER DEFAULT 0,"
+                            + "deny_fall_damage INTEGER DEFAULT 0,"
+                            + "deny_hunger INTEGER DEFAULT 0,"
+                            + "deny_all_damage INTEGER DEFAULT 0,"
+                            + "deny_drop INTEGER DEFAULT 0,"
+                            + "deny_mount INTEGER DEFAULT 0,"
+                            + "deny_ender_pearl INTEGER DEFAULT 0,"
+                            + "deny_bow INTEGER DEFAULT 0,"
+                            + "deny_potion INTEGER DEFAULT 0,"
+                            + "deny_explosion INTEGER DEFAULT 0,"
+                            + "deny_raid INTEGER DEFAULT 0,"
+                            + "deny_fire_spread INTEGER DEFAULT 0,"
+                            + "deny_all_effects INTEGER DEFAULT 0,"
+                            + "deny_item_frame INTEGER DEFAULT 0,"
+                            + "peace_mode INTEGER DEFAULT 0,"
+                            + "peace_mode_duration INTEGER DEFAULT 5,"
+                            + "peace_whitelist TEXT DEFAULT '',"
+                            + "enforce_game_mode TEXT DEFAULT '',"
+                            + "mode_exempt TEXT DEFAULT '',"
+                            + "enter_msg TEXT DEFAULT '',"
+                            + "leave_msg TEXT DEFAULT '',"
+                            + "confiscate_msg TEXT DEFAULT '',"
+                            + "enable_announce INTEGER DEFAULT 0,"
+                            + "announce_template TEXT DEFAULT '',"
+                            + "txt_content TEXT DEFAULT '',"
+                            + "created_at INTEGER NOT NULL)");
+
+            // ★ 领地权限表（管理员/用户/访客三级权限）
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS area_land_permissions ("
+                            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            + "land_id INTEGER NOT NULL,"
+                            + "player_name TEXT NOT NULL,"
+                            + "role TEXT NOT NULL DEFAULT 'visitor',"
+                            + "permissions TEXT DEFAULT '',"
+                            + "granted_at INTEGER NOT NULL,"
+                            + "expires_at INTEGER DEFAULT 0,"
+                            + "UNIQUE(land_id, player_name))");
+            stmt.executeUpdate(
+                    "CREATE INDEX IF NOT EXISTS idx_land_id "
+                    + "ON area_land_permissions(land_id)");
+
+            // ★ 权限商店表
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS area_permission_shop ("
+                            + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                            + "land_id INTEGER NOT NULL,"
+                            + "seller TEXT NOT NULL,"
+                            + "permission TEXT NOT NULL,"
+                            + "price INTEGER NOT NULL,"
+                            + "duration INTEGER NOT NULL DEFAULT 86400,"
+                            + "created_at INTEGER NOT NULL,"
+                            + "status TEXT DEFAULT 'active',"
+                            + "buyer TEXT DEFAULT '',"
+                            + "bought_at INTEGER DEFAULT 0)");
+
+            // ★ 全局配置表
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS area_config ("
+                            + "key TEXT PRIMARY KEY,"
+                            + "value TEXT NOT NULL)");
+
             stmt.close();
         } catch (SQLException e) {
             plugin.getLogger().severe(
@@ -845,6 +1039,137 @@ public class AreaProtection implements Listener {
         }
     }
 
+
+// ==================== txt→db 迁移 ====================
+
+    /**
+     * 将现有的txt文件区域配置迁移到数据库
+     * 只在数据库中没有记录时执行（首次升级）
+     */
+    private void migrateTxtToDb() {
+        try {
+            // 检查数据库是否已有领地数据
+            Statement checkStmt = dbConnection.createStatement();
+            ResultSet rs = checkStmt.executeQuery("SELECT COUNT(*) FROM area_lands");
+            int dbCount = 0;
+            if (rs.next()) dbCount = rs.getInt(1);
+            rs.close();
+            checkStmt.close();
+
+            // 如果数据库已有数据，跳过迁移
+            if (dbCount > 0) {
+                plugin.getLogger().info("[防护] 数据库已有" + dbCount + "个领地，跳过迁移");
+                return;
+            }
+
+            // 扫描txt文件
+            File[] txtFiles = rootDir.listFiles(
+                    (File d, String n) -> n.endsWith(".txt"));
+            if (txtFiles == null || txtFiles.length == 0) {
+                plugin.getLogger().info("[防护] 无txt文件需要迁移");
+                return;
+            }
+
+            int migrated = 0;
+            PreparedStatement insertStmt = dbConnection.prepareStatement(
+                    "INSERT INTO area_lands (name, owner, world, x1, z1, x2, z2, y_min, y_max, "
+                    + "confiscate_items, deny_use_items, give_effects, clear_effects, clear_all_bad, "
+                    + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
+                    + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
+                    + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
+                    + "deny_all_effects, deny_item_frame, peace_mode, peace_mode_duration, "
+                    + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
+                    + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+            for (File f : txtFiles) {
+                try {
+                    String name = f.getName().replace(".txt", "");
+                    // 读取原始txt内容
+                    String txtContent = new String(
+                            java.nio.file.Files.readAllBytes(f.toPath()),
+                            StandardCharsets.UTF_8);
+
+                    // 解析AreaConfig
+                    AreaConfig ac = parseArea(name, f);
+
+                    // 写入数据库
+                    insertStmt.setString(1, name);
+                    insertStmt.setString(2, ""); // owner（txt迁移无owner）
+                    insertStmt.setString(3, ac.world);
+                    insertStmt.setInt(4, ac.x1);
+                    insertStmt.setInt(5, ac.z1);
+                    insertStmt.setInt(6, ac.x2);
+                    insertStmt.setInt(7, ac.z2);
+                    insertStmt.setInt(8, ac.yMin);
+                    insertStmt.setInt(9, ac.yMax);
+                    insertStmt.setString(10, String.join(",", ac.confiscateItems));
+                    insertStmt.setString(11, String.join(",", ac.denyUseItems));
+                    insertStmt.setString(12, effectsToString(ac.giveEffects));
+                    insertStmt.setString(13, String.join(",", ac.clearEffects));
+                    insertStmt.setInt(14, ac.clearAllBadEffects ? 1 : 0);
+                    insertStmt.setString(15, String.join("|", ac.punishCommands));
+                    insertStmt.setInt(16, ac.denyBlockPlace ? 1 : 0);
+                    insertStmt.setInt(17, ac.denyBlockBreak ? 1 : 0);
+                    insertStmt.setInt(18, ac.denyPVP ? 1 : 0);
+                    insertStmt.setInt(19, ac.denyFallDamage ? 1 : 0);
+                    insertStmt.setInt(20, ac.denyHunger ? 1 : 0);
+                    insertStmt.setInt(21, ac.denyAllDamage ? 1 : 0);
+                    insertStmt.setInt(22, ac.denyDrop ? 1 : 0);
+                    insertStmt.setInt(23, ac.denyMount ? 1 : 0);
+                    insertStmt.setInt(24, ac.denyEnderPearl ? 1 : 0);
+                    insertStmt.setInt(25, ac.denyBow ? 1 : 0);
+                    insertStmt.setInt(26, ac.denyPotion ? 1 : 0);
+                    insertStmt.setInt(27, ac.denyExplosion ? 1 : 0);
+                    insertStmt.setInt(28, ac.denyRaid ? 1 : 0);
+                    insertStmt.setInt(29, ac.denyFireSpread ? 1 : 0);
+                    insertStmt.setInt(30, ac.denyAllEffects ? 1 : 0);
+                    insertStmt.setInt(31, ac.denyItemFrame ? 1 : 0);
+                    insertStmt.setInt(32, ac.peaceMode ? 1 : 0);
+                    insertStmt.setInt(33, ac.peaceModeDuration / 1000); // 存秒
+                    insertStmt.setString(34, String.join(",", ac.peaceWhitelist));
+                    insertStmt.setString(35, ac.enforceGameMode != null ? ac.enforceGameMode : "");
+                    insertStmt.setString(36, String.join(",", ac.modeExempt));
+                    insertStmt.setString(37, ac.enterMsg);
+                    insertStmt.setString(38, ac.leaveMsg);
+                    insertStmt.setString(39, ac.confiscateMsg);
+                    insertStmt.setInt(40, ac.enableAnnounce ? 1 : 0);
+                    insertStmt.setString(41, ac.announceTemplate);
+                    insertStmt.setString(42, txtContent);
+                    insertStmt.setLong(43, System.currentTimeMillis() / 1000);
+                    insertStmt.executeUpdate();
+                    migrated++;
+                    plugin.getLogger().info("[防护] 迁移txt→db: " + name);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[防护] 迁移失败: " + f.getName() + " - " + e.getMessage());
+                }
+            }
+            insertStmt.close();
+
+            if (migrated > 0) {
+                plugin.getLogger().info("[防护] ★ 迁移完成，共" + migrated + "个区域已写入数据库");
+                // 创建迁移完成标记文件，防止重复迁移
+                File marker = new File(rootDir, ".db_migrated");
+                marker.createNewFile();
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 迁移过程异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 将效果列表转为存储字符串
+     * 格式: 效果名:等级:秒数|效果名:等级:秒数
+     */
+    private String effectsToString(List<String[]> effects) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < effects.size(); i++) {
+            String[] e = effects.get(i);
+            if (i > 0) sb.append("|");
+            sb.append(e[0]).append(":").append(e[1]).append(":").append(e[2]);
+        }
+        return sb.toString();
+    }
 
 // ==================== 效果名称中英文映射 ====================
 
@@ -1150,10 +1475,24 @@ public class AreaProtection implements Listener {
                             effName.length() - 2);
                 if (!effName.isEmpty())
                     ac.clearEffects.add(effName);
+            } else if (line.contains("和平模式时间")) {
+                ac.peaceMode = true; // 自动开启和平模式
+                int colonIdx = line.indexOf(':');
+                if (colonIdx < 0) colonIdx = line.indexOf('：');
+                if (colonIdx >= 0) {
+                    try {
+                        int seconds = Integer.parseInt(line.substring(colonIdx + 1).trim());
+                        // 最大1小时=3600秒，最小1秒
+                        seconds = Math.max(1, Math.min(3600, seconds));
+                        ac.peaceModeDuration = seconds * 1000;
+                        plugin.getLogger().info("[解析] 和平模式时间=" + seconds + "秒");
+                    } catch (NumberFormatException ignored) {}
+                }
             } else if (line.contains("和平模式")
                     && !line.contains("白名单")
                     && !line.contains("定时")
-                    && !line.contains("开关")) {
+                    && !line.contains("开关")
+                    && !line.contains("时间")) {
                 ac.peaceMode = true;
                 plugin.getLogger().info("[解析] 和平模式已识别");
 
@@ -1391,7 +1730,7 @@ public class AreaProtection implements Listener {
 
         protectedEntities.put(
                 entity.getUniqueId(),
-                System.currentTimeMillis() + 5000);
+                System.currentTimeMillis() + ac.peaceModeDuration);
 
        /* plugin.getLogger().info("[和平] "
                 + entity.getType().name()
@@ -1639,6 +1978,57 @@ public class AreaProtection implements Listener {
                 && z >= minZ && z <= maxZ;
     }
 
+    /**
+     * 获取玩家在指定领地的权限级别
+     */
+    public PermissionLevel getPermissionLevel(Player player, AreaConfig ac) {
+        // 1. 管理员权限
+        if (isAreaAdmin(player)) {
+            return PermissionLevel.ADMIN;
+        }
+
+        // 2. 领地所有者权限
+        if (ac != null && ac.owner != null && !ac.owner.isEmpty()) {
+            if (player.getName().equalsIgnoreCase(ac.owner)) {
+                return PermissionLevel.OWNER;
+            }
+        }
+
+        // 3. 访客权限（白名单 + 数据库购买权限）
+        if (isPlayerWhitelisted(player.getName(), ac)) {
+            return PermissionLevel.VISITOR;
+        }
+
+        // 4. 数据库购买的访客权限（未过期）
+        if (hasValidVisitorPermission(player, ac)) {
+            return PermissionLevel.VISITOR;
+        }
+
+        // 5. 无权限
+        return null;
+    }
+
+    /**
+     * 检查玩家在领地是否有足够权限执行操作
+     * @param requiredLevel 所需的最低权限级别
+     * @return true如果有足够权限
+     */
+    public boolean hasPermission(Player player, AreaConfig ac, PermissionLevel requiredLevel) {
+        PermissionLevel playerLevel = getPermissionLevel(player, ac);
+        if (playerLevel == null) return false;
+
+        // ADMIN拥有所有权限
+        if (playerLevel == PermissionLevel.ADMIN) return true;
+
+        // OWNER可以执行VISITOR能执行的操作
+        if (playerLevel == PermissionLevel.OWNER) {
+            return requiredLevel != PermissionLevel.ADMIN;
+        }
+
+        // VISITOR只能执行VISITOR级别的操作
+        return requiredLevel == PermissionLevel.VISITOR;
+    }
+
     // ===== 统一白名单检查（供所有事件处理器使用）=====
 
     /**
@@ -1677,6 +2067,42 @@ public class AreaProtection implements Listener {
                 areaPlayerWhitelist.get(areaName);
         return areaList != null
                 && areaList.contains(player.toLowerCase());
+    }
+
+    /**
+     * 检查玩家是否为区域防护管理员
+     * 支持TAG和OP两种模式（不共存，按配置文件中的顺序优先）
+     * 全局管理员不受访客权限限制
+     */
+    public boolean isAreaAdmin(Player player) {
+        ConfigManager cfg = plugin.getConfigMgr();
+        if (cfg == null) return player.isOp();
+
+        String mode = cfg.areaProtectAdminMode;
+        if ("op".equals(mode)) {
+            // OP模式：只有OP是管理员
+            return player.isOp();
+        } else {
+            // TAG模式（默认）：有指定Tag的玩家是管理员
+            String tag = cfg.areaProtectAdminTag;
+            if (tag == null || tag.isEmpty()) return player.isOp();
+            String playerName = player.getName();
+            // 检查玩家是否拥有该权限节点（作为Tag的替代方案）
+            // 如果没有权限系统，直接检查名字是否匹配
+            return player.hasPermission("area.admin")
+                    || player.isOp(); // OP始终是管理员（fallback）
+        }
+    }
+
+    /**
+     * 检查CommandSender是否为区域防护管理员（支持控制台）
+     */
+    public boolean isAreaAdmin(CommandSender sender) {
+        if (sender instanceof Player) {
+            return isAreaAdmin((Player) sender);
+        }
+        // 控制台视为管理员
+        return true;
     }
 
     private boolean isItemBlacklisted(String itemId,
@@ -2355,20 +2781,12 @@ public class AreaProtection implements Listener {
      */
     public boolean isExemptFromConfiscation(
             Player p, String areaName) {
-        String name = p.getName();
-
-        if (globalPlayerWhitelist.contains(name))
-            return true;
-
-        Set<String> areaWl =
-                areaPlayerWhitelist.get(areaName);
-        if (areaWl != null && areaWl.contains(name))
-            return true;
-
         AreaConfig ac = areas.get(areaName);
-        if (ac != null && ac.modeExempt.contains(name))
+        // 管理员和领地所有者免检
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return true;
+        // modeExempt名单也免检
+        if (ac != null && ac.modeExempt.contains(p.getName()))
             return true;
-
         return false;
     }
 
@@ -2413,7 +2831,7 @@ public class AreaProtection implements Listener {
         }
 
         // 白名单检查（最先执行）
-        if (isPlayerWhitelisted(p.getName(), ac)) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
         // 游戏模式切换（只对非白名单玩家）
         if (ac.enforceGameMode != null) {
@@ -2919,8 +3337,8 @@ public class AreaProtection implements Listener {
             banRaidMobs(p, ac);
         }
 
-        // 全白或区白 → 跳过所有限制性规则（包括没收）
-        if (isPlayerWhitelisted(p.getName(), ac)) return;
+        // 所有者或管理员 → 跳过所有限制性规则（包括没收）
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
         handleConfiscate(p, ac);
     }
@@ -3072,10 +3490,12 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && ac.denyBlockPlace
-                && !isPlayerWhitelisted(p.getName(), ac)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止放置方块");
+        if (ac != null && ac.denyBlockPlace) {
+            // 访客禁止放置方块，所有者和管理员允许
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止放置方块");
+            }
         }
     }
 
@@ -3087,10 +3507,12 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && ac.denyBlockBreak
-                && !isPlayerWhitelisted(p.getName(), ac)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
+        if (ac != null && ac.denyBlockBreak) {
+            // 访客禁止破坏方块，所有者和管理员允许
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
+            }
         }
     }
 
@@ -3123,10 +3545,12 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.denyPVP
-                && !isPlayerWhitelisted(p.getName(), ac)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止PVP");
+        if (ac != null && ac.denyPVP) {
+            // 访客禁止PVP，所有者和管理员允许
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止PVP");
+            }
         }
     }
 
@@ -3154,10 +3578,11 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.denyDrop
-                && !isPlayerWhitelisted(p.getName(), ac)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
+        if (ac != null && ac.denyDrop) {
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
+            }
         }
     }
 
@@ -3252,15 +3677,17 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        // 白名单跳过
-        if (isPlayerWhitelisted(p.getName(), ac)) return;
-
-        // 禁止使用物品
-        String typeId = hand.getType().name();
-        if (ac.denyUseItems.contains(typeId)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止使用此物品");
-            return;
+        // 所有者+管理员跳过禁止使用物品检查
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) {
+            // 管理员和所有者不受限制
+        } else {
+            // 禁止使用物品（访客级别检查）
+            String typeId = hand.getType().name();
+            if (ac.denyUseItems.contains(typeId)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止使用此物品");
+                return;
+            }
         }
 
         // 没收检查
@@ -3356,10 +3783,11 @@ public class AreaProtection implements Listener {
                 shooter.getLocation().getBlockX(),
                 shooter.getLocation().getBlockY(),
                 shooter.getLocation().getBlockZ());
-        if (ac != null && ac.denyPotion
-                && !isPlayerWhitelisted(shooter.getName(), ac)) {
-            e.setCancelled(true);
-            shooter.sendMessage("§c§l[区域防护] §f禁止使用药水");
+        if (ac != null && ac.denyPotion) {
+            if (!hasPermission(shooter, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                shooter.sendMessage("§c§l[区域防护] §f禁止使用药水");
+            }
         }
     }
 
@@ -3457,7 +3885,9 @@ public class AreaProtection implements Listener {
                 "addwhite", "removewhite", "listwhite",
                 "list", "listitem", "创建", "删除", "重载",
                 "工具", "expand", "contraction",
-                "on", "off", "tempon", "modeexempt"
+                "on", "off", "tempon", "modeexempt",
+                "info", "setowner", "addvisitor", "removevisitor",
+                "listvisitors", "transfer", "shop"
         ));
 
         String first = original[0].toLowerCase();
@@ -3604,13 +4034,29 @@ public class AreaProtection implements Listener {
                 return true;
             }
             String areaName = args[1];
-            File f = new File(rootDir, areaName + ".txt");
-            if (f.exists()) {
+            // 检查重名（数据库+txt）
+            if (areas.containsKey(areaName)) {
                 p.sendMessage("§c区域已存在");
                 return true;
             }
             Location l1 = pos1.get(u);
             Location l2 = pos2.get(u);
+
+            // ★ 创建AreaConfig并保存到数据库
+            AreaConfig ac = new AreaConfig();
+            ac.name = areaName;
+            ac.owner = p.getName();
+            ac.world = l1.getWorld().getName();
+            ac.x1 = l1.getBlockX();
+            ac.z1 = l1.getBlockZ();
+            ac.x2 = l2.getBlockX();
+            ac.z2 = l2.getBlockZ();
+            ac.yMin = 0;
+            ac.yMax = 255;
+            saveAreaToDb(ac);
+
+            // 兼容：同时创建txt文件
+            File f = new File(rootDir, areaName + ".txt");
             try {
                 PrintWriter pw = new PrintWriter(
                         new OutputStreamWriter(
@@ -3632,12 +4078,11 @@ public class AreaProtection implements Listener {
                 pw.println("# 进入提示: 欢迎来到保护区");
                 pw.println("# 离开提示: 已离开保护区");
                 pw.close();
-                p.sendMessage("§a§l[防护] §f区域 "
-                        + areaName + " 已创建");
-                loadAllAreas();
-            } catch (IOException ex) {
-                p.sendMessage("§c创建失败");
-            }
+            } catch (IOException ignored) {}
+
+            p.sendMessage("§a§l[防护] §f区域 "
+                    + areaName + " 已创建 (owner: " + p.getName() + ")");
+            loadAllAreas();
             return true;
         }
 
@@ -4063,14 +4508,17 @@ public class AreaProtection implements Listener {
                         "§e用法: /protect 删除 <名>");
                 return true;
             }
-            File f = new File(rootDir, args[1] + ".txt");
+            String areaName = args[1];
+            // 从数据库删除
+            deleteAreaFromDb(areaName);
+            // 从内存映射移除
+            areas.remove(areaName);
+            // 删除txt文件（如果存在）
+            File f = new File(rootDir, areaName + ".txt");
             if (f.exists()) {
                 f.delete();
-                areas.remove(args[1]);
-                sender.sendMessage("§a已删除: " + args[1]);
-            } else {
-                sender.sendMessage("§c不存在: " + args[1]);
             }
+            sender.sendMessage("§a已删除: " + areaName);
             return true;
         }
 
@@ -4217,6 +4665,486 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // ===== shop 权限商店 =====
+        if (sub.equals("shop")) {
+            String shopAction = args.length >= 2 ? args[1] : "";
+            // shop create <领地> <价格> [时长秒] — 所有者创建权限售卖
+            if (shopAction.equals("create")) {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§c仅玩家可用");
+                    return true;
+                }
+                Player p = (Player) sender;
+                if (args.length < 4) {
+                    sender.sendMessage("§e用法: /protect shop create <领地> <价格> [时长秒]");
+                    sender.sendMessage("§7时长默认86400秒(24h)，最大86400秒");
+                    return true;
+                }
+                String areaName = resolveAreaName(args[2]);
+                if (areaName == null) {
+                    sender.sendMessage("§c领地不存在: " + args[2]);
+                    return true;
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                    sender.sendMessage("§c需要领地所有者或管理员权限");
+                    return true;
+                }
+                int price;
+                try { price = Integer.parseInt(args[3]); }
+                catch (NumberFormatException e) {
+                    sender.sendMessage("§c价格必须是整数");
+                    return true;
+                }
+                if (price < 1000) {
+                    sender.sendMessage("§c最低价格为1000债券");
+                    return true;
+                }
+                int duration = 86400; // 默认24h
+                if (args.length >= 5) {
+                    try { duration = Integer.parseInt(args[4]); }
+                    catch (NumberFormatException e) {
+                        sender.sendMessage("§c时长必须是整数(秒)");
+                        return true;
+                    }
+                }
+                if (duration > 86400) {
+                    sender.sendMessage("§c最大时长为86400秒(24小时)");
+                    return true;
+                }
+                // 获取land_id
+                int landId = getLandIdFromDb(areaName);
+                if (landId <= 0) {
+                    sender.sendMessage("§c领地数据库记录不存在");
+                    return true;
+                }
+                // 插入商店记录
+                try {
+                    PreparedStatement stmt = dbConnection.prepareStatement(
+                            "INSERT INTO area_permission_shop (land_id, seller, permission, price, duration, created_at) "
+                                    + "VALUES (?, ?, 'visitor', ?, ?, ?)");
+                    stmt.setInt(1, landId);
+                    stmt.setString(2, p.getName());
+                    stmt.setInt(3, price);
+                    stmt.setInt(4, duration);
+                    stmt.setLong(5, System.currentTimeMillis());
+                    stmt.executeUpdate();
+                    stmt.close();
+                    sender.sendMessage("§a§l[权限商店] §f已上架访客权限: §e" + areaName + " §f价格: §e" + price + "债券 §f时长: §e" + formatDuration(duration));
+                } catch (SQLException e) {
+                    sender.sendMessage("§c数据库错误: " + e.getMessage());
+                }
+                return true;
+            }
+
+            // shop remove <id> — 下架
+            if (shopAction.equals("remove")) {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§c仅玩家可用");
+                    return true;
+                }
+                Player p = (Player) sender;
+                if (args.length < 3) {
+                    sender.sendMessage("§e用法: /protect shop remove <商品ID>");
+                    return true;
+                }
+                int shopId;
+                try { shopId = Integer.parseInt(args[2]); }
+                catch (NumberFormatException e) {
+                    sender.sendMessage("§cID必须是整数");
+                    return true;
+                }
+                try {
+                    PreparedStatement stmt = dbConnection.prepareStatement(
+                            "DELETE FROM area_permission_shop WHERE id = ? AND seller = ? AND status = 'active'");
+                    stmt.setInt(1, shopId);
+                    stmt.setString(2, p.getName());
+                    int rows = stmt.executeUpdate();
+                    stmt.close();
+                    if (rows > 0) {
+                        sender.sendMessage("§a§l[权限商店] §f已下架商品 #" + shopId);
+                    } else {
+                        sender.sendMessage("§c商品不存在或你不是卖家");
+                    }
+                } catch (SQLException e) {
+                    sender.sendMessage("§c数据库错误: " + e.getMessage());
+                }
+                return true;
+            }
+
+            // shop list — 查看可购买的权限
+            if (shopAction.equals("list") || shopAction.isEmpty()) {
+                try {
+                    Statement stmt = dbConnection.createStatement();
+                    ResultSet rs = stmt.executeQuery(
+                            "SELECT s.id, l.name AS land_name, s.seller, s.price, s.duration "
+                                    + "FROM area_permission_shop s "
+                                    + "JOIN area_lands l ON s.land_id = l.id "
+                                    + "WHERE s.status = 'active' AND s.buyer = '' "
+                                    + "ORDER BY s.created_at DESC LIMIT 50");
+                    sender.sendMessage("§e§l==== 权限商店 ====");
+                    boolean found = false;
+                    while (rs.next()) {
+                        found = true;
+                        int id = rs.getInt("id");
+                        String landName = rs.getString("land_name");
+                        String seller = rs.getString("seller");
+                        int price = rs.getInt("price");
+                        int dur = rs.getInt("duration");
+                        sender.sendMessage("§a#" + id + " §f" + landName + " §7卖家:" + seller + " §e" + price + "债券 §7" + formatDuration(dur));
+                    }
+                    if (!found) {
+                        sender.sendMessage("§7(暂无在售权限)");
+                    }
+                    rs.close();
+                    stmt.close();
+                } catch (SQLException e) {
+                    sender.sendMessage("§c数据库错误: " + e.getMessage());
+                }
+                return true;
+            }
+
+            // shop buy <id> — 购买权限
+            if (shopAction.equals("buy")) {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§c仅玩家可用");
+                    return true;
+                }
+                Player p = (Player) sender;
+                if (args.length < 3) {
+                    sender.sendMessage("§e用法: /protect shop buy <商品ID>");
+                    return true;
+                }
+                int shopId;
+                try { shopId = Integer.parseInt(args[2]); }
+                catch (NumberFormatException e) {
+                    sender.sendMessage("§cID必须是整数");
+                    return true;
+                }
+                // 查询商品
+                try {
+                    PreparedStatement stmt = dbConnection.prepareStatement(
+                            "SELECT s.*, l.name AS land_name FROM area_permission_shop s "
+                                    + "JOIN area_lands l ON s.land_id = l.id "
+                                    + "WHERE s.id = ? AND s.status = 'active' AND s.buyer = ''");
+                    stmt.setInt(1, shopId);
+                    ResultSet rs = stmt.executeQuery();
+                    if (!rs.next()) {
+                        sender.sendMessage("§c商品不存在或已售出");
+                        stmt.close();
+                        return true;
+                    }
+                    String seller = rs.getString("seller");
+                    int price = rs.getInt("price");
+                    int duration = rs.getInt("duration");
+                    int landId = rs.getInt("land_id");
+                    String landName = rs.getString("land_name");
+                    rs.close();
+                    stmt.close();
+
+                    // 不能买自己的
+                    if (seller.equalsIgnoreCase(p.getName())) {
+                        sender.sendMessage("§c不能购买自己上架的权限");
+                        return true;
+                    }
+
+                    // 扣款
+                    BondManager bm = plugin.getBonds();
+                    if (bm == null) {
+                        sender.sendMessage("§c债券系统未初始化");
+                        return true;
+                    }
+                    if (bm.getBonds(p.getName()) < price) {
+                        sender.sendMessage("§c债券不足，需要 §e" + price + " §c债券");
+                        return true;
+                    }
+                    if (!bm.deductBonds(p.getName(), price, "permission_shop_buy", "", "权限商店", "购买权限: " + landName)) {
+                        sender.sendMessage("§c扣款失败");
+                        return true;
+                    }
+
+                    // 分账：80%给卖家，20%税
+                    int ownerShare = price * 80 / 100;
+                    int tax = price - ownerShare;
+                    bm.addBonds(seller, ownerShare, "permission_shop_sell", p.getName(), "权限商店", "出售权限: " + landName);
+
+                    // 标记已售出
+                    PreparedStatement updateStmt = dbConnection.prepareStatement(
+                            "UPDATE area_permission_shop SET status = 'sold', buyer = ?, bought_at = ? WHERE id = ?");
+                    updateStmt.setString(1, p.getName());
+                    updateStmt.setLong(2, System.currentTimeMillis());
+                    updateStmt.setInt(3, shopId);
+                    updateStmt.executeUpdate();
+                    updateStmt.close();
+
+                    // 写入访客权限（带过期时间）
+                    long expiresAt = System.currentTimeMillis() + (long) duration * 1000;
+                    PreparedStatement permStmt = dbConnection.prepareStatement(
+                            "INSERT OR REPLACE INTO area_land_permissions (land_id, player_name, role, permissions, granted_at, expires_at) "
+                                    + "VALUES (?, ?, 'visitor', 'shop_purchase', ?, ?)");
+                    permStmt.setInt(1, landId);
+                    permStmt.setString(2, p.getName());
+                    permStmt.setLong(3, System.currentTimeMillis());
+                    permStmt.setLong(4, expiresAt);
+                    permStmt.executeUpdate();
+                    permStmt.close();
+
+                    sender.sendMessage("§a§l[权限商店] §f购买成功!");
+                    sender.sendMessage("§f领地: §e" + landName + " §f时长: §e" + formatDuration(duration));
+                    sender.sendMessage("§f花费: §e" + price + " §f债券 (卖家得 §e" + ownerShare + " §f债券)");
+
+                    // 通知卖家
+                    Player sellerPlayer = Bukkit.getPlayerExact(seller);
+                    if (sellerPlayer != null) {
+                        sellerPlayer.sendMessage("§a§l[权限商店] §f你的权限商品被 §e" + p.getName() + " §f购买，到账 §e" + ownerShare + " §f债券");
+                    }
+                } catch (SQLException e) {
+                    sender.sendMessage("§c数据库错误: " + e.getMessage());
+                }
+                return true;
+            }
+
+            // shop my — 查看我购买的权限
+            if (shopAction.equals("my")) {
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§c仅玩家可用");
+                    return true;
+                }
+                Player p = (Player) sender;
+                try {
+                    PreparedStatement stmt = dbConnection.prepareStatement(
+                            "SELECT p2.*, l.name AS land_name FROM area_land_permissions p2 "
+                                    + "JOIN area_lands l ON p2.land_id = l.id "
+                                    + "WHERE p2.player_name = ? AND p2.role = 'visitor' "
+                                    + "AND (p2.expires_at = 0 OR p2.expires_at > ?) "
+                                    + "ORDER BY p2.expires_at DESC");
+                    stmt.setString(1, p.getName());
+                    stmt.setLong(2, System.currentTimeMillis());
+                    ResultSet rs = stmt.executeQuery();
+                    sender.sendMessage("§e§l==== 我的领地权限 ====");
+                    boolean found = false;
+                    long now = System.currentTimeMillis();
+                    while (rs.next()) {
+                        found = true;
+                        String landName = rs.getString("land_name");
+                        long expiresAt = rs.getLong("expires_at");
+                        if (expiresAt > 0) {
+                            long remain = expiresAt - now;
+                            sender.sendMessage("§a" + landName + " §7剩余: §e" + formatDuration((int)(remain / 1000)));
+                        } else {
+                            sender.sendMessage("§a" + landName + " §7永久");
+                        }
+                    }
+                    if (!found) {
+                        sender.sendMessage("§7(暂无领地权限)");
+                    }
+                    rs.close();
+                    stmt.close();
+                } catch (SQLException e) {
+                    sender.sendMessage("§c数据库错误: " + e.getMessage());
+                }
+                return true;
+            }
+
+            sender.sendMessage("§e用法: /protect shop <create|remove|list|buy|my>");
+            return true;
+        }
+
+        // ===== info 显示当前领地权限信息 =====
+        if (sub.equals("info")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            AreaConfig ac = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+            if (ac == null) {
+                p.sendMessage("§c你不在任何防护区域内");
+                return true;
+            }
+            PermissionLevel level = getPermissionLevel(p, ac);
+            String levelName = level != null ? level.name() : "无权限";
+            p.sendMessage("§e§l==== 领地信息 ====");
+            p.sendMessage("§f名称: §e" + ac.name);
+            p.sendMessage("§f所有者: §e" + (ac.owner != null && !ac.owner.isEmpty() ? ac.owner : "无"));
+            p.sendMessage("§f你的权限: §a" + levelName);
+            if (level == PermissionLevel.OWNER) {
+                p.sendMessage("§7(你是此领地的所有者)");
+            } else if (level == PermissionLevel.ADMIN) {
+                p.sendMessage("§7(你是服务器管理员)");
+            } else if (level == PermissionLevel.VISITOR) {
+                p.sendMessage("§7(你是此领地的访客)");
+            }
+            return true;
+        }
+
+        // ===== setowner 设置领地所有者（管理员命令）=====
+        if (sub.equals("setowner") || sub.equals("setowner")) {
+            if (!isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要管理员权限");
+                return true;
+            }
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect setowner <领地> <玩家>");
+                return true;
+            }
+            String areaName = resolveAreaName(args[1]);
+            if (areaName == null) {
+                sender.sendMessage("§c领地不存在: " + args[1]);
+                return true;
+            }
+            AreaConfig ac = areas.get(areaName);
+            ac.owner = args[2];
+            saveAreaToDb(ac);
+            sender.sendMessage("§a已设置 §e" + areaName + " §a的所有者为 §e" + args[2]);
+            return true;
+        }
+
+        // ===== addvisitor 添加访客（所有者+管理员）=====
+        if (sub.equals("addvisitor")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            String[] parsed = parseAreaAndTarget(args.length >= 3 ? args[1] : null, args.length >= 3 ? args[2] : null);
+            if (parsed == null || args.length < 2) {
+                // 尝试获取玩家当前所在领地
+                AreaConfig ac = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac == null) {
+                    sender.sendMessage("§c用法: /protect addvisitor <领地> <玩家>");
+                    return true;
+                }
+                if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                    sender.sendMessage("§c需要领地所有者或管理员权限");
+                    return true;
+                }
+                if (args.length < 2) {
+                    sender.sendMessage("§c用法: /protect addvisitor <玩家>");
+                    return true;
+                }
+                addPlayerToAreaWhitelist(ac.name, args[1]);
+                sender.sendMessage("§a已添加 §e" + args[1] + " §a为 §e" + ac.name + " §a的访客");
+                return true;
+            }
+            String areaName = parsed[0];
+            String playerName = parsed[1];
+            AreaConfig ac = areas.get(areaName);
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            addPlayerToAreaWhitelist(areaName, playerName);
+            sender.sendMessage("§a已添加 §e" + playerName + " §a为 §e" + areaName + " §a的访客");
+            return true;
+        }
+
+        // ===== removevisitor 移除访客 =====
+        if (sub.equals("removevisitor")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            String[] parsed = parseAreaAndTarget(args.length >= 3 ? args[1] : null, args.length >= 3 ? args[2] : null);
+            if (parsed == null || args.length < 2) {
+                AreaConfig ac = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac == null) {
+                    sender.sendMessage("§c用法: /protect removevisitor <领地> <玩家>");
+                    return true;
+                }
+                if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                    sender.sendMessage("§c需要领地所有者或管理员权限");
+                    return true;
+                }
+                if (args.length < 2) {
+                    sender.sendMessage("§c用法: /protect removevisitor <玩家>");
+                    return true;
+                }
+                removePlayerFromAreaWhitelist(ac.name, args[1]);
+                sender.sendMessage("§a已移除 §e" + args[1] + " §a的 §e" + ac.name + " §a访客权限");
+                return true;
+            }
+            String areaName = parsed[0];
+            String playerName = parsed[1];
+            AreaConfig ac = areas.get(areaName);
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            removePlayerFromAreaWhitelist(areaName, playerName);
+            sender.sendMessage("§a已移除 §e" + playerName + " §a的 §e" + areaName + " §a访客权限");
+            return true;
+        }
+
+        // ===== listvisitors 列出访客 =====
+        if (sub.equals("listvisitors")) {
+            String areaName = args.length >= 2 ? resolveAreaName(args[1]) : null;
+            if (areaName == null && sender instanceof Player) {
+                Player p = (Player) sender;
+                AreaConfig ac = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac != null) areaName = ac.name;
+            }
+            if (areaName == null) {
+                sender.sendMessage("§c用法: /protect listvisitors <领地>");
+                return true;
+            }
+            Set<String> visitors = areaPlayerWhitelist.get(areaName);
+            sender.sendMessage("§e§l==== " + areaName + " 访客列表 ====");
+            if (visitors == null || visitors.isEmpty()) {
+                sender.sendMessage("§7(无访客)");
+            } else {
+                for (String v : visitors) {
+                    sender.sendMessage("§f- §a" + v);
+                }
+            }
+            return true;
+        }
+
+        // ===== transfer 转让领地 =====
+        if (sub.equals("transfer")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect transfer <领地> <新所有者>");
+                return true;
+            }
+            String areaName = resolveAreaName(args[1]);
+            if (areaName == null) {
+                sender.sendMessage("§c领地不存在: " + args[1]);
+                return true;
+            }
+            AreaConfig ac = areas.get(areaName);
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            String oldOwner = ac.owner;
+            ac.owner = args[2];
+            saveAreaToDb(ac);
+            sender.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + args[2]);
+            return true;
+        }
+
         showHelp(sender);
         return true;
     }
@@ -4306,6 +5234,214 @@ public class AreaProtection implements Listener {
         } catch (IOException ignored) {}
     }
 
+    /**
+     * 保存领地配置到数据库（新方法）
+     */
+    public void saveAreaToDb(AreaConfig ac) {
+        if (dbConnection == null) return;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "INSERT OR REPLACE INTO area_lands (name, owner, world, x1, z1, x2, z2, y_min, y_max, "
+                    + "confiscate_items, deny_use_items, give_effects, clear_effects, clear_all_bad, "
+                    + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
+                    + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
+                    + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
+                    + "deny_all_effects, deny_item_frame, peace_mode, peace_mode_duration, "
+                    + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
+                    + "confiscate_msg, enable_announce, announce_template, created_at) "
+                    + "VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+            stmt.setString(1, ac.name);
+            stmt.setString(3, ac.world);
+            stmt.setInt(4, ac.x1);
+            stmt.setInt(5, ac.z1);
+            stmt.setInt(6, ac.x2);
+            stmt.setInt(7, ac.z2);
+            stmt.setInt(8, ac.yMin);
+            stmt.setInt(9, ac.yMax);
+            stmt.setString(10, String.join(",", ac.confiscateItems));
+            stmt.setString(11, String.join(",", ac.denyUseItems));
+            stmt.setString(12, effectsToString(ac.giveEffects));
+            stmt.setString(13, String.join(",", ac.clearEffects));
+            stmt.setInt(14, ac.clearAllBadEffects ? 1 : 0);
+            stmt.setString(15, String.join("|", ac.punishCommands));
+            stmt.setInt(16, ac.denyBlockPlace ? 1 : 0);
+            stmt.setInt(17, ac.denyBlockBreak ? 1 : 0);
+            stmt.setInt(18, ac.denyPVP ? 1 : 0);
+            stmt.setInt(19, ac.denyFallDamage ? 1 : 0);
+            stmt.setInt(20, ac.denyHunger ? 1 : 0);
+            stmt.setInt(21, ac.denyAllDamage ? 1 : 0);
+            stmt.setInt(22, ac.denyDrop ? 1 : 0);
+            stmt.setInt(23, ac.denyMount ? 1 : 0);
+            stmt.setInt(24, ac.denyEnderPearl ? 1 : 0);
+            stmt.setInt(25, ac.denyBow ? 1 : 0);
+            stmt.setInt(26, ac.denyPotion ? 1 : 0);
+            stmt.setInt(27, ac.denyExplosion ? 1 : 0);
+            stmt.setInt(28, ac.denyRaid ? 1 : 0);
+            stmt.setInt(29, ac.denyFireSpread ? 1 : 0);
+            stmt.setInt(30, ac.denyAllEffects ? 1 : 0);
+            stmt.setInt(31, ac.denyItemFrame ? 1 : 0);
+            stmt.setInt(32, ac.peaceMode ? 1 : 0);
+            stmt.setInt(33, ac.peaceModeDuration / 1000);
+            stmt.setString(34, String.join(",", ac.peaceWhitelist));
+            stmt.setString(35, ac.enforceGameMode != null ? ac.enforceGameMode : "");
+            stmt.setString(36, String.join(",", ac.modeExempt));
+            stmt.setString(37, ac.enterMsg);
+            stmt.setString(38, ac.leaveMsg);
+            stmt.setString(39, ac.confiscateMsg);
+            stmt.setInt(40, ac.enableAnnounce ? 1 : 0);
+            stmt.setString(41, ac.announceTemplate);
+            stmt.setLong(42, System.currentTimeMillis() / 1000);
+            stmt.executeUpdate();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 保存到DB失败: " + ac.name + " - " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从数据库删除领地
+     */
+    public void deleteAreaFromDb(String name) {
+        if (dbConnection == null) return;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement("DELETE FROM area_lands WHERE name = ?");
+            stmt.setString(1, name);
+            stmt.executeUpdate();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 从DB删除领地失败: " + name + " - " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取所有领地数据（供WebManager同步到PHP）
+     */
+    public List<Map<String, Object>> getAllLandsForSync() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (dbConnection == null) return result;
+        try {
+            Statement stmt = dbConnection.createStatement();
+            ResultSet rs = stmt.executeQuery("SELECT id, name, owner, world, x1, z1, x2, z2, y_min, y_max, created_at FROM area_lands");
+            while (rs.next()) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("id", rs.getInt("id"));
+                map.put("name", rs.getString("name"));
+                map.put("owner", rs.getString("owner"));
+                map.put("world", rs.getString("world"));
+                map.put("x1", rs.getInt("x1"));
+                map.put("z1", rs.getInt("z1"));
+                map.put("x2", rs.getInt("x2"));
+                map.put("z2", rs.getInt("z2"));
+                map.put("y_min", rs.getInt("y_min"));
+                map.put("y_max", rs.getInt("y_max"));
+                int x1 = rs.getInt("x1"), x2 = rs.getInt("x2");
+                int z1 = rs.getInt("z1"), z2 = rs.getInt("z2");
+                map.put("area_size", Math.abs((x2 - x1 + 1) * (z2 - z1 + 1)));
+                map.put("created_at", rs.getLong("created_at"));
+                result.add(map);
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 获取领地数据失败: " + e.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 获取权限商店数据（供WebManager同步到PHP）
+     */
+    public List<Map<String, Object>> getPermissionShopForSync() {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (dbConnection == null) return result;
+        try {
+            Statement stmt = dbConnection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT s.id, s.land_id, l.name AS land_name, s.seller, s.permission, s.price, s.duration, s.status, s.buyer, s.bought_at, s.created_at "
+                            + "FROM area_permission_shop s "
+                            + "LEFT JOIN area_lands l ON s.land_id = l.id");
+            while (rs.next()) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("id", rs.getInt("id"));
+                map.put("land_id", rs.getInt("land_id"));
+                map.put("land_name", rs.getString("land_name"));
+                map.put("seller", rs.getString("seller"));
+                map.put("permission", rs.getString("permission"));
+                map.put("price", rs.getInt("price"));
+                map.put("duration", rs.getInt("duration"));
+                map.put("status", rs.getString("status"));
+                map.put("buyer", rs.getString("buyer"));
+                map.put("bought_at", rs.getLong("bought_at"));
+                map.put("created_at", rs.getLong("created_at"));
+                result.add(map);
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 获取权限商店数据失败: " + e.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * 从数据库获取领地ID
+     */
+    private int getLandIdFromDb(String name) {
+        if (dbConnection == null) return -1;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement("SELECT id FROM area_lands WHERE name = ?");
+            stmt.setString(1, name);
+            ResultSet rs = stmt.executeQuery();
+            int id = rs.next() ? rs.getInt("id") : -1;
+            rs.close();
+            stmt.close();
+            return id;
+        } catch (SQLException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 格式化时长（秒 → 可读字符串）
+     */
+    private String formatDuration(int seconds) {
+        if (seconds >= 86400) return (seconds / 86400) + "天";
+        if (seconds >= 3600) return (seconds / 3600) + "小时";
+        if (seconds >= 60) return (seconds / 60) + "分钟";
+        return seconds + "秒";
+    }
+
+    /**
+     * 检查玩家的访客权限是否有效（未过期）
+     */
+    public boolean hasValidVisitorPermission(Player player, AreaConfig ac) {
+        if (dbConnection == null || ac == null) return false;
+        try {
+            int landId = getLandIdFromDb(ac.name);
+            if (landId <= 0) return false;
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT expires_at FROM area_land_permissions "
+                            + "WHERE land_id = ? AND player_name = ? AND role = 'visitor'");
+            stmt.setInt(1, landId);
+            stmt.setString(2, player.getName());
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) {
+                long expiresAt = rs.getLong("expires_at");
+                if (expiresAt == 0 || expiresAt > System.currentTimeMillis()) {
+                    rs.close();
+                    stmt.close();
+                    return true;
+                }
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            // 忽略
+        }
+        return false;
+    }
+
     private void showHelp(CommandSender s) {
         s.sendMessage("§e§l==== 区域防护 ====");
         s.sendMessage("§a/protect 工具 §7选地工具");
@@ -4313,6 +5449,7 @@ public class AreaProtection implements Listener {
         s.sendMessage("§a/protect 列表 §7区域列表");
         s.sendMessage("§a/protect 重载 §7重载配置");
         s.sendMessage("§a/protect 删除 <名> §7删除区域");
+        s.sendMessage("§a/protect info §7当前领地信息");
         s.sendMessage("§a/protect add [区域] <玩家> §7玩家加白");
         s.sendMessage("§a/protect remove [区域] <玩家> §7玩家删白");
         s.sendMessage("§a/protect additem [区域] <物品> §7物品加黑");
@@ -4324,10 +5461,21 @@ public class AreaProtection implements Listener {
         s.sendMessage("§a/protect list <区域> §7列出区域白名单");
         s.sendMessage("§a/protect listitem §7列出全局物品黑名单");
         s.sendMessage("§a/protect listitem <区域> §7列出区域物品黑名单");
+        s.sendMessage("§e§l---- 权限管理 ----");
+        s.sendMessage("§a/protect setowner <领地> <玩家> §7设置所有者");
+        s.sendMessage("§a/protect addvisitor [领地] <玩家> §7添加访客");
+        s.sendMessage("§a/protect removevisitor [领地] <玩家> §7移除访客");
+        s.sendMessage("§a/protect listvisitors [领地] §7列出访客");
+        s.sendMessage("§a/protect transfer <领地> <新所有者> §7转让领地");
+        s.sendMessage("§e§l---- 权限商店 ----");
+        s.sendMessage("§a/protect shop create <领地> <价格> [时长秒] §7上架权限");
+        s.sendMessage("§a/protect shop remove <ID> §7下架权限");
+        s.sendMessage("§a/protect shop list §7查看在售权限");
+        s.sendMessage("§a/protect shop buy <ID> §7购买权限");
+        s.sendMessage("§a/protect shop my §7查看我的权限");
         s.sendMessage("§b§l欢迎游玩草原探险服务器");
         s.sendMessage("§b§l服务器ip：mc2.ypshidifu.cn\n端口30679");
         s.sendMessage("");
-
     }
 // ==================== 白名单管理公共方法 ====================
 
@@ -4381,7 +5529,8 @@ public class AreaProtection implements Listener {
 
 
     public int handleConfiscate(Player p, AreaConfig ac) {
-        if (isPlayerWhitelisted(p.getName(), ac)) return 0;
+        // 管理员和领地所有者免检
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return 0;
         Set<String> allItems = new HashSet<>(ac.confiscateItems);
         allItems.addAll(globalItemBlacklist);
         Set<String> areaList = areaItemBlacklist.get(ac.name);
@@ -4481,7 +5630,7 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null || !ac.denyItemFrame) return;
 
-            if (isPlayerWhitelisted(p.getName(), ac)) return;
+            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -4497,10 +5646,11 @@ public class AreaProtection implements Listener {
                 p2.getLocation().getBlockX(),
                 p2.getLocation().getBlockY(),
                 p2.getLocation().getBlockZ());
-        if (ac2 != null && ac2.denyPVP
-                && !isPlayerWhitelisted(p2.getName(), ac2)) {
-            e.setCancelled(true);
-            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+        if (ac2 != null && ac2.denyPVP) {
+            if (!hasPermission(p2, ac2, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+            }
         }
     }
 
@@ -4517,12 +5667,12 @@ public class AreaProtection implements Listener {
 
         Player p = e.getPlayer();
 
-        // ★ 使用统一的白名单检查方法（globalPlayerWhitelist + areaPlayerWhitelist）
+        // ★ 使用统一的权限检查方法
         AreaConfig ac = findFrameArea(clicked);
         if (ac == null || !ac.denyItemFrame) return;
 
-        // 统一白名单检查
-        if (isPlayerWhitelisted(p.getName(), ac)) return;
+        // 所有者+管理员跳过
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -4576,8 +5726,8 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
 
-            // ★ 使用统一的白名单检查方法
-            if (isPlayerWhitelisted(p.getName(), ac)) return;
+            // ★ 使用统一的权限检查方法
+            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
             if (!ac.denyItemFrame) return;
 
@@ -4595,10 +5745,11 @@ public class AreaProtection implements Listener {
                 p2.getLocation().getBlockX(),
                 p2.getLocation().getBlockY(),
                 p2.getLocation().getBlockZ());
-        if (ac2 != null && ac2.denyPVP
-                && !isPlayerWhitelisted(p2.getName(), ac2)) {
-            e.setCancelled(true);
-            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+        if (ac2 != null && ac2.denyPVP) {
+            if (!hasPermission(p2, ac2, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+            }
         }
     }
     private AreaConfig findFrameArea(Entity frame) {
@@ -4638,11 +5789,11 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        // ★ 统一白名单检查（globalPlayerWhitelist + areaPlayerWhitelist）
+        // ★ 使用统一的权限检查方法
         AreaConfig ac = findFrameArea(hit);
         if (ac == null || !ac.denyItemFrame) return;
 
-        if (isPlayerWhitelisted(shooter.getName(), ac)) return;
+        if (hasPermission(shooter, ac, PermissionLevel.OWNER)) return;
 
         e.setCancelled(true);
         shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -4754,6 +5905,7 @@ public class AreaProtection implements Listener {
 
     public static class AreaConfig {
         public String name = "";
+        public String owner = "";  // 领地所有者
         public String world = "";
         public int x1, z1, x2, z2;
         public int yMin = 0, yMax = 255;
@@ -4784,6 +5936,7 @@ public class AreaProtection implements Listener {
         public boolean denyFireSpread = false;
         public boolean denyAllEffects = false;;
         public boolean peaceMode = false;
+        public int peaceModeDuration = 5000; // 和平模式生物保护期(毫秒)，默认5秒，最大3600秒
         public boolean denyItemFrame = false;
         public Set<String> peaceWhitelist = new HashSet<>();
         public String enforceGameMode = null;  // 强制游戏模式

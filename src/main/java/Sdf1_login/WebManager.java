@@ -18,6 +18,9 @@ import java.security.cert.X509Certificate;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Web通信管理器 - 插件与PHP后端的桥梁
@@ -71,12 +74,127 @@ public class WebManager {
     private final ConcurrentHashMap<String, Long> webloginTokenTimestamps = new ConcurrentHashMap<>();
     private static final long WEBLOGIN_TOKEN_COOLDOWN_MS = 10000; // 10秒冷却
 
+    // ★ 数据库写入排队系统（防止并发SQLite操作导致database is locked）
+    private static final int LOGIN_PRIORITY = 1;    // 登录相关操作最高优先级
+    private static final int NORMAL_PRIORITY = 10;   // 普通同步操作低优先级
+    private final PriorityBlockingQueue<DbTask> dbTaskQueue = new PriorityBlockingQueue<>();
+    private final AtomicInteger dbTaskIdGen = new AtomicInteger(0);
+    private final AtomicBoolean dbWorkerRunning = new AtomicBoolean(false);
+    private Thread dbWorkerThread;
+
     public WebManager(Main plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfig2();
         initSSL();
         loadConfig();
+        startDbWorker();
     }
+
+    // ==================== 数据库写入排队系统 ====================
+
+    /**
+     * 数据库任务：带优先级的Runnable包装
+     */
+    private class DbTask implements Runnable, Comparable<DbTask> {
+        final int id;
+        final int priority;
+        final String name;
+        final Runnable action;
+        final long createdAt;
+
+        DbTask(int priority, String name, Runnable action) {
+            this.id = dbTaskIdGen.incrementAndGet();
+            this.priority = priority;
+            this.name = name;
+            this.action = action;
+            this.createdAt = System.currentTimeMillis();
+        }
+
+        @Override
+        public void run() {
+            action.run();
+        }
+
+        @Override
+        public int compareTo(DbTask other) {
+            // 数字越小优先级越高
+            int cmp = Integer.compare(this.priority, other.priority);
+            if (cmp != 0) return cmp;
+            // 同优先级按FIFO
+            return Integer.compare(this.id, other.id);
+        }
+
+        @Override
+        public String toString() {
+            return "[DbTask#" + id + " " + name + " p=" + priority + "]";
+        }
+    }
+
+    /**
+     * 启动单线程数据库工作者
+     */
+    private void startDbWorker() {
+        dbWorkerRunning.set(true);
+        dbWorkerThread = new Thread(() -> {
+            plugin.getLogger().info("[DB队列] 数据库写入队列已启动（单线程串行化）");
+            while (dbWorkerRunning.get()) {
+                try {
+                    DbTask task = dbTaskQueue.take(); // 阻塞等待
+                    long waitMs = System.currentTimeMillis() - task.createdAt;
+                    if (waitMs > 3000) {
+                        plugin.getLogger().warning("[DB队列] 任务等待过久: " + task + " 等待=" + waitMs + "ms");
+                    }
+                    plugin.getLogger().info("[DB队列] 执行: " + task);
+                    task.run();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[DB队列] 任务执行异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                }
+            }
+            plugin.getLogger().info("[DB队列] 数据库写入队列已停止");
+        }, "sdf1-db-worker");
+        dbWorkerThread.setDaemon(true);
+        dbWorkerThread.start();
+    }
+
+    /**
+     * 提交高优先级（登录相关）数据库写入任务
+     */
+    private void submitDbTask(String name, Runnable action) {
+        submitDbTask(LOGIN_PRIORITY, name, action);
+    }
+
+    /**
+     * 提交普通优先级数据库写入任务
+     */
+    private void submitNormalDbTask(String name, Runnable action) {
+        submitDbTask(NORMAL_PRIORITY, name, action);
+    }
+
+    /**
+     * 提交指定优先级的数据库写入任务
+     */
+    private void submitDbTask(int priority, String name, Runnable action) {
+        DbTask task = new DbTask(priority, name, action);
+        dbTaskQueue.offer(task);
+        if (dbTaskQueue.size() > 50) {
+            plugin.getLogger().warning("[DB队列] 队列积压: " + dbTaskQueue.size() + " 任务等待");
+        }
+    }
+
+    /**
+     * 关闭数据库工作线程
+     */
+    private void stopDbWorker() {
+        dbWorkerRunning.set(false);
+        if (dbWorkerThread != null) {
+            dbWorkerThread.interrupt();
+        }
+    }
+
+    // ==================== 工具方法 ====================
 
     /**
      * 绕过SSL证书验证，解决PKIX等证书错误
@@ -226,21 +344,22 @@ public class WebManager {
         // 清理过期Token
         cleanExpiredTokens();
 
-        // ★ 启动后延迟30秒执行首次全量同步
+        // ★ 启动后延迟30秒执行首次全量同步（通过DB队列串行化）
         new BukkitRunnable() {
             @Override
             public void run() {
-                syncUserRegistrations();
-                pushWebLoginCredentials();
-                syncOnlinePlayers();
-                syncShopData();
-                syncBondBalances();
-                syncBondTransactions();
-                syncAllPlayerIps();
-                syncServiceProviders();
-                // 首次同步只打一次，后续由调度器静默执行
-                plugin.getLogger().info("[Web通信] 首次全量同步完成");
-
+                plugin.getLogger().info("[Web通信] 开始首次全量同步（通过DB队列串行化）...");
+                // 登录相关操作高优先级
+                submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
+                submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
+                // 普通同步操作低优先级
+                submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers());
+                submitNormalDbTask("首次-syncShopData", () -> syncShopData());
+                submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
+                submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
+                submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
+                submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
+                submitNormalDbTask("首次-syncLandData", () -> syncLandData());
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
 
@@ -272,6 +391,7 @@ public class WebManager {
 
     public void shutdown() {
         stop();
+        stopDbWorker();
         // 关闭回调服务器
         if (callbackServer != null) {
             try {
@@ -554,12 +674,7 @@ public class WebManager {
         }
         lastTransactionPullTime = now;
         pendingTransactionPullRequested = false;
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                pullPendingTransactions();
-            }
-        }.runTaskAsynchronously(plugin);
+        submitNormalDbTask("即时拉取-交易", () -> pullPendingTransactions());
     }
 
     // ★ 交易即时推送触发器：交易发生后立即推送交易记录到PHP
@@ -576,23 +691,20 @@ public class WebManager {
         }
         lastImmediateTxSyncTime = now;
         pendingImmediateTxSync = false;
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                try {
-                    syncBondTransactions();
-                } catch (Exception e) {
-                    plugin.getLogger().warning("[Web交易即时] 推送异常: " + e.getMessage());
-                }
-                // 检查是否有待处理的推送
-                if (pendingImmediateTxSync) {
-                    pendingImmediateTxSync = false;
-                    Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-                        try { syncBondTransactions(); } catch (Exception e) {}
-                    }, 40L); // 2秒后执行
-                }
+        submitDbTask("即时推送-交易", () -> {
+            try {
+                syncBondTransactions();
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web交易即时] 推送异常: " + e.getMessage());
             }
-        }.runTaskAsynchronously(plugin);
+            // 检查是否有待处理的推送
+            if (pendingImmediateTxSync) {
+                pendingImmediateTxSync = false;
+                submitDbTask("即时推送-交易(延迟)", () -> {
+                    try { syncBondTransactions(); } catch (Exception e) {}
+                });
+            }
+        });
     }
 
     private void startActiveSync() {
@@ -627,15 +739,15 @@ public class WebManager {
                         
                         if (hasRequest) {
                             plugin.getLogger().info("[Web通信] 收到即时同步请求: " + players.toString());
-                            // 执行同步
-                            pullPendingTransactions();
-                            pullShopStock();
-                            pullBondChanges();
-                            syncOnlinePlayers();
-                            pushWebLoginCredentials();
-                            syncUserRegistrations();
-                            syncAllPlayerIps();
-                            syncServiceProviders();
+                            // 通过DB队列串行化执行同步
+                            submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers());
+                            submitDbTask("即时-pushWebLoginCredentials", () -> pushWebLoginCredentials());
+                            submitDbTask("即时-syncUserRegistrations", () -> syncUserRegistrations());
+                            submitNormalDbTask("即时-pullPendingTransactions", () -> pullPendingTransactions());
+                            submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
+                            submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
+                            submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
+                            submitNormalDbTask("即时-syncServiceProviders", () -> syncServiceProviders());
                         }
                     }
                 } catch (Exception e) {
@@ -655,14 +767,15 @@ public class WebManager {
                         syncAfterAllOffline = false;
                         lastSyncDone = true;
                         lastOnlineCheckTime = System.currentTimeMillis();
-                        pullPendingTransactions();
-                        pullShopStock();
-                        pullBondChanges();
-                        syncOnlinePlayers();
-                        pushWebLoginCredentials();
-                        syncUserRegistrations();
-                        syncBondTransactions();
-                        plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步，调度器继续运行（玩家上线自动恢复）");
+                        // 通过DB队列串行化执行最后一轮同步
+                        submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers());
+                        submitDbTask("末轮-pushWebLoginCredentials", () -> pushWebLoginCredentials());
+                        submitDbTask("末轮-syncUserRegistrations", () -> syncUserRegistrations());
+                        submitDbTask("末轮-syncBondTransactions", () -> syncBondTransactions());
+                        submitNormalDbTask("末轮-pullPendingTransactions", () -> pullPendingTransactions());
+                        submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
+                        submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
+                        plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步（通过DB队列），调度器继续运行（玩家上线自动恢复）");
                         plugin.getLogger().warning("\n" +
                                 "                                          _                                                                          \n" +
                                 "                                         | |                                                                         \n" +
@@ -705,15 +818,16 @@ public class WebManager {
                 activeSyncRunning = true;
 
                 try {
-                    pullPendingTransactions();
-                    pullShopStock();
-                    pullBondChanges();
-                    syncOnlinePlayers();
-                    pushWebLoginCredentials();
-                    syncUserRegistrations();
-                    syncBondTransactions();
-                    syncAllPlayerIps();
-                    syncServiceProviders();
+                    // 通过DB队列串行化执行周期性同步
+                    submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
+                    submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
+                    submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
+                    submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
+                    submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
+                    submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
+                    submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
+                    submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
+                    submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web通信] 全量同步异常: " + e.getMessage());
                 } finally {
@@ -747,11 +861,16 @@ public class WebManager {
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("GET");
                     conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(10000);
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(15000);
                     int code = conn.getResponseCode();
                     if (code != 200) {
-                        plugin.getLogger().warning("[Web交易轮询] HTTP状态码: " + code);
+                        txPollFailCount++;
+                        long now = System.currentTimeMillis();
+                        if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
+                            plugin.getLogger().warning("[Web交易轮询] HTTP状态码: " + code + " (连续失败" + txPollFailCount + "次)");
+                            lastTxPollLogTime = now;
+                        }
                         conn.disconnect();
                         return;
                     }
@@ -761,6 +880,9 @@ public class WebManager {
                     while ((line = reader.readLine()) != null) sb.append(line);
                     reader.close();
                     conn.disconnect();
+
+                    // 成功 → 重置失败计数
+                    txPollFailCount = 0;
 
                     String resp = sb.toString();
                     // 快速解析 "pending":N
@@ -776,14 +898,38 @@ public class WebManager {
                             pullPendingTransactions();
                         }
                     } else {
-                        plugin.getLogger().warning("[Web交易轮询] 响应格式异常: " + resp.substring(0, Math.min(200, resp.length())));
+                        long now = System.currentTimeMillis();
+                        if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
+                            plugin.getLogger().warning("[Web交易轮询] 响应格式异常: " + resp.substring(0, Math.min(200, resp.length())));
+                            lastTxPollLogTime = now;
+                        }
                     }
                 } catch (Exception e) {
-                    plugin.getLogger().warning("[Web交易轮询] 异常: " + e.getMessage());
+                    txPollFailCount++;
+                    long now = System.currentTimeMillis();
+                    if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
+                        plugin.getLogger().warning("[Web交易轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage()
+                                + " (连续失败" + txPollFailCount + "次)");
+                        lastTxPollLogTime = now;
+                    }
                 }
             }
         }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
     }
+
+    // ==================== 高频轮询器失败计数 ====================
+
+    /** 交易轮询连续失败计数 */
+    private volatile int txPollFailCount = 0;
+    /** 登录确认轮询连续失败计数 */
+    private volatile int loginPollFailCount = 0;
+    /** 注册轮询连续失败计数 */
+    private volatile int registerPollFailCount = 0;
+    /** 最后一次日志记录时间（限频） */
+    private volatile long lastTxPollLogTime = 0;
+    private volatile long lastLoginPollLogTime = 0;
+    private volatile long lastRegisterPollLogTime = 0;
+    private static final long POLL_LOG_INTERVAL = 60000; // 同类错误最多1分钟打一次
 
     // ==================== 库存高频轮询 ====================
 
@@ -863,17 +1009,20 @@ public class WebManager {
                             }
                         }
 
-                        // ★ 拉取并应用库存，只在成功更新后才推进时间戳
-                        shopStockPulling = true;
-                        try {
-                            boolean applied = pullShopStockSync();
-                            if (applied && serverLastModified > 0) {
-                                lastKnownShopStockModified = serverLastModified;
+                        // ★ 拉取并应用库存，通过DB队列串行化
+                        final long finalServerLastModified = serverLastModified;
+                        submitNormalDbTask("库存高频拉取", () -> {
+                            shopStockPulling = true;
+                            try {
+                                boolean applied = pullShopStockSync();
+                                if (applied && finalServerLastModified > 0) {
+                                    lastKnownShopStockModified = finalServerLastModified;
+                                }
+                                // applied=false → 不更新lastKnownShopStockModified → 下次重试
+                            } finally {
+                                shopStockPulling = false;
                             }
-                            // applied=false → 不更新lastKnownShopStockModified → 下次重试
-                        } finally {
-                            shopStockPulling = false;
-                        }
+                        });
                     }
 
                 } catch (Exception e) {
@@ -1912,6 +2061,80 @@ public class WebManager {
     }
 
     /**
+     * 同步领地数据到PHP端
+     */
+    public void syncLandData() {
+        if (!enabled) return;
+
+        try {
+            // 从AreaProtection获取领地数据
+            AreaProtection areaProtect = plugin.getAreaProtection();
+            if (areaProtect == null) return;
+
+            // 1. 同步领地列表
+            List<Map<String, Object>> lands = areaProtect.getAllLandsForSync();
+            if (!lands.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < lands.size(); i++) {
+                    if (i > 0) sb.append(",");
+                    Map<String, Object> l = lands.get(i);
+                    sb.append("{");
+                    sb.append("\"id\":").append(l.getOrDefault("id", 0)).append(",");
+                    sb.append("\"name\":\"").append(escapeJson(String.valueOf(l.getOrDefault("name", "")))).append("\",");
+                    sb.append("\"owner\":\"").append(escapeJson(String.valueOf(l.getOrDefault("owner", "")))).append("\",");
+                    sb.append("\"world\":\"").append(escapeJson(String.valueOf(l.getOrDefault("world", "")))).append("\",");
+                    sb.append("\"x1\":").append(l.getOrDefault("x1", 0)).append(",");
+                    sb.append("\"z1\":").append(l.getOrDefault("z1", 0)).append(",");
+                    sb.append("\"x2\":").append(l.getOrDefault("x2", 0)).append(",");
+                    sb.append("\"z2\":").append(l.getOrDefault("z2", 0)).append(",");
+                    sb.append("\"y_min\":").append(l.getOrDefault("y_min", 0)).append(",");
+                    sb.append("\"y_max\":").append(l.getOrDefault("y_max", 255)).append(",");
+                    sb.append("\"area_size\":").append(l.getOrDefault("area_size", 0)).append(",");
+                    sb.append("\"created_at\":").append(l.getOrDefault("created_at", 0));
+                    sb.append("}");
+                }
+                Map<String, String> params = new LinkedHashMap<>();
+                params.put("action", "sync_lands");
+                params.put("secret", secretKey);
+                params.put("lands", "[" + sb.toString() + "]");
+                httpGet("api/sync.php", params);
+            }
+
+            // 2. 同步权限商店数据
+            List<Map<String, Object>> shopItems = areaProtect.getPermissionShopForSync();
+            if (!shopItems.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < shopItems.size(); i++) {
+                    if (i > 0) sb.append(",");
+                    Map<String, Object> s = shopItems.get(i);
+                    sb.append("{");
+                    sb.append("\"id\":").append(s.getOrDefault("id", 0)).append(",");
+                    sb.append("\"land_id\":").append(s.getOrDefault("land_id", 0)).append(",");
+                    sb.append("\"land_name\":\"").append(escapeJson(String.valueOf(s.getOrDefault("land_name", "")))).append("\",");
+                    sb.append("\"seller\":\"").append(escapeJson(String.valueOf(s.getOrDefault("seller", "")))).append("\",");
+                    sb.append("\"permission\":\"").append(escapeJson(String.valueOf(s.getOrDefault("permission", "visitor")))).append("\",");
+                    sb.append("\"price\":").append(s.getOrDefault("price", 0)).append(",");
+                    sb.append("\"duration\":").append(s.getOrDefault("duration", 86400)).append(",");
+                    sb.append("\"status\":\"").append(escapeJson(String.valueOf(s.getOrDefault("status", "active")))).append("\",");
+                    sb.append("\"buyer\":\"").append(escapeJson(String.valueOf(s.getOrDefault("buyer", "")))).append("\",");
+                    sb.append("\"bought_at\":").append(s.getOrDefault("bought_at", 0)).append(",");
+                    sb.append("\"created_at\":").append(s.getOrDefault("created_at", 0));
+                    sb.append("}");
+                }
+                Map<String, String> params = new LinkedHashMap<>();
+                params.put("action", "sync_land_shop");
+                params.put("secret", secretKey);
+                params.put("items", "[" + sb.toString() + "]");
+                httpGet("api/sync.php", params);
+            }
+
+            plugin.getLogger().fine("[Web通信] 领地数据同步完成");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 领地同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
      * 5. 推送债券余额快照到Web端
      */
     public void syncBondBalances() {
@@ -2852,14 +3075,15 @@ public class WebManager {
                 new BukkitRunnable() {
                     @Override
                     public void run() {
-                        syncShopData();
-                        syncBondBalances();
-                        syncBondTransactions();
-                        syncUserRegistrations();
-                        syncServiceProviders();
+                        submitDbTask("管理-syncShopData", () -> syncShopData());
+                        submitDbTask("管理-syncBondBalances", () -> syncBondBalances());
+                        submitDbTask("管理-syncBondTransactions", () -> syncBondTransactions());
+                        submitDbTask("管理-syncUserRegistrations", () -> syncUserRegistrations());
+                        submitDbTask("管理-syncServiceProviders", () -> syncServiceProviders());
+                        submitDbTask("管理-syncLandData", () -> syncLandData());
                     }
                 }.runTaskAsynchronously(plugin);
-                sender.sendMessage("§a[Web] 同步任务已启动...");
+                sender.sendMessage("§a[Web] 同步任务已启动（通过DB队列串行化）...");
                 break;
 
             case "token":
@@ -2959,14 +3183,25 @@ public class WebManager {
         new BukkitRunnable() {
             @Override
             public void run() {
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                // 登录操作通过DB队列串行化，高优先级
+                submitDbTask("登录轮询-pollWebLoginConfirmations", () -> {
                     try {
                         pollWebLoginConfirmations();
+                    } catch (Exception e) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                            plugin.getLogger().warning("[Web登录轮询] pollWebLoginConfirmations异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                            lastPollWebLoginExceptionLog = now;
+                        }
+                    }
+                });
+                submitDbTask("登录轮询-pollWebLoginRequests", () -> {
+                    try {
                         pollWebLoginRequests();
                     } catch (Exception e) {
                         long now = System.currentTimeMillis();
                         if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
-                            plugin.getLogger().warning("[Web登录轮询] 异步执行异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                            plugin.getLogger().warning("[Web登录轮询] pollWebLoginRequests异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                             lastPollWebLoginExceptionLog = now;
                         }
                     }
@@ -2974,7 +3209,7 @@ public class WebManager {
             }
         }.runTaskTimer(plugin, 100L, 100L); // 5秒一次（100 ticks）
 
-        plugin.getLogger().info("[Web通信] Web登录轮询已启动（每5秒，保障登录体验）");
+        plugin.getLogger().info("[Web通信] Web登录轮询已启动（每5秒，通过DB队列串行化，高优先级）");
     }
 
     /**
@@ -2990,11 +3225,20 @@ public class WebManager {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
 
             int code = conn.getResponseCode();
-            if (code != 200) return;
+            if (code != 200) {
+                loginPollFailCount++;
+                long now = System.currentTimeMillis();
+                if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
+                    plugin.getLogger().warning("[Web登录确认轮询] HTTP状态码: " + code + " (连续失败" + loginPollFailCount + "次)");
+                    lastLoginPollLogTime = now;
+                }
+                conn.disconnect();
+                return;
+            }
 
             BufferedReader reader = new BufferedReader(
                     new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
@@ -3002,6 +3246,10 @@ public class WebManager {
             String line;
             while ((line = reader.readLine()) != null) sb.append(line);
             reader.close();
+            conn.disconnect();
+
+            // 成功 → 重置
+            loginPollFailCount = 0;
 
             // 解析JSON响应
             String json = sb.toString();
@@ -3046,10 +3294,12 @@ public class WebManager {
                 });
             }
         } catch (Exception e) {
+            loginPollFailCount++;
             long now = System.currentTimeMillis();
-            if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
-                plugin.getLogger().warning("[Web登录确认轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                lastPollWebLoginExceptionLog = now;
+            if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
+                plugin.getLogger().warning("[Web登录确认轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage()
+                        + " (连续失败" + loginPollFailCount + "次)");
+                lastLoginPollLogTime = now;
             }
         }
     }
@@ -3080,8 +3330,8 @@ public class WebManager {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
 
             int code = conn.getResponseCode();
             if (code != 200) return;
@@ -4004,15 +4254,15 @@ public class WebManager {
                 if (notifyTime > 0 && now - notifyTime < 300000) {
                     // 有人在线才响应通知
                     if (!Bukkit.getOnlinePlayers().isEmpty()) {
-                        // ★ 先拉取（PHP→Java），再推送（Java→PHP），确保不覆盖管理员修改
-                        pullPendingTransactions();
-                        pullShopStock();
-                        pullBondChanges();
-                        syncOnlinePlayers();
-                        pushWebLoginCredentials();
-                        syncUserRegistrations();
-                        syncServiceProviders();
-                        syncShopData();
+                        // ★ 通过DB队列串行化执行同步
+                        submitDbTask("通知-syncOnlinePlayers", () -> syncOnlinePlayers());
+                        submitDbTask("通知-pushWebLoginCredentials", () -> pushWebLoginCredentials());
+                        submitDbTask("通知-syncUserRegistrations", () -> syncUserRegistrations());
+                        submitDbTask("通知-syncServiceProviders", () -> syncServiceProviders());
+                        submitDbTask("通知-syncShopData", () -> syncShopData());
+                        submitNormalDbTask("通知-pullPendingTransactions", () -> pullPendingTransactions());
+                        submitNormalDbTask("通知-pullShopStock", () -> pullShopStock());
+                        submitNormalDbTask("通知-pullBondChanges", () -> pullBondChanges());
                         // 删除通知文件
                         notifyFile.delete();
                     }
@@ -4163,12 +4413,11 @@ public class WebManager {
      * 使用随机间隔避免与其他轮询任务同时执行
      */
     private void scheduleRegisterRequestPoll() {
-        // ★ 注册请求轮询：有玩家在线时3-5秒（快速响应Web注册），无玩家在线时30秒（节省资源）
+        // ★ 注册请求轮询：通过DB队列串行化，高优先级
         new BukkitRunnable() {
             @Override
             public void run() {
-                // 异步执行轮询，避免阻塞主线程
-                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                submitDbTask("注册轮询-pollWebRegisterRequests", () -> {
                     try {
                         pollWebRegisterRequests();
                     } catch (Exception e) {
@@ -4196,12 +4445,18 @@ public class WebManager {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(10000);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
 
             int code = conn.getResponseCode();
             if (code != 200) {
-                plugin.getLogger().warning("[Web注册轮询] HTTP状态码: " + code);
+                registerPollFailCount++;
+                long now = System.currentTimeMillis();
+                if (now - lastRegisterPollLogTime > POLL_LOG_INTERVAL) {
+                    plugin.getLogger().warning("[Web注册轮询] HTTP状态码: " + code + " (连续失败" + registerPollFailCount + "次)");
+                    lastRegisterPollLogTime = now;
+                }
+                conn.disconnect();
                 return;
             }
 
@@ -4211,6 +4466,9 @@ public class WebManager {
             String line;
             while ((line = reader.readLine()) != null) sb.append(line);
             reader.close();
+
+            // 成功 → 重置
+            registerPollFailCount = 0;
 
             String json = sb.toString();
             if (!json.contains("\"success\":true")) {
@@ -4325,8 +4583,8 @@ public class WebManager {
                         // 同步注册到Web端
                         syncRegistration(fName, fHash, fSalt, fIp, fEmail);
 
-                        // 同步密码凭证到Web端
-                        pushWebLoginCredentials();
+                        // 同步密码凭证到Web端（通过DB队列）
+                        submitDbTask("注册后-pushWebLoginCredentials", () -> pushWebLoginCredentials());
 
                         // 确认注册完成
                         sendWebRegisterResult(fReqId, "success", "");
@@ -4341,10 +4599,12 @@ public class WebManager {
             }
 
         } catch (Exception e) {
+            registerPollFailCount++;
             long now = System.currentTimeMillis();
-            if (now - lastPollRegisterRequestsLog > LOG_INTERVAL) {
-                plugin.getLogger().warning("[Web注册轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                lastPollRegisterRequestsLog = now;
+            if (now - lastRegisterPollLogTime > POLL_LOG_INTERVAL) {
+                plugin.getLogger().warning("[Web注册轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage()
+                        + " (连续失败" + registerPollFailCount + "次)");
+                lastRegisterPollLogTime = now;
             }
         }
     }
@@ -4451,7 +4711,7 @@ public class WebManager {
                         }
 
                         syncRegistration(fName, fHash, fSalt, fIp, fEmail);
-                        pushWebLoginCredentials();
+                        submitDbTask("补全-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                         if (fReqId != null) {
                             sendWebRegisterResult(fReqId, "success", "补全同步");
                         }

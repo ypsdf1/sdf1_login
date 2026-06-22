@@ -49,6 +49,12 @@ public class ConfigManager {
     public int garbageInterval = 300;
     public int garbageMaxRounds = 1;
 
+    // ===== 区域防护配置 =====
+    public String areaProtectAdminMode = "tag"; // "tag" 或 "op"，不共存
+    public String areaProtectAdminTag = "admin"; // 管理员Tag名
+    public double areaProtectPricePerSqM = 10.0; // 每平米价格(债券)
+    public int areaProtectMaxLands = 3; // 每个玩家最大领地数
+
     // ★ 构造函数接收 File，和 Main.java 调用一致 ★
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
@@ -183,6 +189,12 @@ public class ConfigManager {
         rewardChannel = m.getOrDefault("奖励发放方式", "债券");
         rewardChannel = normalizeRewardChannel(rewardChannel);
 
+        // ===== 区域防护配置 =====
+        areaProtectAdminMode = m.getOrDefault("区域防护_管理员模式", "tag").toLowerCase();
+        areaProtectAdminTag = m.getOrDefault("区域防护_管理员Tag", adminTag);
+        areaProtectPricePerSqM = parseDouble(m.getOrDefault("区域防护_每平米价格", "10"), 10.0);
+        areaProtectMaxLands = parseInt(m.getOrDefault("区域防护_最大领地数", "3"), 3);
+
 // 验证合法值
         if (!"economy".equalsIgnoreCase(rewardChannel)
                 && !"bonds".equalsIgnoreCase(rewardChannel)) {
@@ -297,6 +309,11 @@ public class ConfigManager {
         L.add("签到债券最大=3");
         L.add("补签积分倍率=5");
         L.add("奖励发放方式=债券");
+        // 区域防护配置
+        L.add("区域防护_管理员模式=tag");
+        L.add("区域防护_管理员Tag=admin");
+        L.add("区域防护_每平米价格=10");
+        L.add("区域防护_最大领地数=3");
         writeLines(f, L);
     }
     public List<String> getAfkWhitelist() {

@@ -4194,6 +4194,50 @@ public class Main extends JavaPlugin
         }
     }
 
+    // ===== 铁砧改名颜色代码支持（&→§）=====
+    @EventHandler
+    public void onAnvilRename(org.bukkit.event.inventory.PrepareAnvilEvent e) {
+        if (e.getResult() == null) return;
+        ItemStack result = e.getResult();
+        if (result == null || !result.hasItemMeta()) return;
+        ItemMeta meta = result.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return;
+
+        String name = meta.getDisplayName();
+        // 检查是否包含 & 颜色码
+        if (!name.contains("&")) return;
+
+        // 转换 &颜色码 → §颜色码
+        String converted = convertColorCodes(name);
+        if (!converted.equals(name)) {
+            meta.setDisplayName(converted);
+            result.setItemMeta(meta);
+            e.setResult(result);
+        }
+    }
+
+    /**
+     * 将 & 颜色码转为 § 颜色码
+     * 支持 &0-9, &a-f, &k-l, &n, &o, &r
+     */
+    private String convertColorCodes(String text) {
+        if (text == null) return text;
+        String result = text;
+        // 数字
+        for (int i = 0; i <= 9; i++) {
+            result = result.replace("&" + i, "§" + i);
+        }
+        // 字母
+        for (char c : "abcdefklnor".toCharArray()) {
+            result = result.replace("&" + c, "§" + c);
+        }
+        // 大写
+        for (char c : "ABCDEFKLNOR".toCharArray()) {
+            result = result.replace("&" + c, "§" + Character.toLowerCase(c));
+        }
+        return result;
+    }
+
     // ===== Commands =====
     @Override
     public boolean onCommand(CommandSender sender,
@@ -4208,39 +4252,8 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§c区域防护未初始化");
                 return true;
             }
-            if (args.length == 0) {
-                sender.sendMessage("§a§l===== 区域防护 =====");
-                sender.sendMessage("§e/protect 工具 §7获取选区工具");
-                sender.sendMessage("§e/protect 创建 <区域名> §7创建区域");
-                sender.sendMessage("§e/protect 列表 §7查看所有区域");
-                sender.sendMessage("§e/protect 重载 §7重载配置");
-                sender.sendMessage("§e/protect add <玩家> §7全局加白");
-                sender.sendMessage("§e/protect add <区域> <玩家> §7区域加白");
-                sender.sendMessage("§e/protect remove <玩家> §7全局删白");
-                sender.sendMessage("§e/protect remove <区域> <玩家> §7区域删白");
-                sender.sendMessage("§e/protect additem <物品ID> §7全局加黑");
-                sender.sendMessage("§e/protect additem <区域> <物品ID> §7区域加黑");
-                sender.sendMessage("§e/protect removeitem <物品ID> §7全局删黑");
-                sender.sendMessage("§e/protect removeitem <区域> <物品ID> §7区域删黑");
-                sender.sendMessage("§e/protect list §7全局白名单");
-                sender.sendMessage("§e/protect list <区域> §7区域白名单");
-                sender.sendMessage("§e/protect listitem §7全局物品黑名单");
-                sender.sendMessage("§e/protect listitem <区域> §7区域物品黑名单");
-                sender.sendMessage("§e/protect expand [格数] §7扩建选区");
-                sender.sendMessage("§e/protect contraction [格数] §7收缩选区");
-                sender.sendMessage("§e/protect addname <区域> <名字> §7添加和平白名单生物");
-                sender.sendMessage("§e/protect removename <区域> <名字> §7移除和平白名单生物");
-                sender.sendMessage("§e/protect addwhite <玩家> §7添加模式排除玩家");
-                sender.sendMessage("§e/protect removewhite <玩家> §7移除模式排除玩家");
-                sender.sendMessage("§e/protect listname <区域> §7查看和平白名单");
-                sender.sendMessage("§e/protect listwhite §7查看模式排除名单");
-                sender.sendMessage("§a§l欢迎游玩草原探险服务器");
-                sender.sendMessage("§a§l服务器ip：mc2.ypshidifu.cn");
-                sender.sendMessage("§a§lJava免输端口，基岩版30679");
-
-                return true;
-            }
-            // 其他子命令交给 areaProtection
+            // 所有子命令（包括空参数）交给 areaProtection
+            // areaProtection内部有自己的showHelp()
             try {
                 return areaProtection.handleCommand(sender, args);
             } catch (Exception e) {
