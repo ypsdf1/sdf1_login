@@ -217,6 +217,20 @@ public class GUIManager implements Listener {
                     "§7给钱、扣钱"));
         }
 
+        // ★ 领地系统 - 39号位（读取用户偏好）
+        int landUiMode = 1;
+        try {
+            landUiMode = plugin.getDb()
+                    .getUiMode(p.getName());
+        } catch (Exception ignored) {}
+        g.setItem(39, mkItem(Material.GRASS_BLOCK,
+                "§a§l领地系统",
+                "§7管理你的领地和权限",
+                "",
+                landUiMode == 0
+                        ? "§e点击打开GUI"
+                        : "§e点击打开CLI"));
+
 
 
         // ===== Row0(0-8): 自定义菜单项 =====

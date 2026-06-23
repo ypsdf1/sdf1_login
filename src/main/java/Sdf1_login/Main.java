@@ -3537,6 +3537,25 @@ public class Main extends JavaPlugin
                 if (p.isOp() || isAdmin(p)) {
                     gui.openBalanceOps(p);
                 }
+            } else if (slot == 39) {
+                // ★ 领地系统入口 - 读取用户偏好
+                int uiMode = 1;
+                try {
+                    uiMode = getDb()
+                            .getUiMode(p.getName());
+                } catch (Exception ignored) {}
+                p.closeInventory();
+                if (uiMode == 0) {
+                    // GUI模式
+                    if (areaGUIManager != null) {
+                        areaGUIManager.openMainMenu(p);
+                    } else {
+                        p.sendMessage("§c领地管理器未初始化");
+                    }
+                } else {
+                    // CLI模式
+                    Bukkit.dispatchCommand(p, "protect menu");
+                }
             }
 
 

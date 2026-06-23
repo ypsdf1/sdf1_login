@@ -4455,6 +4455,25 @@ public class AreaProtection implements Listener {
                                  String[] args) {
         args = smartReorderArgs(args);
         if (args.length == 0) {
+            // ★ 读取用户偏好决定打开GUI还是CLI
+            if (sender instanceof Player) {
+                Player p = (Player) sender;
+                int uiMode = 1;
+                try {
+                    uiMode = plugin.getDb()
+                            .getUiMode(p.getName());
+                } catch (Exception ignored) {}
+                if (uiMode == 0) {
+                    // GUI模式 → 打开领地管理GUI
+                    if (plugin.areaGUIManager != null) {
+                        plugin.areaGUIManager.openMainMenu(p);
+                    } else {
+                        p.sendMessage("§cGUI管理器未初始化，显示文本帮助");
+                        showHelp(sender);
+                    }
+                    return true;
+                }
+            }
             showHelp(sender);
             return true;
         }
@@ -4562,6 +4581,36 @@ public class AreaProtection implements Listener {
                 plugin.areaGUIManager.openMainMenu(p);
             } else {
                 p.sendMessage("§cGUI管理器未初始化");
+            }
+            return true;
+        }
+
+        // ===== UI模式偏好 =====
+        if (sub.equals("uimode") || sub.equals("偏好")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                int current = plugin.getDb()
+                        .getUiMode(p.getName());
+                p.sendMessage("§e当前模式: §f"
+                        + (current == 0 ? "GUI" : "CLI"));
+                p.sendMessage("§7用法: /protect uimode <gui|cli>");
+                return true;
+            }
+            String mode = args[1].toLowerCase();
+            if (mode.equals("gui") || mode.equals("0")) {
+                plugin.getDb().setUiMode(p.getName(), 0);
+                p.sendMessage("§a已切换为 §6GUI §a模式");
+                p.sendMessage("§7下次输入 /protect 将打开GUI菜单");
+            } else if (mode.equals("cli") || mode.equals("1")) {
+                plugin.getDb().setUiMode(p.getName(), 1);
+                p.sendMessage("§a已切换为 §6CLI §a模式");
+                p.sendMessage("§7下次输入 /protect 将显示文本帮助");
+            } else {
+                p.sendMessage("§c用法: /protect uimode <gui|cli>");
             }
             return true;
         }
@@ -5975,7 +6024,7 @@ public class AreaProtection implements Listener {
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
                     + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -6225,6 +6274,9 @@ public class AreaProtection implements Listener {
         sendClickableHelp(s, "/protect shop list", "查看在售权限");
         sendClickableHelp(s, "/protect shop my", "查看我的权限");
         sendClickableHelp(s, "/protect info", "当前领地信息");
+
+        s.sendMessage("§e§l---- 设置 ----");
+        sendClickableHelp(s, "/protect uimode", "切换UI模式(GUI/CLI)");
 
         s.sendMessage("§b§l欢迎游玩草原探险服务器");
         s.sendMessage("§b§l服务器ip：mc2.ypshidifu.cn 端口30679");
