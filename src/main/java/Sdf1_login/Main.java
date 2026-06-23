@@ -2525,6 +2525,11 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 管理员配置输入拦截（GUI点击后聊天栏输入）
+        if (areaProtection != null && areaProtection.handleConfigInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
 
 // ===== 菜单聊天输入 =====
         if (getMenu().isEditing(p.getName())) {
@@ -6142,7 +6147,7 @@ public class Main extends JavaPlugin
                 // ★ cli: 子命令
                 if (sub.equals("cli")) {
                     return filterTab(
-                            Arrays.asList("menu", "lands", "manage", "members", "visitorperm", "toggle", "create"),
+                            Arrays.asList("menu", "lands", "manage", "members", "visitorperm", "toggle", "create", "config"),
                             args[1]);
                 }
             }
@@ -6198,6 +6203,12 @@ public class Main extends JavaPlugin
                     for (Player pl : Bukkit.getOnlinePlayers())
                         players.add(pl.getName());
                     return filterTab(players, args[2]);
+                }
+                // ★ config: 第三层是配置key
+                if (sub.equals("config")) {
+                    return filterTab(
+                            Arrays.asList("create_price", "max_lands", "default_height", "peace_duration"),
+                            args[2]);
                 }
                 // ★ cli manage/members/visitorperm/toggle: 第三层是领地名
                 if (sub.equals("cli")) {

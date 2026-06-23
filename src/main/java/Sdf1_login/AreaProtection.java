@@ -93,6 +93,10 @@ public class AreaProtection implements Listener {
         }
     }
     private final Map<String, PendingDelete> pendingDeletes = new ConcurrentHashMap<>();
+    // ★ 圈地工具冷却：UUID → 上次获取时间（package-private供AreaGUIManager访问）
+    final Map<java.util.UUID, Long> wandCooldownMap = new ConcurrentHashMap<>();
+    // ★ 管理员配置输入等待：UUID → 配置key（GUI点击后等待玩家聊天输入）
+    private final Map<java.util.UUID, String> pendingConfigInput = new ConcurrentHashMap<>();
 
     // ★ 全局配置默认值
     private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
@@ -4673,6 +4677,25 @@ public class AreaProtection implements Listener {
                 return true;
             }
             Player p = (Player) sender;
+            // ★ 5秒冷却
+            long now = System.currentTimeMillis();
+            Long lastGive = wandCooldownMap.get(p.getUniqueId());
+            if (lastGive != null && now - lastGive < 5000) {
+                long remaining = (5000 - (now - lastGive)) / 1000 + 1;
+                p.sendMessage("§c§l[防护] §f请等待 " + remaining + " 秒后再获取");
+                return true;
+            }
+            // ★ 检查是否已拥有
+            for (ItemStack item : p.getInventory().getContents()) {
+                if (item != null && item.getType() == WAND
+                        && item.hasItemMeta() && item.getItemMeta() != null
+                        && item.getItemMeta().hasDisplayName()
+                        && item.getItemMeta().getDisplayName().contains("区域选择工具")) {
+                    p.sendMessage("§e§l[防护] §f你已拥有圈地工具");
+                    wandCooldownMap.put(p.getUniqueId(), now);
+                    return true;
+                }
+            }
             ItemStack tool = new ItemStack(WAND);
             ItemMeta meta = tool.getItemMeta();
             meta.setDisplayName("§a§l区域选择工具");
@@ -4681,6 +4704,7 @@ public class AreaProtection implements Listener {
             tool.setItemMeta(meta);
             p.getInventory().addItem(tool);
             p.sendMessage("§a§l[防护] §f已获取选择工具");
+            wandCooldownMap.put(p.getUniqueId(), now);
             return true;
         }
 
@@ -4803,6 +4827,10 @@ public class AreaProtection implements Listener {
                     plugin.areaCLIManager.togglePerm(p, args[2], args[3], togglePage);
                     // ★ 切换后刷新到访客授权页面（停留当前页面，不退出）
                     plugin.areaCLIManager.refreshCurrentPage(p);
+                    break;
+                case "config":
+                    // ★ CLI全局配置页面
+                    plugin.areaCLIManager.showConfigPage(p);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -5940,6 +5968,8 @@ public class AreaProtection implements Listener {
             AreaConfig ac = areas.get(areaName);
             ac.owner = args[2];
             saveAreaToDb(ac);
+            // ★ 删除冷却期间变更所有者 → 自动取消删除
+            cancelPendingDelete(areaName);
             sender.sendMessage("§a已设置 §e" + areaName + " §a的所有者为 §e" + args[2]);
             return true;
         }
@@ -5967,6 +5997,11 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c需要领地所有者或管理员权限");
                     return true;
                 }
+                // ★ 删除冷却期间添加成员 → 自动取消删除
+                if (hasPendingDelete(ac.name)) {
+                    cancelPendingDelete(ac.name);
+                    p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
+                }
                 if (args.length < 2) {
                     sender.sendMessage("§c用法: /protect addvisitor <玩家>");
                     return true;
@@ -5981,6 +6016,11 @@ public class AreaProtection implements Listener {
             if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
                 return true;
+            }
+            // ★ 删除冷却期间添加成员 → 自动取消删除
+            if (hasPendingDelete(areaName)) {
+                cancelPendingDelete(areaName);
+                p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
             }
             addPlayerToAreaWhitelist(areaName, playerName);
             sender.sendMessage("§a已添加 §e" + playerName + " §a为 §e" + areaName + " §a的访客");
@@ -6009,6 +6049,11 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c需要领地所有者或管理员权限");
                     return true;
                 }
+                // ★ 删除冷却期间移除成员 → 自动取消删除
+                if (hasPendingDelete(ac.name)) {
+                    cancelPendingDelete(ac.name);
+                    p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
+                }
                 if (args.length < 2) {
                     sender.sendMessage("§c用法: /protect removevisitor <玩家>");
                     return true;
@@ -6023,6 +6068,11 @@ public class AreaProtection implements Listener {
             if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
                 return true;
+            }
+            // ★ 删除冷却期间移除成员 → 自动取消删除
+            if (hasPendingDelete(areaName)) {
+                cancelPendingDelete(areaName);
+                p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
             }
             removePlayerFromAreaWhitelist(areaName, playerName);
             sender.sendMessage("§a已移除 §e" + playerName + " §a的 §e" + areaName + " §a访客权限");
@@ -6203,7 +6253,8 @@ public class AreaProtection implements Listener {
     /**
      * 如果领地有待删除请求，取消它（玩家操作领地时自动解除冻结）
      */
-    private void cancelPendingDelete(String areaName) {
+    // ★ package-private供AreaCLIManager访问
+    void cancelPendingDelete(String areaName) {
         PendingDelete pd = pendingDeletes.remove(areaName);
         if (pd != null) {
             pd.task.cancel();
@@ -6550,6 +6601,235 @@ public class AreaProtection implements Listener {
      */
     public void setAreaConfigValue(String key, String value) {
         updateAreaConfig(key, value);
+    }
+
+    // ==================== 管理员配置输入（GUI→聊天栏） ====================
+
+    /**
+     * ★ 设置等待配置输入状态
+     */
+    public void setPendingConfigInput(java.util.UUID uuid, String configKey) {
+        pendingConfigInput.put(uuid, configKey);
+    }
+
+    /**
+     * ★ 检查并处理配置输入（在onPlayerChat中调用）
+     * @return true 如果是配置输入，已处理
+     */
+    public boolean handleConfigInput(Player p, String message) {
+        String configKey = pendingConfigInput.remove(p.getUniqueId());
+        if (configKey == null) return false;
+
+        // ★ 智能数字解析：支持纯数字、中文数字、中文大写、罗马数字、英文数字
+        Integer newValue = parseSmartNumber(message.trim());
+        if (newValue == null) {
+            p.sendMessage("§c§l[配置] §f无法识别输入的数字: " + message);
+            p.sendMessage("§7支持: 纯数字123、中文一二三、大写壹佰贰拾叁、罗马I II III、英文one two three");
+            return true;
+        }
+
+        // 读取当前值
+        int currentValue = 0;
+        try {
+            String v = getAreaConfigValue(configKey);
+            if (v != null) currentValue = Integer.parseInt(v);
+        } catch (Exception ignored) {}
+
+        // 应用新值（如果比原来大=加钱，比原来小=减钱，直接使用绝对值）
+        setAreaConfigValue(configKey, String.valueOf(newValue));
+
+        // 更新内存变量
+        switch (configKey) {
+            case "create_price_per_sqm": globalCreatePricePerSqm = newValue; break;
+            case "max_lands_per_player": globalMaxLandsPerPlayer = newValue; break;
+            case "default_height": globalDefaultHeight = newValue; break;
+        }
+
+        String configName = getConfigNameByKey(configKey);
+        p.sendMessage("§a§l[配置] §f" + configName + " 已更新: §e" + currentValue + " → " + newValue);
+
+        // 刷新GUI
+        if (plugin.areaGUIManager != null) {
+            plugin.areaGUIManager.openAdminPanel(p);
+        }
+        return true;
+    }
+
+    private String getConfigNameByKey(String key) {
+        switch (key) {
+            case "create_price_per_sqm": return "创建价格(每㎡)";
+            case "max_lands_per_player": return "每人最大领地数";
+            case "default_height": return "默认高度";
+            case "peace_mode_max_duration": return "和平模式最大时长(秒)";
+            default: return key;
+        }
+    }
+
+    /**
+     * ★ 智能数字解析：支持多种格式
+     * 纯数字、中文数字、中文大写、罗马数字、英文数字
+     */
+    public static Integer parseSmartNumber(String input) {
+        if (input == null || input.isEmpty()) return null;
+        input = input.trim().toLowerCase();
+
+        // 1. 纯数字
+        try {
+            return Integer.parseInt(input);
+        } catch (Exception ignored) {}
+
+        // 2. 中文数字（小写）
+        Integer result = parseChineseNumber(input);
+        if (result != null) return result;
+
+        // 3. 罗马数字
+        result = parseRomanNumber(input);
+        if (result != null) return result;
+
+        // 4. 英文数字单词
+        result = parseEnglishNumber(input);
+        if (result != null) return result;
+
+        return null;
+    }
+
+    /**
+     * 解析中文数字（一~九十九万九千九百九十九）
+     */
+    private static Integer parseChineseNumber(String input) {
+        if (input.isEmpty()) return null;
+
+        // 中文大写数字映射
+        String[][] chineseMap = {
+            {"零", "0"}, {"一", "1"}, {"二", "2"}, {"三", "3"}, {"四", "4"},
+            {"五", "5"}, {"六", "6"}, {"七", "7"}, {"八", "8"}, {"九", "9"},
+            {"壹", "1"}, {"贰", "2"}, {"叁", "3"}, {"肆", "4"}, {"伍", "5"},
+            {"陆", "6"}, {"柒", "7"}, {"捌", "8"}, {"玖", "9"},
+            {"十", "10"}, {"百", "100"}, {"千", "1000"}, {"万", "10000"},
+            {"拾", "10"}, {"佰", "100"}, {"仟", "1000"}
+        };
+
+        // 替换中文大写为小写
+        String normalized = input;
+        for (String[] pair : chineseMap) {
+            normalized = normalized.replace(pair[0], pair[1]);
+        }
+
+        // 检查是否包含数字
+        if (!normalized.matches("[0-9零一二三四五六七八九十百千万]+")) {
+            return null;
+        }
+
+        // 简单解析：直接替换后计算
+        try {
+            // 处理 "十二" 这种格式 → "12"
+            normalized = normalized.replace("零", "");
+            normalized = normalized.replace("一十", "10");
+            normalized = normalized.replace("二十", "20");
+            normalized = normalized.replace("三十", "30");
+            normalized = normalized.replace("四十", "40");
+            normalized = normalized.replace("五十", "50");
+            normalized = normalized.replace("六十", "60");
+            normalized = normalized.replace("七十", "70");
+            normalized = normalized.replace("八十", "80");
+            normalized = normalized.replace("九十", "90");
+
+            // 处理 "一百" 格式
+            if (normalized.contains("百")) {
+                String[] parts = normalized.split("百");
+                int hundreds = Integer.parseInt(parts[0]) * 100;
+                int tens = parts.length > 1 && !parts[1].isEmpty() ? Integer.parseInt(parts[1]) : 0;
+                return hundreds + tens;
+            }
+
+            // 处理 "千" 格式
+            if (normalized.contains("千")) {
+                String[] parts = normalized.split("千");
+                int thousands = Integer.parseInt(parts[0]) * 1000;
+                int rest = parts.length > 1 && !parts[1].isEmpty() ? Integer.parseInt(parts[1]) : 0;
+                return thousands + rest;
+            }
+
+            // 处理 "万" 格式
+            if (normalized.contains("万")) {
+                String[] parts = normalized.split("万");
+                int tenThousands = Integer.parseInt(parts[0]) * 10000;
+                int rest = parts.length > 1 && !parts[1].isEmpty() ? Integer.parseInt(parts[1]) : 0;
+                return tenThousands + rest;
+            }
+
+            // 纯数字
+            return Integer.parseInt(normalized);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 解析罗马数字
+     */
+    private static Integer parseRomanNumber(String input) {
+        input = input.toUpperCase();
+        if (!input.matches("[IVXLCDM]+")) return null;
+
+        int result = 0;
+        int prev = 0;
+        for (int i = input.length() - 1; i >= 0; i--) {
+            int val = 0;
+            switch (input.charAt(i)) {
+                case 'I': val = 1; break;
+                case 'V': val = 5; break;
+                case 'X': val = 10; break;
+                case 'L': val = 50; break;
+                case 'C': val = 100; break;
+                case 'D': val = 500; break;
+                case 'M': val = 1000; break;
+            }
+            if (val < prev) result -= val;
+            else result += val;
+            prev = val;
+        }
+        return result > 0 ? result : null;
+    }
+
+    /**
+     * 解析英文数字单词
+     */
+    private static Integer parseEnglishNumber(String input) {
+        input = input.toLowerCase().trim();
+        switch (input) {
+            case "zero": return 0;
+            case "one": return 1;
+            case "two": return 2;
+            case "three": return 3;
+            case "four": return 4;
+            case "five": return 5;
+            case "six": return 6;
+            case "seven": return 7;
+            case "eight": return 8;
+            case "nine": return 9;
+            case "ten": return 10;
+            case "eleven": return 11;
+            case "twelve": return 12;
+            case "thirteen": return 13;
+            case "fourteen": return 14;
+            case "fifteen": return 15;
+            case "sixteen": return 16;
+            case "seventeen": return 17;
+            case "eighteen": return 18;
+            case "nineteen": return 19;
+            case "twenty": return 20;
+            case "thirty": return 30;
+            case "forty": return 40;
+            case "fifty": return 50;
+            case "sixty": return 60;
+            case "seventy": return 70;
+            case "eighty": return 80;
+            case "ninety": return 90;
+            case "hundred": return 100;
+            case "thousand": return 1000;
+            default: return null;
+        }
     }
 
     /**

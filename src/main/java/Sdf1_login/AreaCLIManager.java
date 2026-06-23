@@ -108,6 +108,12 @@ public class AreaCLIManager {
         p.sendMessage(clickableAction("ℹ", "当前领地信息",
                 "/protect info"));
 
+        // ★ 管理员配置入口
+        if (areaProtect.isAreaAdmin(p)) {
+            p.sendMessage(clickableAction("⚙", "全局配置",
+                    "/protect cli config"));
+        }
+
         // 设置
         int uiMode = 1;
         try { uiMode = plugin.getDb().getUiMode(p.getName()); } catch (Exception ignored) {}
@@ -115,6 +121,77 @@ public class AreaCLIManager {
                 "/protect uimode " + (uiMode == 0 ? "cli" : "gui")));
 
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    // ==================== 全局配置（CLI交互式） ====================
+
+    /**
+     * ★ CLI全局配置页面：显示当前配置项，点击可修改
+     */
+    public void showConfigPage(Player p) {
+        p.sendMessage(header("全局配置"));
+
+        String price = areaProtect.getAreaConfigValue("create_price_per_sqm");
+        String maxLands = areaProtect.getAreaConfigValue("max_lands_per_player");
+        String height = areaProtect.getAreaConfigValue("default_height");
+        String peace = areaProtect.getAreaConfigValue("peace_mode_max_duration");
+
+        // 创建价格
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a创建价格(每㎡): §f" + (price != null ? price : "10") + " "))
+                .append(Component.text("§a[+10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config create_price " + safeParseInt(price, 10, 10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值（比当前大=加钱，比当前小=减钱）"))))
+                .append(Component.text("§c[-10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config create_price " + safeParseInt(price, 10, -10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值（比当前大=加钱，比当前小=减钱）"))))
+        );
+
+        // 每人最大领地数
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a每人最大领地数: §f" + (maxLands != null ? maxLands : "5") + " "))
+                .append(Component.text("§a[+1] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config max_lands " + safeParseInt(maxLands, 5, 1)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+                .append(Component.text("§c[-1] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config max_lands " + safeParseInt(maxLands, 5, -1)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+        );
+
+        // 默认高度
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a默认高度: §f" + (height != null ? height : "255") + " "))
+                .append(Component.text("§a[+10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config default_height " + safeParseInt(height, 255, 10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+                .append(Component.text("§c[-10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config default_height " + safeParseInt(height, 255, -10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+        );
+
+        // 和平时长
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a和平模式最大时长(秒): §f" + (peace != null ? peace : "3600") + " "))
+                .append(Component.text("§a[+600] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config peace_duration " + safeParseInt(peace, 3600, 600)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+                .append(Component.text("§c[-600] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config peace_duration " + safeParseInt(peace, 3600, -600)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+        );
+
+        p.sendMessage(Component.text("§7提示: 点击修改值后，可在聊天栏输入任意数字进行精确调整"));
+        p.sendMessage(Component.text("§7支持: 纯数字、中文数字、中文大写、罗马数字、英文数字"));
+
+        p.sendMessage(clickableAction("◀", "返回主菜单", "/protect cli menu"));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    private int safeParseInt(String val, int defaultVal, int delta) {
+        try {
+            if (val != null) return Integer.parseInt(val) + delta;
+        } catch (Exception ignored) {}
+        return defaultVal + delta;
     }
 
     // ==================== 领地列表 ====================
@@ -407,6 +484,12 @@ public class AreaCLIManager {
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
             return;
+        }
+
+        // ★ 删除冷却期间修改权限 → 自动取消删除
+        if (areaProtect.hasPendingDelete(landName)) {
+            areaProtect.cancelPendingDelete(landName);
+            p.sendMessage(Component.text("§e§l[防护] §f检测到权限修改，已自动取消领地删除"));
         }
 
         // 切换权限

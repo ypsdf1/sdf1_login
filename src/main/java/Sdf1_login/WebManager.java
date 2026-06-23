@@ -270,6 +270,8 @@ public class WebManager {
         sslCircuitOpenUntil = 0;
         sslConsecutiveFailures = 0;
         plugin.getLogger().info("[Web通信] SSL断路器冷却结束，恢复轮询");
+        // ★ 重建HttpClient，清除可能损坏的连接状态
+        rebuildHttpClient();
         return false;
     }
 
@@ -295,6 +297,9 @@ public class WebManager {
      * ★ 彻底方案：用 java.net.http.HttpClient 替代 HttpsURLConnection
      * HttpsURLConnection 内部调用 factory.createSocket()(无参版本)绕过了自定义工厂的配置
      * HttpClient 原生处理 ALPN/SNI/TLS协商，完全不走HttpsURLConnection的工厂机制
+     *
+     * ★ 信任策略：有证→通过，没证→拦截（信任所有证书，包括自签名）
+     * ★ CF兼容：强制TLS 1.2 + 指定密码套件 + 自动重建连接
      */
     private void initSSL() {
         final TrustManager[] trustAllCerts = new TrustManager[]{
@@ -306,22 +311,74 @@ public class WebManager {
         };
 
         try {
-            // ★ 使用通用TLS（不限版本），让Java协商最佳TLS版本
-            SSLContext sc = SSLContext.getInstance("TLS");
+            // ★ 使用TLS 1.2（CF兼容性最好，TLS 1.3与CF边缘偶发不兼容）
+            SSLContext sc = SSLContext.getInstance("TLSv1.2");
             sc.init(null, trustAllCerts, new SecureRandom());
+
+            // ★ 配置SSL参数：指定兼容CF的密码套件
+            javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
+            sslParams.setCipherSuites(new String[]{
+                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+                    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
+                    "TLS_RSA_WITH_AES_128_GCM_SHA256",
+                    "TLS_RSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_RSA_WITH_AES_128_CBC_SHA256",
+                    "TLS_RSA_WITH_AES_256_CBC_SHA384"
+            });
+            sslParams.setProtocols(new String[]{"TLSv1.2"});
 
             // ★ java.net.http.HttpClient + HTTP/1.1
             // 不用HTTP/2：CF代理对HTTP/2的某些请求模式可能导致PHP返回500
             // HTTP/1.1更稳定，且curl(也是HTTP/1.1)测试正常
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
-                    .connectTimeout(Duration.ofSeconds(10))
+                    .sslParameters(sslParams)
+                    .connectTimeout(Duration.ofSeconds(15))
                     .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
-            plugin.getLogger().info("[Web通信] SSL已初始化(java.net.http.HttpClient, TLS自适应, 信任所有证书, HTTP/1.1)");
+            plugin.getLogger().info("[Web通信] SSL已初始化(TLSv1.2, 信任所有证书, CF兼容密码套件, HTTP/1.1)");
         } catch (Exception e) {
             plugin.getLogger().severe("[Web通信] SSL完全初始化失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 重建HttpClient（SSL断路器冷却后调用，清除可能损坏的连接状态）
+     */
+    private void rebuildHttpClient() {
+        try {
+            final TrustManager[] trustAllCerts = new TrustManager[]{
+                    new X509TrustManager() {
+                        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+                    }
+            };
+            SSLContext sc = SSLContext.getInstance("TLSv1.2");
+            sc.init(null, trustAllCerts, new SecureRandom());
+
+            javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
+            sslParams.setCipherSuites(new String[]{
+                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+                    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
+            });
+            sslParams.setProtocols(new String[]{"TLSv1.2"});
+
+            cfHttpClient = HttpClient.newBuilder()
+                    .sslContext(sc)
+                    .sslParameters(sslParams)
+                    .connectTimeout(Duration.ofSeconds(15))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .build();
+
+            plugin.getLogger().info("[Web通信] HttpClient已重建（清除连接状态）");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] HttpClient重建失败: " + e.getMessage());
         }
     }
 

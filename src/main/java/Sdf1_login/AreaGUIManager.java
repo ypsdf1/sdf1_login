@@ -819,6 +819,14 @@ public class AreaGUIManager implements Listener {
      * ★ 获取圈地工具（木棍）
      */
     private void giveWandTool(Player p) {
+        // ★ 5秒冷却
+        long now = System.currentTimeMillis();
+        Long lastGive = areaProtect.wandCooldownMap.get(p.getUniqueId());
+        if (lastGive != null && now - lastGive < 5000) {
+            long remaining = (5000 - (now - lastGive)) / 1000 + 1;
+            p.sendMessage("§c请等待 " + remaining + " 秒后再获取");
+            return;
+        }
         ItemStack wand = new ItemStack(Material.STICK);
         ItemMeta meta = wand.getItemMeta();
         if (meta != null) {
@@ -844,54 +852,37 @@ public class AreaGUIManager implements Listener {
         }
         p.getInventory().addItem(wand);
         p.sendMessage("§a已获取圈地工具（木棍），左键/右键选择区域边界");
+        areaProtect.wandCooldownMap.put(p.getUniqueId(), now);
     }
 
     /**
-     * ★ 处理管理员面板点击
+     * ★ 处理管理员面板点击 - 改为聊天栏输入模式
+     * 点击后打开聊天栏，玩家输入任意数字，比原来大=加钱，比原来小=减钱
+     * 支持：纯数字、中文数字、中文大写、罗马数字、英文数字
      */
     private void handleAdminPanelClick(Player p, int raw, boolean leftClick, boolean rightClick) {
-        // 读取当前值
-        int pricePerSqm = 10, maxLands = 5, defaultHeight = 255, peaceDuration = 3600;
-        try {
-            String v;
-            v = areaProtect.getAreaConfigValue("create_price_per_sqm");
-            if (v != null) pricePerSqm = Integer.parseInt(v);
-            v = areaProtect.getAreaConfigValue("max_lands_per_player");
-            if (v != null) maxLands = Integer.parseInt(v);
-            v = areaProtect.getAreaConfigValue("default_height");
-            if (v != null) defaultHeight = Integer.parseInt(v);
-            v = areaProtect.getAreaConfigValue("peace_mode_max_duration");
-            if (v != null) peaceDuration = Integer.parseInt(v);
-        } catch (Exception ignored) {}
-
         if (raw == 11) {
-            // 每平米价格
-            if (leftClick) pricePerSqm += 10;
-            else if (rightClick) pricePerSqm = Math.max(0, pricePerSqm - 10);
-            areaProtect.setAreaConfigValue("create_price_per_sqm", String.valueOf(pricePerSqm));
-            p.sendMessage("§a每平米价格已更新: §f" + pricePerSqm + " 元/㎡");
-            openAdminPanel(p);
+            // 每平米价格 - 打开聊天栏输入
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入新的每平米创建价格（当前值会自动对比）:");
+            p.sendMessage("§7支持: 纯数字123、中文一二三、大写壹佰贰拾叁、罗马I II III、英文one two three");
+            // 设置等待状态，监听玩家聊天输入
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "create_price_per_sqm");
         } else if (raw == 13) {
             // 最大领地数
-            if (leftClick) maxLands += 1;
-            else if (rightClick) maxLands = Math.max(1, maxLands - 1);
-            areaProtect.setAreaConfigValue("max_lands_per_player", String.valueOf(maxLands));
-            p.sendMessage("§a最大领地数已更新: §f" + maxLands + " 个");
-            openAdminPanel(p);
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入新的每人最大领地数:");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "max_lands_per_player");
         } else if (raw == 15) {
             // 默认高度
-            if (leftClick) defaultHeight += 32;
-            else if (rightClick) defaultHeight = Math.max(32, defaultHeight - 32);
-            areaProtect.setAreaConfigValue("default_height", String.valueOf(defaultHeight));
-            p.sendMessage("§a默认高度已更新: §f" + defaultHeight + " 格");
-            openAdminPanel(p);
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入新的默认高度:");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "default_height");
         } else if (raw == 22) {
             // 和平模式时间
-            if (leftClick) peaceDuration += 600;
-            else if (rightClick) peaceDuration = Math.max(60, peaceDuration - 600);
-            areaProtect.setAreaConfigValue("peace_mode_max_duration", String.valueOf(peaceDuration));
-            p.sendMessage("§a和平模式时间已更新: §f" + peaceDuration + " 秒");
-            openAdminPanel(p);
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入新的和平模式最大时长(秒):");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "peace_mode_max_duration");
         } else if (raw == 48) {
             openMainMenu(p);
         }
