@@ -698,7 +698,7 @@ public class AreaGUIManager implements Listener {
                             (land.z1 + land.z2) / 2.0
                     );
                     p.teleport(tpLoc);
-                    p.sendMessage("§a已传送到领地: " + land.name);
+                    // ★ GUI模式不发送聊天消息
                 }
             } else if (raw == 45 && page > 0) {
                 openLandList(p, page - 1);
@@ -737,7 +737,7 @@ public class AreaGUIManager implements Listener {
                             (land.z1 + land.z2) / 2.0
                     );
                     p.teleport(tpLoc);
-                    p.sendMessage("§a已传送到领地: " + landName);
+                    // ★ GUI模式不发送聊天消息
                 }
             } else if (raw == 48) {
                 openLandList(p, 0);
@@ -765,7 +765,7 @@ public class AreaGUIManager implements Listener {
                 } else if (event.isRightClick()) {
                     // 右键：移除成员
                     areaProtect.removeLandMember(landName, member);
-                    p.sendMessage("§a已移除成员: " + member);
+                    // ★ GUI模式不发送聊天消息
                     openMemberList(p, landName, page);
                 }
             } else if (raw == 45) {
@@ -797,7 +797,7 @@ public class AreaGUIManager implements Listener {
             if (raw >= 0 && raw < (end - start)) {
                 PermEntry perm = perms.get(start + raw);
                 togglePerm(land, perm.name);
-                p.sendMessage("§a已切换权限: " + perm.name);
+                // ★ GUI模式不发送聊天消息（视觉反馈已在GUI中体现）
                 openVisitorPerm(p, landName, page);
             } else if (raw == 45 && page > 0) {
                 openVisitorPerm(p, landName, page - 1);
@@ -871,13 +871,13 @@ public class AreaGUIManager implements Listener {
                             : getLandDefaultVal(land, field);
                     boolean newVal = !currentVal;
                     areaProtect.setPlayerPerm(landId, targetPlayer, field, newVal);
-                    p.sendMessage("§a已设置 §e" + targetPlayer + " §a的权限");
+                    // ★ GUI模式不发送聊天消息
                     openPlayerPerm(p, landName, targetPlayer);
                 }
             } else if (raw == 48) {
                 // 清除所有自定义权限
                 areaProtect.setPlayerPermJson(landId, targetPlayer, "");
-                p.sendMessage("§a已清除 §e" + targetPlayer + " §a的所有自定义权限");
+                // ★ GUI模式不发送聊天消息
                 openMemberPermList(p, landName);
             } else if (raw == 49) {
                 // 返回成员列表
@@ -900,7 +900,7 @@ public class AreaGUIManager implements Listener {
                         String playerName = meta.getDisplayName()
                                 .replaceAll("§[0-9a-fk-orA-FK-OR]", "");
                         areaProtect.addLandMember(landName, playerName);
-                        p.sendMessage("§a已添加成员: " + playerName);
+                        // ★ GUI模式不发送聊天消息
                         openAddMember(p, landName);
                     }
                 }
@@ -923,13 +923,13 @@ public class AreaGUIManager implements Listener {
                 // 切换公告
                 land.enableAnnounce = !land.enableAnnounce;
                 areaProtect.saveAreaToDb(land);
-                p.sendMessage("§a领地公告: " + (land.enableAnnounce ? "§a已启用" : "§c已禁用"));
+                // ★ GUI模式不发送聊天消息
                 openLandSettings(p, landName);
             } else if (raw == 13) {
                 // 切换和平模式
                 land.peaceMode = !land.peaceMode;
                 areaProtect.saveAreaToDb(land);
-                p.sendMessage("§a和平模式: " + (land.peaceMode ? "§a已启用" : "§c已禁用"));
+                // ★ GUI模式不发送聊天消息
                 openLandSettings(p, landName);
             } else if (raw == 15) {
                 // 切换强制游戏模式
@@ -1103,7 +1103,7 @@ public class AreaGUIManager implements Listener {
             }
         }
         p.getInventory().addItem(wand);
-        p.sendMessage("§a已获取圈地工具（木棍），左键/右键选择区域边界");
+        // ★ GUI模式不发送聊天消息
         areaProtect.wandCooldownMap.put(p.getUniqueId(), now);
     }
 

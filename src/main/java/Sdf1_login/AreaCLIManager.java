@@ -645,6 +645,14 @@ public class AreaCLIManager {
             return;
         }
 
+        // ★ 权限检查：只有所有者或管理员能编辑成员权限
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
         // 获取成员列表
         Set<String> members = areaProtect.getAreaMembers(landName);
         if (members == null || members.isEmpty()) {
@@ -668,9 +676,9 @@ public class AreaCLIManager {
 
         for (int i = start; i < end; i++) {
             String member = memberList.get(i);
-            boolean isOwner = member.equalsIgnoreCase(land.owner);
+            boolean isMemberOwner = member.equalsIgnoreCase(land.owner);
 
-            String roleTag = isOwner ? " §c[所有者]" : "";
+            String roleTag = isMemberOwner ? " §c[所有者]" : "";
             Component line = Component.empty();
             line = line.append(Component.text("§e● " + member + roleTag));
             line = line.append(Component.text(" "));
@@ -717,6 +725,14 @@ public class AreaCLIManager {
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        // ★ 权限检查：只有所有者或管理员能编辑成员权限
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
             return;
         }
 

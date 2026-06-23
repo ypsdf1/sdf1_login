@@ -45,6 +45,7 @@ txt/
 backup/
 新建*.txt
 群戏归类.txt
+upload_sftp.py
 
 # PHP Web 后端
 web/Web.db

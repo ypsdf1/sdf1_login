@@ -101,7 +101,7 @@ public class AreaProtection implements Listener {
     private int globalDefaultHeight = 255;      // 默认高度
 
     // 选地
-    private static final Material WAND = Material.BREEZE_ROD;
+    private static final Material WAND = Material.BLAZE_ROD;
 
     private final Map<UUID, Location> pos1 =
             new ConcurrentHashMap<>();
@@ -4165,7 +4165,7 @@ public class AreaProtection implements Listener {
         if (hand == null) return;
 
         // ===== 选区工具 =====
-        if (hand.getType() == Material.BREEZE_ROD) {
+        if (hand.getType() == Material.BLAZE_ROD) {
             ItemMeta meta = hand.getItemMeta();
             if (meta != null && meta.getDisplayName() != null
                     && meta.getDisplayName().contains("区域选择")) {
@@ -5339,29 +5339,33 @@ public class AreaProtection implements Listener {
             try {
                 switch (key) {
                     case "create_price":
-                        globalCreatePricePerSqm = Integer.parseInt(value);
-                        updateAreaConfig("create_price_per_sqm", value);
-                        sender.sendMessage("§a创建价格已更新为: " + value + "/㎡");
+                        globalCreatePricePerSqm = parseSmartNumber(value, globalCreatePricePerSqm, 0);
+                        updateAreaConfig("create_price_per_sqm", String.valueOf(globalCreatePricePerSqm));
                         break;
                     case "max_lands":
-                        globalMaxLandsPerPlayer = Integer.parseInt(value);
-                        updateAreaConfig("max_lands_per_player", value);
-                        sender.sendMessage("§a每人最大领地数已更新为: " + value);
+                        globalMaxLandsPerPlayer = parseSmartNumber(value, globalMaxLandsPerPlayer, 1);
+                        updateAreaConfig("max_lands_per_player", String.valueOf(globalMaxLandsPerPlayer));
                         break;
                     case "default_height":
-                        updateAreaConfig("default_height", value);
-                        sender.sendMessage("§a默认高度已更新为: " + value);
+                        int newHeight = parseSmartNumber(value, 255, 1);
+                        updateAreaConfig("default_height", String.valueOf(newHeight));
                         break;
                     case "peace_duration":
-                        updateAreaConfig("peace_mode_max_duration", value);
-                        sender.sendMessage("§a和平模式最大时长已更新为: " + value + "秒");
+                        int newDuration = parseSmartNumber(value, 3600, 0);
+                        updateAreaConfig("peace_mode_max_duration", String.valueOf(newDuration));
                         break;
                     default:
                         sender.sendMessage("§c未知配置项: " + key);
-                        break;
+                        return true;
                 }
-            } catch (NumberFormatException e) {
-                sender.sendMessage("§c值必须是数字");
+                // ★ 更新后显示完整配置页面（而非仅打印"已更新"）
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.showConfigPage((Player) sender);
+                } else {
+                    sender.sendMessage("§a配置已更新");
+                }
+            } catch (Exception e) {
+                sender.sendMessage("§c无效的值: " + value + "（支持: 纯数字、+/-前缀、中文数字、罗马数字、英文数字）");
             }
             return true;
         }
@@ -6932,6 +6936,49 @@ public class AreaProtection implements Listener {
      * 纯数字、中文数字、中文大写、罗马数字、英文数字
      */
     public static Integer parseSmartNumber(String input) {
+        if (input == null || input.isEmpty()) return null;
+        input = input.trim().toLowerCase();
+
+        // ★ 支持 +/- 前缀（相对增减）
+        if (input.startsWith("+") || input.startsWith("-")) {
+            // +/- 前缀需要有后续数字
+            String numPart = input.substring(1).trim();
+            if (numPart.isEmpty()) return null;
+            Integer delta = parseSmartNumberBase(numPart);
+            if (delta == null) return null;
+            return input.startsWith("-") ? -delta : delta;
+        }
+
+        return parseSmartNumberBase(input);
+    }
+
+    /**
+     * ★ 智能数字解析（带默认值和下限）
+     * @param input 用户输入
+     * @param current 当前值（用于 +/- 计算）
+     * @param floor 最小值（封底）
+     */
+    public static int parseSmartNumber(String input, int current, int floor) {
+        if (input == null || input.isEmpty()) return current;
+        input = input.trim().toLowerCase();
+
+        // ★ 支持 +/- 前缀（相对增减）
+        if (input.startsWith("+") || input.startsWith("-")) {
+            String numPart = input.substring(1).trim();
+            if (numPart.isEmpty()) return current;
+            Integer delta = parseSmartNumberBase(numPart);
+            if (delta == null) return current;
+            int result = input.startsWith("-") ? current - delta : current + delta;
+            return Math.max(result, floor);
+        }
+
+        // 纯数字（绝对值）
+        Integer abs = parseSmartNumberBase(input);
+        if (abs == null) return current;
+        return Math.max(abs, floor);
+    }
+
+    private static Integer parseSmartNumberBase(String input) {
         if (input == null || input.isEmpty()) return null;
         input = input.trim().toLowerCase();
 
