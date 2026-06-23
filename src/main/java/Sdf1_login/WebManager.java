@@ -10,6 +10,8 @@ import org.slf4j.LoggerFactory;
 import javax.net.ssl.*;
 import java.io.*;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -219,10 +221,15 @@ public class WebManager {
      * 使用TLS 1.2+以确保与Cloudflare兼容
      */
     private void initSSL() {
+        // ★ Cloudflare兼容SSL初始化
+        // 关键：系统属性必须在SSLContext创建之前设置
+        // 强制TLSv1.2（与CF边缘服务器最兼容，避免TLS 1.3协商问题）
+        System.setProperty("jdk.tls.client.protocols", "TLSv1.2");
+
         final TrustManager[] trustAllCerts = new TrustManager[]{
                 new X509TrustManager() {
                     public X509Certificate[] getAcceptedIssuers() {
-                        return null;
+                        return new X509Certificate[0];
                     }
 
                     public void checkClientTrusted(X509Certificate[] certs, String authType) {
@@ -233,25 +240,110 @@ public class WebManager {
                 }
         };
 
-        // 尝试所有可用的 TLS 版本，按优先级从高到低
-        String[] tlsVersions = {"TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1", "TLS"};
-        for (String version : tlsVersions) {
-            try {
-                SSLContext sc = SSLContext.getInstance(version);
-                sc.init(null, trustAllCerts, new SecureRandom());
-                HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
-                HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
-                // ★ Cloudflare兼容：设置系统属性确保SNI和密码套件正常工作
-                System.setProperty("jdk.tls.client.protocols", version);
-                System.setProperty("jdk.tls.client.enabledCipherSuites", "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384");
-                plugin.getLogger().info("[Web通信] SSL已初始化(" + version + ", 信任所有证书, Cloudflare兼容模式)");
-                return;
-            } catch (Exception e) {
-                plugin.getLogger().info("[Web通信] " + version + "不可用，尝试下一个版本");
-            }
-        }
+        try {
+            // ★ 直接用TLSv1.2，不尝试TLS 1.3（CF边缘与Java TLS 1.3有兼容性问题）
+            SSLContext sc = SSLContext.getInstance("TLSv1.2");
+            sc.init(null, trustAllCerts, new SecureRandom());
 
-        plugin.getLogger().warning("[Web通信] 所有TLS版本均不可用，SSL初始化失败");
+            // ★ 自定义SSLSocketFactory：每个socket强制配置协议和密码套件
+            // 这比 setDefaultSSLSocketFactory 更可靠，因为系统属性可能延迟生效
+            final SSLSocketFactory baseFactory = sc.getSocketFactory();
+            SSLSocketFactory cfFactory = new SSLSocketFactory() {
+                private static final String[] CF_CIPHER_SUITES = {
+                        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+                        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+                        "TLS_RSA_WITH_AES_128_GCM_SHA256",
+                        "TLS_RSA_WITH_AES_256_GCM_SHA384"
+                };
+
+                @Override
+                public String[] getDefaultCipherSuites() {
+                    return CF_CIPHER_SUITES;
+                }
+
+                @Override
+                public String[] getSupportedCipherSuites() {
+                    return CF_CIPHER_SUITES;
+                }
+
+                private void configureSocket(SSLSocket socket, String host) {
+                    // 强制TLS 1.2协议
+                    socket.setEnabledProtocols(new String[]{"TLSv1.2"});
+
+                    // 只保留服务端支持的密码套件
+                    java.util.List<String> supported = new ArrayList<>(Arrays.asList(socket.getSupportedCipherSuites()));
+                    java.util.List<String> enabled = new ArrayList<>();
+                    for (String cipher : CF_CIPHER_SUITES) {
+                        if (supported.contains(cipher)) {
+                            enabled.add(cipher);
+                        }
+                    }
+                    if (!enabled.isEmpty()) {
+                        socket.setEnabledCipherSuites(enabled.toArray(new String[0]));
+                    }
+
+                    // ★ SNI设置：Cloudflare需要正确的SNI才能路由到正确的站点
+                    if (host != null && !host.isEmpty() && !host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                        try {
+                            SSLParameters params = socket.getSSLParameters();
+                            java.util.List<SNIServerName> serverNames = new ArrayList<>();
+                            serverNames.add(new SNIHostName(host));
+                            params.setServerNames(serverNames);
+                            socket.setSSLParameters(params);
+                        } catch (Exception e) {
+                            // SNI设置失败不影响连接，只是可能无法正确路由
+                        }
+                    }
+                }
+
+                @Override
+                public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
+                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(s, host, port, autoClose);
+                    configureSocket(socket, host);
+                    return socket;
+                }
+
+                @Override
+                public Socket createSocket(String host, int port) throws IOException {
+                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
+                    configureSocket(socket, host);
+                    return socket;
+                }
+
+                @Override
+                public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port, localHost, localPort);
+                    configureSocket(socket, host);
+                    return socket;
+                }
+
+                @Override
+                public Socket createSocket(InetAddress host, int port) throws IOException {
+                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
+                    configureSocket(socket, null);
+                    return socket;
+                }
+
+                @Override
+                public Socket createSocket(InetAddress addr, int port, InetAddress localAddr, int localPort) throws IOException {
+                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(addr, port, localAddr, localPort);
+                    configureSocket(socket, null);
+                    return socket;
+                }
+            };
+
+            HttpsURLConnection.setDefaultSSLSocketFactory(cfFactory);
+            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+            plugin.getLogger().info("[Web通信] SSL已初始化(TLSv1.2, 自定义CF兼容工厂, 信任所有证书)");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] SSL初始化失败: " + e.getMessage());
+            // 降级：至少设置hostname验证旁路
+            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+        }
     }
 
     // ==================== 配置加载 ====================
