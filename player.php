@@ -675,43 +675,55 @@ if ($currentVersion !== $BUILD_VERSION) {
     async function doPasswordAuth() {
         const password = document.getElementById('authPassword').value;
         if (!password) { document.getElementById('authError').textContent = '请输入密码'; return; }
-        document.getElementById('authError').textContent = '验证中...';
+        document.getElementById('authError').textContent = '正在提交登录请求...';
         try {
-            const url = new URL(API + 'sync.php', location.href);
-            url.searchParams.set('action', 'verify_web_password');
-            const res = await fetch(url, {
+            // ★ 必须走web_login_request流程（Java验证密码），不能用verify_web_password（PHP直接验证=绕过Java）
+            const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({web_token: TOKEN, password: password})
+                body: JSON.stringify({player: currentPlayer, password: password})
             });
-            const data = await res.json();
-            if (data.success) {
-                AUTHENTICATED = true;
-                NEED_PASSWORD = false;
-                currentPlayer = data.data.player || currentPlayer;
-                localStorage.setItem('sdf1_player', currentPlayer);
-
-                // 检查是否需要修改密码（临时密码）
-                if (data.data.need_password_change === 1) {
-                    document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer + ' ⚠️ 请使用临时密码登录后立即修改密码';
-                    setTimeout(() => {
-                        glassAlert('您正在使用临时密码登录。为了您的账号安全，请在登录后立即修改密码！', '🔐');
-                    }, 500);
-                } else {
-                    document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer;
-                }
-                closeModal();
-                toast('验证成功', 'success');
-                try {
-                    const extUrl = new URL(API + 'sync.php', location.href);
-                    extUrl.searchParams.set('action', 'extend_web_token');
-                    extUrl.searchParams.set('web_token', TOKEN);
-                    await fetch(extUrl);
-                } catch(e) {}
-                switchPage(currentPage);
-            } else {
-                document.getElementById('authError').textContent = data.message || '验证失败';
+            const reqData = await reqRes.json();
+            if (!reqData.success) {
+                document.getElementById('authError').textContent = reqData.message || '提交失败';
+                return;
             }
+            const requestId = reqData.data.request_id;
+            document.getElementById('authError').textContent = '等待游戏服务器验证密码...';
+
+            // 轮询结果
+            let attempts = 0;
+            const pollInterval = setInterval(async () => {
+                attempts++;
+                if (attempts > 60) {
+                    clearInterval(pollInterval);
+                    document.getElementById('authError').textContent = '验证超时，请稍后重试';
+                    return;
+                }
+                try {
+                    const pollRes = await fetch(API + 'sync.php?action=check_web_login_result&player=' + encodeURIComponent(currentPlayer) + '&request_id=' + requestId);
+                    const pollData = await pollRes.json();
+                    if (pollData.success && pollData.data) {
+                        const result = pollData.data;
+                        if (result.status === 'success') {
+                            clearInterval(pollInterval);
+                            AUTHENTICATED = true;
+                            NEED_PASSWORD = false;
+                            const newToken = result.token;
+                            TOKEN = newToken;
+                            localStorage.setItem('sdf1_token', newToken);
+                            localStorage.setItem('sdf1_player', currentPlayer);
+                            document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer;
+                            closeModal();
+                            toast('验证成功', 'success');
+                            switchPage(currentPage);
+                        } else if (result.status === 'failed') {
+                            clearInterval(pollInterval);
+                            document.getElementById('authError').textContent = result.message || '密码错误';
+                        }
+                    }
+                } catch (e) { /* 继续轮询 */ }
+            }, 1000);
         } catch (e) {
             document.getElementById('authError').textContent = '连接失败: ' + e.message;
         }
