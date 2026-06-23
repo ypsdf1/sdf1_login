@@ -46,6 +46,18 @@ backup/
 新建*.txt
 群戏归类.txt
 
+# PHP Web 后端
+web/Web.db
+web/debug_log_tail.txt
+web/upload_debug.ps1
+web/api/*.bak*
+# 敏感文件 - 禁止提交上传/调试脚本
+web/upload_*.php
+web/self_update.php
+web/version_check.php
+web/debug_*.php
+web/db/debug_*.php
+
 # Windows 保留设备名（无法用普通 rm 删除）
 nul
 con
