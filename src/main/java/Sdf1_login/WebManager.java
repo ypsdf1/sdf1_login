@@ -239,29 +239,18 @@ public class WebManager {
             SSLContext sc = SSLContext.getInstance("TLS");
             sc.init(null, trustAllCerts, new SecureRandom());
 
-            // ★ java.net.http.HttpClient：原生处理 ALPN、SNI、HTTP/2
+            // ★ java.net.http.HttpClient + HTTP/1.1
+            // 不用HTTP/2：CF代理对HTTP/2的某些请求模式可能导致PHP返回500
+            // HTTP/1.1更稳定，且curl(也是HTTP/1.1)测试正常
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .connectTimeout(Duration.ofSeconds(10))
-                    .version(HttpClient.Version.HTTP_2)  // 优先HTTP/2（CF支持）
+                    .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
-            plugin.getLogger().info("[Web通信] SSL已初始化(java.net.http.HttpClient, TLS自适应, 信任所有证书, HTTP/2)");
+            plugin.getLogger().info("[Web通信] SSL已初始化(java.net.http.HttpClient, TLS自适应, 信任所有证书, HTTP/1.1)");
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] SSL初始化失败: " + e.getMessage());
-            // 降级：HTTP/1.1模式
-            try {
-                SSLContext sc = SSLContext.getInstance("TLS");
-                sc.init(null, trustAllCerts, new SecureRandom());
-                cfHttpClient = HttpClient.newBuilder()
-                        .sslContext(sc)
-                        .connectTimeout(Duration.ofSeconds(10))
-                        .version(HttpClient.Version.HTTP_1_1)
-                        .build();
-                plugin.getLogger().info("[Web通信] SSL降级为HTTP/1.1模式");
-            } catch (Exception e2) {
-                plugin.getLogger().severe("[Web通信] SSL完全初始化失败: " + e2.getMessage());
-            }
+            plugin.getLogger().severe("[Web通信] SSL完全初始化失败: " + e.getMessage());
         }
     }
 
@@ -286,7 +275,11 @@ public class WebManager {
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 return resp.body();
             }
-            plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + urlStr.substring(0, Math.min(120, urlStr.length())));
+            // ★ 500时记录响应体（PHP错误信息在body里）
+            String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
+            String body = resp.body();
+            String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
+            plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
             return null;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -330,7 +323,15 @@ public class WebManager {
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
-            return resp.body();
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                return resp.body();
+            }
+            // ★ 非2xx记录响应体
+            String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
+            String body = resp.body();
+            String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
+            plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            return null;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
