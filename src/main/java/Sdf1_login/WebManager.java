@@ -23,6 +23,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * Web通信管理器 - 插件与PHP后端的桥梁
@@ -315,18 +316,9 @@ public class WebManager {
             SSLContext sc = SSLContext.getInstance("TLSv1.2");
             sc.init(null, trustAllCerts, new SecureRandom());
 
-            // ★ 配置SSL参数：指定兼容CF的密码套件
+            // ★ 不要硬编码密码套件！JVM可能不支持某些套件导致IllegalArgumentException
+            // 只固定协议版本为TLSv1.2，密码套件让JVM自动选择
             javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
-            sslParams.setCipherSuites(new String[]{
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384",
-                    "TLS_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_RSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_RSA_WITH_AES_128_CBC_SHA256",
-                    "TLS_RSA_WITH_AES_256_CBC_SHA384"
-            });
             sslParams.setProtocols(new String[]{"TLSv1.2"});
 
             // ★ java.net.http.HttpClient + HTTP/1.1
@@ -339,7 +331,7 @@ public class WebManager {
                     .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
-            plugin.getLogger().info("[Web通信] SSL已初始化(TLSv1.2, 信任所有证书, CF兼容密码套件, HTTP/1.1)");
+            plugin.getLogger().info("[Web通信] SSL已初始化(TLSv1.2, 信任所有证书, 自动密码套件, HTTP/1.1)");
         } catch (Exception e) {
             plugin.getLogger().severe("[Web通信] SSL完全初始化失败: " + e.getMessage());
         }
@@ -361,12 +353,7 @@ public class WebManager {
             sc.init(null, trustAllCerts, new SecureRandom());
 
             javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
-            sslParams.setCipherSuites(new String[]{
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384"
-            });
+            // ★ 不硬编码密码套件，让JVM自动选择支持的套件
             sslParams.setProtocols(new String[]{"TLSv1.2"});
 
             cfHttpClient = HttpClient.newBuilder()
@@ -654,6 +641,7 @@ public class WebManager {
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
                 submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
+                submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
 
@@ -1118,6 +1106,7 @@ public class WebManager {
                         submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
                         submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
                         submitNormalDbTask("周期-syncLandData", () -> syncLandData());
+                        submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
                     } else {
                         // ★ 不在线：跳过非必要同步任务
                         plugin.getLogger().info("[Web通信] 全员下线，跳过非登录类同步任务");
@@ -2216,6 +2205,84 @@ public class WebManager {
     }
 
     /**
+     * 轮询PHP管理员变更（所有者变更、权限清除等）
+     */
+    private long lastPollAdminChangesId = 0;
+
+    public void pollAdminChanges() {
+        if (!enabled) return;
+
+        try {
+            AreaProtection areaProtect = plugin.getAreaProtection();
+            if (areaProtect == null) return;
+
+            // 查询PHP端管理员变更
+            String url = webBaseUrl + "/api/land_api.php?action=poll_admin_changes&secret=" + secretKey + "&last_id=" + lastPollAdminChangesId + "&limit=50";
+            String response = doGet(url);
+            if (response == null) return;
+
+            Map<String, Object> result = parseJson(response);
+            if (!Boolean.TRUE.equals(result.get("success"))) return;
+
+            List<Map<String, Object>> changes = (List<Map<String, Object>>) result.get("changes");
+            if (changes == null || changes.isEmpty()) return;
+
+            List<Integer> ackedIds = new ArrayList<>();
+
+            for (Map<String, Object> change : changes) {
+                int id = ((Number) change.getOrDefault("id", 0)).intValue();
+                String changeType = String.valueOf(change.getOrDefault("change_type", ""));
+                String targetName = String.valueOf(change.getOrDefault("target_name", ""));
+                String changeDataStr = String.valueOf(change.getOrDefault("change_data", "{}"));
+
+                Map<String, Object> changeData = parseJson(changeDataStr);
+                if (changeData == null) changeData = new HashMap<>();
+
+                try {
+                    switch (changeType) {
+                        case "owner_change": {
+                            // PHP端修改了领地所有者
+                            String newOwner = String.valueOf(changeData.getOrDefault("new_owner", ""));
+                            String landName = targetName;
+                            if (!newOwner.isEmpty() && !landName.isEmpty()) {
+                                // 更新本地领地所有者
+                                areaProtect.setLandOwnerFromWeb(landName, newOwner);
+                                plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
+                            }
+                            break;
+                        }
+                        case "perm_clear": {
+                            // PHP端清除了成员权限
+                            String playerName = targetName;
+                            String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
+                                // 清除本地成员权限
+                                areaProtect.clearPlayerPermFromWeb(landNameJson, playerName);
+                                plugin.getLogger().info("[Web通信] PHP端清除成员权限: " + playerName + " @ " + landNameJson);
+                            }
+                            break;
+                        }
+                        default:
+                            plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
+                    }
+                    ackedIds.add(id);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web通信] 处理变更失败(id=" + id + "): " + e.getMessage());
+                }
+            }
+
+            // 确认已处理的变更
+            if (!ackedIds.isEmpty()) {
+                String ackUrl = webBaseUrl + "/api/land_api.php?action=ack_admin_changes&secret=" + secretKey;
+                String ackBody = "ids=" + String.join(",", ackedIds.stream().map(String::valueOf).collect(Collectors.toList()));
+                httpPost(ackUrl, ackBody);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 轮询PHP管理员变更异常: " + e.getMessage());
+        }
+    }
+
+    /**
      * 5. 推送债券余额快照到Web端
      */
     public void syncBondBalances() {
@@ -3072,6 +3139,7 @@ public class WebManager {
                         submitDbTask("管理-syncUserRegistrations", () -> syncUserRegistrations());
                         submitDbTask("管理-syncServiceProviders", () -> syncServiceProviders());
                         submitDbTask("管理-syncLandData", () -> syncLandData());
+                        submitDbTask("管理-pollAdminChanges", () -> pollAdminChanges());
                     }
                 }.runTaskAsynchronously(plugin);
                 sender.sendMessage("§a[Web] 同步任务已启动（通过DB队列串行化）...");

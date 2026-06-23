@@ -46,9 +46,6 @@ import org.bukkit.event.entity.EntitySpawnEvent;
 import org.bukkit.entity.Item;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 
-
-
-
 public class AreaProtection implements Listener {
 
     // 三级权限枚举
@@ -2232,6 +2229,204 @@ public class AreaProtection implements Listener {
         return requiredLevel == PermissionLevel.VISITOR;
     }
 
+    // ===== Per-Player 独立权限系统 =====
+
+    /**
+     * 获取玩家在指定领地的独立权限JSON
+     * 格式: {"denyMove":true,"denyPVP":false,...}
+     * 空字符串或null表示没有自定义权限（使用领地默认）
+     */
+    public String getPlayerPermJson(int landId, String playerName) {
+        if (dbConnection == null) return "";
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT permissions FROM area_land_permissions "
+                            + "WHERE land_id = ? AND player_name = ?");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            ResultSet rs = stmt.executeQuery();
+            String result = "";
+            if (rs.next()) {
+                result = rs.getString("permissions");
+                if (result == null) result = "";
+            }
+            rs.close();
+            stmt.close();
+            return result;
+        } catch (SQLException e) {
+            return "";
+        }
+    }
+
+    /**
+     * 设置玩家在指定领地的独立权限JSON
+     */
+    public void setPlayerPermJson(int landId, String playerName, String permJson) {
+        if (dbConnection == null) return;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "UPDATE area_land_permissions SET permissions = ? "
+                            + "WHERE land_id = ? AND player_name = ?");
+            stmt.setString(1, permJson != null ? permJson : "");
+            stmt.setInt(2, landId);
+            stmt.setString(3, playerName);
+            stmt.executeUpdate();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 设置玩家权限失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取玩家独立权限（解析JSON为Map）
+     */
+    public Map<String, Boolean> getPlayerPermMap(int landId, String playerName) {
+        Map<String, Boolean> map = new HashMap<>();
+        String json = getPlayerPermJson(landId, playerName);
+        if (json == null || json.isEmpty()) return map;
+        // 简单解析 {"key":true,"key2":false}
+        String clean = json.trim();
+        if (clean.startsWith("{")) clean = clean.substring(1);
+        if (clean.endsWith("}")) clean = clean.substring(0, clean.length() - 1);
+        if (clean.isEmpty()) return map;
+        for (String pair : clean.split(",")) {
+            String[] kv = pair.split(":");
+            if (kv.length == 2) {
+                String key = kv[0].trim().replace("\"", "");
+                boolean val = Boolean.parseBoolean(kv[1].trim().replace("\"", ""));
+                map.put(key, val);
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 设置玩家独立权限中的单个权限项
+     * @param permName 权限名（如 "denyMove"）
+     * @param enabled true=启用限制（deny），false=取消限制（允许）
+     */
+    public void setPlayerPerm(int landId, String playerName, String permName, boolean enabled) {
+        Map<String, Boolean> map = getPlayerPermMap(landId, playerName);
+        map.put(permName, enabled);
+        String json = mapToJson(map);
+        setPlayerPermJson(landId, playerName, json);
+    }
+
+    /**
+     * 获取所有有独立权限的成员列表
+     */
+    public List<Map<String, Object>> getLandMembersWithPerms(int landId) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        if (dbConnection == null) return list;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT player_name, role, permissions FROM area_land_permissions "
+                            + "WHERE land_id = ?");
+            stmt.setInt(1, landId);
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> entry = new HashMap<>();
+                entry.put("player", rs.getString("player_name"));
+                entry.put("role", rs.getString("role"));
+                entry.put("permissions", rs.getString("permissions"));
+                list.add(entry);
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            // 忽略
+        }
+        return list;
+    }
+
+    /**
+     * ★ 核心方法：获取玩家的effective deny状态
+     * 优先级：per-player权限 > 领地默认权限
+     * @param permName 权限字段名（如 "denyMove"）
+     * @return true=限制生效，false=允许
+     */
+    public boolean getEffectiveDeny(Player player, AreaConfig ac, String permName) {
+        // ADMIN/OWNER不检查per-player deny
+        PermissionLevel level = getPermissionLevel(player, ac);
+        if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {
+            return false;
+        }
+
+        // 尝试读取per-player权限
+        int landId = getLandIdFromDb(ac.name);
+        if (landId > 0) {
+            Map<String, Boolean> playerPerms = getPlayerPermMap(landId, player.getName());
+            if (playerPerms.containsKey(permName)) {
+                return playerPerms.get(permName);
+            }
+        }
+
+        // 回退到领地默认权限
+        return getLandDefaultDeny(ac, permName);
+    }
+
+    /**
+     * 获取领地默认deny状态（按字段名映射）
+     */
+    private boolean getLandDefaultDeny(AreaConfig ac, String permName) {
+        switch (permName) {
+            case "denyMove": return ac.denyMove;
+            case "denyBlockPlace": return ac.denyBlockPlace;
+            case "denyBlockBreak": return ac.denyBlockBreak;
+            case "denyPVP": return ac.denyPVP;
+            case "denyFallDamage": return ac.denyFallDamage;
+            case "denyHunger": return ac.denyHunger;
+            case "denyAllDamage": return ac.denyAllDamage;
+            case "denyDrop": return ac.denyDrop;
+            case "denyMount": return ac.denyMount;
+            case "denyEnderPearl": return ac.denyEnderPearl;
+            case "denyBow": return ac.denyBow;
+            case "denyPotion": return ac.denyPotion;
+            case "denyExplosion": return ac.denyExplosion;
+            case "denyRaid": return ac.denyRaid;
+            case "denyFireSpread": return ac.denyFireSpread;
+            case "denyAllEffects": return ac.denyAllEffects;
+            case "denyItemFrame": return ac.denyItemFrame;
+            case "denyPickup": return ac.denyPickup;
+            case "denyFire": return ac.denyFire;
+            case "denyThrownProjectiles": return ac.denyThrownProjectiles;
+            case "denyGlowing": return ac.denyGlowing;
+            case "denyRedstoneInteraction": return ac.denyRedstoneInteraction;
+            case "denyDoorInteraction": return ac.denyDoorInteraction;
+            case "denyNoteblockJukebox": return ac.denyNoteblockJukebox;
+            case "denyLead": return ac.denyLead;
+            case "denyCropHarvest": return ac.denyCropHarvest;
+            case "denyWoolShear": return ac.denyWoolShear;
+            case "denyAnimalFeeding": return ac.denyAnimalFeeding;
+            case "peaceMode": return ac.peaceMode;
+            default: return false;
+        }
+    }
+
+    /**
+     * Map转简单JSON
+     */
+    private String mapToJson(Map<String, Boolean> map) {
+        if (map.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Boolean> e : map.entrySet()) {
+            if (!first) sb.append(",");
+            sb.append("\"").append(e.getKey()).append("\":").append(e.getValue());
+            first = false;
+        }
+        sb.append("}");
+        return sb.toString();
+    }
+
+    /**
+     * 获取指定领地的成员列表
+     */
+    public Set<String> getAreaMembers(String areaName) {
+        Set<String> members = areaPlayerWhitelist.get(areaName);
+        return members != null ? new HashSet<>(members) : new HashSet<>();
+    }
+
     // ===== 统一白名单检查（供所有事件处理器使用）=====
 
     /**
@@ -2529,8 +2724,8 @@ public class AreaProtection implements Listener {
             if (newArea != null) {
                 AreaConfig ac = areas.get(newArea);
                 if (ac != null) {
-                    // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能移动
-                    if (ac.denyMove && !hasPermission(p, ac, PermissionLevel.OWNER)) {
+                    // ★ denyMove检查：支持per-player独立权限
+                    if (getEffectiveDeny(p, ac, "denyMove")) {
                         Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
                         if (safeLoc != null) {
                             p.teleport(safeLoc);
@@ -2669,8 +2864,8 @@ public class AreaProtection implements Listener {
 
             AreaConfig newAc = areas.get(newArea);
             if (newAc != null) {
-                // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能进入
-                if (newAc.denyMove && !hasPermission(p, newAc, PermissionLevel.OWNER)) {
+                // ★ denyMove检查：支持per-player独立权限
+                if (getEffectiveDeny(p, newAc, "denyMove")) {
                     Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
                     if (safeLoc != null) {
                         p.teleport(safeLoc);
@@ -3877,12 +4072,9 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && ac.denyBlockPlace) {
-            // 访客禁止放置方块，所有者和管理员允许
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止放置方块");
-            }
+        if (ac != null && getEffectiveDeny(p, ac, "denyBlockPlace")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止放置方块");
         }
     }
 
@@ -3894,12 +4086,9 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && ac.denyBlockBreak) {
-            // 访客禁止破坏方块，所有者和管理员允许
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
-            }
+        if (ac != null && getEffectiveDeny(p, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
         }
     }
 
@@ -3914,9 +4103,9 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
         if (ac == null) return;
-        // 保护性规则：对所有人无条件生效
-        if (ac.denyAllDamage) { e.setCancelled(true); return; }
-        if (ac.denyFallDamage
+        // 保护性规则：支持per-player独立权限
+        if (getEffectiveDeny(p, ac, "denyAllDamage")) { e.setCancelled(true); return; }
+        if (getEffectiveDeny(p, ac, "denyFallDamage")
                 && e.getCause() == EntityDamageEvent.DamageCause.FALL)
             e.setCancelled(true);
     }
@@ -3932,12 +4121,9 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.denyPVP) {
-            // 访客禁止PVP，所有者和管理员允许
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止PVP");
-            }
+        if (ac != null && getEffectiveDeny(p, ac, "denyPVP")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止PVP");
         }
     }
 
@@ -3951,7 +4137,7 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.denyHunger)
+        if (ac != null && getEffectiveDeny(p, ac, "denyHunger"))
             e.setCancelled(true);
     }
 
@@ -3965,11 +4151,9 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.denyDrop) {
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
-            }
+        if (ac != null && getEffectiveDeny(p, ac, "denyDrop")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
         }
     }
 
@@ -4047,25 +4231,21 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockZ());
         if (ac == null) return;
 
-        // 末影珍珠禁止 (only for visitors)
-        if (ac.denyEnderPearl
+        // 末影珍珠禁止（支持per-player权限）
+        if (getEffectiveDeny(p, ac, "denyEnderPearl")
                 && hand.getType() == Material.ENDER_PEARL) {
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止使用末影珍珠");
-                return;
-            }
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止使用末影珍珠");
+            return;
         }
 
-        // 弓箭禁止 (only for visitors)
-        if (ac.denyBow
+        // 弓箭禁止（支持per-player权限）
+        if (getEffectiveDeny(p, ac, "denyBow")
                 && (hand.getType() == Material.BOW
                 || hand.getType() == Material.CROSSBOW)) {
-            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f禁止使用弓箭");
-                return;
-            }
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止使用弓箭");
+            return;
         }
 
         // 所有者+管理员跳过禁止使用物品检查
@@ -4217,11 +4397,9 @@ public class AreaProtection implements Listener {
                 shooter.getLocation().getBlockX(),
                 shooter.getLocation().getBlockY(),
                 shooter.getLocation().getBlockZ());
-        if (ac != null && ac.denyPotion) {
-            if (!hasPermission(shooter, ac, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                shooter.sendMessage("§c§l[区域防护] §f禁止使用药水");
-            }
+        if (ac != null && getEffectiveDeny(shooter, ac, "denyPotion")) {
+            e.setCancelled(true);
+            shooter.sendMessage("§c§l[区域防护] §f禁止使用药水");
         }
     }
 
@@ -4237,8 +4415,7 @@ public class AreaProtection implements Listener {
                 shooter.getLocation().getBlockY(),
                 shooter.getLocation().getBlockZ());
         if (ac == null) return;
-        if (!ac.denyThrownProjectiles) return;
-        if (hasPermission(shooter, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(shooter, ac, "denyThrownProjectiles")) return;
         // 检查投掷物类型：箭、三叉戟、雪球、风蛋、龙息弹等
         String typeName = proj.getType().name();
         if (typeName.contains("ARROW") || typeName.contains("TRIDENT")
@@ -4262,8 +4439,7 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getY(),
                 e.getClickedBlock().getZ());
         if (ac == null) return;
-        if (!ac.denyDoorInteraction) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyDoorInteraction")) return;
         // 按钮
         if (mat.name().contains("BUTTON")) {
             e.setCancelled(true);
@@ -4291,8 +4467,7 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getY(),
                 e.getClickedBlock().getZ());
         if (ac == null) return;
-        if (!ac.denyDoorInteraction) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyDoorInteraction")) return;
         String name = mat.name();
         if (name.contains("DOOR") || name.contains("GATE") || name.contains("FENCE_GATE")) {
             e.setCancelled(true);
@@ -4312,8 +4487,7 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getY(),
                 e.getClickedBlock().getZ());
         if (ac == null) return;
-        if (!ac.denyRedstoneInteraction) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyRedstoneInteraction")) return;
         if (mat == Material.REPEATER || mat == Material.COMPARATOR
                 || mat.name().contains("REPEATER") || mat.name().contains("COMPARATOR")) {
             e.setCancelled(true);
@@ -4333,8 +4507,7 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getY(),
                 e.getClickedBlock().getZ());
         if (ac == null) return;
-        if (!ac.denyNoteblockJukebox) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyNoteblockJukebox")) return;
         if (mat == Material.NOTE_BLOCK || mat.name().contains("JUKEBOX")
                 || mat.name().contains("CHERRY_JUKEBOX")) {
             e.setCancelled(true);
@@ -4368,8 +4541,7 @@ public class AreaProtection implements Listener {
                 loc.getBlockY(),
                 loc.getBlockZ());
         if (ac == null) return;
-        if (!ac.denyWoolShear) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyWoolShear")) return;
         String entityType = e.getEntity().getType().name();
         if (entityType.contains("SHEEP") || entityType.contains("MOoshroom")) {
             e.setCancelled(true);
@@ -4397,8 +4569,7 @@ public class AreaProtection implements Listener {
                 loc.getBlockY(),
                 loc.getBlockZ());
         if (ac == null) return;
-        if (!ac.denyAnimalFeeding) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyAnimalFeeding")) return;
         // 检查玩家手持的物品是否是食物
         ItemStack hand = p.getInventory().getItemInMainHand();
         if (hand != null && hand.getType().isEdible()) {
@@ -4420,8 +4591,7 @@ public class AreaProtection implements Listener {
                 loc.getBlockY(),
                 loc.getBlockZ());
         if (ac == null) return;
-        if (!ac.denyLead) return;
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (!getEffectiveDeny(p, ac, "denyLead")) return;
         e.setCancelled(true);
         p.sendMessage("§c§l[区域防护] §f禁止在此区域使用拴绳");
     }
@@ -4831,6 +5001,50 @@ public class AreaProtection implements Listener {
                 case "config":
                     // ★ CLI全局配置页面
                     plugin.areaCLIManager.showConfigPage(p);
+                    break;
+                case "memberperm":
+                    // ★ 成员独立权限列表
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli memberperm <领地名> [页码]");
+                        break;
+                    }
+                    int mpPage = 1;
+                    if (args.length >= 4) {
+                        try { mpPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showMemberPermList(p, args[2], mpPage);
+                    break;
+                case "playerperm":
+                    // ★ 某成员的独立权限编辑
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli playerperm <领地名> <玩家> [页码]");
+                        break;
+                    }
+                    int ppPage = 1;
+                    if (args.length >= 5) {
+                        try { ppPage = Integer.parseInt(args[4]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showPlayerPerm(p, args[2], args[3], ppPage);
+                    break;
+                case "toggleplayerperm":
+                    // ★ 切换某成员的独立权限
+                    if (args.length < 5) {
+                        p.sendMessage("§c用法: /protect cli toggleplayerperm <领地名> <玩家> <权限key> [页码]");
+                        break;
+                    }
+                    int tpPage = 1;
+                    if (args.length >= 6) {
+                        try { tpPage = Integer.parseInt(args[5]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.togglePlayerPerm(p, args[2], args[3], args[4], tpPage);
+                    break;
+                case "clearplayerperm":
+                    // ★ 清除某成员所有自定义权限
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli clearplayerperm <领地名> <玩家>");
+                        break;
+                    }
+                    plugin.areaCLIManager.clearPlayerPerm(p, args[2], args[3]);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -6529,7 +6743,7 @@ public class AreaProtection implements Listener {
     /**
      * 从数据库获取领地ID
      */
-    private int getLandIdFromDb(String name) {
+    public int getLandIdFromDb(String name) {
         if (dbConnection == null) return -1;
         try {
             PreparedStatement stmt = dbConnection.prepareStatement("SELECT id FROM area_lands WHERE name = ?");
@@ -6541,6 +6755,54 @@ public class AreaProtection implements Listener {
             return id;
         } catch (SQLException e) {
             return -1;
+        }
+    }
+
+    /**
+     * PHP端修改领地所有者时调用
+     */
+    public void setLandOwnerFromWeb(String landName, String newOwner) {
+        if (dbConnection == null) return;
+        try {
+            // 更新数据库
+            PreparedStatement ps = dbConnection.prepareStatement("UPDATE area_lands SET owner = ? WHERE name = ?");
+            ps.setString(1, newOwner);
+            ps.setString(2, landName);
+            ps.executeUpdate();
+            ps.close();
+
+            // 更新内存中的AreaConfig
+            AreaConfig ac = getLand(landName);
+            if (ac != null) {
+                ac.owner = newOwner;
+            }
+
+            plugin.getLogger().info("[防护] PHP端更新领地所有者: " + landName + " → " + newOwner);
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 更新领地所有者失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * PHP端清除成员权限时调用
+     */
+    public void clearPlayerPermFromWeb(String landName, String playerName) {
+        if (dbConnection == null) return;
+        try {
+            int landId = getLandIdFromDb(landName);
+            if (landId < 0) return;
+
+            // 清除数据库中的自定义权限
+            PreparedStatement ps = dbConnection.prepareStatement(
+                "UPDATE area_land_permissions SET permissions = '' WHERE land_id = ? AND player_name = ?");
+            ps.setInt(1, landId);
+            ps.setString(2, playerName);
+            ps.executeUpdate();
+            ps.close();
+
+            plugin.getLogger().info("[防护] PHP端清除成员权限: " + playerName + " @ " + landName);
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 清除成员权限失败: " + e.getMessage());
         }
     }
 
@@ -7076,11 +7338,9 @@ public class AreaProtection implements Listener {
             if (!(e.getDamager() instanceof Player)) return;
             Player p = (Player) e.getDamager();
 
-            // ★ 统一白名单检查（globalPlayerWhitelist + areaPlayerWhitelist）
+            // ★ 统一白名单检查（支持per-player权限）
             AreaConfig ac = findFrameArea(entity);
-            if (ac == null || !ac.denyItemFrame) return;
-
-            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+            if (ac == null || !getEffectiveDeny(p, ac, "denyItemFrame")) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -7096,11 +7356,9 @@ public class AreaProtection implements Listener {
                 p2.getLocation().getBlockX(),
                 p2.getLocation().getBlockY(),
                 p2.getLocation().getBlockZ());
-        if (ac2 != null && ac2.denyPVP) {
-            if (!hasPermission(p2, ac2, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p2.sendMessage("§c§l[区域防护] §f禁止PVP");
-            }
+        if (ac2 != null && getEffectiveDeny(p2, ac2, "denyPVP")) {
+            e.setCancelled(true);
+            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
         }
     }
 
@@ -7117,12 +7375,9 @@ public class AreaProtection implements Listener {
 
         Player p = e.getPlayer();
 
-        // ★ 使用统一的权限检查方法
+        // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(clicked);
-        if (ac == null || !ac.denyItemFrame) return;
-
-        // 所有者+管理员跳过
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (ac == null || !getEffectiveDeny(p, ac, "denyItemFrame")) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -7176,10 +7431,8 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
 
-            // ★ 使用统一的权限检查方法
-            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
-
-            if (!ac.denyItemFrame) return;
+            // ★ 使用统一的权限检查方法（支持per-player权限）
+            if (!getEffectiveDeny(p, ac, "denyItemFrame")) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -7195,11 +7448,9 @@ public class AreaProtection implements Listener {
                 p2.getLocation().getBlockX(),
                 p2.getLocation().getBlockY(),
                 p2.getLocation().getBlockZ());
-        if (ac2 != null && ac2.denyPVP) {
-            if (!hasPermission(p2, ac2, PermissionLevel.OWNER)) {
-                e.setCancelled(true);
-                p2.sendMessage("§c§l[区域防护] §f禁止PVP");
-            }
+        if (ac2 != null && getEffectiveDeny(p2, ac2, "denyPVP")) {
+            e.setCancelled(true);
+            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
         }
     }
     private AreaConfig findFrameArea(Entity frame) {
@@ -7239,11 +7490,9 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        // ★ 使用统一的权限检查方法
+        // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(hit);
-        if (ac == null || !ac.denyItemFrame) return;
-
-        if (hasPermission(shooter, ac, PermissionLevel.OWNER)) return;
+        if (ac == null || !getEffectiveDeny(shooter, ac, "denyItemFrame")) return;
 
         e.setCancelled(true);
         shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -7365,8 +7614,7 @@ public class AreaProtection implements Listener {
                     p.getLocation().getBlockX(),
                     p.getLocation().getBlockY(),
                     p.getLocation().getBlockZ());
-            if (ac != null && ac.denyGlowing) {
-                if (hasPermission(p, ac, PermissionLevel.OWNER)) continue;
+            if (ac != null && getEffectiveDeny(p, ac, "denyGlowing")) {
                 if (p.hasPotionEffect(PotionEffectType.GLOWING)) {
                     p.removePotionEffect(PotionEffectType.GLOWING);
                     p.sendMessage("§c§l[区域防护] §f此区域禁止使用发光效果");

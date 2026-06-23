@@ -320,8 +320,10 @@ public class AreaCLIManager {
         // ★ 细分管理选项
         p.sendMessage(clickableAction("👤", "用户管理",
                 "/protect cli members " + land.name + " 1"));
-        p.sendMessage(clickableAction("🔑", "访客授权",
+        p.sendMessage(clickableAction("🔑", "访客授权（全局）",
                 "/protect cli visitorperm " + land.name + " 1"));
+        p.sendMessage(clickableAction("🎯", "成员权限（独立）",
+                "/protect cli memberperm " + land.name + " 1"));
         // ★ 新增：设置传送点
         p.sendMessage(clickableAction("📍", "设置传送点（当前位置）",
                 "/protect settp " + land.name));
@@ -546,11 +548,17 @@ public class AreaCLIManager {
         String key;
         String name;
         boolean enabled;
+        boolean overridden; // 是否有per-player覆盖
 
         PermItem(String key, String name, boolean enabled) {
+            this(key, name, enabled, false);
+        }
+
+        PermItem(String key, String name, boolean enabled, boolean overridden) {
             this.key = key;
             this.name = name;
             this.enabled = enabled;
+            this.overridden = overridden;
         }
     }
 
@@ -620,6 +628,339 @@ public class AreaCLIManager {
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
             default: return key;
+        }
+    }
+
+    // ==================== Per-Player 独立权限管理 ====================
+
+    /**
+     * 显示成员列表（点击成员进入per-player权限编辑）
+     */
+    public void showMemberPermList(Player p, String landName, int page) {
+        savePageInfo(p, "memberperm", landName, page);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        // 获取成员列表
+        Set<String> members = areaProtect.getAreaMembers(landName);
+        if (members == null || members.isEmpty()) {
+            p.sendMessage(header("成员权限: " + landName));
+            p.sendMessage(Component.text("§7暂无成员，请先使用 §e/protect addvisitor §7添加"));
+            p.sendMessage(Component.empty()
+                    .append(Component.text("§a[◀ 返回管理]")
+                            .clickEvent(ClickEvent.runCommand(
+                                    "/protect cli manage " + land.name + " 1"))));
+            return;
+        }
+
+        List<String> memberList = new ArrayList<>(members);
+        int totalPages = Math.max(1, (int) Math.ceil((double) memberList.size() / PAGE_SIZE));
+        page = Math.max(1, Math.min(page, totalPages));
+
+        p.sendMessage(header("成员权限: " + landName + " §7第" + page + "/" + totalPages + "页"));
+
+        int start = (page - 1) * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, memberList.size());
+
+        for (int i = start; i < end; i++) {
+            String member = memberList.get(i);
+            boolean isOwner = member.equalsIgnoreCase(land.owner);
+
+            String roleTag = isOwner ? " §c[所有者]" : "";
+            Component line = Component.empty();
+            line = line.append(Component.text("§e● " + member + roleTag));
+            line = line.append(Component.text(" "));
+            line = line.append(Component.text("§a[编辑权限]")
+                    .hoverEvent(HoverEvent.showText(
+                            Component.text("§e设置该成员的独立权限")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli playerperm " + land.name + " " + member + " 1")));
+            p.sendMessage(line);
+        }
+
+        // 分页
+        if (totalPages > 1) {
+            Component pagination = Component.empty();
+            if (page > 1) {
+                pagination = pagination.append(Component.text("§a[◀ 上一页]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli memberperm " + land.name + " " + (page - 1))));
+                pagination = pagination.append(Component.text(" "));
+            }
+            pagination = pagination.append(Component.text("§7" + page + "/" + totalPages));
+            if (page < totalPages) {
+                pagination = pagination.append(Component.text(" "));
+                pagination = pagination.append(Component.text("§a[下一页 ▶]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli memberperm " + land.name + " " + (page + 1))));
+            }
+            p.sendMessage(pagination);
+        }
+
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a[◀ 返回管理]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli manage " + land.name + " " + page))));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    /**
+     * 显示某个成员的独立权限编辑页
+     */
+    public void showPlayerPerm(Player p, String landName, String targetPlayer, int page) {
+        savePageInfo(p, "playerperm", landName + ":" + targetPlayer, page);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        int landId = areaProtect.getLandIdFromDb(landName);
+        if (landId <= 0) {
+            p.sendMessage(Component.text("§c领地数据库ID获取失败"));
+            return;
+        }
+
+        // 获取该成员的per-player权限
+        Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
+        List<PermItem> perms = getPermListWithOverrides(land, playerPerms);
+
+        int totalPages = Math.max(1, (int) Math.ceil((double) perms.size() / PAGE_SIZE));
+        page = Math.max(1, Math.min(page, totalPages));
+
+        p.sendMessage(header(targetPlayer + " 的独立权限"));
+
+        // 显示说明
+        p.sendMessage(Component.text("§7§l说明:"));
+        p.sendMessage(Component.text("  §a✔ 已启用 §7= 允许该操作"));
+        p.sendMessage(Component.text("  §c✘ 已禁用 §7= 禁止该操作"));
+        p.sendMessage(Component.text("  §e★ 自定义 §7= 与领地默认不同"));
+        p.sendMessage(Component.text(""));
+
+        int start = (page - 1) * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, perms.size());
+
+        for (int i = start; i < end; i++) {
+            PermItem perm = perms.get(i);
+            String icon;
+            if (perm.overridden) {
+                icon = perm.enabled ? "§a★" : "§c★"; // 星号表示per-player覆盖
+            } else {
+                icon = perm.enabled ? "§a✔" : "§c✘";
+            }
+            String state = perm.enabled ? "§a允许" : "§c禁止";
+            String overrideTag = perm.overridden ? " §e[自定义]" : " §7[领地默认]";
+
+            Component line = Component.empty();
+            line = line.append(Component.text(icon + " §f" + perm.name + " §7" + state + overrideTag));
+            line = line.append(Component.text(" "));
+            line = line.append(Component.text("§e[切换]")
+                    .hoverEvent(HoverEvent.showText(
+                            Component.text("§e切换该成员的此权限")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli toggleplayerperm " + land.name + " " + targetPlayer + " " + perm.key + " " + page)));
+            p.sendMessage(line);
+        }
+
+        // 分页
+        if (totalPages > 1) {
+            Component pagination = Component.empty();
+            if (page > 1) {
+                pagination = pagination.append(Component.text("§a[◀ 上一页]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli playerperm " + land.name + " " + targetPlayer + " " + (page - 1))));
+                pagination = pagination.append(Component.text(" "));
+            }
+            pagination = pagination.append(Component.text("§7" + page + "/" + totalPages));
+            if (page < totalPages) {
+                pagination = pagination.append(Component.text(" "));
+                pagination = pagination.append(Component.text("§a[下一页 ▶]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli playerperm " + land.name + " " + targetPlayer + " " + (page + 1))));
+            }
+            p.sendMessage(pagination);
+        }
+
+        // 清除按钮
+        p.sendMessage(Component.empty()
+                .append(Component.text("§c[清除所有自定义权限]")
+                        .hoverEvent(HoverEvent.showText(
+                                Component.text("§c将该成员的权限恢复为领地默认")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli clearplayerperm " + land.name + " " + targetPlayer))));
+
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a[◀ 返回成员列表]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli memberperm " + land.name + " 1"))));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    /**
+     * 切换某个成员的独立权限
+     */
+    public void togglePlayerPerm(Player p, String landName, String targetPlayer, String permKey, int page) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        // 权限检查
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
+        int landId = areaProtect.getLandIdFromDb(landName);
+        if (landId <= 0) {
+            p.sendMessage(Component.text("§c领地数据库ID获取失败"));
+            return;
+        }
+
+        // 获取当前值，判断是否已有覆盖
+        Map<String, Boolean> currentPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
+        boolean currentVal = currentPerms.getOrDefault(permKey, getLandDefaultVal(land, permKey));
+
+        // 切换
+        boolean newVal = !currentVal;
+        areaProtect.setPlayerPerm(landId, targetPlayer, permKey, newVal);
+
+        String permName = getPermNameByKey(permKey);
+        p.sendMessage("§a已设置 §e" + targetPlayer + " §a的 §e" + permName + " §7→ " + (newVal ? "§a允许" : "§c禁止"));
+
+        // 刷新页面
+        showPlayerPerm(p, landName, targetPlayer, page);
+    }
+
+    /**
+     * 清除某成员所有per-player权限覆盖
+     */
+    public void clearPlayerPerm(Player p, String landName, String targetPlayer) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
+        int landId = areaProtect.getLandIdFromDb(landName);
+        if (landId <= 0) {
+            p.sendMessage(Component.text("§c领地数据库ID获取失败"));
+            return;
+        }
+
+        areaProtect.setPlayerPermJson(landId, targetPlayer, "");
+        p.sendMessage("§a已清除 §e" + targetPlayer + " §a的所有自定义权限，恢复为领地默认");
+
+        // 返回成员列表
+        showMemberPermList(p, landName, 1);
+    }
+
+    /**
+     * 获取带per-player覆盖的权限列表
+     */
+    private List<PermItem> getPermListWithOverrides(AreaProtection.AreaConfig land, Map<String, Boolean> playerPerms) {
+        List<PermItem> perms = new ArrayList<>();
+        String[][] permDefs = {
+                {"move", "移动", "denyMove"},
+                {"block_place", "放置方块", "denyBlockPlace"},
+                {"block_break", "破坏方块", "denyBlockBreak"},
+                {"pvp", "玩家对战", "denyPVP"},
+                {"mount", "骑乘坐具", "denyMount"},
+                {"ender_pearl", "投掷末影珍珠", "denyEnderPearl"},
+                {"thrown_projectiles", "投掷物(三叉戟/雪球/风蛋)", "denyThrownProjectiles"},
+                {"raid", "袭击侦测", "denyRaid"},
+                {"bow", "弓箭射击", "denyBow"},
+                {"potion", "药水效果", "denyPotion"},
+                {"fire", "点燃", "denyFire"},
+                {"fire_spread", "火焰蔓延", "denyFireSpread"},
+                {"pickup", "拾取物品", "denyPickup"},
+                {"drop", "丢弃物品", "denyDrop"},
+                {"explosion", "爆炸", "denyExplosion"},
+                {"fall_damage", "摔落伤害", "denyFallDamage"},
+                {"hunger", "饥饿", "denyHunger"},
+                {"all_damage", "所有伤害", "denyAllDamage"},
+                {"all_effects", "所有效果", "denyAllEffects"},
+                {"item_frame", "展示框交互", "denyItemFrame"},
+                {"redstone", "红石电路(中继器/比较器)", "denyRedstoneInteraction"},
+                {"door", "门禁(门/按钮/压力板)", "denyDoorInteraction"},
+                {"audio", "音频(音符盒/唱片机)", "denyNoteblockJukebox"},
+                {"lead", "拴绳使用", "denyLead"},
+                {"crop_harvest", "农作物收获", "denyCropHarvest"},
+                {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
+                {"animal_feed", "投喂动物", "denyAnimalFeeding"},
+                {"glowing", "玩家发光", "denyGlowing"},
+                {"peace_mode", "和平模式", "peaceMode"}
+        };
+
+        for (String[] def : permDefs) {
+            String key = def[0];
+            String name = def[1];
+            String field = def[2];
+            boolean landDefault = getLandDefaultVal(land, field);
+
+            // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
+            if (playerPerms.containsKey(field)) {
+                boolean playerVal = playerPerms.get(field);
+                // 注意：per-player存储的是deny值
+                // perm.enabled = true 表示"允许操作"（即deny=false）
+                perms.add(new PermItem(key, name, !playerVal, true));
+            } else {
+                perms.add(new PermItem(key, name, !landDefault, false));
+            }
+        }
+        return perms;
+    }
+
+    /**
+     * 获取领地默认deny值
+     */
+    private boolean getLandDefaultVal(AreaProtection.AreaConfig land, String field) {
+        switch (field) {
+            case "denyMove": return land.denyMove;
+            case "denyBlockPlace": return land.denyBlockPlace;
+            case "denyBlockBreak": return land.denyBlockBreak;
+            case "denyPVP": return land.denyPVP;
+            case "denyMount": return land.denyMount;
+            case "denyEnderPearl": return land.denyEnderPearl;
+            case "denyThrownProjectiles": return land.denyThrownProjectiles;
+            case "denyRaid": return land.denyRaid;
+            case "denyBow": return land.denyBow;
+            case "denyPotion": return land.denyPotion;
+            case "denyFire": return land.denyFire;
+            case "denyFireSpread": return land.denyFireSpread;
+            case "denyPickup": return land.denyPickup;
+            case "denyDrop": return land.denyDrop;
+            case "denyExplosion": return land.denyExplosion;
+            case "denyFallDamage": return land.denyFallDamage;
+            case "denyHunger": return land.denyHunger;
+            case "denyAllDamage": return land.denyAllDamage;
+            case "denyAllEffects": return land.denyAllEffects;
+            case "denyItemFrame": return land.denyItemFrame;
+            case "denyRedstoneInteraction": return land.denyRedstoneInteraction;
+            case "denyDoorInteraction": return land.denyDoorInteraction;
+            case "denyNoteblockJukebox": return land.denyNoteblockJukebox;
+            case "denyLead": return land.denyLead;
+            case "denyCropHarvest": return land.denyCropHarvest;
+            case "denyWoolShear": return land.denyWoolShear;
+            case "denyAnimalFeeding": return land.denyAnimalFeeding;
+            case "denyGlowing": return land.denyGlowing;
+            case "peaceMode": return land.peaceMode;
+            default: return false;
         }
     }
 }

@@ -6147,7 +6147,8 @@ public class Main extends JavaPlugin
                 // ★ cli: 子命令
                 if (sub.equals("cli")) {
                     return filterTab(
-                            Arrays.asList("menu", "lands", "manage", "members", "visitorperm", "toggle", "create", "config"),
+                            Arrays.asList("menu", "lands", "manage", "members", "visitorperm", "toggle", "create", "config",
+                                    "memberperm", "playerperm", "toggleplayerperm", "clearplayerperm"),
                             args[1]);
                 }
             }
@@ -6210,11 +6211,13 @@ public class Main extends JavaPlugin
                             Arrays.asList("create_price", "max_lands", "default_height", "peace_duration"),
                             args[2]);
                 }
-                // ★ cli manage/members/visitorperm/toggle: 第三层是领地名
+                // ★ cli manage/members/visitorperm/toggle/memberperm/playerperm/toggleplayerperm/clearplayerperm: 第三层是领地名
                 if (sub.equals("cli")) {
                     String action = args[1].toLowerCase();
                     if (action.equals("manage") || action.equals("members")
-                            || action.equals("visitorperm") || action.equals("toggle")) {
+                            || action.equals("visitorperm") || action.equals("toggle")
+                            || action.equals("memberperm") || action.equals("playerperm")
+                            || action.equals("toggleplayerperm") || action.equals("clearplayerperm")) {
                         return filterTab(
                                 new ArrayList<>(areaProtection.getAreaNames()),
                                 args[2]);
@@ -6222,7 +6225,8 @@ public class Main extends JavaPlugin
                 }
             }
 
-            // ★ 第四层：cli toggle需要权限key，cli manage/members/visitorperm需要页码
+            // ★ 第四层：cli toggle需要权限key，cli manage/members/visitorperm/memberperm需要页码
+            // playerperm/toggleplayerperm需要玩家名，clearplayerperm需要玩家名
             if (args.length == 4) {
                 if (sub.equals("cli")) {
                     String action = args[1].toLowerCase();
@@ -6238,9 +6242,41 @@ public class Main extends JavaPlugin
                                 args[3]);
                     }
                     if (action.equals("manage") || action.equals("members")
-                            || action.equals("visitorperm")) {
+                            || action.equals("visitorperm") || action.equals("memberperm")) {
                         // 页码
                         return Arrays.asList("1", "2", "3", "4", "5");
+                    }
+                    if (action.equals("playerperm") || action.equals("clearplayerperm")) {
+                        // 玩家名
+                        List<String> players = new ArrayList<>();
+                        for (Player pl : Bukkit.getOnlinePlayers())
+                            players.add(pl.getName());
+                        return filterTab(players, args[3]);
+                    }
+                    if (action.equals("toggleplayerperm")) {
+                        // 玩家名
+                        List<String> players = new ArrayList<>();
+                        for (Player pl : Bukkit.getOnlinePlayers())
+                            players.add(pl.getName());
+                        return filterTab(players, args[3]);
+                    }
+                }
+            }
+
+            // ★ 第五层：cli toggleplayerperm需要权限key
+            if (args.length == 5) {
+                if (sub.equals("cli")) {
+                    String action = args[1].toLowerCase();
+                    if (action.equals("toggleplayerperm")) {
+                        // 权限key
+                        return filterTab(Arrays.asList(
+                                "denyMove", "denyBlockPlace", "denyBlockBreak", "denyPVP", "denyMount",
+                                "denyEnderPearl", "denyThrownProjectiles", "denyRaid", "denyBow", "denyPotion",
+                                "denyFire", "denyFireSpread", "denyPickup", "denyDrop", "denyExplosion",
+                                "denyFallDamage", "denyHunger", "denyAllDamage", "denyAllEffects",
+                                "denyItemFrame", "denyRedstoneInteraction", "denyDoorInteraction", "denyNoteblockJukebox",
+                                "denyLead", "denyCropHarvest", "denyWoolShear", "denyAnimalFeeding", "denyGlowing", "peaceMode"),
+                                args[4]);
                     }
                 }
             }
