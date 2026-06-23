@@ -2062,7 +2062,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
 // ==================== 领地管理 ====================
 
-let landsState = { view: 'list', currentLand: null };
+let landsState = { view: 'list', currentLand: null, currentMember: null };
 
 async function renderLands(el) {
     if (!TOKEN) {
@@ -2077,6 +2077,16 @@ async function renderLands(el) {
 
     if (landsState.view === 'detail' && landsState.currentLand) {
         await renderLandDetail(el, landsState.currentLand);
+        return;
+    }
+
+    if (landsState.view === 'member_perms' && landsState.currentLand) {
+        await renderMemberPerms(el, landsState.currentLand);
+        return;
+    }
+
+    if (landsState.view === 'member_perm_detail' && landsState.currentLand && landsState.currentMember) {
+        await renderMemberPermDetail(el, landsState.currentLand, landsState.currentMember);
         return;
     }
 
@@ -2226,6 +2236,7 @@ async function renderLandDetail(el, landName) {
         html += `<div style="margin-bottom:16px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="margin:0;color:var(--fg)">👥 访客管理 (${visitors.length})</h3>
+                <button class="btn" style="font-size:12px;padding:4px 12px" onclick="landsState.view='member_perms';landsState.currentLand='${escHtml(land.name)}';renderLands(document.getElementById('content'))">🎯 成员权限</button>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:12px">
                 <input type="text" id="newVisitorName" placeholder="输入玩家名" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
@@ -2248,6 +2259,59 @@ async function renderLandDetail(el, landName) {
             html += `</tbody></table>`;
         }
         html += `</div></div>`;
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function renderMemberPerms(el, landName) {
+    el.innerHTML = `<div class="card"><p style="color:var(--dim)">加载成员权限...</p></div>`;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'get_member_perms');
+        url.searchParams.set('token', TOKEN);
+        url.searchParams.set('land', landName);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.success) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.error}</p><button class="btn" onclick="landsState.view='detail';renderLands(document.getElementById('content'))">← 返回</button></div>`;
+            return;
+        }
+
+        const land = data.land;
+        const members = data.members || [];
+        const permTypes = data.perm_types || {};
+
+        let html = `<div class="card">
+            <button class="btn" onclick="landsState.view='detail';landsState.currentLand='${escHtml(landName)}';landsState.currentMember=null;renderLands(document.getElementById('content'))" style="margin-bottom:12px;font-size:13px">← 返回领地详情</button>
+            <h2 style="margin:0 0 8px;color:var(--fg)">🎯 ${escHtml(landName)} 成员权限</h2>
+            <p style="color:var(--dim);font-size:13px;margin-bottom:16px">为每个成员设置独立的权限覆盖。启用=覆盖默认值，禁用=使用领地默认值。</p>`;
+
+        if (members.length === 0) {
+            html += `<div style="text-align:center;padding:32px;color:var(--dim)">
+                <div style="font-size:40px;margin-bottom:12px">👥</div>
+                <p>暂无成员</p>
+                <p style="font-size:12px;margin-top:8px">请先在访客管理中添加成员</p>
+            </div>`;
+        } else {
+            html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px">`;
+            for (const member of members) {
+                const permCount = member.perm_map ? Object.keys(member.perm_map).length : 0;
+                const hasCustom = permCount > 0;
+                html += `<div onclick="landsState.view='member_perm_detail';landsState.currentMember='${escHtml(member.player_name)}';renderLands(document.getElementById('content'))"
+                    style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:pointer;transition:all 0.2s"
+                    onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                        <h3 style="margin:0;color:var(--fg);font-size:15px">👤 ${escHtml(member.player_name)}</h3>
+                        ${hasCustom ? '<span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:12px;font-size:11px">★ 自定义</span>' : '<span style="color:var(--dim);font-size:12px">默认权限</span>'}
+                    </div>
+                    <div style="font-size:12px;color:var(--dim)">${permCount} 项自定义权限</div>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
         el.innerHTML = html;
     } catch (e) {
         el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
@@ -2302,6 +2366,138 @@ async function removeLandVisitor(landName, player) {
 
 function buyLandPermission(landName, itemId) {
     glassAlert('请在游戏中使用 /protect shop 购买领地权限', '🎮');
+}
+
+async function renderMemberPermDetail(el, landName, targetPlayer) {
+    el.innerHTML = `<div class="card"><p style="color:var(--dim)">加载权限详情...</p></div>`;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'get_member_perms');
+        url.searchParams.set('token', TOKEN);
+        url.searchParams.set('land', landName);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.success) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.error}</p><button class="btn" onclick="landsState.view='member_perms';renderLands(document.getElementById('content'))">← 返回</button></div>`;
+            return;
+        }
+
+        const land = data.land;
+        const permTypes = data.perm_types || {};
+        const members = data.members || [];
+        const member = members.find(m => m.player_name === targetPlayer);
+
+        if (!member) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">成员不存在</p><button class="btn" onclick="landsState.view='member_perms';renderLands(document.getElementById('content'))">← 返回</button></div>`;
+            return;
+        }
+
+        const permMap = member.perm_map || {};
+        const permEntries = Object.entries(permTypes);
+
+        let html = `<div class="card">
+            <button class="btn" onclick="landsState.view='member_perms';landsState.currentMember=null;renderLands(document.getElementById('content'))" style="margin-bottom:12px;font-size:13px">← 返回成员列表</button>
+            <h2 style="margin:0 0 8px;color:var(--fg)">👤 ${escHtml(targetPlayer)} 权限</h2>
+            <p style="color:var(--dim);font-size:13px;margin-bottom:16px">在 ${escHtml(landName)} 中的独立权限设置</p>
+            <div style="display:flex;gap:8px;margin-bottom:16px">
+                <button class="btn" onclick="clearAllMemberPerms('${escHtml(landName)}','${escHtml(targetPlayer)}')" style="color:var(--red)">🗑️ 清除所有自定义</button>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">`;
+
+        for (const [key, label] of permEntries) {
+            const isCustom = permMap.hasOwnProperty(key);
+            const enabled = isCustom ? permMap[key] : false;
+            const defaultVal = land[key] || false;
+
+            html += `<div onclick="toggleMemberPerm('${escHtml(landName)}','${escHtml(targetPlayer)}','${key}',this)"
+                style="background:${isCustom ? (enabled ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)') : 'var(--bg)'};
+                border:1px solid ${isCustom ? (enabled ? 'var(--green)' : 'var(--red)') : 'var(--border)'};
+                border-radius:8px;padding:12px;cursor:pointer;transition:all 0.2s">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                    <span style="color:var(--fg);font-size:13px;font-weight:500">${label}</span>
+                    <span style="font-size:11px;color:${isCustom ? (enabled ? 'var(--green)' : 'var(--red)') : 'var(--dim)'}">
+                        ${isCustom ? (enabled ? '✓ 启用' : '✗ 禁用') : '默认'}
+                    </span>
+                </div>
+                <div style="font-size:11px;color:var(--dim)">
+                    ${isCustom ? '★ 自定义' : `领地默认: ${defaultVal ? '禁止' : '允许'}`}
+                </div>
+            </div>`;
+        }
+        html += `</div></div>`;
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function toggleMemberPerm(landName, targetPlayer, permKey, el) {
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_member_perm');
+        url.searchParams.set('token', TOKEN);
+
+        const body = new URLSearchParams();
+        body.set('land', landName);
+        body.set('player', targetPlayer);
+        body.set('perm', permKey);
+
+        // 从元素中获取当前状态
+        const statusSpan = el.querySelector('span:last-child');
+        const isCustom = statusSpan.textContent.includes('自定义');
+        const isEnabled = statusSpan.textContent.includes('启用');
+
+        if (isCustom) {
+            // 已有自定义：切换启用/禁用
+            body.set('enabled', (!isEnabled).toString());
+        } else {
+            // 无自定义：设置为启用
+            body.set('enabled', 'true');
+        }
+
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+        const data = await res.json();
+        if (data.success) {
+            // 刷新页面
+            await renderMemberPermDetail(document.getElementById('content'), landName, targetPlayer);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+async function clearAllMemberPerms(landName, targetPlayer) {
+    if (!await glassConfirm(`确定要清除 ${targetPlayer} 的所有自定义权限吗？`)) return;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'clear_member_perm');
+        url.searchParams.set('token', TOKEN);
+
+        const body = new URLSearchParams();
+        body.set('land', landName);
+        body.set('player', targetPlayer);
+
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString()
+        });
+        const data = await res.json();
+        if (data.success) {
+            glassAlert('已清除所有自定义权限');
+            await renderMemberPermDetail(document.getElementById('content'), landName, targetPlayer);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
 }
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

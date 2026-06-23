@@ -33,8 +33,14 @@ try {
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item'];
     // 玩家端action：需要token
     $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission'];
+    // ★ 玩家端权限操作action
+    $playerPermActions = ['update_visitor_perm', 'get_visitor_perm'];
+    // ★ 成员独立权限操作action（领地所有者编辑成员权限）
+    $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
+    // ★ Java端轮询PHP管理员变更
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes'];
 
-    if (in_array($action, $syncActions)) {
+    if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
         if (!validateSecret($secret)) {
             echo json_encode(['success' => false, 'error' => 'invalid secret']);
@@ -56,7 +62,7 @@ try {
             echo json_encode(['success' => false, 'error' => '需要管理员认证']);
             exit;
         }
-    } elseif (in_array($action, $playerActions)) {
+    } elseif (in_array($action, $playerActions) || in_array($action, $playerPermActions) || in_array($action, $memberPermActions)) {
         // 玩家端：需要token
         $token = $_GET['token'] ?? '';
         if (empty($token)) {
@@ -181,6 +187,53 @@ try {
             handleLandShop($db, $_GET['name'] ?? '');
             break;
 
+        // ===== 玩家端：获取访客权限 =====
+        case 'get_visitor_perm':
+            handleGetVisitorPerm($db, $playerName, $_GET['land'] ?? '');
+            break;
+
+        // ===== 玩家端：更新访客权限 =====
+        case 'update_visitor_perm':
+            if ($method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'POST only']);
+                exit;
+            }
+            handleUpdateVisitorPerm($db, $playerName, $_POST);
+            break;
+
+        // ===== 成员独立权限：获取成员权限列表 =====
+        case 'get_member_perms':
+            handleGetMemberPerms($db, $playerName, $_GET['land'] ?? '');
+            break;
+
+        // ===== 成员独立权限：更新单个权限 =====
+        case 'update_member_perm':
+            if ($method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'POST only']);
+                exit;
+            }
+            handleUpdateMemberPerm($db, $playerName, $_POST);
+            break;
+
+        // ===== 成员独立权限：清除所有自定义权限 =====
+        case 'clear_member_perm':
+            if ($method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'POST only']);
+                exit;
+            }
+            handleClearMemberPerm($db, $playerName, $_POST);
+            break;
+
+        // ===== Java端轮询PHP管理员变更 =====
+        case 'poll_admin_changes':
+            handlePollAdminChanges($db, $_GET);
+            break;
+
+        // ===== Java端确认已处理变更 =====
+        case 'ack_admin_changes':
+            handleAckAdminChanges($db, $_POST);
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'unknown action']);
     }
@@ -236,6 +289,29 @@ function initLandTables($db) {
         expires_at INTEGER DEFAULT 0,
         synced_at INTEGER DEFAULT 0,
         UNIQUE(land_id, player_name)
+    )");
+
+    // ★ 管理员变更队列表（PHP→Java同步）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        change_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        target_name TEXT DEFAULT '',
+        change_data TEXT DEFAULT '',
+        created_at INTEGER DEFAULT 0,
+        acknowledged INTEGER DEFAULT 0,
+        acked_at INTEGER DEFAULT 0
+    )");
+
+    // ★ 领地所有者变更表（记录PHP端修改的所有者变更）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_land_owner_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        land_id INTEGER NOT NULL,
+        land_name TEXT NOT NULL,
+        old_owner TEXT DEFAULT '',
+        new_owner TEXT NOT NULL,
+        created_at INTEGER DEFAULT 0,
+        synced INTEGER DEFAULT 0
     )");
 }
 
@@ -367,10 +443,36 @@ function handleUpdateLandOwner($db, $post) {
         return;
     }
 
-    $stmt = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
-    $stmt->bindValue(':owner', $owner, SQLITE3_TEXT);
+    // 获取旧所有者
+    $stmt = $db->prepare("SELECT owner FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
-    $stmt->execute();
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+    $oldOwner = $row ? ($row['owner'] ?? '') : '';
+
+    // 更新所有者
+    $stmt2 = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
+    $stmt2->bindValue(':owner', $owner, SQLITE3_TEXT);
+    $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt2->execute();
+
+    // 记录变更（用于同步到Java）
+    if ($oldOwner !== $owner) {
+        $stmt3 = $db->prepare("INSERT INTO web_land_owner_changes (land_name, old_owner, new_owner, created_at) VALUES (:name, :old, :new, :now)");
+        $stmt3->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt3->bindValue(':old', $oldOwner, SQLITE3_TEXT);
+        $stmt3->bindValue(':new', $owner, SQLITE3_TEXT);
+        $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmt3->execute();
+
+        // 同时添加到变更队列
+        $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('owner_change', :id, :name, :data, :now)");
+        $stmt4->bindValue(':id', (int)($post['id'] ?? 0), SQLITE3_INTEGER);
+        $stmt4->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt4->bindValue(':data', json_encode(['old_owner' => $oldOwner, 'new_owner' => $owner]), SQLITE3_TEXT);
+        $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmt4->execute();
+    }
 
     echo json_encode(['success' => true]);
 }
@@ -482,6 +584,18 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
+    // ★ 校验玩家名格式（至少3字符，只含字母数字下划线）
+    if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $visitor)) {
+        echo json_encode(['success' => false, 'error' => '无效的玩家名: ' . $visitor]);
+        return;
+    }
+
+    // ★ 校验玩家是否存在于数据库（login.db或web用户表）
+    if (!playerExists($db, $visitor)) {
+        echo json_encode(['success' => false, 'error' => '玩家不存在: ' . $visitor . '，请确认玩家已注册']);
+        return;
+    }
+
     // 获取领地
     $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
@@ -509,6 +623,46 @@ function handleAddVisitor($db, $playerName, $req) {
     $stmt2->execute();
 
     echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
+}
+
+/**
+ * ★ 检查玩家是否存在于数据库
+ */
+function playerExists($db, $playerName) {
+    // 检查web用户表
+    try {
+        $stmt = $db->prepare("SELECT COUNT(*) as cnt FROM weblogin_tokens WHERE player = :player");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        if ($row && $row['cnt'] > 0) return true;
+    } catch (\Throwable $e) {
+        // 表可能不存在，忽略
+    }
+
+    // 检查users表
+    try {
+        $stmt = $db->prepare("SELECT COUNT(*) as cnt FROM users WHERE player_name = :player");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        if ($row && $row['cnt'] > 0) return true;
+    } catch (\Throwable $e) {
+        // 表可能不存在，忽略
+    }
+
+    // 检查tokens表
+    try {
+        $stmt = $db->prepare("SELECT COUNT(*) as cnt FROM tokens WHERE player = :player");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        if ($row && $row['cnt'] > 0) return true;
+    } catch (\Throwable $e) {
+        // 表可能不存在，忽略
+    }
+
+    return false;
 }
 
 // ==================== 玩家端：移除访客 ====================
@@ -600,6 +754,338 @@ function handleLandShop($db, $landName) {
     }
 
     echo json_encode(['success' => true, 'items' => $items]);
+}
+
+// ==================== 玩家端：获取访客权限 ====================
+
+function handleGetVisitorPerm($db, $playerName, $landName) {
+    if (empty($landName)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名称']);
+        return;
+    }
+
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 获取该玩家的权限
+    $stmt2 = $db->prepare("SELECT * FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':player', $playerName, SQLITE3_TEXT);
+    $result2 = $stmt2->execute();
+    $perm = $result2->fetchArray(SQLITE3_ASSOC);
+
+    echo json_encode(['success' => true, 'permission' => $perm]);
+}
+
+// ==================== 玩家端：更新访客权限 ====================
+
+function handleUpdateVisitorPerm($db, $playerName, $post) {
+    $landName = $post['land'] ?? '';
+    $visitor = $post['visitor'] ?? '';
+    $permissions = $post['permissions'] ?? '';
+    $role = $post['role'] ?? 'visitor';
+
+    if (empty($landName) || empty($visitor)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名或玩家名']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 权限检查：只有所有者能更新权限
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能更新权限']);
+        return;
+    }
+
+    // 更新权限
+    $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+        VALUES (:land_id, :land_name, :player, :role, :perms, :now, 0, :now)");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':land_name', $landName, SQLITE3_TEXT);
+    $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $stmt2->bindValue(':role', $role, SQLITE3_TEXT);
+    $stmt2->bindValue(':perms', $permissions, SQLITE3_TEXT);
+    $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt2->execute();
+
+    echo json_encode(['success' => true, 'message' => "已更新 $visitor 的权限"]);
+}
+
+// ==================== 成员独立权限操作 ====================
+
+/**
+ * 29种权限类型定义
+ */
+$PERM_TYPES = [
+    'denyMove' => '移动',
+    'denyBlockPlace' => '放置方块',
+    'denyBlockBreak' => '破坏方块',
+    'denyPVP' => 'PVP战斗',
+    'denyMount' => '骑乘',
+    'denyEnderPearl' => '末影珍珠',
+    'denyThrownProjectiles' => '投掷物',
+    'denyRaid' => '袭击',
+    'denyBow' => '弓箭',
+    'denyPotion' => '药水',
+    'denyFire' => '点火',
+    'denyFireSpread' => '火焰蔓延',
+    'denyPickup' => '拾取物品',
+    'denyDrop' => '丢弃物品',
+    'denyExplosion' => '爆炸',
+    'denyFallDamage' => '摔落伤害',
+    'denyHunger' => '饥饿',
+    'denyAllDamage' => '所有伤害',
+    'denyAllEffects' => '所有效果',
+    'denyItemFrame' => '物品展示框',
+    'denyRedstoneInteraction' => '红石交互',
+    'denyDoorInteraction' => '门禁交互',
+    'denyNoteblockJukebox' => '音符盒/唱片机',
+    'denyLead' => '拴绳',
+    'denyCropHarvest' => '收割作物',
+    'denyWoolShear' => '剪羊毛',
+    'denyAnimalFeeding' => '投喂动物',
+    'denyGlowing' => '发光效果',
+    'denyPeaceMode' => '和平模式'
+];
+
+function handleGetMemberPerms($db, $playerName, $landName) {
+    global $PERM_TYPES;
+
+    if (empty($landName)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名称']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 权限检查：只有所有者能编辑成员权限
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能编辑成员权限']);
+        return;
+    }
+
+    // 获取所有成员及其权限
+    $stmt2 = $db->prepare("SELECT * FROM web_area_permissions WHERE land_id = :land_id ORDER BY player_name");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $result2 = $stmt2->execute();
+
+    $members = [];
+    while ($row = $result2->fetchArray(SQLITE3_ASSOC)) {
+        // 解析权限JSON
+        $permJson = $row['permissions'] ?? '';
+        $perms = [];
+        if (!empty($permJson)) {
+            $decoded = json_decode($permJson, true);
+            if (is_array($decoded)) {
+                $perms = $decoded;
+            }
+        }
+        $row['perm_map'] = $perms;
+        $members[] = $row;
+    }
+
+    echo json_encode([
+        'success' => true,
+        'land' => $land,
+        'members' => $members,
+        'perm_types' => $PERM_TYPES
+    ]);
+}
+
+function handleUpdateMemberPerm($db, $playerName, $post) {
+    $landName = $post['land'] ?? '';
+    $targetPlayer = $post['player'] ?? '';
+    $permKey = $post['perm'] ?? '';
+    $enabled = isset($post['enabled']) ? (bool)$post['enabled'] : false;
+
+    if (empty($landName) || empty($targetPlayer) || empty($permKey)) {
+        echo json_encode(['success' => false, 'error' => '缺少参数']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 权限检查
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能编辑成员权限']);
+        return;
+    }
+
+    // 获取当前权限
+    $stmt2 = $db->prepare("SELECT * FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
+    $result2 = $stmt2->execute();
+    $perm = $result2->fetchArray(SQLITE3_ASSOC);
+
+    if (!$perm) {
+        echo json_encode(['success' => false, 'error' => '该玩家不是领地成员']);
+        return;
+    }
+
+    // 解析现有权限
+    $permMap = [];
+    $permJson = $perm['permissions'] ?? '';
+    if (!empty($permJson)) {
+        $decoded = json_decode($permJson, true);
+        if (is_array($decoded)) {
+            $permMap = $decoded;
+        }
+    }
+
+    // 更新权限
+    if ($enabled) {
+        $permMap[$permKey] = true;
+    } else {
+        unset($permMap[$permKey]);
+    }
+
+    // 写回数据库
+    $newJson = json_encode($permMap, JSON_UNESCAPED_UNICODE);
+    $stmt3 = $db->prepare("UPDATE web_area_permissions SET permissions = :perms, synced_at = :now WHERE land_id = :land_id AND player_name = :player");
+    $stmt3->bindValue(':perms', $newJson, SQLITE3_TEXT);
+    $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt3->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt3->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
+    $stmt3->execute();
+
+    echo json_encode(['success' => true, 'message' => "已更新 $targetPlayer 的 $permKey 权限"]);
+}
+
+function handleClearMemberPerm($db, $playerName, $post) {
+    $landName = $post['land'] ?? '';
+    $targetPlayer = $post['player'] ?? '';
+
+    if (empty($landName) || empty($targetPlayer)) {
+        echo json_encode(['success' => false, 'error' => '缺少参数']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 权限检查
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能清除成员权限']);
+        return;
+    }
+
+    // 获取旧权限
+    $stmt_old = $db->prepare("SELECT permissions FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmt_old->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt_old->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
+    $result_old = $stmt_old->execute();
+    $old_perm = $result_old->fetchArray(SQLITE3_ASSOC);
+    $old_perms = $old_perm ? ($old_perm['permissions'] ?? '') : '';
+
+    // 清除权限
+    $stmt2 = $db->prepare("UPDATE web_area_permissions SET permissions = '', synced_at = :now WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
+    $stmt2->execute();
+
+    // 记录变更
+    if (!empty($old_perms)) {
+        $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_clear', :id, :name, :data, :now)");
+        $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
+        $stmt3->bindValue(':name', $targetPlayer, SQLITE3_TEXT);
+        $stmt3->bindValue(':data', json_encode(['land_name' => $landName, 'old_permissions' => $old_perms]), SQLITE3_TEXT);
+        $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmt3->execute();
+    }
+
+    echo json_encode(['success' => true, 'message' => "已清除 $targetPlayer 的所有自定义权限"]);
+}
+
+// ==================== Java端轮询PHP管理员变更 ====================
+
+function handlePollAdminChanges($db, $get) {
+    $lastId = (int)($get['last_id'] ?? 0);
+    $limit = min((int)($get['limit'] ?? 50), 100);
+
+    // 获取未确认的变更
+    $stmt = $db->prepare("SELECT * FROM web_admin_changes WHERE id > :last_id AND acknowledged = 0 ORDER BY id ASC LIMIT :limit");
+    $stmt->bindValue(':last_id', $lastId, SQLITE3_INTEGER);
+    $stmt->bindValue(':limit', $limit, SQLITE3_INTEGER);
+    $result = $stmt->execute();
+
+    $changes = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $changes[] = $row;
+    }
+
+    echo json_encode(['success' => true, 'changes' => $changes, 'count' => count($changes)]);
+}
+
+function handleAckAdminChanges($db, $post) {
+    $ids = $post['ids'] ?? '';
+    if (empty($ids)) {
+        echo json_encode(['success' => false, 'error' => 'missing ids']);
+        return;
+    }
+
+    $idList = array_filter(array_map('intval', explode(',', $ids)));
+    if (empty($idList)) {
+        echo json_encode(['success' => false, 'error' => 'invalid ids']);
+        return;
+    }
+
+    $now = time();
+    $placeholders = implode(',', array_fill(0, count($idList), '?'));
+    $stmt = $db->prepare("UPDATE web_admin_changes SET acknowledged = 1, acked_at = :now WHERE id IN ($placeholders)");
+    $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+    $i = 1;
+    foreach ($idList as $id) {
+        $stmt->bindValue($i++, $id, SQLITE3_INTEGER);
+    }
+    $stmt->execute();
+
+    echo json_encode(['success' => true, 'acked' => count($idList)]);
 }
 
 function validateSecret($secret) {
