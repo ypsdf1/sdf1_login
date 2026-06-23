@@ -212,8 +212,35 @@ public class WebManager {
 
     /**
      * 提交指定优先级的数据库写入任务
+     * ★ 限制同种类任务最多3个（防止队列积压）
      */
     private void submitDbTask(int priority, String name, Runnable action) {
+        // ★ SSL断路器：断路期间跳过所有HTTP相关任务
+        if (isCircuitOpen()) {
+            plugin.getLogger().warning("[DB队列] SSL断路器开启，跳过任务: " + name);
+            return;
+        }
+
+        // ★ 同种类任务去重：提取任务类型前缀（如 "周期-syncOnlinePlayers" → "syncOnlinePlayers"）
+        String taskType = name.contains("-") ? name.substring(name.indexOf("-") + 1) : name;
+
+        // ★ 统计同类型任务数量
+        int sameTypeCount = 0;
+        for (DbTask t : dbTaskQueue) {
+            if (t != null) {
+                String tType = t.name.contains("-") ? t.name.substring(t.name.indexOf("-") + 1) : t.name;
+                if (tType.equals(taskType)) {
+                    sameTypeCount++;
+                }
+            }
+        }
+
+        // ★ 同类型任务最多3个，超过则丢弃低优先级的
+        if (sameTypeCount >= 3) {
+            plugin.getLogger().warning("[DB队列] 同类型任务已满(3): " + taskType + "，丢弃: " + name);
+            return;
+        }
+
         DbTask task = new DbTask(priority, name, action);
         dbTaskQueue.offer(task);
         if (dbTaskQueue.size() > 50) {
@@ -308,6 +335,10 @@ public class WebManager {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
             return null;
         }
+        // ★ SSL断路器：断路期间直接返回，避免无意义请求
+        if (isCircuitOpen()) {
+            return null;
+        }
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
@@ -345,6 +376,10 @@ public class WebManager {
      */
     private int doGetStatus(String urlStr) {
         if (cfHttpClient == null) return -1;
+        // ★ SSL断路器：断路期间直接返回，避免无意义请求
+        if (isCircuitOpen()) {
+            return -1;
+        }
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
@@ -365,6 +400,10 @@ public class WebManager {
     private String doPost(String urlStr, String jsonBody) {
         if (cfHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        // ★ SSL断路器：断路期间直接返回，避免无意义请求
+        if (isCircuitOpen()) {
             return null;
         }
         try {
@@ -395,6 +434,10 @@ public class WebManager {
      * POST请求带重试（处理SSL/网络异常）
      */
     private String doPostWithRetry(String urlStr, String jsonBody, int maxRetries) {
+        // ★ SSL断路器：断路期间直接返回，避免无意义重试
+        if (isCircuitOpen()) {
+            return null;
+        }
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 HttpRequest req = HttpRequest.newBuilder()
@@ -578,6 +621,9 @@ public class WebManager {
 
         // ★ 启动CDK验证轮询（每2秒检查PHP端CDK验证请求）
         startCdkValidationPolling();
+
+        // ★ 启动领地数据即时同步（每10秒从PHP拉取最新领地配置）
+        startLandSyncTimer();
 
         plugin.getLogger().info("[Web通信] 实时同步调度器已启动（60~90秒随机，无人停止，有人恢复）");
         plugin.getLogger().info("[Web通信] PHP回调服务器已启动，端口: " + callbackPort);
@@ -997,16 +1043,28 @@ public class WebManager {
                 activeSyncRunning = true;
 
                 try {
-                    // 通过DB队列串行化执行周期性同步
-                    submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
+                    // ★ 玩家在线时：全量同步
+                    // ★ 玩家不在线时：只保留注册/登录轮询，其余任务全部跳过
+                    boolean online = !Bukkit.getOnlinePlayers().isEmpty();
+
+                    // 登录/注册相关（始终执行）
                     submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                     submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
-                    submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
-                    submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
-                    submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
-                    submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
-                    submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
-                    submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
+
+                    if (online) {
+                        // 在线：执行全量同步
+                        submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
+                        submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
+                        submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
+                        submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
+                        submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
+                        submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
+                        submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
+                        submitNormalDbTask("周期-syncLandData", () -> syncLandData());
+                    } else {
+                        // ★ 不在线：跳过非必要同步任务
+                        plugin.getLogger().info("[Web通信] 全员下线，跳过非登录类同步任务");
+                    }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web通信] 全量同步异常: " + e.getMessage());
                 } finally {
@@ -1252,6 +1310,60 @@ public class WebManager {
             }
         }.runTaskTimerAsynchronously(plugin, 20L * 2, 20L * 2); // 每2秒检查一次
         plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
+    }
+
+    // ==================== 领地数据即时同步 ====================
+
+    /**
+     * ★ 领地数据即时同步：每10秒从PHP拉取最新领地配置
+     * 配合60~90秒全量同步作为兜底
+     */
+    private volatile boolean landSyncPulling = false;
+    private volatile int landSyncFailCount = 0;
+    private static final int LAND_SYNC_FAIL_THRESHOLD = 10;
+
+    private void startLandSyncTimer() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    // ★ 玩家不在线时跳过
+                    if (Bukkit.getOnlinePlayers().isEmpty()) return;
+
+                    // ★ 防重入
+                    if (landSyncPulling) return;
+
+                    // ★ 连续失败过多时降低频率
+                    if (landSyncFailCount >= LAND_SYNC_FAIL_THRESHOLD) {
+                        if (landSyncFailCount % 6 != 0) {
+                            landSyncFailCount++;
+                            return;
+                        }
+                    }
+
+                    landSyncPulling = true;
+                    try {
+                        String url = webBaseUrl + "/api/land_api.php?action=get_config&secret="
+                                + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                        String json = doGet(url);
+                        if (json != null && json.contains("\"success\":true")) {
+                            landSyncFailCount = 0;
+                            // 配置拉取成功，通知AreaProtection刷新
+                            if (plugin.areaProtection != null) {
+                                plugin.areaProtection.reloadAreaConfigFromDb();
+                            }
+                        } else {
+                            landSyncFailCount++;
+                        }
+                    } finally {
+                        landSyncPulling = false;
+                    }
+                } catch (Exception e) {
+                    landSyncFailCount++;
+                }
+            }
+        }.runTaskTimerAsynchronously(plugin, 20L * 10, 20L * 10); // 每10秒
+        plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每10秒）");
     }
 
     /**

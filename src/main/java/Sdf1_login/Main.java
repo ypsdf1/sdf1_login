@@ -6052,7 +6052,15 @@ public class Main extends JavaPlugin
                         "expand", "contraction",
                         "list", "listitem",
                         "addname", "removename", "listname",
-                        "addwhite", "removewhite", "listwhite");
+                        "addwhite", "removewhite", "listwhite",
+                        "settp", "setwarp", "tp", "warp",
+                        "setowner", "addvisitor", "removevisitor", "listvisitors", "transfer",
+                        "info", "shop",
+                        "cli", "menu", "菜单",
+                        "取消删除", "canceldelete",
+                        "removemember", "addmember",
+                        "config", "配置",
+                        "delete", "create", "reload");
                 return filterTab(opts, args[0]);
             }
 
@@ -6085,7 +6093,13 @@ public class Main extends JavaPlugin
                     return Arrays.asList("1", "3", "5", "10", "20", "50");
                 }
                 // 创建/删除: 区域名
-                if (sub.equals("创建") || sub.equals("删除")) {
+                if (sub.equals("创建") || sub.equals("delete")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // ★ 删除也支持中文
+                if (sub.equals("删除")) {
                     return filterTab(
                             new ArrayList<>(areaProtection.getAreaNames()),
                             args[1]);
@@ -6102,6 +6116,33 @@ public class Main extends JavaPlugin
                         || sub.equals("listwhite")) {
                     return filterTab(
                             new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // ★ settp/setwarp/tp/warp: 区域名
+                if (sub.equals("settp") || sub.equals("setwarp")
+                        || sub.equals("tp") || sub.equals("warp")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // ★ setowner: 区域名
+                if (sub.equals("setowner") || sub.equals("transfer")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // ★ addvisitor/removevisitor/listvisitors/removemember/addmember: 区域名
+                if (sub.equals("addvisitor") || sub.equals("removevisitor")
+                        || sub.equals("listvisitors") || sub.equals("removemember")
+                        || sub.equals("addmember")) {
+                    return filterTab(
+                            new ArrayList<>(areaProtection.getAreaNames()),
+                            args[1]);
+                }
+                // ★ cli: 子命令
+                if (sub.equals("cli")) {
+                    return filterTab(
+                            Arrays.asList("menu", "lands", "manage", "members", "visitorperm", "toggle", "create"),
                             args[1]);
                 }
             }
@@ -6136,6 +6177,60 @@ public class Main extends JavaPlugin
                     for (Player pl : Bukkit.getOnlinePlayers())
                         players.add(pl.getName());
                     return filterTab(players, args[2]);
+                }
+                // ★ setowner: 第三层是玩家名
+                if (sub.equals("setowner")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
+                }
+                // ★ addvisitor/removevisitor: 第三层是玩家名
+                if (sub.equals("addvisitor") || sub.equals("removevisitor")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
+                }
+                // ★ removemember/addmember: 第三层是玩家名
+                if (sub.equals("removemember") || sub.equals("addmember")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
+                }
+                // ★ cli manage/members/visitorperm/toggle: 第三层是领地名
+                if (sub.equals("cli")) {
+                    String action = args[1].toLowerCase();
+                    if (action.equals("manage") || action.equals("members")
+                            || action.equals("visitorperm") || action.equals("toggle")) {
+                        return filterTab(
+                                new ArrayList<>(areaProtection.getAreaNames()),
+                                args[2]);
+                    }
+                }
+            }
+
+            // ★ 第四层：cli toggle需要权限key，cli manage/members/visitorperm需要页码
+            if (args.length == 4) {
+                if (sub.equals("cli")) {
+                    String action = args[1].toLowerCase();
+                    if (action.equals("toggle")) {
+                        // toggle: 第四层是权限key
+                        return filterTab(Arrays.asList(
+                                "move", "block_place", "block_break", "pvp", "mount",
+                                "ender_pearl", "thrown_projectiles", "raid", "bow", "potion",
+                                "fire", "fire_spread", "pickup", "drop", "explosion",
+                                "fall_damage", "hunger", "all_damage", "all_effects",
+                                "item_frame", "redstone", "door", "audio", "lead",
+                                "crop_harvest", "wool_shear", "animal_feed", "glowing", "peace_mode"),
+                                args[3]);
+                    }
+                    if (action.equals("manage") || action.equals("members")
+                            || action.equals("visitorperm")) {
+                        // 页码
+                        return Arrays.asList("1", "2", "3", "4", "5");
+                    }
                 }
             }
 

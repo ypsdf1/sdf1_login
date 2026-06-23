@@ -52,8 +52,17 @@ public class AreaGUIManager implements Listener {
     /**
      * 打开区域防护主菜单
      */
+    // ★ 管理员面板标题
+    private static final String T_ADMIN_PANEL = "§6§l管理员配置面板";
+
     public void openMainMenu(Player p) {
         Inventory inv = Bukkit.createInventory(null, 54, T_MAIN);
+
+        // ★ 获取圈地工具（位置3）
+        inv.setItem(3, createItem(Material.STICK, "§a§l获取圈地工具",
+                "§7获取选择区域的木棍工具",
+                "",
+                "§e点击获取"));
 
         // 创建领地（位置12）
         inv.setItem(12, createItem(Material.GRASS_BLOCK, "§a§l创建领地",
@@ -79,6 +88,15 @@ public class AreaGUIManager implements Listener {
                 "§7在浏览器中打开插件文档页面",
                 "",
                 "§e点击查看"));
+
+        // ★ 管理员面板：只有tag管理员可见（位置4）
+        if (areaProtect.isAreaAdmin(p)) {
+            inv.setItem(4, createItem(Material.NETHER_STAR, "§c§l管理员面板",
+                    "§7调整区域防护全局配置",
+                    "§7每平米价格、最大领地数等",
+                    "",
+                    "§e点击进入"));
+        }
 
         // ★ 切换到CLI模式（位置42）
         inv.setItem(42, createItem(Material.COMMAND_BLOCK, "§b§l切换到CLI模式",
@@ -442,7 +460,11 @@ public class AreaGUIManager implements Listener {
         // 区域防护主菜单
         if (T_MAIN.equals(title)) {
             event.setCancelled(true);
-            if (raw == 12) {
+            if (raw == 3) {
+                // ★ 获取圈地工具
+                p.closeInventory();
+                giveWandTool(p);
+            } else if (raw == 12) {
                 // 创建领地 - 给予选择工具
                 p.closeInventory();
                 p.performCommand("protect 工具");
@@ -454,6 +476,9 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 40) {
                 p.closeInventory();
                 p.sendMessage("§a文档链接: https://wiki.ypshidifu.cn");
+            } else if (raw == 4 && areaProtect.isAreaAdmin(p)) {
+                // ★ 管理员面板
+                openAdminPanel(p);
             } else if (raw == 42) {
                 // ★ 切换到CLI模式
                 p.closeInventory();
@@ -671,9 +696,20 @@ public class AreaGUIManager implements Listener {
                 String modeStr = land.enforceGameMode != null ? land.enforceGameMode : "无";
                 p.sendMessage("§a强制游戏模式: §f" + modeStr);
                 openLandSettings(p, landName);
+            } else if (raw == 31) {
+                // ★ 设置传送点
+                p.closeInventory();
+                p.performCommand("protect settp " + landName);
             } else if (raw == 48) {
                 openLandManage(p, landName);
             }
+            return;
+        }
+
+        // ★ 管理员面板
+        if (T_ADMIN_PANEL.equals(title)) {
+            event.setCancelled(true);
+            handleAdminPanelClick(p, raw, event.isLeftClick(), event.isRightClick());
             return;
         }
     }
@@ -713,9 +749,151 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击切换: 生存→创造→冒险→旁观→无"));
 
+        // ★ 设置传送点（位置31）
+        inv.setItem(31, createItem(Material.ENDER_PEARL, "§a§l设置传送点",
+                "§7将你当前位置设为领地传送点",
+                "",
+                "§e点击设置"));
+
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回管理领地", ""));
 
         p.openInventory(inv);
+    }
+
+    // ==================== 管理员面板 ====================
+
+    /**
+     * ★ 打开管理员配置面板
+     */
+    public void openAdminPanel(Player p) {
+        Inventory inv = Bukkit.createInventory(null, 54, T_ADMIN_PANEL);
+
+        // 读取全局配置
+        int pricePerSqm = 10;
+        int maxLands = 5;
+        int defaultHeight = 255;
+        int peaceDuration = 3600;
+        try {
+            String val = areaProtect.getAreaConfigValue("create_price_per_sqm");
+            if (val != null) pricePerSqm = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("max_lands_per_player");
+            if (val != null) maxLands = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("default_height");
+            if (val != null) defaultHeight = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("peace_mode_max_duration");
+            if (val != null) peaceDuration = Integer.parseInt(val);
+        } catch (Exception ignored) {}
+
+        // 每平米价格（位置11）
+        inv.setItem(11, createItem(Material.EMERALD, "§e§l每平米价格",
+                "§7当前: §f" + pricePerSqm + " 元/㎡",
+                "",
+                "§e左键+10 / 右键-10"));
+
+        // 最大领地数（位置13）
+        inv.setItem(13, createItem(Material.NAME_TAG, "§e§l每玩家最大领地数",
+                "§7当前: §f" + maxLands + " 个",
+                "",
+                "§e左键+1 / 右键-1"));
+
+        // 默认高度（位置15）
+        inv.setItem(15, createItem(Material.BARRIER, "§e§l默认领地高度",
+                "§7当前: §f" + defaultHeight + " 格",
+                "",
+                "§e左键+32 / 右键-32"));
+
+        // 和平模式最大时间（位置22）
+        inv.setItem(22, createItem(Material.SHIELD, "§e§l和平模式最长时间",
+                "§7当前: §f" + peaceDuration + " 秒",
+                "",
+                "§e左键+600 / 右键-600"));
+
+        // 返回按钮（位置48）
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回主菜单", ""));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * ★ 获取圈地工具（木棍）
+     */
+    private void giveWandTool(Player p) {
+        ItemStack wand = new ItemStack(Material.STICK);
+        ItemMeta meta = wand.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName("§a§l区域选择工具");
+            meta.setLore(Arrays.asList(
+                    "§7左键点击选择第一个点",
+                    "§7右键点击选择第二个点",
+                    "§7手持工具输入 /protect 创建 <名称>",
+                    "",
+                    "§e草原探险 - 区域防护"
+            ));
+            wand.setItemMeta(meta);
+        }
+        // 检查背包是否已有
+        for (ItemStack item : p.getInventory().getContents()) {
+            if (item != null && item.getType() == Material.STICK
+                    && item.hasItemMeta() && item.getItemMeta() != null
+                    && item.getItemMeta().hasDisplayName()
+                    && item.getItemMeta().getDisplayName().contains("区域选择工具")) {
+                p.sendMessage("§e你已拥有圈地工具");
+                return;
+            }
+        }
+        p.getInventory().addItem(wand);
+        p.sendMessage("§a已获取圈地工具（木棍），左键/右键选择区域边界");
+    }
+
+    /**
+     * ★ 处理管理员面板点击
+     */
+    private void handleAdminPanelClick(Player p, int raw, boolean leftClick, boolean rightClick) {
+        // 读取当前值
+        int pricePerSqm = 10, maxLands = 5, defaultHeight = 255, peaceDuration = 3600;
+        try {
+            String v;
+            v = areaProtect.getAreaConfigValue("create_price_per_sqm");
+            if (v != null) pricePerSqm = Integer.parseInt(v);
+            v = areaProtect.getAreaConfigValue("max_lands_per_player");
+            if (v != null) maxLands = Integer.parseInt(v);
+            v = areaProtect.getAreaConfigValue("default_height");
+            if (v != null) defaultHeight = Integer.parseInt(v);
+            v = areaProtect.getAreaConfigValue("peace_mode_max_duration");
+            if (v != null) peaceDuration = Integer.parseInt(v);
+        } catch (Exception ignored) {}
+
+        if (raw == 11) {
+            // 每平米价格
+            if (leftClick) pricePerSqm += 10;
+            else if (rightClick) pricePerSqm = Math.max(0, pricePerSqm - 10);
+            areaProtect.setAreaConfigValue("create_price_per_sqm", String.valueOf(pricePerSqm));
+            p.sendMessage("§a每平米价格已更新: §f" + pricePerSqm + " 元/㎡");
+            openAdminPanel(p);
+        } else if (raw == 13) {
+            // 最大领地数
+            if (leftClick) maxLands += 1;
+            else if (rightClick) maxLands = Math.max(1, maxLands - 1);
+            areaProtect.setAreaConfigValue("max_lands_per_player", String.valueOf(maxLands));
+            p.sendMessage("§a最大领地数已更新: §f" + maxLands + " 个");
+            openAdminPanel(p);
+        } else if (raw == 15) {
+            // 默认高度
+            if (leftClick) defaultHeight += 32;
+            else if (rightClick) defaultHeight = Math.max(32, defaultHeight - 32);
+            areaProtect.setAreaConfigValue("default_height", String.valueOf(defaultHeight));
+            p.sendMessage("§a默认高度已更新: §f" + defaultHeight + " 格");
+            openAdminPanel(p);
+        } else if (raw == 22) {
+            // 和平模式时间
+            if (leftClick) peaceDuration += 600;
+            else if (rightClick) peaceDuration = Math.max(60, peaceDuration - 600);
+            areaProtect.setAreaConfigValue("peace_mode_max_duration", String.valueOf(peaceDuration));
+            p.sendMessage("§a和平模式时间已更新: §f" + peaceDuration + " 秒");
+            openAdminPanel(p);
+        } else if (raw == 48) {
+            openMainMenu(p);
+        }
     }
 }

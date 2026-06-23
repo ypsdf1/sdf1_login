@@ -723,6 +723,29 @@ public class AreaProtection implements Listener {
         plugin.getLogger().info("========================================");
     }
 
+    /**
+     * ★ 从数据库重新加载area_config配置（Web同步用）
+     */
+    public void reloadAreaConfigFromDb() {
+        if (dbConnection == null) return;
+        try {
+            ResultSet cfgRs = dbConnection.createStatement().executeQuery("SELECT key, value FROM area_config");
+            while (cfgRs.next()) {
+                String key = cfgRs.getString("key");
+                String value = cfgRs.getString("value");
+                switch (key) {
+                    case "create_price_per_sqm": /* 已在area_config表管理 */ break;
+                    case "max_lands_per_player": break;
+                    case "default_height": break;
+                    case "peace_mode_max_duration": break;
+                }
+            }
+            cfgRs.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 从DB重载配置失败: " + e.getMessage());
+        }
+    }
+
 // ==================== 消息格式化 ====================
 
     /**
@@ -4770,12 +4793,16 @@ public class AreaProtection implements Listener {
                     break;
                 case "toggle":
                     if (args.length < 4) {
-                        p.sendMessage("§c用法: /protect cli toggle <领地名> <权限key>");
+                        p.sendMessage("§c用法: /protect cli toggle <领地名> <权限key> [页码]");
                         break;
                     }
-                    plugin.areaCLIManager.togglePerm(p, args[2], args[3]);
-                    // ★ 切换后刷新当前领地管理页面
-                    plugin.areaCLIManager.showLandManage(p, args[2], 1);
+                    int togglePage = 1;
+                    if (args.length >= 5) {
+                        try { togglePage = Integer.parseInt(args[4]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.togglePerm(p, args[2], args[3], togglePage);
+                    // ★ 切换后刷新到访客授权页面（停留当前页面，不退出）
+                    plugin.areaCLIManager.refreshCurrentPage(p);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -5325,7 +5352,7 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== 删除（带1分钟延迟+二次确认）=====
+        // ===== 删除（带60秒延迟自动删除 + 取消）=====
         if (sub.equals("删除") || sub.equals("delete")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -5348,70 +5375,48 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c领地不存在: " + areaName);
                 return true;
             }
-            // ★ 二次确认：参数2必须是完整的领地名
-            if (args.length < 3 || !args[2].equals(areaName)) {
-                sender.sendMessage("§e⚠ 此操作不可逆！请在60秒内输入: §c/protect 删除 " + areaName + " " + areaName);
-                // 如果有旧的待删除，取消
-                PendingDelete old = pendingDeletes.remove(areaName);
-                if (old != null) old.task.cancel();
-                // 启动1分钟倒计时
-                UUID uid = p.getUniqueId();
-                String finalAreaName = areaName;
-                long start = System.currentTimeMillis();
-                BukkitTask task = new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        pendingDeletes.remove(finalAreaName);
+            // ★ 检查是否已有待删除请求
+            PendingDelete existing = pendingDeletes.get(areaName);
+            if (existing != null) {
+                // 已有等待期，提示取消方式
+                long elapsed = System.currentTimeMillis() - existing.startTime;
+                long remaining = Math.max(0, (60000 - elapsed) / 1000);
+                sender.sendMessage("§e领地 §c" + areaName + " §e正在等待删除中，还剩 §c" + remaining + " §e秒后自动删除");
+                sender.sendMessage("§7输入 §e/protect 取消删除 " + areaName + " §7可取消");
+                return true;
+            }
+            // ★ 新建等待期：60秒后自动删除
+            sender.sendMessage("§e⚠ 此操作不可逆！领地 §c" + areaName + " §e将在 §c60秒 §e后自动删除");
+            sender.sendMessage("§7输入 §e/protect 取消删除 " + areaName + " §7可取消");
+            // 也显示到领地列表（CLI/GUI取消按钮会自动刷新）
+            UUID uid = p.getUniqueId();
+            String finalAreaName = areaName;
+            long start = System.currentTimeMillis();
+            BukkitTask task = new BukkitRunnable() {
+                @Override
+                public void run() {
+                    pendingDeletes.remove(finalAreaName);
+                    // ★ 60秒到期后自动删除领地
+                    if (areas.containsKey(finalAreaName)) {
+                        deleteAreaFromDb(finalAreaName);
+                        areas.remove(finalAreaName);
+                        plugin.getLogger().info("[防护] 领地 §e" + finalAreaName + " §7等待期结束，已自动删除");
+                        // 通知发起者
                         Player online = Bukkit.getPlayer(uid);
                         if (online != null && online.isOnline()) {
-                            online.sendMessage("§c§l[防护] §f领地 §e" + finalAreaName + " §f的删除请求已超时失效");
+                            online.sendMessage("§a§l[防护] §f领地 §e" + finalAreaName + " §f等待期结束，已自动删除");
+                        }
+                        // 通知所有在线管理员
+                        for (Player admin : Bukkit.getOnlinePlayers()) {
+                            if (admin.getUniqueId().equals(uid)) continue;
+                            if (isAreaAdmin(admin)) {
+                                admin.sendMessage("§7[防护] 领地 §e" + finalAreaName + " §7等待期结束，已自动删除");
+                            }
                         }
                     }
-                }.runTaskLater(plugin, 1200L); // 60秒 = 1200 tick
-                pendingDeletes.put(areaName, new PendingDelete(areaName, p.getName(), start, task));
-                return true;
-            }
-            // ★ 验证是发起者本人确认（或管理员）
-            PendingDelete pd = pendingDeletes.get(areaName);
-            if (pd == null) {
-                // 没有待删除记录，先创建一个（防止绕过延迟）
-                sender.sendMessage("§e⚠ 此操作不可逆！请在60秒内输入: §c/protect 删除 " + areaName + " " + areaName);
-                PendingDelete old = pendingDeletes.remove(areaName);
-                if (old != null) old.task.cancel();
-                UUID uid = p.getUniqueId();
-                String finalAreaName = areaName;
-                long start = System.currentTimeMillis();
-                BukkitTask task = new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        pendingDeletes.remove(finalAreaName);
-                        Player online = Bukkit.getPlayer(uid);
-                        if (online != null && online.isOnline()) {
-                            online.sendMessage("§c§l[防护] §f领地 §e" + finalAreaName + " §f的删除请求已超时失效");
-                        }
-                    }
-                }.runTaskLater(plugin, 1200L);
-                pendingDeletes.put(areaName, new PendingDelete(areaName, p.getName(), start, task));
-                return true;
-            }
-            if (!pd.playerName.equals(p.getName()) && !isAreaAdmin(sender)) {
-                sender.sendMessage("§c只有发起删除的玩家才能确认");
-                return true;
-            }
-            // ★ 检查是否已超时（1分钟）
-            if (System.currentTimeMillis() - pd.startTime > 60_000) {
-                pendingDeletes.remove(areaName);
-                pd.task.cancel();
-                sender.sendMessage("§c删除请求已超时，请重新发起");
-                return true;
-            }
-            // ★ 冻结期间如果玩家操作了领地，则自动取消
-            pendingDeletes.remove(areaName);
-            if (pd != null) pd.task.cancel();
-            // 执行删除
-            deleteAreaFromDb(areaName);
-            areas.remove(areaName);
-            sender.sendMessage("§a§l[防护] §f已删除领地: §e" + areaName);
+                }
+            }.runTaskLater(plugin, 1200L); // 60秒 = 1200 tick
+            pendingDeletes.put(areaName, new PendingDelete(areaName, p.getName(), start, task));
             return true;
         }
 
@@ -6087,15 +6092,28 @@ public class AreaProtection implements Listener {
                 return true;
             }
             Player p = (Player) sender;
-            // 找到玩家所在的领地
-            AreaConfig ac = getArea(
-                    p.getWorld().getName(),
-                    p.getLocation().getBlockX(),
-                    p.getLocation().getBlockY(),
-                    p.getLocation().getBlockZ());
-            if (ac == null) {
-                sender.sendMessage("§c你不在任何领地内");
-                return true;
+            AreaConfig ac = null;
+            // ★ 支持指定领地名：/protect settp <领地名>
+            if (args.length >= 2) {
+                String targetName = args[1];
+                String resolved = resolveAreaName(targetName);
+                if (resolved != null) targetName = resolved;
+                ac = areas.get(targetName);
+                if (ac == null) {
+                    sender.sendMessage("§c领地不存在: " + targetName);
+                    return true;
+                }
+            } else {
+                // 找到玩家所在的领地
+                ac = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac == null) {
+                    sender.sendMessage("§c你不在任何领地内，请指定领地名: /protect settp <领地名>");
+                    return true;
+                }
             }
             if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
@@ -6502,6 +6520,36 @@ public class AreaProtection implements Listener {
         } catch (Exception e) {
             plugin.getLogger().warning("[防护] 更新配置失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * ★ 获取area_config表中的配置值
+     */
+    public String getAreaConfigValue(String key) {
+        if (dbConnection == null) return null;
+        try {
+            PreparedStatement ps = dbConnection.prepareStatement("SELECT value FROM area_config WHERE key = ?");
+            ps.setString(1, key);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String val = rs.getString("value");
+                rs.close();
+                ps.close();
+                return val;
+            }
+            rs.close();
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 读取配置失败: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * ★ 设置area_config表中的配置值（公开方法）
+     */
+    public void setAreaConfigValue(String key, String value) {
+        updateAreaConfig(key, value);
     }
 
     /**
@@ -7129,7 +7177,22 @@ public class AreaProtection implements Listener {
     public LandConfig getLandConfig() { return landConfig; }
 
     private void loadAreaConfig() {
-        File configFile = new File(plugin.getDataFolder(), "区域防护配置.txt");
+        // ★ 配置文件放在area/子目录，避免插件根目录凌乱
+        File areaDir = new File(plugin.getDataFolder(), "area");
+        if (!areaDir.exists()) {
+            areaDir.mkdirs();
+        }
+        // ★ 自动迁移：如果根目录有旧配置文件，移到area/目录
+        File oldConfigFile = new File(plugin.getDataFolder(), "区域防护配置.txt");
+        File configFile = new File(areaDir, "区域防护配置.txt");
+        if (!configFile.exists() && oldConfigFile.exists()) {
+            try {
+                oldConfigFile.renameTo(configFile);
+                plugin.getLogger().info("[防护] 已将区域防护配置迁移到 area/ 目录");
+            } catch (Exception e) {
+                // 迁移失败，使用新位置
+            }
+        }
         if (!configFile.exists()) {
             writeDefaultAreaConfig(configFile);
         }

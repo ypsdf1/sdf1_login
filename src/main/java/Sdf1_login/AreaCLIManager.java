@@ -6,7 +6,10 @@ import net.kyori.adventure.text.event.HoverEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -21,12 +24,49 @@ public class AreaCLIManager {
     private final AreaProtection areaProtect;
     private static final int PAGE_SIZE = 10;
 
+    // ★ 记录每个玩家当前所在页面（切换权限后刷新用）
+    private final Map<UUID, String[]> playerPageInfo = new HashMap<>();
+
     public AreaCLIManager(Main plugin, AreaProtection areaProtect) {
         this.plugin = plugin;
         this.areaProtect = areaProtect;
     }
 
     // ==================== 辅助方法 ====================
+
+    /**
+     * ★ 记录玩家当前页面位置
+     * @param type 页面类型（visitorperm / members / manage / lands）
+     * @param landName 领地名
+     * @param page 页码
+     */
+    private void savePageInfo(Player p, String type, String landName, int page) {
+        playerPageInfo.put(p.getUniqueId(), new String[]{type, landName, String.valueOf(page)});
+    }
+
+    /**
+     * ★ 获取玩家上次所在页面，返回 [type, landName, page] 或 null
+     */
+    private String[] getPageInfo(Player p) {
+        return playerPageInfo.get(p.getUniqueId());
+    }
+
+    /**
+     * ★ 切换权限后刷新：回到当前所在访客授权页面
+     */
+    public void refreshCurrentPage(Player p) {
+        String[] info = getPageInfo(p);
+        if (info != null && "visitorperm".equals(info[0])) {
+            showVisitorPerm(p, info[1], Integer.parseInt(info[2]));
+        } else if (info != null && "members".equals(info[0])) {
+            showMemberList(p, info[1], Integer.parseInt(info[2]));
+        } else {
+            // 默认回到管理页面
+            if (info != null) {
+                showLandManage(p, info[1], 1);
+            }
+        }
+    }
 
     private Component coloredText(String text, NamedTextColor color) {
         return Component.text(text).color(color);
@@ -57,6 +97,8 @@ public class AreaCLIManager {
     public void showMainMenu(Player p) {
         p.sendMessage(header("领地系统"));
 
+        p.sendMessage(clickableAction("⛏", "获取圈地工具",
+                "/protect 工具"));
         p.sendMessage(clickableAction("⚔", "创建领地",
                 "/protect cli create"));
         p.sendMessage(clickableAction("📋", "领地列表",
@@ -69,7 +111,6 @@ public class AreaCLIManager {
         // 设置
         int uiMode = 1;
         try { uiMode = plugin.getDb().getUiMode(p.getName()); } catch (Exception ignored) {}
-        String modeLabel = uiMode == 0 ? "CLI" : "GUI";
         p.sendMessage(clickableAction("⚙", "切换到" + (uiMode == 0 ? "GUI" : "CLI") + "模式",
                 "/protect uimode " + (uiMode == 0 ? "cli" : "gui")));
 
@@ -79,6 +120,8 @@ public class AreaCLIManager {
     // ==================== 领地列表 ====================
 
     public void showLandList(Player p, int page) {
+        savePageInfo(p, "lands", "", page);
+
         String playerName = p.getName();
         List<AreaProtection.AreaConfig> lands = areaProtect.getLandsByOwner(playerName);
 
@@ -128,7 +171,6 @@ public class AreaCLIManager {
                                 "/protect tp " + land.name)));
                 line = line.append(Component.text(" "));
                 if (areaProtect.hasPendingDelete(land.name)) {
-                    // ★ 有待删除请求时显示取消按钮
                     line = line.append(Component.text("§e[取消删除]")
                             .hoverEvent(HoverEvent.showText(
                                     Component.text("§e点击取消删除此领地")))
@@ -175,6 +217,8 @@ public class AreaCLIManager {
     // ==================== 领地管理 ====================
 
     public void showLandManage(Player p, String landName, int permPage) {
+        savePageInfo(p, "manage", landName, 1);
+
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -201,6 +245,9 @@ public class AreaCLIManager {
                 "/protect cli members " + land.name + " 1"));
         p.sendMessage(clickableAction("🔑", "访客授权",
                 "/protect cli visitorperm " + land.name + " 1"));
+        // ★ 新增：设置传送点
+        p.sendMessage(clickableAction("📍", "设置传送点（当前位置）",
+                "/protect settp " + land.name));
 
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回列表]")
@@ -212,6 +259,8 @@ public class AreaCLIManager {
     // ==================== 用户管理 ====================
 
     public void showMemberList(Player p, String landName, int page) {
+        savePageInfo(p, "members", landName, page);
+
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -263,11 +312,13 @@ public class AreaCLIManager {
             p.sendMessage(pagination);
         }
 
+        // ★ 修复占位符：使用 suggest_command 让玩家可以编辑命令输入玩家名
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[添加成员] ")
-                        .clickEvent(ClickEvent.runCommand(
-                                "/protect addvisitor " + land.name + " <玩家名>")))
-                .append(Component.text("§7§7点击后在聊天框输入玩家名")));
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后在聊天框输入玩家名")))
+                        .clickEvent(ClickEvent.suggestCommand(
+                                "/protect addvisitor " + land.name + " ")))
+                .append(Component.text("§7点击后输入玩家名")));
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回管理]")
                         .clickEvent(ClickEvent.runCommand(
@@ -278,6 +329,8 @@ public class AreaCLIManager {
     // ==================== 访客授权 ====================
 
     public void showVisitorPerm(Player p, String landName, int page) {
+        savePageInfo(p, "visitorperm", landName, page);
+
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -314,7 +367,7 @@ public class AreaCLIManager {
                     .hoverEvent(HoverEvent.showText(
                             Component.text("§e点击切换此权限状态")))
                     .clickEvent(ClickEvent.runCommand(
-                            "/protect cli toggle " + land.name + " " + perm.key)));
+                            "/protect cli toggle " + land.name + " " + perm.key + " " + page)));
             p.sendMessage(line);
         }
 
@@ -325,7 +378,7 @@ public class AreaCLIManager {
                 pagination = pagination.append(Component.text("§a[◀ 上一页]")
                         .hoverEvent(HoverEvent.showText(Component.text("§e上一页")))
                         .clickEvent(ClickEvent.runCommand(
-                                "/protect cli manage " + land.name + " " + (page - 1))));
+                                "/protect cli visitorperm " + land.name + " " + (page - 1))));
                 pagination = pagination.append(Component.text(" "));
             }
             pagination = pagination.append(Component.text("§7第" + page + "/" + totalPages + "页"));
@@ -334,7 +387,7 @@ public class AreaCLIManager {
                 pagination = pagination.append(Component.text("§a[下一页 ▶]")
                         .hoverEvent(HoverEvent.showText(Component.text("§e下一页")))
                         .clickEvent(ClickEvent.runCommand(
-                                "/protect cli manage " + land.name + " " + (page + 1))));
+                                "/protect cli visitorperm " + land.name + " " + (page + 1))));
             }
             p.sendMessage(pagination);
         }
@@ -342,7 +395,7 @@ public class AreaCLIManager {
 
     // ==================== 切换权限 ====================
 
-    public void togglePerm(Player p, String landName, String permKey) {
+    public void togglePerm(Player p, String landName, String permKey, int page) {
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -395,6 +448,13 @@ public class AreaCLIManager {
         String permName = getPermNameByKey(permKey);
         boolean newState = !oldState;
         p.sendMessage("§a已切换 §e" + permName + " §7→ " + (newState ? "§a已启用" : "§c已禁用"));
+    }
+
+    /**
+     * ★ 兼容旧调用（不含page参数）
+     */
+    public void togglePerm(Player p, String landName, String permKey) {
+        togglePerm(p, landName, permKey, 1);
     }
 
     // ==================== 数据结构 ====================
