@@ -5695,34 +5695,32 @@ public class AreaProtection implements Listener {
         // 可点击的帮助消息
         sendClickableHelp(s, "/protect menu", "打开GUI菜单");
         sendClickableHelp(s, "/protect 工具", "获取选地工具");
-        sendClickableHelp(s, "/protect 创建 <名>", "创建区域");
+        sendClickableHelp(s, "/protect 创建", "创建区域(先选点)");
         sendClickableHelp(s, "/protect 列表", "区域列表");
         sendClickableHelp(s, "/protect 重载", "重载配置");
-        sendClickableHelp(s, "/protect 删除 <名>", "删除区域");
+        sendClickableHelp(s, "/protect 删除", "删除当前所在区域");
         sendClickableHelp(s, "/protect info", "当前领地信息");
-        sendClickableHelp(s, "/protect add [区域] <玩家>", "玩家加白");
-        sendClickableHelp(s, "/protect remove [区域] <玩家>", "玩家删白");
-        sendClickableHelp(s, "/protect additem [区域] <物品>", "物品加黑");
-        sendClickableHelp(s, "/protect removeitem [区域] <物品>", "物品删黑");
+        sendClickableHelp(s, "/protect add", "玩家加白(需在领地内)");
+        sendClickableHelp(s, "/protect remove", "玩家删白(需在领地内)");
+        sendClickableHelp(s, "/protect additem", "物品加黑");
+        sendClickableHelp(s, "/protect removeitem", "物品删黑");
         sendClickableHelp(s, "/protect on", "显示边框");
         sendClickableHelp(s, "/protect off", "关闭边框");
         sendClickableHelp(s, "/protect tempon", "临时边框(15秒)");
-        sendClickableHelp(s, "/protect list [区域]", "列出白名单");
-        sendClickableHelp(s, "/protect listitem [区域]", "列出物品黑名单");
+        sendClickableHelp(s, "/protect list", "列出白名单(需在领地内)");
+        sendClickableHelp(s, "/protect listitem", "列出物品黑名单");
 
         s.sendMessage("§e§l---- 权限管理 ----");
-        sendClickableHelp(s, "/protect setowner <领地> <玩家>", "设置所有者");
-        sendClickableHelp(s, "/protect addvisitor [领地] <玩家>", "添加访客");
-        sendClickableHelp(s, "/protect removevisitor [领地] <玩家>", "移除访客");
-        sendClickableHelp(s, "/protect listvisitors [领地]", "列出访客");
-        sendClickableHelp(s, "/protect transfer <领地> <新所有者>", "转让领地");
+        sendClickableHelp(s, "/protect setowner", "设置当前领地所有者(管理员)");
+        sendClickableHelp(s, "/protect addvisitor", "添加访客(需在领地内)");
+        sendClickableHelp(s, "/protect removevisitor", "移除访客(需在领地内)");
+        sendClickableHelp(s, "/protect listvisitors", "列出访客(需在领地内)");
+        sendClickableHelp(s, "/protect transfer", "转让领地(需在领地内)");
 
         s.sendMessage("§e§l---- 权限商店 ----");
-        sendClickableHelp(s, "/protect shop create <领地> <价格> [时长秒]", "上架权限");
-        sendClickableHelp(s, "/protect shop remove <ID>", "下架权限");
         sendClickableHelp(s, "/protect shop list", "查看在售权限");
-        sendClickableHelp(s, "/protect shop buy <ID>", "购买权限");
         sendClickableHelp(s, "/protect shop my", "查看我的权限");
+        sendClickableHelp(s, "/protect info", "当前领地信息");
 
         s.sendMessage("§b§l欢迎游玩草原探险服务器");
         s.sendMessage("§b§l服务器ip：mc2.ypshidifu.cn 端口30679");
