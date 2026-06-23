@@ -9,15 +9,15 @@ import org.slf4j.LoggerFactory;
 
 import javax.net.ssl.*;
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.Socket;
-import java.net.URL;
-import java.net.URLEncoder;
+import java.net.*;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.sql.*;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
@@ -61,6 +61,9 @@ public class WebManager {
     private int syncIntervalMinutes = 5;
     private String secretKey = "sdf1_web_comm_2026_ypshidifu";
     private int callbackPort = 9090; // PHP回调端口
+
+    // ★ 统一HTTP客户端（绕过HttpsURLConnection的TLS时序问题，原生支持ALPN/SNI/HTTP2）
+    private HttpClient cfHttpClient;
 
     // ★ 上次同步快照（用于检测变化，无变化静默）
     private String lastOnlinePlayersHash = "";
@@ -217,133 +220,157 @@ public class WebManager {
     // ==================== 工具方法 ====================
 
     /**
-     * 绕过SSL证书验证，解决PKIX等证书错误
-     * 使用TLS 1.2+以确保与Cloudflare兼容
+     * SSL初始化 - Cloudflare兼容
+     * ★ 彻底方案：用 java.net.http.HttpClient 替代 HttpsURLConnection
+     * HttpsURLConnection 内部调用 factory.createSocket()(无参版本)绕过了自定义工厂的配置
+     * HttpClient 原生处理 ALPN/SNI/TLS协商，完全不走HttpsURLConnection的工厂机制
      */
     private void initSSL() {
-        // ★ Cloudflare兼容SSL初始化
-        // 关键：系统属性必须在SSLContext创建之前设置
-        // 强制TLSv1.2（与CF边缘服务器最兼容，避免TLS 1.3协商问题）
-        System.setProperty("jdk.tls.client.protocols", "TLSv1.2");
-
         final TrustManager[] trustAllCerts = new TrustManager[]{
                 new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() {
-                        return new X509Certificate[0];
-                    }
-
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) {
-                    }
-
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) {
-                    }
+                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
                 }
         };
 
         try {
-            // ★ 直接用TLSv1.2，不尝试TLS 1.3（CF边缘与Java TLS 1.3有兼容性问题）
-            SSLContext sc = SSLContext.getInstance("TLSv1.2");
+            // ★ 使用通用TLS（不限版本），让Java协商最佳TLS版本
+            SSLContext sc = SSLContext.getInstance("TLS");
             sc.init(null, trustAllCerts, new SecureRandom());
 
-            // ★ 自定义SSLSocketFactory：每个socket强制配置协议和密码套件
-            // 这比 setDefaultSSLSocketFactory 更可靠，因为系统属性可能延迟生效
-            final SSLSocketFactory baseFactory = sc.getSocketFactory();
-            SSLSocketFactory cfFactory = new SSLSocketFactory() {
-                private static final String[] CF_CIPHER_SUITES = {
-                        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
-                        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
-                        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
-                        "TLS_RSA_WITH_AES_128_GCM_SHA256",
-                        "TLS_RSA_WITH_AES_256_GCM_SHA384"
-                };
+            // ★ java.net.http.HttpClient：原生处理 ALPN、SNI、HTTP/2
+            cfHttpClient = HttpClient.newBuilder()
+                    .sslContext(sc)
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .version(HttpClient.Version.HTTP_2)  // 优先HTTP/2（CF支持）
+                    .build();
 
-                @Override
-                public String[] getDefaultCipherSuites() {
-                    return CF_CIPHER_SUITES;
-                }
-
-                @Override
-                public String[] getSupportedCipherSuites() {
-                    return CF_CIPHER_SUITES;
-                }
-
-                private void configureSocket(SSLSocket socket, String host) {
-                    // 强制TLS 1.2协议
-                    socket.setEnabledProtocols(new String[]{"TLSv1.2"});
-
-                    // 只保留服务端支持的密码套件
-                    java.util.List<String> supported = new ArrayList<>(Arrays.asList(socket.getSupportedCipherSuites()));
-                    java.util.List<String> enabled = new ArrayList<>();
-                    for (String cipher : CF_CIPHER_SUITES) {
-                        if (supported.contains(cipher)) {
-                            enabled.add(cipher);
-                        }
-                    }
-                    if (!enabled.isEmpty()) {
-                        socket.setEnabledCipherSuites(enabled.toArray(new String[0]));
-                    }
-
-                    // ★ SNI设置：Cloudflare需要正确的SNI才能路由到正确的站点
-                    if (host != null && !host.isEmpty() && !host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
-                        try {
-                            SSLParameters params = socket.getSSLParameters();
-                            java.util.List<SNIServerName> serverNames = new ArrayList<>();
-                            serverNames.add(new SNIHostName(host));
-                            params.setServerNames(serverNames);
-                            socket.setSSLParameters(params);
-                        } catch (Exception e) {
-                            // SNI设置失败不影响连接，只是可能无法正确路由
-                        }
-                    }
-                }
-
-                @Override
-                public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
-                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(s, host, port, autoClose);
-                    configureSocket(socket, host);
-                    return socket;
-                }
-
-                @Override
-                public Socket createSocket(String host, int port) throws IOException {
-                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
-                    configureSocket(socket, host);
-                    return socket;
-                }
-
-                @Override
-                public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
-                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port, localHost, localPort);
-                    configureSocket(socket, host);
-                    return socket;
-                }
-
-                @Override
-                public Socket createSocket(InetAddress host, int port) throws IOException {
-                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(host, port);
-                    configureSocket(socket, null);
-                    return socket;
-                }
-
-                @Override
-                public Socket createSocket(InetAddress addr, int port, InetAddress localAddr, int localPort) throws IOException {
-                    SSLSocket socket = (SSLSocket) baseFactory.createSocket(addr, port, localAddr, localPort);
-                    configureSocket(socket, null);
-                    return socket;
-                }
-            };
-
-            HttpsURLConnection.setDefaultSSLSocketFactory(cfFactory);
-            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
-            plugin.getLogger().info("[Web通信] SSL已初始化(TLSv1.2, 自定义CF兼容工厂, 信任所有证书)");
+            plugin.getLogger().info("[Web通信] SSL已初始化(java.net.http.HttpClient, TLS自适应, 信任所有证书, HTTP/2)");
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] SSL初始化失败: " + e.getMessage());
-            // 降级：至少设置hostname验证旁路
-            HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
+            // 降级：HTTP/1.1模式
+            try {
+                SSLContext sc = SSLContext.getInstance("TLS");
+                sc.init(null, trustAllCerts, new SecureRandom());
+                cfHttpClient = HttpClient.newBuilder()
+                        .sslContext(sc)
+                        .connectTimeout(Duration.ofSeconds(10))
+                        .version(HttpClient.Version.HTTP_1_1)
+                        .build();
+                plugin.getLogger().info("[Web通信] SSL降级为HTTP/1.1模式");
+            } catch (Exception e2) {
+                plugin.getLogger().severe("[Web通信] SSL完全初始化失败: " + e2.getMessage());
+            }
         }
+    }
+
+    // ==================== 统一HTTP请求方法（java.net.http.HttpClient） ====================
+
+    /**
+     * GET请求 - 返回响应体，失败返回null
+     */
+    private String doGet(String urlStr) {
+        if (cfHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                return resp.body();
+            }
+            plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + urlStr.substring(0, Math.min(120, urlStr.length())));
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * GET请求 - 返回状态码
+     */
+    private int doGetStatus(String urlStr) {
+        if (cfHttpClient == null) return -1;
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            return resp.statusCode();
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /**
+     * POST请求（JSON body）- 返回响应体，失败返回null
+     */
+    private String doPost(String urlStr, String jsonBody) {
+        if (cfHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .header("Content-Type", "application/json; charset=UTF-8")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            return resp.body();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * POST请求带重试（处理SSL/网络异常）
+     */
+    private String doPostWithRetry(String urlStr, String jsonBody, int maxRetries) {
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(urlStr))
+                        .timeout(Duration.ofSeconds(15))
+                        .header("User-Agent", "Sdf1-WebManager/2.8")
+                        .header("Content-Type", "application/json; charset=UTF-8")
+                        .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                        .build();
+                HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                    return resp.body();
+                }
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + " HTTP " + resp.statusCode());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    return resp.body();
+                }
+            } catch (Exception e) {
+                if (attempt < maxRetries) {
+                    plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName());
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                } else {
+                    plugin.getLogger().warning("[Web通信] POST最终失败: " + e.getMessage());
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     // ==================== 配置加载 ====================
@@ -619,26 +646,12 @@ public class WebManager {
                 String pullUrl = webBaseUrl + "/api/sync.php?action=check_player_registered&player="
                         + java.net.URLEncoder.encode(fName, "UTF-8") + "&secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                URL url = new URL(pullUrl);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(5000);
-
-                int code = conn.getResponseCode();
-                if (code != 200) {
-                    plugin.getLogger().warning("[Web通信] PHP拉取注册数据失败: HTTP " + code);
+                String pullJson = doGet(pullUrl);
+                if (pullJson == null) {
+                    plugin.getLogger().warning("[Web通信] PHP拉取注册数据失败");
                     sendCallbackResponse(socket, "{\"success\":false,\"message\":\"pull_failed\"}");
                     return;
                 }
-
-                BufferedReader pullReader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                StringBuilder pullSb = new StringBuilder();
-                while ((line = pullReader.readLine()) != null) pullSb.append(line);
-                pullReader.close();
-
-                String pullJson = pullSb.toString();
                 if (!pullJson.contains("\"success\":true")) {
                     plugin.getLogger().warning("[Web通信] PHP返回非success: " + pullJson.substring(0, Math.min(200, pullJson.length())));
                     sendCallbackResponse(socket, "{\"success\":false,\"message\":\"invalid_response\"}");
@@ -672,12 +685,7 @@ public class WebManager {
                         + java.net.URLEncoder.encode(secretKey, "UTF-8")
                         + "&request_id=0"
                         + "&result=success";
-                URL confirmUrlObj = new URL(confirmUrl);
-                HttpURLConnection confirmConn = (HttpURLConnection) confirmUrlObj.openConnection();
-                confirmConn.setRequestMethod("POST");
-                confirmConn.setConnectTimeout(5000);
-                confirmConn.setReadTimeout(5000);
-                confirmConn.getResponseCode();
+                doPost(confirmUrl, "{}");
 
                 // 返回成功
                 sendCallbackResponse(socket, "{\"success\":true,\"message\":\"user_created\"}");
@@ -972,34 +980,19 @@ public class WebManager {
                 try {
                     String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_transactions&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                    URL url = new URL(urlStr);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(10000);
-                    conn.setReadTimeout(15000);
-                    int code = conn.getResponseCode();
-                    if (code != 200) {
+                    String resp = doGet(urlStr);
+                    if (resp == null) {
                         txPollFailCount++;
                         long now = System.currentTimeMillis();
                         if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
-                            plugin.getLogger().warning("[Web交易轮询] HTTP状态码: " + code + " (连续失败" + txPollFailCount + "次)");
+                            plugin.getLogger().warning("[Web交易轮询] GET失败 (连续失败" + txPollFailCount + "次)");
                             lastTxPollLogTime = now;
                         }
-                        conn.disconnect();
                         return;
                     }
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-                    conn.disconnect();
 
                     // 成功 → 重置失败计数
                     txPollFailCount = 0;
-
-                    String resp = sb.toString();
                     // 快速解析 "pending":N
                     int idx = resp.indexOf("\"pending\":");
                     if (idx >= 0) {
@@ -1080,29 +1073,13 @@ public class WebManager {
                     String urlStr = webBaseUrl + "/api/sync.php?action=check_shop_stock_changed&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8")
                             + "&last_modified=" + lastKnownShopStockModified;
-                    URL url = new URL(urlStr);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
 
-                    int code = conn.getResponseCode();
-                    if (code != 200) {
+                    String resp = doGet(urlStr);
+                    if (resp == null) {
                         shopStockPollFailCount++;
-                        conn.disconnect();
                         return;
                     }
 
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-                    conn.disconnect();
-
-                    String resp = sb.toString();
                     shopStockPollFailCount = 0;
 
                     // 解析响应
@@ -1161,38 +1138,24 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=pull_shop_stock&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
 
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                plugin.getLogger().warning("[库存高频] pull_shop_stock HTTP " + code);
+            String resp = doGet(urlStr);
+            if (resp == null) {
+                plugin.getLogger().warning("[库存高频] pull_shop_stock GET失败");
                 return false;
             }
 
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            String json = sb.toString();
-            if (!json.contains("\"success\":true")) {
+            if (!resp.contains("\"success\":true")) {
                 plugin.getLogger().warning("[库存高频] pull_shop_stock 返回失败");
                 return false;
             }
 
-            int dataStart = json.indexOf("\"items\":");
+            int dataStart = resp.indexOf("\"items\":");
             if (dataStart < 0) {
                 plugin.getLogger().warning("[库存高频] pull_shop_stock 无items字段");
                 return false;
             }
-            String dataStr = json.substring(dataStart + 8);
+            String dataStr = resp.substring(dataStart + 8);
             int arrEnd = findMatchingBracket(dataStr, 0);
             if (arrEnd < 0) {
                 plugin.getLogger().warning("[库存高频] pull_shop_stock JSON解析失败");
@@ -1242,23 +1205,8 @@ public class WebManager {
         try {
             String listUrl = webBaseUrl + "/api/sync.php?action=pull_cdk_validate_requests&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(listUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-CDKValidator/1.0");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(10000);
-            int respCode = conn.getResponseCode();
-            if (respCode != 200) { conn.disconnect(); return; }
-
-            BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-            conn.disconnect();
-
-            String json = sb.toString();
+            String json = doGet(listUrl);
+            if (json == null) return;
             if (!json.contains("\"success\":true")) return;
 
             int reqIdx = json.indexOf("\"requests\":[");
@@ -1318,13 +1266,7 @@ public class WebManager {
                         + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8")
                         + "&status=" + java.net.URLEncoder.encode(status, "UTF-8")
                         + "&amount=" + amount;
-                URL pushUrlObj = new URL(pushUrl);
-                HttpURLConnection pushConn = (HttpURLConnection) pushUrlObj.openConnection();
-                pushConn.setRequestMethod("GET");
-                pushConn.setConnectTimeout(8000);
-                pushConn.setReadTimeout(10000);
-                pushConn.getResponseCode();
-                pushConn.disconnect();
+                doGet(pushUrl);
 
                 if (!"not_found".equals(status)) {
                     plugin.getLogger().info("[CDK远程验证] " + cdkCode + " → " + status + " player=" + playerName + (amount > 0 ? " 金额:" + amount : ""));
@@ -1364,21 +1306,8 @@ public class WebManager {
                     String validateUrl = webBaseUrl + "/api/sync.php?action=check_cdk_exists&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8")
                             + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8");
-                    URL vUrl = new URL(validateUrl);
-                    HttpURLConnection vConn = (HttpURLConnection) vUrl.openConnection();
-                    vConn.setRequestMethod("GET");
-                    vConn.setConnectTimeout(8000);
-                    vConn.setReadTimeout(10000);
-                    int vCode = vConn.getResponseCode();
-                    if (vCode == 200) {
-                        BufferedReader vReader = new BufferedReader(new InputStreamReader(vConn.getInputStream(), StandardCharsets.UTF_8));
-                        StringBuilder vSb = new StringBuilder();
-                        String vLine;
-                        while ((vLine = vReader.readLine()) != null) vSb.append(vLine);
-                        vReader.close();
-                        vConn.disconnect();
-
-                        String vJson = vSb.toString();
+                    String vJson = doGet(validateUrl);
+                    if (vJson != null) {
                         // ★ 详细日志：PHP返回的原始JSON
                         plugin.getLogger().info("[CDK-Web验证] PHP原始返回: " + vJson);
                         String found = extractJsonStr(vJson, "found");
@@ -1395,20 +1324,8 @@ public class WebManager {
                                         + java.net.URLEncoder.encode(secretKey, "UTF-8")
                                         + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8")
                                         + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8");
-                                URL rUrl = new URL(redeemUrl);
-                                HttpURLConnection rConn = (HttpURLConnection) rUrl.openConnection();
-                                rConn.setRequestMethod("GET");
-                                rConn.setConnectTimeout(5000);
-                                rConn.setReadTimeout(5000);
-                                int rCode = rConn.getResponseCode();
-                                if (rCode == 200) {
-                                    BufferedReader rReader = new BufferedReader(new InputStreamReader(rConn.getInputStream(), StandardCharsets.UTF_8));
-                                    StringBuilder rSb = new StringBuilder();
-                                    String rLine;
-                                    while ((rLine = rReader.readLine()) != null) rSb.append(rLine);
-                                    rReader.close();
-                                    rConn.disconnect();
-                                    String rJson = rSb.toString();
+                                String rJson = doGet(redeemUrl);
+                                if (rJson != null) {
                                     plugin.getLogger().info("[CDK-Web验证] 兑换结果: " + rJson);
                                     String rSt = extractJsonStr(rJson, "status");
                                     if ("success".equals(rSt)) {
@@ -1417,7 +1334,7 @@ public class WebManager {
                                         status = "already_used";
                                     }
                                 } else {
-                                    plugin.getLogger().warning("[CDK-Web验证] cdk_redeem_remote HTTP: " + rCode);
+                                    plugin.getLogger().warning("[CDK-Web验证] cdk_redeem_remote GET失败");
                                 }
                             } catch (Exception e) {
                                 plugin.getLogger().warning("[CDK-Web验证] 兑换请求失败: " + e.getMessage());
@@ -1428,8 +1345,7 @@ public class WebManager {
                             plugin.getLogger().info("[CDK-Web验证] CDK " + cdkCode + " 在Web端不存在或状态未知");
                         }
                     } else {
-                        plugin.getLogger().warning("[CDK-Web验证] HTTP状态码: " + vCode + " CDK=" + cdkCode);
-                        vConn.disconnect();
+                        plugin.getLogger().warning("[CDK-Web验证] GET失败 CDK=" + cdkCode);
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[CDK-Web验证] 请求失败: " + e.getMessage());
@@ -1474,33 +1390,10 @@ public class WebManager {
 
             String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"tokens\":" + jsonArr + "}";
 
-            URL url = new URL(webBaseUrl + "/api/sync.php?action=receive_token");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            conn.setDoOutput(true);
-
-            OutputStream os = conn.getOutputStream();
-            os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
-            os.flush();
-            os.close();
-
-            int code = conn.getResponseCode();
-            if (code >= 200 && code < 300) {
-                InputStream is = conn.getInputStream();
-                if (is != null) {
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-                    plugin.getLogger().info("[Web通信] Token注册成功");
-                }
+            String resp = doPost(webBaseUrl + "/api/sync.php?action=receive_token", jsonBody);
+            if (resp != null) {
+                plugin.getLogger().info("[Web通信] Token注册成功");
             }
-            conn.disconnect();
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] Token注册失败: " + e.getClass().getSimpleName() + " - " + e.getMessage());
         }
@@ -1538,32 +1431,7 @@ public class WebManager {
                 urlStr.setLength(urlStr.length() - 1);
             }
 
-            URL url = new URL(urlStr.toString());
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(10000);
-            conn.setInstanceFollowRedirects(true);
-
-            int code = conn.getResponseCode();
-            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-            if (is == null) {
-                plugin.getLogger().warning("[Web通信] GET响应为空: " + endpoint + " (HTTP " + code + ")");
-                return null;
-            }
-
-            BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-            conn.disconnect();
-
-            String result = sb.toString();
-            if (code < 200 || code >= 300) {
-                plugin.getLogger().warning("[Web通信] GET请求失败: " + endpoint + " (HTTP " + code + ") " + result);
-            }
+            String result = doGet(urlStr.toString());
             return result;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] GET请求异常: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -1582,75 +1450,8 @@ public class WebManager {
      * HTTP POST 带重试机制（处理 SSL 握手失败和网络超时）
      */
     private String httpPostWithRetry(String endpoint, String jsonBody, int maxRetries) {
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                URL url = new URL(webBaseUrl + "/" + endpoint);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
-                conn.setDoOutput(true);
-
-                OutputStream os = conn.getOutputStream();
-                os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-                os.close();
-
-                int code = conn.getResponseCode();
-                InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-                if (is == null) {
-                    if (attempt < maxRetries) {
-                        plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + endpoint + " (HTTP " + code + ")");
-                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                        continue;
-                    }
-                    plugin.getLogger().warning("[Web通信] POST响应为空: " + endpoint + " (HTTP " + code + ")");
-                    return null;
-                }
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                conn.disconnect();
-
-                String result = sb.toString();
-                if (code < 200 || code >= 300) {
-                    plugin.getLogger().warning("[Web通信] POST请求失败: " + endpoint + " (HTTP " + code + ") " + result.substring(0, Math.min(200, result.length())));
-                    if (attempt < maxRetries) {
-                        plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + endpoint);
-                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                        continue;
-                    }
-                }
-                return result;
-            } catch (javax.net.ssl.SSLHandshakeException e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] SSL握手异常，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] SSL握手最终失败: " + endpoint + " - " + e.getMessage());
-                }
-            } catch (java.net.SocketTimeoutException e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] 连接超时，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] 连接超时最终失败: " + endpoint + " - " + e.getMessage());
-                }
-            } catch (Exception e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] 请求异常，重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] 请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
-                }
-            }
-        }
-        return null;
+        String urlStr = webBaseUrl + "/" + endpoint;
+        return doPostWithRetry(urlStr, jsonBody, maxRetries);
     }
 
     /**
@@ -1664,87 +1465,22 @@ public class WebManager {
      * HTTP POST with Token 带重试机制
      */
     private String httpPostWithTokenWithRetry(String endpoint, String token, Map<String, Object> data, int maxRetries) {
-        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                StringBuilder urlStr = new StringBuilder(webBaseUrl + "/" + endpoint);
-                if (token != null) {
-                    // 检查URL是否已包含?参数，用&连接避免双问号
-                    urlStr.append(urlStr.indexOf("?") >= 0 ? "&" : "?");
-                    urlStr.append("token=").append(java.net.URLEncoder.encode(token, "UTF-8"));
-                }
-
-                // ★ 在JSON body中也带上secretKey，作为token失效时的回退认证
-                Map<String, Object> bodyWithSecret = new LinkedHashMap<>(data);
-                bodyWithSecret.put("secret", secretKey);
-
-                String json = mapToJson(bodyWithSecret);
-                URL url = new URL(urlStr.toString());
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
-                conn.setDoOutput(true);
-
-                OutputStream os = conn.getOutputStream();
-                os.write(json.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-                os.close();
-
-                int code = conn.getResponseCode();
-                InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-                if (is == null) {
-                    if (attempt < maxRetries) {
-                        plugin.getLogger().info("[Web通信] POST+Token重试 " + attempt + "/" + maxRetries + ": " + endpoint + " (HTTP " + code + ")");
-                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                        continue;
-                    }
-                    plugin.getLogger().warning("[Web通信] POST+Token响应为空: " + endpoint + " (HTTP " + code + ")");
-                    return null;
-                }
-
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                conn.disconnect();
-
-                String result = sb.toString();
-                if (code < 200 || code >= 300) {
-                    plugin.getLogger().warning("[Web通信] POST+Token请求失败: " + endpoint + " (HTTP " + code + ") " + result);
-                    if (attempt < maxRetries) {
-                        plugin.getLogger().info("[Web通信] POST+Token重试 " + attempt + "/" + maxRetries + ": " + endpoint);
-                        try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                        continue;
-                    }
-                }
-                return result;
-            } catch (javax.net.ssl.SSLHandshakeException e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] POST+Token SSL握手异常，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] POST+Token SSL握手最终失败: " + endpoint + " - " + e.getMessage());
-                }
-            } catch (java.net.SocketTimeoutException e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] POST+Token连接超时，重试 " + attempt + "/" + maxRetries + ": " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] POST+Token连接超时最终失败: " + endpoint + " - " + e.getMessage());
-                }
-            } catch (Exception e) {
-                if (attempt < maxRetries) {
-                    plugin.getLogger().info("[Web通信] POST+Token请求异常，重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
-                } else {
-                    plugin.getLogger().warning("[Web通信] POST+Token请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
-                }
+        try {
+            StringBuilder urlStr = new StringBuilder(webBaseUrl + "/" + endpoint);
+            if (token != null) {
+                urlStr.append(urlStr.indexOf("?") >= 0 ? "&" : "?");
+                urlStr.append("token=").append(java.net.URLEncoder.encode(token, "UTF-8"));
             }
+
+            Map<String, Object> bodyWithSecret = new LinkedHashMap<>(data);
+            bodyWithSecret.put("secret", secretKey);
+
+            String json = mapToJson(bodyWithSecret);
+            return doPostWithRetry(urlStr.toString(), json, maxRetries);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] POST+Token请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
         }
-        return null;
     }
 
     // ==================== JSON工具 ====================
@@ -2548,32 +2284,14 @@ public class WebManager {
                     + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
                     + "&players=" + java.net.URLEncoder.encode(playersJson, "UTF-8");
 
-            URL url = new URL(getUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(10000);
+            String response = doGet(getUrl);
 
-            int code = conn.getResponseCode();
-            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-            String response = "";
-            if (is != null) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                response = sb.toString();
-            }
-            conn.disconnect();
-
-            if (code == 200 && response.contains("\"success\":true")) {
+            if (response != null && response.contains("\"success\":true")) {
                 if (changed) {
                     plugin.getLogger().info("[Web通信] ★ 在线玩家同步成功: " + playersData.size() + "人");
                 }
             } else {
-                plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): HTTP " + code + " - " + response.substring(0, Math.min(300, response.length())));
+                plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): " + response);
                 // GET失败时回退到POST
                 tryPostSync(playersJson, playersData.size());
             }
@@ -2592,40 +2310,15 @@ public class WebManager {
      */
     private void tryPostSync(String playersJson, int count) {
         try {
-            String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+            String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"players\":" + playersJson + "}";
             plugin.getLogger().info("[Web通信] 尝试POST同步: " + count + "人");
 
-            URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_online_players");
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-            conn.setConnectTimeout(8000);
-            conn.setReadTimeout(10000);
-            conn.setDoOutput(true);
+            String response = doPost(webBaseUrl + "/api/sync.php?action=sync_online_players", jsonBody);
 
-            OutputStream os = conn.getOutputStream();
-            os.write(formBody.getBytes(StandardCharsets.UTF_8));
-            os.flush();
-            os.close();
-
-            int code = conn.getResponseCode();
-            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-            String response = "";
-            if (is != null) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                response = sb.toString();
-            }
-            conn.disconnect();
-
-            if (code == 200 && response.contains("\"success\":true")) {
+            if (response != null && response.contains("\"success\":true")) {
                 plugin.getLogger().info("[Web通信] POST同步成功: " + count + "人");
             } else {
-                plugin.getLogger().warning("[Web通信] POST同步也失败: HTTP " + code + " - " + response.substring(0, Math.min(300, response.length())));
+                plugin.getLogger().warning("[Web通信] POST同步也失败: " + (response != null ? response.substring(0, Math.min(300, response.length())) : "null"));
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST同步异常: " + e.getMessage());
@@ -2678,39 +2371,17 @@ public class WebManager {
         playersData.add(playerInfo);
 
         String playersJson = buildPlayersJsonArrayWithIp(playersData);
-        String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+        String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"players\":" + playersJson + "}";
 
         new BukkitRunnable() {
             @Override
             public void run() {
                 try {
-                    URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_online_players");
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                    conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(10000);
-                    conn.setDoOutput(true);
-
-                    OutputStream os = conn.getOutputStream();
-                    os.write(formBody.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    os.close();
-
-                    int code = conn.getResponseCode();
-                    if (code == 200) {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = reader.readLine()) != null) sb.append(line);
-                        reader.close();
-                        if (sb.toString().contains("\"success\":true")) {
-                            // 标记为已同步，下次有变化才会再推
-                            ipCache.put(playerName, new String[]{ip, "0"});
-                        }
+                    String resp = doPost(webBaseUrl + "/api/sync.php?action=sync_online_players", jsonBody);
+                    if (resp != null && resp.contains("\"success\":true")) {
+                        // 标记为已同步，下次有变化才会再推
+                        ipCache.put(playerName, new String[]{ip, "0"});
                     }
-                    conn.disconnect();
                 } catch (Exception e) {
                     // 静默忽略
                 }
@@ -2780,50 +2451,26 @@ public class WebManager {
         }
         playersJson += "]";
 
-        String formBody = "secret=" + escapeUrl(secretKey) + "&players=" + escapeUrl(playersJson);
+        String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"players\":" + playersJson + "}";
 
         new BukkitRunnable() {
             @Override
             public void run() {
                 try {
-                    URL url = new URL(webBaseUrl + "/api/sync.php?action=sync_player_ips");
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                    conn.setConnectTimeout(8000);
-                    conn.setReadTimeout(10000);
-                    conn.setDoOutput(true);
-
-                    OutputStream os = conn.getOutputStream();
-                    os.write(formBody.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    os.close();
-
-                    int code = conn.getResponseCode();
-                    InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-                    if (is != null) {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = reader.readLine()) != null) sb.append(line);
-                        reader.close();
-                        String resp = sb.toString();
-                        if (code == 200 && resp.contains("\"success\":true")) {
-                            plugin.getLogger().info("[Web通信] 全量同步" + needSync.size() + "个玩家IP到PHP端");
-                            // 标记为已同步
-                            for (Map<String, Object> p : needSync) {
-                                String name = (String) p.get("name");
-                                String ip = (String) p.get("ip");
-                                if (name != null && ip != null) {
-                                    ipCache.put(name, new String[]{ip, "0"});
-                                }
+                    String resp = doPost(webBaseUrl + "/api/sync.php?action=sync_player_ips", jsonBody);
+                    if (resp != null && resp.contains("\"success\":true")) {
+                        plugin.getLogger().info("[Web通信] 全量同步" + needSync.size() + "个玩家IP到PHP端");
+                        // 标记为已同步
+                        for (Map<String, Object> p : needSync) {
+                            String name = (String) p.get("name");
+                            String ip = (String) p.get("ip");
+                            if (name != null && ip != null) {
+                                ipCache.put(name, new String[]{ip, "0"});
                             }
-                        } else {
-                            plugin.getLogger().warning("[Web通信] 同步IP到PHP失败: HTTP " + code + " - " + resp.substring(0, Math.min(200, resp.length())));
                         }
+                    } else {
+                        plugin.getLogger().warning("[Web通信] 同步IP到PHP失败: " + (resp != null ? resp.substring(0, Math.min(200, resp.length())) : "null"));
                     }
-                    conn.disconnect();
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web通信] 同步玩家IP异常: " + e.getMessage());
                 }
@@ -3053,28 +2700,13 @@ public class WebManager {
                     + "&registered=" + (isRegistered ? "1" : "0")
                     + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8");
 
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(12000);
-
-            int code = conn.getResponseCode();
-            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-            if (is != null) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                String response = sb.toString();
+            String response = doGet(urlStr);
+            if (response != null) {
                 plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
                 if (response.contains("\"success\":true")) {
                     syncSuccess = true;
                 }
             }
-            conn.disconnect();
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 同步Web登录Token失败: " + e.getMessage());
         }
@@ -3139,28 +2771,13 @@ public class WebManager {
                     + "&registered=" + (isRegistered ? "1" : "0")
                     + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8");
 
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(12000);
-
-            int code = conn.getResponseCode();
-            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
-            if (is != null) {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-                String response = sb.toString();
+            String response = doGet(urlStr);
+            if (response != null) {
                 plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
                 if (response.contains("\"success\":true")) {
                     syncSuccess = true;
                 }
             }
-            conn.disconnect();
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 推送玩家登录状态失败: " + e.getMessage());
         }
@@ -3386,38 +3003,19 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_web_login_confirmations&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-
-            int code = conn.getResponseCode();
-            if (code != 200) {
+            String json = doGet(urlStr);
+            if (json == null) {
                 loginPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web登录确认轮询] HTTP状态码: " + code + " (连续失败" + loginPollFailCount + "次)");
+                    plugin.getLogger().warning("[Web登录确认轮询] GET失败 (连续失败" + loginPollFailCount + "次)");
                     lastLoginPollLogTime = now;
                 }
-                conn.disconnect();
                 return;
             }
 
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-            conn.disconnect();
-
             // 成功 → 重置
             loginPollFailCount = 0;
-
-            // 解析JSON响应
-            String json = sb.toString();
             if (!json.contains("\"success\":true")) return;
 
             // 简单解析玩家名列表
@@ -3491,24 +3089,8 @@ public class WebManager {
             }
             String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_logins&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-
-            int code = conn.getResponseCode();
-            if (code != 200) return;
-
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            String json = sb.toString();
+            String json = doGet(urlStr);
+            if (json == null) return;
             if (!json.contains("\"success\":true")) return;
 
             // 解析请求列表
@@ -3610,23 +3192,15 @@ public class WebManager {
                                 + "&request_id=" + reqId
                                 + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
                                 + "&result=" + resultEncoded;
-                        
-                        URL url = new URL(urlStr);
-                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                        conn.setRequestMethod("GET");
-                        conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                        conn.setConnectTimeout(10000);
-                        conn.setReadTimeout(10000);
-                        
-                        int code = conn.getResponseCode();
-                        conn.disconnect();
-                        
-                        if (code >= 200 && code < 300) {
+
+                        String resp = doGet(urlStr);
+
+                        if (resp != null) {
                             sent = true;
                             plugin.getLogger().info("[Web密码验证] 结果已发送: reqId=" + reqId + " result=" + result + " (第" + (attempt + 1) + "次尝试)");
                             break;
                         } else {
-                            plugin.getLogger().warning("[Web密码验证] HTTP " + code + ": reqId=" + reqId + " player=" + playerName);
+                            plugin.getLogger().warning("[Web密码验证] GET失败: reqId=" + reqId + " player=" + playerName);
                         }
                     } catch (Exception e) {
                         plugin.getLogger().warning("[Web密码验证] 第" + (attempt + 1) + "次尝试异常: reqId=" + reqId + " " + e.getMessage());
@@ -3701,35 +3275,17 @@ public class WebManager {
                 try {
                     String urlStr = webBaseUrl + "/api/sync.php?action=pull_pending_transactions&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                    URL url = new URL(urlStr);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
-
-                    int code = conn.getResponseCode();
-                    if (code != 200) {
-                        plugin.getLogger().warning("[Web交易] HTTP状态码: " + code + "，3秒后重试...");
+                    String json = doGet(urlStr);
+                    if (json == null) {
+                        plugin.getLogger().warning("[Web交易] GET失败，3秒后重试...");
                         try { Thread.sleep(3000); } catch (InterruptedException ie) {}
-                        conn.disconnect();
-                        // ★ 修复：重试需要重新创建连接
-                        conn = (HttpURLConnection) url.openConnection();
-                        code = conn.getResponseCode();
-                        if (code != 200) {
-                            plugin.getLogger().warning("[Web交易] HTTP重试后状态码: " + code + "，跳过本轮交易拉取");
+                        // 重试一次
+                        json = doGet(urlStr);
+                        if (json == null) {
+                            plugin.getLogger().warning("[Web交易] 重试后仍失败，跳过本轮交易拉取");
                             return;
                         }
                     }
-
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-
-                    String json = sb.toString();
                     if (!json.contains("\"success\":true")) {
                         plugin.getLogger().warning("[Web交易] 响应不含success:true: " + json.substring(0, Math.min(200, json.length())));
                         return;
@@ -4166,20 +3722,9 @@ public class WebManager {
             public void run() {
                 try {
                     String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
-                    URL url = new URL(webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
-                            + java.net.URLEncoder.encode(secretKey, "UTF-8"));
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
-                    conn.setDoOutput(true);
-                    OutputStream os = conn.getOutputStream();
-                    os.write(bodyJson.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    os.close();
-                    conn.getResponseCode();
+                    String postUrl = webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    doPost(postUrl, bodyJson);
                 } catch (Exception e) {
                     // 静默处理
                 }
@@ -4197,25 +3742,8 @@ public class WebManager {
                 try {
                     String urlStr = webBaseUrl + "/api/sync.php?action=pull_shop_stock&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                    URL url = new URL(urlStr);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
-
-                    int code = conn.getResponseCode();
-                    if (code != 200) return;
-
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-
-                    String json = sb.toString();
-                    if (!json.contains("\"success\":true")) return;
+                    String json = doGet(urlStr);
+                    if (json == null || !json.contains("\"success\":true")) return;
 
                     // 解析商品库存列表
                     int dataStart = json.indexOf("\"items\":");
@@ -4247,14 +3775,7 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=clear_admin_stock&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            conn.getResponseCode(); // 执行即可
-            conn.disconnect();
+            doGet(urlStr);
         } catch (Exception e) {
             // 静默处理
         }
@@ -4448,25 +3969,8 @@ public class WebManager {
                 try {
                     String urlStr = webBaseUrl + "/api/sync.php?action=pull_bonds&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                    URL url = new URL(urlStr);
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
-
-                    int code = conn.getResponseCode();
-                    if (code != 200) return;
-
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
-
-                    String json = sb.toString();
-                    if (!json.contains("\"success\":true")) return;
+                    String json = doGet(urlStr);
+                    if (json == null || !json.contains("\"success\":true")) return;
 
                     // 解析债券变化
                     int dataStart = json.indexOf("\"bonds\":");
@@ -4606,36 +4110,19 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_register_requests&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(15000);
-
-            int code = conn.getResponseCode();
-            if (code != 200) {
+            String json = doGet(urlStr);
+            if (json == null) {
                 registerPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastRegisterPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web注册轮询] HTTP状态码: " + code + " (连续失败" + registerPollFailCount + "次)");
+                    plugin.getLogger().warning("[Web注册轮询] GET失败 (连续失败" + registerPollFailCount + "次)");
                     lastRegisterPollLogTime = now;
                 }
-                conn.disconnect();
                 return;
             }
 
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
             // 成功 → 重置
             registerPollFailCount = 0;
-
-            String json = sb.toString();
             if (!json.contains("\"success\":true")) {
                 plugin.getLogger().warning("[Web注册轮询] 响应不含success:true: " + json.substring(0, Math.min(200, json.length())));
                 return;
@@ -4783,25 +4270,8 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_completed_web_register_requests&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
-            conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-
-            int code = conn.getResponseCode();
-            if (code != 200) return;
-
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-            reader.close();
-
-            String json = sb.toString();
-            if (!json.contains("\"success\":true")) return;
+            String json = doGet(urlStr);
+            if (json == null || !json.contains("\"success\":true")) return;
 
             // 解析所有请求
             int requestsStart = json.indexOf("\"requests\":[");
@@ -4926,20 +4396,9 @@ public class WebManager {
                     String bodyJson = "{\"request_id\":" + reqId
                             + ",\"result\":\"" + escapeJson(result) + "\""
                             + ",\"error\":\"" + escapeJson(errorMsg) + "\"}";
-                    URL url = new URL(webBaseUrl + "/api/sync.php?action=complete_web_register_request&secret="
-                            + java.net.URLEncoder.encode(secretKey, "UTF-8"));
-                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                    conn.setRequestMethod("POST");
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
-                    conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                    conn.setConnectTimeout(5000);
-                    conn.setReadTimeout(5000);
-                    conn.setDoOutput(true);
-                    OutputStream os = conn.getOutputStream();
-                    os.write(bodyJson.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                    os.close();
-                    conn.getResponseCode();
+                    String postUrl = webBaseUrl + "/api/sync.php?action=complete_web_register_request&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    doPost(postUrl, bodyJson);
                 } catch (Exception e) {
                     // 静默处理
                 }
@@ -4970,25 +4429,8 @@ public class WebManager {
                 String urlStr = webBaseUrl + "/api/sync.php?action=check_player_registered&player="
                         + java.net.URLEncoder.encode(playerName, "UTF-8") + "&secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                URL url = new URL(urlStr);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-                conn.setRequestProperty("User-Agent", "Sdf1-WebManager/1.0");
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(8000);
-
-                int code = conn.getResponseCode();
-                if (code != 200) return;
-
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line);
-                reader.close();
-
-                String json = sb.toString();
-                if (!json.contains("\"success\":true")) return;
+                String json = doGet(urlStr);
+                if (json == null || !json.contains("\"success\":true")) return;
 
                 // 解析响应：{"success":true,"message":"ok","data":{"registered":true,...}}
                 int dataStart = json.indexOf("\"data\":");
@@ -5102,34 +4544,12 @@ public class WebManager {
     private void pushWebLoginCredentialsDelayed(final String playerName) {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
-                // 调用PHP端获取密码凭证
                 String urlStr = webBaseUrl + "/api/sync.php?action=push_web_credentials&secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                URL url = new URL(urlStr);
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(8000);
-
-                // 构建请求体
                 String postData = "players=" + java.net.URLEncoder.encode(
                         "[{\"player_name\":\"" + playerName + "\",\"temp_only\":true}]", "UTF-8");
-
-                java.io.OutputStream os = conn.getOutputStream();
-                os.write(postData.getBytes("UTF-8"));
-                os.flush();
-                os.close();
-
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
-                    StringBuilder sb = new StringBuilder();
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                    reader.close();
+                String resp = doPost(urlStr, postData);
+                if (resp != null) {
                     plugin.getLogger().info("[Web凭证] 玩家 " + playerName + " 的密码凭证已推送到PHP后端");
                 }
             } catch (Exception e) {
