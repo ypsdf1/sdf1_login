@@ -241,7 +241,10 @@ public class WebManager {
                 sc.init(null, trustAllCerts, new SecureRandom());
                 HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
                 HttpsURLConnection.setDefaultHostnameVerifier((hostname, session) -> true);
-                plugin.getLogger().info("[Web通信] SSL已初始化(" + version + ", 信任所有证书)");
+                // ★ Cloudflare兼容：设置系统属性确保SNI和密码套件正常工作
+                System.setProperty("jdk.tls.client.protocols", version);
+                System.setProperty("jdk.tls.client.enabledCipherSuites", "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384");
+                plugin.getLogger().info("[Web通信] SSL已初始化(" + version + ", 信任所有证书, Cloudflare兼容模式)");
                 return;
             } catch (Exception e) {
                 plugin.getLogger().info("[Web通信] " + version + "不可用，尝试下一个版本");
