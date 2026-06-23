@@ -396,7 +396,6 @@ public class AreaProtection implements Listener {
         migrateTxtToDb(); // ★ 迁移txt文件到数据库
         loadAllAreas();
         loadWhitelists();
-        loadAreaConfig();
         recoverPendingEffects();
     }
     public void recoverPendingEffects() {
@@ -841,7 +840,12 @@ public class AreaProtection implements Listener {
         // ★ 优先从数据库加载
         loadAreasFromDb();
 
-        // ★ 兼容：如果没有从DB加载到数据，回退到txt（未迁移场景）
+        // ★ 自动迁移：如果DB有数据但txt文件仍存在，迁移txt中的白名单数据到DB后删除txt
+        if (!areas.isEmpty()) {
+            migrateTxtFilesToDb();
+        }
+
+        // ★ 兼容：如果没有从DB加载到数据，回退到txt（未迁移场景）并自动导入DB
         if (areas.isEmpty()) {
             File[] files = rootDir.listFiles(
                     (File d, String n) -> n.endsWith(".txt"));
@@ -851,11 +855,75 @@ public class AreaProtection implements Listener {
                         String name = f.getName().replace(".txt", "");
                         AreaConfig ac = parseArea(name, f);
                         areas.put(name, ac);
+                        // ★ 自动写入数据库
+                        saveAreaToDb(ac);
+                        plugin.getLogger().info("[防护] 自动迁移txt→DB: " + name);
                     } catch (Exception e) {
                         plugin.getLogger().warning("[防护] 加载失败: " + f.getName());
                     }
                 }
+                // ★ 迁移完成后删除所有txt文件
+                if (!areas.isEmpty()) {
+                    for (File f : files) {
+                        if (f.delete()) {
+                            plugin.getLogger().info("[防护] 已删除迁移后的txt: " + f.getName());
+                        }
+                    }
+                    // 也删除白名单目录
+                    File wlDir = new File(rootDir, "whitelists");
+                    if (wlDir.exists() && wlDir.isDirectory()) {
+                        File[] wlFiles = wlDir.listFiles();
+                        if (wlFiles != null) {
+                            for (File wf : wlFiles) {
+                                wf.delete();
+                            }
+                        }
+                        wlDir.delete();
+                    }
+                    plugin.getLogger().info("[防护] txt迁移完成，共导入 " + areas.size() + " 个领地");
+                }
             }
+        }
+    }
+
+    /**
+     * 迁移txt文件到数据库（如果txt存在但DB已有数据，清理txt）
+     */
+    private void migrateTxtFilesToDb() {
+        File[] files = rootDir.listFiles(
+                (File d, String n) -> n.endsWith(".txt"));
+        if (files == null || files.length == 0) return;
+
+        plugin.getLogger().info("[防护] 检测到 " + files.length + " 个残留txt文件，开始清理...");
+        for (File f : files) {
+            String name = f.getName().replace(".txt", "");
+            // 如果txt对应的领地不在DB中，先导入
+            if (!areas.containsKey(name)) {
+                try {
+                    AreaConfig ac = parseArea(name, f);
+                    areas.put(name, ac);
+                    saveAreaToDb(ac);
+                    plugin.getLogger().info("[防护] 迁移txt→DB: " + name);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[防护] 迁移失败: " + f.getName());
+                }
+            }
+            // 删除txt
+            if (f.delete()) {
+                plugin.getLogger().info("[防护] 已删除: " + f.getName());
+            }
+        }
+        // 清理白名单目录
+        File wlDir = new File(rootDir, "whitelists");
+        if (wlDir.exists() && wlDir.isDirectory()) {
+            File[] wlFiles = wlDir.listFiles();
+            if (wlFiles != null) {
+                for (File wf : wlFiles) {
+                    wf.delete();
+                }
+            }
+            wlDir.delete();
+            plugin.getLogger().info("[防护] 已清理白名单目录");
         }
     }
 
@@ -3596,6 +3664,13 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 检查领地是否有待删除请求
+     */
+    public boolean hasPendingDelete(String areaName) {
+        return pendingDeletes.containsKey(areaName);
+    }
+
+    /**
      * 获取指定玩家拥有的所有领地
      */
     public List<AreaConfig> getLandsByOwner(String ownerName) {
@@ -4423,7 +4498,10 @@ public class AreaProtection implements Listener {
                 "setowner", "addvisitor", "removevisitor", "listvisitors", "transfer",
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
-                "menu", "菜单", "sdf1debug", "testclear", "cli"
+                "menu", "菜单", "sdf1debug", "testclear", "cli",
+                "取消删除", "canceldelete",
+                "removemember", "addmember",
+                "config", "配置"
         ));
 
         String first = original[0].toLowerCase();
@@ -4617,11 +4695,17 @@ public class AreaProtection implements Listener {
             if (mode.equals("gui") || mode.equals("0")) {
                 plugin.getDb().setUiMode(p.getName(), 0);
                 p.sendMessage("§a已切换为 §6GUI §a模式");
-                p.sendMessage("§7下次输入 /protect 将打开GUI菜单");
+                // ★ 立即打开GUI
+                if (plugin.areaGUIManager != null) {
+                    plugin.areaGUIManager.openMainMenu(p);
+                }
             } else if (mode.equals("cli") || mode.equals("1")) {
                 plugin.getDb().setUiMode(p.getName(), 1);
                 p.sendMessage("§a已切换为 §6CLI §a模式");
-                p.sendMessage("§7下次输入 /protect 将显示文本帮助");
+                // ★ 立即显示CLI菜单
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.showMainMenu(p);
+                }
             } else {
                 p.sendMessage("§c用法: /protect uimode <gui|cli>");
             }
@@ -4662,12 +4746,36 @@ public class AreaProtection implements Listener {
                     }
                     plugin.areaCLIManager.showLandManage(p, args[2], permPage);
                     break;
+                case "members":
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli members <领地名> [页码]");
+                        break;
+                    }
+                    int memberPage = 1;
+                    if (args.length >= 4) {
+                        try { memberPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showMemberList(p, args[2], memberPage);
+                    break;
+                case "visitorperm":
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli visitorperm <领地名> [页码]");
+                        break;
+                    }
+                    int vPermPage = 1;
+                    if (args.length >= 4) {
+                        try { vPermPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showVisitorPerm(p, args[2], vPermPage);
+                    break;
                 case "toggle":
                     if (args.length < 4) {
                         p.sendMessage("§c用法: /protect cli toggle <领地名> <权限key>");
                         break;
                     }
                     plugin.areaCLIManager.togglePerm(p, args[2], args[3]);
+                    // ★ 切换后刷新当前领地管理页面
+                    plugin.areaCLIManager.showLandManage(p, args[2], 1);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -4704,8 +4812,37 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c区域已存在");
                 return true;
             }
+            // ★ 检查每人领地数量上限
+            long playerLandCount = areas.values().stream()
+                    .filter(a -> p.getName().equalsIgnoreCase(a.owner))
+                    .count();
+            if (playerLandCount >= globalMaxLandsPerPlayer) {
+                p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + globalMaxLandsPerPlayer + " §f个领地");
+                return true;
+            }
             Location l1 = pos1.get(u);
             Location l2 = pos2.get(u);
+
+            // ★ 领地计费：计算面积并扣除余额
+            int width = Math.abs(l2.getBlockX() - l1.getBlockX()) + 1;
+            int length = Math.abs(l2.getBlockZ() - l1.getBlockZ()) + 1;
+            int area = width * length;
+            int cost = area * globalCreatePricePerSqm;
+            if (cost > 0) {
+                BondManager bm = plugin.getBonds();
+                if (bm != null) {
+                    int balance = bm.getBonds(p.getName());
+                    if (balance < cost) {
+                        p.sendMessage("§c§l[防护] §f余额不足！需要 §e" + cost + " §f债券，当前余额 §e" + balance);
+                        return true;
+                    }
+                    if (!bm.deductBonds(p.getName(), cost, "land_create", p.getName(), p.getName(), "创建领地: " + areaName + " (" + area + "㎡×" + globalCreatePricePerSqm + ")")) {
+                        p.sendMessage("§c§l[防护] §f扣费失败，请稍后重试");
+                        return true;
+                    }
+                    p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cost + " §f债券（" + area + "㎡×" + globalCreatePricePerSqm + "/㎡）");
+                }
+            }
 
             // ★ 创建AreaConfig并保存到数据库
             AreaConfig ac = new AreaConfig();
@@ -4719,31 +4856,6 @@ public class AreaProtection implements Listener {
             ac.yMin = 0;
             ac.yMax = 255;
             saveAreaToDb(ac);
-
-            // 兼容：同时创建txt文件
-            File f = new File(rootDir, areaName + ".txt");
-            try {
-                PrintWriter pw = new PrintWriter(
-                        new OutputStreamWriter(
-                                new FileOutputStream(f),
-                                StandardCharsets.UTF_8));
-                pw.println("# 区域: " + areaName);
-                pw.println("起点: " + l1.getWorld().getName()
-                        + "," + l1.getBlockX()
-                        + "," + l1.getBlockZ());
-                pw.println("终点: " + l2.getWorld().getName()
-                        + "," + l2.getBlockX()
-                        + "," + l2.getBlockZ());
-                pw.println("高度范围: 0-255");
-                pw.println();
-                pw.println("# 禁止放置方块");
-                pw.println("# 禁止破坏方块");
-                pw.println("# 禁止PVP");
-                pw.println("# 效果: 夜视 1 999");
-                pw.println("# 进入提示: 欢迎来到保护区");
-                pw.println("# 离开提示: 已离开保护区");
-                pw.close();
-            } catch (IOException ignored) {}
 
             p.sendMessage("§a§l[防护] §f区域 "
                     + areaName + " 已创建 (owner: " + p.getName() + ")");
@@ -4934,6 +5046,53 @@ public class AreaProtection implements Listener {
                             + en.getValue().ruleCount()
                             + "条");
                 }
+            }
+            return true;
+        }
+
+        // ===== config 全局配置 =====
+        if (sub.equals("config") || sub.equals("配置")) {
+            if (!isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要管理员权限");
+                return true;
+            }
+            if (args.length < 3) {
+                // 查看配置
+                sender.sendMessage("§e§l==== 全局配置 ====");
+                sender.sendMessage("§a创建价格(每㎡): §f" + globalCreatePricePerSqm);
+                sender.sendMessage("§a每人最大领地数: §f" + globalMaxLandsPerPlayer);
+                sender.sendMessage("§7用法: /protect config <key> <value>");
+                sender.sendMessage("§7可用key: create_price, max_lands, default_height, peace_duration");
+                return true;
+            }
+            String key = args[1];
+            String value = args[2];
+            try {
+                switch (key) {
+                    case "create_price":
+                        globalCreatePricePerSqm = Integer.parseInt(value);
+                        updateAreaConfig("create_price_per_sqm", value);
+                        sender.sendMessage("§a创建价格已更新为: " + value + "/㎡");
+                        break;
+                    case "max_lands":
+                        globalMaxLandsPerPlayer = Integer.parseInt(value);
+                        updateAreaConfig("max_lands_per_player", value);
+                        sender.sendMessage("§a每人最大领地数已更新为: " + value);
+                        break;
+                    case "default_height":
+                        updateAreaConfig("default_height", value);
+                        sender.sendMessage("§a默认高度已更新为: " + value);
+                        break;
+                    case "peace_duration":
+                        updateAreaConfig("peace_mode_max_duration", value);
+                        sender.sendMessage("§a和平模式最大时长已更新为: " + value + "秒");
+                        break;
+                    default:
+                        sender.sendMessage("§c未知配置项: " + key);
+                        break;
+                }
+            } catch (NumberFormatException e) {
+                sender.sendMessage("§c值必须是数字");
             }
             return true;
         }
@@ -5253,6 +5412,30 @@ public class AreaProtection implements Listener {
             deleteAreaFromDb(areaName);
             areas.remove(areaName);
             sender.sendMessage("§a§l[防护] §f已删除领地: §e" + areaName);
+            return true;
+        }
+
+        // ===== 取消删除 =====
+        if (sub.equals("取消删除") || sub.equals("canceldelete")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect 取消删除 <领地名>");
+                return true;
+            }
+            String areaName = args[1];
+            String resolved = resolveAreaName(areaName);
+            if (resolved != null) areaName = resolved;
+            PendingDelete pd = pendingDeletes.remove(areaName);
+            if (pd == null) {
+                sender.sendMessage("§c没有待删除的领地: " + areaName);
+                return true;
+            }
+            pd.task.cancel();
+            sender.sendMessage("§a§l[防护] §f已取消删除领地: §e" + areaName);
             return true;
         }
 
@@ -5799,8 +5982,8 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== removevisitor 移除访客 =====
-        if (sub.equals("removevisitor")) {
+        // ===== removevisitor / removemember 移除访客/成员 =====
+        if (sub.equals("removevisitor") || sub.equals("removemember")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
@@ -6303,6 +6486,25 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 更新area_config表中的配置值
+     */
+    private void updateAreaConfig(String key, String value) {
+        if (dbConnection == null) return;
+        try {
+            PreparedStatement ps = dbConnection.prepareStatement(
+                    "INSERT INTO area_config (key, value) VALUES (?, ?) "
+                    + "ON CONFLICT(key) DO UPDATE SET value = ?");
+            ps.setString(1, key);
+            ps.setString(2, value);
+            ps.setString(3, value);
+            ps.executeUpdate();
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 更新配置失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 检查玩家的访客权限是否有效（未过期）
      */
     public boolean hasValidVisitorPermission(Player player, AreaConfig ac) {
@@ -6353,6 +6555,7 @@ public class AreaProtection implements Listener {
         sendClickableHelp(s, "/protect tempon", "临时边框(15秒)");
         sendClickableHelp(s, "/protect list", "列出白名单(需在领地内)");
         sendClickableHelp(s, "/protect listitem", "列出物品黑名单");
+        sendClickableHelp(s, "/protect config", "查看/修改全局配置");
 
         s.sendMessage("§e§l---- 权限管理 ----");
         sendClickableHelp(s, "/protect setowner", "设置当前领地所有者(管理员)");

@@ -80,6 +80,13 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击查看"));
 
+        // ★ 切换到CLI模式（位置42）
+        inv.setItem(42, createItem(Material.COMMAND_BLOCK, "§b§l切换到CLI模式",
+                "§7切换到命令行交互模式",
+                "§7权限管理更便捷，支持批量操作",
+                "",
+                "§e点击切换"));
+
         // 返回按钮（位置49）
         inv.setItem(49, createItem(Material.ARROW, "§c§l返回主菜单", ""));
 
@@ -447,6 +454,17 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 40) {
                 p.closeInventory();
                 p.sendMessage("§a文档链接: https://wiki.ypshidifu.cn");
+            } else if (raw == 42) {
+                // ★ 切换到CLI模式
+                p.closeInventory();
+                try {
+                    plugin.getDb().setUiMode(p.getName(), 1);
+                } catch (Exception ignored) {}
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.showMainMenu(p);
+                } else {
+                    p.sendMessage("§cCLI管理器未初始化");
+                }
             } else if (raw == 49) {
                 plugin.getGui().openMain(p);
             }
@@ -470,10 +488,9 @@ public class AreaGUIManager implements Listener {
                 if (event.isLeftClick() && !event.isShiftClick()) {
                     openLandManage(p, land.name);
                 } else if (event.isRightClick()) {
-                    // 删除领地
-                    areaProtect.deleteLand(land.name);
-                    p.sendMessage("§a已删除领地: " + land.name);
-                    openLandList(p, page);
+                    // ★ 删除领地：走延迟确认流程
+                    p.closeInventory();
+                    p.performCommand("protect 删除 " + land.name);
                 } else if (event.isShiftClick() && event.isLeftClick()) {
                     // 传送
                     p.closeInventory();

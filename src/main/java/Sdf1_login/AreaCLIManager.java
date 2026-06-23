@@ -127,11 +127,20 @@ public class AreaCLIManager {
                         .clickEvent(ClickEvent.runCommand(
                                 "/protect tp " + land.name)));
                 line = line.append(Component.text(" "));
-                line = line.append(Component.text("§c[删除]")
-                        .hoverEvent(HoverEvent.showText(
-                                Component.text("§c点击删除此领地")))
-                        .clickEvent(ClickEvent.runCommand(
-                                "/protect 删除 " + land.name)));
+                if (areaProtect.hasPendingDelete(land.name)) {
+                    // ★ 有待删除请求时显示取消按钮
+                    line = line.append(Component.text("§e[取消删除]")
+                            .hoverEvent(HoverEvent.showText(
+                                    Component.text("§e点击取消删除此领地")))
+                            .clickEvent(ClickEvent.runCommand(
+                                    "/protect 取消删除 " + land.name)));
+                } else {
+                    line = line.append(Component.text("§c[删除]")
+                            .hoverEvent(HoverEvent.showText(
+                                    Component.text("§c点击删除此领地")))
+                            .clickEvent(ClickEvent.runCommand(
+                                    "/protect 删除 " + land.name)));
+                }
             }
 
             p.sendMessage(line);
@@ -187,15 +196,101 @@ public class AreaCLIManager {
         p.sendMessage(Component.text("§7规则数: §f" + land.ruleCount()));
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
 
-        // 显示权限列表（分页）
-        List<AreaProtection.AreaConfig> tempLandList = new ArrayList<>();
-        tempLandList.add(land);
-        showPermPage(p, land, permPage);
+        // ★ 细分管理选项
+        p.sendMessage(clickableAction("👤", "用户管理",
+                "/protect cli members " + land.name + " 1"));
+        p.sendMessage(clickableAction("🔑", "访客授权",
+                "/protect cli visitorperm " + land.name + " 1"));
 
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回列表]")
                         .hoverEvent(HoverEvent.showText(Component.text("§e返回领地列表")))
                         .clickEvent(ClickEvent.runCommand("/protect cli lands 1"))));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    // ==================== 用户管理 ====================
+
+    public void showMemberList(Player p, String landName, int page) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        Set<String> members = areaProtect.getLandMembers(landName);
+        List<String> memberList = new ArrayList<>(members);
+        int totalPages = Math.max(1, (int) Math.ceil((double) memberList.size() / PAGE_SIZE));
+        page = Math.max(1, Math.min(page, totalPages));
+
+        p.sendMessage(header("用户管理: " + landName));
+
+        if (memberList.isEmpty()) {
+            p.sendMessage(Component.text("§7暂无成员"));
+        } else {
+            int start = (page - 1) * PAGE_SIZE;
+            int end = Math.min(start + PAGE_SIZE, memberList.size());
+            for (int i = start; i < end; i++) {
+                String member = memberList.get(i);
+                Component line = Component.empty();
+                line = line.append(Component.text("§f" + member));
+                line = line.append(Component.text(" "));
+                line = line.append(Component.text("§c[移除]")
+                        .hoverEvent(HoverEvent.showText(
+                                Component.text("§c点击移除此成员")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect removemember " + land.name + " " + member)));
+                p.sendMessage(line);
+            }
+        }
+
+        // 分页
+        if (totalPages > 1) {
+            Component pagination = Component.empty();
+            if (page > 1) {
+                pagination = pagination.append(Component.text("§a[◀ 上一页]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli members " + land.name + " " + (page - 1))));
+                pagination = pagination.append(Component.text(" "));
+            }
+            pagination = pagination.append(Component.text("§7第" + page + "/" + totalPages + "页"));
+            if (page < totalPages) {
+                pagination = pagination.append(Component.text(" "));
+                pagination = pagination.append(Component.text("§a[下一页 ▶]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli members " + land.name + " " + (page + 1))));
+            }
+            p.sendMessage(pagination);
+        }
+
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a[添加成员] ")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect addvisitor " + land.name + " <玩家名>")))
+                .append(Component.text("§7§7点击后在聊天框输入玩家名")));
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a[◀ 返回管理]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli manage " + land.name + " 1"))));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    // ==================== 访客授权 ====================
+
+    public void showVisitorPerm(Player p, String landName, int page) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        p.sendMessage(header("访客授权: " + landName));
+        showPermPage(p, land, page);
+
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a[◀ 返回管理]")
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli manage " + land.name + " 1"))));
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
     }
 

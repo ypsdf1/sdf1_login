@@ -101,6 +101,20 @@ public class WebManager {
     // 库存高频拉取去重标志
     private final AtomicBoolean stockFastPollTaskPending = new AtomicBoolean(false);
 
+    // ★ Web请求专用线程池（HTTP操作不阻塞DB队列）
+    private final java.util.concurrent.ExecutorService webExecutor =
+            java.util.concurrent.Executors.newFixedThreadPool(3, r -> {
+                Thread t = new Thread(r, "sdf1-web-worker");
+                t.setDaemon(true);
+                return t;
+            });
+
+    // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
+    private static final int SSL_CIRCUIT_THRESHOLD = 5;  // 连续失败5次触发断路
+    private static final long SSL_CIRCUIT_COOLDOWN_MS = 60000; // 断路冷却60秒
+    private volatile int sslConsecutiveFailures = 0;
+    private volatile long sslCircuitOpenUntil = 0;
+
     public WebManager(Main plugin) {
         this.plugin = plugin;
         this.config = plugin.getConfig2();
@@ -217,6 +231,36 @@ public class WebManager {
         }
     }
 
+    // ==================== SSL断路器 ====================
+
+    /**
+     * 检查SSL断路器是否开启（跳过轮询请求）
+     */
+    private boolean isCircuitOpen() {
+        if (sslCircuitOpenUntil == 0) return false;
+        if (System.currentTimeMillis() < sslCircuitOpenUntil) return true;
+        // 冷却期结束，允许重试
+        sslCircuitOpenUntil = 0;
+        sslConsecutiveFailures = 0;
+        plugin.getLogger().info("[Web通信] SSL断路器冷却结束，恢复轮询");
+        return false;
+    }
+
+    /**
+     * 提交Web任务到专用线程池（HTTP操作不阻塞DB队列）
+     * HTTP完成后再把DB写入提交到DB队列
+     */
+    private void submitWebTask(String name, Runnable action) {
+        if (isCircuitOpen()) return;
+        webExecutor.submit(() -> {
+            try {
+                action.run();
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web线程] " + name + " 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            }
+        });
+    }
+
     // ==================== 工具方法 ====================
 
     /**
@@ -273,6 +317,7 @@ public class WebManager {
                     .build();
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                sslConsecutiveFailures = 0; // 成功 → 重置断路器
                 return resp.body();
             }
             // ★ 500时记录响应体（PHP错误信息在body里）
@@ -282,6 +327,14 @@ public class WebManager {
             plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
             return null;
         } catch (Exception e) {
+            // ★ SSL断路器：跟踪连续失败
+            if (e.getMessage() != null && e.getMessage().contains("handshake")) {
+                sslConsecutiveFailures++;
+                if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
+                    sslCircuitOpenUntil = System.currentTimeMillis() + SSL_CIRCUIT_COOLDOWN_MS;
+                    plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询60秒");
+                }
+            }
             plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
@@ -533,6 +586,8 @@ public class WebManager {
     public void shutdown() {
         stop();
         stopDbWorker();
+        // ★ 关闭Web线程池
+        webExecutor.shutdownNow();
         // 关闭回调服务器
         if (callbackServer != null) {
             try {
@@ -2963,7 +3018,8 @@ public class WebManager {
         // 检查是否有玩家正在登录
         if (!hasPendingLogins()) return;
 
-        submitDbTask("登录轮询-pollWebLoginConfirmations", () -> {
+        // ★ HTTP在webExecutor执行，不阻塞DB队列
+        submitWebTask("登录轮询-pollWebLoginConfirmations", () -> {
             try {
                 pollWebLoginConfirmations();
             } catch (Exception e) {
@@ -2974,7 +3030,7 @@ public class WebManager {
                 }
             }
         });
-        submitDbTask("登录轮询-pollWebLoginRequests", () -> {
+        submitWebTask("登录轮询-pollWebLoginRequests", () -> {
             try {
                 pollWebLoginRequests();
             } catch (Exception e) {
@@ -4083,11 +4139,11 @@ public class WebManager {
      * 使用随机间隔避免与其他轮询任务同时执行
      */
     private void scheduleRegisterRequestPoll() {
-        // ★ 注册请求轮询：通过DB队列串行化，高优先级
+        // ★ 注册请求轮询：HTTP在webExecutor执行，DB写入才走DB队列
         new BukkitRunnable() {
             @Override
             public void run() {
-                submitDbTask("注册轮询-pollWebRegisterRequests", () -> {
+                submitWebTask("注册轮询-pollWebRegisterRequests", () -> {
                     try {
                         pollWebRegisterRequests();
                     } catch (Exception e) {
