@@ -21,7 +21,6 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Animals;
-import org.bukkit.entity.Projectile;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.block.BlockState;
@@ -46,7 +45,6 @@ import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.event.entity.EntitySpawnEvent;
 import org.bukkit.entity.Item;
 import org.bukkit.event.inventory.InventoryOpenEvent;
-import org.bukkit.inventory.InventoryHolder;
 
 
 
@@ -1184,7 +1182,7 @@ public class AreaProtection implements Listener {
                     + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             for (File f : txtFiles) {
                 try {
@@ -1243,7 +1241,7 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(43, ac.enableAnnounce ? 1 : 0);
                     insertStmt.setString(44, ac.announceTemplate);
                     insertStmt.setString(45, txtContent);
-                    insertStmt.setLong(47, System.currentTimeMillis() / 1000);
+                    insertStmt.setLong(46, System.currentTimeMillis() / 1000);
                     insertStmt.executeUpdate();
                     migrated++;
                     plugin.getLogger().info("[防护] 迁移txt→db: " + name);
