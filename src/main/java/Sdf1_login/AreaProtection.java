@@ -18,8 +18,14 @@ import org.bukkit.potion.PotionEffectType;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Animals;
+import org.bukkit.entity.Projectile;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
+import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.Container;
 import java.sql.*;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.*;
@@ -74,6 +80,26 @@ public class AreaProtection implements Listener {
     // 区域黑名单
     private final Map<String, Set<String>> areaItemBlacklist =
             new ConcurrentHashMap<>();
+
+    // ★ 领地删除延迟队列（1分钟冷却）
+    private static class PendingDelete {
+        final String areaName;
+        final String playerName;
+        final long startTime;
+        final BukkitTask task;
+        PendingDelete(String areaName, String playerName, long startTime, BukkitTask task) {
+            this.areaName = areaName;
+            this.playerName = playerName;
+            this.startTime = startTime;
+            this.task = task;
+        }
+    }
+    private final Map<String, PendingDelete> pendingDeletes = new ConcurrentHashMap<>();
+
+    // ★ 全局配置默认值
+    private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
+    private int globalMaxLandsPerPlayer = 5;   // 每人最多领地数
+    private int globalDefaultHeight = 255;      // 默认高度
 
     // 选地
     private static final Material WAND = Material.BREEZE_ROD;
@@ -880,6 +906,21 @@ public class AreaProtection implements Listener {
                 try { ac.denyMove = rs.getInt("deny_move") == 1; } catch (Exception ignored) {}
                 try { ac.denyPickup = rs.getInt("deny_pickup") == 1; } catch (Exception ignored) {}
                 try { ac.denyFire = rs.getInt("deny_fire") == 1; } catch (Exception ignored) {}
+                try { ac.denyThrownProjectiles = rs.getInt("deny_thrown_projectiles") == 1; } catch (Exception ignored) {}
+                try { ac.denyGlowing = rs.getInt("deny_glowing") == 1; } catch (Exception ignored) {}
+                try { ac.denyRedstoneInteraction = rs.getInt("deny_redstone_interaction") == 1; } catch (Exception ignored) {}
+                try { ac.denyDoorInteraction = rs.getInt("deny_door_interaction") == 1; } catch (Exception ignored) {}
+                try { ac.denyNoteblockJukebox = rs.getInt("deny_noteblock_jukebox") == 1; } catch (Exception ignored) {}
+                try { ac.denyLead = rs.getInt("deny_lead") == 1; } catch (Exception ignored) {}
+                try { ac.denyCropHarvest = rs.getInt("deny_crop_harvest") == 1; } catch (Exception ignored) {}
+                try { ac.denyWoolShear = rs.getInt("deny_wool_shear") == 1; } catch (Exception ignored) {}
+                try { ac.denyAnimalFeeding = rs.getInt("deny_animal_feeding") == 1; } catch (Exception ignored) {}
+                try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
+                try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
+                try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
+                try { ac.warpYaw = rs.getFloat("warp_yaw"); } catch (Exception ignored) {}
+                try { ac.warpPitch = rs.getFloat("warp_pitch"); } catch (Exception ignored) {}
+                try { ac.warpWorld = rs.getString("warp_world"); } catch (Exception ignored) {}
                 ac.peaceMode = rs.getInt("peace_mode") == 1;
                 ac.peaceModeDuration = rs.getInt("peace_mode_duration") * 1000; // 转毫秒
                 ac.peaceWhitelist = new HashSet<>(splitToList(rs.getString("peace_whitelist")));
@@ -1047,6 +1088,51 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_pickup INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_fire INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN txt_content TEXT DEFAULT ''"); } catch (Exception ignored) {}
+            // ★ 新增权限列
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_thrown_projectiles INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_glowing INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_redstone_interaction INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_door_interaction INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_noteblock_jukebox INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_lead INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_crop_harvest INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_wool_shear INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_animal_feeding INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 传送点列
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_x REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_y REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_z REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_yaw REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_pitch REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_world TEXT DEFAULT ''"); } catch (Exception ignored) {}
+
+            // ★ 全局配置默认值
+            try {
+                ResultSet checkRs = stmt.executeQuery("SELECT COUNT(*) FROM area_config");
+                int configCount = 0;
+                if (checkRs.next()) configCount = checkRs.getInt(1);
+                checkRs.close();
+                if (configCount == 0) {
+                    stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('create_price_per_sqm', '10')");
+                    stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('max_lands_per_player', '5')");
+                    stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('default_height', '255')");
+                    stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('peace_mode_max_duration', '3600')");
+                }
+                // 读取全局配置
+                ResultSet cfgRs = stmt.executeQuery("SELECT key, value FROM area_config");
+                while (cfgRs.next()) {
+                    String k = cfgRs.getString("key");
+                    String v = cfgRs.getString("value");
+                    try {
+                        switch (k) {
+                            case "create_price_per_sqm": globalCreatePricePerSqm = Integer.parseInt(v); break;
+                            case "max_lands_per_player": globalMaxLandsPerPlayer = Integer.parseInt(v); break;
+                            case "default_height": globalDefaultHeight = Integer.parseInt(v); break;
+                        }
+                    } catch (NumberFormatException ignored) {}
+                }
+                cfgRs.close();
+            } catch (Exception ignored) {}
 
             stmt.close();
         } catch (SQLException e) {
@@ -1157,7 +1243,7 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(43, ac.enableAnnounce ? 1 : 0);
                     insertStmt.setString(44, ac.announceTemplate);
                     insertStmt.setString(45, txtContent);
-                    insertStmt.setLong(46, System.currentTimeMillis() / 1000);
+                    insertStmt.setLong(47, System.currentTimeMillis() / 1000);
                     insertStmt.executeUpdate();
                     migrated++;
                     plugin.getLogger().info("[防护] 迁移txt→db: " + name);
@@ -2570,15 +2656,34 @@ public class AreaProtection implements Listener {
         else if (minDist == distTop) exitZ = minZ - 3;
         else exitZ = maxZ + 3;
 
-        Location exit = new Location(loc.getWorld(), exitX, loc.getY(), exitZ);
-        for (int y = loc.getWorld().getMaxHeight(); y >= loc.getWorld().getMinHeight(); y--) {
-            exit.setY(y);
-            if (!exit.getBlock().getType().isSolid()) {
-                exit.setY(y + 1);
-                return exit;
+        // ★ 安全判定：头顶≥2格空气、脚下实体方块、距边界≥3格
+        World world = loc.getWorld();
+        if (world == null) return null;
+        for (int y = Math.min(ac.yMax, world.getMaxHeight() - 3); y >= Math.max(ac.yMin, world.getMinHeight() + 2); y--) {
+            Location check = new Location(world, exitX, y, exitZ);
+            Block feet = check.getBlock();
+            Block head = world.getBlockAt(exitX, y + 1, exitZ);
+            Block head2 = world.getBlockAt(exitX, y + 2, exitZ);
+            // 脚下必须是实体方块
+            if (!feet.getType().isSolid()) continue;
+            // 头顶2格必须是空气（可通过）
+            if (head.getType() != Material.AIR && head.getType() != Material.CAVE_AIR && head.getType() != Material.VOID_AIR) continue;
+            if (head2.getType() != Material.AIR && head2.getType() != Material.CAVE_AIR && head2.getType() != Material.VOID_AIR) continue;
+            // ★ 确保出口不在领地范围内（再往外推3格）
+            int finalX = exitX;
+            int finalZ = exitZ;
+            // 如果出口坐标还在领地内，继续往外推
+            if (finalX >= minX && finalX <= maxX && finalZ >= minZ && finalZ <= maxZ) {
+                // 在minDist方向继续推
+                if (minDist == distLeft) finalX = minX - 3;
+                else if (minDist == distRight) finalX = maxX + 3;
+                else if (minDist == distTop) finalZ = minZ - 3;
+                else finalZ = maxZ + 3;
             }
+            return new Location(world, finalX + 0.5, y + 1, finalZ + 0.5);
         }
-        return exit;
+        // ★ 不满足条件，传送到世界出生点
+        return world.getSpawnLocation().clone();
     }
 
 // ===== 清理袭击生物 =====
@@ -3894,19 +3999,39 @@ public class AreaProtection implements Listener {
         Player p = (Player) e.getPlayer();
 
         InventoryHolder holder = e.getInventory().getHolder();
-        if (holder instanceof org.bukkit.block.BlockState) {
-            org.bukkit.block.BlockState bs = (org.bukkit.block.BlockState) holder;
-            Location loc = bs.getLocation();
-            AreaConfig ac = getArea(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
-            if (ac == null) return;
+        Location loc = null;
 
-            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
-
-            PermissionLevel level = getPermissionLevel(p, ac);
-            if (level == null) {
-                e.setCancelled(true);
-                p.sendMessage("§c§l[区域防护] §f你不具备访问此容器的权限");
+        // ★ 检测所有容器类型：箱子、熔炉、高炉、潜影盒、末影箱、讲台、铁砧、信标、漏斗、发射器、投掷器、酿造台、工作台等
+        if (holder instanceof BlockState) {
+            BlockState bs = (BlockState) holder;
+            loc = bs.getLocation();
+        } else if (holder instanceof Container) {
+            // Container接口覆盖所有方块容器
+            if (holder instanceof org.bukkit.block.Block) {
+                org.bukkit.block.Block block = (org.bukkit.block.Block) holder;
+                loc = block.getLocation();
             }
+        }
+
+        // 末影箱特殊处理：检查末影箱所在位置而非玩家位置
+        if (holder != null) {
+            String typeName = holder.getClass().getSimpleName();
+            if (typeName.contains("EnderChest") || typeName.contains("Ender")) {
+                // 末影箱也是BlockState，已经在上面处理
+            }
+        }
+
+        if (loc == null) return;
+
+        AreaConfig ac = getArea(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        if (ac == null) return;
+
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+
+        PermissionLevel level = getPermissionLevel(p, ac);
+        if (level == null) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f你不具备访问此容器的权限");
         }
     }
 
@@ -3991,6 +4116,207 @@ public class AreaProtection implements Listener {
                 shooter.sendMessage("§c§l[区域防护] §f禁止使用药水");
             }
         }
+    }
+
+    // ===== ★ 投掷物检测（三叉戟、雪球、风蛋、箭）=====
+    @EventHandler
+    public void onProjectileLaunch(ProjectileLaunchEvent e) {
+        if (!(e.getEntity().getShooter() instanceof Player)) return;
+        Player shooter = (Player) e.getEntity().getShooter();
+        Entity proj = e.getEntity();
+        AreaConfig ac = getArea(
+                shooter.getWorld().getName(),
+                shooter.getLocation().getBlockX(),
+                shooter.getLocation().getBlockY(),
+                shooter.getLocation().getBlockZ());
+        if (ac == null) return;
+        if (!ac.denyThrownProjectiles) return;
+        if (hasPermission(shooter, ac, PermissionLevel.OWNER)) return;
+        // 检查投掷物类型：箭、三叉戟、雪球、风蛋、龙息弹等
+        String typeName = proj.getType().name();
+        if (typeName.contains("ARROW") || typeName.contains("TRIDENT")
+                || typeName.contains("SNOWBALL") || typeName.contains("WIND_CHARGE")
+                || typeName.contains("DRAGON_FIREBALL") || typeName.contains("FIREBALL")
+                || typeName.contains("SHULKER_BULLET") || typeName.contains("LLAMA_SPIT")) {
+            e.setCancelled(true);
+            shooter.sendMessage("§c§l[区域防护] §f禁止在此区域投掷物品");
+        }
+    }
+
+    // ★ 门禁交互检测（按钮、门、压力板）
+    @EventHandler
+    public void onDoorInteract(PlayerInteractEvent e) {
+        if (e.getClickedBlock() == null) return;
+        Player p = e.getPlayer();
+        Material mat = e.getClickedBlock().getType();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                e.getClickedBlock().getX(),
+                e.getClickedBlock().getY(),
+                e.getClickedBlock().getZ());
+        if (ac == null) return;
+        if (!ac.denyDoorInteraction) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        // 按钮
+        if (mat.name().contains("BUTTON")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止操作按钮");
+            return;
+        }
+        // 压力板
+        if (mat.name().contains("PRESSURE_PLATE")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止踩踏压力板");
+            return;
+        }
+    }
+
+    // ★ 门禁交互检测（门类 - 独立事件，因为门是RIGHT_CLICK_BLOCK）
+    @EventHandler
+    public void onDoorOpen(PlayerInteractEvent e) {
+        if (e.getClickedBlock() == null) return;
+        if (e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        Player p = e.getPlayer();
+        Material mat = e.getClickedBlock().getType();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                e.getClickedBlock().getX(),
+                e.getClickedBlock().getY(),
+                e.getClickedBlock().getZ());
+        if (ac == null) return;
+        if (!ac.denyDoorInteraction) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        String name = mat.name();
+        if (name.contains("DOOR") || name.contains("GATE") || name.contains("FENCE_GATE")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止操作门/栅栏门");
+        }
+    }
+
+    // ★ 红石交互检测（中继器、比较器）
+    @EventHandler
+    public void onRedstoneInteract(PlayerInteractEvent e) {
+        if (e.getClickedBlock() == null) return;
+        Player p = e.getPlayer();
+        Material mat = e.getClickedBlock().getType();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                e.getClickedBlock().getX(),
+                e.getClickedBlock().getY(),
+                e.getClickedBlock().getZ());
+        if (ac == null) return;
+        if (!ac.denyRedstoneInteraction) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (mat == Material.REPEATER || mat == Material.COMPARATOR
+                || mat.name().contains("REPEATER") || mat.name().contains("COMPARATOR")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止操作红石元件");
+        }
+    }
+
+    // ★ 音频交互检测（音符盒、唱片机）
+    @EventHandler
+    public void onNoteblockInteract(PlayerInteractEvent e) {
+        if (e.getClickedBlock() == null) return;
+        Player p = e.getPlayer();
+        Material mat = e.getClickedBlock().getType();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                e.getClickedBlock().getX(),
+                e.getClickedBlock().getY(),
+                e.getClickedBlock().getZ());
+        if (ac == null) return;
+        if (!ac.denyNoteblockJukebox) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        if (mat == Material.NOTE_BLOCK || mat.name().contains("JUKEBOX")
+                || mat.name().contains("CHERRY_JUKEBOX")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止操作音符盒/唱片机");
+        }
+    }
+
+    // ★ 农作物状态检测（播种&收获）
+    @EventHandler
+    public void onCropHarvest(BlockGrowEvent e) {
+        Location loc = e.getBlock().getLocation();
+        AreaConfig ac = getArea(
+                loc.getWorld().getName(),
+                loc.getBlockX(),
+                loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac != null && ac.denyCropHarvest) {
+            e.setCancelled(true);
+        }
+    }
+
+    // ★ 采集羊毛检测
+    @EventHandler
+    public void onShearEntity(PlayerShearEntityEvent e) {
+        Player p = e.getPlayer();
+        // 检查羊的位置
+        Location loc = e.getEntity().getLocation();
+        AreaConfig ac = getArea(
+                loc.getWorld().getName(),
+                loc.getBlockX(),
+                loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac == null) return;
+        if (!ac.denyWoolShear) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        String entityType = e.getEntity().getType().name();
+        if (entityType.contains("SHEEP") || entityType.contains("MOoshroom")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止在此区域剪毛");
+        }
+    }
+
+    // ★ 投喂动物检测
+    @EventHandler
+    public void onEntityInteract(PlayerInteractEntityEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = e.getPlayer();
+        Entity entity = e.getRightClicked();
+        // 只检测动物类
+        String typeName = entity.getType().name();
+        if (!(entity instanceof Animals || typeName.contains("IRON_GOLEM")
+                || typeName.contains("WOLF") || typeName.contains("CAT")
+                || typeName.contains("PARROT") || typeName.contains("FROG"))) {
+            return;
+        }
+        Location loc = entity.getLocation();
+        AreaConfig ac = getArea(
+                loc.getWorld().getName(),
+                loc.getBlockX(),
+                loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac == null) return;
+        if (!ac.denyAnimalFeeding) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        // 检查玩家手持的物品是否是食物
+        ItemStack hand = p.getInventory().getItemInMainHand();
+        if (hand != null && hand.getType().isEdible()) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止在此区域投喂动物");
+        }
+    }
+
+    // ★ 拴绳使用检测
+    @EventHandler
+    public void onLeadUse(PlayerLeashEntityEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = e.getPlayer();
+        Entity entity = e.getEntity();
+        Location loc = entity.getLocation();
+        AreaConfig ac = getArea(
+                loc.getWorld().getName(),
+                loc.getBlockX(),
+                loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac == null) return;
+        if (!ac.denyLead) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        e.setCancelled(true);
+        p.sendMessage("§c§l[区域防护] §f禁止在此区域使用拴绳");
     }
 
     /**
@@ -4088,6 +4414,8 @@ public class AreaProtection implements Listener {
                 "list", "listitem", "创建", "create", "删除", "delete", "重载", "reload",
                 "工具", "wand", "expand", "contraction",
                 "on", "off", "tempon", "modeexempt",
+                "settp", "setwarp", "tp", "warp",
+                "setowner", "addvisitor", "removevisitor", "listvisitors", "transfer",
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
                 "menu", "菜单", "sdf1debug", "testclear"
@@ -4724,24 +5052,65 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== 删除 =====
+        // ===== 删除（带1分钟延迟+二次确认）=====
         if (sub.equals("删除") || sub.equals("delete")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (!isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要管理员权限");
+                return true;
+            }
             if (args.length < 2) {
-                sender.sendMessage(
-                        "§e用法: /protect 删除 <名>");
+                sender.sendMessage("§e用法: /protect 删除 <名>");
                 return true;
             }
             String areaName = args[1];
-            // 从数据库删除
-            deleteAreaFromDb(areaName);
-            // 从内存映射移除
-            areas.remove(areaName);
-            // 删除txt文件（如果存在）
-            File f = new File(rootDir, areaName + ".txt");
-            if (f.exists()) {
-                f.delete();
+            // 精确匹配
+            String resolved = resolveAreaName(areaName);
+            if (resolved != null) areaName = resolved;
+            if (!areas.containsKey(areaName)) {
+                sender.sendMessage("§c领地不存在: " + areaName);
+                return true;
             }
-            sender.sendMessage("§a已删除: " + areaName);
+            // ★ 二次确认：参数2必须是完整的领地名
+            if (args.length < 3 || !args[2].equals(areaName)) {
+                sender.sendMessage("§e⚠ 此操作不可逆！请在60秒内输入: §c/protect 删除 " + areaName + " " + areaName);
+                // 如果有旧的待删除，取消
+                PendingDelete old = pendingDeletes.remove(areaName);
+                if (old != null) old.task.cancel();
+                // 启动1分钟倒计时
+                UUID uid = p.getUniqueId();
+                String finalAreaName = areaName;
+                long start = System.currentTimeMillis();
+                BukkitTask task = new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        pendingDeletes.remove(finalAreaName);
+                        Player online = Bukkit.getPlayer(uid);
+                        if (online != null && online.isOnline()) {
+                            online.sendMessage("§c§l[防护] §f领地 §e" + finalAreaName + " §f的删除请求已超时失效");
+                        }
+                    }
+                }.runTaskLater(plugin, 1200L); // 60秒 = 1200 tick
+                pendingDeletes.put(areaName, new PendingDelete(areaName, p.getName(), start, task));
+                return true;
+            }
+            // ★ 验证是发起者本人确认（或管理员）
+            PendingDelete pd = pendingDeletes.get(areaName);
+            if (pd != null && !pd.playerName.equals(p.getName()) && !isAreaAdmin(sender)) {
+                sender.sendMessage("§c只有发起删除的玩家才能确认");
+                return true;
+            }
+            // ★ 冻结期间如果玩家操作了领地，则自动取消
+            pendingDeletes.remove(areaName);
+            if (pd != null) pd.task.cancel();
+            // 执行删除
+            deleteAreaFromDb(areaName);
+            areas.remove(areaName);
+            sender.sendMessage("§a§l[防护] §f已删除领地: §e" + areaName);
             return true;
         }
 
@@ -5229,6 +5598,7 @@ public class AreaProtection implements Listener {
                 }
                 ac.owner = p.getName();
                 saveAreaToDb(ac);
+                cancelPendingDelete(ac.name);
                 sender.sendMessage("§a已自动将 §e" + ac.name + " §a的所有者设为 §e" + p.getName());
                 return true;
             }
@@ -5385,8 +5755,120 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // ===== settp 设置领地传送点 =====
+        if (sub.equals("settp") || sub.equals("setwarp")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            // 找到玩家所在的领地
+            AreaConfig ac = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+            if (ac == null) {
+                sender.sendMessage("§c你不在任何领地内");
+                return true;
+            }
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            ac.warpX = p.getLocation().getX();
+            ac.warpY = p.getLocation().getY();
+            ac.warpZ = p.getLocation().getZ();
+            ac.warpYaw = p.getLocation().getYaw();
+            ac.warpPitch = p.getLocation().getPitch();
+            ac.warpWorld = p.getWorld().getName();
+            saveAreaToDb(ac);
+            cancelPendingDelete(ac.name);
+            sender.sendMessage("§a§l[防护] §f已将 §e" + ac.name + " §f的传送点设置为当前坐标");
+            return true;
+        }
+
+        // ===== tp 传送到领地传送点 =====
+        if (sub.equals("tp") || sub.equals("warp")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            AreaConfig ac = null;
+            if (args.length >= 2) {
+                String areaName = resolveAreaName(args[1]);
+                if (areaName == null) {
+                    sender.sendMessage("§c领地不存在: " + args[1]);
+                    return true;
+                }
+                ac = areas.get(areaName);
+            } else {
+                // 传送到当前所在领地的传送点
+                ac = getArea(
+                        p.getWorld().getName(),
+                        p.getLocation().getBlockX(),
+                        p.getLocation().getBlockY(),
+                        p.getLocation().getBlockZ());
+                if (ac == null) {
+                    sender.sendMessage("§c你不在任何领地内，请指定领地名: /protect tp <领地名>");
+                    return true;
+                }
+            }
+            if (ac == null) {
+                sender.sendMessage("§c领地不存在");
+                return true;
+            }
+            // 检查传送点是否已设置
+            if (ac.warpWorld == null || ac.warpWorld.isEmpty()) {
+                // 没有传送点，传送到领地中心
+                int cx = (Math.min(ac.x1, ac.x2) + Math.max(ac.x1, ac.x2)) / 2;
+                int cz = (Math.min(ac.z1, ac.z2) + Math.max(ac.z1, ac.z2)) / 2;
+                World w = Bukkit.getWorld(ac.world);
+                if (w == null) {
+                    sender.sendMessage("§c世界不存在: " + ac.world);
+                    return true;
+                }
+                // 找到安全高度
+                Location center = new Location(w, cx, 0, cz);
+                for (int y = w.getMaxHeight(); y >= w.getMinHeight(); y--) {
+                    center.setY(y);
+                    if (!center.getBlock().getType().isSolid()) {
+                        center.setY(y + 1);
+                        break;
+                    }
+                }
+                p.teleport(center);
+                sender.sendMessage("§a§l[防护] §f已传送到 §e" + ac.name + " §f中心（未设置传送点）");
+            } else {
+                World w = Bukkit.getWorld(ac.warpWorld);
+                if (w == null) {
+                    sender.sendMessage("§c传送点所在世界不存在");
+                    return true;
+                }
+                Location warp = new Location(w, ac.warpX, ac.warpY, ac.warpZ, ac.warpYaw, ac.warpPitch);
+                p.teleport(warp);
+                sender.sendMessage("§a§l[防护] §f已传送到 §e" + ac.name + " §f传送点");
+            }
+            return true;
+        }
+
         showHelp(sender);
         return true;
+    }
+
+    /**
+     * 如果领地有待删除请求，取消它（玩家操作领地时自动解除冻结）
+     */
+    private void cancelPendingDelete(String areaName) {
+        PendingDelete pd = pendingDeletes.remove(areaName);
+        if (pd != null) {
+            pd.task.cancel();
+            Player p = Bukkit.getPlayerExact(pd.playerName);
+            if (p != null && p.isOnline()) {
+                p.sendMessage("§c§l[防护] §f领地 §e" + areaName + " §f已被操作，删除请求已自动取消");
+            }
+        }
     }
 
 
@@ -5489,8 +5971,11 @@ public class AreaProtection implements Listener {
                     + "deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire, "
                     + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
-                    + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
+                    + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
+                    + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -5538,6 +6023,23 @@ public class AreaProtection implements Listener {
             stmt.setString(44, ac.announceTemplate);
             stmt.setString(45, ac.txtContent != null ? ac.txtContent : "");
             stmt.setLong(46, System.currentTimeMillis() / 1000);
+            // ★ 新增权限列
+            stmt.setInt(47, ac.denyThrownProjectiles ? 1 : 0);
+            stmt.setInt(48, ac.denyGlowing ? 1 : 0);
+            stmt.setInt(49, ac.denyRedstoneInteraction ? 1 : 0);
+            stmt.setInt(50, ac.denyDoorInteraction ? 1 : 0);
+            stmt.setInt(51, ac.denyNoteblockJukebox ? 1 : 0);
+            stmt.setInt(52, ac.denyLead ? 1 : 0);
+            stmt.setInt(53, ac.denyCropHarvest ? 1 : 0);
+            stmt.setInt(54, ac.denyWoolShear ? 1 : 0);
+            stmt.setInt(55, ac.denyAnimalFeeding ? 1 : 0);
+            // ★ 传送点列
+            stmt.setDouble(56, ac.warpX);
+            stmt.setDouble(57, ac.warpY);
+            stmt.setDouble(58, ac.warpZ);
+            stmt.setFloat(59, ac.warpYaw);
+            stmt.setFloat(60, ac.warpPitch);
+            stmt.setString(61, ac.warpWorld != null ? ac.warpWorld : "");
             stmt.executeUpdate();
             stmt.close();
         } catch (SQLException e) {
@@ -5716,6 +6218,8 @@ public class AreaProtection implements Listener {
         sendClickableHelp(s, "/protect removevisitor", "移除访客(需在领地内)");
         sendClickableHelp(s, "/protect listvisitors", "列出访客(需在领地内)");
         sendClickableHelp(s, "/protect transfer", "转让领地(需在领地内)");
+        sendClickableHelp(s, "/protect settp", "设置领地传送点");
+        sendClickableHelp(s, "/protect tp <领地>", "传送到领地传送点");
 
         s.sendMessage("§e§l---- 权限商店 ----");
         sendClickableHelp(s, "/protect shop list", "查看在售权限");
@@ -6268,6 +6772,24 @@ public class AreaProtection implements Listener {
         public boolean denyMove = false;
         public boolean denyPickup = false;
         public boolean denyFire = false;
+        // ★ 新增投掷物权限（三叉戟、雪球、风蛋、箭）
+        public boolean denyThrownProjectiles = false;
+        // ★ 玩家发光控制
+        public boolean denyGlowing = false;
+        // ★ 红石电路交互（中继器、比较器）
+        public boolean denyRedstoneInteraction = false;
+        // ★ 门禁交互（按钮、普通门和铁门、压力板）
+        public boolean denyDoorInteraction = false;
+        // ★ 音频交互（音符盒、唱片机）
+        public boolean denyNoteblockJukebox = false;
+        // ★ 拴绳使用
+        public boolean denyLead = false;
+        // ★ 农作物状态检测（播种&收获）
+        public boolean denyCropHarvest = false;
+        // ★ 采集羊毛和乐魂挽具
+        public boolean denyWoolShear = false;
+        // ★ 投喂动物
+        public boolean denyAnimalFeeding = false;
         public boolean enableAnnounce = false;
         public String announceTemplate = "";
         public String txtContent = "";
@@ -6283,6 +6805,10 @@ public class AreaProtection implements Listener {
         public Set<String> peaceWhitelist = new HashSet<>();
         public String enforceGameMode = null;  // 强制游戏模式
         public Set<String> modeExempt = new HashSet<>(); // 模式排除名单
+        // ★ 传送点坐标（玩家自定义，防止卡墙）
+        public double warpX = 0, warpY = 0, warpZ = 0;
+        public float warpYaw = 0, warpPitch = 0;
+        public String warpWorld = "";
 
 
 
@@ -6389,6 +6915,15 @@ public class AreaProtection implements Listener {
             if (!denyUseItems.isEmpty()) c++;
             if (peaceMode) c++;
             if (denyItemFrame) c++;
+            if (denyThrownProjectiles) c++;
+            if (denyGlowing) c++;
+            if (denyRedstoneInteraction) c++;
+            if (denyDoorInteraction) c++;
+            if (denyNoteblockJukebox) c++;
+            if (denyLead) c++;
+            if (denyCropHarvest) c++;
+            if (denyWoolShear) c++;
+            if (denyAnimalFeeding) c++;
             if (!peaceWhitelist.isEmpty()) c++;
 
             return c;
