@@ -204,8 +204,8 @@ public class AreaGUIManager implements Listener {
             int slot = i - start;
 
             ItemStack memberItem = createItem(Material.PLAYER_HEAD, "§a§l" + member,
-                    "§7左键: 移除成员",
-                    "§7右键: 传送到玩家");
+                    "§7左键: 编辑权限",
+                    "§7右键: 移除成员");
             SkullMeta skull = (SkullMeta) memberItem.getItemMeta();
             if (skull != null) {
                 skull.setOwningPlayer(Bukkit.getOfflinePlayer(member));
@@ -517,20 +517,13 @@ public class AreaGUIManager implements Listener {
             if (raw >= 0 && raw < (end - start)) {
                 String member = memberList.get(start + raw);
                 if (event.isLeftClick()) {
-                    // 移除成员
+                    // 左键：编辑权限（打开访客权限页面）
+                    openVisitorPerm(p, landName, 0);
+                } else if (event.isRightClick()) {
+                    // 右键：移除成员
                     areaProtect.removeLandMember(landName, member);
                     p.sendMessage("§a已移除成员: " + member);
                     openMemberList(p, landName, page);
-                } else if (event.isRightClick()) {
-                    // 传送到玩家
-                    Player target = Bukkit.getPlayer(member);
-                    if (target != null) {
-                        p.closeInventory();
-                        p.teleport(target.getLocation());
-                        p.sendMessage("§a已传送到: " + member);
-                    } else {
-                        p.sendMessage("§c玩家不在线");
-                    }
                 }
             } else if (raw == 45) {
                 openAddMember(p, landName);

@@ -87,6 +87,7 @@ public class WebManager {
 
     // ★ 数据库写入排队系统（防止并发SQLite操作导致database is locked）
     private static final int LOGIN_PRIORITY = 1;    // 登录相关操作最高优先级
+    private static final int SHOP_PRIORITY = 5;     // 商店操作第二优先级
     private static final int NORMAL_PRIORITY = 10;   // 普通同步操作低优先级
     private final PriorityBlockingQueue<DbTask> dbTaskQueue = new PriorityBlockingQueue<>();
     private final AtomicInteger dbTaskIdGen = new AtomicInteger(0);
@@ -181,6 +182,13 @@ public class WebManager {
      */
     private void submitNormalDbTask(String name, Runnable action) {
         submitDbTask(NORMAL_PRIORITY, name, action);
+    }
+
+    /**
+     * 提交商店相关数据库写入任务（第二优先级）
+     */
+    private void submitShopDbTask(String name, Runnable action) {
+        submitDbTask(SHOP_PRIORITY, name, action);
     }
 
     /**
@@ -468,6 +476,8 @@ public class WebManager {
                         requestImmediateTransactionPull();
                     }
                 }.runTaskAsynchronously(plugin);
+                // ★ 事件驱动：PHP回调时触发一次登录轮询
+                triggerLoginPoll();
             }
 
             // 如果不是notify_sync，处理注册回调
@@ -3076,6 +3086,9 @@ public class WebManager {
                 }
             }
         }.runTaskLater(plugin, 100L);
+
+        // ★ 事件驱动：玩家加入时触发一次登录轮询
+        triggerLoginPoll();
     }
 
     /**
@@ -3221,36 +3234,52 @@ public class WebManager {
     public void startWebLoginPolling() {
         if (!enabled) return;
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                // 登录操作通过DB队列串行化，高优先级
-                submitDbTask("登录轮询-pollWebLoginConfirmations", () -> {
-                    try {
-                        pollWebLoginConfirmations();
-                    } catch (Exception e) {
-                        long now = System.currentTimeMillis();
-                        if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
-                            plugin.getLogger().warning("[Web登录轮询] pollWebLoginConfirmations异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                            lastPollWebLoginExceptionLog = now;
-                        }
-                    }
-                });
-                submitDbTask("登录轮询-pollWebLoginRequests", () -> {
-                    try {
-                        pollWebLoginRequests();
-                    } catch (Exception e) {
-                        long now = System.currentTimeMillis();
-                        if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
-                            plugin.getLogger().warning("[Web登录轮询] pollWebLoginRequests异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
-                            lastPollWebLoginExceptionLog = now;
-                        }
-                    }
-                });
-            }
-        }.runTaskTimer(plugin, 100L, 100L); // 5秒一次（100 ticks）
+        // ★ 改为事件驱动模式：不再主动轮询
+        // 玩家加入时触发一次轮询，PHP回调时触发一次轮询
+        // 登录完成后如果没有玩家还在登录则静默
+        plugin.getLogger().info("[Web通信] Web登录轮询已切换为事件驱动模式（玩家加入/PHP回调时触发）");
+    }
 
-        plugin.getLogger().info("[Web通信] Web登录轮询已启动（每5秒，通过DB队列串行化，高优先级）");
+    /**
+     * 触发一次登录轮询（事件驱动）
+     * 由玩家加入服务器或PHP回调时调用
+     */
+    public void triggerLoginPoll() {
+        if (!enabled) return;
+
+        // 检查是否有玩家正在登录
+        if (!hasPendingLogins()) return;
+
+        submitDbTask("登录轮询-pollWebLoginConfirmations", () -> {
+            try {
+                pollWebLoginConfirmations();
+            } catch (Exception e) {
+                long now = System.currentTimeMillis();
+                if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                    plugin.getLogger().warning("[Web登录轮询] pollWebLoginConfirmations异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    lastPollWebLoginExceptionLog = now;
+                }
+            }
+        });
+        submitDbTask("登录轮询-pollWebLoginRequests", () -> {
+            try {
+                pollWebLoginRequests();
+            } catch (Exception e) {
+                long now = System.currentTimeMillis();
+                if (now - lastPollWebLoginExceptionLog > LOG_INTERVAL) {
+                    plugin.getLogger().warning("[Web登录轮询] pollWebLoginRequests异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                    lastPollWebLoginExceptionLog = now;
+                }
+            }
+        });
+    }
+
+    /**
+     * 检查是否有待处理的登录请求
+     */
+    private boolean hasPendingLogins() {
+        // 检查是否有玩家正在等待登录确认
+        return !tokenStore.isEmpty() || Bukkit.getOnlinePlayers().size() > 0;
     }
 
     /**

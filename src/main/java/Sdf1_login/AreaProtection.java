@@ -2332,6 +2332,12 @@ public class AreaProtection implements Listener {
             if (newArea != null) {
                 AreaConfig ac = areas.get(newArea);
                 if (ac != null) {
+                    // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能移动
+                    if (ac.denyMove && !hasPermission(p, ac, PermissionLevel.OWNER)) {
+                        event.setTo(event.getFrom());
+                        return;
+                    }
+
                     // ★ 每次移动都清除指定效果
                     clearBadEffects(p, ac);
 
@@ -2459,6 +2465,12 @@ public class AreaProtection implements Listener {
 
             AreaConfig newAc = areas.get(newArea);
             if (newAc != null) {
+                // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能进入
+                if (newAc.denyMove && !hasPermission(p, newAc, PermissionLevel.OWNER)) {
+                    event.setTo(event.getFrom());
+                    return;
+                }
+
                 if (newAc.enterMsg != null
                         && !newAc.enterMsg.isEmpty()) {
                     p.sendMessage(
