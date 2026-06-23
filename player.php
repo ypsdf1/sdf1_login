@@ -222,6 +222,34 @@ if ($currentVersion !== $BUILD_VERSION) {
             from { opacity: 0; transform: translateY(30px) scale(0.95); }
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
+        /* ★ 毛玻璃Alert弹窗 */
+        .glass-alert-overlay {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.45);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            z-index: 5000; justify-content: center; align-items: center;
+            animation: glassFadeIn 0.25s ease;
+        }
+        .glass-alert-overlay.show { display: flex; }
+        .glass-alert-card {
+            background: rgba(22,27,34,0.92);
+            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(88,166,255,0.25);
+            border-radius: 16px; padding: 28px 28px 20px; width: 360px; max-width: 88%;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+            animation: glassSlideUp 0.3s ease;
+            text-align: center;
+        }
+        .glass-alert-card .alert-icon { font-size: 36px; margin-bottom: 12px; }
+        .glass-alert-card .alert-msg { font-size: 14px; color: #e6edf3; line-height: 1.6; margin-bottom: 20px; word-break: break-word; }
+        .glass-alert-card .alert-btns { display: flex; gap: 10px; justify-content: center; }
+        .glass-alert-card .alert-btns button {
+            padding: 8px 24px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600;
+            cursor: pointer; transition: all 0.2s;
+        }
+        .glass-alert-card .alert-btns .ag-ok { background: #58a6ff; color: #fff; }
+        .glass-alert-card .alert-btns .ag-cancel { background: rgba(255,255,255,0.08); color: #8b949e; }
+        .glass-alert-card .alert-btns button:hover { opacity: 0.85; transform: scale(1.03); }
         @media (max-width: 768px) {
             .sidebar { display: none; }
             .grid { grid-template-columns: 1fr; }
@@ -240,8 +268,9 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     <div class="main">
         <div class="sidebar">
-            <div class="sidebar-item active" data-page="dashboard" onclick="switchPage('dashboard')">📊 个人中心</div>
+            <div class="sidebar-item" data-page="dashboard" onclick="switchPage('dashboard')">📊 个人中心</div>
             <div class="sidebar-item" data-page="shop" onclick="switchPage('shop')">🛒 商城</div>
+            <div class="sidebar-item" data-page="lands" onclick="switchPage('lands')">🏡 领地管理</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
@@ -255,6 +284,17 @@ if ($currentVersion !== $BUILD_VERSION) {
     <!-- ★ 游客模式C位登录按钮 -->
     <div class="guest-center-login" id="guestCenterLogin">
         <button class="glow-btn" onclick="openGlassLogin()">🔑 立即登录</button>
+    </div>
+
+    <!-- ★ 毛玻璃Alert弹窗 -->
+    <div class="glass-alert-overlay" id="glassAlertOverlay">
+        <div class="glass-alert-card" onclick="event.stopPropagation()">
+            <div class="alert-icon" id="glassAlertIcon">⚠️</div>
+            <div class="alert-msg" id="glassAlertMsg"></div>
+            <div class="alert-btns" id="glassAlertBtns">
+                <button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>
+            </div>
+        </div>
     </div>
 
     <!-- ★ 毛玻璃登录弹窗 -->
@@ -655,7 +695,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                 if (data.data.need_password_change === 1) {
                     document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer + ' ⚠️ 请使用临时密码登录后立即修改密码';
                     setTimeout(() => {
-                        alert('您正在使用临时密码登录。为了您的账号安全，请在登录后立即修改密码！');
+                        glassAlert('您正在使用临时密码登录。为了您的账号安全，请在登录后立即修改密码！', '🔐');
                     }, 500);
                 } else {
                     document.getElementById('playerInfo').textContent = '已登录: ' + currentPlayer;
@@ -980,6 +1020,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (!c) return;
         if (page === 'dashboard') renderDashboard(c);
         else if (page === 'shop') renderShop(c);
+        else if (page === 'lands') renderLands(c);
         else if (page === 'cdk') renderCDK(c);
         else if (page === 'balance') renderBalance(c);
         else if (page === 'account') renderAccount(c);
@@ -1364,6 +1405,31 @@ if ($currentVersion !== $BUILD_VERSION) {
         t.textContent = msg;
         document.body.appendChild(t);
         setTimeout(() => t.remove(), 3000);
+    }
+
+    // ★ 毛玻璃Alert/Confirm弹窗（替代原生alert/confirm）
+    let _glassAlertResolve = null;
+    function glassAlertResolve(val) {
+        document.getElementById('glassAlertOverlay').classList.remove('show');
+        if (_glassAlertResolve) { _glassAlertResolve(val); _glassAlertResolve = null; }
+    }
+    function glassAlert(msg, icon = '⚠️') {
+        return new Promise(resolve => {
+            _glassAlertResolve = resolve;
+            document.getElementById('glassAlertIcon').textContent = icon;
+            document.getElementById('glassAlertMsg').textContent = msg;
+            document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
+            document.getElementById('glassAlertOverlay').classList.add('show');
+        });
+    }
+    function glassConfirm(msg, icon = '❓') {
+        return new Promise(resolve => {
+            _glassAlertResolve = resolve;
+            document.getElementById('glassAlertIcon').textContent = icon;
+            document.getElementById('glassAlertMsg').textContent = msg;
+            document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-cancel" onclick="glassAlertResolve(false)">取消</button><button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
+            document.getElementById('glassAlertOverlay').classList.add('show');
+        });
     }
 
     // ===== 主题切换 =====
@@ -1830,7 +1896,7 @@ if ($currentVersion !== $BUILD_VERSION) {
     }
 
     async function withdrawTicket(id) {
-        if (!confirm('确定要撤销此工单吗？')) return;
+        if (!await glassConfirm('确定要撤销此工单吗？')) return;
         try {
             const url = new URL(API + 'ticket.php', location.href);
             url.searchParams.set('action', 'withdraw');
@@ -1842,10 +1908,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                 ticketState.view = 'list';
                 renderTicket(document.getElementById('content'));
             } else {
-                alert(data.message);
+                glassAlert(data.message);
             }
         } catch (e) {
-            alert('撤销失败: ' + e.message);
+            glassAlert('撤销失败: ' + e.message);
         }
     }
 
@@ -1993,6 +2059,250 @@ if ($currentVersion !== $BUILD_VERSION) {
         return s;
         } catch(e) { console.error('[MD_RENDER] Error:', e); return escHtml(text).replace(/\n/g, '<br>'); }
     }
+
+// ==================== 领地管理 ====================
+
+let landsState = { view: 'list', currentLand: null };
+
+async function renderLands(el) {
+    if (!TOKEN) {
+        el.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+            <div style="font-size:48px;margin-bottom:16px">🏡</div>
+            <h2 style="margin:0 0 8px;color:var(--fg)">领地管理</h2>
+            <p style="color:var(--dim);margin-bottom:16px">请先登录以管理你的领地</p>
+            <button class="btn btn-blue" onclick="openGlassLogin()">🔑 登录</button>
+        </div>`;
+        return;
+    }
+
+    if (landsState.view === 'detail' && landsState.currentLand) {
+        await renderLandDetail(el, landsState.currentLand);
+        return;
+    }
+
+    // 加载我的领地列表
+    el.innerHTML = `<div class="card"><p style="color:var(--dim)">加载领地中...</p></div>`;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'my_lands');
+        url.searchParams.set('token', TOKEN);
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.needLogin) {
+            el.innerHTML = `<div class="card" style="text-align:center;padding:40px">
+                <div style="font-size:48px;margin-bottom:16px">🏡</div>
+                <h2 style="margin:0 0 8px;color:var(--fg)">领地管理</h2>
+                <p style="color:var(--dim);margin-bottom:16px">请先登录以管理你的领地</p>
+                <button class="btn btn-blue" onclick="openGlassLogin()">🔑 登录</button>
+            </div>`;
+            return;
+        }
+
+        if (!data.success) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.error}</p></div>`;
+            return;
+        }
+
+        const lands = data.lands || [];
+        let html = `<div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h2 style="margin:0;color:var(--fg)">🏡 我的领地 (${lands.length})</h2>
+                <span style="color:var(--dim);font-size:13px">玩家: ${escHtml(data.player)}</span>
+            </div>`;
+
+        if (lands.length === 0) {
+            html += `<div style="text-align:center;padding:32px;color:var(--dim)">
+                <div style="font-size:40px;margin-bottom:12px">🏗️</div>
+                <p>你还没有领地</p>
+                <p style="font-size:12px;margin-top:8px">在游戏中输入 <code style="background:rgba(88,166,255,0.1);padding:2px 6px;border-radius:4px;color:var(--accent)">/protect create <领地名></code> 来创建领地</p>
+            </div>`;
+        } else {
+            html += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">`;
+            for (const land of lands) {
+                const areaSize = land.area_size || 0;
+                const createdAt = land.created_at ? new Date(land.created_at * 1000).toLocaleDateString('zh-CN') : '未知';
+                const coordStr = `(${land.x1},${land.z1}) → (${land.x2},${land.z2})`;
+                html += `<div onclick="landsState.view='detail';landsState.currentLand='${escHtml(land.name)}';renderLands(document.getElementById('content'))"
+                    style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;cursor:pointer;transition:all 0.2s"
+                    onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                        <h3 style="margin:0;color:var(--fg);font-size:16px">📍 ${escHtml(land.name)}</h3>
+                        <span style="color:var(--green);font-size:11px">✦ 所有者</span>
+                    </div>
+                    <div style="font-size:13px;color:var(--dim);margin-bottom:4px">🌍 ${escHtml(land.world || '未知')}</div>
+                    <div style="font-size:13px;color:var(--dim);margin-bottom:4px">📐 ${coordStr}</div>
+                    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-top:8px">
+                        <span>📏 ${areaSize} 格²</span>
+                        <span>📅 ${createdAt}</span>
+                    </div>
+                </div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+
+        // 领地商店
+        html += `<div class="card" style="margin-top:12px">
+            <h3 style="margin:0 0 12px;color:var(--fg)">🛍️ 领地权限商店</h3>`;
+        try {
+            const shopUrl = new URL(API + 'land_api.php', location.href);
+            shopUrl.searchParams.set('action', 'land_shop');
+            const shopRes = await fetch(shopUrl);
+            const shopData = await shopRes.json();
+            if (shopData.success && shopData.items && shopData.items.length > 0) {
+                html += `<table class="table"><thead><tr>
+                    <th>领地</th><th>卖家</th><th>权限</th><th>价格(债券)</th><th>时长</th><th>操作</th>
+                </tr></thead><tbody>`;
+                for (const item of shopData.items) {
+                    const dur = item.duration >= 86400 ? Math.floor(item.duration/86400)+'天' : Math.floor(item.duration/3600)+'小时';
+                    html += `<tr>
+                        <td>${escHtml(item.land_name)}</td>
+                        <td>${escHtml(item.seller)}</td>
+                        <td><span style="color:var(--accent)">${escHtml(item.permission)}</span></td>
+                        <td style="color:var(--green)">${item.price}</td>
+                        <td>${dur}</td>
+                        <td><button class="btn btn-blue" style="font-size:11px;padding:3px 8px" onclick="buyLandPermission('${escHtml(item.land_name)}',${item.id})">购买</button></td>
+                    </tr>`;
+                }
+                html += `</tbody></table>`;
+            } else {
+                html += `<p style="color:var(--dim);font-size:13px">暂无在售的领地权限</p>`;
+            }
+        } catch (e) {
+            html += `<p style="color:var(--dim);font-size:13px">商店加载失败</p>`;
+        }
+        html += `</div>`;
+
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function renderLandDetail(el, landName) {
+    el.innerHTML = `<div class="card"><p style="color:var(--dim)">加载领地详情...</p></div>`;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'land_detail');
+        url.searchParams.set('token', TOKEN);
+        url.searchParams.set('name', landName);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.success) {
+            el.innerHTML = `<div class="card"><p style="color:var(--red)">${data.error}</p><button class="btn" onclick="landsState.view='list';landsState.currentLand=null;renderLands(document.getElementById('content'))">← 返回</button></div>`;
+            return;
+        }
+
+        const land = data.land;
+        const visitors = data.visitors || [];
+        const coordStr = `(${land.x1},${land.z1}) → (${land.x2},${land.z2})`;
+
+        let html = `<div class="card">
+            <button class="btn" onclick="landsState.view='list';landsState.currentLand=null;renderLands(document.getElementById('content'))" style="margin-bottom:12px;font-size:13px">← 返回我的领地</button>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h2 style="margin:0;color:var(--fg)">📍 ${escHtml(land.name)}</h2>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">🌍 世界</div>
+                    <div style="color:var(--fg);font-size:14px">${escHtml(land.world || '未知')}</div>
+                </div>
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">📐 坐标</div>
+                    <div style="color:var(--fg);font-size:14px">${coordStr}</div>
+                </div>
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">📏 面积</div>
+                    <div style="color:var(--fg);font-size:14px">${land.area_size || 0} 格²</div>
+                </div>
+                <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
+                    <div style="color:var(--dim);font-size:12px;margin-bottom:4px">📅 创建时间</div>
+                    <div style="color:var(--fg);font-size:14px">${land.created_at ? new Date(land.created_at*1000).toLocaleDateString('zh-CN') : '未知'}</div>
+                </div>
+            </div>`;
+
+        // 访客管理
+        html += `<div style="margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="margin:0;color:var(--fg)">👥 访客管理 (${visitors.length})</h3>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px">
+                <input type="text" id="newVisitorName" placeholder="输入玩家名" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
+                <button class="btn btn-blue" onclick="addLandVisitor('${escHtml(land.name)}')">添加访客</button>
+            </div>`;
+
+        if (visitors.length === 0) {
+            html += `<p style="color:var(--dim);font-size:13px">暂无访客</p>`;
+        } else {
+            html += `<table class="table"><thead><tr><th>玩家名</th><th>角色</th><th>授权时间</th><th>操作</th></tr></thead><tbody>`;
+            for (const v of visitors) {
+                const grantDate = v.granted_at ? new Date(v.granted_at * 1000).toLocaleString('zh-CN') : '未知';
+                html += `<tr>
+                    <td><strong>${escHtml(v.player_name)}</strong></td>
+                    <td><span style="color:var(--accent)">${escHtml(v.role)}</span></td>
+                    <td style="font-size:12px;color:var(--dim)">${grantDate}</td>
+                    <td><button class="btn" style="color:var(--red);font-size:11px;padding:3px 8px" onclick="removeLandVisitor('${escHtml(land.name)}','${escHtml(v.player_name)}')">移除</button></td>
+                </tr>`;
+            }
+            html += `</tbody></table>`;
+        }
+        html += `</div></div>`;
+        el.innerHTML = html;
+    } catch (e) {
+        el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
+    }
+}
+
+async function addLandVisitor(landName) {
+    const input = document.getElementById('newVisitorName');
+    if (!input) return;
+    const visitor = input.value.trim();
+    if (!visitor) return;
+
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'add_visitor');
+        url.searchParams.set('token', TOKEN);
+        url.searchParams.set('name', landName);
+        url.searchParams.set('visitor', visitor);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+async function removeLandVisitor(landName, player) {
+    if (!await glassConfirm(`确定要移除访客 ${player} 吗？`)) return;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'remove_visitor');
+        url.searchParams.set('token', TOKEN);
+        url.searchParams.set('name', landName);
+        url.searchParams.set('visitor', player);
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+function buyLandPermission(landName, itemId) {
+    glassAlert('请在游戏中使用 /protect shop 购买领地权限', '🎮');
+}
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 

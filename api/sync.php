@@ -305,6 +305,9 @@ switch ($action) {
     case 'sync_land_shop':
         syncLandShop();
         break;
+    case 'sync_permissions':
+        syncPermissions();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -526,6 +529,50 @@ function syncLandShop() {
         $count++;
     }
     success("权限商店同步成功: {$count}个");
+}
+
+// ===== 插件推送访客权限数据 =====
+function syncPermissions() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $permsRaw = getParam('permissions');
+    if (!$permsRaw) error('缺少permissions参数');
+    $perms = is_array($permsRaw) ? $permsRaw : json_decode($permsRaw, true);
+    if (!is_array($perms)) error('permissions格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_area_permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        land_id INTEGER NOT NULL,
+        land_name TEXT DEFAULT '',
+        player_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'visitor',
+        permissions TEXT DEFAULT '',
+        granted_at INTEGER DEFAULT 0,
+        expires_at INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0,
+        UNIQUE(land_id, player_name)
+    )");
+
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+        VALUES (:land_id, :land_name, :player, :role, :perms, :granted, :expires, :synced)");
+    $count = 0;
+    foreach ($perms as $p) {
+        $stmt->bindValue(':land_id', (int)($p['land_id'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':land_name', $p['land_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':player', $p['player_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':role', $p['role'] ?? 'visitor', SQLITE3_TEXT);
+        $stmt->bindValue(':perms', $p['permissions'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':granted', (int)($p['granted_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':expires', (int)($p['expires_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        $count++;
+    }
+    success("访客权限同步成功: {$count}个");
 }
 
 // ===== 插件推送债券余额 =====

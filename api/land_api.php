@@ -1,8 +1,8 @@
 <?php
 /**
- * 领地系统API - 接收Java端领地数据 + 管理面板
+ * 领地系统API - 接收Java端领地数据 + 管理面板 + 玩家端
  * POST: Java端推送领地数据
- * GET: admin面板读取领地数据
+ * GET: admin/玩家面板读取领地数据
  */
 header('Content-Type: application/json; charset=utf-8');
 error_reporting(E_ERROR | E_PARSE);
@@ -20,8 +20,58 @@ try {
     $method = $_SERVER['REQUEST_METHOD'];
 
     // ===== 验证 =====
-    if ($method === 'POST') {
+    // 三种认证方式：
+    // 1. Java端推送: POST + secret
+    // 2. 管理面板: GET/POST + admin_token (admin.php已登录的session)
+    // 3. 玩家端: GET + player_token
+    $playerName = '';
+    $isAdmin = false;
+
+    // 同步类action只接受secret验证（Java端推送）
+    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions'];
+    // 管理面板action：支持admin_token或secret
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item'];
+    // 玩家端action：需要token
+    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission'];
+
+    if (in_array($action, $syncActions)) {
+        // 同步类：必须有secret
         if (!validateSecret($secret)) {
+            echo json_encode(['success' => false, 'error' => 'invalid secret']);
+            exit;
+        }
+    } elseif (in_array($action, $adminActions)) {
+        // 管理面板：验证admin_token或secret
+        $adminToken = $_GET['admin_token'] ?? $_POST['admin_token'] ?? '';
+        if (!empty($adminToken)) {
+            // 用admin_token验证（admin.php的登录态）
+            $adminInfo = validateTokenSilent($adminToken);
+            if (!$adminInfo) {
+                echo json_encode(['success' => false, 'error' => '管理员认证失败', 'needLogin' => true]);
+                exit;
+            }
+            $isAdmin = true;
+        } elseif (!validateSecret($secret)) {
+            // 没有admin_token，尝试secret
+            echo json_encode(['success' => false, 'error' => '需要管理员认证']);
+            exit;
+        }
+    } elseif (in_array($action, $playerActions)) {
+        // 玩家端：需要token
+        $token = $_GET['token'] ?? '';
+        if (empty($token)) {
+            echo json_encode(['success' => false, 'error' => '需要登录', 'needLogin' => true]);
+            exit;
+        }
+        $tokenInfo = validateTokenSilent($token);
+        if (!$tokenInfo) {
+            echo json_encode(['success' => false, 'error' => 'token无效或已过期', 'needLogin' => true]);
+            exit;
+        }
+        $playerName = is_array($tokenInfo) ? $tokenInfo['player'] : $tokenInfo;
+    } else {
+        // 未知action：默认放行（部分公开GET读取）
+        if ($method === 'POST' && !validateSecret($secret)) {
             echo json_encode(['success' => false, 'error' => 'invalid secret']);
             exit;
         }
@@ -41,6 +91,11 @@ try {
         // ===== Java端推送权限商店数据 =====
         case 'sync_shop':
             handleSyncShop($db, $_POST);
+            break;
+
+        // ===== Java端推送访客权限数据 =====
+        case 'sync_permissions':
+            handleSyncPermissions($db, $_POST);
             break;
 
         // ===== 管理面板：获取所有领地 =====
@@ -86,6 +141,46 @@ try {
             handleDeleteShopItem($db, $_POST);
             break;
 
+        // ===== 玩家端：我拥有的领地 =====
+        case 'my_lands':
+            handleMyLands($db, $playerName);
+            break;
+
+        // ===== 玩家端：领地详情（含访客列表）=====
+        case 'land_detail':
+            handleLandDetail($db, $playerName, $_GET['name'] ?? '');
+            break;
+
+        // ===== 玩家端：添加访客 =====
+        case 'add_visitor':
+            if ($method !== 'GET' && $method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'GET/POST only']);
+                exit;
+            }
+            $req = $method === 'POST' ? $_POST : $_GET;
+            handleAddVisitor($db, $playerName, $req);
+            break;
+
+        // ===== 玩家端：移除访客 =====
+        case 'remove_visitor':
+            if ($method !== 'GET' && $method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'GET/POST only']);
+                exit;
+            }
+            $req = $method === 'POST' ? $_POST : $_GET;
+            handleRemoveVisitor($db, $playerName, $req);
+            break;
+
+        // ===== 玩家端：访客列表 =====
+        case 'list_visitors':
+            handleListVisitors($db, $_GET['name'] ?? '');
+            break;
+
+        // ===== 玩家端：领地商店（购买访客权限）=====
+        case 'land_shop':
+            handleLandShop($db, $_GET['name'] ?? '');
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'unknown action']);
     }
@@ -127,6 +222,20 @@ function initLandTables($db) {
     $db->exec("CREATE TABLE IF NOT EXISTS web_area_config (
         key TEXT PRIMARY KEY,
         value TEXT DEFAULT ''
+    )");
+
+    // ★ 访客权限表（Java端同步过来）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_area_permissions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        land_id INTEGER NOT NULL,
+        land_name TEXT DEFAULT '',
+        player_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'visitor',
+        permissions TEXT DEFAULT '',
+        granted_at INTEGER DEFAULT 0,
+        expires_at INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0,
+        UNIQUE(land_id, player_name)
     )");
 }
 
@@ -278,6 +387,219 @@ function handleDeleteShopItem($db, $post) {
     $stmt->execute();
 
     echo json_encode(['success' => true]);
+}
+
+// ==================== Java端同步：访客权限 ====================
+
+function handleSyncPermissions($db, $post) {
+    $perms = json_decode($post['permissions'] ?? '[]', true);
+    if (!is_array($perms)) {
+        echo json_encode(['success' => false, 'error' => 'invalid permissions data']);
+        return;
+    }
+
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+        VALUES (:land_id, :land_name, :player, :role, :perms, :granted, :expires, :synced)");
+
+    foreach ($perms as $p) {
+        $stmt->bindValue(':land_id', (int)($p['land_id'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':land_name', $p['land_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':player', $p['player_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':role', $p['role'] ?? 'visitor', SQLITE3_TEXT);
+        $stmt->bindValue(':perms', $p['permissions'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':granted', (int)($p['granted_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':expires', (int)($p['expires_at'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+
+    echo json_encode(['success' => true, 'count' => count($perms)]);
+}
+
+// ==================== 玩家端：我拥有的领地 ====================
+
+function handleMyLands($db, $playerName) {
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE owner = :owner ORDER BY created_at DESC");
+    $stmt->bindValue(':owner', $playerName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+
+    $lands = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $lands[] = $row;
+    }
+
+    echo json_encode(['success' => true, 'lands' => $lands, 'player' => $playerName]);
+}
+
+// ==================== 玩家端：领地详情（含访客） ====================
+
+function handleLandDetail($db, $playerName, $landName) {
+    if (empty($landName)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名称']);
+        return;
+    }
+
+    // 获取领地信息
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    // 权限检查：只有所有者或管理员能查看详情
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者']);
+        return;
+    }
+
+    // 获取访客列表
+    $stmt2 = $db->prepare("SELECT * FROM web_area_permissions WHERE land_id = :land_id ORDER BY granted_at DESC");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $result2 = $stmt2->execute();
+
+    $visitors = [];
+    while ($row = $result2->fetchArray(SQLITE3_ASSOC)) {
+        $visitors[] = $row;
+    }
+
+    echo json_encode(['success' => true, 'land' => $land, 'visitors' => $visitors]);
+}
+
+// ==================== 玩家端：添加访客 ====================
+
+function handleAddVisitor($db, $playerName, $req) {
+    $landName = $req['name'] ?? $req['land'] ?? '';
+    $visitor = $req['visitor'] ?? $req['player'] ?? '';
+
+    if (empty($landName) || empty($visitor)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名或玩家名']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能添加访客']);
+        return;
+    }
+
+    // 插入访客
+    $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+        VALUES (:land_id, :land_name, :player, 'visitor', '', :now, 0, :now)");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':land_name', $landName, SQLITE3_TEXT);
+    $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt2->execute();
+
+    echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
+}
+
+// ==================== 玩家端：移除访客 ====================
+
+function handleRemoveVisitor($db, $playerName, $req) {
+    $landName = $req['name'] ?? $req['land'] ?? '';
+    $visitor = $req['visitor'] ?? $req['player'] ?? '';
+
+    if (empty($landName) || empty($visitor)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名或玩家名']);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能移除访客']);
+        return;
+    }
+
+    $stmt2 = $db->prepare("DELETE FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $stmt2->execute();
+
+    echo json_encode(['success' => true, 'message' => "已移除访客: $visitor"]);
+}
+
+// ==================== 玩家端：访客列表 ====================
+
+function handleListVisitors($db, $landName) {
+    if (empty($landName)) {
+        echo json_encode(['success' => false, 'error' => '缺少领地名称']);
+        return;
+    }
+
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    $stmt2 = $db->prepare("SELECT * FROM web_area_permissions WHERE land_id = :land_id ORDER BY granted_at DESC");
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $result2 = $stmt2->execute();
+
+    $visitors = [];
+    while ($row = $result2->fetchArray(SQLITE3_ASSOC)) {
+        $visitors[] = $row;
+    }
+
+    echo json_encode(['success' => true, 'visitors' => $visitors]);
+}
+
+// ==================== 玩家端：领地商店 ====================
+
+function handleLandShop($db, $landName) {
+    $sql = "SELECT * FROM web_area_shop WHERE status = 'active'";
+    $params = [];
+
+    if (!empty($landName)) {
+        $sql .= " AND land_name = :name";
+        $params[':name'] = $landName;
+    }
+    $sql .= " ORDER BY created_at DESC LIMIT 50";
+
+    $stmt = $db->prepare($sql);
+    foreach ($params as $k => $v) {
+        $stmt->bindValue($k, $v, SQLITE3_TEXT);
+    }
+    $result = $stmt->execute();
+
+    $items = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $items[] = $row;
+    }
+
+    echo json_encode(['success' => true, 'items' => $items]);
 }
 
 function validateSecret($secret) {

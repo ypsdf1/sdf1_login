@@ -37,11 +37,12 @@ function getDB() {
         }
         $db = new SQLite3(DB_PATH);
         $db->enableExceptions(true);
-        // 减少 PRAGMA 调用，避免可能的锁问题
+        // WAL模式 + 长等待超时防止database is locked
         $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA busy_timeout=15000');  // 数据库锁等待15秒
+        $db->exec('PRAGMA busy_timeout=30000');  // 30秒等待
         $db->exec('PRAGMA synchronous=NORMAL');
         $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
+        $db->exec('PRAGMA wal_autocheckpoint=1000');
         initTables($db);
         migrateDatabase($db); // 迁移旧数据库
     }

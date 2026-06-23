@@ -2247,9 +2247,9 @@ async function loadLands(el) {
     el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
     try {
         const [landsRes, shopRes, configRes] = await Promise.all([
-            fetch('api/land_api.php?action=list_lands').then(r => r.json()),
-            fetch('api/land_api.php?action=list_shop').then(r => r.json()),
-            fetch('api/land_api.php?action=get_config').then(r => r.json())
+            fetch('api/land_api.php?action=list_lands&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()),
+            fetch('api/land_api.php?action=list_shop&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()),
+            fetch('api/land_api.php?action=get_config&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json())
         ]);
 
         let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
@@ -2368,12 +2368,12 @@ async function saveLandConfig() {
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=land_price_per_sqm&value=' + encodeURIComponent(price)
+            body: 'key=land_price_per_sqm&value=' + encodeURIComponent(price) + '&secret=sdf1_web_comm_2026_ypshidifu'
         });
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=max_lands&value=' + encodeURIComponent(maxLands)
+            body: 'key=max_lands&value=' + encodeURIComponent(maxLands) + '&secret=sdf1_web_comm_2026_ypshidifu'
         });
         document.querySelector('.modal-close')?.click();
         loadLands(document.getElementById('C'));
@@ -2388,7 +2388,7 @@ function changeLandOwner(name, currentOwner) {
     fetch('api/land_api.php?action=update_land_owner', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(newOwner)
+        body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(newOwner) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else alert('失败: ' + (d.error||''));
@@ -2400,7 +2400,7 @@ function deleteLand(name) {
     fetch('api/land_api.php?action=delete_land', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'name=' + encodeURIComponent(name)
+        body: 'name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else alert('失败: ' + (d.error||''));
@@ -2412,7 +2412,7 @@ function deleteShopItem(id) {
     fetch('api/land_api.php?action=delete_shop_item', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'id=' + id
+        body: 'id=' + id + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else alert('失败: ' + (d.error||''));

@@ -5,3 +5,14 @@
 *.db-journal
 *.db-wal
 *.db-shm
+upload_debug.php
+upload_via_http.php
+upload_debug.ps1
+debug_admin_api.php
+debug_online.php
+debug_region.php
+debug_region_search.php
+self_update.php
+version_check.php
+test_sync.php
+db/debug_ip_v2.php
