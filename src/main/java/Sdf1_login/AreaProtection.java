@@ -39,6 +39,8 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.event.entity.EntitySpawnEvent;
 import org.bukkit.entity.Item;
+import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.inventory.InventoryHolder;
 
 
 
@@ -370,6 +372,7 @@ public class AreaProtection implements Listener {
         migrateTxtToDb(); // ★ 迁移txt文件到数据库
         loadAllAreas();
         loadWhitelists();
+        loadAreaConfig();
         recoverPendingEffects();
     }
     public void recoverPendingEffects() {
@@ -844,6 +847,7 @@ public class AreaProtection implements Listener {
             while (rs.next()) {
                 AreaConfig ac = new AreaConfig();
                 ac.name = rs.getString("name");
+                ac.owner = rs.getString("owner");
                 ac.world = rs.getString("world");
                 ac.x1 = rs.getInt("x1");
                 ac.z1 = rs.getInt("z1");
@@ -873,6 +877,9 @@ public class AreaProtection implements Listener {
                 ac.denyFireSpread = rs.getInt("deny_fire_spread") == 1;
                 ac.denyAllEffects = rs.getInt("deny_all_effects") == 1;
                 ac.denyItemFrame = rs.getInt("deny_item_frame") == 1;
+                try { ac.denyMove = rs.getInt("deny_move") == 1; } catch (Exception ignored) {}
+                try { ac.denyPickup = rs.getInt("deny_pickup") == 1; } catch (Exception ignored) {}
+                try { ac.denyFire = rs.getInt("deny_fire") == 1; } catch (Exception ignored) {}
                 ac.peaceMode = rs.getInt("peace_mode") == 1;
                 ac.peaceModeDuration = rs.getInt("peace_mode_duration") * 1000; // 转毫秒
                 ac.peaceWhitelist = new HashSet<>(splitToList(rs.getString("peace_whitelist")));
@@ -884,6 +891,7 @@ public class AreaProtection implements Listener {
                 ac.confiscateMsg = rs.getString("confiscate_msg");
                 ac.enableAnnounce = rs.getInt("enable_announce") == 1;
                 ac.announceTemplate = rs.getString("announce_template");
+                ac.txtContent = rs.getString("txt_content");
                 areas.put(ac.name, ac);
                 count++;
             }
@@ -983,6 +991,9 @@ public class AreaProtection implements Listener {
                             + "deny_fire_spread INTEGER DEFAULT 0,"
                             + "deny_all_effects INTEGER DEFAULT 0,"
                             + "deny_item_frame INTEGER DEFAULT 0,"
+                            + "deny_move INTEGER DEFAULT 0,"
+                            + "deny_pickup INTEGER DEFAULT 0,"
+                            + "deny_fire INTEGER DEFAULT 0,"
                             + "peace_mode INTEGER DEFAULT 0,"
                             + "peace_mode_duration INTEGER DEFAULT 5,"
                             + "peace_whitelist TEXT DEFAULT '',"
@@ -1031,6 +1042,12 @@ public class AreaProtection implements Listener {
                             + "key TEXT PRIMARY KEY,"
                             + "value TEXT NOT NULL)");
 
+            // 添加可能缺失的列（兼容旧数据库）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_move INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_pickup INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_fire INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN txt_content TEXT DEFAULT ''"); } catch (Exception ignored) {}
+
             stmt.close();
         } catch (SQLException e) {
             plugin.getLogger().severe(
@@ -1077,10 +1094,11 @@ public class AreaProtection implements Listener {
                     + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
                     + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
                     + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
-                    + "deny_all_effects, deny_item_frame, peace_mode, peace_mode_duration, "
+                    + "deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire, "
+                    + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             for (File f : txtFiles) {
                 try {
@@ -1125,18 +1143,21 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(29, ac.denyFireSpread ? 1 : 0);
                     insertStmt.setInt(30, ac.denyAllEffects ? 1 : 0);
                     insertStmt.setInt(31, ac.denyItemFrame ? 1 : 0);
-                    insertStmt.setInt(32, ac.peaceMode ? 1 : 0);
-                    insertStmt.setInt(33, ac.peaceModeDuration / 1000); // 存秒
-                    insertStmt.setString(34, String.join(",", ac.peaceWhitelist));
-                    insertStmt.setString(35, ac.enforceGameMode != null ? ac.enforceGameMode : "");
-                    insertStmt.setString(36, String.join(",", ac.modeExempt));
-                    insertStmt.setString(37, ac.enterMsg);
-                    insertStmt.setString(38, ac.leaveMsg);
-                    insertStmt.setString(39, ac.confiscateMsg);
-                    insertStmt.setInt(40, ac.enableAnnounce ? 1 : 0);
-                    insertStmt.setString(41, ac.announceTemplate);
-                    insertStmt.setString(42, txtContent);
-                    insertStmt.setLong(43, System.currentTimeMillis() / 1000);
+                    insertStmt.setInt(32, ac.denyMove ? 1 : 0);
+                    insertStmt.setInt(33, ac.denyPickup ? 1 : 0);
+                    insertStmt.setInt(34, ac.denyFire ? 1 : 0);
+                    insertStmt.setInt(35, ac.peaceMode ? 1 : 0);
+                    insertStmt.setInt(36, ac.peaceModeDuration / 1000); // 存秒
+                    insertStmt.setString(37, String.join(",", ac.peaceWhitelist));
+                    insertStmt.setString(38, ac.enforceGameMode != null ? ac.enforceGameMode : "");
+                    insertStmt.setString(39, String.join(",", ac.modeExempt));
+                    insertStmt.setString(40, ac.enterMsg);
+                    insertStmt.setString(41, ac.leaveMsg);
+                    insertStmt.setString(42, ac.confiscateMsg);
+                    insertStmt.setInt(43, ac.enableAnnounce ? 1 : 0);
+                    insertStmt.setString(44, ac.announceTemplate);
+                    insertStmt.setString(45, txtContent);
+                    insertStmt.setLong(46, System.currentTimeMillis() / 1000);
                     insertStmt.executeUpdate();
                     migrated++;
                     plugin.getLogger().info("[防护] 迁移txt→db: " + name);
@@ -2280,10 +2301,7 @@ public class AreaProtection implements Listener {
         if (to == null) return;
 
         Location from = event.getFrom();
-        if (from.getBlockX() == to.getBlockX()
-                && from.getBlockZ() == to.getBlockZ()) {
-            return;
-        }
+        // X/Z debounce removed to allow denyMove teleport for small movements
 
         // 防抖
         Long lastTime = lastMoveProcess.get(uid);
@@ -2334,7 +2352,14 @@ public class AreaProtection implements Listener {
                 if (ac != null) {
                     // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能移动
                     if (ac.denyMove && !hasPermission(p, ac, PermissionLevel.OWNER)) {
-                        event.setTo(event.getFrom());
+                        Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
+                        if (safeLoc != null) {
+                            p.teleport(safeLoc);
+                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限，已被传送出去");
+                        } else {
+                            p.teleport(p.getWorld().getSpawnLocation());
+                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限");
+                        }
                         return;
                     }
 
@@ -2467,7 +2492,14 @@ public class AreaProtection implements Listener {
             if (newAc != null) {
                 // ★ denyMove检查：无OWNER/ADMIN权限的玩家不能进入
                 if (newAc.denyMove && !hasPermission(p, newAc, PermissionLevel.OWNER)) {
-                    event.setTo(event.getFrom());
+                    Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
+                    if (safeLoc != null) {
+                        p.teleport(safeLoc);
+                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限，已被传送出去");
+                    } else {
+                        p.teleport(p.getWorld().getSpawnLocation());
+                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限");
+                    }
                     return;
                 }
 
@@ -2516,6 +2548,39 @@ public class AreaProtection implements Listener {
             playerCurrentArea.remove(uid);
         }
     }
+
+    /**
+     * 查找安全的领地外部传送位置
+     */
+    private Location findSafeExitLocation(Location loc, AreaConfig ac) {
+        int px = loc.getBlockX(), pz = loc.getBlockZ();
+        int minX = Math.min(ac.x1, ac.x2), maxX = Math.max(ac.x1, ac.x2);
+        int minZ = Math.min(ac.z1, ac.z2), maxZ = Math.max(ac.z1, ac.z2);
+
+        int distLeft = px - minX;
+        int distRight = maxX - px;
+        int distTop = pz - minZ;
+        int distBottom = maxZ - pz;
+
+        int minDist = Math.min(Math.min(distLeft, distRight), Math.min(distTop, distBottom));
+
+        int exitX = px, exitZ = pz;
+        if (minDist == distLeft) exitX = minX - 3;
+        else if (minDist == distRight) exitX = maxX + 3;
+        else if (minDist == distTop) exitZ = minZ - 3;
+        else exitZ = maxZ + 3;
+
+        Location exit = new Location(loc.getWorld(), exitX, loc.getY(), exitZ);
+        for (int y = loc.getWorld().getMaxHeight(); y >= loc.getWorld().getMinHeight(); y--) {
+            exit.setY(y);
+            if (!exit.getBlock().getType().isSolid()) {
+                exit.setY(y + 1);
+                return exit;
+            }
+        }
+        return exit;
+    }
+
 // ===== 清理袭击生物 =====
 
     // 需要清理的袭击生物类型
@@ -3770,21 +3835,25 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockZ());
         if (ac == null) return;
 
-        // 末影珍珠禁止
+        // 末影珍珠禁止 (only for visitors)
         if (ac.denyEnderPearl
                 && hand.getType() == Material.ENDER_PEARL) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止使用末影珍珠");
-            return;
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止使用末影珍珠");
+                return;
+            }
         }
 
-        // 弓箭禁止
+        // 弓箭禁止 (only for visitors)
         if (ac.denyBow
                 && (hand.getType() == Material.BOW
                 || hand.getType() == Material.CROSSBOW)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止使用弓箭");
-            return;
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止使用弓箭");
+                return;
+            }
         }
 
         // 所有者+管理员跳过禁止使用物品检查
@@ -3818,6 +3887,29 @@ public class AreaProtection implements Listener {
                 it.remove();
         }
     }
+
+    @EventHandler
+    public void onInventoryOpen(InventoryOpenEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = (Player) e.getPlayer();
+
+        InventoryHolder holder = e.getInventory().getHolder();
+        if (holder instanceof org.bukkit.block.BlockState) {
+            org.bukkit.block.BlockState bs = (org.bukkit.block.BlockState) holder;
+            Location loc = bs.getLocation();
+            AreaConfig ac = getArea(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+            if (ac == null) return;
+
+            if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+
+            PermissionLevel level = getPermissionLevel(p, ac);
+            if (level == null) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f你不具备访问此容器的权限");
+            }
+        }
+    }
+
     public void loadWhitelists() {
         globalPlayerWhitelist.clear();
         areaPlayerWhitelist.clear();
@@ -5119,8 +5211,25 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c需要管理员权限");
                 return true;
             }
+            // If args.length < 3, try to auto-assign: use current location's land and set admin as owner
             if (args.length < 3) {
-                sender.sendMessage("§e用法: /protect setowner <领地> <玩家>");
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§e用法: /protect setowner <领地> <玩家>");
+                    return true;
+                }
+                Player p = (Player) sender;
+                AreaConfig ac = getArea(p.getWorld().getName(), p.getLocation().getBlockX(), p.getLocation().getBlockY(), (int) p.getLocation().getZ());
+                if (ac == null) {
+                    sender.sendMessage("§c你不在任何领地内");
+                    return true;
+                }
+                if (ac.owner != null && !ac.owner.isEmpty()) {
+                    sender.sendMessage("§c该领地已有所有者: " + ac.owner + "。用法: /protect setowner <领地> <新玩家>");
+                    return true;
+                }
+                ac.owner = p.getName();
+                saveAreaToDb(ac);
+                sender.sendMessage("§a已自动将 §e" + ac.name + " §a的所有者设为 §e" + p.getName());
                 return true;
             }
             String areaName = resolveAreaName(args[1]);
@@ -5377,12 +5486,14 @@ public class AreaProtection implements Listener {
                     + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
                     + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
                     + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
-                    + "deny_all_effects, deny_item_frame, peace_mode, peace_mode_duration, "
+                    + "deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire, "
+                    + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
-                    + "confiscate_msg, enable_announce, announce_template, created_at) "
-                    + "VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
+            stmt.setString(2, ac.owner != null ? ac.owner : "");
             stmt.setString(3, ac.world);
             stmt.setInt(4, ac.x1);
             stmt.setInt(5, ac.z1);
@@ -5412,17 +5523,21 @@ public class AreaProtection implements Listener {
             stmt.setInt(29, ac.denyFireSpread ? 1 : 0);
             stmt.setInt(30, ac.denyAllEffects ? 1 : 0);
             stmt.setInt(31, ac.denyItemFrame ? 1 : 0);
-            stmt.setInt(32, ac.peaceMode ? 1 : 0);
-            stmt.setInt(33, ac.peaceModeDuration / 1000);
-            stmt.setString(34, String.join(",", ac.peaceWhitelist));
-            stmt.setString(35, ac.enforceGameMode != null ? ac.enforceGameMode : "");
-            stmt.setString(36, String.join(",", ac.modeExempt));
-            stmt.setString(37, ac.enterMsg);
-            stmt.setString(38, ac.leaveMsg);
-            stmt.setString(39, ac.confiscateMsg);
-            stmt.setInt(40, ac.enableAnnounce ? 1 : 0);
-            stmt.setString(41, ac.announceTemplate);
-            stmt.setLong(42, System.currentTimeMillis() / 1000);
+            stmt.setInt(32, ac.denyMove ? 1 : 0);
+            stmt.setInt(33, ac.denyPickup ? 1 : 0);
+            stmt.setInt(34, ac.denyFire ? 1 : 0);
+            stmt.setInt(35, ac.peaceMode ? 1 : 0);
+            stmt.setInt(36, ac.peaceModeDuration / 1000);
+            stmt.setString(37, String.join(",", ac.peaceWhitelist));
+            stmt.setString(38, ac.enforceGameMode != null ? ac.enforceGameMode : "");
+            stmt.setString(39, String.join(",", ac.modeExempt));
+            stmt.setString(40, ac.enterMsg);
+            stmt.setString(41, ac.leaveMsg);
+            stmt.setString(42, ac.confiscateMsg);
+            stmt.setInt(43, ac.enableAnnounce ? 1 : 0);
+            stmt.setString(44, ac.announceTemplate);
+            stmt.setString(45, ac.txtContent != null ? ac.txtContent : "");
+            stmt.setLong(46, System.currentTimeMillis() / 1000);
             stmt.executeUpdate();
             stmt.close();
         } catch (SQLException e) {
@@ -6058,6 +6173,74 @@ public class AreaProtection implements Listener {
     }
 
 
+    // ==================== 区域配置文件 ====================
+
+    public static class LandConfig {
+        public int 创建价格 = 1000;
+        public int 默认高度范围最小 = 0;
+        public int 默认高度范围最大 = 255;
+        public int 默认和平模式持续秒数 = 5;
+        public int 权限商店最低价格 = 1000;
+        public int 权限商店默认时长秒 = 86400;
+        public int 权限商店最大时长秒 = 86400;
+        public String 进入提示 = "进入领地: {area}";
+        public String 离开提示 = "离开领地: {area}";
+    }
+
+    private final LandConfig landConfig = new LandConfig();
+
+    public LandConfig getLandConfig() { return landConfig; }
+
+    private void loadAreaConfig() {
+        File configFile = new File(plugin.getDataFolder(), "区域防护配置.txt");
+        if (!configFile.exists()) {
+            writeDefaultAreaConfig(configFile);
+        }
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(new FileInputStream(configFile), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                String key = line.substring(0, eq).trim();
+                String value = line.substring(eq + 1).trim();
+                switch (key) {
+                    case "创建价格": landConfig.创建价格 = Integer.parseInt(value); break;
+                    case "默认高度范围最小": landConfig.默认高度范围最小 = Integer.parseInt(value); break;
+                    case "默认高度范围最大": landConfig.默认高度范围最大 = Integer.parseInt(value); break;
+                    case "默认和平模式持续秒数": landConfig.默认和平模式持续秒数 = Integer.parseInt(value); break;
+                    case "权限商店最低价格": landConfig.权限商店最低价格 = Integer.parseInt(value); break;
+                    case "权限商店默认时长秒": landConfig.权限商店默认时长秒 = Integer.parseInt(value); break;
+                    case "权限商店最大时长秒": landConfig.权限商店最大时长秒 = Integer.parseInt(value); break;
+                    case "进入提示": landConfig.进入提示 = value; break;
+                    case "离开提示": landConfig.离开提示 = value; break;
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 加载区域配置文件失败: " + e.getMessage());
+        }
+    }
+
+    private void writeDefaultAreaConfig(File configFile) {
+        try (PrintWriter pw = new PrintWriter(
+                new OutputStreamWriter(new FileOutputStream(configFile), StandardCharsets.UTF_8))) {
+            pw.println("# 区域防护配置文件");
+            pw.println("创建价格=1000");
+            pw.println("默认高度范围最小=0");
+            pw.println("默认高度范围最大=255");
+            pw.println("默认和平模式持续秒数=5");
+            pw.println("权限商店最低价格=1000");
+            pw.println("权限商店默认时长秒=86400");
+            pw.println("权限商店最大时长秒=86400");
+            pw.println("进入提示=进入领地: {area}");
+            pw.println("离开提示=离开领地: {area}");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 写入默认区域配置失败: " + e.getMessage());
+        }
+    }
+
     // ==================== 数据类 ====================
 
     public static class AreaConfig {
@@ -6089,6 +6272,7 @@ public class AreaProtection implements Listener {
         public boolean denyFire = false;
         public boolean enableAnnounce = false;
         public String announceTemplate = "";
+        public String txtContent = "";
         public String confiscateMsg = "";
         public String enterMsg = "";
         public String leaveMsg = "";
