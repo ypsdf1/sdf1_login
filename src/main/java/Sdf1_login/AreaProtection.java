@@ -3589,6 +3589,13 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 获取所有领地（只读）
+     */
+    public Map<String, AreaConfig> getAllLands() {
+        return Collections.unmodifiableMap(areas);
+    }
+
+    /**
      * 获取指定玩家拥有的所有领地
      */
     public List<AreaConfig> getLandsByOwner(String ownerName) {
@@ -4416,7 +4423,7 @@ public class AreaProtection implements Listener {
                 "setowner", "addvisitor", "removevisitor", "listvisitors", "transfer",
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
-                "menu", "菜单", "sdf1debug", "testclear"
+                "menu", "菜单", "sdf1debug", "testclear", "cli"
         ));
 
         String first = original[0].toLowerCase();
@@ -4469,6 +4476,14 @@ public class AreaProtection implements Listener {
                         p.sendMessage("§cGUI管理器未初始化，显示文本帮助");
                         showHelp(sender);
                     }
+                    return true;
+                }
+            }
+            // CLI模式 → 显示交互式菜单
+            if (sender instanceof Player) {
+                Player p = (Player) sender;
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.showMainMenu(p);
                     return true;
                 }
             }
@@ -4609,6 +4624,58 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§7下次输入 /protect 将显示文本帮助");
             } else {
                 p.sendMessage("§c用法: /protect uimode <gui|cli>");
+            }
+            return true;
+        }
+
+        // ===== CLI交互式菜单 =====
+        if (sub.equals("cli")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (plugin.areaCLIManager == null) {
+                p.sendMessage("§cCLI管理器未初始化");
+                return true;
+            }
+            String action = args.length >= 2 ? args[1] : "menu";
+            switch (action) {
+                case "menu":
+                    plugin.areaCLIManager.showMainMenu(p);
+                    break;
+                case "lands":
+                    int page = 1;
+                    if (args.length >= 3) {
+                        try { page = Integer.parseInt(args[2]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showLandList(p, page);
+                    break;
+                case "manage":
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli manage <领地名> [页码]");
+                        break;
+                    }
+                    int permPage = 1;
+                    if (args.length >= 4) {
+                        try { permPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showLandManage(p, args[2], permPage);
+                    break;
+                case "toggle":
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli toggle <领地名> <权限key>");
+                        break;
+                    }
+                    plugin.areaCLIManager.togglePerm(p, args[2], args[3]);
+                    break;
+                case "create":
+                    // 跳转到创建命令
+                    // 直接转发
+                    break;
+                default:
+                    plugin.areaCLIManager.showMainMenu(p);
+                    break;
             }
             return true;
         }

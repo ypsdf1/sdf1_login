@@ -145,6 +145,7 @@ public class Main extends JavaPlugin
 
     public AreaProtection areaProtection;
     public AreaGUIManager areaGUIManager;
+    public AreaCLIManager areaCLIManager;
 
 
     // 钱包流水查看目标（玩家名 → 查看目标）
@@ -512,6 +513,8 @@ public class Main extends JavaPlugin
         areaGUIManager = new AreaGUIManager(this, areaProtection);
         getServer().getPluginManager()
                 .registerEvents(areaGUIManager, this);
+        // 区域防护CLI
+        areaCLIManager = new AreaCLIManager(this, areaProtection);
 
 // 发光效果检测（每2秒扫描一次）
         getServer().getScheduler().runTaskTimer(this, () -> {
