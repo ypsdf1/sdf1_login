@@ -513,11 +513,12 @@ public class Main extends JavaPlugin
         getServer().getPluginManager()
                 .registerEvents(areaGUIManager, this);
 
-// 效果清除定时器（只留一个）
+// 发光效果检测（每2秒扫描一次）
         getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection != null) {
+                areaProtection.checkGlowingPlayers();
             }
-        }, 20L, 20L);
+        }, 20L, 40L);
 
 // 和平模式独立检测
         getServer().getScheduler().runTaskTimer(this, () -> {

@@ -9,6 +9,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.NotePlayEvent;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.*;
 import org.bukkit.inventory.ItemStack;
@@ -21,13 +22,12 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Animals;
+import org.bukkit.entity.EnderPearl;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import java.sql.*;
-import org.bukkit.event.entity.*;
-import org.bukkit.event.player.*;
 import org.bukkit.GameMode;
 import org.bukkit.event.EventPriority;
 
@@ -5147,8 +5147,36 @@ public class AreaProtection implements Listener {
             }
             // ★ 验证是发起者本人确认（或管理员）
             PendingDelete pd = pendingDeletes.get(areaName);
-            if (pd != null && !pd.playerName.equals(p.getName()) && !isAreaAdmin(sender)) {
+            if (pd == null) {
+                // 没有待删除记录，先创建一个（防止绕过延迟）
+                sender.sendMessage("§e⚠ 此操作不可逆！请在60秒内输入: §c/protect 删除 " + areaName + " " + areaName);
+                PendingDelete old = pendingDeletes.remove(areaName);
+                if (old != null) old.task.cancel();
+                UUID uid = p.getUniqueId();
+                String finalAreaName = areaName;
+                long start = System.currentTimeMillis();
+                BukkitTask task = new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        pendingDeletes.remove(finalAreaName);
+                        Player online = Bukkit.getPlayer(uid);
+                        if (online != null && online.isOnline()) {
+                            online.sendMessage("§c§l[防护] §f领地 §e" + finalAreaName + " §f的删除请求已超时失效");
+                        }
+                    }
+                }.runTaskLater(plugin, 1200L);
+                pendingDeletes.put(areaName, new PendingDelete(areaName, p.getName(), start, task));
+                return true;
+            }
+            if (!pd.playerName.equals(p.getName()) && !isAreaAdmin(sender)) {
                 sender.sendMessage("§c只有发起删除的玩家才能确认");
+                return true;
+            }
+            // ★ 检查是否已超时（1分钟）
+            if (System.currentTimeMillis() - pd.startTime > 60_000) {
+                pendingDeletes.remove(areaName);
+                pd.task.cancel();
+                sender.sendMessage("§c删除请求已超时，请重新发起");
                 return true;
             }
             // ★ 冻结期间如果玩家操作了领地，则自动取消
@@ -6660,6 +6688,93 @@ public class AreaProtection implements Listener {
                 block.getX(), block.getY(), block.getZ());
         if (ac != null && ac.denyFireSpread)
             e.setCancelled(true);
+    }
+
+    // ===== ★ 拴绳使用（给生物拴绳或拉拽）=====
+    @EventHandler
+    public void onLeash(PlayerInteractEntityEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = e.getPlayer();
+        Entity entity = e.getRightClicked();
+        // 检查玩家所在位置或实体位置
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                p.getLocation().getBlockX(),
+                p.getLocation().getBlockY(),
+                p.getLocation().getBlockZ());
+        if (ac == null) {
+            ac = getArea(
+                    entity.getWorld().getName(),
+                    entity.getLocation().getBlockX(),
+                    entity.getLocation().getBlockY(),
+                    entity.getLocation().getBlockZ());
+        }
+        if (ac == null || !ac.denyLead) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        // 只拦截拴绳操作（主手持拴绳）
+        ItemStack hand = p.getInventory().getItemInMainHand();
+        if (hand != null && hand.getType() == Material.LEAD) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止在此区域使用拴绳");
+        }
+    }
+
+    // ===== ★ 投喂动物 =====
+    @EventHandler
+    public void onPlayerFeedAnimal(EntityBreedEvent e) {
+        if (!(e.getBreeder() instanceof Player)) return;
+        Player p = (Player) e.getBreeder();
+        Entity entity = e.getEntity();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                p.getLocation().getBlockX(),
+                p.getLocation().getBlockY(),
+                p.getLocation().getBlockZ());
+        if (ac == null) {
+            ac = getArea(
+                    entity.getWorld().getName(),
+                    entity.getLocation().getBlockX(),
+                    entity.getLocation().getBlockY(),
+                    entity.getLocation().getBlockZ());
+        }
+        if (ac == null || !ac.denyAnimalFeeding) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        e.setCancelled(true);
+        p.sendMessage("§c§l[区域防护] §f禁止在此区域繁殖动物");
+    }
+
+    // ===== ★ 袭击侦听（玩家触发袭击时检测）=====
+    @EventHandler
+    public void onRaidTrigger(org.bukkit.event.raid.RaidTriggerEvent e) {
+        Player p = e.getPlayer();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                p.getLocation().getBlockX(),
+                p.getLocation().getBlockY(),
+                p.getLocation().getBlockZ());
+        if (ac == null || !ac.denyRaid) return;
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        e.setCancelled(true);
+        p.sendMessage("§c§l[区域防护] §f此区域禁止触发袭击事件");
+    }
+
+    // ===== ★ 玩家发光检测（通过定期扫描清除区域内发光效果）=====
+    // 在onEnable中注册repeating task，此处提供public方法供Main调用
+    public void checkGlowingPlayers() {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            AreaConfig ac = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+            if (ac != null && ac.denyGlowing) {
+                if (hasPermission(p, ac, PermissionLevel.OWNER)) continue;
+                if (p.hasPotionEffect(PotionEffectType.GLOWING)) {
+                    p.removePotionEffect(PotionEffectType.GLOWING);
+                    p.sendMessage("§c§l[区域防护] §f此区域禁止使用发光效果");
+                }
+            }
+        }
     }
 
 
