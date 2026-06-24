@@ -1868,12 +1868,93 @@ public class WebManager {
         } catch (NumberFormatException ignored) {
         }
 
+        // JSON数组 → List<Map>
+        if (value.startsWith("[") && value.endsWith("]")) {
+            List<Object> list = parseJsonArray(value);
+            map.put(key, list);
+            return;
+        }
+
         // 字符串（去掉引号）
         String cleaned = value.replaceAll("^\"|\"$", "")
                 .replace("\\\"", "\"")
                 .replace("\\n", "\n")
                 .replace("\\\\", "\\");
         map.put(key, cleaned);
+    }
+
+    /**
+     * 解析JSON数组为List
+     * 支持 [{...}, {...}] 和 ["a", "b"] 格式
+     */
+    private static List<Object> parseJsonArray(String arrStr) {
+        List<Object> list = new ArrayList<>();
+        arrStr = arrStr.trim();
+        if (arrStr.length() < 2) return list;
+        arrStr = arrStr.substring(1, arrStr.length() - 1); // 去掉 [ ]
+
+        int depth = 0;
+        boolean inString = false;
+        StringBuilder current = new StringBuilder();
+
+        for (int i = 0; i < arrStr.length(); i++) {
+            char c = arrStr.charAt(i);
+            if (inString) {
+                if (c == '\\' && i + 1 < arrStr.length()) {
+                    current.append(c).append(arrStr.charAt(++i));
+                } else if (c == '"') {
+                    inString = false;
+                    current.append(c);
+                } else {
+                    current.append(c);
+                }
+            } else {
+                if (c == '"') {
+                    inString = true;
+                    current.append(c);
+                } else if (c == '{' || c == '[') {
+                    depth++;
+                    current.append(c);
+                } else if (c == '}' || c == ']') {
+                    depth--;
+                    current.append(c);
+                } else if (c == ',' && depth == 0) {
+                    // 分隔符
+                    String item = current.toString().trim();
+                    if (!item.isEmpty()) {
+                        list.add(parseJsonArrayItem(item));
+                    }
+                    current = new StringBuilder();
+                } else {
+                    current.append(c);
+                }
+            }
+        }
+        String last = current.toString().trim();
+        if (!last.isEmpty()) {
+            list.add(parseJsonArrayItem(last));
+        }
+        return list;
+    }
+
+    private static Object parseJsonArrayItem(String item) {
+        item = item.trim();
+        if (item.startsWith("{") && item.endsWith("}")) {
+            // 嵌套对象 → Map
+            return parseJson(item);
+        }
+        if (item.startsWith("\"") && item.endsWith("\"")) {
+            return item.substring(1, item.length() - 1)
+                    .replace("\\\"", "\"")
+                    .replace("\\n", "\n")
+                    .replace("\\\\", "\\");
+        }
+        if (item.equals("null")) return null;
+        if (item.equals("true")) return true;
+        if (item.equals("false")) return false;
+        try { return Integer.parseInt(item); } catch (NumberFormatException ignored) {}
+        try { return Double.parseDouble(item); } catch (NumberFormatException ignored) {}
+        return item;
     }
 
     // ==================== 业务功能 ====================
