@@ -610,28 +610,28 @@ public class AreaCLIManager {
         perms.add(new PermItem("mount", "骑乘坐具", !land.denyMount));
         perms.add(new PermItem("ender_pearl", "投掷末影珍珠", !land.denyEnderPearl));
         perms.add(new PermItem("thrown_projectiles", "投掷物(三叉戟/雪球/风蛋)", !land.denyThrownProjectiles));
-        perms.add(new PermItem("raid", "袭击侦测", !land.denyRaid));
+        perms.add(new PermItem("raid", "禁止袭击", !land.denyRaid));
         perms.add(new PermItem("bow", "弓箭射击", !land.denyBow));
         perms.add(new PermItem("potion", "药水效果", !land.denyPotion));
         perms.add(new PermItem("fire", "点燃", !land.denyFire));
         perms.add(new PermItem("fire_spread", "火焰蔓延", !land.denyFireSpread));
-        perms.add(new PermItem("pickup", "拾取物品", !land.denyPickup));
+        perms.add(new PermItem("pickup", "禁止拾取", !land.denyPickup));
         perms.add(new PermItem("drop", "丢弃物品", !land.denyDrop));
         perms.add(new PermItem("explosion", "爆炸", !land.denyExplosion));
         perms.add(new PermItem("fall_damage", "摔落伤害", !land.denyFallDamage));
         perms.add(new PermItem("hunger", "饥饿", !land.denyHunger));
         perms.add(new PermItem("all_damage", "所有伤害", !land.denyAllDamage));
         perms.add(new PermItem("all_effects", "所有效果", !land.denyAllEffects));
-        perms.add(new PermItem("item_frame", "展示框交互", !land.denyItemFrame));
+        perms.add(new PermItem("item_frame", "禁止展示框", !land.denyItemFrame));
         perms.add(new PermItem("redstone", "红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
-        perms.add(new PermItem("door", "门禁(门/按钮/压力板)", !land.denyDoorInteraction));
+        perms.add(new PermItem("door", "禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermItem("audio", "音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
         perms.add(new PermItem("crop_harvest", "农作物收获", !land.denyCropHarvest));
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", "投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
-        perms.add(new PermItem("peace_mode", "和平模式", !land.peaceMode));
+        perms.add(new PermItem("peace_mode", "禁止和平模式", !land.peaceMode));
         return perms;
     }
 
@@ -644,28 +644,28 @@ public class AreaCLIManager {
             case "mount": return "骑乘坐具";
             case "ender_pearl": return "投掷末影珍珠";
             case "thrown_projectiles": return "投掷物";
-            case "raid": return "袭击侦测";
+            case "raid": return "禁止袭击";
             case "bow": return "弓箭射击";
             case "potion": return "药水效果";
             case "fire": return "点燃";
             case "fire_spread": return "火焰蔓延";
-            case "pickup": return "拾取物品";
+            case "pickup": return "禁止拾取";
             case "drop": return "丢弃物品";
             case "explosion": return "爆炸";
             case "fall_damage": return "摔落伤害";
             case "hunger": return "饥饿";
             case "all_damage": return "所有伤害";
             case "all_effects": return "所有效果";
-            case "item_frame": return "展示框交互";
+            case "item_frame": return "禁止展示框";
             case "redstone": return "红石电路";
-            case "door": return "门禁";
+            case "door": return "禁止门禁";
             case "audio": return "音频";
             case "lead": return "拴绳使用";
             case "crop_harvest": return "农作物收获";
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
             case "glowing": return "玩家发光";
-            case "peace_mode": return "和平模式";
+            case "peace_mode": return "禁止和平模式";
             default: return key;
         }
     }
@@ -940,28 +940,28 @@ public class AreaCLIManager {
                 {"mount", "骑乘坐具", "denyMount"},
                 {"ender_pearl", "投掷末影珍珠", "denyEnderPearl"},
                 {"thrown_projectiles", "投掷物(三叉戟/雪球/风蛋)", "denyThrownProjectiles"},
-                {"raid", "袭击侦测", "denyRaid"},
+                {"raid", "禁止袭击", "denyRaid"},
                 {"bow", "弓箭射击", "denyBow"},
                 {"potion", "药水效果", "denyPotion"},
                 {"fire", "点燃", "denyFire"},
                 {"fire_spread", "火焰蔓延", "denyFireSpread"},
-                {"pickup", "拾取物品", "denyPickup"},
+                {"pickup", "禁止拾取", "denyPickup"},
                 {"drop", "丢弃物品", "denyDrop"},
                 {"explosion", "爆炸", "denyExplosion"},
                 {"fall_damage", "摔落伤害", "denyFallDamage"},
                 {"hunger", "饥饿", "denyHunger"},
                 {"all_damage", "所有伤害", "denyAllDamage"},
                 {"all_effects", "所有效果", "denyAllEffects"},
-                {"item_frame", "展示框交互", "denyItemFrame"},
+                {"item_frame", "禁止展示框", "denyItemFrame"},
                 {"redstone", "红石电路(中继器/比较器)", "denyRedstoneInteraction"},
-                {"door", "门禁(门/按钮/压力板)", "denyDoorInteraction"},
+                {"door", "禁止门禁(门/按钮/压力板)", "denyDoorInteraction"},
                 {"audio", "音频(音符盒/唱片机)", "denyNoteblockJukebox"},
                 {"lead", "拴绳使用", "denyLead"},
                 {"crop_harvest", "农作物收获", "denyCropHarvest"},
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"glowing", "玩家发光", "denyGlowing"},
-                {"peace_mode", "和平模式", "peaceMode"}
+                {"peace_mode", "禁止和平模式", "peaceMode"}
         };
 
         for (String[] def : permDefs) {

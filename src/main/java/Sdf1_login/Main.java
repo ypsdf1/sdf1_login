@@ -431,6 +431,10 @@ public class Main extends JavaPlugin
                 getCommand("protect").setExecutor(this);
                 getCommand("protect").setTabCompleter(this);
             }
+            // ★ Issue 10: /传送 命令注册
+            if (getCommand("传送") != null) {
+                getCommand("传送").setExecutor(this);
+            }
         }
 
         // ===== 10. 注册事件 =====
@@ -4289,6 +4293,26 @@ public class Main extends JavaPlugin
             // areaProtection内部有自己的showHelp()
             try {
                 return areaProtection.handleCommand(sender, args);
+            } catch (Exception e) {
+                sender.sendMessage("§c执行出错: " + e.getMessage());
+                e.printStackTrace();
+                return true;
+            }
+        }
+
+        // ★ Issue 10: /传送 命令 → 委托给 areaProtection 的 tp 子命令
+        if (cmd.getName().equals("传送")) {
+            if (areaProtection == null) {
+                sender.sendMessage("§c区域防护未初始化");
+                return true;
+            }
+            if (args.length == 0) {
+                sender.sendMessage("§c用法: /传送 <领地名>");
+                return true;
+            }
+            String[] tpArgs = new String[]{"tp", args[0]};
+            try {
+                return areaProtection.handleCommand(sender, tpArgs);
             } catch (Exception e) {
                 sender.sendMessage("§c执行出错: " + e.getMessage());
                 e.printStackTrace();

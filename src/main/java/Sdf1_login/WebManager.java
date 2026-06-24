@@ -2343,6 +2343,17 @@ public class WebManager {
                             }
                             break;
                         }
+                        case "perm_change": {
+                            // PHP端更新了访客/成员权限
+                            String playerName = targetName;
+                            String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
+                            if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
+                                areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson);
+                                plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson);
+                            }
+                            break;
+                        }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }

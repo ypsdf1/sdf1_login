@@ -893,17 +893,6 @@ public class AreaProtection implements Listener {
                             plugin.getLogger().info("[防护] 已删除迁移后的txt: " + f.getName());
                         }
                     }
-                    // 也删除白名单目录
-                    File wlDir = new File(rootDir, "whitelists");
-                    if (wlDir.exists() && wlDir.isDirectory()) {
-                        File[] wlFiles = wlDir.listFiles();
-                        if (wlFiles != null) {
-                            for (File wf : wlFiles) {
-                                wf.delete();
-                            }
-                        }
-                        wlDir.delete();
-                    }
                     plugin.getLogger().info("[防护] txt迁移完成，共导入 " + areas.size() + " 个领地");
                 }
             }
@@ -936,18 +925,6 @@ public class AreaProtection implements Listener {
             if (f.delete()) {
                 plugin.getLogger().info("[防护] 已删除: " + f.getName());
             }
-        }
-        // 清理白名单目录
-        File wlDir = new File(rootDir, "whitelists");
-        if (wlDir.exists() && wlDir.isDirectory()) {
-            File[] wlFiles = wlDir.listFiles();
-            if (wlFiles != null) {
-                for (File wf : wlFiles) {
-                    wf.delete();
-                }
-            }
-            wlDir.delete();
-            plugin.getLogger().info("[防护] 已清理白名单目录");
         }
     }
 
@@ -4303,6 +4280,18 @@ public class AreaProtection implements Listener {
             }
         }
 
+        // ★ Issue 9: 矿车容器（漏斗矿车、运输矿车）
+        if (holder != null && loc == null) {
+            String className = holder.getClass().getSimpleName();
+            if (className.contains("Minecart")) {
+                // 矿车容器使用实体位置
+                if (holder instanceof org.bukkit.entity.Entity) {
+                    org.bukkit.entity.Entity entity = (org.bukkit.entity.Entity) holder;
+                    loc = entity.getLocation();
+                }
+            }
+        }
+
         // 末影箱特殊处理：检查末影箱所在位置而非玩家位置
         if (holder != null) {
             String typeName = holder.getClass().getSimpleName();
@@ -4317,6 +4306,13 @@ public class AreaProtection implements Listener {
         if (ac == null) return;
 
         if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+
+        // ★ Issue 3: 如果denyBlockBreak=true，非领主也不能访问容器
+        if (ac.denyBlockBreak) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f此领地禁止破坏方块，容器访问已限制");
+            return;
+        }
 
         PermissionLevel level = getPermissionLevel(p, ac);
         if (level == null) {
@@ -5151,7 +5147,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 ac.peaceWhitelist.add(parsed[1]);
-                saveAreaConfig(ac);
+                saveAreaToDb(ac);
                 sender.sendMessage("§a已添加: "
                         + parsed[1] + " → "
                         + parsed[0] + " 和平白名单");
@@ -5175,7 +5171,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 ac.peaceWhitelist.remove(parsed[1]);
-                saveAreaConfig(ac);
+                saveAreaToDb(ac);
                 sender.sendMessage("§a已移除: "
                         + parsed[1] + " ← " + parsed[0]);
                 return true;
@@ -5222,7 +5218,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 ac.modeExempt.add(parsed[1]);
-                saveAreaConfig(ac);
+                saveAreaToDb(ac);
                 sender.sendMessage("§a已添加: "
                         + parsed[1] + " → "
                         + parsed[0] + " 模式排除");
@@ -5246,7 +5242,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 ac.modeExempt.remove(parsed[1]);
-                saveAreaConfig(ac);
+                saveAreaToDb(ac);
                 sender.sendMessage("§a已移除: "
                         + parsed[1] + " ← "
                         + parsed[0] + " 模式排除");
@@ -5546,7 +5542,7 @@ public class AreaProtection implements Listener {
             ac.x2 = maxX;
             ac.z1 = minZ;
             ac.z2 = maxZ;
-            saveAreaConfig(ac);
+            saveAreaToDb(ac);
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
                     + " §f向 §e" + dir + " §f扩建 §e"
                     + amount + "§f格");
@@ -5594,7 +5590,7 @@ public class AreaProtection implements Listener {
             ac.x2 = maxX;
             ac.z1 = minZ;
             ac.z2 = maxZ;
-            saveAreaConfig(ac);
+            saveAreaToDb(ac);
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
                     + " §f向 §e" + dir + " §f收缩 §e"
                     + amount + "§f格");
@@ -6810,6 +6806,57 @@ public class AreaProtection implements Listener {
             plugin.getLogger().info("[防护] PHP端清除成员权限: " + playerName + " @ " + landName);
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 清除成员权限失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * PHP端更新访客/成员权限时调用
+     * landName 可能是JSON数组格式 "[领地名]" 或纯领地名
+     */
+    public void updateVisitorPermFromWeb(String landName, String playerName, String permsJson) {
+        if (dbConnection == null) return;
+        try {
+            // 解析可能的JSON数组格式
+            String[] landNames = landName.startsWith("[") ? parseJsonArray(landName) : new String[]{landName};
+            
+            for (String lname : landNames) {
+                int landId = getLandIdFromDb(lname);
+                if (landId < 0) continue;
+
+                // 更新数据库中的自定义权限
+                PreparedStatement ps = dbConnection.prepareStatement(
+                    "INSERT INTO area_land_permissions (land_id, land_name, player_name, role, permissions, granted_at, synced_at) " +
+                    "VALUES (?, ?, ?, 'member', ?, 0, 0) " +
+                    "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = excluded.permissions");
+                ps.setInt(1, landId);
+                ps.setString(2, lname);
+                ps.setString(3, playerName);
+                ps.setString(4, permsJson);
+                ps.executeUpdate();
+                ps.close();
+            }
+
+            plugin.getLogger().info("[防护] PHP端更新权限: " + playerName + " @ " + Arrays.toString(landNames));
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 更新权限失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 解析JSON数组格式的领地名字符串
+     */
+    private String[] parseJsonArray(String json) {
+        try {
+            String inner = json.replaceAll("^\\[|\\]$", "");
+            String[] parts = inner.split("\"");
+            java.util.List<String> result = new java.util.ArrayList<>();
+            for (String part : parts) {
+                String trimmed = part.trim().replaceAll("\u00A7[0-9a-fk-or]", "");
+                if (!trimmed.isEmpty()) result.add(trimmed);
+            }
+            return result.toArray(new String[0]);
+        } catch (Exception e) {
+            return new String[]{json};
         }
     }
 

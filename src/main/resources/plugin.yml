@@ -102,6 +102,9 @@ commands:
   protect:
     description: 区域保护
     usage: /protect
+  传送:
+    description: 传送至领地
+    usage: /传送 <领地名>
   update:
     description: 检查所有插件更新(集群控制)
     usage: /update

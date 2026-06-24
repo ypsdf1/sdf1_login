@@ -129,6 +129,15 @@ public class AreaGUIManager implements Listener {
         // 也显示玩家有权限管理的领地（管理员领地）
         List<AreaProtection.AreaConfig> allManageableLands = new ArrayList<>(playerLands);
 
+        // ★ Issue 6: 管理员可以看到所有领地
+        if (areaProtect.isAreaAdmin(p)) {
+            for (AreaProtection.AreaConfig ac : areaProtect.getAllLands().values()) {
+                if (!allManageableLands.contains(ac)) {
+                    allManageableLands.add(ac);
+                }
+            }
+        }
+
         int totalPages = (int) Math.ceil((double) allManageableLands.size() / PAGE_SIZE);
         if (totalPages == 0) totalPages = 1;
 
@@ -399,14 +408,14 @@ public class AreaGUIManager implements Listener {
         String[][] permDefs = {
                 {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
                 {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
-                {"投掷物", "denyThrownProjectiles"}, {"袭击侦测", "denyRaid"}, {"弓箭射击", "denyBow"},
+                {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                 {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
-                {"拾取物品", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
+                {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
                 {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
-                {"所有效果", "denyAllEffects"}, {"展示框交互", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
-                {"门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
+                {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
+                {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
-                {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
+                {"玩家发光", "denyGlowing"}, {"禁止和平模式", "peaceMode"}
         };
 
         int slot = 0;
@@ -527,28 +536,28 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("骑乘坐具", !land.denyMount));
         perms.add(new PermEntry("投掷末影珍珠", !land.denyEnderPearl));
         perms.add(new PermEntry("投掷物(三叉戟/雪球/风蛋)", !land.denyThrownProjectiles));
-        perms.add(new PermEntry("袭击侦测", !land.denyRaid));
+        perms.add(new PermEntry("禁止袭击", !land.denyRaid));
         perms.add(new PermEntry("弓箭射击", !land.denyBow));
         perms.add(new PermEntry("药水效果", !land.denyPotion));
         perms.add(new PermEntry("点燃", !land.denyFire));
         perms.add(new PermEntry("火焰蔓延", !land.denyFireSpread));
-        perms.add(new PermEntry("拾取物品", !land.denyPickup));
+        perms.add(new PermEntry("禁止拾取", !land.denyPickup));
         perms.add(new PermEntry("丢弃物品", !land.denyDrop));
         perms.add(new PermEntry("爆炸", !land.denyExplosion));
         perms.add(new PermEntry("摔落伤害", !land.denyFallDamage));
         perms.add(new PermEntry("饥饿", !land.denyHunger));
         perms.add(new PermEntry("所有伤害", !land.denyAllDamage));
         perms.add(new PermEntry("所有效果", !land.denyAllEffects));
-        perms.add(new PermEntry("展示框交互", !land.denyItemFrame));
+        perms.add(new PermEntry("禁止展示框", !land.denyItemFrame));
         perms.add(new PermEntry("红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
-        perms.add(new PermEntry("门禁(门/按钮/压力板)", !land.denyDoorInteraction));
+        perms.add(new PermEntry("禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermEntry("音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermEntry("拴绳使用", !land.denyLead));
         perms.add(new PermEntry("农作物收获", !land.denyCropHarvest));
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermEntry("投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
-        perms.add(new PermEntry("和平模式", !land.peaceMode));
+        perms.add(new PermEntry("禁止和平模式", !land.peaceMode));
         return perms;
     }
 
@@ -577,28 +586,28 @@ public class AreaGUIManager implements Listener {
             case "骑乘坐具": land.denyMount = !land.denyMount; break;
             case "投掷末影珍珠": land.denyEnderPearl = !land.denyEnderPearl; break;
             case "投掷物(三叉戟/雪球/风蛋)": land.denyThrownProjectiles = !land.denyThrownProjectiles; break;
-            case "袭击侦测": land.denyRaid = !land.denyRaid; break;
+            case "禁止袭击": land.denyRaid = !land.denyRaid; break;
             case "弓箭射击": land.denyBow = !land.denyBow; break;
             case "药水效果": land.denyPotion = !land.denyPotion; break;
             case "点燃": land.denyFire = !land.denyFire; break;
             case "火焰蔓延": land.denyFireSpread = !land.denyFireSpread; break;
-            case "拾取物品": land.denyPickup = !land.denyPickup; break;
+            case "禁止拾取": land.denyPickup = !land.denyPickup; break;
             case "丢弃物品": land.denyDrop = !land.denyDrop; break;
             case "爆炸": land.denyExplosion = !land.denyExplosion; break;
             case "摔落伤害": land.denyFallDamage = !land.denyFallDamage; break;
             case "饥饿": land.denyHunger = !land.denyHunger; break;
             case "所有伤害": land.denyAllDamage = !land.denyAllDamage; break;
             case "所有效果": land.denyAllEffects = !land.denyAllEffects; break;
-            case "展示框交互": land.denyItemFrame = !land.denyItemFrame; break;
+            case "禁止展示框": land.denyItemFrame = !land.denyItemFrame; break;
             case "红石电路(中继器/比较器)": land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
-            case "门禁(门/按钮/压力板)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
+            case "禁止门禁(门/按钮/压力板)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
             case "音频(音符盒/唱片机)": land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "拴绳使用": land.denyLead = !land.denyLead; break;
             case "农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
             case "投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
-            case "和平模式": land.peaceMode = !land.peaceMode; break;
+            case "禁止和平模式": land.peaceMode = !land.peaceMode; break;
         }
         areaProtect.saveAreaToDb(land);
     }
@@ -852,14 +861,14 @@ public class AreaGUIManager implements Listener {
                 String[][] permDefs = {
                         {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
                         {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
-                        {"投掷物", "denyThrownProjectiles"}, {"袭击侦测", "denyRaid"}, {"弓箭射击", "denyBow"},
+                        {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                         {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
-                        {"拾取物品", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
+                        {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
                         {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
-                        {"所有效果", "denyAllEffects"}, {"展示框交互", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
-                        {"门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
+                        {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
+                        {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
-                        {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
+                        {"玩家发光", "denyGlowing"}, {"禁止和平模式", "peaceMode"}
                 };
 
                 if (raw < permDefs.length) {
