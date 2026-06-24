@@ -1069,7 +1069,7 @@ function handlePollAdminChanges($db, $get) {
         $changes[] = $row;
     }
 
-    echo json_encode(['success' => true, 'changes' => $changes, 'count' => count($changes)]);
+    echo json_encode(['success' => true, 'changes' => $changes, 'count' => count($changes)], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 function handleAckAdminChanges($db, $post) {
