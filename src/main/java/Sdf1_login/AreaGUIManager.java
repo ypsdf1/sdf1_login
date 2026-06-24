@@ -1079,7 +1079,7 @@ public class AreaGUIManager implements Listener {
             p.sendMessage("§c请等待 " + remaining + " 秒后再获取");
             return;
         }
-        ItemStack wand = new ItemStack(Material.STICK);
+        ItemStack wand = new ItemStack(Material.BLAZE_ROD);
         ItemMeta meta = wand.getItemMeta();
         if (meta != null) {
             meta.setDisplayName("§a§l区域选择工具");
@@ -1094,7 +1094,7 @@ public class AreaGUIManager implements Listener {
         }
         // 检查背包是否已有
         for (ItemStack item : p.getInventory().getContents()) {
-            if (item != null && item.getType() == Material.STICK
+            if (item != null && item.getType() == Material.BLAZE_ROD
                     && item.hasItemMeta() && item.getItemMeta() != null
                     && item.getItemMeta().hasDisplayName()
                     && item.getItemMeta().getDisplayName().contains("区域选择工具")) {

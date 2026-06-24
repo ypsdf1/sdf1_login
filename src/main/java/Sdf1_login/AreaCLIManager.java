@@ -532,7 +532,8 @@ public class AreaCLIManager {
 
         String permName = getPermNameByKey(permKey);
         boolean newState = !oldState;
-        p.sendMessage("§a已切换 §e" + permName + " §7→ " + (newState ? "§a已启用" : "§c已禁用"));
+        // ★ newState是deny值：true=禁止，false=允许
+        p.sendMessage("§a已切换 §e" + permName + " §7→ " + (!newState ? "§a已允许" : "§c已禁止"));
     }
 
     /**
@@ -543,6 +544,44 @@ public class AreaCLIManager {
     }
 
     // ==================== 数据结构 ====================
+
+    /**
+     * ★ 将短key（如"block_break"）映射为deny字段名（如"denyBlockBreak"）
+     */
+    private static String shortKeyToDenyField(String shortKey) {
+        switch (shortKey) {
+            case "move": return "denyMove";
+            case "block_place": return "denyBlockPlace";
+            case "block_break": return "denyBlockBreak";
+            case "pvp": return "denyPVP";
+            case "mount": return "denyMount";
+            case "ender_pearl": return "denyEnderPearl";
+            case "thrown_projectiles": return "denyThrownProjectiles";
+            case "raid": return "denyRaid";
+            case "bow": return "denyBow";
+            case "potion": return "denyPotion";
+            case "fire": return "denyFire";
+            case "fire_spread": return "denyFireSpread";
+            case "pickup": return "denyPickup";
+            case "drop": return "denyDrop";
+            case "explosion": return "denyExplosion";
+            case "fall_damage": return "denyFallDamage";
+            case "hunger": return "denyHunger";
+            case "all_damage": return "denyAllDamage";
+            case "all_effects": return "denyAllEffects";
+            case "item_frame": return "denyItemFrame";
+            case "redstone": return "denyRedstoneInteraction";
+            case "door": return "denyDoorInteraction";
+            case "audio": return "denyNoteblockJukebox";
+            case "lead": return "denyLead";
+            case "crop_harvest": return "denyCropHarvest";
+            case "wool_shear": return "denyWoolShear";
+            case "animal_feed": return "denyAnimalFeeding";
+            case "glowing": return "denyGlowing";
+            case "peace_mode": return "peaceMode";
+            default: return shortKey;
+        }
+    }
 
     private static class PermItem {
         String key;
@@ -842,15 +881,17 @@ public class AreaCLIManager {
         }
 
         // 获取当前值，判断是否已有覆盖
+        // ★ 使用deny字段名作为key，与getEffectiveDeny保持一致
+        String denyField = shortKeyToDenyField(permKey);
         Map<String, Boolean> currentPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
-        boolean currentVal = currentPerms.getOrDefault(permKey, getLandDefaultVal(land, permKey));
+        boolean currentVal = currentPerms.getOrDefault(denyField, getLandDefaultVal(land, denyField));
 
         // 切换
         boolean newVal = !currentVal;
-        areaProtect.setPlayerPerm(landId, targetPlayer, permKey, newVal);
+        areaProtect.setPlayerPerm(landId, targetPlayer, denyField, newVal);
 
         String permName = getPermNameByKey(permKey);
-        p.sendMessage("§a已设置 §e" + targetPlayer + " §a的 §e" + permName + " §7→ " + (newVal ? "§a允许" : "§c禁止"));
+        p.sendMessage("§a已设置 §e" + targetPlayer + " §a的 §e" + permName + " §7→ " + (!newVal ? "§a允许" : "§c禁止"));
 
         // 刷新页面
         showPlayerPerm(p, landName, targetPlayer, page);

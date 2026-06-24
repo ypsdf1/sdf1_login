@@ -3948,7 +3948,10 @@ public class AreaProtection implements Listener {
     public void removeLandMember(String landName, String playerName) {
         Set<String> members = areaPlayerWhitelist.get(landName);
         if (members != null) {
-            members.remove(playerName.toLowerCase());
+            // ★ 尝试精确匹配 + 小写匹配
+            if (!members.remove(playerName)) {
+                members.remove(playerName.toLowerCase());
+            }
             saveWhitelists();
         }
     }
@@ -7280,7 +7283,10 @@ public class AreaProtection implements Listener {
             String areaName, String playerName) {
         Set<String> wl =
                 areaPlayerWhitelist.get(areaName);
-        boolean ok = wl != null && wl.remove(playerName);
+        if (wl == null) return false;
+        // ★ 精确匹配 + 小写匹配
+        boolean ok = wl.remove(playerName);
+        if (!ok) ok = wl.remove(playerName.toLowerCase());
         if (ok) saveWhitelists();
         return ok;
     }
