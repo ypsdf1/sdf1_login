@@ -458,7 +458,9 @@ function handleUpdateLandOwner($db, $post) {
 
     // 记录变更（用于同步到Java）
     if ($oldOwner !== $owner) {
-        $stmt3 = $db->prepare("INSERT INTO web_land_owner_changes (land_name, old_owner, new_owner, created_at) VALUES (:name, :old, :new, :now)");
+        $landId = (int)($post['id'] ?? 0);
+        $stmt3 = $db->prepare("INSERT INTO web_land_owner_changes (land_id, land_name, old_owner, new_owner, created_at) VALUES (:lid, :name, :old, :new, :now)");
+        $stmt3->bindValue(':lid', $landId, SQLITE3_INTEGER);
         $stmt3->bindValue(':name', $name, SQLITE3_TEXT);
         $stmt3->bindValue(':old', $oldOwner, SQLITE3_TEXT);
         $stmt3->bindValue(':new', $owner, SQLITE3_TEXT);
@@ -825,6 +827,14 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
     $stmt2->bindValue(':perms', $permissions, SQLITE3_TEXT);
     $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt2->execute();
+
+    // ★ 写入web_admin_changes以便Java同步
+    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
+    $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt4->bindValue(':name', $visitor, SQLITE3_TEXT);
+    $stmt4->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $permissions, 'role' => $role]), SQLITE3_TEXT);
+    $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt4->execute();
 
     echo json_encode(['success' => true, 'message' => "已更新 $visitor 的权限"]);
 }

@@ -65,6 +65,18 @@
         .color-btn { width:30px; height:30px; border-radius:4px; cursor:pointer; border:2px solid transparent; transition:all 0.2s; }
         .color-btn:hover { border-color:var(--accent); transform:scale(1.1); }
         .color-input { padding:7px 10px; background:var(--bg); border:1px solid var(--border); border-radius:4px; color:var(--text); font-size:13px; flex:1; }
+        .glass-alert-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:5000;justify-content:center;align-items:center;animation:glassFadeIn 0.25s ease}
+        .glass-alert-overlay.show{display:flex}
+        .glass-alert-card{background:rgba(22,27,34,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(88,166,255,0.25);border-radius:16px;padding:28px 28px 20px;width:360px;max-width:88%;box-shadow:0 12px 48px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.05);animation:glassSlideUp 0.3s ease;text-align:center}
+        .glass-alert-card .alert-icon{font-size:36px;margin-bottom:12px}
+        .glass-alert-card .alert-msg{font-size:14px;color:#e6edf3;line-height:1.6;margin-bottom:20px;word-break:break-word}
+        .glass-alert-card .alert-btns{display:flex;gap:10px;justify-content:center}
+        .glass-alert-card .alert-btns button{padding:8px 24px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:all 0.2s}
+        .glass-alert-card .alert-btns .ag-ok{background:#58a6ff;color:#fff}
+        .glass-alert-card .alert-btns .ag-cancel{background:rgba(255,255,255,0.08);color:#8b949e}
+        .glass-alert-card .alert-btns button:hover{opacity:0.85;transform:scale(1.03)}
+        @keyframes glassFadeIn{from{opacity:0}to{opacity:1}}
+        @keyframes glassSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
     </style>
 </head>
 <body>
@@ -437,7 +449,7 @@ async function editStock(id, current) {
 }
 
 async function removeShop(id) {
-    if (!confirm('确定删除商品 '+id+'?')) return;
+    if (!await glassConfirm('确定删除商品 '+id+'?')) return;
     const r = await postApi('shop_remove', {id});
     toast(r.message, r.success?'ok':'err');
     if (r.success) loadShop(document.getElementById('C'));
@@ -524,7 +536,7 @@ async function doBatchCDK() {
 
 // ===== CDK撤销和删除 =====
 async function undoRecentCDK() {
-    if (!confirm('确定要撤销最近3分钟内生成的CDK吗？')) return;
+    if (!await glassConfirm('确定要撤销最近3分钟内生成的CDK吗？')) return;
     
     const r = await jsonApi('cdk.php?action=list');
     const list = r.data || [];
@@ -564,7 +576,7 @@ async function undoRecentCDK() {
 }
 
 async function deleteCDK(code) {
-    if (!confirm(`确定要删除CDK ${code}吗？`)) return;
+    if (!await glassConfirm(`确定要删除CDK ${code}吗？`)) return;
     
     const r = await postApi('cdk_delete', {code});
     if (r.success) {
@@ -2018,8 +2030,8 @@ async function adminRejectTicket(id) {
         url.searchParams.set('id', id);
         const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({reason: reason})});
         const data = await res.json();
-        if (data.success) { loadTicketList(document.getElementById('C')); } else { alert(data.message); }
-    } catch (e) { alert('操作失败: ' + e.message); }
+        if (data.success) { loadTicketList(document.getElementById('C')); } else { glassAlert(data.message); }
+    } catch (e) { glassAlert('操作失败: ' + e.message); }
 }
 
 async function adminCompleteTicket(id) {
@@ -2029,8 +2041,8 @@ async function adminCompleteTicket(id) {
         url.searchParams.set('id', id);
         const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin'});
         const data = await res.json();
-        if (data.success) { viewAdminTicket(id); } else { alert(data.message); }
-    } catch (e) { alert('操作失败: ' + e.message); }
+        if (data.success) { viewAdminTicket(id); } else { glassAlert(data.message); }
+    } catch (e) { glassAlert('操作失败: ' + e.message); }
 }
 
 async function adminAssignTicket(id) {
@@ -2378,7 +2390,7 @@ async function saveLandConfig() {
         document.querySelector('.modal-close')?.click();
         loadLands(document.getElementById('C'));
     } catch(e) {
-        alert('保存失败: ' + e.message);
+        glassAlert('保存失败: ' + e.message);
     }
 }
 
@@ -2391,31 +2403,66 @@ function changeLandOwner(name, currentOwner) {
         body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(newOwner) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
-        else alert('失败: ' + (d.error||''));
+        else glassAlert('失败: ' + (d.error||''));
     });
 }
 
-function deleteLand(name) {
-    if (!confirm('确定删除领地 [' + name + '] ?')) return;
+async function deleteLand(name) {
+    if (!await glassConfirm('确定删除领地 [' + name + '] ?')) return;
     fetch('api/land_api.php?action=delete_land', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
-        else alert('失败: ' + (d.error||''));
+        else glassAlert('失败: ' + (d.error||''));
     });
 }
 
-function deleteShopItem(id) {
-    if (!confirm('确定下架商品 #' + id + ' ?')) return;
+async function deleteShopItem(id) {
+    if (!await glassConfirm('确定下架商品 #' + id + ' ?')) return;
     fetch('api/land_api.php?action=delete_shop_item', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'id=' + id + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
-        else alert('失败: ' + (d.error||''));
+        else glassAlert('失败: ' + (d.error||''));
+    });
+}
+</script>
+<!-- 毛玻璃弹窗 -->
+<div class="glass-alert-overlay" id="glassAlertOverlay" onclick="glassAlertResolve(false)">
+    <div class="glass-alert-card" onclick="event.stopPropagation()">
+        <div class="alert-icon" id="glassAlertIcon">⚠️</div>
+        <div class="alert-msg" id="glassAlertMsg"></div>
+        <div class="alert-btns" id="glassAlertBtns">
+            <button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>
+        </div>
+    </div>
+</div>
+<script>
+let _glassAlertResolve = null;
+function glassAlertResolve(val) {
+    document.getElementById('glassAlertOverlay').classList.remove('show');
+    if (_glassAlertResolve) { _glassAlertResolve(val); _glassAlertResolve = null; }
+}
+function glassAlert(msg, icon = '⚠️') {
+    return new Promise(resolve => {
+        _glassAlertResolve = resolve;
+        document.getElementById('glassAlertIcon').textContent = icon;
+        document.getElementById('glassAlertMsg').textContent = msg;
+        document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
+        document.getElementById('glassAlertOverlay').classList.add('show');
+    });
+}
+function glassConfirm(msg, icon = '❓') {
+    return new Promise(resolve => {
+        _glassAlertResolve = resolve;
+        document.getElementById('glassAlertIcon').textContent = icon;
+        document.getElementById('glassAlertMsg').textContent = msg;
+        document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-cancel" onclick="glassAlertResolve(false)">取消</button><button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
+        document.getElementById('glassAlertOverlay').classList.add('show');
     });
 }
 </script>
