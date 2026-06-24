@@ -2535,6 +2535,18 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 添加成员输入拦截（GUI点击后聊天栏输入玩家名）
+        if (areaProtection != null && areaProtection.handleAddMemberInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
+        // ★ 效果管理输入拦截（GUI点击后聊天栏输入效果名）
+        if (areaProtection != null && areaProtection.handleEffectInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
 // ===== 菜单聊天输入 =====
         if (getMenu().isEditing(p.getName())) {
             e.setCancelled(true);

@@ -94,6 +94,10 @@ public class AreaProtection implements Listener {
     final Map<java.util.UUID, Long> wandCooldownMap = new ConcurrentHashMap<>();
     // ★ 管理员配置输入等待：UUID → 配置key（GUI点击后等待玩家聊天输入）
     private final Map<java.util.UUID, String> pendingConfigInput = new ConcurrentHashMap<>();
+    // ★ 添加成员输入等待：UUID → 领地名
+    private final Map<java.util.UUID, String> pendingAddMemberInput = new ConcurrentHashMap<>();
+    // ★ 效果管理待处理输入：UUID → [landName, inputType]
+    private final Map<java.util.UUID, String[]> pendingEffectInput = new ConcurrentHashMap<>();
 
     // ★ 全局配置默认值
     private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
@@ -2446,26 +2450,20 @@ public class AreaProtection implements Listener {
 
     /**
      * 检查玩家是否为区域防护管理员
-     * 支持TAG和OP两种模式（不共存，按配置文件中的顺序优先）
-     * 全局管理员不受访客权限限制
+     * 与 Main.isAdmin() 使用相同的 ScoreboardTag 机制
      */
     public boolean isAreaAdmin(Player player) {
         ConfigManager cfg = plugin.getConfigMgr();
-        if (cfg == null) return player.isOp();
+        if (cfg == null) return false;
 
-        String mode = cfg.areaProtectAdminMode;
-        if ("op".equals(mode)) {
-            // OP模式：只有OP是管理员
-            return player.isOp();
-        } else {
-            // TAG模式（默认）：有指定Tag的玩家是管理员
-            String tag = cfg.areaProtectAdminTag;
-            if (tag == null || tag.isEmpty()) return player.isOp();
-            String playerName = player.getName();
-            // 检查玩家是否拥有该权限节点（作为Tag的替代方案）
-            // 如果没有权限系统，直接检查名字是否匹配
-            return player.hasPermission("area.admin")
-                    || player.isOp(); // OP始终是管理员（fallback）
+        String tag = cfg.areaProtectAdminTag;
+        if (tag == null || tag.isEmpty()) return false;
+
+        // 使用ScoreboardTag验证（与Main.isAdmin()一致）
+        try {
+            return player.getScoreboardTags().contains(tag);
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -7036,6 +7034,121 @@ public class AreaProtection implements Listener {
         // 刷新GUI
         if (plugin.areaGUIManager != null) {
             plugin.areaGUIManager.openAdminPanel(p);
+        }
+        return true;
+    }
+
+    /**
+     * 设置等待添加成员输入状态
+     */
+    public void setPendingAddMemberInput(java.util.UUID uuid, String landName) {
+        pendingAddMemberInput.put(uuid, landName);
+    }
+
+    /**
+     * 检查并处理添加成员输入
+     * @return true 如果是添加成员输入，已处理
+     */
+    public boolean handleAddMemberInput(Player p, String message) {
+        String landName = pendingAddMemberInput.remove(p.getUniqueId());
+        if (landName == null) return false;
+
+        String playerName = message.trim();
+        // 验证玩家名格式
+        if (!playerName.matches("^[a-zA-Z0-9_]{3,16}$")) {
+            p.sendMessage("§c§l[添加成员] §f无效的玩家名格式（3-16位字母数字下划线）: " + playerName);
+            p.sendMessage("§7请重新输入有效玩家名，或输入 cancel 取消");
+            return true;
+        }
+
+        // 检查玩家是否已存在（本地）
+        Player target = Bukkit.getPlayerExact(playerName);
+        if (target == null) {
+            // 玩家不在线，但仍然可以添加（因为可能在数据库中有记录）
+            p.sendMessage("§e§l[添加成员] §f玩家 " + playerName + " 当前不在线，但仍可添加为成员");
+        }
+
+        // 检查是否已是成员
+        Set<String> members = getLandMembers(landName);
+        if (members.contains(playerName)) {
+            p.sendMessage("§c§l[添加成员] §f" + playerName + " 已经是该领地成员");
+            return true;
+        }
+
+        // 添加成员
+        addLandMember(landName, playerName);
+        p.sendMessage("§a§l[添加成员] §f已成功添加 " + playerName + " 为领地成员");
+
+        // 刷新GUI
+        if (plugin.areaGUIManager != null) {
+            plugin.areaGUIManager.openAddMember(p, landName);
+        }
+        return true;
+    }
+
+    /**
+     * 设置等待效果管理输入状态
+     */
+    public void setPendingClearEffectInput(java.util.UUID uuid, String landName, String inputType) {
+        pendingEffectInput.put(uuid, new String[]{landName, inputType});
+    }
+
+    /**
+     * 检查并处理效果管理输入
+     * @return true 如果是效果管理输入，已处理
+     */
+    public boolean handleEffectInput(Player p, String message) {
+        String[] landAndType = pendingEffectInput.remove(p.getUniqueId());
+        if (landAndType == null) return false;
+
+        String landName = landAndType[0];
+        String inputType = landAndType[1];
+        AreaProtection.AreaConfig land = getLand(landName);
+        if (land == null) {
+            p.sendMessage("§c领地不存在");
+            return true;
+        }
+
+        if ("clear".equals(inputType)) {
+            // 添加单清效果
+            String effName = message.trim();
+            if (effName.isEmpty()) {
+                p.sendMessage("§c§l[添加清除效果] §f效果名不能为空");
+                return true;
+            }
+            if (!land.clearEffects.contains(effName)) {
+                land.clearEffects.add(effName);
+                saveAreaToDb(land);
+                p.sendMessage("§a§l[添加清除效果] §f已添加: " + effName);
+            } else {
+                p.sendMessage("§e§l[添加清除效果] §f效果 " + effName + " 已在列表中");
+            }
+        } else if ("give".equals(inputType)) {
+            // 添加增益效果: 格式 效果名 [等级] [秒数]
+            String[] parts = message.trim().split("\\s+");
+            if (parts.length < 1) {
+                p.sendMessage("§c§l[添加增益效果] §f请输入: 效果名 [等级] [秒数]");
+                return true;
+            }
+            String effName = parts[0].trim();
+            int effLv = 1;
+            int effDur = 300; // 默认5分钟
+            try {
+                if (parts.length >= 2) effLv = Integer.parseInt(parts[1]);
+                if (parts.length >= 3) effDur = Integer.parseInt(parts[2]);
+            } catch (NumberFormatException ignored) {
+                p.sendMessage("§c等级和秒数必须是数字");
+                return true;
+            }
+            String[] effRecord = {effName, String.valueOf(effLv), String.valueOf(effDur)};
+            land.giveEffects.add(effRecord);
+            saveAreaToDb(land);
+            p.sendMessage("§a§l[添加增益效果] §f已添加: " + effName + " Lv" + effLv + " " + effDur + "秒");
+        }
+
+        // 刷新GUI
+        if (plugin.areaGUIManager != null) {
+            plugin.areaGUIManager.openEffectsManagement(p, landName, 1);
         }
         return true;
     }

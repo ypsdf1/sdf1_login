@@ -538,7 +538,7 @@ public class AreaCLIManager {
         String permName = getPermNameByKey(permKey);
         boolean newState = !oldState;
         // ★ newState是deny值：true=禁止，false=允许
-        p.sendMessage("§a已切换 §e" + permName + " §7→ " + (!newState ? "§a已允许" : "§c已禁止"));
+        p.sendMessage("§a已切换 §e" + permName + " §7→ " + (newState ? "§a已启用" : "§c已关闭"));
     }
 
     /**
@@ -615,7 +615,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("mount", "骑乘坐具", !land.denyMount));
         perms.add(new PermItem("ender_pearl", "投掷末影珍珠", !land.denyEnderPearl));
         perms.add(new PermItem("thrown_projectiles", "投掷物(三叉戟/雪球/风蛋)", !land.denyThrownProjectiles));
-        perms.add(new PermItem("raid", "禁止袭击", !land.denyRaid));
+        perms.add(new PermItem("raid", "启用袭击", !land.denyRaid));
         perms.add(new PermItem("bow", "弓箭射击", !land.denyBow));
         perms.add(new PermItem("potion", "药水效果", !land.denyPotion));
         perms.add(new PermItem("fire", "点燃", !land.denyFire));
@@ -636,7 +636,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", "投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
-        perms.add(new PermItem("peace_mode", "禁止和平模式", !land.peaceMode));
+        perms.add(new PermItem("peace_mode", "启用和平模式", land.peaceMode));
         return perms;
     }
 
@@ -649,7 +649,7 @@ public class AreaCLIManager {
             case "mount": return "骑乘坐具";
             case "ender_pearl": return "投掷末影珍珠";
             case "thrown_projectiles": return "投掷物";
-            case "raid": return "禁止袭击";
+            case "raid": return "启用袭击";
             case "bow": return "弓箭射击";
             case "potion": return "药水效果";
             case "fire": return "点燃";
@@ -670,7 +670,7 @@ public class AreaCLIManager {
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
             case "glowing": return "玩家发光";
-            case "peace_mode": return "禁止和平模式";
+            case "peace_mode": return "启用和平模式";
             default: return key;
         }
     }
@@ -966,7 +966,7 @@ public class AreaCLIManager {
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"glowing", "玩家发光", "denyGlowing"},
-                {"peace_mode", "禁止和平模式", "peaceMode"}
+                {"peace_mode", "启用和平模式", "peaceMode"}
         };
 
         for (String[] def : permDefs) {

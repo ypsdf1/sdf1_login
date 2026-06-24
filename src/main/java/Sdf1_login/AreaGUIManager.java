@@ -34,6 +34,9 @@ public class AreaGUIManager implements Listener {
     private static final String T_LAND_SETTINGS = "§6§l领地设置";
     private static final String T_MEMBER_PERM_LIST = "§6§l成员权限列表";
     private static final String T_PLAYER_PERM = "§6§l成员权限";
+    private static final String T_EFFECTS_MGMT = "§b§l效果管理";
+    private static final String T_EFFECTS_CLEAR = "§b§l单清效果";
+    private static final String T_EFFECTS_GIVE = "§b§l增益效果";
 
     // 每页显示数量
     private static final int PAGE_SIZE = 45;
@@ -48,6 +51,9 @@ public class AreaGUIManager implements Listener {
 
     // ★ 玩家当前编辑的per-player目标玩家
     private final Map<UUID, String> playerPermTarget = new HashMap<>();
+
+    // ★ 效果管理待处理输入：UUID → [landName, inputType]
+    private final Map<UUID, String[]> pendingEffectInput = new HashMap<>();
 
     public AreaGUIManager(Main plugin, AreaProtection areaProtect) {
         this.plugin = plugin;
@@ -497,7 +503,7 @@ public class AreaGUIManager implements Listener {
     }
 
     /**
-     * 打开添加成员菜单
+     * 打开添加成员菜单 - 显示在线玩家 + 自定义输入
      */
     public void openAddMember(Player p, String landName) {
         managingLand.put(p.getUniqueId(), landName);
@@ -523,6 +529,11 @@ public class AreaGUIManager implements Listener {
             inv.setItem(slot, playerItem);
             slot++;
         }
+
+        // 自定义输入成员（位置45）
+        inv.setItem(45, createItem(Material.PAPER, "§e§l自定义输入成员",
+                "§7点击后在聊天栏输入玩家名",
+                "§7将添加到该领地"));
 
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回成员列表", ""));
@@ -903,6 +914,21 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
+        // 效果管理
+        if (title.startsWith("§b§l效果管理") || title.startsWith("§b§l单清效果") || title.startsWith("§b§l增益效果")) {
+            event.setCancelled(true);
+            String landName = managingLand.get(p.getUniqueId());
+            if (landName == null) return;
+
+            // 从标题提取subPage
+            int subPage = 1;
+            if (title.contains("单清效果")) subPage = 2;
+            else if (title.contains("增益效果")) subPage = 3;
+
+            handleEffectsManagementClick(p, raw, subPage, landName);
+            return;
+        }
+
         // 添加成员
         if (title.startsWith(T_ADD_MEMBER)) {
             event.setCancelled(true);
@@ -921,6 +947,11 @@ public class AreaGUIManager implements Listener {
                         openAddMember(p, landName);
                     }
                 }
+            } else if (raw == 45) {
+                // 自定义输入成员：打开聊天栏等待玩家名
+                p.closeInventory();
+                p.sendMessage("§e§l[添加成员] §f请输入要添加的玩家名:");
+                areaProtect.setPendingAddMemberInput(p.getUniqueId(), landName);
             } else if (raw == 48) {
                 openMemberList(p, landName, 0);
             }
@@ -1006,7 +1037,7 @@ public class AreaGUIManager implements Listener {
         // 和平模式（位置13）
         Material peaceMat = land.peaceMode ? Material.LIME_DYE : Material.GRAY_DYE;
         inv.setItem(13, createItem(peaceMat, "§e§l和平模式",
-                "§7当前状态: " + (land.peaceMode ? "§a已启用" : "§c已禁用"),
+                "§7当前状态: " + (land.peaceMode ? "§a已启用" : "§c已关闭"),
                 "§7新生物进入领地后有保护期",
                 "",
                 "§e点击切换"));
@@ -1162,7 +1193,7 @@ public class AreaGUIManager implements Listener {
     /**
      * 打开效果管理菜单
      */
-    private void openEffectsManagement(Player p, String landName, int subPage) {
+    public void openEffectsManagement(Player p, String landName, int subPage) {
         managingLand.put(p.getUniqueId(), landName);
 
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
@@ -1254,10 +1285,100 @@ public class AreaGUIManager implements Listener {
             }
 
             inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
+            inv.setItem(53, createItem(Material.BOOK, "§a§l添加效果",
+                    "§7点击后在聊天栏输入效果名（如：缓慢、中毒）"));
+
+            p.openInventory(inv);
+        }
+
+        // ========== 子菜单3：增益效果列表 ==========
+        else if (subPage == 3) {
+            Inventory inv = Bukkit.createInventory(null, 54, "§b§l增益效果 - " + landName);
+
+            if (land.giveEffects.isEmpty()) {
+                inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无增益效果",
+                        "§7使用快捷指令添加: /protect cli effectsaddadd <效果名> [等级] [秒数]",
+                        "",
+                        "§e示例: /protect cli effectsaddadd 力量 2 300"));
+            } else {
+                for (int i = 0; i < Math.min(land.giveEffects.size(), 36); i++) {
+                    String[] eff = land.giveEffects.get(i);
+                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " " + eff[2] + "秒" : "");
+                    inv.setItem(i, createItem(Material.GOLDEN_CARROT, "§a" + desc,
+                            "§7点击移除此增益效果",
+                            "§e序号: " + (i + 1)));
+                }
+            }
+
+            inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
             inv.setItem(53, createItem(Material.BOOK, "§a§l添加增益",
                     "§7点击后在聊天栏输入: 效果名 等级 秒数"));
 
             p.openInventory(inv);
+        }
+    }
+
+    /**
+     * 处理效果管理GUI点击事件
+     */
+    private void handleEffectsManagementClick(Player p, int raw, int subPage, String landName) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) return;
+
+        // 子菜单1：开关管理
+        if (subPage == 1) {
+            if (raw == 11) {
+                // 切换清除所有负面效果
+                land.clearAllBadEffects = !land.clearAllBadEffects;
+                areaProtect.saveAreaToDb(land);
+                openEffectsManagement(p, landName, 1);
+            } else if (raw == 13) {
+                // 切换禁止所有效果
+                land.denyAllEffects = !land.denyAllEffects;
+                areaProtect.saveAreaToDb(land);
+                openEffectsManagement(p, landName, 1);
+            } else if (raw == 15) {
+                // 打开单清效果列表
+                openEffectsManagement(p, landName, 2);
+            } else if (raw == 17) {
+                // 打开增益效果列表
+                openEffectsManagement(p, landName, 3);
+            } else if (raw == 48) {
+                // 返回管理领地
+                openLandManage(p, landName);
+            }
+        }
+        // 子菜单2：单清效果列表
+        else if (subPage == 2) {
+            if (raw < land.clearEffects.size()) {
+                // 移除单清效果
+                land.clearEffects.remove(raw);
+                areaProtect.saveAreaToDb(land);
+                openEffectsManagement(p, landName, 2);
+            } else if (raw == 48) {
+                openEffectsManagement(p, landName, 1);
+            } else if (raw == 53) {
+                // 打开聊天栏输入效果名
+                p.closeInventory();
+                p.sendMessage("§e§l[添加清除效果] §f请输入效果名（如：缓慢、中毒、凋零）:");
+                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "clear");
+            }
+        }
+        // 子菜单3：增益效果列表
+        else if (subPage == 3) {
+            if (raw < land.giveEffects.size()) {
+                // 移除增益效果
+                land.giveEffects.remove(raw);
+                areaProtect.saveAreaToDb(land);
+                openEffectsManagement(p, landName, 3);
+            } else if (raw == 48) {
+                openEffectsManagement(p, landName, 1);
+            } else if (raw == 53) {
+                // 打开聊天栏输入增益效果
+                p.closeInventory();
+                p.sendMessage("§e§l[添加增益效果] §f请输入: 效果名 [等级] [秒数] (例: 力量 2 300)");
+                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "give");
+            }
         }
     }
 }
