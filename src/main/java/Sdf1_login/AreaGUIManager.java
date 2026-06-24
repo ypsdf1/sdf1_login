@@ -1361,7 +1361,7 @@ public class AreaGUIManager implements Listener {
                 // 打开聊天栏输入效果名
                 p.closeInventory();
                 p.sendMessage("§e§l[添加清除效果] §f请输入效果名（如：缓慢、中毒、凋零）:");
-                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "clear");
+                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "clear", 2);
             }
         }
         // 子菜单3：增益效果列表
@@ -1377,7 +1377,7 @@ public class AreaGUIManager implements Listener {
                 // 打开聊天栏输入增益效果
                 p.closeInventory();
                 p.sendMessage("§e§l[添加增益效果] §f请输入: 效果名 [等级] [秒数] (例: 力量 2 300)");
-                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "give");
+                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "give", 3);
             }
         }
     }

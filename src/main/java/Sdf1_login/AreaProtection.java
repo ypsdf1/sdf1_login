@@ -294,34 +294,27 @@ public class AreaProtection implements Listener {
             Player p, String areaName) {
         String name = p.getName();
 
-      /*  if (p.isOp()) {
-            plugin.getLogger().info(
-                    "[防护-调试] 豁免原因: OP, 玩家=" + name);
+        // 管理员豁免
+        if (isAreaAdmin(p)) {
             return true;
-        }*/
+        }
+
         if (globalPlayerWhitelist.contains(name)) {
-          /*  plugin.getLogger().info(
-                    "[防护-调试] 豁免原因: 全局白名单, 玩家="
-                            + name);*/
             return true;
         }
         Set<String> aw =
                 areaPlayerWhitelist.get(areaName);
         if (aw != null && aw.contains(name)) {
-         /*   plugin.getLogger().info(
-                    "[防护-调试] 豁免原因: 区域白名单, 玩家="
-                            + name + " 区域=" + areaName);*/
             return true;
         }
         AreaConfig ac = areas.get(areaName);
         if (ac != null && ac.modeExempt.contains(name)) {
-          /*  plugin.getLogger().info(
-                    "[防护-调试] 豁免原因: 模式排除名单, 玩家="
-                            + name);*/
             return true;
         }
-      /*  plugin.getLogger().info(
-                "[防护-调试] 无豁免, 玩家=" + name);*/
+        // 领地所有者豁免
+        if (ac != null && ac.owner != null && ac.owner.equals(name)) {
+            return true;
+        }
         return false;
     }
 
@@ -5062,6 +5055,8 @@ public class AreaProtection implements Listener {
                         break;
                     }
                     plugin.areaCLIManager.toggleClearAllBadEffects(p, args[2], args[3]);
+                    // 刷新：回到效果管理(subPage 1)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 1);
                     break;
                 case "effectsdenyall":
                     // ★ 切换「禁止所有效果」
@@ -5070,6 +5065,8 @@ public class AreaProtection implements Listener {
                         break;
                     }
                     plugin.areaCLIManager.toggleDenyAllEffects(p, args[2], args[3]);
+                    // 刷新：回到效果管理(subPage 1)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 1);
                     break;
                 case "effectsclearremove":
                     // ★ 移除指定清除效果
@@ -5080,6 +5077,8 @@ public class AreaProtection implements Listener {
                     int clrIdx = 1;
                     try { clrIdx = Integer.parseInt(args[3]); } catch (Exception ignored) {}
                     plugin.areaCLIManager.removeClearEffect(p, args[2], clrIdx);
+                    // 刷新：回到单清效果列表(subPage 2)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 2);
                     break;
                 case "effectsclearadd":
                     // ★ 添加清除效果
@@ -5088,6 +5087,8 @@ public class AreaProtection implements Listener {
                         break;
                     }
                     plugin.areaCLIManager.addClearEffect(p, args[2], args[3]);
+                    // 刷新：回到单清效果列表(subPage 2)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 2);
                     break;
                 case "effectsaddremove":
                     // ★ 移除指定增益效果
@@ -5098,6 +5099,8 @@ public class AreaProtection implements Listener {
                     int giveIdx = 1;
                     try { giveIdx = Integer.parseInt(args[3]); } catch (Exception ignored) {}
                     plugin.areaCLIManager.removeGiveEffect(p, args[2], giveIdx);
+                    // 刷新：回到增益效果列表(subPage 3)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 3);
                     break;
                 case "effectsaddadd":
                     // ★ 添加增益效果: 效果名 [等级] [秒数]
@@ -5111,6 +5114,8 @@ public class AreaProtection implements Listener {
                     if (args.length >= 5) effLevel = args[4];
                     if (args.length >= 6) effDuration = args[5];
                     plugin.areaCLIManager.addGiveEffect(p, args[2], effName, effLevel, effDuration);
+                    // 刷新：回到增益效果列表(subPage 3)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 3);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -6506,17 +6511,24 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c世界不存在: " + ac.world);
                     return true;
                 }
-                // 找到安全高度
-                Location center = new Location(w, cx, 0, cz);
+                // 找到安全位置：从最高向下找第一个上方有2格空气、下方有实体的方块
+                Location safeLoc = null;
                 for (int y = w.getMaxHeight(); y >= w.getMinHeight(); y--) {
-                    center.setY(y);
-                    if (!center.getBlock().getType().isSolid()) {
-                        center.setY(y + 1);
-                        break;
-                    }
+                    Location check = new Location(w, cx, y, cz);
+                    // 脚下必须有实体方块
+                    if (!check.getBlock().getType().isSolid()) continue;
+                    // 脚上和头顶至少2格空气（站立空间）
+                    if (check.clone().add(0, 1, 0).getBlock().getType().isSolid()) continue;
+                    if (check.clone().add(0, 2, 0).getBlock().getType().isSolid()) continue;
+                    safeLoc = check.clone().add(0, 1, 0); // 站在方块上表面+1的位置
+                    break;
                 }
-                p.teleport(center);
-                sender.sendMessage("§a§l[防护] §f已传送到 §e" + ac.name + " §f中心（未设置传送点）");
+                if (safeLoc != null) {
+                    p.teleport(safeLoc);
+                    sender.sendMessage("§a§l[防护] §f已传送到 §e" + ac.name + " §f安全位置（未设置传送点）");
+                } else {
+                    sender.sendMessage("§c§l[防护] §f无法找到安全传送位置，请为该领地设置传送点 (/protect settp)");
+                }
             } else {
                 World w = Bukkit.getWorld(ac.warpWorld);
                 if (w == null) {
@@ -7088,9 +7100,10 @@ public class AreaProtection implements Listener {
 
     /**
      * 设置等待效果管理输入状态
+     * @param subPage 子页面索引（1=开关, 2=单清, 3=增益）
      */
-    public void setPendingClearEffectInput(java.util.UUID uuid, String landName, String inputType) {
-        pendingEffectInput.put(uuid, new String[]{landName, inputType});
+    public void setPendingClearEffectInput(java.util.UUID uuid, String landName, String inputType, int subPage) {
+        pendingEffectInput.put(uuid, new String[]{landName, inputType, String.valueOf(subPage)});
     }
 
     /**
@@ -7107,6 +7120,15 @@ public class AreaProtection implements Listener {
         if (land == null) {
             p.sendMessage("§c领地不存在");
             return true;
+        }
+
+        // 获取subPage（如果有）
+        int subPage = 1;
+        if (landAndType.length >= 3) {
+            try {
+                subPage = Integer.parseInt(landAndType[2]);
+            } catch (NumberFormatException ignored) {
+            }
         }
 
         if ("clear".equals(inputType)) {
@@ -7146,9 +7168,9 @@ public class AreaProtection implements Listener {
             p.sendMessage("§a§l[添加增益效果] §f已添加: " + effName + " Lv" + effLv + " " + effDur + "秒");
         }
 
-        // 刷新GUI
+        // 刷新GUI，回到原来的subPage
         if (plugin.areaGUIManager != null) {
-            plugin.areaGUIManager.openEffectsManagement(p, landName, 1);
+            plugin.areaGUIManager.openEffectsManagement(p, landName, subPage);
         }
         return true;
     }
@@ -7632,15 +7654,27 @@ public class AreaProtection implements Listener {
         // ===== PVP 逻辑 =====
         if (!(e.getDamager() instanceof Player)) return;
         if (!(e.getEntity() instanceof Player)) return;
-        Player p2 = (Player) e.getEntity();
-        AreaConfig ac2 = getArea(
-                p2.getWorld().getName(),
-                p2.getLocation().getBlockX(),
-                p2.getLocation().getBlockY(),
-                p2.getLocation().getBlockZ());
-        if (ac2 != null && getEffectiveDeny(p2, ac2, "denyPVP")) {
+        Player attacker = (Player) e.getDamager();
+        Player victim = (Player) e.getEntity();
+
+        // 管理员互殴不受限
+        if (isAreaAdmin(attacker) && isAreaAdmin(victim)) return;
+        // 伤害者在自己领地无denyPVP时，跳过
+        AreaConfig acAttacker = getArea(
+                attacker.getWorld().getName(),
+                attacker.getLocation().getBlockX(),
+                attacker.getLocation().getBlockY(),
+                attacker.getLocation().getBlockZ());
+        if (acAttacker == null || !getEffectiveDeny(attacker, acAttacker, "denyPVP")) return;
+        // 受害者领地有denyPVP → 阻断
+        AreaConfig acVictim = getArea(
+                victim.getWorld().getName(),
+                victim.getLocation().getBlockX(),
+                victim.getLocation().getBlockY(),
+                victim.getLocation().getBlockZ());
+        if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
             e.setCancelled(true);
-            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+            attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
         }
     }
 
@@ -7724,15 +7758,27 @@ public class AreaProtection implements Listener {
         // ===== PVP 逻辑（原有的，不动）=====
         if (!(e.getDamager() instanceof Player)) return;
         if (!(e.getEntity() instanceof Player)) return;
-        Player p2 = (Player) e.getEntity();
-        AreaConfig ac2 = getArea(
-                p2.getWorld().getName(),
-                p2.getLocation().getBlockX(),
-                p2.getLocation().getBlockY(),
-                p2.getLocation().getBlockZ());
-        if (ac2 != null && getEffectiveDeny(p2, ac2, "denyPVP")) {
+        Player attacker = (Player) e.getDamager();
+        Player victim = (Player) e.getEntity();
+
+        // 管理员互殴不受限
+        if (isAreaAdmin(attacker) && isAreaAdmin(victim)) return;
+        // 伤害者在自己领地无denyPVP时，跳过
+        AreaConfig acAttacker = getArea(
+                attacker.getWorld().getName(),
+                attacker.getLocation().getBlockX(),
+                attacker.getLocation().getBlockY(),
+                attacker.getLocation().getBlockZ());
+        if (acAttacker == null || !getEffectiveDeny(attacker, acAttacker, "denyPVP")) return;
+        // 受害者领地有denyPVP → 阻断
+        AreaConfig acVictim = getArea(
+                victim.getWorld().getName(),
+                victim.getLocation().getBlockX(),
+                victim.getLocation().getBlockY(),
+                victim.getLocation().getBlockZ());
+        if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
             e.setCancelled(true);
-            p2.sendMessage("§c§l[区域防护] §f禁止PVP");
+            attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
         }
     }
     private AreaConfig findFrameArea(Entity frame) {
