@@ -65,6 +65,9 @@ public class WebManager {
 
     // ★ 统一HTTP客户端（绕过HttpsURLConnection的TLS时序问题，原生支持ALPN/SNI/HTTP2）
     private HttpClient cfHttpClient;
+    
+    // ★ HTTP降级专用HttpClient（不带SSL配置）
+    private HttpClient plainHttpClient;
 
     // ★ 上次同步快照（用于检测变化，无变化静默）
     private String lastOnlinePlayersHash = "";
@@ -123,6 +126,7 @@ public class WebManager {
         this.plugin = plugin;
         this.config = plugin.getConfig2();
         initSSL();
+        initPlainHttpClient();  // 初始化HTTP降级客户端
         loadConfig();
         startDbWorker();
     }
@@ -283,6 +287,7 @@ public class WebManager {
     /**
      * 判断是否需要降级到HTTP
      * 降级条件：连续SSL失败>=3次，且尚未降级
+     * ⚠️ 降级后HTTP请求如果返回301跳转，需要禁用followRedirects
      */
     private boolean shouldDowngradeToHttp(String urlStr) {
         if (sslConsecutiveFailures >= SSL_DOWNGRADE_THRESHOLD && !sslDowngraded) {
@@ -296,22 +301,22 @@ public class WebManager {
     }
 
     /**
-     * 降级后的HTTP GET请求
+     * 降级后的HTTP GET请求（使用不带SSL的HttpClient）
      */
     private String doGetHttpFallback(String urlStr) {
-        if (cfHttpClient == null) {
-            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+        if (plainHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HTTP降级客户端未初始化");
             return null;
         }
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(10))
                     .header("User-Agent", "Sdf1-WebManager/2.8-http")
                     .header("Accept", "application/json")
                     .GET()
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = plainHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 // HTTP成功 → 重置SSL计数，恢复正常
                 sslConsecutiveFailures = 0;
@@ -402,21 +407,34 @@ public class WebManager {
             };
             SSLContext sc = SSLContext.getInstance("TLSv1.2");
             sc.init(null, trustAllCerts, new SecureRandom());
-
             javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
-            // ★ 不硬编码密码套件，让JVM自动选择支持的套件
             sslParams.setProtocols(new String[]{"TLSv1.2"});
-
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .sslParameters(sslParams)
                     .connectTimeout(Duration.ofSeconds(15))
                     .version(HttpClient.Version.HTTP_1_1)
+                    .followRedirects(HttpClient.Redirect.NORMAL)
                     .build();
-
-            plugin.getLogger().info("[Web通信] HttpClient已重建（清除连接状态）");
+            plugin.getLogger().info("[Web通信] HttpClient已重建");
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] HttpClient重建失败: " + e.getMessage());
+            plugin.getLogger().severe("[Web通信] HttpClient重建失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 初始化纯HTTP客户端（不带SSL配置，用于降级）
+     */
+    private void initPlainHttpClient() {
+        try {
+            plainHttpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .followRedirects(HttpClient.Redirect.ALWAYS)
+                    .build();
+            plugin.getLogger().info("[Web通信] HTTP降级客户端已初始化");
+        } catch (Exception e) {
+            plugin.getLogger().severe("[Web通信] HTTP降级客户端初始化失败: " + e.getMessage());
         }
     }
 
@@ -594,22 +612,22 @@ public class WebManager {
     }
 
     /**
-     * 降级后的HTTP POST请求
+     * 降级后的HTTP POST请求（使用不带SSL的HttpClient）
      */
     private String doPostHttpFallback(String urlStr, String jsonBody) {
-        if (cfHttpClient == null) {
-            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+        if (plainHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HTTP降级客户端未初始化");
             return null;
         }
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(10))
                     .header("User-Agent", "Sdf1-WebManager/2.8-http")
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = plainHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0;
                 sslDowngraded = false;
@@ -1270,7 +1288,7 @@ public class WebManager {
 
                 checkSyncNotify();
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 每5±3秒检查一次
     }
 
     /**
@@ -1332,7 +1350,18 @@ public class WebManager {
                     }
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5); // 每5秒检查一次
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±3秒
+    }
+
+    /**
+     * 生成定时器随机间隔（基础值 ±3秒）
+     * 每个请求都是独立随机数，避开并发导致的SQL锁死
+     * @param baseSeconds 基础秒数
+     * @return 随机秒数 [base-3, base+3]，最小1秒
+     */
+    private long randomIntervalSeconds(long baseSeconds) {
+        long offset = (long) (Math.random() * 7) - 3; // -3 ~ +3
+        return Math.max(1, baseSeconds + offset);
     }
 
     // ==================== 高频轮询器失败计数 ====================
@@ -1435,7 +1464,7 @@ public class WebManager {
                     shopStockPollFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * 5, 20L * 5);
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±3秒
         plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每5秒）");
     }
 
@@ -1504,7 +1533,7 @@ public class WebManager {
                     // 静默，避免刷屏
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * 2, 20L * 2); // 每2秒检查一次
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±3秒(最小1秒)
         plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
     }
 
@@ -1558,7 +1587,7 @@ public class WebManager {
                     landSyncFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * 10, 20L * 10); // 每10秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±3秒
         plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每10秒）");
     }
 
@@ -4666,7 +4695,7 @@ public class WebManager {
                     }
                 });
             }
-        }.runTaskTimer(plugin, 20L * 3, 20L * 3); // 初始3秒，每3秒轮询
+        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±3秒(最小1秒)
     }
 
     /**
