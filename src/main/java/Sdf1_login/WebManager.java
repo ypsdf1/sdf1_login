@@ -388,6 +388,7 @@ public class WebManager {
                     .uri(URI.create(urlStr))
                     .timeout(Duration.ofSeconds(15))
                     .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .header("Accept", "application/json")
                     .GET()
                     .build();
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
@@ -1778,12 +1779,42 @@ public class WebManager {
     }
 
     /**
-     * 简单JSON解析（提取字段值）
+     * 解码JSON中的 Unicode转义序列
      */
+    private static String decodeUnicodeEscapes(String str) {
+        if (str == null || !str.contains("\\u")) return str;
+        try {
+            StringBuilder sb = new StringBuilder(str.length());
+            int i = 0;
+            while (i < str.length()) {
+                if (str.charAt(i) == '\\' && i + 5 < str.length() && str.charAt(i + 1) == 'u') {
+                    try {
+                        String hex = str.substring(i + 2, i + 6);
+                        int codePoint = Integer.parseUnsignedInt(hex, 16);
+                        sb.appendCodePoint(codePoint);
+                        i += 6;
+                    } catch (Exception e) {
+                        sb.append(str, i, i + 2);
+                        i += 2;
+                    }
+                } else {
+                    sb.append(str.charAt(i));
+                    i++;
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return str;
+        }
+    }
+
     public static Map<String, Object> parseJson(String json) {
         // 简易JSON解析器，支持嵌套对象和数组
         Map<String, Object> result = new HashMap<>();
         if (json == null || json.isEmpty()) return result;
+
+        // ★ 先解码Unicode转义序列 XXXX → 实际字符
+        json = decodeUnicodeEscapes(json.trim());
 
         json = json.trim();
         if (json.startsWith("{")) json = json.substring(1);
@@ -2308,6 +2339,8 @@ public class WebManager {
             List<Map<String, Object>> changes = (List<Map<String, Object>>) result.get("changes");
             if (changes == null || changes.isEmpty()) return;
 
+            // 无变更静默
+            boolean hadChange = false;
             List<Integer> ackedIds = new ArrayList<>();
 
             for (Map<String, Object> change : changes) {
@@ -2322,35 +2355,33 @@ public class WebManager {
                 try {
                     switch (changeType) {
                         case "owner_change": {
-                            // PHP端修改了领地所有者
                             String newOwner = String.valueOf(changeData.getOrDefault("new_owner", ""));
                             String landName = targetName;
                             if (!newOwner.isEmpty() && !landName.isEmpty()) {
-                                // 更新本地领地所有者
                                 areaProtect.setLandOwnerFromWeb(landName, newOwner);
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
+                                hadChange = true;
                             }
                             break;
                         }
                         case "perm_clear": {
-                            // PHP端清除了成员权限
                             String playerName = targetName;
                             String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
-                                // 清除本地成员权限
                                 areaProtect.clearPlayerPermFromWeb(landNameJson, playerName);
                                 plugin.getLogger().info("[Web通信] PHP端清除成员权限: " + playerName + " @ " + landNameJson);
+                                hadChange = true;
                             }
                             break;
                         }
                         case "perm_change": {
-                            // PHP端更新了访客/成员权限
                             String playerName = targetName;
                             String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
                             String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
                                 areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson);
                                 plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson);
+                                hadChange = true;
                             }
                             break;
                         }
@@ -2362,6 +2393,8 @@ public class WebManager {
                     plugin.getLogger().warning("[Web通信] 处理变更失败(id=" + id + "): " + e.getMessage());
                 }
             }
+
+            if (!hadChange) return; // 无实际变更则静默
 
             // 确认已处理的变更
             if (!ackedIds.isEmpty()) {
