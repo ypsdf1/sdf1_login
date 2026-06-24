@@ -27,6 +27,9 @@ public class AreaCLIManager {
     // ★ 记录每个玩家当前所在页面（切换权限后刷新用）
     private final Map<UUID, String[]> playerPageInfo = new HashMap<>();
 
+    // ★ 记录效果管理待输入状态
+    private final Map<UUID, String[]> pendingEffectInput = new HashMap<>();
+
     public AreaCLIManager(Main plugin, AreaProtection areaProtect) {
         this.plugin = plugin;
         this.areaProtect = areaProtect;
@@ -1100,8 +1103,8 @@ public class AreaCLIManager {
             p.sendMessage(addLine);
             p.sendMessage(Component.text("§a[◀ 返回管理菜单]")
                     .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1")));
-            p.sendMessage(Component.text("§7提示: 添加效果请使用快捷指令: /protect cli effectsclearadd <效果名>")
-                    .hoverEvent(HoverEvent.showText(Component.text("§e效果名可使用中文（如：缓慢、中毒、凋零）"))));
+            p.sendMessage(Component.text("§7提示: 单清效果请使用快捷指令: /protect cli effectsclearadd <效果名>"));
+            p.sendMessage(Component.text("§7支持中文（如：缓慢、中毒、凋零、饥饿）"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
 
