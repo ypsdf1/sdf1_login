@@ -206,6 +206,12 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击设置"));
 
+        // 效果管理（位置16）
+        inv.setItem(16, createItem(Material.BREWING_STAND, "§b§l效果管理",
+                "§7配置清除/增益效果",
+                "§7单清指定效果 · 全清负面",
+                "§e点击管理"));
+
         // 领地信息（位置22）
         inv.setItem(22, createItem(Material.BOOK, "§e§l领地信息",
                 "§7所有者: §f" + land.owner,
@@ -734,6 +740,8 @@ public class AreaGUIManager implements Listener {
                 openMemberPermList(p, landName);
             } else if (raw == 15) {
                 openLandSettings(p, landName);
+            } else if (raw == 16) {
+                openEffectsManagement(p, landName, 1);
             } else if (raw == 31) {
                 // 传送
                 p.closeInventory();
@@ -1146,6 +1154,110 @@ public class AreaGUIManager implements Listener {
             areaProtect.setPendingConfigInput(p.getUniqueId(), "peace_mode_max_duration");
         } else if (raw == 48) {
             openMainMenu(p);
+        }
+    }
+
+    // ==================== 效果管理 GUI ====================
+
+    /**
+     * 打开效果管理菜单
+     */
+    private void openEffectsManagement(Player p, String landName, int subPage) {
+        managingLand.put(p.getUniqueId(), landName);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage("§c领地不存在: " + landName);
+            return;
+        }
+
+        // ========== 子菜单1：开关管理 ==========
+        if (subPage == 1) {
+            Inventory inv = Bukkit.createInventory(null, 54, "§b§l效果管理 - " + landName);
+
+            // 全清负面效果
+            Material clearAllMat = land.clearAllBadEffects ? Material.LIME_DYE : Material.GRAY_DYE;
+            inv.setItem(11, createItem(clearAllMat, "§e§l清除所有负面效果",
+                    "§7当前: " + (land.clearAllBadEffects ? "§a已开启" : "§c已关闭"),
+                    "§7进入领地时清除所有负面/中性药水效果",
+                    "",
+                    "§e点击切换"));
+
+            // 禁止所有效果
+            Material denyAllMat = land.denyAllEffects ? Material.RED_DYE : Material.GRAY_DYE;
+            inv.setItem(13, createItem(denyAllMat, "§e§l禁止所有效果",
+                    "§7当前: " + (land.denyAllEffects ? "§a已开启" : "§c已关闭"),
+                    "§7进入领地时禁止接收所有药水效果",
+                    "",
+                    "§e点击切换"));
+
+            // 单清效果列表
+            inv.setItem(15, createItem(Material.MAGMA_CREAM, "§b§l单清指定效果",
+                    "§7当前列表: §f" + land.clearEffects.size() + " 个效果",
+                    "",
+                    "§e点击查看/编辑"));
+
+            // 添加增益效果
+            inv.setItem(17, createItem(Material.BREWING_STAND, "§a§l添加增益效果",
+                    "§7当前增益: §f" + land.giveEffects.size() + " 个",
+                    "",
+                    "§e点击查看/编辑"));
+
+            // 返回
+            inv.setItem(48, createItem(Material.ARROW, "§c§l返回管理领地", ""));
+
+            p.openInventory(inv);
+        }
+
+        // ========== 子菜单2：单清效果列表 ==========
+        else if (subPage == 2) {
+            Inventory inv = Bukkit.createInventory(null, 54, "§b§l单清效果 - " + landName);
+
+            if (land.clearEffects.isEmpty()) {
+                inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无清除效果",
+                        "§7使用快捷指令添加: /protect cli effectsclearadd <效果名>",
+                        "",
+                        "§e效果名可使用中文（如：缓慢、中毒）"));
+            } else {
+                for (int i = 0; i < Math.min(land.clearEffects.size(), 36); i++) {
+                    String eff = land.clearEffects.get(i);
+                    inv.setItem(i, createItem(Material.MAGMA_CREAM, "§f" + eff,
+                            "§7点击移除此清除效果",
+                            "§e序号: " + (i + 1)));
+                }
+            }
+
+            inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
+            inv.setItem(53, createItem(Material.BOOK, "§a§l添加效果",
+                    "§7点击后在聊天栏输入效果名"));
+
+            p.openInventory(inv);
+        }
+
+        // ========== 子菜单3：增益效果列表 ==========
+        else if (subPage == 3) {
+            Inventory inv = Bukkit.createInventory(null, 54, "§b§l增益效果 - " + landName);
+
+            if (land.giveEffects.isEmpty()) {
+                inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无增益效果",
+                        "§7使用快捷指令添加: /protect cli effectsaddadd <效果名> [等级] [秒数]",
+                        "",
+                        "§e示例: /protect cli effectsaddadd 力量 2 300"));
+            } else {
+                for (int i = 0; i < Math.min(land.giveEffects.size(), 36); i++) {
+                    String[] eff = land.giveEffects.get(i);
+                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " " + eff[2] + "秒" : "");
+                    inv.setItem(i, createItem(Material.GOLDEN_CARROT, "§a" + desc,
+                            "§7点击移除此增益效果",
+                            "§e序号: " + (i + 1)));
+                }
+            }
+
+            inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
+            inv.setItem(53, createItem(Material.BOOK, "§a§l添加增益",
+                    "§7点击后在聊天栏输入: 效果名 等级 秒数"));
+
+            p.openInventory(inv);
         }
     }
 }

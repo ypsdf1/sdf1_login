@@ -5045,6 +5045,75 @@ public class AreaProtection implements Listener {
                     }
                     plugin.areaCLIManager.clearPlayerPerm(p, args[2], args[3]);
                     break;
+                case "effectsmgmt":
+                    // ★ 效果管理菜单
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli effectsmgmt <领地名> [子页]");
+                        break;
+                    }
+                    int effPage = 1;
+                    if (args.length >= 4) {
+                        try { effPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], effPage);
+                    break;
+                case "effectsclearall":
+                    // ★ 切换「全清负面效果」
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsclearall <领地名> on/off");
+                        break;
+                    }
+                    plugin.areaCLIManager.toggleClearAllBadEffects(p, args[2], args[3]);
+                    break;
+                case "effectsdenyall":
+                    // ★ 切换「禁止所有效果」
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsdenyall <领地名> on/off");
+                        break;
+                    }
+                    plugin.areaCLIManager.toggleDenyAllEffects(p, args[2], args[3]);
+                    break;
+                case "effectsclearremove":
+                    // ★ 移除指定清除效果
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsclearremove <领地名> <序号>");
+                        break;
+                    }
+                    int clrIdx = 1;
+                    try { clrIdx = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    plugin.areaCLIManager.removeClearEffect(p, args[2], clrIdx);
+                    break;
+                case "effectsclearadd":
+                    // ★ 添加清除效果
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsclearadd <领地名> <效果名>");
+                        break;
+                    }
+                    plugin.areaCLIManager.addClearEffect(p, args[2], args[3]);
+                    break;
+                case "effectsaddremove":
+                    // ★ 移除指定增益效果
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsaddremove <领地名> <序号>");
+                        break;
+                    }
+                    int giveIdx = 1;
+                    try { giveIdx = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    plugin.areaCLIManager.removeGiveEffect(p, args[2], giveIdx);
+                    break;
+                case "effectsaddadd":
+                    // ★ 添加增益效果: 效果名 [等级] [秒数]
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsaddadd <领地名> <效果名> [等级] [秒数]");
+                        break;
+                    }
+                    String effName = args[3];
+                    String effLevel = "1";
+                    String effDuration = "999";
+                    if (args.length >= 5) effLevel = args[4];
+                    if (args.length >= 6) effDuration = args[5];
+                    plugin.areaCLIManager.addGiveEffect(p, args[2], effName, effLevel, effDuration);
+                    break;
                 case "create":
                     // 跳转到创建命令
                     // 直接转发

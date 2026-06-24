@@ -324,6 +324,8 @@ public class AreaCLIManager {
                 "/protect cli visitorperm " + land.name + " 1"));
         p.sendMessage(clickableAction("🎯", "成员权限（独立）",
                 "/protect cli memberperm " + land.name + " 1"));
+        p.sendMessage(clickableAction("💥", "效果管理（清除/增益）",
+                "/protect cli effectsmgmt " + land.name + " 1"));
         // ★ 新增：设置传送点
         p.sendMessage(clickableAction("📍", "设置传送点（当前位置）",
                 "/protect settp " + land.name));
@@ -1019,5 +1021,256 @@ public class AreaCLIManager {
             case "peaceMode": return land.peaceMode;
             default: return false;
         }
+    }
+
+    // ==================== 效果管理 ====================
+
+    /**
+     * 显示效果管理菜单
+     * 支持：全清负面、单清效果、添加增益
+     */
+    public void showEffectsManagement(Player p, String landName, int subPage) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        // 权限检查
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
+        // ========== 子菜单1：清除效果管理 ==========
+        if (subPage == 1) {
+            p.sendMessage(header("效果管理: " + landName));
+            p.sendMessage(Component.text("§7清除所有负面效果: §f" + (land.clearAllBadEffects ? "§a开启" : "§c关闭")));
+            p.sendMessage(Component.text("§7禁止所有效果: §f" + (land.denyAllEffects ? "§a开启" : "§c关闭")));
+
+            // 全清负面
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§a[关闭清除所有负面效果]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击关闭清除所有负面效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsclearall " + landName + " off")));
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§a[开启清除所有负面效果]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击开启清除所有负面效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsclearall " + landName + " on")));
+
+            // 禁止所有效果
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§a[关闭禁止所有效果]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击关闭禁止所有效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsdenyall " + landName + " off")));
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§a[开启禁止所有效果]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击开启禁止所有效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsdenyall " + landName + " on")));
+
+            // 返回
+            p.sendMessage(Component.text(""));
+            p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli landmanage " + landName + " 1"));
+            p.sendMessage(clickableAction("➡", "单清效果", "/protect cli effectsclear " + landName + " 1"));
+            p.sendMessage(clickableAction("➡", "添加增益效果", "/protect cli effectsadd " + landName + " 1"));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 子菜单2：单清效果列表 ==========
+        else if (subPage == 2) {
+            p.sendMessage(header("清除指定效果: " + landName));
+            p.sendMessage(Component.text("§7当前单清列表:"));
+
+            if (land.clearEffects.isEmpty()) {
+                p.sendMessage(Component.text("§7（空）"));
+            } else {
+                for (int i = 0; i < land.clearEffects.size(); i++) {
+                    String eff = land.clearEffects.get(i);
+                    p.sendMessage(Component.empty()
+                            .append(Component.text("§f- " + eff))
+                            .append(Component.text(" §c[x]"))
+                            .hoverEvent(HoverEvent.showText(Component.text("§e点击移除效果 '" + eff + "'")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsclearremove " + landName + " " + (i + 1))));
+                }
+            }
+
+            Component addLine = Component.empty().append(Component.text("§e[添加效果] "));
+            p.sendMessage(addLine);
+            p.sendMessage(Component.text("§a[◀ 返回管理菜单]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1")));
+            p.sendMessage(Component.text("§7提示: 添加效果请使用快捷指令: /protect cli effectsclearadd <效果名>")
+                    .hoverEvent(HoverEvent.showText(Component.text("§e效果名可使用中文（如：缓慢、中毒、凋零）"))));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 子菜单3：添加增益效果 ==========
+        else if (subPage == 3) {
+            p.sendMessage(header("添加增益效果: " + landName));
+            p.sendMessage(Component.text("§7当前增益列表:"));
+
+            if (land.giveEffects.isEmpty()) {
+                p.sendMessage(Component.text("§7（空）"));
+            } else {
+                for (int i = 0; i < land.giveEffects.size(); i++) {
+                    String[] eff = land.giveEffects.get(i);
+                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " §f" + eff[2] + "秒" : "");
+                    p.sendMessage(Component.empty()
+                            .append(Component.text("§a- " + desc))
+                            .append(Component.text(" §c[x]"))
+                            .hoverEvent(HoverEvent.showText(Component.text("§e点击移除增益效果 '" + desc + "'")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsaddremove " + landName + " " + (i + 1))));
+                }
+            }
+
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.empty()
+                    .append(Component.text("§e[添加增益] "))
+                    .append(Component.text("§a[◀ 返回管理菜单]")
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1"))));
+            p.sendMessage(Component.text("§7提示: 添加增益效果请使用快捷指令: /protect cli effectsaddadd <效果名> [等级] [秒数]"));
+            p.sendMessage(Component.empty()
+                    .append(Component.text("§e示例: /protect cli effectsaddadd 力量 2 300 = 力量II 持续5分钟"))
+                    .clickEvent(ClickEvent.suggestCommand("/protect cli effectsaddadd 力量 2 300")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+    }
+
+    /**
+     * 切换「全清负面效果」开关
+     */
+    public void toggleClearAllBadEffects(Player p, String landName, String newState) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        if (newState.equalsIgnoreCase("on")) {
+            land.clearAllBadEffects = true;
+            p.sendMessage(Component.text("§a已开启清除所有负面效果"));
+        } else {
+            land.clearAllBadEffects = false;
+            p.sendMessage(Component.text("§a已关闭清除所有负面效果"));
+        }
+        // 保存到DB
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 切换「禁止所有效果」开关
+     */
+    public void toggleDenyAllEffects(Player p, String landName, String newState) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        if (newState.equalsIgnoreCase("on")) {
+            land.denyAllEffects = true;
+            p.sendMessage(Component.text("§a已开启禁止所有效果"));
+        } else {
+            land.denyAllEffects = false;
+            p.sendMessage(Component.text("§a已关闭禁止所有效果"));
+        }
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 从单清列表中移除指定效果
+     */
+    public void removeClearEffect(Player p, String landName, int index) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        if (index < 1 || index > land.clearEffects.size()) {
+            p.sendMessage(Component.text("§c索引超出范围"));
+            return;
+        }
+        String removed = land.clearEffects.remove(index - 1);
+        p.sendMessage(Component.text("§a已移除清除效果: §f" + removed));
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 向单清列表添加效果名
+     */
+    public void addClearEffect(Player p, String landName, String effName) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        // 去掉"效果"后缀
+        String clean = effName;
+        if (clean.endsWith("效果")) clean = clean.substring(0, clean.length() - 2);
+        clean = clean.trim();
+        if (clean.isEmpty()) {
+            p.sendMessage(Component.text("§c效果名不能为空"));
+            return;
+        }
+        // 检查是否已存在
+        if (land.clearEffects.contains(clean)) {
+            p.sendMessage(Component.text("§c该效果已在清除列表中: §f" + clean));
+            return;
+        }
+        land.clearEffects.add(clean);
+        p.sendMessage(Component.text("§a已添加清除效果: §f" + clean));
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 从增益列表中移除指定效果
+     */
+    public void removeGiveEffect(Player p, String landName, int index) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        if (index < 1 || index > land.giveEffects.size()) {
+            p.sendMessage(Component.text("§c索引超出范围"));
+            return;
+        }
+        String[] eff = land.giveEffects.remove(index - 1);
+        String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "");
+        p.sendMessage(Component.text("§a已移除增益效果: §f" + desc));
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 向增益列表添加效果
+     * 参数: 效果名 [等级] [秒数]
+     */
+    public void addGiveEffect(Player p, String landName, String effName, String levelStr, String durationStr) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        // 验证等级
+        int level = 1;
+        try { level = Integer.parseInt(levelStr); } catch (Exception ignored) {}
+        level = Math.max(1, level);
+
+        // 验证秒数
+        int duration = 999;
+        try { duration = Integer.parseInt(durationStr); } catch (Exception ignored) {}
+        duration = Math.max(1, Math.min(duration, 3600));
+
+        // 检查是否已存在
+        for (String[] existing : land.giveEffects) {
+            if (existing[0].equalsIgnoreCase(effName)) {
+                p.sendMessage(Component.text("§c该效果已存在于增益列表中: §f" + existing[0]));
+                return;
+            }
+        }
+
+        land.giveEffects.add(new String[]{effName, String.valueOf(level), String.valueOf(duration)});
+        String desc = effName + " Lv" + level + " " + duration + "秒";
+        p.sendMessage(Component.text("§a已添加增益效果: §f" + desc));
+        areaProtect.saveAreaToDb(land);
     }
 }
