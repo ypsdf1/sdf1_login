@@ -2931,9 +2931,16 @@ public class WebManager {
                     plugin.getLogger().info("[Web通信] ★ 在线玩家同步成功: " + playersData.size() + "人");
                 }
             } else {
-                plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): " + response);
-                // GET失败时回退到POST
-                tryPostSync(playersJson, playersData.size());
+                // 检测404响应：如果response中明确包含404，直接跳过POST回退
+                // 因为PHP端syncOnlinePlayers的GET和POST路由指向同一函数，404通常是URL编码过长导致CF/Nginx拦截
+                if (response != null && (response.contains("404") || response.contains("\"404\"") || response.startsWith("404"))) {
+                    plugin.getLogger().warning("[Web通信] ★ 在线玩家同步404（跳过POST回退，URL可能过长）: " + response);
+                    // 降级：拆分玩家分批POST（每人一批，避免URL超长）
+                    splitPostSyncOnlinePlayers(playersData);
+                } else {
+                    plugin.getLogger().warning("[Web通信] ★ 在线玩家同步失败(GET): " + response);
+                    tryPostSync(playersJson, playersData.size());
+                }
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] syncOnlinePlayers异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -2963,6 +2970,49 @@ public class WebManager {
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST同步异常: " + e.getMessage());
         }
+    }
+
+    /**
+     * 拆分在线玩家分批POST同步（解决URL超长导致404的问题）
+     * 当GET同步返回404时触发，每次只传1个玩家，避免URL/POST Body过长
+     */
+    private void splitPostSyncOnlinePlayers(List<Map<String, Object>> playersData) {
+        if (playersData == null || playersData.isEmpty()) {
+            plugin.getLogger().info("[Web通信] 拆分同步：玩家列表为空，跳过");
+            return;
+        }
+        plugin.getLogger().info("[Web通信] 拆分同步：开始分批POST " + playersData.size() + " 个玩家");
+        int batchSize = 1; // 每批1个玩家，确保URL最短
+        int total = playersData.size();
+        int sent = 0;
+        int failed = 0;
+
+        for (int i = 0; i < total; i++) {
+            List<Map<String, Object>> batch = new ArrayList<>();
+            batch.add(playersData.get(i));
+            String batchJson = buildPlayersJsonArray(batch);
+            String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"players\":" + batchJson + "}";
+            String url = webBaseUrl + "/api/sync.php?action=sync_online_players";
+
+            try {
+                String resp = doPost(url, jsonBody);
+                if (resp != null && resp.contains("\"success\":true")) {
+                    sent++;
+                } else {
+                    failed++;
+                    if (i % 5 == 0) { // 每5个失败打印一次日志，避免刷屏
+                        plugin.getLogger().warning("[Web通信] 拆分同步第" + (i+1) + "个失败: " + (resp != null ? resp.substring(0, Math.min(100, resp.length())) : "null"));
+                    }
+                }
+            } catch (Exception e) {
+                failed++;
+                if (i % 5 == 0) {
+                    plugin.getLogger().warning("[Web通信] 拆分同步第" + (i+1) + "个异常: " + e.getMessage());
+                }
+            }
+        }
+
+        plugin.getLogger().info("[Web通信] 拆分同步完成: 成功" + sent + "/" + total + " 失败" + failed + "/" + total);
     }
 
     // IP变更缓存：playerName -> [ip, syncFlag]
