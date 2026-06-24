@@ -113,6 +113,9 @@ public class WebManager {
     // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
     private static final int SSL_CIRCUIT_THRESHOLD = 5;  // 连续失败5次触发断路
     private static final long SSL_CIRCUIT_COOLDOWN_MS = 60000; // 断路冷却60秒
+    // ★ SSL降级：连续失败3次后降级到HTTP
+    private static final int SSL_DOWNGRADE_THRESHOLD = 3;  // 连续失败3次触发降级
+    private volatile boolean sslDowngraded = false;  // SSL降级标志
     private volatile int sslConsecutiveFailures = 0;
     private volatile long sslCircuitOpenUntil = 0;
 
@@ -259,7 +262,7 @@ public class WebManager {
         }
     }
 
-    // ==================== SSL断路器 ====================
+    // ==================== SSL断路器 + 降级HTTP ====================
 
     /**
      * 检查SSL断路器是否开启（跳过轮询请求）
@@ -270,10 +273,58 @@ public class WebManager {
         // 冷却期结束，允许重试
         sslCircuitOpenUntil = 0;
         sslConsecutiveFailures = 0;
+        sslDowngraded = false;  // 恢复降级标志
         plugin.getLogger().info("[Web通信] SSL断路器冷却结束，恢复轮询");
         // ★ 重建HttpClient，清除可能损坏的连接状态
         rebuildHttpClient();
         return false;
+    }
+
+    /**
+     * 判断是否需要降级到HTTP
+     * 降级条件：连续SSL失败>=3次，且尚未降级
+     */
+    private boolean shouldDowngradeToHttp(String urlStr) {
+        if (sslConsecutiveFailures >= SSL_DOWNGRADE_THRESHOLD && !sslDowngraded) {
+            sslDowngraded = true;
+            // 将HTTPS URL转为HTTP URL
+            String httpUrl = urlStr.replaceFirst("^https:", "http:");
+            plugin.getLogger().warning("[Web通信] SSL连续失败" + sslConsecutiveFailures + "次，降级到HTTP: " + httpUrl);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 降级后的HTTP GET请求
+     */
+    private String doGetHttpFallback(String urlStr) {
+        if (cfHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Sdf1-WebManager/2.8-http")
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                // HTTP成功 → 重置SSL计数，恢复正常
+                sslConsecutiveFailures = 0;
+                sslDowngraded = false;
+                plugin.getLogger().info("[Web通信] HTTP降级成功，恢复正常HTTPS");
+                return resp.body();
+            }
+            plugin.getLogger().warning("[Web通信] HTTP降级失败 HTTP " + resp.statusCode() + ": " + urlStr);
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] HTTP降级异常: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -373,6 +424,7 @@ public class WebManager {
 
     /**
      * GET请求 - 返回响应体，失败返回null
+     * ★ 包含SSL降级逻辑：连续失败3次后降级到HTTP
      */
     private String doGet(String urlStr) {
         if (cfHttpClient == null) {
@@ -394,6 +446,7 @@ public class WebManager {
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0; // 成功 → 重置断路器
+                sslDowngraded = false;  // 恢复正常HTTPS
                 return resp.body();
             }
             // ★ 500时记录响应体（PHP错误信息在body里）
@@ -406,6 +459,11 @@ public class WebManager {
             // ★ SSL断路器：跟踪连续失败
             if (e.getMessage() != null && e.getMessage().contains("handshake")) {
                 sslConsecutiveFailures++;
+                // ★ 降级到HTTP：连续失败3次
+                if (sslConsecutiveFailures >= SSL_DOWNGRADE_THRESHOLD && shouldDowngradeToHttp(urlStr)) {
+                    String httpUrl = urlStr.replaceFirst("^https:", "http:");
+                    return doGetHttpFallback(httpUrl);
+                }
                 if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
                     sslCircuitOpenUntil = System.currentTimeMillis() + SSL_CIRCUIT_COOLDOWN_MS;
                     plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询60秒");
@@ -441,8 +499,17 @@ public class WebManager {
 
     /**
      * POST请求（JSON body）- 返回响应体，失败返回null
+     * ★ 包含SSL降级逻辑
      */
     private String doPost(String urlStr, String jsonBody) {
+        return doPostWithSslFallback(urlStr, jsonBody);
+    }
+
+    /**
+     * POST请求（JSON body）- 返回响应体，失败返回null（不含SSL降级）
+     * 供不需要降级的特殊POST使用
+     */
+    private String doPostWithoutFallback(String urlStr, String jsonBody) {
         if (cfHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
             return null;
@@ -471,6 +538,88 @@ public class WebManager {
             return null;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * POST请求 - 返回响应体，失败返回null（含SSL降级逻辑）
+     */
+    private String doPostWithSslFallback(String urlStr, String jsonBody) {
+        if (cfHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        // ★ SSL断路器：断路期间直接返回，避免无意义请求
+        if (isCircuitOpen()) {
+            return null;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .header("Content-Type", "application/json; charset=UTF-8")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                sslConsecutiveFailures = 0;
+                sslDowngraded = false;  // 恢复正常HTTPS
+                return resp.body();
+            }
+            // ★ 非2xx记录响应体
+            String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
+            String body = resp.body();
+            String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
+            plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            return null;
+        } catch (Exception e) {
+            // ★ SSL断路器：跟踪连续失败
+            if (e.getMessage() != null && e.getMessage().contains("handshake")) {
+                sslConsecutiveFailures++;
+                // ★ 降级到HTTP：连续失败3次
+                if (sslConsecutiveFailures >= SSL_DOWNGRADE_THRESHOLD && shouldDowngradeToHttp(urlStr)) {
+                    String httpUrl = urlStr.replaceFirst("^https:", "http:");
+                    return doPostHttpFallback(httpUrl, jsonBody);
+                }
+                if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
+                    sslCircuitOpenUntil = System.currentTimeMillis() + SSL_CIRCUIT_COOLDOWN_MS;
+                    plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询60秒");
+                }
+            }
+            plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 降级后的HTTP POST请求
+     */
+    private String doPostHttpFallback(String urlStr, String jsonBody) {
+        if (cfHttpClient == null) {
+            plugin.getLogger().warning("[Web通信] HttpClient未初始化");
+            return null;
+        }
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("User-Agent", "Sdf1-WebManager/2.8-http")
+                    .header("Content-Type", "application/json; charset=UTF-8")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                sslConsecutiveFailures = 0;
+                sslDowngraded = false;
+                plugin.getLogger().info("[Web通信] HTTP降级成功，恢复正常HTTPS");
+                return resp.body();
+            }
+            plugin.getLogger().warning("[Web通信] HTTP降级失败 POST HTTP " + resp.statusCode() + ": " + urlStr);
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] HTTP降级POST异常: " + e.getMessage());
             return null;
         }
     }
