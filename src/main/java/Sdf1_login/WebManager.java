@@ -1321,7 +1321,7 @@ public class WebManager {
 
                 checkSyncNotify();
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 每5±3秒检查一次
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±5秒
     }
 
     /**
@@ -1383,17 +1383,17 @@ public class WebManager {
                     }
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±3秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±5秒
     }
 
     /**
-     * 生成定时器随机间隔（基础值 ±3秒）
+     * 生成定时器随机间隔（基础值 ±5秒）
      * 每个请求都是独立随机数，避开并发导致的SQL锁死
      * @param baseSeconds 基础秒数
-     * @return 随机秒数 [base-3, base+3]，最小1秒
+     * @return 随机秒数 [base-5, base+5]，最小1秒
      */
     private long randomIntervalSeconds(long baseSeconds) {
-        long offset = (long) (Math.random() * 7) - 3; // -3 ~ +3
+        long offset = (long) (Math.random() * 11) - 5; // -5 ~ +5
         return Math.max(1, baseSeconds + offset);
     }
 
@@ -1448,6 +1448,18 @@ public class WebManager {
 
                     String resp = doGet(urlStr);
                     if (resp == null) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
+                            plugin.getLogger().warning("[库存高频轮询] GET失败 (连续失败" + shopStockPollFailCount + "次)");
+                            lastTxPollLogTime = now;
+                        }
+                        shopStockPollFailCount++;
+                        return;
+                    }
+
+                    // 额外校验：即使resp不为null，也可能包含数据库锁错误
+                    if (resp.contains("\"database is locked\"") || !resp.contains("\"success\":true")) {
+                        plugin.getLogger().warning("[库存高频轮询] PHP返回DB锁错误或非success响应: " + resp.substring(0, Math.min(200, resp.length())));
                         shopStockPollFailCount++;
                         return;
                     }
@@ -1497,7 +1509,7 @@ public class WebManager {
                     shopStockPollFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±3秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±5秒
         plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每5秒）");
     }
 
@@ -1566,7 +1578,7 @@ public class WebManager {
                     // 静默，避免刷屏
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±3秒(最小1秒)
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±5秒(最小1秒)
         plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
     }
 
@@ -1620,7 +1632,7 @@ public class WebManager {
                     landSyncFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±3秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±5秒
         plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每10秒）");
     }
 
@@ -4728,7 +4740,7 @@ public class WebManager {
                     }
                 });
             }
-        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±3秒(最小1秒)
+        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±5秒(最小1秒)
     }
 
     /**
