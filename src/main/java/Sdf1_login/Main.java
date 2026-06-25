@@ -1743,6 +1743,11 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
+        // ★ 玩家加入时立即允许登录轮询（不等全量同步完成）
+        if (webManager != null) {
+            webManager.allowLoginPolling = true;
+        }
+
         // ===== 快速重连三层检查（严格按流程图） =====
         
         // ★ 检查点1：检查玩家是否有Java手动登录记录

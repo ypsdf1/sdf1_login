@@ -133,6 +133,7 @@ public class WebManager {
     private static final int SSL_DOWNGRADE_THRESHOLD = 3;  // 连续失败3次触发降级
     private volatile boolean sslDowngraded = false;  // SSL降级标志
     private volatile boolean initialSyncComplete = false;  // 首次全量同步完成标志
+    public volatile boolean allowLoginPolling = false;  // 允许登录轮询（全量同步完成 OR 玩家在线）
     private volatile int sslConsecutiveFailures = 0;
     private volatile long sslCircuitOpenUntil = 0;
     private volatile int sslCircuitOpenCount = 0;  // 连续断路次数（用于指数退避）
@@ -867,7 +868,8 @@ public class WebManager {
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
-                initialSyncComplete = true;  // 首次全量同步提交完成，允许轮询器启动
+                initialSyncComplete = true;  // 首次全量同步提交完成
+                allowLoginPolling = true;  // 允许登录轮询
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
 
@@ -1419,7 +1421,7 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_A] = now; }
 
-                if (initialSyncComplete) {
+                if (allowLoginPolling) {
                     // 注册请求轮询
                     submitWebTask("合并A-注册轮询", () -> {
                         try { pollWebRegisterRequests(); }
