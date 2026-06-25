@@ -794,31 +794,31 @@ public class WebManager {
         cleanExpiredTokens();
 
         // ★ 启动后延迟30秒执行首次全量同步（通过DB队列串行化）
-        // 每个任务之间加入随机延迟，避免瞬时堆叠导致DB队列等待过久
+        // 每个任务之间加入随机延迟（2-4秒），避免瞬时堆叠导致DB队列等待过久
         new BukkitRunnable() {
             @Override
             public void run() {
                 plugin.getLogger().info("[Web通信] 开始首次全量同步（通过DB队列串行化）...");
                 // 登录相关操作高优先级
                 submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
-                // 普通同步操作低优先级（每个任务间错开1500ms，避免PHP端DB锁）
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                // 普通同步操作低优先级（每个任务间随机间隔2-4秒，避免PHP端DB锁）
                 submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
-                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
@@ -1189,19 +1189,19 @@ public class WebManager {
                             plugin.getLogger().info("[Web通信] 收到即时同步请求: " + players.toString());
                             // 通过DB队列串行化执行（每个任务间错开800ms）
                             submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitDbTask("即时-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitDbTask("即时-syncUserRegistrations", () -> syncUserRegistrations());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullPendingTransactions", () -> pullPendingTransactions());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
-                            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-syncServiceProviders", () -> syncServiceProviders());
                         }
                     }
@@ -1222,19 +1222,19 @@ public class WebManager {
                         syncAfterAllOffline = false;
                         lastSyncDone = true;
                         lastOnlineCheckTime = System.currentTimeMillis();
-                        // 通过DB队列串行化执行最后一轮同步（每个任务间错开800ms）
+                        // 通过DB队列串行化执行最后一轮同步（每个任务间随机间隔2-4秒，避免与定时轮询冲突）
                         submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-syncUserRegistrations", () -> syncUserRegistrations());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-syncBondTransactions", () -> syncBondTransactions());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullPendingTransactions", () -> pullPendingTransactions());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
                         plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步（通过DB队列），调度器继续运行（玩家上线自动恢复）");
                         plugin.getLogger().warning("\n" +
@@ -1283,30 +1283,30 @@ public class WebManager {
                     // ★ 玩家不在线时：只保留注册/登录轮询，其余任务全部跳过
                     boolean online = !Bukkit.getOnlinePlayers().isEmpty();
 
-                    // 登录/注册相关（始终执行，错开1500ms避免PHP端DB锁）
+                    // 登录/注册相关（始终执行，随机间隔2-4秒避免PHP端DB锁）
                     submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                    try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                     submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
-                    try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
 
                     if (online) {
-                        // 在线：执行全量同步（每个任务错开1500ms）
+                        // 在线：执行全量同步（每个任务随机间隔2-4秒）
                         submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncLandData", () -> syncLandData());
-                        try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(2000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
                     } else {
                         // ★ 不在线：跳过非必要同步任务
@@ -1321,7 +1321,7 @@ public class WebManager {
 
                 checkSyncNotify();
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±8秒
     }
 
     /**
@@ -1383,17 +1383,17 @@ public class WebManager {
                     }
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±8秒
     }
 
     /**
-     * 生成定时器随机间隔（基础值 ±5秒）
+     * 生成定时器随机间隔（基础值 ±8秒）
      * 每个请求都是独立随机数，避开并发导致的SQL锁死
      * @param baseSeconds 基础秒数
-     * @return 随机秒数 [base-5, base+5]，最小1秒
+     * @return 随机秒数 [base-8, base+8]，最小1秒
      */
     private long randomIntervalSeconds(long baseSeconds) {
-        long offset = (long) (Math.random() * 11) - 5; // -5 ~ +5
+        long offset = (long) (Math.random() * 17) - 8; // -8 ~ +8
         return Math.max(1, baseSeconds + offset);
     }
 
@@ -1509,7 +1509,7 @@ public class WebManager {
                     shopStockPollFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±8秒
         plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每5秒）");
     }
 
@@ -1578,7 +1578,7 @@ public class WebManager {
                     // 静默，避免刷屏
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±5秒(最小1秒)
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±8秒(最小1秒)
         plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
     }
 
@@ -1632,7 +1632,7 @@ public class WebManager {
                     landSyncFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±8秒
         plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每10秒）");
     }
 
@@ -2988,6 +2988,12 @@ public class WebManager {
         int failed = 0;
 
         for (int i = 0; i < total; i++) {
+            // 每个请求前随机等待0-2秒，与正在进行的任务拉开时间差
+            try {
+                long delayMs = (long) (Math.random() * 2000); // 0-2秒
+                Thread.sleep(delayMs);
+            } catch (InterruptedException ignored) {}
+            
             List<Map<String, Object>> batch = new ArrayList<>();
             batch.add(playersData.get(i));
             String batchJson = buildPlayersJsonArray(batch);
@@ -4790,7 +4796,7 @@ public class WebManager {
                     }
                 });
             }
-        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±5秒(最小1秒)
+        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±8秒(最小1秒)
     }
 
     /**
