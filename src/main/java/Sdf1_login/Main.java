@@ -1739,22 +1739,36 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
-        // 登录时自动生成Web登录Token
+        // ===== 快速重连三层检查（严格按流程图） =====
+        
+        // ★ 检查点1：检查玩家是否有Java手动登录记录（ loggedIn 集合）
+        if (loggedIn.contains(name)) {
+            getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java手动登录记录，放行");
+            // 继续走正常登录流程（不中断）
+        } else {
+            getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java手动登录记录");
+        }
+        
+        // 辅助操作：生成Web Token + 同步PHP注册数据
         if (webManager != null) {
             webManager.autoGenerateWebLoginToken(p);
-            // 加入时同步PHP后端的注册数据到Java本地
             if (!db.userExists(name)) {
                 webManager.syncUserOnJoin(name);
             }
-
-            // ★ 检查本地Web登录验证状态（Java验证成功后立即记录）
-            if (webManager.isWebLoginVerified(name)) {
-                getLogger().info("[Web登录] 玩家 " + name + " 已通过Web密码验证，自动登录");
-                webManager.clearWebLoginVerified(name);
-                autoLogin(p, "web_password");
-                return;
-            }
         }
+        
+        // ★ 检查点2：检查服务器内存中是否有该玩家来自PHP的验证请求
+        if (webManager != null && webManager.isWebLoginVerified(name)) {
+            getLogger().info("[Web登录] 检查点2通过: 玩家 " + name + " 内存中有PHP验证记录，自动登录");
+            webManager.clearWebLoginVerified(name);
+            autoLogin(p, "web_password");
+            return;  // 检查点2通过 → 直接放行，不继续后面流程
+        } else {
+            getLogger().info("[Web登录] 检查点2失败: 玩家 " + name + " 内存中无PHP验证记录");
+        }
+        
+        // ★ 上述2路验证都失败 → 检查点3：强制重新验证密码（走正常登录流程）
+        getLogger().info("[Web登录] 检查点3: 上述2路验证都失败，强制重新验证密码");
 
         // 强制重发资源包（清掉客户端拒绝记录）
         Bukkit.getScheduler()

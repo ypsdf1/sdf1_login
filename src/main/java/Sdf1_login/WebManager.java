@@ -2894,7 +2894,7 @@ public class WebManager {
      * Java验证成功后立即记录，玩家进游戏时直接检查
      */
     public boolean isWebLoginVerified(String playerName) {
-        // ★ 优先检查内存（Java刚验证的）
+        // ★ 纯内存检查（5分钟有效期，无需持久化）
         Long verifiedTime = verifiedWebLogins.get(playerName);
         if (verifiedTime != null) {
             if (System.currentTimeMillis() - verifiedTime > VERIFIED_LOGIN_EXPIRE_MS) {
@@ -2903,23 +2903,6 @@ public class WebManager {
             }
             return true;
         }
-
-        // ★ 内存没有 → 检查login.db（重启后恢复）
-        try {
-            Long dbTime = (Long) plugin.getDb().getField(playerName, "web_verified_at");
-            if (dbTime != null && dbTime > 0) {
-                if (System.currentTimeMillis() - dbTime > VERIFIED_LOGIN_EXPIRE_MS) {
-                    // 过期，清除DB记录
-                    plugin.getDb().setField(playerName, "web_verified_at", 0L);
-                    return false;
-                }
-                // ★ 发现DB记录 → 同步到内存
-                verifiedWebLogins.put(playerName, dbTime);
-                return true;
-            }
-        } catch (Exception e) {
-            // DB查询失败，安全降级为不自动登录
-        }
         return false;
     }
 
@@ -2927,13 +2910,8 @@ public class WebManager {
      * 清除玩家的Web登录验证状态（玩家成功登录后调用）
      */
     public void clearWebLoginVerified(String playerName) {
+        // ★ 纯内存清除（无需清除DB）
         verifiedWebLogins.remove(playerName);
-        // ★ 同步清除login.db记录
-        try {
-            plugin.getDb().setField(playerName, "web_verified_at", 0L);
-        } catch (Exception e) {
-            // 静默
-        }
     }
 
     /**
@@ -3908,16 +3886,10 @@ public class WebManager {
                     try {
                         String result = plugin.handleWebPasswordVerify(fName, fPwd);
 
-                        // ★ 验证成功后，立即记录本地登录状态（不依赖PHP）
+                        // ★ 验证成功后，立即记录本地登录状态（纯内存，5分钟有效期）
                         if ("\"success\"".equals(result)) {
                             verifiedWebLogins.put(fName, System.currentTimeMillis());
-                            // ★ 持久化到login.db（重启不丢失）
-                            try {
-                                plugin.getDb().setField(fName, "web_verified_at", System.currentTimeMillis());
-                            } catch (Exception dbEx) {
-                                plugin.getLogger().warning("[Web密码验证] 写入login.db失败: " + dbEx.getMessage());
-                            }
-                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态（内存+DB）");
+                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态（内存缓存5分钟）");
                         }
 
                         // 异步将结果写回PHP（供Web端查询）
