@@ -1937,21 +1937,13 @@ public class AreaProtection implements Listener {
 
     public void banHostilesWithWhitelist(Player p, AreaConfig ac) {
         long now = System.currentTimeMillis();
-        // 看看附近到底有什么实体
         List<Entity> nearby = p.getNearbyEntities(48, 48, 48);
-       /* plugin.getLogger().info("[和平] " + p.getName()
-                + " 附近实体总数=" + nearby.size());*/
-        for (Entity ent : nearby) {
-            String typeName = ent.getType().name();
-       /*     plugin.getLogger().info("[和平] 实体: "
-                    + typeName + " isHostile=" + isHostile(typeName));*/
-        }
         int scanned = 0;
         int waiting = 0;
         int saved = 0;
         int banished = 0;
 
-        for (Entity ent : p.getNearbyEntities(48, 48, 48)) {
+        for (Entity ent : nearby) {
             if (!isHostile(ent.getType().name())) continue;
             scanned++;
 
@@ -1959,101 +1951,100 @@ public class AreaProtection implements Listener {
             Long protectUntil = protectedEntities.get(entUid);
             String customName = ent.getCustomName();
 
+            // 白名单命名生物：永久保留
+            if (customName != null && !customName.isEmpty() && ac.peaceWhitelist.contains(customName)) {
+                if (protectUntil != null) protectedEntities.remove(entUid);
+                saved++;
+                continue;
+            }
+
             // 有保护期记录
             if (protectUntil != null) {
                 long remain = protectUntil - now;
-
                 if (remain > 0) {
-                    // 保护期内，精确剩余秒数
-                    int secondsLeft = (int) Math.ceil(remain / 1000.0);
                     waiting++;
-
-                    // 保护期内也检查名字（玩家可能刚贴上）
-                    if (customName != null
-                            && !customName.isEmpty()
-                            && ac.peaceWhitelist.contains(customName)) {
-                        protectedEntities.remove(entUid);
-                        saved++;
-                /*        plugin.getLogger().info("[和平] "
-                                + ent.getType().name()
-                                + " 命名[" + customName
-                                + "] 白名单匹配，永久保留");*/
-                        continue;
-                    }
-
-                  /*  plugin.getLogger().info("[和平] "
-                            + ent.getType().name()
-                            + " 保护期剩余约" + secondsLeft + "秒");*/
                     continue;
                 }
-
-                // 保护期到了，最终检查
+                // 保护期到期 → 移除记录并检查白名单
                 protectedEntities.remove(entUid);
-           /*     plugin.getLogger().info("[和平] "
-                        + ent.getType().name() + " 5秒到期");*/
-
-                // 到期时再查一次白名单
-                if (customName != null
-                        && !customName.isEmpty()
-                        && ac.peaceWhitelist.contains(customName)) {
+                if (customName != null && !customName.isEmpty() && ac.peaceWhitelist.contains(customName)) {
                     saved++;
-                 /*   plugin.getLogger().info("[和平] "
-                            + ent.getType().name()
-                            + " 命名[" + customName
-                            + "] 到期但白名单匹配，保留");*/
                     continue;
                 }
-
-                // 没名字或不在白名单，传送虚空
-                Location voidLoc = ent.getLocation().clone();
-                voidLoc.setY(ent.getWorld().getMinHeight() - 50);
-                // 末影人受伤害会自动传送回来，所以直接移除实体
-                if ("ENDERMAN".equals(ent.getType().name())) {
-                    ent.remove();
-                } else {
-                    ent.teleport(voidLoc);
-                }
+                banEntity(ent);
                 banished++;
-            /*    plugin.getLogger().info("[和平] "
-                        + ent.getType().name()
-                        + " 命名=[" + customName + "] 传送虚空");*/
                 continue;
             }
 
-            // 没有保护期记录（非刷怪蛋生成的或记录被清了）
-            // 也检查一下白名单
-            if (customName != null
-                    && !customName.isEmpty()
-                    && ac.peaceWhitelist.contains(customName)) {
-                saved++;
-             /*   plugin.getLogger().info("[和平] "
-                        + ent.getType().name()
-                        + " 命名[" + customName
-                        + "] 无保护期但白名单匹配，保留");*/
-                continue;
-            }
-
-            // 没有保护期且不在白名单，传送虚空
-            Location voidLoc = ent.getLocation().clone();
-            voidLoc.setY(ent.getWorld().getMinHeight() - 50);
-            // 末影人受伤害会自动传送回来，直接移除
-            if ("ENDERMAN".equals(ent.getType().name())) {
-                ent.remove();
-            } else {
-                ent.teleport(voidLoc);
-            }
+            // 无保护期记录 → 未命名敌对生物，立即清理
+            banEntity(ent);
             banished++;
-           /* plugin.getLogger().info("[和平] "
-                    + ent.getType().name()
-                    + " 无保护期，命名=[" + customName + "] 传送虚空");*/
+        }
+    }
+
+    /**
+     * 全图扫描清理和平模式下的未命名敌对生物
+     * 由 Main 中的定时任务调用
+     */
+    public void scanAllLandsPeaceMode() {
+        long now = System.currentTimeMillis();
+        int cleared = 0;
+
+        // 遍历所有已加载的区域
+        for (Map.Entry<String, AreaConfig> entry : areas.entrySet()) {
+            AreaConfig ac = entry.getValue();
+            if (!ac.peaceMode) continue;
+
+            // 对该区域边界内的实体扫描
+            // 简化：扫描该区域周围一定范围的实体
+            double centerX = (ac.x1 + ac.x2) / 2.0;
+            double centerZ = (ac.z1 + ac.z2) / 2.0;
+            World world = Bukkit.getWorld(ac.world);
+            if (world == null) continue;
+
+            // 扫描区域中心 ±50 格的实体
+            List<Entity> nearby = new java.util.ArrayList<>(world.getNearbyEntities(
+                    new Location(world, centerX, world.getMaxHeight() / 2, centerZ), 50, 50, 50));
+
+            for (Entity ent : nearby) {
+                if (!isHostile(ent.getType().name())) continue;
+
+                // 检查是否在领地范围内
+                AreaConfig landAc = getArea(world.getName(),
+                        ent.getLocation().getBlockX(),
+                        ent.getLocation().getBlockY(),
+                        ent.getLocation().getBlockZ());
+                if (landAc == null || !landAc.peaceMode) continue;
+
+                // 白名单命名生物：跳过
+                String cname = ent.getCustomName();
+                if (cname != null && !cname.isEmpty() && landAc.peaceWhitelist.contains(cname)) continue;
+
+                // 保护期内：跳过
+                UUID uid = ent.getUniqueId();
+                Long protectUntil = protectedEntities.get(uid);
+                if (protectUntil != null && (protectUntil - now) > 0) continue;
+
+                // 清理
+                banEntity(ent);
+                cleared++;
+            }
         }
 
-     /*   plugin.getLogger().info("[和平] "
-                + " 扫描=" + scanned
-                + " 等待=" + waiting
-                + " 保留=" + saved
-                + " 传送=" + banished
-                + " 白名单=" + ac.peaceWhitelist);*/
+        if (cleared > 0) {
+            plugin.getLogger().info("[和平模式扫描] 清理未命名敌对生物: " + cleared + " 个");
+        }
+    }
+
+    private void banEntity(Entity ent) {
+        Location voidLoc = ent.getLocation().clone();
+        voidLoc.setY(ent.getWorld().getMinHeight() - 50);
+        if ("ENDERMAN".equals(ent.getType().name())) {
+            ent.remove();
+        } else {
+            ent.teleport(voidLoc);
+        }
+        protectedEntities.remove(ent.getUniqueId());
     }
 
     private static final Set<String> HOSTILE_TYPES = new HashSet<>(Arrays.asList(
@@ -6760,23 +6751,14 @@ public class AreaProtection implements Listener {
         if (dbConnection == null) return result;
         try {
             Statement stmt = dbConnection.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT id, name, owner, world, x1, z1, x2, z2, y_min, y_max, created_at FROM area_lands");
+            ResultSet rs = stmt.executeQuery("SELECT * FROM area_lands");
+            int cols = rs.getMetaData().getColumnCount();
             while (rs.next()) {
                 Map<String, Object> map = new HashMap<>();
-                map.put("id", rs.getInt("id"));
-                map.put("name", rs.getString("name"));
-                map.put("owner", rs.getString("owner"));
-                map.put("world", rs.getString("world"));
-                map.put("x1", rs.getInt("x1"));
-                map.put("z1", rs.getInt("z1"));
-                map.put("x2", rs.getInt("x2"));
-                map.put("z2", rs.getInt("z2"));
-                map.put("y_min", rs.getInt("y_min"));
-                map.put("y_max", rs.getInt("y_max"));
-                int x1 = rs.getInt("x1"), x2 = rs.getInt("x2");
-                int z1 = rs.getInt("z1"), z2 = rs.getInt("z2");
-                map.put("area_size", Math.abs((x2 - x1 + 1) * (z2 - z1 + 1)));
-                map.put("created_at", rs.getLong("created_at"));
+                for (int i = 1; i <= cols; i++) {
+                    String colName = rs.getMetaData().getColumnName(i);
+                    map.put(colName, rs.getObject(colName));
+                }
                 result.add(map);
             }
             rs.close();
@@ -7138,12 +7120,21 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c§l[添加清除效果] §f效果名不能为空");
                 return true;
             }
+            // ★ 验证效果名是否有效
+            PotionEffectType resolved = resolveEffectType(effName);
+            if (resolved == null) {
+                p.sendMessage("§c§l[添加清除效果] §f无效的效果名: §e" + effName);
+                p.sendMessage("§7支持的中文名: 缓慢、挖掘疲劳、瞬间伤害、反胃、失明、饥饿、虚弱、中毒、凋零、飘浮、霉运、黑暗、蓄风、盘丝、渗浆、寄生");
+                p.sendMessage("§7中性: 不祥之兆、袭击之兆、试炼之兆");
+                p.sendMessage("§7正面: 迅捷、急迫、力量、瞬间治疗、跳跃提升、生命恢复、抗性提升、抗火、水下呼吸、隐身、夜视、发光、生命提升、伤害吸收、饱和、幸运、村庄英雄、缓降、潮涌能量、海豚的恩惠");
+                return true;
+            }
             if (!land.clearEffects.contains(effName)) {
                 land.clearEffects.add(effName);
                 saveAreaToDb(land);
-                p.sendMessage("§a§l[添加清除效果] §f已添加: " + effName);
+                p.sendMessage("§a§l[添加清除效果] §f已添加: §e" + effName);
             } else {
-                p.sendMessage("§e§l[添加清除效果] §f效果 " + effName + " 已在列表中");
+                p.sendMessage("§e§l[添加清除效果] §f效果 §e" + effName + " §f已在列表中");
             }
         } else if ("give".equals(inputType)) {
             // 添加增益效果: 格式 效果名 [等级] [秒数]
@@ -7159,13 +7150,36 @@ public class AreaProtection implements Listener {
                 if (parts.length >= 2) effLv = Integer.parseInt(parts[1]);
                 if (parts.length >= 3) effDur = Integer.parseInt(parts[2]);
             } catch (NumberFormatException ignored) {
-                p.sendMessage("§c等级和秒数必须是数字");
+                p.sendMessage("§c§l[添加增益效果] §f等级和秒数必须是数字");
                 return true;
+            }
+            // ★ 验证等级和秒数范围
+            if (effLv < 1 || effLv > 255) {
+                p.sendMessage("§c§l[添加增益效果] §f等级范围: 1~255");
+                return true;
+            }
+            if (effDur < 1 || effDur > 3600) {
+                p.sendMessage("§c§l[添加增益效果] §f持续时间范围: 1~3600秒");
+                return true;
+            }
+            // ★ 验证效果名是否有效
+            PotionEffectType resolved = resolveEffectType(effName);
+            if (resolved == null) {
+                p.sendMessage("§c§l[添加增益效果] §f无效的效果名: §e" + effName);
+                p.sendMessage("§7推荐增益: 迅捷、急迫、力量、瞬间治疗、跳跃提升、生命恢复、抗性提升、抗火、水下呼吸、隐身、夜视、发光、生命提升、伤害吸收、饱和、幸运、村庄英雄、缓降、潮涌能量、海豚的恩惠");
+                return true;
+            }
+            // ★ 检查是否已存在同名增益
+            for (String[] existing : land.giveEffects) {
+                if (existing[0].equals(effName)) {
+                    p.sendMessage("§e§l[添加增益效果] §f增益 §e" + effName + " §f已存在，先移除旧的再添加");
+                    return true;
+                }
             }
             String[] effRecord = {effName, String.valueOf(effLv), String.valueOf(effDur)};
             land.giveEffects.add(effRecord);
             saveAreaToDb(land);
-            p.sendMessage("§a§l[添加增益效果] §f已添加: " + effName + " Lv" + effLv + " " + effDur + "秒");
+            p.sendMessage("§a§l[添加增益效果] §f已添加: §a" + effName + " §fLv" + effLv + " " + effDur + "秒");
         }
 
         // 刷新GUI，回到原来的subPage

@@ -530,23 +530,7 @@ public class Main extends JavaPlugin
 // 和平模式独立检测
         getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection == null) return;
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                AreaProtection.AreaConfig ac = areaProtection.getArea(
-                        p.getWorld().getName(),
-                        p.getLocation().getBlockX(),
-                        p.getLocation().getBlockY(),
-                        p.getLocation().getBlockZ());
-                if (ac != null) {
-                    // 无条件打印，不管 peaceMode 是啥
-                 /*   getLogger().info("[和平定时器] " + p.getName()
-                            + " 在[" + ac.name
-                            + "] peaceMode=" + ac.peaceMode
-                            + " 白名单=" + ac.peaceWhitelist);*/
-                    if (ac.peaceMode) {
-                        areaProtection.banHostilesWithWhitelist(p, ac);
-                    }
-                }
-            }
+            areaProtection.scanAllLandsPeaceMode();
         }, 40L, 40L);
         areaProtection.startEnforceTask();
         if (areaProtection != null) {

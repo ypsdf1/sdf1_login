@@ -228,6 +228,20 @@ public class WebManager {
     }
 
     /**
+     * 提交普通优先级数据库写入任务（支持绕过SSL断路器）
+     */
+    private void submitNormalDbTask(String name, Runnable action, boolean bypassSslCheck) {
+        submitDbTask(NORMAL_PRIORITY, name, action, bypassSslCheck);
+    }
+
+    /**
+     * 提交登录优先级数据库写入任务（支持绕过SSL断路器）
+     */
+    private void submitDbTask(String name, Runnable action, boolean bypassSslCheck) {
+        submitDbTask(LOGIN_PRIORITY, name, action, bypassSslCheck);
+    }
+
+    /**
      * 提交商店相关数据库写入任务（第二优先级）
      */
     private void submitShopDbTask(String name, Runnable action) {
@@ -239,8 +253,15 @@ public class WebManager {
      * ★ 限制同种类任务最多3个（防止队列积压）
      */
     private void submitDbTask(int priority, String name, Runnable action) {
-        // ★ SSL断路器：断路期间跳过所有HTTP相关任务
-        if (isCircuitOpen()) {
+        submitDbTask(priority, name, action, false);
+    }
+
+    /**
+     * 提交任务（支持bypassSslCheck：关键任务如syncOnlinePlayers不应被SSL断路器阻断）
+     */
+    private void submitDbTask(int priority, String name, Runnable action, boolean bypassSslCheck) {
+        // ★ SSL断路器：断路期间跳过所有HTTP相关任务（除非指定绕过）
+        if (!bypassSslCheck && isCircuitOpen()) {
             plugin.getLogger().warning("[DB队列] SSL断路器开启，跳过任务: " + name);
             return;
         }
@@ -259,8 +280,8 @@ public class WebManager {
             }
         }
 
-        // ★ 同类型任务最多3个，超过则丢弃低优先级的
-        if (sameTypeCount >= 3) {
+        // ★ 同类型任务最多3个，超过则丢弃低优先级的（关键任务不丢弃）
+        if (sameTypeCount >= 3 && !bypassSslCheck) {
             plugin.getLogger().warning("[DB队列] 同类型任务已满(3): " + taskType + "，丢弃: " + name);
             return;
         }
@@ -853,7 +874,7 @@ public class WebManager {
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 // 普通同步操作低优先级（每个任务间随机间隔2-4秒，避免PHP端DB锁）
-                submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers());
+                submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -1218,7 +1239,7 @@ public class WebManager {
 
                     if (hasRequest) {
                         plugin.getLogger().info("[合并C] 收到即时同步请求: " + players);
-                        submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers());
+                        submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitDbTask("即时-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -1249,7 +1270,7 @@ public class WebManager {
                     syncAfterAllOffline = false;
                     lastSyncDone = true;
                     lastOnlineCheckTime = System.currentTimeMillis();
-                    submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers());
+                    submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                     submitDbTask("末轮-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -1276,7 +1297,7 @@ public class WebManager {
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
-            submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
+            submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -2608,31 +2629,18 @@ public class WebManager {
             if (currentHash.equals(lastLandDataHash)) return;
             lastLandDataHash = currentHash;
 
-            // 1. 同步领地列表
+            // 1. 同步领地列表（全字段）
             if (!lands.isEmpty()) {
-                StringBuilder sb = new StringBuilder();
+                StringBuilder sb = new StringBuilder("[");
                 for (int i = 0; i < lands.size(); i++) {
                     if (i > 0) sb.append(",");
-                    Map<String, Object> l = lands.get(i);
-                    sb.append("{");
-                    sb.append("\"id\":").append(l.getOrDefault("id", 0)).append(",");
-                    sb.append("\"name\":\"").append(escapeJson(String.valueOf(l.getOrDefault("name", "")))).append("\",");
-                    sb.append("\"owner\":\"").append(escapeJson(String.valueOf(l.getOrDefault("owner", "")))).append("\",");
-                    sb.append("\"world\":\"").append(escapeJson(String.valueOf(l.getOrDefault("world", "")))).append("\",");
-                    sb.append("\"x1\":").append(l.getOrDefault("x1", 0)).append(",");
-                    sb.append("\"z1\":").append(l.getOrDefault("z1", 0)).append(",");
-                    sb.append("\"x2\":").append(l.getOrDefault("x2", 0)).append(",");
-                    sb.append("\"z2\":").append(l.getOrDefault("z2", 0)).append(",");
-                    sb.append("\"y_min\":").append(l.getOrDefault("y_min", 0)).append(",");
-                    sb.append("\"y_max\":").append(l.getOrDefault("y_max", 255)).append(",");
-                    sb.append("\"area_size\":").append(l.getOrDefault("area_size", 0)).append(",");
-                    sb.append("\"created_at\":").append(l.getOrDefault("created_at", 0));
-                    sb.append("}");
+                    sb.append(mapToJson(lands.get(i)));
                 }
+                sb.append("]");
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("action", "sync_lands");
                 params.put("secret", secretKey);
-                params.put("lands", "[" + sb.toString() + "]");
+                params.put("lands", sb.toString());
                 httpGet("api/sync.php", params);
             }
 
@@ -3939,7 +3947,6 @@ public class WebManager {
             }
 
             if (players.isEmpty()) {
-                plugin.getLogger().info("[Web登录确认轮询] ○ 无待处理的登录确认");
                 return;
             }
 
@@ -4060,7 +4067,6 @@ public class WebManager {
 
             // ★ 逐个提取 {...} 对象，用 parseJson 解析，避免手动截取密码出错
             if (arrStr.trim().equals("[]")) {
-                plugin.getLogger().info("[Web密码验证轮询] ○ 无待处理的密码验证请求");
                 return;
             }
             plugin.getLogger().info("[Web密码验证轮询] ★ 发现待处理请求，数组长度=" + arrStr.length());
@@ -4912,7 +4918,7 @@ public class WebManager {
                     // 有人在线才响应通知
                     if (!Bukkit.getOnlinePlayers().isEmpty()) {
                         // ★ 通过DB队列串行化执行同步
-                        submitDbTask("通知-syncOnlinePlayers", () -> syncOnlinePlayers());
+                        submitDbTask("通知-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                         submitDbTask("通知-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                         submitDbTask("通知-syncUserRegistrations", () -> syncUserRegistrations());
                         submitDbTask("通知-syncServiceProviders", () -> syncServiceProviders());

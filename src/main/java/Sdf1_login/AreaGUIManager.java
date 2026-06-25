@@ -427,7 +427,7 @@ public class AreaGUIManager implements Listener {
                 {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                 {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
-                {"玩家发光", "denyGlowing"}, {"禁止和平模式", "peaceMode"}
+                {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
         };
 
         int slot = 0;
@@ -574,7 +574,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermEntry("投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
-        perms.add(new PermEntry("禁止和平模式", !land.peaceMode));
+        perms.add(new PermEntry("和平模式", land.peaceMode));
         return perms;
     }
 
@@ -624,7 +624,7 @@ public class AreaGUIManager implements Listener {
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
             case "投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
-            case "禁止和平模式": land.peaceMode = !land.peaceMode; break;
+            case "和平模式": land.peaceMode = !land.peaceMode; break;
         }
         areaProtect.saveAreaToDb(land);
     }
@@ -887,7 +887,7 @@ public class AreaGUIManager implements Listener {
                         {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                         {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
-                        {"玩家发光", "denyGlowing"}, {"禁止和平模式", "peaceMode"}
+                        {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
                 };
 
                 if (raw < permDefs.length) {
@@ -1352,8 +1352,9 @@ public class AreaGUIManager implements Listener {
         else if (subPage == 2) {
             if (raw < land.clearEffects.size()) {
                 // 移除单清效果
-                land.clearEffects.remove(raw);
+                String removed = land.clearEffects.remove(raw);
                 areaProtect.saveAreaToDb(land);
+                p.sendMessage("§a§l[效果管理] §f已移除清除效果: §e" + removed);
                 openEffectsManagement(p, landName, 2);
             } else if (raw == 48) {
                 openEffectsManagement(p, landName, 1);
@@ -1368,8 +1369,10 @@ public class AreaGUIManager implements Listener {
         else if (subPage == 3) {
             if (raw < land.giveEffects.size()) {
                 // 移除增益效果
-                land.giveEffects.remove(raw);
+                String[] removed = land.giveEffects.remove(raw);
+                String desc = removed[0] + (removed.length > 1 ? " Lv" + removed[1] : "") + (removed.length > 2 ? " " + removed[2] + "秒" : "");
                 areaProtect.saveAreaToDb(land);
+                p.sendMessage("§a§l[效果管理] §f已移除增益效果: §a" + desc);
                 openEffectsManagement(p, landName, 3);
             } else if (raw == 48) {
                 openEffectsManagement(p, landName, 1);

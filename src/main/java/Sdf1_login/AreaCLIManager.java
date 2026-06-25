@@ -636,7 +636,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", "投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
-        perms.add(new PermItem("peace_mode", "启用和平模式", land.peaceMode));
+        perms.add(new PermItem("peace_mode", "和平模式", land.peaceMode));
         return perms;
     }
 
@@ -670,7 +670,7 @@ public class AreaCLIManager {
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
             case "glowing": return "玩家发光";
-            case "peace_mode": return "启用和平模式";
+            case "peace_mode": return "和平模式";
             default: return key;
         }
     }
@@ -966,7 +966,7 @@ public class AreaCLIManager {
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"glowing", "玩家发光", "denyGlowing"},
-                {"peace_mode", "启用和平模式", "peaceMode"}
+                {"peace_mode", "和平模式", "peaceMode"}
         };
 
         for (String[] def : permDefs) {
@@ -1099,12 +1099,13 @@ public class AreaCLIManager {
                 }
             }
 
-            Component addLine = Component.empty().append(Component.text("§e[添加效果] "));
-            p.sendMessage(addLine);
+            // ★ 可点击添加按钮 → 跳转到效果选择列表
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§e[添加效果]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击选择要清除的效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 4")));
             p.sendMessage(Component.text("§a[◀ 返回管理菜单]")
                     .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1")));
-            p.sendMessage(Component.text("§7提示: 单清效果请使用快捷指令: /protect cli effectsclearadd <效果名>"));
-            p.sendMessage(Component.text("§7支持中文（如：缓慢、中毒、凋零、饥饿）"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
 
@@ -1128,14 +1129,123 @@ public class AreaCLIManager {
             }
 
             p.sendMessage(Component.text(""));
-            p.sendMessage(Component.empty()
-                    .append(Component.text("§e[添加增益] "))
-                    .append(Component.text("§a[◀ 返回管理菜单]")
-                            .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1"))));
-            p.sendMessage(Component.text("§7提示: 添加增益效果请使用快捷指令: /protect cli effectsaddadd <效果名> [等级] [秒数]"));
-            p.sendMessage(Component.empty()
-                    .append(Component.text("§e示例: /protect cli effectsaddadd 力量 2 300 = 力量II 持续5分钟"))
-                    .clickEvent(ClickEvent.suggestCommand("/protect cli effectsaddadd 力量 2 300")));
+            // ★ 可点击添加按钮 → 跳转到增益效果选择列表
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§e[添加增益]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击选择要添加的增益效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 5")));
+            p.sendMessage(Component.text("§a[◀ 返回管理菜单]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 子菜单4：选择清除效果（可点击列表） ==========
+        else if (subPage == 4) {
+            p.sendMessage(header("选择要清除的效果: " + landName));
+
+            // ★ 负面效果（可点击添加到单清列表）
+            p.sendMessage(Component.text("§c§l负面效果:"));
+            String[][] badEffects = {
+                    {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
+                    {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
+                    {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
+                    {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
+                    {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"}
+            };
+            for (String[] eff : badEffects) {
+                boolean alreadyInList = land.clearEffects.contains(eff[0]);
+                String prefix = alreadyInList ? "§7" : "§c";
+                String suffix = alreadyInList ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyInList) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text("§e点击添加清除效果: " + eff[0])))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsclearadd " + landName + " " + eff[0]));
+                }
+                p.sendMessage(btn);
+            }
+
+            // ★ 中性效果
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§e§l中性效果:"));
+            String[][] neutralEffects = {
+                    {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"}
+            };
+            for (String[] eff : neutralEffects) {
+                boolean alreadyInList = land.clearEffects.contains(eff[0]);
+                String prefix = alreadyInList ? "§7" : "§e";
+                String suffix = alreadyInList ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyInList) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text("§e点击添加清除效果: " + eff[0])))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsclearadd " + landName + " " + eff[0]));
+                }
+                p.sendMessage(btn);
+            }
+
+            // ★ 正面效果（也可以添加到清除列表）
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§a§l正面效果:"));
+            String[][] goodEffects = {
+                    {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
+                    {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
+                    {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
+                    {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
+                    {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
+                    {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
+                    {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
+            };
+            for (String[] eff : goodEffects) {
+                boolean alreadyInList = land.clearEffects.contains(eff[0]);
+                String prefix = alreadyInList ? "§7" : "§a";
+                String suffix = alreadyInList ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyInList) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text("§e点击添加清除效果: " + eff[0])))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsclearadd " + landName + " " + eff[0]));
+                }
+                p.sendMessage(btn);
+            }
+
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§a[◀ 返回单清效果列表]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 2")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 子菜单5：选择增益效果（可点击列表） ==========
+        else if (subPage == 5) {
+            p.sendMessage(header("选择要添加的增益效果: " + landName));
+            p.sendMessage(Component.text("§7点击效果名称直接添加（默认等级1，持续300秒）"));
+            p.sendMessage(Component.text("§7高级: /protect cli effectsaddadd <效果名> [等级] [秒数]"));
+
+            String[][] giveEffectsList = {
+                    {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
+                    {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
+                    {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
+                    {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
+                    {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
+                    {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
+                    {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
+            };
+            for (String[] eff : giveEffectsList) {
+                // 检查是否已存在同名增益
+                boolean alreadyExists = false;
+                for (String[] ge : land.giveEffects) {
+                    if (ge[0].equals(eff[0])) { alreadyExists = true; break; }
+                }
+                String prefix = alreadyExists ? "§7" : "§a";
+                String suffix = alreadyExists ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyExists) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text("§e点击添加增益: " + eff[0] + " Lv1 300秒")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsaddadd " + landName + " " + eff[0] + " 1 300"));
+                }
+                p.sendMessage(btn);
+            }
+
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§a[◀ 返回增益效果列表]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 3")));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
     }
