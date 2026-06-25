@@ -1044,18 +1044,27 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
             return ['ok' => true, 'mode' => 'full_verified', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '交易金额≤1000，免验证'];
         }
 
-        // >1000债券交易需要密码验证
-        if ($password) {
-            if (verifyWebLoginPassword($playerName, $password)) {
+        // ★ 安全修复：大额交易密码验证必须通过游戏服务器（web_login_verified），禁止PHP自验证
+        // 检查web_login_verified表：最近10分钟内通过Java验证过 → 允许
+        $db = getDB();
+        try {
+            $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+            $stmt = $db->prepare("SELECT verified_at FROM web_login_verified WHERE player_name = :player");
+            $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $result = $stmt->execute();
+            $row = $result->fetchArray();
+            $verifiedAt = $row ? (int)$row['verified_at'] : 0;
+            $validWindow = 600; // 10分钟内有效
+            if ($verifiedAt > 0 && (time() - $verifiedAt) < $validWindow) {
                 $sessionToken = recordWebSession($playerName, $ipAddress);
-                debugLog("validateWebAccess: 密码验证通过", ['player' => $playerName, 'amount' => $amount]);
+                debugLog("validateWebAccess: Java验证有效", ['player' => $playerName, 'amount' => $amount, 'age' => time() - $verifiedAt]);
                 return ['ok' => true, 'mode' => 'full_verified', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '密码验证通过'];
             }
-            debugLog("validateWebAccess: 密码错误", ['player' => $playerName]);
-            return ['ok' => false, 'mode' => 'denied', 'message' => '密码错误'];
+        } catch (\Throwable $e) {
+            debugLog("validateWebAccess: 查询web_login_verified异常", ['error' => $e->getMessage()]);
         }
         debugLog("validateWebAccess: 需要密码", ['player' => $playerName, 'amount' => $amount]);
-        return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '大额交易需要输入密码确认'];
+        return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '大额交易需要在游戏中重新验证密码'];
     }
 
     // 8. 其他操作：Token有效，直接允许访问

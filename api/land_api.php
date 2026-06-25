@@ -1073,7 +1073,7 @@ function handlePollAdminChanges($db, $get) {
 }
 
 function handleAckAdminChanges($db, $post) {
-    $ids = $post['ids'] ?? '';
+    $ids = $post['ids'] ?? ($_GET['ids'] ?? '');
     if (empty($ids)) {
         echo json_encode(['success' => false, 'error' => 'missing ids']);
         return;

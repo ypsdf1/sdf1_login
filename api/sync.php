@@ -204,7 +204,8 @@ switch ($action) {
         pushWebCredentials();
         break;
     case 'verify_web_password':
-        verifyWebPassword();
+        // ★ 安全修复：禁止PHP自验证密码，必须走web_login_request流程
+        error('安全限制: 密码验证必须通过游戏服务器，请使用web_login_request接口');
         break;
     case 'web_access_check':
         webAccessCheck();
