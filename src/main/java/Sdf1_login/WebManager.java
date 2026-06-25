@@ -1405,7 +1405,7 @@ public class WebManager {
         scheduleTimerB(140L);
         // C: 12秒后首次启动（错开B至少5秒）
         scheduleTimerC(240L);
-        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动：A注册登录(0~5s) B交易(0~10s) C其它(10~20s) 错峰≥5秒");
+        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动：A注册登录(8~15s) B交易(0~10s) C其它(10~20s) 错峰≥5秒");
     }
 
     /**
@@ -1455,8 +1455,8 @@ public class WebManager {
                     });
                 }
 
-                // 自调度下一轮（0~5秒，错峰）
-                scheduleTimerA(calcStaggeredDelay(TIMER_A, 0, 5));
+                // 自调度下一轮（8~15秒，错峰，避免与PHP锁库冲突）
+                scheduleTimerA(calcStaggeredDelay(TIMER_A, 8, 15));
             }
         }.runTaskLaterAsynchronously(plugin, ticks);
     }
@@ -2680,7 +2680,7 @@ public class WebManager {
             if (areaProtect == null) return;
 
             // 查询PHP端管理员变更
-            String url = webBaseUrl + "/api/land_api.php?action=poll_admin_changes&secret=" + secretKey + "&last_id=" + lastPollAdminChangesId + "&limit=50";
+            String url = webBaseUrl + "/api/land_api.php?action=poll_admin_changes&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8") + "&last_id=" + lastPollAdminChangesId + "&limit=50";
             String response = doGet(url);
             if (response == null) return;
 
@@ -2750,7 +2750,7 @@ public class WebManager {
             // 确认已处理的变更
             if (!ackedIds.isEmpty()) {
                 String idsStr = String.join(",", ackedIds.stream().map(String::valueOf).collect(Collectors.toList()));
-                String ackUrl = "/api/land_api.php?action=ack_admin_changes&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8") + "&ids=" + java.net.URLEncoder.encode(idsStr, "UTF-8");
+                String ackUrl = webBaseUrl + "/api/land_api.php?action=ack_admin_changes&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8") + "&ids=" + java.net.URLEncoder.encode(idsStr, "UTF-8");
                 doGet(ackUrl);
             }
         } catch (Exception e) {
