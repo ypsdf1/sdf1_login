@@ -1357,7 +1357,7 @@ public class WebManager {
 
                 checkSyncNotify();
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±10秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±5秒
     }
 
     /**
@@ -1388,6 +1388,11 @@ public class WebManager {
                         return;
                     }
 
+                    // ★ 锁库特殊处理：reset failCount，不计失败，等下一轮重试
+                    if (resp.contains("\"database is locked\"")) {
+                        txPollFailCount = 0;
+                        return;
+                    }
                     // 成功 → 重置失败计数
                     txPollFailCount = 0;
                     // 快速解析 "pending":N
@@ -1419,17 +1424,17 @@ public class WebManager {
                     }
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 交易轮询 5±10秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(8), 20L * randomIntervalSeconds(8)); // 交易轮询 8±5秒
     }
 
     /**
-     * 生成定时器随机间隔（基础值 ±10秒）
+     * 生成定时器随机间隔（基础值 ±5秒）
      * 每个请求都是独立随机数，避开并发导致的SQL锁死
      * @param baseSeconds 基础秒数
-     * @return 随机秒数 [base-10, base+10]，最小1秒
+     * @return 随机秒数 [base-5, base+5]，最小1秒
      */
     private long randomIntervalSeconds(long baseSeconds) {
-        long offset = (long) (Math.random() * 21) - 10; // -10 ~ +10
+        long offset = (long) (Math.random() * 11) - 5; // -5 ~ +5
         return Math.max(1, baseSeconds + offset);
     }
 
@@ -1494,9 +1499,13 @@ public class WebManager {
                         return;
                     }
 
-                    // 额外校验：即使resp不为null，也可能包含数据库锁错误
-                    if (resp.contains("\"database is locked\"") || !resp.contains("\"success\":true")) {
-                        plugin.getLogger().warning("[库存高频轮询] PHP返回DB锁错误或非success响应: " + resp.substring(0, Math.min(200, resp.length())));
+                    // ★ 锁库特殊处理：PHP返回database is locked时重置failCount，不计为失败
+                    if (resp.contains("\"database is locked\"")) {
+                        shopStockPollFailCount = 0;
+                        return;
+                    }
+                    if (!resp.contains("\"success\":true")) {
+                        plugin.getLogger().warning("[库存高频轮询] PHP返回非success响应: " + resp.substring(0, Math.min(200, resp.length())));
                         shopStockPollFailCount++;
                         return;
                     }
@@ -1546,7 +1555,7 @@ public class WebManager {
                     shopStockPollFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // 库存轮询 5±10秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(8), 20L * randomIntervalSeconds(8)); // 库存轮询 8±5秒
         plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每5秒）");
     }
 
@@ -1654,11 +1663,20 @@ public class WebManager {
                         String url = webBaseUrl + "/api/land_api.php?action=get_config&secret="
                                 + java.net.URLEncoder.encode(secretKey, "UTF-8");
                         String json = doGet(url);
-                        if (json != null && json.contains("\"success\":true")) {
-                            landSyncFailCount = 0;
-                            // 配置拉取成功，通知AreaProtection刷新
-                            if (plugin.areaProtection != null) {
-                                plugin.areaProtection.reloadAreaConfigFromDb();
+                        if (json != null) {
+                            // ★ 锁库检测：PHP返回database is locked时不计为失败，但也不刷屏
+                            if (json.contains("database is locked")) {
+                                landSyncFailCount = 0;
+                                return;
+                            }
+                            if (json.contains("\"success\":true")) {
+                                landSyncFailCount = 0;
+                                // 配置拉取成功，通知AreaProtection刷新
+                                if (plugin.areaProtection != null) {
+                                    plugin.areaProtection.reloadAreaConfigFromDb();
+                                }
+                            } else {
+                                landSyncFailCount++;
                             }
                         } else {
                             landSyncFailCount++;
@@ -1683,6 +1701,10 @@ public class WebManager {
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             String json = doGet(listUrl);
             if (json == null) return;
+            // ★ 锁库检测：PHP返回database is locked时不计为"成功响应"，但也不刷屏
+            if (json.contains("database is locked")) {
+                return;
+            }
             if (!json.contains("\"success\":true")) return;
 
             int reqIdx = json.indexOf("\"requests\":[");
@@ -1784,6 +1806,10 @@ public class WebManager {
                             + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8");
                     String vJson = doGet(validateUrl);
                     if (vJson != null) {
+                        // ★ 锁库检测：PHP返回database is locked时跳过
+                        if (vJson.contains("database is locked")) {
+                            return;
+                        }
                         // ★ 详细日志：PHP返回的原始JSON
                         plugin.getLogger().info("[CDK-Web验证] PHP原始返回: " + vJson);
                         String found = extractJsonStr(vJson, "found");
@@ -1802,6 +1828,10 @@ public class WebManager {
                                         + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8");
                                 String rJson = doGet(redeemUrl);
                                 if (rJson != null) {
+                                    // ★ 锁库检测：PHP返回database is locked时跳过
+                                    if (rJson.contains("database is locked")) {
+                                        return;
+                                    }
                                     plugin.getLogger().info("[CDK-Web验证] 兑换结果: " + rJson);
                                     String rSt = extractJsonStr(rJson, "status");
                                     if ("success".equals(rSt)) {
@@ -4865,6 +4895,11 @@ public class WebManager {
                 return;
             }
 
+            // ★ 锁库检测：PHP返回database is locked时不计为"成功响应"，但也不刷屏
+            if (json.contains("database is locked")) {
+                registerPollFailCount = 0;
+                return;
+            }
             // 成功 → 重置
             registerPollFailCount = 0;
             if (!json.contains("\"success\":true")) {
