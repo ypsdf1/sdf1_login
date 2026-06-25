@@ -3877,12 +3877,13 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_web_login_confirmations&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            plugin.getLogger().info("[Web登录确认轮询] ★ 开始轮询 check_web_login_confirmations");
             String json = doGet(urlStr);
             if (json == null) {
                 loginPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web登录确认轮询] GET失败 (连续失败" + loginPollFailCount + "次)");
+                    plugin.getLogger().warning("[Web登录确认轮询] ✗ GET失败 (连续失败" + loginPollFailCount + "次)");
                     lastLoginPollLogTime = now;
                 }
                 return;
@@ -3890,15 +3891,17 @@ public class WebManager {
 
             // 成功 → 重置
             loginPollFailCount = 0;
+            plugin.getLogger().info("[Web登录确认轮询] ★ PHP响应(前300字符): " + json.substring(0, Math.min(300, json.length())));
+
             if (!json.contains("\"success\":true")) {
-                plugin.getLogger().info("[Web登录确认轮询] PHP响应非success: " + json.substring(0, Math.min(200, json.length())));
+                plugin.getLogger().info("[Web登录确认轮询] ✗ PHP响应非success");
                 return;
             }
 
-            // 简单解析玩家名列表
+            // 简单解析玩家名列表 + php_verified状态
             int dataStart = json.indexOf("\"data\":");
             if (dataStart < 0) {
-                plugin.getLogger().info("[Web登录确认轮询] PHP响应无data字段: " + json.substring(0, Math.min(200, json.length())));
+                plugin.getLogger().info("[Web登录确认轮询] ✗ PHP响应无data字段");
                 return;
             }
             String dataStr = json.substring(dataStart + 7);
@@ -3906,48 +3909,79 @@ public class WebManager {
             if (arrEnd < 0) return;
             String arrStr = dataStr.substring(0, arrEnd + 1);
 
-            // 提取每个player_name
+            // ★ 解析每个确认记录（player_name + php_verified）
             java.util.List<String> players = new java.util.ArrayList<>();
+            java.util.Map<String, Boolean> phpVerifiedMap = new java.util.HashMap<>();
             int idx = 0;
             while (true) {
-                int nameStart = arrStr.indexOf("\"player_name\":\"", idx);
-                if (nameStart < 0) break;
+                int objStart = arrStr.indexOf("{", idx);
+                if (objStart < 0) break;
+                int objEnd = findMatchingBracket(arrStr, objStart);
+                if (objEnd < 0) break;
+                String obj = arrStr.substring(objStart, objEnd + 1);
+
+                // 提取player_name
+                int nameStart = obj.indexOf("\"player_name\":\"");
+                if (nameStart < 0) { idx = objEnd + 1; continue; }
                 nameStart += 15;
-                int nameEnd = arrStr.indexOf("\"", nameStart);
-                if (nameEnd < 0) break;
-                players.add(arrStr.substring(nameStart, nameEnd));
-                idx = nameEnd + 1;
+                int nameEnd = obj.indexOf("\"", nameStart);
+                if (nameEnd < 0) { idx = objEnd + 1; continue; }
+                String playerName = obj.substring(nameStart, nameEnd);
+
+                // 提取php_verified
+                boolean phpVerified = obj.contains("\"php_verified\":true");
+
+                players.add(playerName);
+                phpVerifiedMap.put(playerName, phpVerified);
+                idx = objEnd + 1;
             }
 
-            if (!players.isEmpty()) {
-                plugin.getLogger().info("[Web登录轮询] 发现 " + players.size() + " 个未消费的登录确认: " + players);
+            if (players.isEmpty()) {
+                plugin.getLogger().info("[Web登录确认轮询] ○ 无待处理的登录确认");
+                return;
             }
+
+            plugin.getLogger().info("[Web登录确认轮询] ★ 发现 " + players.size() + " 个登录确认: " + players
+                    + " phpVerified=" + phpVerifiedMap);
 
             // 在主线程处理每个玩家的自动登录
             for (String playerName : players) {
                 final String name = playerName;
+                final boolean phpVerified = phpVerifiedMap.getOrDefault(playerName, false);
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     try {
-                        // ★★★ 安全加固：PHP推送的登录确认，必须在Java本地有验证记录 ★★★
-                        // 防止PHP自验证假密码 → 写入web_login_confirmations → Java盲目自动登录
-                        boolean hasVerifiedRecord = isWebLoginVerified(name);
-                        plugin.getLogger().info("[Web登录轮询] 安全检查: player=" + name + " hasVerifiedRecord=" + hasVerifiedRecord);
-                        
-                        if (!hasVerifiedRecord) {
-                            plugin.getLogger().warning("[Web登录轮询] ⚠️ 玩家 " + name + " 无Java本地验证记录，拒绝自动登录（安全拦截）");
+                        // ★ 安全检查：Java本地记录 or PHP验证状态
+                        boolean javaVerified = isWebLoginVerified(name);
+                        plugin.getLogger().info("[Web登录确认轮询] ★ 安全检查 player=" + name
+                                + " javaVerified=" + javaVerified
+                                + " phpVerified=" + phpVerified
+                                + " javaVerifiedKeys=" + verifiedWebLogins.keySet());
+
+                        if (!javaVerified && !phpVerified) {
+                            // 两边都没有验证记录 → 拒绝
+                            plugin.getLogger().warning("[Web登录确认轮询] ✗ 玩家 " + name
+                                    + " Java和PHP均无验证记录，拒绝自动登录（安全拦截）");
                             return;
                         }
-                        
-                        plugin.getLogger().info("[Web登录轮询] 尝试处理玩家 " + name + " 的自动登录");
+
+                        if (!javaVerified && phpVerified) {
+                            // Java内存没有但PHP有 → 信任PHP，写入Java内存（邮箱验证码等场景）
+                            plugin.getLogger().info("[Web登录确认轮询] ★ 玩家 " + name
+                                    + " Java无记录但PHP已验证，信任PHP验证结果，写入Java记录");
+                            recordWebLogin(name);
+                        }
+
+                        plugin.getLogger().info("[Web登录确认轮询] ★ 尝试自动登录 player=" + name);
                         boolean ok = plugin.handleWebLoginConfirmation(name);
                         if (ok) {
                             clearWebLoginVerified(name);  // ★ 消费后立即清除
-                            plugin.getLogger().info("[Web登录轮询] ✅ 玩家 " + name + " 通过Java本地验证，已自动登录");
+                            plugin.getLogger().info("[Web登录确认轮询] ✓ 玩家 " + name + " 已自动登录成功");
                         } else {
-                            plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 未在线，跳过自动登录（Java验证记录保留5分钟，等待玩家上线）");
+                            plugin.getLogger().info("[Web登录确认轮询] ○ 玩家 " + name + " 不在线，跳过（验证记录保留5分钟，等上线后onJoin放行）");
                         }
                     } catch (Exception e) {
-                        plugin.getLogger().warning("[Web登录轮询] 处理异常: player=" + name + " error=" + e.getMessage());
+                        plugin.getLogger().warning("[Web登录确认轮询] ✗ 处理异常: player=" + name
+                                + " error=" + e.getClass().getSimpleName() + ": " + e.getMessage());
                     }
                 });
             }
@@ -3955,7 +3989,7 @@ public class WebManager {
             loginPollFailCount++;
             long now = System.currentTimeMillis();
             if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
-                plugin.getLogger().warning("[Web登录确认轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage()
+                plugin.getLogger().warning("[Web登录确认轮询] ✗ 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage()
                         + " (连续失败" + loginPollFailCount + "次)");
                 lastLoginPollLogTime = now;
             }
@@ -4003,15 +4037,16 @@ public class WebManager {
             }
             // 成功 → 重置
             loginPollFailCount = 0;
+            plugin.getLogger().info("[Web密码验证轮询] ★ PHP响应(前300字符): " + json.substring(0, Math.min(300, json.length())));
             if (!json.contains("\"success\":true")) {
-                plugin.getLogger().info("[Web密码验证轮询] PHP响应非success: " + json.substring(0, Math.min(200, json.length())));
+                plugin.getLogger().info("[Web密码验证轮询] ✗ PHP响应非success");
                 return;
             }
 
             // 解析请求列表
             int dataStart = json.indexOf("\"data\":");
             if (dataStart < 0) {
-                plugin.getLogger().info("[Web密码验证轮询] PHP响应无data字段: " + json.substring(0, Math.min(200, json.length())));
+                plugin.getLogger().info("[Web密码验证轮询] ✗ PHP响应无data字段");
                 return;
             }
             String dataStr = json.substring(dataStart + 7);
@@ -4020,7 +4055,11 @@ public class WebManager {
             String arrStr = dataStr.substring(0, arrEnd + 1);
 
             // ★ 逐个提取 {...} 对象，用 parseJson 解析，避免手动截取密码出错
-        //    plugin.getLogger().info("[Web密码验证] 待解析数组: " + (arrStr.length() > 200 ? arrStr.substring(0, 200) + "..." : arrStr));
+            if (arrStr.trim().equals("[]")) {
+                plugin.getLogger().info("[Web密码验证轮询] ○ 无待处理的密码验证请求");
+                return;
+            }
+            plugin.getLogger().info("[Web密码验证轮询] ★ 发现待处理请求，数组长度=" + arrStr.length());
             int idx = 0;
             while (true) {
                 int objStart = arrStr.indexOf("{", idx);
@@ -4101,6 +4140,9 @@ public class WebManager {
                     resultJson = "{\"success\":false,\"status\":\"failed\"}";
                 }
 
+                plugin.getLogger().info("[Web密码验证回写] ★ 开始回写PHP player=" + playerName
+                        + " reqId=" + reqId + " result=" + result);
+
                 // 使用GET请求，所有参数通过URL传递，避免POST body解析问题
                 // 最多重试3次，每次间隔2秒
                 boolean sent = false;
@@ -4117,20 +4159,25 @@ public class WebManager {
 
                         if (resp != null) {
                             sent = true;
-                            plugin.getLogger().info("[Web密码验证] 结果已发送: reqId=" + reqId + " result=" + result + " (第" + (attempt + 1) + "次尝试)");
+                            plugin.getLogger().info("[Web密码验证回写] ✓ 成功: player=" + playerName
+                                    + " reqId=" + reqId + " result=" + result
+                                    + " PHP响应=" + resp.substring(0, Math.min(200, resp.length()))
+                                    + " (第" + (attempt + 1) + "次)");
                             break;
                         } else {
-                            plugin.getLogger().warning("[Web密码验证] GET失败: reqId=" + reqId + " player=" + playerName);
+                            plugin.getLogger().warning("[Web密码验证回写] ✗ GET失败: player=" + playerName
+                                    + " reqId=" + reqId + " (第" + (attempt + 1) + "次)");
                         }
                     } catch (Exception e) {
-                        plugin.getLogger().warning("[Web密码验证] 第" + (attempt + 1) + "次尝试异常: reqId=" + reqId + " " + e.getMessage());
+                        plugin.getLogger().warning("[Web密码验证回写] ✗ 异常: player=" + playerName
+                                + " reqId=" + reqId + " (第" + (attempt + 1) + "次) " + e.getMessage());
                     }
                     // 重试前等待
                     try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
                 }
-                
+
                 if (!sent) {
-                    plugin.getLogger().warning("[Web密码验证] 发送结果失败，已重试3次: reqId=" + reqId + " player=" + playerName);
+                    plugin.getLogger().warning("[Web密码验证回写] ✗ 最终失败，已重试3次: player=" + playerName + " reqId=" + reqId);
                 }
             }
         }.runTaskAsynchronously(plugin);
