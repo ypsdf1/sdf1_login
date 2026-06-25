@@ -115,12 +115,14 @@ public class WebManager {
 
     // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
     private static final int SSL_CIRCUIT_THRESHOLD = 5;  // 连续失败5次触发断路
-    private static final long SSL_CIRCUIT_COOLDOWN_MS = 60000; // 断路冷却60秒
+    private static final long SSL_CIRCUIT_BASE_COOLDOWN_MS = 30000; // 断路基础冷却30秒
+    private static final long SSL_CIRCUIT_MAX_COOLDOWN_MS = 300000; // 断路最大冷却5分钟
     // ★ SSL降级：连续失败3次后降级到HTTP
     private static final int SSL_DOWNGRADE_THRESHOLD = 3;  // 连续失败3次触发降级
     private volatile boolean sslDowngraded = false;  // SSL降级标志
     private volatile int sslConsecutiveFailures = 0;
     private volatile long sslCircuitOpenUntil = 0;
+    private volatile int sslCircuitOpenCount = 0;  // 连续断路次数（用于指数退避）
 
     public WebManager(Main plugin) {
         this.plugin = plugin;
@@ -278,7 +280,7 @@ public class WebManager {
         sslCircuitOpenUntil = 0;
         sslConsecutiveFailures = 0;
         sslDowngraded = false;  // 恢复降级标志
-        plugin.getLogger().info("[Web通信] SSL断路器冷却结束，恢复轮询");
+        plugin.getLogger().info("[Web通信] SSL断路器冷却结束（第" + (sslCircuitOpenCount + 1) + "轮），恢复轮询");
         // ★ 重建HttpClient，清除可能损坏的连接状态
         rebuildHttpClient();
         return false;
@@ -320,6 +322,7 @@ public class WebManager {
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 // HTTP成功 → 重置SSL计数，恢复正常
                 sslConsecutiveFailures = 0;
+                sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;
                 plugin.getLogger().info("[Web通信] HTTP降级成功，恢复正常HTTPS");
                 return resp.body();
@@ -383,7 +386,7 @@ public class WebManager {
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .sslParameters(sslParams)
-                    .connectTimeout(Duration.ofSeconds(15))
+                    .connectTimeout(Duration.ofSeconds(10))
                     .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
@@ -412,7 +415,7 @@ public class WebManager {
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .sslParameters(sslParams)
-                    .connectTimeout(Duration.ofSeconds(15))
+                    .connectTimeout(Duration.ofSeconds(10))
                     .version(HttpClient.Version.HTTP_1_1)
                     .followRedirects(HttpClient.Redirect.NORMAL)
                     .build();
@@ -456,7 +459,7 @@ public class WebManager {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(10))
                     .header("User-Agent", "Sdf1-WebManager/2.8")
                     .header("Accept", "application/json")
                     .GET()
@@ -464,6 +467,7 @@ public class WebManager {
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0; // 成功 → 重置断路器
+                sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;  // 恢复正常HTTPS
                 return resp.body();
             }
@@ -482,8 +486,13 @@ public class WebManager {
                 return doGetHttpFallback(httpUrl);
             }
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
-                sslCircuitOpenUntil = System.currentTimeMillis() + SSL_CIRCUIT_COOLDOWN_MS;
-                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询60秒");
+                // ★ 指数退避：30s → 60s → 120s → 240s → 300s(上限)
+                long cooldown = Math.min(
+                    SSL_CIRCUIT_BASE_COOLDOWN_MS * (1L << sslCircuitOpenCount),
+                    SSL_CIRCUIT_MAX_COOLDOWN_MS);
+                sslCircuitOpenUntil = System.currentTimeMillis() + cooldown;
+                sslCircuitOpenCount++;
+                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询" + (cooldown/1000) + "秒（第" + sslCircuitOpenCount + "轮退避）");
             }
             plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
@@ -537,7 +546,7 @@ public class WebManager {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(10))
                     .header("User-Agent", "Sdf1-WebManager/2.8")
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
@@ -575,7 +584,7 @@ public class WebManager {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(10))
                     .header("User-Agent", "Sdf1-WebManager/2.8")
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
@@ -583,6 +592,7 @@ public class WebManager {
             HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0;
+                sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;  // 恢复正常HTTPS
                 return resp.body();
             }
@@ -601,8 +611,13 @@ public class WebManager {
                 return doPostHttpFallback(httpUrl, jsonBody);
             }
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
-                sslCircuitOpenUntil = System.currentTimeMillis() + SSL_CIRCUIT_COOLDOWN_MS;
-                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询60秒");
+                // ★ 指数退避：30s → 60s → 120s → 240s → 300s(上限)
+                long cooldown = Math.min(
+                    SSL_CIRCUIT_BASE_COOLDOWN_MS * (1L << sslCircuitOpenCount),
+                    SSL_CIRCUIT_MAX_COOLDOWN_MS);
+                sslCircuitOpenUntil = System.currentTimeMillis() + cooldown;
+                sslCircuitOpenCount++;
+                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询" + (cooldown/1000) + "秒（第" + sslCircuitOpenCount + "轮退避）");
             }
             plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
@@ -628,8 +643,9 @@ public class WebManager {
             HttpResponse<String> resp = plainHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0;
+                sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;
-                plugin.getLogger().info("[Web通信] HTTP降级成功，恢复正常HTTPS");
+                plugin.getLogger().info("[Web通信] HTTP降级POST成功，恢复正常HTTPS");
                 return resp.body();
             }
             plugin.getLogger().warning("[Web通信] HTTP降级失败 POST HTTP " + resp.statusCode() + ": " + urlStr);
@@ -652,7 +668,7 @@ public class WebManager {
             try {
                 HttpRequest req = HttpRequest.newBuilder()
                         .uri(URI.create(urlStr))
-                        .timeout(Duration.ofSeconds(15))
+                        .timeout(Duration.ofSeconds(10))
                         .header("User-Agent", "Sdf1-WebManager/2.8")
                         .header("Content-Type", "application/json; charset=UTF-8")
                         .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
@@ -801,24 +817,24 @@ public class WebManager {
                 plugin.getLogger().info("[Web通信] 开始首次全量同步（通过DB队列串行化）...");
                 // 登录相关操作高优先级
                 submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 // 普通同步操作低优先级（每个任务间随机间隔2-4秒，避免PHP端DB锁）
                 submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
-                try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
@@ -1189,19 +1205,19 @@ public class WebManager {
                             plugin.getLogger().info("[Web通信] 收到即时同步请求: " + players.toString());
                             // 通过DB队列串行化执行（每个任务间错开800ms）
                             submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitDbTask("即时-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitDbTask("即时-syncUserRegistrations", () -> syncUserRegistrations());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullPendingTransactions", () -> pullPendingTransactions());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
-                            try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                            try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                             submitNormalDbTask("即时-syncServiceProviders", () -> syncServiceProviders());
                         }
                     }
@@ -1224,17 +1240,17 @@ public class WebManager {
                         lastOnlineCheckTime = System.currentTimeMillis();
                         // 通过DB队列串行化执行最后一轮同步（每个任务间随机间隔2-4秒，避免与定时轮询冲突）
                         submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-syncUserRegistrations", () -> syncUserRegistrations());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("末轮-syncBondTransactions", () -> syncBondTransactions());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullPendingTransactions", () -> pullPendingTransactions());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
                         plugin.getLogger().info("[Web通信] 检测到全员下线超60秒，执行最后一轮同步（通过DB队列），调度器继续运行（玩家上线自动恢复）");
                         plugin.getLogger().warning("\n" +
@@ -1285,28 +1301,28 @@ public class WebManager {
 
                     // 登录/注册相关（始终执行，随机间隔2-4秒避免PHP端DB锁）
                     submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                    try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                     submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
-                    try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                    try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
 
                     if (online) {
                         // 在线：执行全量同步（每个任务随机间隔2-4秒）
                         submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-syncLandData", () -> syncLandData());
-                        try { Thread.sleep(8000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                        try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
                     } else {
                         // ★ 不在线：跳过非必要同步任务
