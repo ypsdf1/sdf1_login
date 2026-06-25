@@ -1736,6 +1736,7 @@ function checkWebLoginConfirmations() {
 
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
+    $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
 
     // ★ 不使用BEGIN IMMEDIATE（纯读+更新，减少锁冲突）
     try {
@@ -1754,6 +1755,22 @@ function checkWebLoginConfirmations() {
             $confirmations[] = $row;
             $playerNames[] = $row['player_name'];
         }
+
+        // ★ 为每个玩家查询web_login_verified状态（供Java判断是否信任此确认）
+        if (!empty($confirmations)) {
+            $verifiedStmt = $db->prepare("SELECT verified_at FROM web_login_verified WHERE player_name = :player AND verified_at >= :expire");
+            $verifiedStmt->bindValue(':expire', $expireTime, SQLITE3_INTEGER);
+            foreach ($confirmations as &$conf) {
+                $verifiedStmt->bindValue(':player', $conf['player_name'], SQLITE3_TEXT);
+                $vResult = $verifiedStmt->execute();
+                $vRow = $vResult->fetchArray(SQLITE3_ASSOC);
+                $conf['php_verified'] = $vRow ? true : false;
+                $conf['php_verified_at'] = $vRow ? (int)$vRow['verified_at'] : 0;
+            }
+            unset($conf);
+        }
+
+        debugLog("checkWebLoginConfirmations: 轮询", ['count' => count($confirmations), 'players' => $playerNames]);
 
         // 标记为已消费（一次性）
         if (!empty($playerNames)) {
@@ -1897,6 +1914,7 @@ function webLoginRequest() {
     $requestId = $db->lastInsertRowID();
 
     $db->exec("COMMIT");
+    debugLog("webLoginRequest: ✓ 新请求已创建", ['player' => $player, 'request_id' => $requestId, 'pwd_len' => strlen($password)]);
     } catch (\Throwable $e) {
         try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
         @error_log("[webLoginRequest] Transaction failed: " . $e->getMessage());
@@ -2049,6 +2067,7 @@ function checkPendingWebLogins() {
         $requests[] = $row;
     }
 
+    debugLog("checkPendingWebLogins: 轮询", ['count' => count($requests), 'players' => array_column($requests, 'player_name')]);
     success($requests);
 }
 
@@ -2124,7 +2143,7 @@ function completeWebLoginRequest() {
         }
 
         $db->exec("COMMIT");
-        debugLog("completeWebLoginRequest: 更新成功", ['request_id' => $requestId, 'status' => $status]);
+        debugLog("completeWebLoginRequest: ✓ 写入成功", ['request_id' => $requestId, 'player' => $player, 'status' => $status, 'wrote_confirmations' => ($status === 'success')]);
         success(['status' => $status], "结果已写入");
     } catch (\Throwable $e) {
         try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
