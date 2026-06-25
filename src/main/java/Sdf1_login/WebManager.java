@@ -2894,15 +2894,33 @@ public class WebManager {
      * Java验证成功后立即记录，玩家进游戏时直接检查
      */
     public boolean isWebLoginVerified(String playerName) {
+        // ★ 优先检查内存（Java刚验证的）
         Long verifiedTime = verifiedWebLogins.get(playerName);
-        if (verifiedTime == null) return false;
-
-        // 检查是否过期（5分钟）
-        if (System.currentTimeMillis() - verifiedTime > VERIFIED_LOGIN_EXPIRE_MS) {
-            verifiedWebLogins.remove(playerName);
-            return false;
+        if (verifiedTime != null) {
+            if (System.currentTimeMillis() - verifiedTime > VERIFIED_LOGIN_EXPIRE_MS) {
+                verifiedWebLogins.remove(playerName);
+                return false;
+            }
+            return true;
         }
-        return true;
+
+        // ★ 内存没有 → 检查login.db（重启后恢复）
+        try {
+            Long dbTime = (Long) plugin.getDb().getField(playerName, "web_verified_at");
+            if (dbTime != null && dbTime > 0) {
+                if (System.currentTimeMillis() - dbTime > VERIFIED_LOGIN_EXPIRE_MS) {
+                    // 过期，清除DB记录
+                    plugin.getDb().setField(playerName, "web_verified_at", 0L);
+                    return false;
+                }
+                // ★ 发现DB记录 → 同步到内存
+                verifiedWebLogins.put(playerName, dbTime);
+                return true;
+            }
+        } catch (Exception e) {
+            // DB查询失败，安全降级为不自动登录
+        }
+        return false;
     }
 
     /**
@@ -2910,6 +2928,12 @@ public class WebManager {
      */
     public void clearWebLoginVerified(String playerName) {
         verifiedWebLogins.remove(playerName);
+        // ★ 同步清除login.db记录
+        try {
+            plugin.getDb().setField(playerName, "web_verified_at", 0L);
+        } catch (Exception e) {
+            // 静默
+        }
     }
 
     /**
@@ -3783,10 +3807,17 @@ public class WebManager {
             for (String playerName : players) {
                 final String name = playerName;
                 Bukkit.getScheduler().runTask(plugin, () -> {
+                    // ★★★ 安全加固：PHP推送的登录确认，必须在Java本地有验证记录 ★★★
+                    // 防止PHP自验证假密码 → 写入web_login_confirmations → Java盲目自动登录
+                    if (!isWebLoginVerified(name)) {
+                        plugin.getLogger().warning("[Web登录轮询] ⚠️ 玩家 " + name + " 无Java本地验证记录，拒绝自动登录（安全拦截）");
+                        return;
+                    }
                     plugin.getLogger().info("[Web登录轮询] 尝试处理玩家 " + name + " 的自动登录");
                     boolean ok = plugin.handleWebLoginConfirmation(name);
                     if (ok) {
-                        plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 通过WebToken验证，已自动登录");
+                        clearWebLoginVerified(name);  // ★ 消费后立即清除
+                        plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 通过Java本地验证，已自动登录");
                     } else {
                         plugin.getLogger().info("[Web登录轮询] 玩家 " + name + " 未在线，跳过自动登录");
                     }
@@ -3880,7 +3911,13 @@ public class WebManager {
                         // ★ 验证成功后，立即记录本地登录状态（不依赖PHP）
                         if ("\"success\"".equals(result)) {
                             verifiedWebLogins.put(fName, System.currentTimeMillis());
-                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态");
+                            // ★ 持久化到login.db（重启不丢失）
+                            try {
+                                plugin.getDb().setField(fName, "web_verified_at", System.currentTimeMillis());
+                            } catch (Exception dbEx) {
+                                plugin.getLogger().warning("[Web密码验证] 写入login.db失败: " + dbEx.getMessage());
+                            }
+                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态（内存+DB）");
                         }
 
                         // 异步将结果写回PHP（供Web端查询）

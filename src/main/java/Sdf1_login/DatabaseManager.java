@@ -72,6 +72,9 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "temp_pw_expire",
                     "INTEGER DEFAULT 0");
+            // ★ Web密码验证时间戳（Java验证成功后写入，重启不丢失）
+            safeAdd(st, "web_verified_at",
+                    "INTEGER DEFAULT 0");
             safeAdd(st, "temp_pw_used",
                     "INTEGER DEFAULT 0");
             safeAdd(st, "ip_address",
