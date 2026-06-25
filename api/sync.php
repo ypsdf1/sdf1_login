@@ -2171,66 +2171,11 @@ function pushWebCredentials() {
 }
 
 // ===== Web端验证登录密码 =====
+// ★★★ 安全加固：此函数已废弃，禁止PHP自验证密码 ★★★
+// 所有密码验证必须通过 web_login_request → Java插件本地验证 → complete_web_login_request 回调
+// PHP端自验证密码会导致：假密码通过验证 + 游戏内未登录 + 快速重连绕过验证
 function verifyWebPassword() {
-    $webToken = getParam('web_token');
-    $password = getParam('password');
-    $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-
-    if (!$webToken) error('缺少web_token');
-    if (!$password) error('缺少password');
-
-    // 先验证token
-    $db = getDB();
-    $stmt = $db->prepare("SELECT * FROM weblogin_tokens WHERE web_token = :token");
-    $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
-    $result = $stmt->execute();
-    $row = $result->fetchArray(SQLITE3_ASSOC);
-
-    if (!$row) error('无效的登录Token');
-
-    $createdAt = (int)$row['created_at'];
-    $expireSeconds = (int)$row['expire_seconds'];
-    if (time() - $createdAt > $expireSeconds) error('登录Token已过期');
-
-    $playerName = $row['player_name'];
-
-    // ★ 安全检查：玩家必须在游戏中注册过才能登录
-    if (!isPlayerRegistered($playerName)) {
-        error('玩家未在游戏中注册，请先在游戏中使用 /register 注册账号');
-    }
-
-    // 验证密码
-    $verifyResult = verifyWebLoginPassword($playerName, $password);
-    if ($verifyResult === false) {
-        error('密码错误');
-    }
-
-    // 标记需要修改密码（如果是临时密码）
-    $needPasswordChange = ($verifyResult === 'temp') ? 1 : 0;
-
-    // 密码正确，创建登录确认记录，供插件轮询后自动登录游戏
-    $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
-    $confirmStmt = $db->prepare("INSERT OR REPLACE INTO web_login_confirmations (player_name, confirmed_at, consumed) VALUES (:player, :time, 0)");
-    $confirmStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-    $confirmStmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    $confirmStmt->execute();
-
-    // ★ 记录Web登录验证成功，供玩家进游戏时自动登录（持久化，不随轮询消费而消失）
-    $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
-    $verifiedStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
-    $verifiedStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-    $verifiedStmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    $verifiedStmt->execute();
-
-    // 记录会话
-    $sessionToken = recordWebSession($playerName, $ipAddress);
-
-    success([
-        'player' => $playerName,
-        'session' => $sessionToken,
-        'mode' => 'full',
-        'need_password_change' => $needPasswordChange
-    ], '登录成功');
+    error('安全限制: PHP禁止直接验证密码，必须通过游戏服务器验证。请使用web_login_request接口');
 }
 
 // ===== Web端安全验证入口（双保险）=====
