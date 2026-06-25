@@ -3886,11 +3886,9 @@ public class WebManager {
                     try {
                         String result = plugin.handleWebPasswordVerify(fName, fPwd);
 
-                        // ★ 验证成功后，立即记录本地登录状态（纯内存，5分钟有效期）
-                        if ("\"success\"".equals(result)) {
-                            verifiedWebLogins.put(fName, System.currentTimeMillis());
-                            plugin.getLogger().info("[Web密码验证] ★ 玩家 " + fName + " Web登录验证成功，已设置本地登录状态（内存缓存5分钟）");
-                        }
+                        // ★ 不在验证成功时写入verifiedWebLogins！
+                        // verifiedWebLogins只在玩家真正完成autoLogin后才设置（onJoin时自动登录）
+                        // 防止PHP假密码/错误密码验证被Java盲目信任
 
                         // 异步将结果写回PHP（供Web端查询）
                         sendWebLoginResult(fReqId, fName, result);

@@ -1767,7 +1767,7 @@ public class Main extends JavaPlugin
             getLogger().info("[Web登录] 检查点2失败: 玩家 " + name + " 内存中无PHP验证记录");
         }
         
-        // ★ 上述2路验证都失败 → 检查点3：强制重新验证密码（走正常登录流程）
+        // ★ 检查点3：上述2路验证都失败 → 强制重新验证密码（走正常登录流程）
         getLogger().info("[Web登录] 检查点3: 上述2路验证都失败，强制重新验证密码");
 
         // 强制重发资源包（清掉客户端拒绝记录）
@@ -1845,6 +1845,27 @@ public class Main extends JavaPlugin
         if (isBedrock) {
             autoLogin(p, "bedrock");
             return;
+        }
+        // ★ 关键安全修复：快速重连也必须检查Java是否有Web登录验证记录
+        // 否则PHP假密码登录成功后，玩家快速重连会被盲目放行
+        if (webManager != null && webManager.isWebLoginVerified(name)) {
+            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 有Java验证记录，放行");
+            webManager.clearWebLoginVerified(name);
+            autoLogin(p, "web_password");
+            return;
+        } else {
+            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 无Java验证记录，拒绝快速重连");
+        }
+        // ★ 关键安全修复：快速重连时必须检查Java是否有Web登录验证记录
+        // 如果玩家在Web端通过Java密码验证登录过，5分钟内重连直接放行
+        // 如果没有Java验证记录 → 拒绝快速重连（防止PHP假密码绕过）
+        if (webManager != null && webManager.isWebLoginVerified(name)) {
+            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 有Java验证记录，放行");
+            webManager.clearWebLoginVerified(name);
+            autoLogin(p, "web_password");
+            return;
+        } else {
+            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 无Java验证记录，拒绝快速重连");
         }
         if (canAutoLogin(p)) {
             autoLogin(p, "ip_reconnect");
