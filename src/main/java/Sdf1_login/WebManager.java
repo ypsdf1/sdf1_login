@@ -115,11 +115,12 @@ public class WebManager {
 
     // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
     private static final int SSL_CIRCUIT_THRESHOLD = 5;  // 连续失败5次触发断路
-    private static final long SSL_CIRCUIT_BASE_COOLDOWN_MS = 30000; // 断路基础冷却30秒
+    private static final long SSL_CIRCUIT_BASE_COOLDOWN_MS = 60000; // 断路基础冷却60秒
     private static final long SSL_CIRCUIT_MAX_COOLDOWN_MS = 300000; // 断路最大冷却5分钟
     // ★ SSL降级：连续失败3次后降级到HTTP
     private static final int SSL_DOWNGRADE_THRESHOLD = 3;  // 连续失败3次触发降级
     private volatile boolean sslDowngraded = false;  // SSL降级标志
+    private volatile boolean initialSyncComplete = false;  // 首次全量同步完成标志
     private volatile int sslConsecutiveFailures = 0;
     private volatile long sslCircuitOpenUntil = 0;
     private volatile int sslCircuitOpenCount = 0;  // 连续断路次数（用于指数退避）
@@ -303,6 +304,32 @@ public class WebManager {
     }
 
     /**
+     * ★ 安全触发断路器（防止并发重复触发）
+     * 已开路时只更新冷却时间（取最大值），不增加sslCircuitOpenCount
+     */
+    private void triggerCircuitBreaker(boolean httpAlsoFailed) {
+        if (isCircuitOpen()) {
+            // 已开路，但如果HTTP也失败说明CDN完全不可达，延长冷却
+            if (httpAlsoFailed) {
+                long extra = SSL_CIRCUIT_BASE_COOLDOWN_MS; // 额外加一轮基础冷却
+                long newUntil = System.currentTimeMillis() + extra;
+                if (newUntil > sslCircuitOpenUntil) {
+                    sslCircuitOpenUntil = newUntil;
+                    plugin.getLogger().warning("[Web通信] HTTP降级也失败，延长断路冷却至" + (extra/1000) + "秒");
+                }
+            }
+            return;
+        }
+        // 首次触发
+        long cooldown = Math.min(
+            SSL_CIRCUIT_BASE_COOLDOWN_MS * (1L << sslCircuitOpenCount),
+            SSL_CIRCUIT_MAX_COOLDOWN_MS);
+        sslCircuitOpenUntil = System.currentTimeMillis() + cooldown;
+        sslCircuitOpenCount++;
+        plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询" + (cooldown/1000) + "秒（第" + sslCircuitOpenCount + "轮退避）");
+    }
+
+    /**
      * 降级后的HTTP GET请求（使用不带SSL的HttpClient）
      */
     private String doGetHttpFallback(String urlStr) {
@@ -328,9 +355,11 @@ public class WebManager {
                 return resp.body();
             }
             plugin.getLogger().warning("[Web通信] HTTP降级失败 HTTP " + resp.statusCode() + ": " + urlStr);
+            triggerCircuitBreaker(true);
             return null;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] HTTP降级异常: " + e.getMessage());
+            triggerCircuitBreaker(true);
             return null;
         }
     }
@@ -486,13 +515,7 @@ public class WebManager {
                 return doGetHttpFallback(httpUrl);
             }
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
-                // ★ 指数退避：30s → 60s → 120s → 240s → 300s(上限)
-                long cooldown = Math.min(
-                    SSL_CIRCUIT_BASE_COOLDOWN_MS * (1L << sslCircuitOpenCount),
-                    SSL_CIRCUIT_MAX_COOLDOWN_MS);
-                sslCircuitOpenUntil = System.currentTimeMillis() + cooldown;
-                sslCircuitOpenCount++;
-                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询" + (cooldown/1000) + "秒（第" + sslCircuitOpenCount + "轮退避）");
+                triggerCircuitBreaker(false);
             }
             plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
@@ -611,13 +634,7 @@ public class WebManager {
                 return doPostHttpFallback(httpUrl, jsonBody);
             }
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
-                // ★ 指数退避：30s → 60s → 120s → 240s → 300s(上限)
-                long cooldown = Math.min(
-                    SSL_CIRCUIT_BASE_COOLDOWN_MS * (1L << sslCircuitOpenCount),
-                    SSL_CIRCUIT_MAX_COOLDOWN_MS);
-                sslCircuitOpenUntil = System.currentTimeMillis() + cooldown;
-                sslCircuitOpenCount++;
-                plugin.getLogger().warning("[Web通信] SSL断路器触发: 连续失败" + sslConsecutiveFailures + "次，暂停轮询" + (cooldown/1000) + "秒（第" + sslCircuitOpenCount + "轮退避）");
+                triggerCircuitBreaker(false);
             }
             plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
@@ -649,9 +666,11 @@ public class WebManager {
                 return resp.body();
             }
             plugin.getLogger().warning("[Web通信] HTTP降级失败 POST HTTP " + resp.statusCode() + ": " + urlStr);
+            triggerCircuitBreaker(true);
             return null;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] HTTP降级POST异常: " + e.getMessage());
+            triggerCircuitBreaker(true);
             return null;
         }
     }
@@ -836,6 +855,7 @@ public class WebManager {
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
                 try { Thread.sleep(10000 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
+                initialSyncComplete = true;  // 首次全量同步提交完成，允许轮询器启动
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
 
@@ -1446,6 +1466,7 @@ public class WebManager {
         new BukkitRunnable() {
             @Override
             public void run() {
+                if (!initialSyncComplete) return; // 等首次全量同步完成后再轮询
                 try {
                     // ★ 防重入：正在拉取中则跳过
                     if (shopStockPulling) return;
@@ -1584,6 +1605,7 @@ public class WebManager {
         new BukkitRunnable() {
             @Override
             public void run() {
+                if (!initialSyncComplete) return; // 等首次全量同步完成后再轮询
                 try {
                     // === Part 1: 拉取Web端的CDK验证请求 → 本地验证 ===
                     pullWebCdkRequestsAndValidate();
@@ -4800,6 +4822,7 @@ public class WebManager {
         new BukkitRunnable() {
             @Override
             public void run() {
+                if (!initialSyncComplete) return; // 等首次全量同步完成后再轮询
                 submitWebTask("注册轮询-pollWebRegisterRequests", () -> {
                     try {
                         pollWebRegisterRequests();
