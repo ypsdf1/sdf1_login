@@ -1166,6 +1166,10 @@ public class Main extends JavaPlugin
         }
 
         loggedIn.add(name);
+        // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
+        if (webManager != null) {
+            webManager.recordJavaLogin(name);
+        }
         p.setAllowFlight(false);
         p.setFlying(false);
 
@@ -1741,14 +1745,15 @@ public class Main extends JavaPlugin
 
         // ===== 快速重连三层检查（严格按流程图） =====
         
-        // ★ 检查点1：检查玩家是否有Java手动登录记录（ loggedIn 集合）
-        // 注意：loggedIn在onQuit时会被清除，因此快速重连时检查点1通常失败
-        // 这是正常行为 — 快速重连走检查点2（isWebLoginVerified）通过IP+内存验证
-        if (loggedIn.contains(name)) {
-            getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java手动登录记录，放行");
-            // 继续走正常登录流程（不中断）
+        // ★ 检查点1：检查玩家是否有Java手动登录记录
+        // 优先检查loggedIn（当前在线），再检查javaLoginRecords（5分钟内重连有效）
+        boolean hasJavaLogin = loggedIn.contains(name) || (webManager != null && webManager.isJavaLoginRecorded(name));
+        if (hasJavaLogin) {
+            getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java登录记录，自动登录");
+            autoLogin(p, "java_reconnect");
+            return;  // 检查点1通过 → 直接放行
         } else {
-            getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java手动登录记录（正常，已在onQuit清除）");
+            getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java登录记录");
         }
         
         // 辅助操作：生成Web Token + 同步PHP注册数据

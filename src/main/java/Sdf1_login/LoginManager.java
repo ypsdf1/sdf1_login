@@ -66,6 +66,10 @@ public class LoginManager {
         plugin.getDb().createUser(
                 name, hash, salt);
         plugin.getLoggedIn().add(name);
+        // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
+        if (plugin.webManager != null) {
+            plugin.webManager.recordJavaLogin(name);
+        }
         p.setAllowFlight(false);
         p.setFlying(false);
         plugin.getDb().setLoggedIn(name, true);
@@ -162,6 +166,10 @@ public class LoginManager {
                             name, hash);
             if (matchMain) {
                 plugin.getLoggedIn().add(name);
+                // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
+                if (plugin.webManager != null) {
+                    plugin.webManager.recordJavaLogin(name);
+                }
                 plugin.getDb().setLoggedIn(
                         name, true);
                 plugin.getDb().setLoggedIn(
@@ -207,6 +215,10 @@ public class LoginManager {
                                     name, hash);
             if (matchTemp) {
                 plugin.getLoggedIn().add(name);
+                // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
+                if (plugin.webManager != null) {
+                    plugin.webManager.recordJavaLogin(name);
+                }
                 plugin.getDb().setLoggedIn(name, true);
                 p.setAllowFlight(false);
                 p.setFlying(false);

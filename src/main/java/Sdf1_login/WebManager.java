@@ -55,6 +55,11 @@ public class WebManager {
     private final ConcurrentHashMap<String, Long> verifiedWebLogins = new ConcurrentHashMap<>();
     private static final long VERIFIED_LOGIN_EXPIRE_MS = 300000; // 5分钟过期
 
+    // ★ Java手动登录记录：playerName -> 登录时间戳（毫秒）
+    // 玩家通过/l命令或autoLogin成功后记录，onQuit不清除，5分钟内重连可直接放行（检查点1）
+    private final ConcurrentHashMap<String, Long> javaLoginRecords = new ConcurrentHashMap<>();
+    private static final long JAVA_LOGIN_RECORD_EXPIRE_MS = 300000; // 5分钟过期
+
     // ★ 合并定时器错峰调度（v17：3个定时器替代6个）
     private static final int TIMER_A = 0; // 注册登录 0~5秒
     private static final int TIMER_B = 1; // 交易 0~10秒
@@ -2999,6 +3004,40 @@ public class WebManager {
         verifiedWebLogins.remove(playerName);
     }
 
+    // ==================== Java手动登录记录（检查点1持久化） ====================
+
+    /**
+     * 记录玩家Java手动登录成功（/l命令或autoLogin调用后）
+     * onQuit不清除，5分钟内重连可直接放行（检查点1）
+     */
+    public void recordJavaLogin(String playerName) {
+        javaLoginRecords.put(playerName, System.currentTimeMillis());
+        plugin.getLogger().info("[Web登录] 记录Java登录: " + playerName + "（5分钟内重连可直接放行）");
+    }
+
+    /**
+     * 检查玩家是否有Java手动登录记录（检查点1用）
+     * 5分钟内有效，超时自动清除
+     */
+    public boolean isJavaLoginRecorded(String playerName) {
+        Long loginTime = javaLoginRecords.get(playerName);
+        if (loginTime != null) {
+            if (System.currentTimeMillis() - loginTime > JAVA_LOGIN_RECORD_EXPIRE_MS) {
+                javaLoginRecords.remove(playerName);
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 清除玩家的Java登录记录（玩家成功再次登录后调用，避免过期残留）
+     */
+    public void clearJavaLoginRecord(String playerName) {
+        javaLoginRecords.remove(playerName);
+    }
+
     /**
      * 同步在线玩家列表到PHP端（用于Web登录状态检查）
      * 注意：推送所有在线玩家（包括未登录的），PHP端通过 web_login_verified 判断是否已认证
@@ -3838,11 +3877,17 @@ public class WebManager {
 
             // 成功 → 重置
             loginPollFailCount = 0;
-            if (!json.contains("\"success\":true")) return;
+            if (!json.contains("\"success\":true")) {
+                plugin.getLogger().info("[Web登录确认轮询] PHP响应非success: " + json.substring(0, Math.min(200, json.length())));
+                return;
+            }
 
             // 简单解析玩家名列表
             int dataStart = json.indexOf("\"data\":");
-            if (dataStart < 0) return;
+            if (dataStart < 0) {
+                plugin.getLogger().info("[Web登录确认轮询] PHP响应无data字段: " + json.substring(0, Math.min(200, json.length())));
+                return;
+            }
             String dataStr = json.substring(dataStart + 7);
             int arrEnd = findMatchingBracket(dataStr, 0);
             if (arrEnd < 0) return;
@@ -3916,15 +3961,38 @@ public class WebManager {
                         (now - entry.getValue()) > VERIFIED_LOGIN_EXPIRE_MS
                 );
             }
+            // ★ 清理过期的Java登录记录（检查点1用）
+            if (javaLoginRecords.size() > 0) {
+                long now = System.currentTimeMillis();
+                javaLoginRecords.entrySet().removeIf(entry ->
+                        (now - entry.getValue()) > JAVA_LOGIN_RECORD_EXPIRE_MS
+                );
+            }
             String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_logins&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             String json = doGet(urlStr);
-            if (json == null) return;
-            if (!json.contains("\"success\":true")) return;
+            if (json == null) {
+                loginPollFailCount++;
+                long now = System.currentTimeMillis();
+                if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
+                    plugin.getLogger().warning("[Web密码验证轮询] GET失败 (连续失败" + loginPollFailCount + "次)");
+                    lastLoginPollLogTime = now;
+                }
+                return;
+            }
+            // 成功 → 重置
+            loginPollFailCount = 0;
+            if (!json.contains("\"success\":true")) {
+                plugin.getLogger().info("[Web密码验证轮询] PHP响应非success: " + json.substring(0, Math.min(200, json.length())));
+                return;
+            }
 
             // 解析请求列表
             int dataStart = json.indexOf("\"data\":");
-            if (dataStart < 0) return;
+            if (dataStart < 0) {
+                plugin.getLogger().info("[Web密码验证轮询] PHP响应无data字段: " + json.substring(0, Math.min(200, json.length())));
+                return;
+            }
             String dataStr = json.substring(dataStart + 7);
             int arrEnd = findMatchingBracket(dataStr, 0);
             if (arrEnd < 0) return;
