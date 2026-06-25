@@ -1742,11 +1742,13 @@ public class Main extends JavaPlugin
         // ===== 快速重连三层检查（严格按流程图） =====
         
         // ★ 检查点1：检查玩家是否有Java手动登录记录（ loggedIn 集合）
+        // 注意：loggedIn在onQuit时会被清除，因此快速重连时检查点1通常失败
+        // 这是正常行为 — 快速重连走检查点2（isWebLoginVerified）通过IP+内存验证
         if (loggedIn.contains(name)) {
             getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java手动登录记录，放行");
             // 继续走正常登录流程（不中断）
         } else {
-            getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java手动登录记录");
+            getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java手动登录记录（正常，已在onQuit清除）");
         }
         
         // 辅助操作：生成Web Token + 同步PHP注册数据
@@ -1757,137 +1759,32 @@ public class Main extends JavaPlugin
             }
         }
         
-        // ★ 检查点2：检查服务器内存中是否有该玩家来自PHP的验证请求
-        if (webManager != null && webManager.isWebLoginVerified(name)) {
-            getLogger().info("[Web登录] 检查点2通过: 玩家 " + name + " 内存中有PHP验证记录，自动登录");
+        // ★ 同IP判断：只作为开启自动登录验证的钥匙，不作为自动登录依据
+        boolean sameIP = canAutoLogin(p);
+        if (!sameIP) {
+            // 不同IP → 跳过检查点2，直接强制密码验证
+            getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP不同，跳过快速重连验证");
+        } else {
+            getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP相同，允许快速重连验证");
+        }
+        
+        // ★ 检查点2：只有同IP才检查服务器内存中是否有该玩家来自PHP的验证请求
+        if (sameIP && webManager != null && webManager.isWebLoginVerified(name)) {
+            getLogger().info("[Web登录] 检查点2通过: 玩家 " + name + " 同IP且内存中有PHP验证记录，自动登录");
             webManager.clearWebLoginVerified(name);
             autoLogin(p, "web_password");
             return;  // 检查点2通过 → 直接放行，不继续后面流程
         } else {
-            getLogger().info("[Web登录] 检查点2失败: 玩家 " + name + " 内存中无PHP验证记录");
+            if (sameIP) {
+                getLogger().info("[Web登录] 检查点2失败: 玩家 " + name + " 同IP但内存中无PHP验证记录");
+            }
         }
         
         // ★ 检查点3：上述2路验证都失败 → 强制重新验证密码（走正常登录流程）
         getLogger().info("[Web登录] 检查点3: 上述2路验证都失败，强制重新验证密码");
-
-        // 强制重发资源包（清掉客户端拒绝记录）
-        Bukkit.getScheduler()
-                .runTaskLater(this, () -> {
-                    // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
-                    if (radio != null) {
-                        final Player jp = p;
-                        Bukkit.getScheduler().runTaskLater(
-                                this, () -> {
-                                    if (jp.isOnline()) {
-                                        radio.sendResourcePack(jp);
-                                    }
-                                }, 60L);
-                    }
-
-                }, 20L);
-        // 重置聊天输入状态（防止上次退出时残留）
-        chatInput.reset(p);
-        if (needsPasswordChange.contains(name))
-            needsPasswordChange.remove(name);
-// 改完了直接打包，要打sdf1一起
-        lastActivity.put(p.getUniqueId(),
-                System.currentTimeMillis());
-        if (needsPasswordChange.contains(name))
-            needsPasswordChange.remove(name);
-
-        boolean isBedrock =
-                verification.isBedrockPlayer(p);
-        boolean isOnlineMode =
-                verification.isOnlineMode();
-
-        // ★ 登录阶段始终允许飞行，防止悬空被踢出
-        p.setAllowFlight(true);
-
-        if (!db.userExists(name)) {
-            if (config.maxAccountsPerIP > 0
-                    && ip != null
-                    && !ipGroup.canRegister(ip)) {
-                p.kickPlayer(
-                        buildIPKickMessage(p, ip));
-                return;
-            }
-        }
-        if (!"manual".equals(config.approvalMode)
-                && !db.userExists(name)) {
-            AccountRequestManager.Request req =
-                    accountRequest.createRequest(
-                            name, name, ip);
-            if (req != null) {
-                p.kickPlayer(
-                        config.msg("need_approval")
-                                .replace("{id}",
-                                        String.valueOf(
-                                                req.id)));
-                return;
-            }
-        }
-        // [ADDED] 资源包（延迟发送，不强制）
-        // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
-        if (radio != null) {
-            final Player jp = p;
-            Bukkit.getScheduler().runTaskLater(
-                    this, () -> {
-                        if (jp.isOnline()) {
-                            radio.sendResourcePack(jp);
-                        }
-                    }, 60L);
-        }
-
-        if (isOnlineMode) {
-            autoLogin(p, "premium");
-            return;
-        }
-        if (isBedrock) {
-            autoLogin(p, "bedrock");
-            return;
-        }
-        // ★ 关键安全修复：快速重连也必须检查Java是否有Web登录验证记录
-        // 否则PHP假密码登录成功后，玩家快速重连会被盲目放行
-        if (webManager != null && webManager.isWebLoginVerified(name)) {
-            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 有Java验证记录，放行");
-            webManager.clearWebLoginVerified(name);
-            autoLogin(p, "web_password");
-            return;
-        } else {
-            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 无Java验证记录，拒绝快速重连");
-        }
-        // ★ 关键安全修复：快速重连时必须检查Java是否有Web登录验证记录
-        // 如果玩家在Web端通过Java密码验证登录过，5分钟内重连直接放行
-        // 如果没有Java验证记录 → 拒绝快速重连（防止PHP假密码绕过）
-        if (webManager != null && webManager.isWebLoginVerified(name)) {
-            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 有Java验证记录，放行");
-            webManager.clearWebLoginVerified(name);
-            autoLogin(p, "web_password");
-            return;
-        } else {
-            getLogger().info("[Web登录] 快速重连检查: 玩家 " + name + " 无Java验证记录，拒绝快速重连");
-        }
-        if (canAutoLogin(p)) {
-            autoLogin(p, "ip_reconnect");
-            return;
-        }
         afk.remove(p.getUniqueId());
         afk.recordAction(p.getUniqueId());
         hideInventoryDelayed(p, 0);
-        // [ADDED] 发送资源包
-        // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
-        if (radio != null) {
-            final Player jp = p;
-            Bukkit.getScheduler().runTaskLater(
-                    this, () -> {
-                        if (jp.isOnline()) {
-                            radio.sendResourcePack(jp);
-                        }
-                    }, 60L);
-        }
-
-
-        // [ADDED] 发送资源包（延迟5秒确保客户端就绪）
         // ★ 资源包：只发送一次，延迟3秒确保客户端就绪
         if (radio != null) {
             final Player jp = p;

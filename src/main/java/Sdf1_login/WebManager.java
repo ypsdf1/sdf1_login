@@ -1357,11 +1357,11 @@ public class WebManager {
 
                 checkSyncNotify();
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(5), 20L * randomIntervalSeconds(5)); // activeSync 5±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // activeSync调度 10±3秒
     }
 
     /**
-     * 交易高频轮询：每5秒检查PHP端是否有待处理交易
+     * 交易高频轮询：每15秒(±5)检查PHP端是否有待处理交易
      * 检测到pending交易时立即拉取，不等60-90秒的全量同步
      */
     /**
@@ -1424,17 +1424,19 @@ public class WebManager {
                     }
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(8), 20L * randomIntervalSeconds(8)); // 交易轮询 8±5秒
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(15), 20L * randomIntervalSeconds(15)); // 交易轮询 15±5秒
     }
 
     /**
-     * 生成定时器随机间隔（基础值 ±5秒）
+     * 生成定时器随机间隔（比例偏移，基础值越大偏移越大）
+     * 偏移量 = ±max(2, base/3)，确保小基数也有随机性，大基数不过度离散
      * 每个请求都是独立随机数，避开并发导致的SQL锁死
      * @param baseSeconds 基础秒数
-     * @return 随机秒数 [base-5, base+5]，最小1秒
+     * @return 随机秒数 [base-offset, base+offset]，最小1秒
      */
     private long randomIntervalSeconds(long baseSeconds) {
-        long offset = (long) (Math.random() * 11) - 5; // -5 ~ +5
+        long maxOffset = Math.max(2, baseSeconds / 3);
+        long offset = (long) (Math.random() * (maxOffset * 2 + 1)) - maxOffset;
         return Math.max(1, baseSeconds + offset);
     }
 
@@ -1463,7 +1465,7 @@ public class WebManager {
     private volatile boolean shopStockPulling = false;
 
     /**
-     * 库存高频轮询：每5秒请求Web端库存变更检测接口
+     * 库存高频轮询：每15秒(±5)请求Web端库存变更检测接口
      * 无改动跳过，有改动立即拉取完整库存并更新游戏
      * 60~90秒的全量同步定时器作为兜底
      */
@@ -1555,8 +1557,8 @@ public class WebManager {
                     shopStockPollFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(8), 20L * randomIntervalSeconds(8)); // 库存轮询 8±5秒
-        plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每5秒）");
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(15), 20L * randomIntervalSeconds(15)); // 库存轮询 15±5秒
+        plugin.getLogger().info("[Web通信] 库存高频轮询已启动（每15秒±5）");
     }
 
     /**
@@ -1625,14 +1627,14 @@ public class WebManager {
                     // 静默，避免刷屏
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(2), 20L * randomIntervalSeconds(2)); // CDK轮询 2±10秒(最小1秒)
-        plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每2秒）");
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(8), 20L * randomIntervalSeconds(8)); // CDK轮询 8±3秒
+        plugin.getLogger().info("[Web通信] CDK远程验证轮询已启动（每8秒±3）");
     }
 
     // ==================== 领地数据即时同步 ====================
 
     /**
-     * ★ 领地数据即时同步：每10秒从PHP拉取最新领地配置
+     * ★ 领地数据即时同步：每15秒(±5)从PHP拉取最新领地配置
      * 配合60~90秒全量同步作为兜底
      */
     private volatile boolean landSyncPulling = false;
@@ -1688,8 +1690,8 @@ public class WebManager {
                     landSyncFailCount++;
                 }
             }
-        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(10), 20L * randomIntervalSeconds(10)); // 领地同步 10±10秒
-        plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每10秒）");
+        }.runTaskTimerAsynchronously(plugin, 20L * randomIntervalSeconds(15), 20L * randomIntervalSeconds(15)); // 领地同步 15±5秒
+        plugin.getLogger().info("[Web通信] 领地配置即时同步已启动（每15秒±5）");
     }
 
     /**
@@ -4847,7 +4849,7 @@ public class WebManager {
         // 启动注册请求轮询
         scheduleRegisterRequestPoll();
 
-        plugin.getLogger().info("[Web通信] Web注册请求轮询已启动（30~90秒随机间隔，静默运行）");
+        plugin.getLogger().info("[Web通信] Web注册请求轮询已启动（12±4秒随机间隔，静默运行）");
     }
 
     /**
@@ -4872,7 +4874,7 @@ public class WebManager {
                     }
                 });
             }
-        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(3), 20L * randomIntervalSeconds(3)); // 注册轮询 3±10秒(最小1秒)
+        }.runTaskTimer(plugin, 20L * randomIntervalSeconds(12), 20L * randomIntervalSeconds(12)); // 注册轮询 12±4秒
     }
 
     /**
