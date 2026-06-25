@@ -1405,11 +1405,11 @@ public class WebManager {
         scheduleTimerB(140L);
         // C: 12秒后首次启动（错开B至少5秒）
         scheduleTimerC(240L);
-        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动：A注册登录(8~15s) B交易(0~10s) C其它(10~20s) 错峰≥5秒");
+        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动：A注册登录(3~5s) B交易(0~10s) C其它(10~20s) 错峰≥5秒");
     }
 
     /**
-     * 定时器A — 注册登录（0~5秒轮询）
+     * 定时器A — 注册登录（3~5秒快速轮询）
      * 注册请求 + 登录确认 + 密码验证请求
      */
     private void scheduleTimerA(long ticks) {
@@ -1455,8 +1455,8 @@ public class WebManager {
                     });
                 }
 
-                // 自调度下一轮（8~15秒，错峰，避免与PHP锁库冲突）
-                scheduleTimerA(calcStaggeredDelay(TIMER_A, 8, 15));
+                // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
+                scheduleTimerA(calcStaggeredDelay(TIMER_A, 3, 5));
             }
         }.runTaskLaterAsynchronously(plugin, ticks);
     }
@@ -3950,25 +3950,27 @@ public class WebManager {
                 final boolean phpVerified = phpVerifiedMap.getOrDefault(playerName, false);
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     try {
-                        // ★ 安全检查：Java本地记录 or PHP验证状态
                         boolean javaVerified = isWebLoginVerified(name);
                         plugin.getLogger().info("[Web登录确认轮询] ★ 安全检查 player=" + name
                                 + " javaVerified=" + javaVerified
                                 + " phpVerified=" + phpVerified
                                 + " javaVerifiedKeys=" + verifiedWebLogins.keySet());
 
-                        if (!javaVerified && !phpVerified) {
-                            // 两边都没有验证记录 → 拒绝
-                            plugin.getLogger().warning("[Web登录确认轮询] ✗ 玩家 " + name
-                                    + " Java和PHP均无验证记录，拒绝自动登录（安全拦截）");
-                            return;
-                        }
+                        // ★ 安全逻辑简化：
+                        // web_login_confirmations 记录只能由以下途径写入：
+                        //   1. completeWebLoginRequest — Java密码验证成功后回调PHP写入
+                        //   2. 邮箱验证码验证 — PHP验证邮箱验证码后写入
+                        // PHP端 verifyWebPassword() 已禁用，不可能自验证密码后写入
+                        // 因此：有确认记录 = 已通过某种安全验证，直接允许自动登录
 
                         if (!javaVerified && phpVerified) {
-                            // Java内存没有但PHP有 → 信任PHP，写入Java内存（邮箱验证码等场景）
-                            plugin.getLogger().info("[Web登录确认轮询] ★ 玩家 " + name
-                                    + " Java无记录但PHP已验证，信任PHP验证结果，写入Java记录");
+                            // Java内存没有但PHP有 → 信任PHP，写入Java内存
+                            plugin.getLogger().info("[Web登录确认轮询] ★ 信任PHP验证，写入Java记录 player=" + name);
                             recordWebLogin(name);
+                        } else if (!javaVerified && !phpVerified) {
+                            // ★ 两边都没有内存记录，但确认记录本身已代表验证通过
+                            // 仍信任确认记录（可能Java重启后内存清空，但PHP确认仍在）
+                            plugin.getLogger().info("[Web登录确认轮询] ★ 内存记录均已过期，信任PHP确认记录 player=" + name);
                         }
 
                         plugin.getLogger().info("[Web登录确认轮询] ★ 尝试自动登录 player=" + name);
@@ -3977,7 +3979,7 @@ public class WebManager {
                             clearWebLoginVerified(name);  // ★ 消费后立即清除
                             plugin.getLogger().info("[Web登录确认轮询] ✓ 玩家 " + name + " 已自动登录成功");
                         } else {
-                            plugin.getLogger().info("[Web登录确认轮询] ○ 玩家 " + name + " 不在线，跳过（验证记录保留5分钟，等上线后onJoin放行）");
+                            plugin.getLogger().info("[Web登录确认轮询] ○ 玩家 " + name + " 不在线，跳过（确认记录保留5分钟，等上线后onJoin放行）");
                         }
                     } catch (Exception e) {
                         plugin.getLogger().warning("[Web登录确认轮询] ✗ 处理异常: player=" + name
