@@ -544,7 +544,7 @@ function syncLands() {
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
                 :deny_block_break, :deny_block_place, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
                 :deny_item_frame, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
-                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad_effects, :deny_all_effects,
+                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad_effects,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
                 :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
@@ -616,8 +616,14 @@ function syncLands() {
         $stmt->bindValue(':warp_yaw', (float)($land['warp_yaw'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_pitch', (float)($land['warp_pitch'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_world', $land['warp_world'] ?? '', SQLITE3_TEXT);
-        $stmt->execute();
-        $count++;
+        try {
+            $stmt->execute();
+            $count++;
+        } catch (\Throwable $e) {
+            $errMsg = date('Y-m-d H:i:s') . " syncLands INSERT失败: " . $e->getMessage()
+                . " land=" . ($land['name'] ?? '?') . "\n";
+            @file_put_contents($logFile, $errMsg, FILE_APPEND);
+        }
     }
     // ★ 调试日志：同步完成
     $logMsg2 = date('Y-m-d H:i:s') . " syncLands完成 同步{$count}个领地\n";
