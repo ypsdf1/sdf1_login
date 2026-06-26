@@ -809,10 +809,10 @@ public class AreaCLIManager {
         // 获取该成员的per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员权限自动隐藏：管理员自动获得所有权限（发光效果除外）
+        // ★ 管理员权限自动隐藏：非领地主操作管理员时，简化显示（管理员自动获得所有权限）
         org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
         boolean isTargetAdmin = areaProtect.isLandAdmin(land.name, targetPlayer);
-        if (isTargetAdmin) {
+        if (isTargetAdmin && !isOwner) {
             p.sendMessage(header(targetPlayer + " 的独立权限"));
             p.sendMessage(Component.text(""));
             p.sendMessage(Component.text("§6§l该玩家是管理员，自动获得所有权限"));

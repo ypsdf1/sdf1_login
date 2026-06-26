@@ -4704,7 +4704,9 @@ public class AreaProtection implements Listener {
                 || name.contains("SUGAR_CANE") || name.contains("NETHER_WART")
                 || name.contains("KELP") || name.contains("SEA_PICKLE")
                 || name.contains("CHORUS") || name.contains("TWISTING_VINES")
-                || name.contains("WEEPING_VINES") || mat == Material.MELON_STEM
+                || name.contains("WEEPING_VINES") || name.contains("PITCHER")
+                || name.contains("TORCHFLOWER")
+                || mat == Material.MELON_STEM
                 || mat == Material.ATTACHED_MELON_STEM
                 || mat == Material.PUMPKIN_STEM
                 || mat == Material.ATTACHED_PUMPKIN_STEM;
@@ -4734,15 +4736,15 @@ public class AreaProtection implements Listener {
     private boolean isCropSeed(Material mat) {
         String name = mat.name();
         return name.contains("SEEDS") || name.contains("SAPLING")
+                || name.contains("STEM") || name.contains("PICKLE")
                 || mat == Material.BAMBOO || mat == Material.SUGAR_CANE
                 || mat == Material.CACTUS || mat == Material.COCOA_BEANS
                 || mat == Material.NETHER_WART || mat == Material.KELP
                 || mat == Material.TWISTING_VINES || mat == Material.WEEPING_VINES
                 || mat == Material.CHORUS_FLOWER || mat == Material.SWEET_BERRY_BUSH
-                || mat == Material.MELON_STEM || mat == Material.ATTACHED_MELON_STEM
-                || mat == Material.PUMPKIN_STEM || mat == Material.ATTACHED_PUMPKIN_STEM
                 || mat == Material.CARROT || mat == Material.POTATO
-                || mat == Material.BEETROOT_SEEDS || mat == Material.WHEAT_SEEDS;
+                || mat == Material.BEETROOT_SEEDS || mat == Material.WHEAT_SEEDS
+                || mat == Material.PITCHER_POD || mat == Material.TORCHFLOWER_SEEDS;
     }
 
     // ★ 检查是否为动物食物（包括玩家食物+动物专用食物）

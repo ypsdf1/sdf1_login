@@ -418,11 +418,14 @@ public class AreaGUIManager implements Listener {
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
         int slot = 0;
 
+        // ★ 权限检查：只有所有者或管理员能编辑成员权限
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+
         // ★ 管理员状态检测（领地级管理员，非全局tag）
         boolean isAdmin = areaProtect.isLandAdmin(landName, targetPlayer);
 
-        // ★ 管理员提示：管理员自动获得所有权限
-        if (isAdmin) {
+        // ★ 管理员提示：非领地主操作管理员时简化显示
+        if (isAdmin && !isOwner) {
             inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
                     "§7该玩家是此领地管理员，自动获得所有权限",
                     "§7点击切换管理员身份"));
