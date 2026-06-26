@@ -1171,6 +1171,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_yaw REAL DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_pitch REAL DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_world TEXT DEFAULT ''"); } catch (Exception ignored) {}
+            // ★ 容器管理权限列（旧表缺失会导致INSERT OR REPLACE失败）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
