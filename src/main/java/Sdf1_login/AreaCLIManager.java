@@ -809,17 +809,29 @@ public class AreaCLIManager {
         // 获取该成员的per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员权限自动隐藏：非领地主操作管理员时，简化显示（管理员自动获得所有权限）
-        org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
+        // ★ 管理员简化面板：管理员自动获得所有权限，只显示身份切换+发光开关
         boolean isTargetAdmin = areaProtect.isLandAdmin(land.name, targetPlayer);
-        if (isTargetAdmin && !isOwner) {
+        if (isTargetAdmin) {
             p.sendMessage(header(targetPlayer + " 的独立权限"));
             p.sendMessage(Component.text(""));
             p.sendMessage(Component.text("§6§l该玩家是管理员，自动获得所有权限"));
             p.sendMessage(Component.text("§7管理员不受任何权限限制（发光效果除外）"));
-            p.sendMessage(Component.text("§7（不可删除、不可过户、不可操作自身和其他管理员）"));
             p.sendMessage(Component.text(""));
-            // ★ 管理员只保留发光效果权限控制
+
+            // ★ 领地主：可切换管理员身份
+            if (isOwner && !targetPlayer.equalsIgnoreCase(land.owner)) {
+                Component adminLine = Component.empty();
+                adminLine = adminLine.append(Component.text("§6✔ §f身份: §6管理员"));
+                adminLine = adminLine.append(Component.text(" "));
+                adminLine = adminLine.append(Component.text("§c[撤销管理员]")
+                        .hoverEvent(HoverEvent.showText(Component.text("§c将该玩家恢复为普通成员")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli toggleadmin " + land.name + " " + targetPlayer + " 1")));
+                p.sendMessage(adminLine);
+                p.sendMessage(Component.text(""));
+            }
+
+            // ★ 玩家发光控制（领地主和管理员都可以操作）
             boolean glowingDefault = !land.denyGlowing;
             boolean glowingOverride = playerPerms.containsKey("glowing") ? playerPerms.get("glowing") : glowingDefault;
             String glowingIcon = glowingOverride ? "§a✔" : "§c✘";
@@ -848,6 +860,7 @@ public class AreaCLIManager {
             return;
         }
 
+        // ★ 普通成员：完整权限列表
         List<PermItem> perms = getPermListWithOverrides(land, playerPerms);
 
         int totalPages = Math.max(1, (int) Math.ceil((double) perms.size() / PAGE_SIZE));
@@ -855,27 +868,15 @@ public class AreaCLIManager {
 
         p.sendMessage(header(targetPlayer + " 的独立权限"));
 
-        // ★ 领地主可以在完整面板中切换目标玩家的管理员身份
-        if (isOwner && targetPlayer.equalsIgnoreCase(land.owner)) {
-            // 不能操作自己
-            p.sendMessage(Component.text("§7无法对自己的身份进行操作"));
-        } else if (isOwner) {
-            String adminIcon = isTargetAdmin ? "§6✔" : "§7✘";
-            String adminState = isTargetAdmin ? "§6管理员" : "§7普通成员";
+        // 领地主可以切换普通成员的管理员身份
+        if (isOwner && !targetPlayer.equalsIgnoreCase(land.owner)) {
             Component adminLine = Component.empty();
-            adminLine = adminLine.append(Component.text(adminIcon + " §f身份: §7" + adminState));
+            adminLine = adminLine.append(Component.text("§7✘ §f身份: §7普通成员"));
             adminLine = adminLine.append(Component.text(" "));
-            if (isTargetAdmin) {
-                adminLine = adminLine.append(Component.text("§c[撤销管理员]")
-                        .hoverEvent(HoverEvent.showText(Component.text("§c将该玩家恢复为普通成员")))
-                        .clickEvent(ClickEvent.runCommand(
-                                "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
-            } else {
-                adminLine = adminLine.append(Component.text("§a[设为管理员]")
-                        .hoverEvent(HoverEvent.showText(Component.text("§a授予该玩家管理员身份（自动获得所有权限）")))
-                        .clickEvent(ClickEvent.runCommand(
-                                "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
-            }
+            adminLine = adminLine.append(Component.text("§a[设为管理员]")
+                    .hoverEvent(HoverEvent.showText(Component.text("§a授予该玩家管理员身份（自动获得所有权限）")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
             p.sendMessage(adminLine);
             p.sendMessage(Component.text(""));
         }
