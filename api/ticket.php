@@ -61,6 +61,10 @@ switch ($action) {
     default:
         error('未知操作: ' . $action);
 }
+
+// ★ WAL checkpoint：释放WAL锁，减少database is locked概率
+try { walCheckpoint(); } catch (\Throwable $ignored) {}
+
 } catch (\Throwable $e) {
     error('服务器错误: ' . $e->getMessage());
 }

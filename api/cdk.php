@@ -36,6 +36,10 @@ switch ($action) {
     default:
         error('未知操作: ' . $action);
 }
+
+// ★ WAL checkpoint：释放WAL锁，减少database is locked概率
+try { walCheckpoint(); } catch (\Throwable $ignored) {}
+
 } catch (\Throwable $e) {
     http_response_code(500);
     header('Content-Type: application/json; charset=utf-8');
@@ -151,12 +155,15 @@ function cdkExchange($token) {
             }
 
             // ★ PHP只负责记录交易，不更新bond_cache（Java端负责加债券）
-            // 记录流水（本地CDK和远程CDK都记录pending交易，Java拉取后处理）
-            $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
+            // 记录流水：远程CDK标记completed（Java在pullWebCdkRequestsAndValidate中已直接加债券）
+            // 本地CDK标记pending（Java通过pullPendingTransactions拉取后处理）
+            $txStatus = $isRemote ? 'completed' : 'pending';
+            $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, :status, :time)");
             $stmt->bindValue(':player', $player, SQLITE3_TEXT);
             $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
             $stmt->bindValue(':reason', $isRemote ? "CDK远程兑换: {$code}" : "CDK兑换: {$code}", SQLITE3_TEXT);
             $stmt->bindValue(':detail', json_encode(['code' => $code, 'remote' => $isRemote], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $stmt->bindValue(':status', $txStatus, SQLITE3_TEXT);
             $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
             $stmt->execute();
 

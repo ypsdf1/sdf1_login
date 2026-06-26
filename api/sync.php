@@ -476,15 +476,65 @@ function syncLands() {
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_bow INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_potion INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_raid INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    // ★ 权限字段迁移（缺失会导致INSERT OR REPLACE失败）
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_block_break INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_block_place INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_fluid INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_pvp INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_fire_spread INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_item_frame INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_move INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_pickup INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_drop INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_explosion INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_fall_damage INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_hunger INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_damage INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_thrown_projectiles INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_glowing INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_redstone_interaction INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_door_interaction INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_noteblock_jukebox INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_lead INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_crop_harvest INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_wool_shear INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_animal_feeding INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    // ★ 配置字段迁移
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN peace_mode INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN peace_mode_duration INTEGER DEFAULT 3600"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN peace_whitelist TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN enforce_game_mode TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN mode_exempt TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN enter_msg TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN leave_msg TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN confiscate_msg TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN enable_announce INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN announce_template TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN txt_content TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    // ★ 传送点字段迁移
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_x REAL DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_y REAL DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_z REAL DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_yaw REAL DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_pitch REAL DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN warp_world TEXT DEFAULT ''"); } catch (\Throwable $e) {}
 
     $now = time();
+    // ★ 调试日志：记录同步请求
+    $logFile = __DIR__ . '/../sync_land_debug.log';
+    $logMsg = date('Y-m-d H:i:s') . " syncLands收到 " . count($lands) . " 个领地\n";
+    if (!empty($lands)) {
+        $logMsg .= "  第1个领地字段: " . implode(', ', array_keys($lands[0])) . "\n";
+    }
+    @file_put_contents($logFile, $logMsg, FILE_APPEND);
+
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at,
          peace_mode, peace_mode_duration, peace_whitelist, enforce_game_mode, mode_exempt,
          enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
          deny_block_break, deny_block_place, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
          deny_item_frame, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
-         deny_all_damage, clear_effects, give_effects, clear_all_bad_effects, deny_all_effects,
+         deny_all_damage, clear_effects, give_effects, clear_all_bad_effects,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
          deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
@@ -569,6 +619,18 @@ function syncLands() {
         $stmt->execute();
         $count++;
     }
+    // ★ 调试日志：同步完成
+    $logMsg2 = date('Y-m-d H:i:s') . " syncLands完成 同步{$count}个领地\n";
+    if (!empty($lands)) {
+        $first = $lands[0];
+        $logMsg2 .= "  第1个: name=" . ($first['name'] ?? '?')
+            . " owner=" . ($first['owner'] ?? '?')
+            . " deny_block_break=" . ($first['deny_block_break'] ?? '?')
+            . " deny_crop_harvest=" . ($first['deny_crop_harvest'] ?? '?')
+            . " deny_container=" . ($first['deny_container'] ?? '?') . "\n";
+    }
+    @file_put_contents($logFile, $logMsg2, FILE_APPEND);
+
     success("领地同步成功: {$count}个");
 }
 

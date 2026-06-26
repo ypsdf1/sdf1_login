@@ -30,6 +30,10 @@ switch ($action) {
     default:
         error('未知操作: ' . $action);
 }
+
+// ★ WAL checkpoint：释放WAL锁，减少database is locked概率
+try { walCheckpoint(); } catch (\Throwable $ignored) {}
+
 } catch (\Throwable $e) {
     while (ob_get_level() > 0) ob_end_clean();
     error('服务器内部错误: ' . $e->getMessage(), 500);

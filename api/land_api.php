@@ -940,6 +940,7 @@ $PERM_TYPES = [
     'denyMove' => '移动',
     'denyBlockPlace' => '放置方块',
     'denyBlockBreak' => '破坏方块',
+    'denyContainer' => '容器管理',
     'denyPVP' => 'PVP战斗',
     'denyMount' => '骑乘',
     'denyEnderPearl' => '末影珍珠',
