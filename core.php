@@ -39,7 +39,7 @@ function getDB() {
         $db->enableExceptions(true);
         // WAL模式 + 长等待超时防止database is locked
         $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA busy_timeout=30000');  // 30秒等待
+        $db->exec('PRAGMA busy_timeout=60000');  // ★ 60秒等待（原30秒不够）
         $db->exec('PRAGMA synchronous=NORMAL');
         $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
         $db->exec('PRAGMA wal_autocheckpoint=1000');
@@ -47,6 +47,20 @@ function getDB() {
         migrateDatabase($db); // 迁移旧数据库
     }
     return $db;
+}
+
+/**
+ * ★ WAL checkpoint：释放WAL锁，减少database is locked概率
+ * 在大量写操作后调用，或在请求结束时调用
+ */
+function walCheckpoint($db = null) {
+    if ($db === null) $db = getDB();
+    try {
+        // TRUNCATE模式：将WAL内容合并到主库并清空WAL文件
+        $db->exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (Exception $e) {
+        // checkpoint失败不影响正常流程
+    }
 }
 
 /**
@@ -964,7 +978,7 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         'ip' => $ipAddress
     ]);
 
-    // 4. view操作：Token有效 → 允许Web密码登录（即使游戏里未登录）
+    // 4. view操作：Token有效 + 在线 + Java推送web_login_verified → 允许访问
     if ($action === 'view') {
         if (!$isRegistered) {
             // ★ 玩家未在游戏中注册 → 允许Web注册，录入注册请求等待插件同步
@@ -972,12 +986,27 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
             return ['ok' => false, 'mode' => 'need_register', 'player' => $playerName, 'registered' => false, 'online' => $isOnline, 'message' => '玩家未注册，可以在Web端注册账号'];
         }
         if (!$isOnline) {
-            // 玩家已注册但在游戏中未登录 → 允许Web密码登录
-            debugLog("validateWebAccess: 需要密码", ['player' => $playerName]);
+            // 玩家已注册但在游戏中未登录 → 需要密码
+            debugLog("validateWebAccess: 需要密码(不在线)", ['player' => $playerName]);
             return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => false, 'message' => '请输入游戏登录密码以同步登录游戏'];
         }
+        // ★ 在线但未通过Java推送web_login_verified → 也需要密码（防止偷token自动登录）
+        $isWebVerified = false;
+        try {
+            $fiveMinAgo = time() - 300;
+            $wvStmt = $db->prepare("SELECT 1 FROM web_login_verified WHERE player_name = :player AND verified_at >= :expire");
+            $wvStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $wvStmt->bindValue(':expire', $fiveMinAgo, SQLITE3_INTEGER);
+            $wvResult = $wvStmt->execute();
+            $wvRow = $wvResult->fetchArray();
+            if ($wvRow) $isWebVerified = true;
+        } catch (\Throwable $e) {}
+        if (!$isWebVerified) {
+            debugLog("validateWebAccess: 需要密码(在线但未验证)", ['player' => $playerName]);
+            return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => true, 'message' => '请输入游戏登录密码以验证身份'];
+        }
         $sessionToken = recordWebSession($playerName, $ipAddress);
-        debugLog("validateWebAccess: 验证成功", ['player' => $playerName, 'mode' => 'full']);
+        debugLog("validateWebAccess: 验证成功(Java已确认)", ['player' => $playerName, 'mode' => 'full']);
         return ['ok' => true, 'mode' => 'full', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '验证成功'];
     }
 

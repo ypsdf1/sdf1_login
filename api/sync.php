@@ -312,6 +312,10 @@ switch ($action) {
     default:
         error('未知操作: ' . $action);
 }
+
+// ★ WAL checkpoint：释放WAL锁，减少database is locked概率
+try { walCheckpoint(); } catch (\Throwable $ignored) {}
+
 } catch (\Throwable $e) {
     while (ob_get_level() > 0) ob_end_clean();
     error('服务器内部错误: ' . $e->getMessage(), 500);
@@ -463,6 +467,15 @@ function syncLands() {
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    // ★ 新增字段迁移
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_fire INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_ender_pearl INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_mount INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_bow INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_potion INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_raid INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
 
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
@@ -474,16 +487,18 @@ function syncLands() {
          deny_all_damage, clear_effects, give_effects, clear_all_bad_effects, deny_all_effects,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
          deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
-         warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world)
+         warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
+         deny_container, deny_mob_attack, deny_fire, deny_ender_pearl, deny_mount, deny_bow, deny_potion, deny_raid)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced,
-                0, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
+                :peace_mode, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
-                1, 1, 1, 1, 1, 0, 0,
-                0, 1, 1, 0, 0, 0,
-                0, '', '', 0, 0,
-                0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0,
-                :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world)");
+                :deny_block_break, :deny_block_place, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
+                :deny_item_frame, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
+                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad_effects, :deny_all_effects,
+                :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
+                :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding,
+                :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
+                :deny_container, :deny_mob_attack, :deny_fire, :deny_ender_pearl, :deny_mount, :deny_bow, :deny_potion, :deny_raid)");
     $count = 0;
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -509,6 +524,42 @@ function syncLands() {
         $stmt->bindValue(':announce', (int)($land['enable_announce'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':announce_tpl', $land['announce_template'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':deny_block_break', (int)($land['deny_block_break'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_block_place', (int)($land['deny_block_place'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_fluid', (int)($land['deny_fluid'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_pvp', (int)($land['deny_pvp'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_fire_spread', (int)($land['deny_fire_spread'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_all_effects', (int)($land['deny_all_effects'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_item_frame', (int)($land['deny_item_frame'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_move', (int)($land['deny_move'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_pickup', (int)($land['deny_pickup'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_drop', (int)($land['deny_drop'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_explosion', (int)($land['deny_explosion'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_fall_damage', (int)($land['deny_fall_damage'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_hunger', (int)($land['deny_hunger'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_all_damage', (int)($land['deny_all_damage'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':clear_effects', $land['clear_effects'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':give_effects', $land['give_effects'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':clear_all_bad_effects', (int)($land['clear_all_bad_effects'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_all_effects', (int)($land['deny_all_effects'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':admin_changed', (int)($land['admin_changed'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_thrown_projectiles', (int)($land['deny_thrown_projectiles'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_glowing', (int)($land['deny_glowing'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_redstone_interaction', (int)($land['deny_redstone_interaction'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_door_interaction', (int)($land['deny_door_interaction'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_noteblock_jukebox', (int)($land['deny_noteblock_jukebox'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_lead', (int)($land['deny_lead'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_crop_harvest', (int)($land['deny_crop_harvest'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_wool_shear', (int)($land['deny_wool_shear'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_animal_feeding', (int)($land['deny_animal_feeding'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_container', (int)($land['deny_container'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_mob_attack', (int)($land['deny_mob_attack'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_fire', (int)($land['deny_fire'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_ender_pearl', (int)($land['deny_ender_pearl'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_mount', (int)($land['deny_mount'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_bow', (int)($land['deny_bow'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_potion', (int)($land['deny_potion'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_raid', (int)($land['deny_raid'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':warp_x', (double)($land['warp_x'] ?? 0), SQLITE3_DOUBLE);
         $stmt->bindValue(':warp_y', (double)($land['warp_y'] ?? 0), SQLITE3_DOUBLE);
         $stmt->bindValue(':warp_z', (double)($land['warp_z'] ?? 0), SQLITE3_DOUBLE);
@@ -1699,6 +1750,14 @@ function pushPlayerLoginStatus() {
         $sessionStmt->bindValue(':time', $now, SQLITE3_INTEGER);
         $sessionStmt->bindValue(':ip', !empty($playerIp) ? $playerIp : 'plugin_sync', SQLITE3_TEXT);
         $sessionStmt->execute();
+
+        // ★ 4. 同时写入web_login_verified：Java推送online=1时记录验证状态（5分钟内有效）
+        // 解决"拿到token就自动登录"安全问题：view操作需要检查此表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+        $wvStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
+        $wvStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $wvStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $wvStmt->execute();
 
         // ★ 如果有IP，更新player_ip_changes表
         if (!empty($playerIp)) {
