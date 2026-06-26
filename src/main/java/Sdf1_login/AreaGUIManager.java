@@ -417,15 +417,14 @@ public class AreaGUIManager implements Listener {
         // 获取per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员状态检测
-        org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
-        boolean isAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+        // ★ 管理员状态检测（领地级管理员，非全局tag）
+        boolean isAdmin = areaProtect.isLandAdmin(landName, targetPlayer);
 
         // ★ 管理员提示：管理员自动获得所有权限
         if (isAdmin) {
             inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
-                    "§7该玩家是管理员，自动获得所有权限",
-                    "§7无需单独配置权限"));
+                    "§7该玩家是此领地管理员，自动获得所有权限",
+                    "§7点击切换管理员身份"));
         }
 
         // 权限列表
@@ -991,6 +990,7 @@ public class AreaGUIManager implements Listener {
                         {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                         {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
+                        {"攻击生物", "denyMobAttack"},
                         {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
                 };
 
@@ -1012,37 +1012,13 @@ public class AreaGUIManager implements Listener {
                 // ★ GUI模式不发送聊天消息
                 openMemberList(p, landName, 0);
             } else if (raw == 47) {
-                // ★ 管理员按钮：切换管理员状态
-                org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
-                boolean isTargetAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+                // ★ 管理员按钮：切换领地管理员状态（非全局tag）
+                boolean isTargetAdmin = areaProtect.isLandAdmin(landName, targetPlayer);
+                areaProtect.setLandAdmin(landName, targetPlayer, !isTargetAdmin);
                 if (!isTargetAdmin) {
-                    // 设置管理员
-                    org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
-                    if (targetOnline == null) {
-                        p.sendMessage("§c玩家不在线，无法设置管理员");
-                    } else {
-                        ConfigManager cfg = plugin.getConfigMgr();
-                        String tag = cfg != null ? cfg.areaProtectAdminTag : null;
-                        if (tag != null && !tag.isEmpty()) {
-                            targetOnline.addScoreboardTag(tag);
-                            p.sendMessage("§a已将 §e" + targetPlayer + " §a设置为管理员");
-                            targetOnline.sendMessage("§6[区域防护] §a你已被设置为管理员");
-                        }
-                    }
+                    p.sendMessage("§a已将 §e" + targetPlayer + " §a设置为此领地管理员");
                 } else {
-                    // 移除管理员
-                    org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
-                    if (targetOnline == null) {
-                        p.sendMessage("§c玩家不在线，无法移除管理员");
-                    } else {
-                        ConfigManager cfg = plugin.getConfigMgr();
-                        String tag = cfg != null ? cfg.areaProtectAdminTag : null;
-                        if (tag != null && !tag.isEmpty()) {
-                            targetOnline.removeScoreboardTag(tag);
-                            p.sendMessage("§a已将 §e" + targetPlayer + " §a移除管理员");
-                            targetOnline.sendMessage("§6[区域防护] §c你已被移除管理员");
-                        }
-                    }
+                    p.sendMessage("§a已将 §e" + targetPlayer + " §a移除此领地管理员");
                 }
                 openPlayerPerm(p, landName, targetPlayer);
             } else if (raw == 49) {
@@ -1080,7 +1056,10 @@ public class AreaGUIManager implements Listener {
                     if (meta != null && meta.getDisplayName() != null) {
                         String playerName = meta.getDisplayName()
                                 .replaceAll("§[0-9a-fk-orA-FK-OR]", "");
-                        areaProtect.addLandMember(landName, playerName);
+                        boolean added = areaProtect.addLandMember(landName, playerName);
+                        if (!added) {
+                            p.sendMessage("§c§l[区域防护] §f领地主不能作为成员添加");
+                        }
                         // ★ GUI模式不发送聊天消息
                         openAddMember(p, landName);
                     }

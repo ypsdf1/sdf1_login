@@ -1473,6 +1473,10 @@ public class WebManager {
         plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s)");
     }
 
+    // Timer A 内部计数器：每N轮同步一次在线玩家（保持PHP心跳不断）
+    private int timerACycleCount = 0;
+    private static final int SYNC_ONLINE_EVERY_N_CYCLES = 10; // ~30-50秒同步一次
+
     /**
      * 定时器A — 注册登录（3~5秒快速轮询）
      * ★ v19: 3个请求串行化执行（不再并行），每个间隔2-3秒，彻底避免PHP锁库
@@ -1524,6 +1528,16 @@ public class WebManager {
                             }
                         }
                     });
+                }
+
+                // ★ 定期同步在线玩家（保持PHP心跳，全员下线时也推送空列表）
+                timerACycleCount++;
+                if (timerACycleCount >= SYNC_ONLINE_EVERY_N_CYCLES) {
+                    timerACycleCount = 0;
+                    submitDbTask("TimerA-syncOnline", () -> {
+                        try { syncOnlinePlayers(); }
+                        catch (Exception e) { /* 静默 */ }
+                    }, true);
                 }
 
                 // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
@@ -2716,8 +2730,17 @@ public class WebManager {
             List<Map<String, Object>> lands = areaProtect.getAllLandsForSync();
             List<Map<String, Object>> shopItems = areaProtect.getPermissionShopForSync();
 
-            // ★ 无变化静默
-            String currentHash = lands.size() + ":" + lands.hashCode() + "|" + shopItems.size() + ":" + shopItems.hashCode();
+            // ★ 无变化静默：用JSON内容hash检测（比hashCode更可靠）
+            StringBuilder hashBuilder = new StringBuilder();
+            for (Map<String, Object> land : lands) {
+                hashBuilder.append(land.getOrDefault("id", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("owner", "")).append(":");
+                hashBuilder.append(land.getOrDefault("deny_container", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_mob_attack", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_fire", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_x", 0)).append("|");
+            }
+            String currentHash = lands.size() + ":" + hashBuilder.toString();
             if (currentHash.equals(lastLandDataHash)) return;
             lastLandDataHash = currentHash;
 

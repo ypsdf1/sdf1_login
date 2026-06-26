@@ -2331,6 +2331,56 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 检查玩家是否是某领地的管理员（role='admin'）
+     */
+    public boolean isLandAdmin(String landName, String playerName) {
+        int landId = getLandIdFromDb(landName);
+        if (landId <= 0) return false;
+        if (dbConnection == null) return false;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT role FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            ResultSet rs = stmt.executeQuery();
+            boolean isAdmin = false;
+            if (rs.next()) {
+                isAdmin = "admin".equalsIgnoreCase(rs.getString("role"));
+            }
+            rs.close();
+            stmt.close();
+            return isAdmin;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    /**
+     * 设置/取消玩家的领地管理员身份
+     */
+    public void setLandAdmin(String landName, String playerName, boolean admin) {
+        int landId = getLandIdFromDb(landName);
+        if (landId <= 0) return;
+        if (dbConnection == null) return;
+        try {
+            String role = admin ? "admin" : "member";
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
+                            + "VALUES (?, ?, ?, '', ?) "
+                            + "ON CONFLICT(land_id, player_name) DO UPDATE SET role = ?");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            stmt.setString(3, role);
+            stmt.setLong(4, System.currentTimeMillis() / 1000);
+            stmt.setString(5, role);
+            stmt.executeUpdate();
+            stmt.close();
+        } catch (SQLException e) {
+            // 忽略
+        }
+    }
+
+    /**
      * ★ 核心方法：获取玩家的effective deny状态
      * 优先级：per-player权限 > 领地默认权限
      * @param permName 权限字段名（如 "denyMove"）
@@ -3920,13 +3970,18 @@ public class AreaProtection implements Listener {
     }
 
     /**
-     * 添加领地成员
+     * 添加领地成员（领地主自动跳过，不允许作为成员入库）
      */
-    public void addLandMember(String landName, String playerName) {
+    public boolean addLandMember(String landName, String playerName) {
+        AreaConfig ac = getLand(landName);
+        if (ac != null && ac.owner != null && ac.owner.equalsIgnoreCase(playerName)) {
+            return false; // 领地主不能作为成员添加
+        }
         Set<String> members = areaPlayerWhitelist.computeIfAbsent(
                 landName, k -> ConcurrentHashMap.newKeySet());
         members.add(playerName.toLowerCase());
         saveWhitelists();
+        return true;
     }
 
     /**
@@ -4545,7 +4600,7 @@ public class AreaProtection implements Listener {
         }
     }
 
-    // ★ 红石交互检测（中继器、比较器）
+    // ★ 红石交互检测（中继器、比较器、拉杆、按钮、压力板、阳光传感器）
     @EventHandler
     public void onRedstoneInteract(PlayerInteractEvent e) {
         if (e.getClickedBlock() == null) return;
@@ -4558,8 +4613,28 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getZ());
         if (ac == null) return;
         if (!getEffectiveDeny(p, ac, "denyRedstoneInteraction")) return;
+        String name = mat.name();
         if (mat == Material.REPEATER || mat == Material.COMPARATOR
-                || mat.name().contains("REPEATER") || mat.name().contains("COMPARATOR")) {
+                || mat == Material.LEVER
+                || mat == Material.STONE_BUTTON || mat == Material.OAK_BUTTON
+                || mat == Material.SPRUCE_BUTTON || mat == Material.BIRCH_BUTTON
+                || mat == Material.JUNGLE_BUTTON || mat == Material.ACACIA_BUTTON
+                || mat == Material.DARK_OAK_BUTTON || mat == Material.MANGROVE_BUTTON
+                || mat == Material.CHERRY_BUTTON || mat == Material.BAMBOO_BUTTON
+                || mat == Material.CRIMSON_BUTTON || mat == Material.WARPED_BUTTON
+                || mat == Material.POLISHED_BLACKSTONE_BUTTON
+                || mat == Material.STONE_PRESSURE_PLATE || mat == Material.OAK_PRESSURE_PLATE
+                || mat == Material.SPRUCE_PRESSURE_PLATE || mat == Material.BIRCH_PRESSURE_PLATE
+                || mat == Material.JUNGLE_PRESSURE_PLATE || mat == Material.ACACIA_PRESSURE_PLATE
+                || mat == Material.DARK_OAK_PRESSURE_PLATE || mat == Material.MANGROVE_PRESSURE_PLATE
+                || mat == Material.CHERRY_PRESSURE_PLATE || mat == Material.BAMBOO_PRESSURE_PLATE
+                || mat == Material.CRIMSON_PRESSURE_PLATE || mat == Material.WARPED_PRESSURE_PLATE
+                || mat == Material.POLISHED_BLACKSTONE_PRESSURE_PLATE || mat == Material.LIGHT_WEIGHTED_PRESSURE_PLATE
+                || mat == Material.HEAVY_WEIGHTED_PRESSURE_PLATE
+                || mat == Material.DAYLIGHT_DETECTOR
+                || name.contains("REPEATER") || name.contains("COMPARATOR")
+                || name.contains("BUTTON") || name.contains("PRESSURE_PLATE")
+                || name.contains("DAYLIGHT")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止操作红石元件");
         }
@@ -7275,6 +7350,13 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // 检查是否是领地主
+        AreaConfig ac = getLand(landName);
+        if (ac != null && ac.owner != null && ac.owner.equalsIgnoreCase(playerName)) {
+            p.sendMessage("§c§l[添加成员] §f领地主不能作为成员添加");
+            return true;
+        }
+
         // 添加成员
         addLandMember(landName, playerName);
         p.sendMessage("§a§l[添加成员] §f已成功添加 " + playerName + " 为领地成员");
@@ -7975,7 +8057,9 @@ public class AreaProtection implements Listener {
 
         // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(clicked);
-        if (ac == null || !getEffectiveDeny(p, ac, "denyItemFrame")) return;
+        if (ac == null) return;
+        // ★ 展示框同时受denyItemFrame和denyContainer控制
+        if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -8029,8 +8113,8 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
 
-            // ★ 使用统一的权限检查方法（支持per-player权限）
-            if (!getEffectiveDeny(p, ac, "denyItemFrame")) return;
+            // ★ 展示框同时受denyItemFrame和denyContainer控制
+            if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -8102,7 +8186,9 @@ public class AreaProtection implements Listener {
 
         // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(hit);
-        if (ac == null || !getEffectiveDeny(shooter, ac, "denyItemFrame")) return;
+        if (ac == null) return;
+        // ★ 展示框同时受denyItemFrame和denyContainer控制
+        if (!getEffectiveDeny(shooter, ac, "denyItemFrame") && !getEffectiveDeny(shooter, ac, "denyContainer")) return;
 
         e.setCancelled(true);
         shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
