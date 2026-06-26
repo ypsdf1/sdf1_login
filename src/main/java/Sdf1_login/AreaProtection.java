@@ -4740,7 +4740,9 @@ public class AreaProtection implements Listener {
                 || mat == Material.TWISTING_VINES || mat == Material.WEEPING_VINES
                 || mat == Material.CHORUS_FLOWER || mat == Material.SWEET_BERRY_BUSH
                 || mat == Material.MELON_STEM || mat == Material.ATTACHED_MELON_STEM
-                || mat == Material.PUMPKIN_STEM || mat == Material.ATTACHED_PUMPKIN_STEM;
+                || mat == Material.PUMPKIN_STEM || mat == Material.ATTACHED_PUMPKIN_STEM
+                || mat == Material.CARROT || mat == Material.POTATO
+                || mat == Material.BEETROOT_SEEDS || mat == Material.WHEAT_SEEDS;
     }
 
     // ★ 检查是否为动物食物（包括玩家食物+动物专用食物）

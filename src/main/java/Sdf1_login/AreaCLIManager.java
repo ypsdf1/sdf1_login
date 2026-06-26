@@ -321,12 +321,10 @@ public class AreaCLIManager {
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
 
         // ★ 细分管理选项
-        p.sendMessage(clickableAction("👤", "用户管理",
+        p.sendMessage(clickableAction("👤", "用户管理（含权限编辑）",
                 "/protect cli members " + land.name + " 1"));
         p.sendMessage(clickableAction("🔑", "访客授权（全局）",
                 "/protect cli visitorperm " + land.name + " 1"));
-        p.sendMessage(clickableAction("🎯", "成员权限（独立）",
-                "/protect cli memberperm " + land.name + " 1"));
         p.sendMessage(clickableAction("💥", "效果管理（清除/增益）",
                 "/protect cli effectsmgmt " + land.name + " 1"));
         // ★ 新增：设置传送点
@@ -365,8 +363,18 @@ public class AreaCLIManager {
             int end = Math.min(start + PAGE_SIZE, memberList.size());
             for (int i = start; i < end; i++) {
                 String member = memberList.get(i);
+                boolean isMemberOwner = member.equalsIgnoreCase(land.owner);
                 Component line = Component.empty();
                 line = line.append(Component.text("§f" + member));
+                if (isMemberOwner) {
+                    line = line.append(Component.text(" §c[所有者]"));
+                }
+                line = line.append(Component.text(" "));
+                line = line.append(Component.text("§a[编辑权限]")
+                        .hoverEvent(HoverEvent.showText(
+                                Component.text("§e设置该成员的独立权限")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli playerperm " + land.name + " " + member + " 1")));
                 line = line.append(Component.text(" "));
                 line = line.append(Component.text("§c[移除]")
                         .hoverEvent(HoverEvent.showText(
@@ -797,18 +805,42 @@ public class AreaCLIManager {
         // 获取该成员的per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员权限自动隐藏：管理员自动获得所有权限
+        // ★ 管理员权限自动隐藏：管理员自动获得所有权限（发光效果除外）
         org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
-        if (targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit)) {
+        boolean isTargetAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+        if (isTargetAdmin) {
             p.sendMessage(header(targetPlayer + " 的独立权限"));
             p.sendMessage(Component.text(""));
             p.sendMessage(Component.text("§6§l该玩家是管理员，自动获得所有权限"));
-            p.sendMessage(Component.text("§7管理员不受任何权限限制，无需单独配置"));
+            p.sendMessage(Component.text("§7管理员不受任何权限限制（发光效果除外）"));
             p.sendMessage(Component.text("§7（不可删除、不可过户、不可操作自身和其他管理员）"));
             p.sendMessage(Component.text(""));
+            // ★ 管理员只保留发光效果权限控制
+            boolean glowingDefault = !land.denyGlowing;
+            boolean glowingOverride = playerPerms.containsKey("glowing") ? playerPerms.get("glowing") : glowingDefault;
+            String glowingIcon = glowingOverride ? "§a✔" : "§c✘";
+            String glowingState = glowingOverride ? "§a允许" : "§c禁止";
+            boolean glowingOverridden = playerPerms.containsKey("glowing");
+            String glowingTag = glowingOverridden ? " §e[自定义]" : " §7[领地默认]";
+            Component glowLine = Component.empty();
+            glowLine = glowLine.append(Component.text(glowingIcon + " §f玩家发光 §7" + glowingState + glowingTag));
+            glowLine = glowLine.append(Component.text(" "));
+            glowLine = glowLine.append(Component.text("§e[切换]")
+                    .hoverEvent(HoverEvent.showText(
+                            Component.text("§e切换该管理员的发光效果权限")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli toggleplayerperm " + land.name + " " + targetPlayer + " glowing 1")));
+            p.sendMessage(glowLine);
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§c[清除所有自定义权限]")
+                    .hoverEvent(HoverEvent.showText(
+                            Component.text("§c将该成员的权限恢复为领地默认")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect clearplayerperm " + land.name + " " + targetPlayer)));
             p.sendMessage(Component.text("§c[返回成员列表]")
                     .clickEvent(ClickEvent.runCommand(
-                            "/protect cli memberlist " + land.name)));
+                            "/protect cli members " + land.name + " 1")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
             return;
         }
 
