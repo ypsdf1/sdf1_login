@@ -67,6 +67,13 @@ public class WebManager {
     private final long[] lastRunTimestamps = new long[3];
     private final Object scheduleLock = new Object();
 
+    // ★ PHP锁库退避：检测到database is locked时暂停所有非关键定时器
+    private volatile long phpBusyUntil = 0;  // 解除时间戳（毫秒）
+    private static final long PHP_BUSY_BACKOFF_MS = 10000; // 退避10秒
+    // ★ 全员下线暂停标志
+    private volatile boolean timersBCPaused = false;  // 全员下线时暂停Timer B/C
+    private volatile boolean timerAStopped = false;  // Timer A是否已停止（不应该停，但做兜底）
+
     // 默认配置
     private String webBaseUrl = "https://caoyuan.ypshidifu.cn/plugin";
     private boolean enabled = false;
@@ -386,7 +393,9 @@ public class WebManager {
                 sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;
                 plugin.getLogger().info("[Web通信] HTTP降级成功，恢复正常HTTPS");
-                return resp.body();
+                String body = resp.body();
+                detectPhpBusy(body);  // ★ 锁库检测
+                return body;
             }
             plugin.getLogger().warning("[Web通信] HTTP降级失败 HTTP " + resp.statusCode() + ": " + urlStr);
             triggerCircuitBreaker(true);
@@ -532,7 +541,9 @@ public class WebManager {
                 sslConsecutiveFailures = 0; // 成功 → 重置断路器
                 sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;  // 恢复正常HTTPS
-                return resp.body();
+                String body = resp.body();
+                detectPhpBusy(body);  // ★ 锁库检测
+                return body;
             }
             // ★ 500时记录响应体（PHP错误信息在body里）
             String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
@@ -697,7 +708,9 @@ public class WebManager {
                 sslCircuitOpenCount = 0;    // 重置退避计数
                 sslDowngraded = false;
                 plugin.getLogger().info("[Web通信] HTTP降级POST成功，恢复正常HTTPS");
-                return resp.body();
+                String body = resp.body();
+                detectPhpBusy(body);  // ★ 锁库检测
+                return body;
             }
             plugin.getLogger().warning("[Web通信] HTTP降级失败 POST HTTP " + resp.statusCode() + ": " + urlStr);
             triggerCircuitBreaker(true);
@@ -728,7 +741,9 @@ public class WebManager {
                         .build();
                 HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
                 if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
-                    return resp.body();
+                    String body = resp.body();
+                    detectPhpBusy(body);  // ★ 锁库检测
+                    return body;
                 }
                 if (attempt < maxRetries) {
                     plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + " HTTP " + resp.statusCode());
@@ -1263,8 +1278,10 @@ public class WebManager {
             if (!hasOnlinePlayers) {
                 if (!allPlayersOffline) {
                     allPlayersOffline = true;
+                    timersBCPaused = true;  // ★ 全员下线：暂停Timer B/C
                     lastOnlineCheckTime = System.currentTimeMillis();
                     syncAfterAllOffline = true;
+                    plugin.getLogger().info("[合并C] ★ 全员下线，Timer B/C已暂停，仅保留Timer A(注册登录)");
                 } else if (syncAfterAllOffline && !lastSyncDone && (System.currentTimeMillis() - lastOnlineCheckTime > 60000)) {
                     allPlayersOffline = false;
                     syncAfterAllOffline = false;
@@ -1291,6 +1308,16 @@ public class WebManager {
             allPlayersOffline = false;
             syncAfterAllOffline = false;
             lastSyncDone = false;
+
+            // ★ 玩家上线恢复：重启Timer B/C（之前全员下线时已暂停）
+            if (timersBCPaused) {
+                timersBCPaused = false;
+                long randB = (long)(Math.random() * 10) * 2;
+                long randC = (long)(Math.random() * 10) * 2;
+                scheduleTimerB(40L + randB);  // 2秒后重启B
+                scheduleTimerC(120L + randC); // 6秒后重启C
+                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s)");
+            }
 
             // 玩家在线：全量批处理
             submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
@@ -1390,7 +1417,7 @@ public class WebManager {
     // ==================== ★ v17 合并定时器错峰调度 ====================
 
     /**
-     * 计算错峰延迟：确保本定时器与其他定时器至少间隔5秒
+     * 计算错峰延迟：确保本定时器与其他定时器至少间隔8秒
      * @param timerId 本定时器ID (TIMER_A/B/C)
      * @param baseMin 最小延迟(秒)
      * @param baseMax 最大延迟(秒)
@@ -1402,14 +1429,18 @@ public class WebManager {
         long now = System.currentTimeMillis();
 
         synchronized (scheduleLock) {
+            // ★ PHP锁库退避：如果PHP正忙，所有定时器延后
+            if (phpBusyUntil > now) {
+                delayMs = Math.max(delayMs, phpBusyUntil - now + 2000);
+            }
             for (int i = 0; i < 3; i++) {
                 if (i == timerId) continue;
                 long otherLast = lastRunTimestamps[i];
                 if (otherLast == 0) continue;
-                // 如果预期执行时间距其他定时器上次执行不足5秒，推后
+                // 如果预期执行时间距其他定时器上次执行不足8秒，推后
                 long gap = (now + delayMs) - otherLast;
-                if (gap >= 0 && gap < 5000) {
-                    delayMs += (5000 - gap) + (long)(Math.random() * 2000);
+                if (gap >= 0 && gap < 8000) {
+                    delayMs += (8000 - gap) + (long)(Math.random() * 3000);
                 }
             }
         }
@@ -1417,23 +1448,34 @@ public class WebManager {
     }
 
     /**
+     * 检测PHP锁库退避：response包含database is locked时设置退避
+     */
+    private void detectPhpBusy(String response) {
+        if (response != null && response.contains("database is locked")) {
+            phpBusyUntil = System.currentTimeMillis() + PHP_BUSY_BACKOFF_MS;
+            plugin.getLogger().warning("[Web通信] ★ PHP锁库退避：暂停所有定时器" + (PHP_BUSY_BACKOFF_MS / 1000) + "秒");
+        }
+    }
+
+    /**
      * 启动3个合并定时器（替代原来的6个独立定时器）
-     * 定时器A 注册登录 0~5秒 | 定时器B 交易 0~10秒 | 定时器C 其它 10~20秒
-     * 三者错峰：首次启动分别间隔5秒，后续通过calcStaggeredDelay自动错开≥5秒
+     * 定时器A 注册登录 3~5秒 | 定时器B 交易 0~10秒 | 定时器C 其它 10~20秒
+     * 三者错峰：首次启动带±5秒随机偏移，后续通过calcStaggeredDelay自动错开≥8秒
      */
     private void startMergedPolling() {
-        // A: 2秒后首次启动
-        scheduleTimerA(40L);
-        // B: 7秒后首次启动（错开A至少5秒）
-        scheduleTimerB(140L);
-        // C: 12秒后首次启动（错开B至少5秒）
-        scheduleTimerC(240L);
-        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动：A注册登录(3~5s) B交易(0~10s) C其它(10~20s) 错峰≥5秒");
+        // ★ 首次启动加±5秒随机偏移，避免精确对齐导致并发
+        long randA = (long)(Math.random() * 10) * 2; // 0~10秒(偶数tick)
+        long randB = (long)(Math.random() * 10) * 2;
+        long randC = (long)(Math.random() * 10) * 2;
+        scheduleTimerA(40L + randA);
+        scheduleTimerB(140L + randB);
+        scheduleTimerC(240L + randC);
+        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s)");
     }
 
     /**
      * 定时器A — 注册登录（3~5秒快速轮询）
-     * 注册请求 + 登录确认 + 密码验证请求
+     * ★ v19: 3个请求串行化执行（不再并行），每个间隔2-3秒，彻底避免PHP锁库
      */
     private void scheduleTimerA(long ticks) {
         new BukkitRunnable() {
@@ -1442,8 +1484,14 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_A] = now; }
 
+                // ★ PHP锁库退避检查：如果PHP正忙，跳过本轮
+                if (phpBusyUntil > System.currentTimeMillis()) {
+                    scheduleTimerA(calcStaggeredDelay(TIMER_A, 3, 5));
+                    return;
+                }
+
                 if (allowLoginPolling) {
-                    // 注册请求轮询
+                    // ★ 串行化：注册请求 → 等2~3秒 → 登录确认 → 等2~3秒 → 登录请求
                     submitWebTask("合并A-注册轮询", () -> {
                         try { pollWebRegisterRequests(); }
                         catch (Exception e) {
@@ -1453,9 +1501,9 @@ public class WebManager {
                                 lastPollRegisterRequestsLog = t;
                             }
                         }
-                    });
-                    // 登录确认轮询
-                    submitWebTask("合并A-登录确认", () -> {
+                        // ★ 串行间隔：等2~3秒再发下一个请求
+                        try { Thread.sleep(2000 + (long)(Math.random() * 1000)); } catch (InterruptedException ignored) {}
+                        // 登录确认轮询
                         try { pollWebLoginConfirmations(); }
                         catch (Exception e) {
                             long t = System.currentTimeMillis();
@@ -1464,9 +1512,9 @@ public class WebManager {
                                 lastPollWebLoginExceptionLog = t;
                             }
                         }
-                    });
-                    // 密码验证请求轮询
-                    submitWebTask("合并A-登录请求", () -> {
+                        // ★ 串行间隔
+                        try { Thread.sleep(2000 + (long)(Math.random() * 1000)); } catch (InterruptedException ignored) {}
+                        // 密码验证请求轮询
                         try { pollWebLoginRequests(); }
                         catch (Exception e) {
                             long t = System.currentTimeMillis();
@@ -1486,7 +1534,7 @@ public class WebManager {
 
     /**
      * 定时器B — 交易（0~10秒轮询）
-     * 交易检查 + 库存变更检测 + CDK验证
+     * ★ v19: 全员下线时自动暂停，PHP锁库时跳过
      */
     private void scheduleTimerB(long ticks) {
         new BukkitRunnable() {
@@ -1494,6 +1542,18 @@ public class WebManager {
             public void run() {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_B] = now; }
+
+                // ★ 全员下线暂停：不调度下一轮
+                if (timersBCPaused) {
+                    plugin.getLogger().info("[合并B] ★ 全员下线，Timer B已暂停");
+                    return; // 不调度下一轮，定时器自然停止
+                }
+
+                // ★ PHP锁库退避检查
+                if (phpBusyUntil > now) {
+                    scheduleTimerB(calcStaggeredDelay(TIMER_B, 0, 10));
+                    return;
+                }
 
                 // 交易检查（check_pending_transactions）
                 try { doTransactionPollCheck(); }
@@ -1530,7 +1590,7 @@ public class WebManager {
 
     /**
      * 定时器C — 其它（10~20秒轮询）
-     * 领地配置同步 + 全量批处理同步
+     * ★ v19: 全员下线时自动暂停，PHP锁库时跳过
      */
     private void scheduleTimerC(long ticks) {
         new BukkitRunnable() {
@@ -1538,6 +1598,18 @@ public class WebManager {
             public void run() {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_C] = now; }
+
+                // ★ 全员下线暂停：不调度下一轮
+                if (timersBCPaused) {
+                    plugin.getLogger().info("[合并C] ★ 全员下线，Timer C已暂停");
+                    return; // 不调度下一轮，定时器自然停止
+                }
+
+                // ★ PHP锁库退避检查
+                if (phpBusyUntil > now) {
+                    scheduleTimerC(calcStaggeredDelay(TIMER_C, 10, 20));
+                    return;
+                }
 
                 // 领地配置同步
                 if (!Bukkit.getOnlinePlayers().isEmpty()) {
