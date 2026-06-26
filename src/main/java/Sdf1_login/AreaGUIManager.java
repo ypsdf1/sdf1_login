@@ -416,6 +416,7 @@ public class AreaGUIManager implements Listener {
 
         // 获取per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
+        int slot = 0;
 
         // ★ 管理员状态检测（领地级管理员，非全局tag）
         boolean isAdmin = areaProtect.isLandAdmin(landName, targetPlayer);
@@ -425,6 +426,20 @@ public class AreaGUIManager implements Listener {
             inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
                     "§7该玩家是此领地管理员，自动获得所有权限",
                     "§7点击切换管理员身份"));
+            // 管理员只保留发光效果权限控制
+            boolean glowingDefault = !land.denyGlowing;
+            boolean glowingOverride = playerPerms.containsKey("denyGlowing") ? playerPerms.get("denyGlowing") : glowingDefault;
+            boolean glowingAllowed = !glowingOverride;
+            Material glowingMat = glowingAllowed ? Material.LIME_DYE : Material.GRAY_DYE;
+            String glowingStatus = glowingAllowed ? "§a✔ 允许" : "§c✘ 禁止";
+            String glowingOverrideTag = playerPerms.containsKey("denyGlowing") ? " §e★自定义" : " §7[默认]";
+            inv.setItem(0, createItem(glowingMat,
+                    "§e§l玩家发光" + glowingOverrideTag,
+                    glowingStatus,
+                    "",
+                    "§e点击切换"));
+            // 跳过权限列表循环
+            slot = 45;
         }
 
         // 权限列表
@@ -442,7 +457,6 @@ public class AreaGUIManager implements Listener {
                 {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
         };
 
-        int slot = 0;
         for (String[] def : permDefs) {
             if (slot >= 45) break;
             String name = def[0];

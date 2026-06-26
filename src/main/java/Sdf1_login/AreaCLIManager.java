@@ -364,10 +364,14 @@ public class AreaCLIManager {
             for (int i = start; i < end; i++) {
                 String member = memberList.get(i);
                 boolean isMemberOwner = member.equalsIgnoreCase(land.owner);
+                boolean isMemberAdmin = areaProtect.isLandAdmin(land.name, member);
                 Component line = Component.empty();
                 line = line.append(Component.text("§f" + member));
                 if (isMemberOwner) {
                     line = line.append(Component.text(" §c[所有者]"));
+                }
+                if (isMemberAdmin) {
+                    line = line.append(Component.text(" §6[管理员]"));
                 }
                 line = line.append(Component.text(" "));
                 line = line.append(Component.text("§a[编辑权限]")
@@ -807,7 +811,7 @@ public class AreaCLIManager {
 
         // ★ 管理员权限自动隐藏：管理员自动获得所有权限（发光效果除外）
         org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
-        boolean isTargetAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+        boolean isTargetAdmin = areaProtect.isLandAdmin(land.name, targetPlayer);
         if (isTargetAdmin) {
             p.sendMessage(header(targetPlayer + " 的独立权限"));
             p.sendMessage(Component.text(""));
