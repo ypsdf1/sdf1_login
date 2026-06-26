@@ -91,7 +91,7 @@ function shopBuy($token) {
 
     if (!$itemId) error('缺少item_id');
     if (!$player) error('缺少player');
-    if ($amount < 1 || $amount > 64) error('数量无效');
+    if ($amount < 1) error('数量无效');
 
     // ★ 双保险验证：购买操作需要密码确认
     $isPreview = true;

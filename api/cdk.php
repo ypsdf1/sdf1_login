@@ -134,99 +134,54 @@ function cdkExchange($token) {
         ], '预览模式 - CDK兑换不会生效');
     }
 
-    // 执行兑换
-    $now = time();
-    $isRemote = !empty($cdk['_remote']);
+        // 执行兑换
+        $now = time();
+        $isRemote = !empty($cdk['_remote']);
 
-    // ★ 全部DB操作包装在事务中，防止database is locked
-    $db->exec('BEGIN IMMEDIATE');
-    try {
-        // 标记CDK已使用（仅本地CDK需要）
-        if (!$isRemote) {
-            $stmt = $db->prepare("UPDATE cdk SET used = 1, used_by = :player, used_at = :time WHERE code = :code");
-            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-            $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-            $stmt->bindValue(':code', strtoupper(trim($code)), SQLITE3_TEXT);
-            $stmt->execute();
-        }
-
-        // ★ 远程CDK：Java端(cdkManager.redeem)已处理加债券，Web端只做记录，不再加bond_cache
-        if (!$isRemote) {
-            // 更新余额
-            if ($row) {
-                $stmt = $db->prepare("UPDATE bond_cache SET amount = :amount, updated_at = :time WHERE player_name = :name");
-                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
+        // ★ 全部DB操作包装在事务中，防止database is locked
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            // 标记CDK已使用（仅本地CDK需要）
+            if (!$isRemote) {
+                $stmt = $db->prepare("UPDATE cdk SET used = 1, used_by = :player, used_at = :time WHERE code = :code");
+                $stmt->bindValue(':player', $player, SQLITE3_TEXT);
                 $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
-                $stmt->execute();
-            } else {
-                $stmt = $db->prepare("INSERT INTO bond_cache (player_name, amount, updated_at) VALUES (:name, :amount, :time)");
-                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
-                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
-                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt->bindValue(':code', strtoupper(trim($code)), SQLITE3_TEXT);
                 $stmt->execute();
             }
 
-            // 记录流水 + sync_requests（仅本地CDK需要，远程CDK由Java记录流水）
+            // ★ PHP只负责记录交易，不更新bond_cache（Java端负责加债券）
+            // 记录流水（本地CDK和远程CDK都记录pending交易，Java拉取后处理）
             $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
             $stmt->bindValue(':player', $player, SQLITE3_TEXT);
             $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
-            $stmt->bindValue(':reason', "CDK兑换: {$code}", SQLITE3_TEXT);
-            $stmt->bindValue(':detail', json_encode(['code' => $code, 'remote' => false], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $stmt->bindValue(':reason', $isRemote ? "CDK远程兑换: {$code}" : "CDK兑换: {$code}", SQLITE3_TEXT);
+            $stmt->bindValue(':detail', json_encode(['code' => $code, 'remote' => $isRemote], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
             $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
             $stmt->execute();
 
-            $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
-            $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
-            $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
-            $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
-            $stmt2->execute();
-        } else {
-            // 远程CDK：PHP也更新bond_cache + 写pending交易，与本地兑换逻辑一致
-            // 注意：远程CDK已在sdf1侧标记used，PHP只需要同步债券
-            if ($row) {
-                $stmt = $db->prepare("UPDATE bond_cache SET amount = :amount, updated_at = :time WHERE player_name = :name");
-                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
-                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
-                $stmt->execute();
-            } else {
-                $stmt = $db->prepare("INSERT INTO bond_cache (player_name, amount, updated_at) VALUES (:name, :amount, :time)");
-                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
-                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
-                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-                $stmt->execute();
+            // 只有本地CDK需要sync_requests触发Java立即同步
+            if (!$isRemote) {
+                $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+                $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+                $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+                $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt2->execute();
             }
 
-            // 写pending交易，Java端pullPendingTransactions拉取后通知sdf1加券
-            $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
-            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-            $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
-            $stmt->bindValue(':reason', "CDK远程兑换: {$code}", SQLITE3_TEXT);
-            $stmt->bindValue(':detail', json_encode(['code' => $code, 'remote' => true], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-            $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
-            $stmt->execute();
-
-            $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
-            $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
-            $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
-            $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
-            $stmt2->execute();
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
+            @error_log("[cdk] 兑换事务失败: " . $e->getMessage());
         }
 
-        $db->exec('COMMIT');
-    } catch (\Throwable $e) {
-        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
-        @error_log("[cdk] 兑换事务失败: " . $e->getMessage());
-    }
-
-    success([
-        'code' => $code,
-        'amount' => $cdk['amount'],
-        'player' => $player,
-        'balance_before' => $currentBalance,
-        'balance_after' => $newBalance
-    ], 'CDK兑换成功');
+        success([
+            'code' => $code,
+            'amount' => $cdk['amount'],
+            'player' => $player,
+            'balance_before' => $currentBalance,
+            'balance_after' => $currentBalance
+        ], 'CDK兑换成功，债券将由Java端处理');
 }
 
 // ===== 创建CDK =====

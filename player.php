@@ -1196,9 +1196,10 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (stock == 0) { toast('商品已售罄', 'error'); return; }
         document.getElementById('modalTitle').textContent = '购买: ' + name;
         const needPwd = price > 1000;
+        const maxQty = stock > 0 ? stock : 999;
         document.getElementById('modalBody').innerHTML = `
             <div class="row"><label>单价: ${price} 债券</label></div>
-            <div class="row"><label>数量</label><input type="number" id="buyAmount" value="1" min="1" max="${stock > 0 ? stock : 64}"></div>
+            <div class="row"><label>数量</label><input type="number" id="buyAmount" value="1" min="1" max="${maxQty}"></div>
             <div class="row"><label>小计: <span id="buyTotal">${price}</span> 债券</label></div>
             ${needPwd ? '<div class="row"><label>密码确认</label><input type="password" id="buyPassword" placeholder="输入游戏登录密码"></div>' : '<div style="color:var(--dim);font-size:12px;text-align:center;margin-top:4px">小额交易（≤1000债券），免密码确认</div>'}`;
         document.getElementById('modalConfirm').onclick = () => doBuy(id);
