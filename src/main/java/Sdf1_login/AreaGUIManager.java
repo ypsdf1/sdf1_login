@@ -416,16 +416,15 @@ public class AreaGUIManager implements Listener {
         // 获取per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员权限自动隐藏：管理员自动获得所有权限
+        // ★ 管理员状态检测
         org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
-        if (targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit)) {
+        boolean isAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+
+        // ★ 管理员提示：管理员自动获得所有权限
+        if (isAdmin) {
             inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
                     "§7该玩家是管理员，自动获得所有权限",
-                    "§7无需单独配置权限",
-                    "",
-                    "§c[返回成员列表]"));
-            p.openInventory(inv);
-            return;
+                    "§7无需单独配置权限"));
         }
 
         // 权限列表
@@ -485,10 +484,8 @@ public class AreaGUIManager implements Listener {
         inv.setItem(49, createItem(Material.ARROW, "§a§l返回成员列表", ""));
 
         // ★ 管理员按钮（位置47）：显示当前管理员状态
-        org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
-        boolean isTargetAdmin = targetOnline != null && areaProtect.isAreaAdmin(targetOnline);
-        Material adminMat = isTargetAdmin ? Material.GOLD_BLOCK : Material.IRON_BLOCK;
-        String adminStatus = isTargetAdmin ? "§a✔ 管理员" : "§c✘ 普通成员";
+        Material adminMat = isAdmin ? Material.GOLD_BLOCK : Material.IRON_BLOCK;
+        String adminStatus = isAdmin ? "§a✔ 管理员" : "§c✘ 普通成员";
         inv.setItem(47, createItem(adminMat, "§6§l管理员权限",
                 "§7当前状态: " + adminStatus,
                 "",
@@ -650,6 +647,8 @@ public class AreaGUIManager implements Listener {
             case "弓箭射击": land.denyBow = !land.denyBow; break;
             case "药水效果": land.denyPotion = !land.denyPotion; break;
             case "点燃": land.denyFire = !land.denyFire; break;
+            case "禁止点燃": land.denyFire = !land.denyFire; break;
+            case "启用点燃": land.denyFire = !land.denyFire; break;
             case "火焰蔓延": land.denyFireSpread = !land.denyFireSpread; break;
             case "禁止拾取": land.denyPickup = !land.denyPickup; break;
             case "丢弃物品": land.denyDrop = !land.denyDrop; break;
@@ -664,6 +663,8 @@ public class AreaGUIManager implements Listener {
             case "音频(音符盒/唱片机)": land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "拴绳使用": land.denyLead = !land.denyLead; break;
             case "农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
+            case "禁用农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
+            case "启用农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
             case "投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
@@ -959,6 +960,40 @@ public class AreaGUIManager implements Listener {
                 areaProtect.setPlayerPermJson(landId, targetPlayer, "");
                 // ★ GUI模式不发送聊天消息
                 openMemberPermList(p, landName);
+            } else if (raw == 47) {
+                // ★ 管理员按钮：切换管理员状态
+                org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
+                boolean isTargetAdmin = targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit);
+                if (!isTargetAdmin) {
+                    // 设置管理员
+                    org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
+                    if (targetOnline == null) {
+                        p.sendMessage("§c玩家不在线，无法设置管理员");
+                    } else {
+                        ConfigManager cfg = plugin.getConfigMgr();
+                        String tag = cfg != null ? cfg.areaProtectAdminTag : null;
+                        if (tag != null && !tag.isEmpty()) {
+                            targetOnline.addScoreboardTag(tag);
+                            p.sendMessage("§a已将 §e" + targetPlayer + " §a设置为管理员");
+                            targetOnline.sendMessage("§6[区域防护] §a你已被设置为管理员");
+                        }
+                    }
+                } else {
+                    // 移除管理员
+                    org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
+                    if (targetOnline == null) {
+                        p.sendMessage("§c玩家不在线，无法移除管理员");
+                    } else {
+                        ConfigManager cfg = plugin.getConfigMgr();
+                        String tag = cfg != null ? cfg.areaProtectAdminTag : null;
+                        if (tag != null && !tag.isEmpty()) {
+                            targetOnline.removeScoreboardTag(tag);
+                            p.sendMessage("§a已将 §e" + targetPlayer + " §a移除管理员");
+                            targetOnline.sendMessage("§6[区域防护] §c你已被移除管理员");
+                        }
+                    }
+                }
+                openPlayerPerm(p, landName, targetPlayer);
             } else if (raw == 49) {
                 // 返回成员列表
                 openMemberPermList(p, landName);
