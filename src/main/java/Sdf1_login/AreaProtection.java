@@ -4701,7 +4701,7 @@ public class AreaProtection implements Listener {
                 "工具", "wand", "expand", "contraction",
                 "on", "off", "tempon", "modeexempt",
                 "settp", "setwarp", "tp", "warp",
-                "setowner", "addvisitor", "removevisitor", "listvisitors", "transfer",
+                "setowner", "setadmin", "unsetadmin", "addvisitor", "removevisitor", "listvisitors", "transfer",
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
                 "menu", "菜单", "sdf1debug", "testclear", "cli",
@@ -6279,6 +6279,68 @@ public class AreaProtection implements Listener {
             // ★ 删除冷却期间变更所有者 → 自动取消删除
             cancelPendingDelete(areaName);
             sender.sendMessage("§a已设置 §e" + areaName + " §a的所有者为 §e" + args[2]);
+            return true;
+        }
+
+        // ===== setadmin 设置管理员（通过ScoreboardTag）=====
+        if (sub.equals("setadmin")) {
+            if (!isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要管理员权限");
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect setadmin <玩家>");
+                return true;
+            }
+            Player target = Bukkit.getPlayerExact(args[1]);
+            if (target == null) {
+                sender.sendMessage("§c玩家不在线: " + args[1]);
+                return true;
+            }
+            ConfigManager cfg = plugin.getConfigMgr();
+            String tag = cfg != null ? cfg.areaProtectAdminTag : null;
+            if (tag == null || tag.isEmpty()) {
+                sender.sendMessage("§c管理员标签未配置");
+                return true;
+            }
+            if (target.getScoreboardTags().contains(tag)) {
+                sender.sendMessage("§e" + args[1] + " §c已经是管理员");
+                return true;
+            }
+            target.addScoreboardTag(tag);
+            sender.sendMessage("§a已将 §e" + args[1] + " §a设置为管理员");
+            target.sendMessage("§6[区域防护] §a你已被设置为管理员");
+            return true;
+        }
+
+        // ===== unsetadmin 移除管理员 =====
+        if (sub.equals("unsetadmin")) {
+            if (!isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要管理员权限");
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect unsetadmin <玩家>");
+                return true;
+            }
+            Player target = Bukkit.getPlayerExact(args[1]);
+            if (target == null) {
+                sender.sendMessage("§c玩家不在线: " + args[1]);
+                return true;
+            }
+            ConfigManager cfg = plugin.getConfigMgr();
+            String tag = cfg != null ? cfg.areaProtectAdminTag : null;
+            if (tag == null || tag.isEmpty()) {
+                sender.sendMessage("§c管理员标签未配置");
+                return true;
+            }
+            if (!target.getScoreboardTags().contains(tag)) {
+                sender.sendMessage("§e" + args[1] + " §c不是管理员");
+                return true;
+            }
+            target.removeScoreboardTag(tag);
+            sender.sendMessage("§a已移除 §e" + args[1] + " §a的管理员权限");
+            target.sendMessage("§6[区域防护] §c你的管理员权限已被移除");
             return true;
         }
 

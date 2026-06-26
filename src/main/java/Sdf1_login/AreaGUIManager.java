@@ -473,6 +473,18 @@ public class AreaGUIManager implements Listener {
         // 返回按钮（位置49）
         inv.setItem(49, createItem(Material.ARROW, "§a§l返回成员列表", ""));
 
+        // ★ 管理员按钮（位置47）：显示当前管理员状态
+        org.bukkit.entity.Player targetOnline = Bukkit.getPlayerExact(targetPlayer);
+        boolean isTargetAdmin = targetOnline != null && areaProtect.isAreaAdmin(targetOnline);
+        Material adminMat = isTargetAdmin ? Material.GOLD_BLOCK : Material.IRON_BLOCK;
+        String adminStatus = isTargetAdmin ? "§a✔ 管理员" : "§c✘ 普通成员";
+        inv.setItem(47, createItem(adminMat, "§6§l管理员权限",
+                "§7当前状态: " + adminStatus,
+                "",
+                "§7管理员自动拥有所有权限",
+                "§7使用命令设置: §e/protect setadmin <玩家>",
+                "§7使用命令移除: §e/protect unsetadmin <玩家>"));
+
         p.openInventory(inv);
     }
 
@@ -522,14 +534,17 @@ public class AreaGUIManager implements Listener {
         managingLand.put(p.getUniqueId(), landName);
         Inventory inv = Bukkit.createInventory(null, 54, T_ADD_MEMBER + " - " + landName);
 
-        // 显示在线玩家（排除自身）
+        // 显示在线玩家（排除自身和领地主人）
         List<Player> onlinePlayers = new ArrayList<>(Bukkit.getOnlinePlayers());
         Set<String> existingMembers = areaProtect.getLandMembers(landName);
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        String ownerName = land != null ? land.owner : "";
 
         int slot = 0;
         for (Player target : onlinePlayers) {
             if (slot >= 45) break;
             if (target.getUniqueId().equals(p.getUniqueId())) continue; // ★ 排除自身
+            if (target.getName().equalsIgnoreCase(ownerName)) continue; // ★ 排除领地主人
             if (existingMembers.contains(target.getName())) continue;
 
             ItemStack playerItem = createItem(Material.PLAYER_HEAD, "§a§l" + target.getName(),
@@ -620,6 +635,7 @@ public class AreaGUIManager implements Listener {
             case "投掷末影珍珠": land.denyEnderPearl = !land.denyEnderPearl; break;
             case "投掷物(三叉戟/雪球/风蛋)": land.denyThrownProjectiles = !land.denyThrownProjectiles; break;
             case "禁止袭击": land.denyRaid = !land.denyRaid; break;
+            case "启用袭击": land.denyRaid = !land.denyRaid; break;
             case "弓箭射击": land.denyBow = !land.denyBow; break;
             case "药水效果": land.denyPotion = !land.denyPotion; break;
             case "点燃": land.denyFire = !land.denyFire; break;
@@ -1480,10 +1496,8 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 48) {
                 openEffectsManagement(p, landName, 1);
             } else if (raw == 53) {
-                // 打开聊天栏输入增益效果
-                p.closeInventory();
-                p.sendMessage("§e§l[添加增益效果] §f请输入: 效果名 [等级] [秒数] (例: 力量 2 300)");
-                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "give", 3);
+                // 打开效果选择列表（与单清一致）
+                openEffectsSelection(p, landName, "give", 3);
             }
         }
     }
