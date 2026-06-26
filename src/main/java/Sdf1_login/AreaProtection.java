@@ -5267,6 +5267,18 @@ public class AreaProtection implements Listener {
                     }
                     plugin.areaCLIManager.togglePlayerPerm(p, args[2], args[3], args[4], tpPage);
                     break;
+                case "toggleadmin":
+                    // ★ 切换玩家的管理员身份（领地主专属）
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli toggleadmin <领地名> <玩家> [页码]");
+                        break;
+                    }
+                    int taPage = 1;
+                    if (args.length >= 5) {
+                        try { taPage = Integer.parseInt(args[4]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.toggleAdmin(p, args[2], args[3], taPage);
+                    break;
                 case "clearplayerperm":
                     // ★ 清除某成员所有自定义权限
                     if (args.length < 4) {

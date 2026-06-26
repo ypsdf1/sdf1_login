@@ -855,6 +855,31 @@ public class AreaCLIManager {
 
         p.sendMessage(header(targetPlayer + " 的独立权限"));
 
+        // ★ 领地主可以在完整面板中切换目标玩家的管理员身份
+        if (isOwner && targetPlayer.equalsIgnoreCase(land.owner)) {
+            // 不能操作自己
+            p.sendMessage(Component.text("§7无法对自己的身份进行操作"));
+        } else if (isOwner) {
+            String adminIcon = isTargetAdmin ? "§6✔" : "§7✘";
+            String adminState = isTargetAdmin ? "§6管理员" : "§7普通成员";
+            Component adminLine = Component.empty();
+            adminLine = adminLine.append(Component.text(adminIcon + " §f身份: §7" + adminState));
+            adminLine = adminLine.append(Component.text(" "));
+            if (isTargetAdmin) {
+                adminLine = adminLine.append(Component.text("§c[撤销管理员]")
+                        .hoverEvent(HoverEvent.showText(Component.text("§c将该玩家恢复为普通成员")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
+            } else {
+                adminLine = adminLine.append(Component.text("§a[设为管理员]")
+                        .hoverEvent(HoverEvent.showText(Component.text("§a授予该玩家管理员身份（自动获得所有权限）")))
+                        .clickEvent(ClickEvent.runCommand(
+                                "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
+            }
+            p.sendMessage(adminLine);
+            p.sendMessage(Component.text(""));
+        }
+
         // 显示说明
         p.sendMessage(Component.text("§7§l说明:"));
         p.sendMessage(Component.text("  §a✔ 已启用 §7= 允许该操作"));
@@ -919,6 +944,49 @@ public class AreaCLIManager {
                         .clickEvent(ClickEvent.runCommand(
                                 "/protect cli memberperm " + land.name + " 1"))));
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    /**
+     * ★ 切换玩家的管理员身份（仅领地主可操作）
+     */
+    public void toggleAdmin(Player p, String landName, String targetPlayer, int page) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        if (!isOwner) {
+            p.sendMessage(Component.text("§c只有领地所有者才能操作管理员身份"));
+            return;
+        }
+
+        // 不能操作自己
+        if (targetPlayer.equalsIgnoreCase(land.owner)) {
+            p.sendMessage(Component.text("§c不能修改自己的管理员身份"));
+            return;
+        }
+
+        // 检查目标是否为成员
+        Set<String> members = areaProtect.getLandMembers(landName);
+        if (!members.contains(targetPlayer)) {
+            p.sendMessage(Component.text("§c" + targetPlayer + " 不是该领地的成员"));
+            return;
+        }
+
+        boolean isTargetAdmin = areaProtect.isLandAdmin(land.name, targetPlayer);
+        // 切换管理员状态
+        areaProtect.setLandAdmin(landName, targetPlayer, !isTargetAdmin);
+
+        if (!isTargetAdmin) {
+            p.sendMessage(Component.text("§a已将 " + targetPlayer + " §a设为管理员（自动获得所有权限）"));
+        } else {
+            p.sendMessage(Component.text("§e已撤销 " + targetPlayer + " §e的管理员身份（恢复为普通成员）"));
+        }
+
+        // 返回权限面板
+        showPlayerPerm(p, landName, targetPlayer, page);
     }
 
     /**
