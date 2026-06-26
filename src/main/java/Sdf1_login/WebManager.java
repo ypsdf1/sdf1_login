@@ -4511,13 +4511,13 @@ public class WebManager {
                 txSuccess = true;
                 confirmTransaction(txId);
             } else if (type.equals("cdk_redeem")) {
-                // CDK兑换：增加债券（不受冻结限制）
+                // CDK兑换：增加债券（本地CDK由PHP标记used，远程CDK由sdf1标记）
                 int balanceBefore = plugin.getBondManager().getBonds(playerName);
                 plugin.getBondManager().addBonds(playerName, amount, "web_cdk", "", "Web商城", "CDK兑换");
                 int balanceAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " CDK兑换，金额: " + amount);
 
-                // ★ 通知在线玩家
+                // 通知在线玩家
                 Player cdkPlayer = plugin.getServer().getPlayer(playerName);
                 if (cdkPlayer != null && cdkPlayer.isOnline()) {
                     cdkPlayer.sendMessage("§6[债券] §aCDK兑换成功！§f +§a" + amount + "§f 债券");
