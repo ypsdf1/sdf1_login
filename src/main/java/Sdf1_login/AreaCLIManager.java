@@ -530,6 +530,7 @@ public class AreaCLIManager {
             case "crop_harvest": oldState = land.denyCropHarvest; land.denyCropHarvest = !land.denyCropHarvest; break;
             case "wool_shear": oldState = land.denyWoolShear; land.denyWoolShear = !land.denyWoolShear; break;
             case "animal_feed": oldState = land.denyAnimalFeeding; land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
+            case "mob_attack": oldState = land.denyMobAttack; land.denyMobAttack = !land.denyMobAttack; break;
             case "glowing": oldState = land.denyGlowing; land.denyGlowing = !land.denyGlowing; break;
             case "peace_mode": oldState = land.peaceMode; land.peaceMode = !land.peaceMode; break;
         }
@@ -584,6 +585,7 @@ public class AreaCLIManager {
             case "crop_harvest": return "denyCropHarvest";
             case "wool_shear": return "denyWoolShear";
             case "animal_feed": return "denyAnimalFeeding";
+            case "mob_attack": return "denyMobAttack";
             case "glowing": return "denyGlowing";
             case "peace_mode": return "peaceMode";
             default: return shortKey;
@@ -637,7 +639,8 @@ public class AreaCLIManager {
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
         perms.add(new PermItem("crop_harvest", land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
-        perms.add(new PermItem("animal_feed", "投喂动物", !land.denyAnimalFeeding));
+        perms.add(new PermItem("animal_feed", land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
+        perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
         perms.add(new PermItem("peace_mode", "和平模式", land.peaceMode));
         return perms;
@@ -673,6 +676,7 @@ public class AreaCLIManager {
             case "crop_harvest": return "农作物收获";
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
+            case "mob_attack": return "攻击生物";
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
             default: return key;
@@ -986,6 +990,7 @@ public class AreaCLIManager {
                 {"crop_harvest", "农作物收获", "denyCropHarvest"},
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
+                {"mob_attack", "攻击生物", "denyMobAttack"},
                 {"glowing", "玩家发光", "denyGlowing"},
                 {"peace_mode", "和平模式", "peaceMode"}
         };
@@ -1007,6 +1012,14 @@ public class AreaCLIManager {
             // ★ denyCropHarvest显示名称
             if (field.equals("denyCropHarvest")) {
                 name = landDefault ? "禁用农作物收获" : "启用农作物收获";
+            }
+            // ★ denyAnimalFeeding显示名称
+            if (field.equals("denyAnimalFeeding")) {
+                name = landDefault ? "禁止投喂" : "允许投喂动物";
+            }
+            // ★ denyMobAttack显示名称
+            if (field.equals("denyMobAttack")) {
+                name = landDefault ? "禁止攻击生物" : "允许攻击生物";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
@@ -1155,11 +1168,21 @@ public class AreaCLIManager {
                 for (int i = 0; i < land.giveEffects.size(); i++) {
                     String[] eff = land.giveEffects.get(i);
                     String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " §f" + eff[2] + "秒" : "");
+                    String level = eff.length > 1 ? eff[1] : "1";
+                    String duration = eff.length > 2 ? eff[2] : "300";
                     p.sendMessage(Component.empty()
-                            .append(Component.text("§a- " + desc))
-                            .append(Component.text(" §c[x]"))
-                            .hoverEvent(HoverEvent.showText(Component.text("§e点击移除增益效果 '" + desc + "'")))
-                            .clickEvent(ClickEvent.runCommand("/protect cli effectsaddremove " + landName + " " + (i + 1))));
+                            .append(Component.text("§a- " + desc + " "))
+                            .append(Component.text("§b[等级:" + level + "]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑等级")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsaddedit " + landName + " " + (i + 1) + " level")))
+                            .append(Component.text(" "))
+                            .append(Component.text("§d[时长:" + duration + "s]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑时长(秒)")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsaddedit " + landName + " " + (i + 1) + " duration")))
+                            .append(Component.text(" "))
+                            .append(Component.text("§c[x]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§c点击移除增益效果 '" + desc + "'")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsaddremove " + landName + " " + (i + 1)))));
                 }
             }
 
@@ -1303,6 +1326,29 @@ public class AreaCLIManager {
         }
         // 保存到DB
         areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * ★ 开始编辑增益效果的等级或时长（等待玩家输入）
+     */
+    public void startEditGiveEffect(Player p, String landName, String indexStr, String editField) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) { p.sendMessage(Component.text("§c领地不存在")); return; }
+        int idx;
+        try { idx = Integer.parseInt(indexStr); } catch (Exception e) { p.sendMessage(Component.text("§c序号无效")); return; }
+        if (idx < 1 || idx > land.giveEffects.size()) { p.sendMessage(Component.text("§c序号超出范围")); return; }
+        if (!editField.equals("level") && !editField.equals("duration")) {
+            p.sendMessage(Component.text("§c编辑类型必须是 level 或 duration"));
+            return;
+        }
+        // 记录待输入状态到 AreaProtection 的 pendingEffectInput
+        String inputType = "editGive_" + editField + "_" + idx;
+        areaProtect.setPendingEffectInput(p.getUniqueId(), landName, inputType, 3);
+        String fieldLabel = editField.equals("level") ? "等级" : "时长(秒)";
+        String[] eff = land.giveEffects.get(idx - 1);
+        String current = editField.equals("level") ? (eff.length > 1 ? eff[1] : "1") : (eff.length > 2 ? eff[2] : "300");
+        p.sendMessage(Component.text("§e请输入新的" + fieldLabel + "（当前: " + current + "），输入取消"));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
     }
 
     /**

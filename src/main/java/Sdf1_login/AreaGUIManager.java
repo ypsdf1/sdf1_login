@@ -3,6 +3,7 @@ package Sdf1_login;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -438,6 +439,7 @@ public class AreaGUIManager implements Listener {
                 {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                 {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
+                {"攻击生物", "denyMobAttack"},
                 {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
         };
 
@@ -460,6 +462,12 @@ public class AreaGUIManager implements Listener {
             }
             if (field.equals("denyCropHarvest")) {
                 name = landDefault ? "禁用农作物收获" : "启用农作物收获";
+            }
+            if (field.equals("denyAnimalFeeding")) {
+                name = landDefault ? "禁止投喂" : "允许投喂动物";
+            }
+            if (field.equals("denyMobAttack")) {
+                name = landDefault ? "禁止攻击生物" : "允许攻击生物";
             }
 
             // enabled = true 表示"允许操作"（即deny=false）
@@ -610,7 +618,8 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("拴绳使用", !land.denyLead));
         perms.add(new PermEntry(land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
-        perms.add(new PermEntry("投喂动物", !land.denyAnimalFeeding));
+        perms.add(new PermEntry(land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
+        perms.add(new PermEntry(land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
         perms.add(new PermEntry("和平模式", land.peaceMode));
         return perms;
@@ -666,7 +675,8 @@ public class AreaGUIManager implements Listener {
             case "禁用农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
             case "启用农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
-            case "投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
+            case "禁止投喂": case "允许投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
+            case "禁止攻击生物": case "允许攻击生物": land.denyMobAttack = !land.denyMobAttack; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
             case "和平模式": land.peaceMode = !land.peaceMode; break;
         }
@@ -687,6 +697,36 @@ public class AreaGUIManager implements Listener {
             item.setItemMeta(meta);
         }
         return item;
+    }
+
+    /**
+     * 安全传送位置搜索：优先中心点，然后随机40次寻找头顶≥2空气+脚下非实体方块+在领地范围内
+     */
+    private Location findSafeLocation(World w, int cx, int cz, int yMin, int yMax) {
+        // 先检查中心点
+        for (int y = Math.min(yMax, w.getMaxHeight()); y >= Math.max(yMin, w.getMinHeight()); y--) {
+            org.bukkit.block.Block foot = w.getBlockAt(cx, y, cz);
+            if (!foot.getType().isSolid()) continue;
+            if (w.getBlockAt(cx, y + 1, cz).getType().isSolid()) continue;
+            if (w.getBlockAt(cx, y + 2, cz).getType().isSolid()) continue;
+            return new Location(w, cx + 0.5, y + 1, cz + 0.5);
+        }
+        // 随机40次
+        java.util.Random rng = new java.util.Random();
+        int x1 = Math.min(cx - 5, cx + 5), x2 = Math.max(cx - 5, cx + 5);
+        int z1 = Math.min(cz - 5, cz + 5), z2 = Math.max(cz - 5, cz + 5);
+        for (int i = 0; i < 40; i++) {
+            int rx = x1 + rng.nextInt(Math.max(1, x2 - x1 + 1));
+            int rz = z1 + rng.nextInt(Math.max(1, z2 - z1 + 1));
+            for (int y = Math.min(yMax, w.getMaxHeight()); y >= Math.max(yMin, w.getMinHeight()); y--) {
+                org.bukkit.block.Block foot = w.getBlockAt(rx, y, rz);
+                if (!foot.getType().isSolid()) continue;
+                if (w.getBlockAt(rx, y + 1, rz).getType().isSolid()) continue;
+                if (w.getBlockAt(rx, y + 2, rz).getType().isSolid()) continue;
+                return new Location(w, rx + 0.5, y + 1, rz + 0.5);
+            }
+        }
+        return null; // 找不到安全位置
     }
 
     /**
@@ -759,16 +799,22 @@ public class AreaGUIManager implements Listener {
                     p.closeInventory();
                     p.performCommand("protect 删除 " + land.name);
                 } else if (event.isShiftClick() && event.isLeftClick()) {
-                    // 传送
+                    // 传送 - 优先传送点，否则安全搜索中心
                     p.closeInventory();
-                    Location tpLoc = new Location(
-                            Bukkit.getWorld(land.world),
-                            (land.x1 + land.x2) / 2.0,
-                            land.yMin,
-                            (land.z1 + land.z2) / 2.0
-                    );
-                    p.teleport(tpLoc);
-                    // ★ GUI模式不发送聊天消息
+                    if (land.warpWorld != null && !land.warpWorld.isEmpty()) {
+                        World ww = Bukkit.getWorld(land.warpWorld);
+                        if (ww != null) {
+                            p.teleport(new Location(ww, land.warpX, land.warpY, land.warpZ, land.warpYaw, land.warpPitch));
+                        }
+                    } else {
+                        int cx = (Math.min(land.x1, land.x2) + Math.max(land.x1, land.x2)) / 2;
+                        int cz = (Math.min(land.z1, land.z2) + Math.max(land.z1, land.z2)) / 2;
+                        World ww = Bukkit.getWorld(land.world);
+                        if (ww != null) {
+                            Location safeLoc = findSafeLocation(ww, cx, cz, land.yMin, land.yMax);
+                            if (safeLoc != null) p.teleport(safeLoc);
+                        }
+                    }
                 }
             } else if (raw == 45 && page > 0) {
                 openLandList(p, page - 1);
@@ -790,26 +836,31 @@ public class AreaGUIManager implements Listener {
                 openMemberList(p, landName, 0);
             } else if (raw == 13) {
                 openVisitorPerm(p, landName, 0);
-            } else if (raw == 14) {
-                // ★ 成员权限（独立）
-                openMemberPermList(p, landName);
             } else if (raw == 15) {
                 openLandSettings(p, landName);
             } else if (raw == 16) {
                 openEffectsManagement(p, landName, 1);
             } else if (raw == 31) {
-                // 传送
+                // 传送 - 优先传送点，否则安全搜索中心
                 p.closeInventory();
                 AreaProtection.AreaConfig land = areaProtect.getLand(landName);
                 if (land != null) {
-                    Location tpLoc = new Location(
-                            Bukkit.getWorld(land.world),
-                            (land.x1 + land.x2) / 2.0,
-                            land.yMin,
-                            (land.z1 + land.z2) / 2.0
-                    );
-                    p.teleport(tpLoc);
-                    // ★ GUI模式不发送聊天消息
+                    if (land.warpWorld != null && !land.warpWorld.isEmpty()) {
+                        // 有传送点 → 直接传送
+                        World ww = Bukkit.getWorld(land.warpWorld);
+                        if (ww != null) {
+                            p.teleport(new Location(ww, land.warpX, land.warpY, land.warpZ, land.warpYaw, land.warpPitch));
+                        }
+                    } else {
+                        // 无传送点 → 中心点安全搜索
+                        int cx = (Math.min(land.x1, land.x2) + Math.max(land.x1, land.x2)) / 2;
+                        int cz = (Math.min(land.z1, land.z2) + Math.max(land.z1, land.z2)) / 2;
+                        World ww = Bukkit.getWorld(land.world);
+                        if (ww != null) {
+                            Location safeLoc = findSafeLocation(ww, cx, cz, land.yMin, land.yMax);
+                            if (safeLoc != null) p.teleport(safeLoc);
+                        }
+                    }
                 }
             } else if (raw == 48) {
                 openLandList(p, 0);
@@ -832,8 +883,8 @@ public class AreaGUIManager implements Listener {
             if (raw >= 0 && raw < (end - start)) {
                 String member = memberList.get(start + raw);
                 if (event.isLeftClick()) {
-                    // 左键：编辑权限（打开访客权限页面）
-                    openVisitorPerm(p, landName, 0);
+                    // 左键：编辑该成员的独立权限
+                    openPlayerPerm(p, landName, member);
                 } else if (event.isRightClick()) {
                     // 右键：移除成员
                     areaProtect.removeLandMember(landName, member);
@@ -923,7 +974,7 @@ public class AreaGUIManager implements Listener {
             if (raw == 22) {
                 ItemStack item = event.getView().getTopInventory().getItem(raw);
                 if (item != null && item.getType() == Material.GOLD_BLOCK) {
-                    openMemberPermList(p, landName);
+                    openMemberList(p, landName, 0);
                     return;
                 }
             }
@@ -959,7 +1010,7 @@ public class AreaGUIManager implements Listener {
                 // 清除所有自定义权限
                 areaProtect.setPlayerPermJson(landId, targetPlayer, "");
                 // ★ GUI模式不发送聊天消息
-                openMemberPermList(p, landName);
+                openMemberList(p, landName, 0);
             } else if (raw == 47) {
                 // ★ 管理员按钮：切换管理员状态
                 org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
@@ -996,7 +1047,7 @@ public class AreaGUIManager implements Listener {
                 openPlayerPerm(p, landName, targetPlayer);
             } else if (raw == 49) {
                 // 返回成员列表
-                openMemberPermList(p, landName);
+                openMemberList(p, landName, 0);
             }
             return;
         }

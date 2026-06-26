@@ -151,6 +151,15 @@ public class AreaProtection implements Listener {
     // 待清理的效果列表（与延时任务配合）
     private final Map<UUID, List<PotionEffectType>> pendingClearEffects
             = new ConcurrentHashMap<>();
+    // ★ 拾取消息节流（5~10秒随机间隔）
+    private final Map<UUID, Long> lastPickupMsgTime = new ConcurrentHashMap<>();
+    private static final String[] PICKUP_MSGS = {
+            "§c§l[区域防护] §f禁止拾取物品",
+            "§c§l[区域防护] §f此区域不允许拾取",
+            "§c§l[区域防护] §f拾取功能已禁用",
+            "§c§l[区域防护] §f你无法在此区域拾取物品",
+            "§c§l[区域防护] §f请离开领地后再拾取"
+    };
 
 
 
@@ -980,6 +989,7 @@ public class AreaProtection implements Listener {
                 try { ac.denyWoolShear = rs.getInt("deny_wool_shear") == 1; } catch (Exception ignored) {}
                 try { ac.denyAnimalFeeding = rs.getInt("deny_animal_feeding") == 1; } catch (Exception ignored) {}
                 try { ac.denyContainer = rs.getInt("deny_container") == 1; } catch (Exception ignored) {}
+                try { ac.denyMobAttack = rs.getInt("deny_mob_attack") == 1; } catch (Exception ignored) {}
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1173,6 +1183,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN warp_world TEXT DEFAULT ''"); } catch (Exception ignored) {}
             // ★ 容器管理权限列（旧表缺失会导致INSERT OR REPLACE失败）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 玩家攻击生物权限列
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -2378,6 +2390,7 @@ public class AreaProtection implements Listener {
             case "denyCropHarvest": return ac.denyCropHarvest;
             case "denyWoolShear": return ac.denyWoolShear;
             case "denyAnimalFeeding": return ac.denyAnimalFeeding;
+            case "denyMobAttack": return ac.denyMobAttack;
             case "peaceMode": return ac.peaceMode;
             default: return false;
         }
@@ -4143,7 +4156,7 @@ public class AreaProtection implements Listener {
         }
     }
 
-    // ★ 拾取限制：denyPickup=true时禁止拾取地上物品
+    // ★ 拾取限制：denyPickup=true时禁止拾取地上物品（节流5~10秒随机提示）
     @EventHandler
     public void onPlayerPickup(PlayerPickupItemEvent e) {
         Player p = e.getPlayer();
@@ -4154,7 +4167,14 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockZ());
         if (ac != null && getEffectiveDeny(p, ac, "denyPickup")) {
             e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止拾取物品");
+            // 节流：5~10秒随机间隔
+            long now = System.currentTimeMillis();
+            Long last = lastPickupMsgTime.get(p.getUniqueId());
+            long cooldown = 5000 + new java.util.Random().nextLong(5000); // 5~10秒
+            if (last == null || now - last > cooldown) {
+                lastPickupMsgTime.put(p.getUniqueId(), now);
+                p.sendMessage(PICKUP_MSGS[new java.util.Random().nextInt(PICKUP_MSGS.length)]);
+            }
         }
     }
 
@@ -4613,6 +4633,17 @@ public class AreaProtection implements Listener {
                 || mat == Material.BEACON || mat.name().contains("LECTERN");
     }
 
+    // ★ 检查是否为动物食物（包括玩家食物+动物专用食物）
+    private boolean isAnimalFood(Material mat) {
+        if (mat.isEdible()) return true; // 玩家食物（面包、胡萝卜等）
+        // 动物专用食物（玩家不可食用）
+        return mat == Material.WHEAT || mat == Material.BEETROOT_SEEDS
+                || mat == Material.MELON_SEEDS || mat == Material.PUMPKIN_SEEDS
+                || mat == Material.COCOA_BEANS || mat == Material.BONE_MEAL
+                || mat == Material.NAME_TAG || mat == Material.SADDLE
+                || mat.name().contains("SEEDS"); // 各种种子
+    }
+
     // ★ 采集羊毛检测
     @EventHandler
     public void onShearEntity(PlayerShearEntityEvent e) {
@@ -4654,9 +4685,9 @@ public class AreaProtection implements Listener {
                 loc.getBlockZ());
         if (ac == null) return;
         if (!getEffectiveDeny(p, ac, "denyAnimalFeeding")) return;
-        // 检查玩家手持的物品是否是食物
+        // 检查玩家手持的物品是否是食物（isEdible()只检测玩家食物，需额外检测动物食物）
         ItemStack hand = p.getInventory().getItemInMainHand();
-        if (hand != null && hand.getType().isEdible()) {
+        if (hand != null && hand.getType() != Material.AIR && isAnimalFood(hand.getType())) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止在此区域投喂动物");
         }
@@ -5210,6 +5241,14 @@ public class AreaProtection implements Listener {
                     plugin.areaCLIManager.addGiveEffect(p, args[2], effName, effLevel, effDuration);
                     // 刷新：回到增益效果列表(subPage 3)
                     plugin.areaCLIManager.showEffectsManagement(p, args[2], 3);
+                    break;
+                case "effectsaddedit":
+                    // ★ 编辑增益效果等级或时长: 序号 level|duration
+                    if (args.length < 5) {
+                        p.sendMessage("§c用法: /protect cli effectsaddedit <领地名> <序号> <level|duration>");
+                        break;
+                    }
+                    plugin.areaCLIManager.startEditGiveEffect(p, args[2], args[3], args[4]);
                     break;
                 case "create":
                     // 跳转到创建命令
@@ -6820,8 +6859,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -6887,6 +6926,7 @@ public class AreaProtection implements Listener {
             stmt.setFloat(60, ac.warpPitch);
             stmt.setString(61, ac.warpWorld != null ? ac.warpWorld : "");
             stmt.setInt(62, ac.denyContainer ? 1 : 0);
+            stmt.setInt(63, ac.denyMobAttack ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
         } catch (SQLException e) {
@@ -7255,6 +7295,13 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 通用设置效果输入状态
+     */
+    public void setPendingEffectInput(java.util.UUID uuid, String landName, String inputType, int subPage) {
+        pendingEffectInput.put(uuid, new String[]{landName, inputType, String.valueOf(subPage)});
+    }
+
+    /**
      * 检查并处理效果管理输入
      * @return true 如果是效果管理输入，已处理
      */
@@ -7346,6 +7393,46 @@ public class AreaProtection implements Listener {
             land.giveEffects.add(effRecord);
             saveAreaToDb(land);
             p.sendMessage("§a§l[添加增益效果] §f已添加: §a" + effName + " §fLv" + effLv + " " + effDur + "秒");
+        } else if (inputType.startsWith("editGive_")) {
+            // ★ 编辑增益效果等级/时长: editGive_level_3 或 editGive_duration_3
+            String[] parts = inputType.split("_");
+            if (parts.length < 3) return true;
+            String editField = parts[1]; // level 或 duration
+            int idx;
+            try { idx = Integer.parseInt(parts[2]); } catch (Exception e) { return true; }
+            if (idx < 1 || idx > land.giveEffects.size()) {
+                p.sendMessage("§c序号超出范围");
+                return true;
+            }
+            if (message.trim().equalsIgnoreCase("取消")) {
+                p.sendMessage("§7已取消编辑");
+                if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 3);
+                return true;
+            }
+            String[] eff = land.giveEffects.get(idx - 1);
+            if ("level".equals(editField)) {
+                int newLevel;
+                try { newLevel = Integer.parseInt(message.trim()); } catch (Exception e) {
+                    p.sendMessage("§c请输入有效数字");
+                    return true;
+                }
+                if (newLevel < 1 || newLevel > 255) { p.sendMessage("§c等级范围1~255"); return true; }
+                if (eff.length < 2) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, eff.length); eff = tmp; land.giveEffects.set(idx - 1, eff); }
+                eff[1] = String.valueOf(newLevel);
+                p.sendMessage("§a§l[编辑增益] §f已将 §e" + eff[0] + " §f等级修改为 " + newLevel);
+            } else {
+                int newDur;
+                try { newDur = Integer.parseInt(message.trim()); } catch (Exception e) {
+                    p.sendMessage("§c请输入有效数字");
+                    return true;
+                }
+                if (newDur < 1 || newDur > 86400) { p.sendMessage("§c时长范围1~86400秒"); return true; }
+                if (eff.length < 3) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, Math.min(eff.length, 3)); eff = tmp; land.giveEffects.set(idx - 1, eff); }
+                eff[2] = String.valueOf(newDur);
+                p.sendMessage("§a§l[编辑增益] §f已将 §e" + eff[0] + " §f时长修改为 " + newDur + "秒");
+            }
+            saveAreaToDb(land);
+            if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 3);
         }
 
         // 刷新GUI，回到原来的subPage
@@ -7828,6 +7915,21 @@ public class AreaProtection implements Listener {
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+            return;
+        }
+
+        // ===== 攻击生物逻辑 =====
+        if (!(e.getDamager() instanceof Player)) return;
+        if (e.getEntity() instanceof Player) return; // PVP走下面的逻辑
+        Player mobAttacker = (Player) e.getDamager();
+        AreaConfig acMob = getArea(
+                mobAttacker.getWorld().getName(),
+                mobAttacker.getLocation().getBlockX(),
+                mobAttacker.getLocation().getBlockY(),
+                mobAttacker.getLocation().getBlockZ());
+        if (acMob != null && getEffectiveDeny(mobAttacker, acMob, "denyMobAttack")) {
+            e.setCancelled(true);
+            mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
             return;
         }
 
@@ -8325,6 +8427,8 @@ public class AreaProtection implements Listener {
         public boolean denyWoolShear = false;
         // ★ 投喂动物
         public boolean denyAnimalFeeding = false;
+        // ★ 玩家攻击生物
+        public boolean denyMobAttack = false;
         public boolean enableAnnounce = false;
         public String announceTemplate = "";
         public String txtContent = "";
