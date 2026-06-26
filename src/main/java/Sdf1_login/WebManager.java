@@ -422,6 +422,15 @@ public class WebManager {
         });
     }
 
+    // ==================== 静态内部类 ====================
+
+    // ★ 静态具名内部类替代匿名X509TrustManager（解决Bukkit类加载器NoClassDefFoundError）
+    private static class TrustAllX509Manager implements X509TrustManager {
+        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+    }
+
     // ==================== 工具方法 ====================
 
     /**
@@ -434,13 +443,7 @@ public class WebManager {
      * ★ CF兼容：强制TLS 1.2 + 指定密码套件 + 自动重建连接
      */
     private void initSSL() {
-        final TrustManager[] trustAllCerts = new TrustManager[]{
-                new X509TrustManager() {
-                    public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-                    public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                    public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-                }
-        };
+        final TrustManager[] trustAllCerts = new TrustManager[]{ new TrustAllX509Manager() };
 
         try {
             // ★ 使用TLS 1.2（CF兼容性最好，TLS 1.3与CF边缘偶发不兼容）
@@ -473,13 +476,7 @@ public class WebManager {
      */
     private void rebuildHttpClient() {
         try {
-            final TrustManager[] trustAllCerts = new TrustManager[]{
-                    new X509TrustManager() {
-                        public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-                        public void checkClientTrusted(X509Certificate[] certs, String authType) {}
-                        public void checkServerTrusted(X509Certificate[] certs, String authType) {}
-                    }
-            };
+            final TrustManager[] trustAllCerts = new TrustManager[]{ new TrustAllX509Manager() };
             SSLContext sc = SSLContext.getInstance("TLSv1.2");
             sc.init(null, trustAllCerts, new SecureRandom());
             javax.net.ssl.SSLParameters sslParams = sc.getDefaultSSLParameters();
