@@ -975,6 +975,11 @@ public class AreaCLIManager {
             String field = def[2];
             boolean landDefault = getLandDefaultVal(land, field);
 
+            // 特殊处理：denyRaid的显示名称
+            if (field.equals("denyRaid")) {
+                name = landDefault ? "禁止袭击" : "启用袭击";
+            }
+
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
             if (playerPerms.containsKey(field)) {
                 boolean playerVal = playerPerms.get(field);

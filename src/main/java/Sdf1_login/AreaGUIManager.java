@@ -553,7 +553,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("骑乘坐具", !land.denyMount));
         perms.add(new PermEntry("投掷末影珍珠", !land.denyEnderPearl));
         perms.add(new PermEntry("投掷物(三叉戟/雪球/风蛋)", !land.denyThrownProjectiles));
-        perms.add(new PermEntry("禁止袭击", !land.denyRaid));
+        perms.add(new PermEntry(land.denyRaid ? "禁止袭击" : "启用袭击", !land.denyRaid));
         perms.add(new PermEntry("弓箭射击", !land.denyBow));
         perms.add(new PermEntry("药水效果", !land.denyPotion));
         perms.add(new PermEntry("点燃", !land.denyFire));

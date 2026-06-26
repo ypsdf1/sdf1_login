@@ -3901,7 +3901,6 @@ public class WebManager {
 
             // 成功 → 重置
             loginPollFailCount = 0;
-            plugin.getLogger().info("[Web登录确认轮询] ★ PHP响应(前300字符): " + json.substring(0, Math.min(300, json.length())));
 
             if (!json.contains("\"success\":true")) {
                 plugin.getLogger().info("[Web登录确认轮询] ✗ PHP响应非success");
@@ -4048,7 +4047,6 @@ public class WebManager {
             }
             // 成功 → 重置
             loginPollFailCount = 0;
-            plugin.getLogger().info("[Web密码验证轮询] ★ PHP响应(前300字符): " + json.substring(0, Math.min(300, json.length())));
             if (!json.contains("\"success\":true")) {
                 plugin.getLogger().info("[Web密码验证轮询] ✗ PHP响应非success");
                 return;
