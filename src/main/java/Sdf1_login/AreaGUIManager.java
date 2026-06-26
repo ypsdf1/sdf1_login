@@ -1012,6 +1012,86 @@ public class AreaGUIManager implements Listener {
             handleAdminPanelClick(p, raw, event.isLeftClick(), event.isRightClick());
             return;
         }
+
+        // 效果选择列表
+        if (title.startsWith("§a§l选择效果 - ")) {
+            event.setCancelled(true);
+            EffectSelectionState state = pendingEffectSelection.get(p.getUniqueId());
+            if (state == null) return;
+
+            if (raw == 48) {
+                // 返回按钮
+                pendingEffectSelection.remove(p.getUniqueId());
+                openEffectsManagement(p, state.landName, state.returnSubPage);
+                return;
+            }
+
+            if (raw < 0 || raw >= 45) return;
+
+            // 获取效果名
+            String effName = getEffectNameBySlot(raw);
+            if (effName == null) return;
+
+            AreaProtection.AreaConfig land = areaProtect.getLand(state.landName);
+            if (land == null) return;
+
+            if (state.type.equals("clear")) {
+                // 添加到清除效果列表
+                if (!land.clearEffects.contains(effName)) {
+                    land.clearEffects.add(effName);
+                    areaProtect.saveAreaToDb(land);
+                    p.sendMessage("§a§l[效果管理] §f已添加清除效果: §e" + effName);
+                } else {
+                    p.sendMessage("§c§l[效果管理] §f该效果已在清除列表中: §e" + effName);
+                }
+            } else {
+                // 添加到增益效果列表
+                boolean alreadyExists = false;
+                for (String[] ge : land.giveEffects) {
+                    if (ge[0].equals(effName)) { alreadyExists = true; break; }
+                }
+                if (!alreadyExists) {
+                    land.giveEffects.add(new String[]{effName, "1", "300"});
+                    areaProtect.saveAreaToDb(land);
+                    p.sendMessage("§a§l[效果管理] §f已添加增益效果: §a" + effName + " Lv1 300秒");
+                } else {
+                    p.sendMessage("§c§l[效果管理] §f该增益效果已存在: §e" + effName);
+                }
+            }
+
+            // 刷新选择列表
+            openEffectsSelection(p, state.landName, state.type, state.returnSubPage);
+            return;
+        }
+    }
+
+    /**
+     * 根据槽位获取效果名
+     */
+    private String getEffectNameBySlot(int slot) {
+        String[][] allEffects = {
+                // 负面效果 (0-15)
+                {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
+                {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
+                {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
+                {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
+                {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"},
+                // 中性效果 (16-18)
+                {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"},
+                // 正面效果 (19-38)
+                {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
+                {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
+                {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
+                {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
+                {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
+                {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
+                {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
+        };
+
+        if (slot >= 0 && slot < allEffects.length) {
+            return allEffects[slot][0];
+        }
+        return null;
     }
 
     /**
@@ -1260,7 +1340,7 @@ public class AreaGUIManager implements Listener {
 
             inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
             inv.setItem(53, createItem(Material.BOOK, "§a§l添加效果",
-                    "§7点击后在聊天栏输入效果名"));
+                    "§7点击选择要清除的效果"));
 
             p.openInventory(inv);
         }
@@ -1359,10 +1439,8 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 48) {
                 openEffectsManagement(p, landName, 1);
             } else if (raw == 53) {
-                // 打开聊天栏输入效果名
-                p.closeInventory();
-                p.sendMessage("§e§l[添加清除效果] §f请输入效果名（如：缓慢、中毒、凋零）:");
-                areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "clear", 2);
+                // 打开效果选择列表
+                openEffectsSelection(p, landName, "clear", 2);
             }
         }
         // 子菜单3：增益效果列表
@@ -1382,6 +1460,98 @@ public class AreaGUIManager implements Listener {
                 p.sendMessage("§e§l[添加增益效果] §f请输入: 效果名 [等级] [秒数] (例: 力量 2 300)");
                 areaProtect.setPendingClearEffectInput(p.getUniqueId(), landName, "give", 3);
             }
+        }
+    }
+
+    /**
+     * 打开效果选择列表（可点击选择）
+     * @param type "clear"=清除效果, "give"=增益效果
+     * @param returnSubPage 返回时的子菜单页码
+     */
+    private void openEffectsSelection(Player p, String landName, String type, int returnSubPage) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) return;
+
+        String title = "§a§l选择效果 - " + landName;
+        Inventory inv = Bukkit.createInventory(null, 54, title);
+
+        // 负面效果
+        String[][] badEffects = {
+                {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
+                {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
+                {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
+                {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
+                {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"}
+        };
+
+        // 中性效果
+        String[][] neutralEffects = {
+                {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"}
+        };
+
+        // 正面效果
+        String[][] goodEffects = {
+                {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
+                {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
+                {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
+                {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
+                {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
+                {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
+                {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
+        };
+
+        int slot = 0;
+        // 负面效果
+        for (String[] eff : badEffects) {
+            if (slot >= 45) break;
+            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            Material mat = alreadyInList ? Material.GRAY_DYE : Material.RED_DYE;
+            String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§c" + eff[0];
+            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            slot++;
+        }
+
+        // 中性效果
+        for (String[] eff : neutralEffects) {
+            if (slot >= 45) break;
+            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            Material mat = alreadyInList ? Material.GRAY_DYE : Material.YELLOW_DYE;
+            String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§e" + eff[0];
+            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            slot++;
+        }
+
+        // 正面效果
+        for (String[] eff : goodEffects) {
+            if (slot >= 45) break;
+            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            Material mat = alreadyInList ? Material.GRAY_DYE : Material.LIME_DYE;
+            String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§a" + eff[0];
+            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            slot++;
+        }
+
+        // 返回按钮
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回", ""));
+
+        p.openInventory(inv);
+
+        // 存储选择状态
+        pendingEffectSelection.put(p.getUniqueId(), new EffectSelectionState(landName, type, returnSubPage));
+    }
+
+    // 效果选择状态
+    private final java.util.Map<java.util.UUID, EffectSelectionState> pendingEffectSelection = new java.util.HashMap<>();
+
+    private static class EffectSelectionState {
+        final String landName;
+        final String type;
+        final int returnSubPage;
+
+        EffectSelectionState(String landName, String type, int returnSubPage) {
+            this.landName = landName;
+            this.type = type;
+            this.returnSubPage = returnSubPage;
         }
     }
 }
