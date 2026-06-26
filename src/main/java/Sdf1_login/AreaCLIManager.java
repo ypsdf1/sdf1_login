@@ -505,6 +505,7 @@ public class AreaCLIManager {
             case "move": oldState = land.denyMove; land.denyMove = !land.denyMove; break;
             case "block_place": oldState = land.denyBlockPlace; land.denyBlockPlace = !land.denyBlockPlace; break;
             case "block_break": oldState = land.denyBlockBreak; land.denyBlockBreak = !land.denyBlockBreak; break;
+            case "container": oldState = land.denyContainer; land.denyContainer = !land.denyContainer; break;
             case "pvp": oldState = land.denyPVP; land.denyPVP = !land.denyPVP; break;
             case "mount": oldState = land.denyMount; land.denyMount = !land.denyMount; break;
             case "ender_pearl": oldState = land.denyEnderPearl; land.denyEnderPearl = !land.denyEnderPearl; break;
@@ -558,6 +559,7 @@ public class AreaCLIManager {
             case "move": return "denyMove";
             case "block_place": return "denyBlockPlace";
             case "block_break": return "denyBlockBreak";
+            case "container": return "denyContainer";
             case "pvp": return "denyPVP";
             case "mount": return "denyMount";
             case "ender_pearl": return "denyEnderPearl";
@@ -611,11 +613,12 @@ public class AreaCLIManager {
         perms.add(new PermItem("move", "移动", !land.denyMove));
         perms.add(new PermItem("block_place", "放置方块", !land.denyBlockPlace));
         perms.add(new PermItem("block_break", "破坏方块", !land.denyBlockBreak));
+        perms.add(new PermItem("container", "容器管理", !land.denyContainer));
         perms.add(new PermItem("pvp", "玩家对战", !land.denyPVP));
         perms.add(new PermItem("mount", "骑乘坐具", !land.denyMount));
         perms.add(new PermItem("ender_pearl", "投掷末影珍珠", !land.denyEnderPearl));
         perms.add(new PermItem("thrown_projectiles", "投掷物(三叉戟/雪球/风蛋)", !land.denyThrownProjectiles));
-        perms.add(new PermItem("raid", "启用袭击", !land.denyRaid));
+        perms.add(new PermItem("raid", land.denyRaid ? "禁止袭击" : "启用袭击", !land.denyRaid));
         perms.add(new PermItem("bow", "弓箭射击", !land.denyBow));
         perms.add(new PermItem("potion", "药水效果", !land.denyPotion));
         perms.add(new PermItem("fire", "点燃", !land.denyFire));
@@ -645,11 +648,12 @@ public class AreaCLIManager {
             case "move": return "移动";
             case "block_place": return "放置方块";
             case "block_break": return "破坏方块";
+            case "container": return "容器管理";
             case "pvp": return "玩家对战";
             case "mount": return "骑乘坐具";
             case "ender_pearl": return "投掷末影珍珠";
             case "thrown_projectiles": return "投掷物";
-            case "raid": return "启用袭击";
+            case "raid": return "禁止袭击";
             case "bow": return "弓箭射击";
             case "potion": return "药水效果";
             case "fire": return "点燃";
@@ -788,6 +792,22 @@ public class AreaCLIManager {
 
         // 获取该成员的per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
+
+        // ★ 管理员权限自动隐藏：管理员自动获得所有权限
+        org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
+        if (targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit)) {
+            p.sendMessage(header(targetPlayer + " 的独立权限"));
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§6§l该玩家是管理员，自动获得所有权限"));
+            p.sendMessage(Component.text("§7管理员不受任何权限限制，无需单独配置"));
+            p.sendMessage(Component.text("§7（不可删除、不可过户、不可操作自身和其他管理员）"));
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§c[返回成员列表]")
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli memberlist " + land.name)));
+            return;
+        }
+
         List<PermItem> perms = getPermListWithOverrides(land, playerPerms);
 
         int totalPages = Math.max(1, (int) Math.ceil((double) perms.size() / PAGE_SIZE));
@@ -941,6 +961,7 @@ public class AreaCLIManager {
                 {"move", "移动", "denyMove"},
                 {"block_place", "放置方块", "denyBlockPlace"},
                 {"block_break", "破坏方块", "denyBlockBreak"},
+                {"container", "容器管理", "denyContainer"},
                 {"pvp", "玩家对战", "denyPVP"},
                 {"mount", "骑乘坐具", "denyMount"},
                 {"ender_pearl", "投掷末影珍珠", "denyEnderPearl"},
@@ -1001,6 +1022,7 @@ public class AreaCLIManager {
             case "denyMove": return land.denyMove;
             case "denyBlockPlace": return land.denyBlockPlace;
             case "denyBlockBreak": return land.denyBlockBreak;
+            case "denyContainer": return land.denyContainer;
             case "denyPVP": return land.denyPVP;
             case "denyMount": return land.denyMount;
             case "denyEnderPearl": return land.denyEnderPearl;
@@ -1081,8 +1103,8 @@ public class AreaCLIManager {
             // 返回
             p.sendMessage(Component.text(""));
             p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli landmanage " + landName + " 1"));
-            p.sendMessage(clickableAction("➡", "单清效果", "/protect cli effectsclear " + landName + " 1"));
-            p.sendMessage(clickableAction("➡", "添加增益效果", "/protect cli effectsadd " + landName + " 1"));
+            p.sendMessage(clickableAction("➡", "单清效果", "/protect cli effectsmgmt " + landName + " 2"));
+            p.sendMessage(clickableAction("➡", "添加增益效果", "/protect cli effectsmgmt " + landName + " 3"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
 

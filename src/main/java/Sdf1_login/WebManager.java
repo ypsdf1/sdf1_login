@@ -1827,6 +1827,26 @@ public class WebManager {
                             status = "success";
                             amount = Integer.parseInt(sbResult[1]);
                             plugin.getLogger().info("[CDK远程验证] 计分板CDK匹配: " + cdkCode + " 金额=" + amount);
+
+                            // ★ 关键修复：sdf1的checkScoreBoardCdk已删除口令但不加债券
+                            // 这里直接加债券，确保核销和到账原子性
+                            if (amount > 0 && !"web_remote".equals(playerName)) {
+                                try {
+                                    int bef = plugin.getBondManager().getBonds(playerName);
+                                    plugin.getBondManager().addBonds(playerName, amount, "cdk_redeem_web", cdkCode, "Web系统", "CDK远程兑换: " + cdkCode);
+                                    int aft = plugin.getBondManager().getBonds(playerName);
+                                    plugin.getLogger().info("[CDK远程验证] 直接加债券: " + playerName + " +" + amount + " (" + bef + "->" + aft + ")");
+
+                                    // 通知在线玩家
+                                    Player targetPlayer = Bukkit.getPlayerExact(playerName);
+                                    if (targetPlayer != null && targetPlayer.isOnline()) {
+                                        targetPlayer.sendMessage("§6[债券] §aCDK兑换成功！§f +§a" + amount + "§f 债券");
+                                        targetPlayer.sendMessage("§6[债券] §f余额: §e" + bef + " §7→ §a" + aft);
+                                    }
+                                } catch (Exception bondEx) {
+                                    plugin.getLogger().warning("[CDK远程验证] 直接加债券失败: " + bondEx.getMessage());
+                                }
+                            }
                         } else if (sbResult != null && "not_bond".equals(sbResult[0])) {
                             status = "not_bond";
                             plugin.getLogger().info("[CDK远程验证] 计分板CDK存在但非债券类型: " + cdkCode);
@@ -3887,7 +3907,6 @@ public class WebManager {
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_web_login_confirmations&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            plugin.getLogger().info("[Web登录确认轮询] ★ 开始轮询 check_web_login_confirmations");
             String json = doGet(urlStr);
             if (json == null) {
                 loginPollFailCount++;

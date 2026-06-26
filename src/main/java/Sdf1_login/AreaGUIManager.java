@@ -416,10 +416,22 @@ public class AreaGUIManager implements Listener {
         // 获取per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
+        // ★ 管理员权限自动隐藏：管理员自动获得所有权限
+        org.bukkit.entity.Player targetBukkit = Bukkit.getPlayerExact(targetPlayer);
+        if (targetBukkit != null && areaProtect.isAreaAdmin(targetBukkit)) {
+            inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
+                    "§7该玩家是管理员，自动获得所有权限",
+                    "§7无需单独配置权限",
+                    "",
+                    "§c[返回成员列表]"));
+            p.openInventory(inv);
+            return;
+        }
+
         // 权限列表
         String[][] permDefs = {
                 {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
-                {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
+                {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                 {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                 {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
                 {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
@@ -472,6 +484,7 @@ public class AreaGUIManager implements Listener {
             case "denyMove": return land.denyMove;
             case "denyBlockPlace": return land.denyBlockPlace;
             case "denyBlockBreak": return land.denyBlockBreak;
+            case "denyContainer": return land.denyContainer;
             case "denyPVP": return land.denyPVP;
             case "denyMount": return land.denyMount;
             case "denyEnderPearl": return land.denyEnderPearl;
@@ -509,13 +522,14 @@ public class AreaGUIManager implements Listener {
         managingLand.put(p.getUniqueId(), landName);
         Inventory inv = Bukkit.createInventory(null, 54, T_ADD_MEMBER + " - " + landName);
 
-        // 显示在线玩家
+        // 显示在线玩家（排除自身）
         List<Player> onlinePlayers = new ArrayList<>(Bukkit.getOnlinePlayers());
         Set<String> existingMembers = areaProtect.getLandMembers(landName);
 
         int slot = 0;
         for (Player target : onlinePlayers) {
             if (slot >= 45) break;
+            if (target.getUniqueId().equals(p.getUniqueId())) continue; // ★ 排除自身
             if (existingMembers.contains(target.getName())) continue;
 
             ItemStack playerItem = createItem(Material.PLAYER_HEAD, "§a§l" + target.getName(),
@@ -549,6 +563,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("移动", !land.denyMove));
         perms.add(new PermEntry("放置方块", !land.denyBlockPlace));
         perms.add(new PermEntry("破坏方块", !land.denyBlockBreak));
+        perms.add(new PermEntry("容器管理", !land.denyContainer));
         perms.add(new PermEntry("玩家对战", !land.denyPVP));
         perms.add(new PermEntry("骑乘坐具", !land.denyMount));
         perms.add(new PermEntry("投掷末影珍珠", !land.denyEnderPearl));
@@ -599,6 +614,7 @@ public class AreaGUIManager implements Listener {
             case "移动": land.denyMove = !land.denyMove; break;
             case "放置方块": land.denyBlockPlace = !land.denyBlockPlace; break;
             case "破坏方块": land.denyBlockBreak = !land.denyBlockBreak; break;
+            case "容器管理": land.denyContainer = !land.denyContainer; break;
             case "玩家对战": land.denyPVP = !land.denyPVP; break;
             case "骑乘坐具": land.denyMount = !land.denyMount; break;
             case "投掷末影珍珠": land.denyEnderPearl = !land.denyEnderPearl; break;
@@ -875,11 +891,20 @@ public class AreaGUIManager implements Listener {
             int landId = areaProtect.getLandIdFromDb(landName);
             if (landId <= 0) return;
 
+            // ★ 管理员权限提示项（slot 22）点击返回
+            if (raw == 22) {
+                ItemStack item = event.getView().getTopInventory().getItem(raw);
+                if (item != null && item.getType() == Material.GOLD_BLOCK) {
+                    openMemberPermList(p, landName);
+                    return;
+                }
+            }
+
             if (raw >= 0 && raw < 45) {
                 // 切换权限
                 String[][] permDefs = {
                         {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
-                        {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
+                        {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                         {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                         {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
                         {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},

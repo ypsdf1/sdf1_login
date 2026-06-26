@@ -979,6 +979,7 @@ public class AreaProtection implements Listener {
                 try { ac.denyCropHarvest = rs.getInt("deny_crop_harvest") == 1; } catch (Exception ignored) {}
                 try { ac.denyWoolShear = rs.getInt("deny_wool_shear") == 1; } catch (Exception ignored) {}
                 try { ac.denyAnimalFeeding = rs.getInt("deny_animal_feeding") == 1; } catch (Exception ignored) {}
+                try { ac.denyContainer = rs.getInt("deny_container") == 1; } catch (Exception ignored) {}
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1082,6 +1083,7 @@ public class AreaProtection implements Listener {
                             + "punish_commands TEXT DEFAULT '',"
                             + "deny_block_place INTEGER DEFAULT 0,"
                             + "deny_block_break INTEGER DEFAULT 0,"
+                            + "deny_container INTEGER DEFAULT 0,"
                             + "deny_pvp INTEGER DEFAULT 0,"
                             + "deny_fall_damage INTEGER DEFAULT 0,"
                             + "deny_hunger INTEGER DEFAULT 0,"
@@ -2348,6 +2350,7 @@ public class AreaProtection implements Listener {
             case "denyMove": return ac.denyMove;
             case "denyBlockPlace": return ac.denyBlockPlace;
             case "denyBlockBreak": return ac.denyBlockBreak;
+            case "denyContainer": return ac.denyContainer;
             case "denyPVP": return ac.denyPVP;
             case "denyFallDamage": return ac.denyFallDamage;
             case "denyHunger": return ac.denyHunger;
@@ -4129,6 +4132,21 @@ public class AreaProtection implements Listener {
         }
     }
 
+    // ★ 拾取限制：denyPickup=true时禁止拾取地上物品
+    @EventHandler
+    public void onPlayerPickup(PlayerPickupItemEvent e) {
+        Player p = e.getPlayer();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                p.getLocation().getBlockX(),
+                p.getLocation().getBlockY(),
+                p.getLocation().getBlockZ());
+        if (ac != null && getEffectiveDeny(p, ac, "denyPickup")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止拾取物品");
+        }
+    }
+
     // 替换整个 onInteract 方法
     @EventHandler
     public void onInteract(PlayerInteractEvent e) {
@@ -4299,10 +4317,10 @@ public class AreaProtection implements Listener {
 
         if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
-        // ★ Issue 3: 如果denyBlockBreak=true，非领主也不能访问容器
-        if (ac.denyBlockBreak) {
+        // ★ 容器管理权限：denyContainer=true时非领主/管理员不能访问容器
+        if (getEffectiveDeny(p, ac, "denyContainer")) {
             e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f此领地禁止破坏方块，容器访问已限制");
+            p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
             return;
         }
 
@@ -6665,8 +6683,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -6731,6 +6749,7 @@ public class AreaProtection implements Listener {
             stmt.setFloat(59, ac.warpYaw);
             stmt.setFloat(60, ac.warpPitch);
             stmt.setString(61, ac.warpWorld != null ? ac.warpWorld : "");
+            stmt.setInt(62, ac.denyContainer ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
         } catch (SQLException e) {
@@ -8137,6 +8156,7 @@ public class AreaProtection implements Listener {
         public List<String> punishCommands = new ArrayList<>();
         public boolean denyBlockPlace = false;
         public boolean denyBlockBreak = false;
+        public boolean denyContainer = false;   // ★ 独立容器管理权限
         public boolean denyPVP = false;
         public boolean denyFallDamage = false;
         public boolean denyHunger = false;
