@@ -4117,7 +4117,21 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyBlockPlace")) {
+        if (ac == null) return;
+
+        Material placedMat = e.getBlock().getType();
+
+        // ★ 农作物种植权限分层：种子/农作物由denyCropHarvest独立控制
+        if (isCropSeed(placedMat)) {
+            if (getEffectiveDeny(p, ac, "denyCropHarvest")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止种植农作物");
+            }
+            return; // 农作物种子不走denyBlockPlace
+        }
+
+        // 非农作物：正常denyBlockPlace检查
+        if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止放置方块");
         }
@@ -4131,18 +4145,23 @@ public class AreaProtection implements Listener {
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyBlockBreak")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
-            return;
-        }
-        // ★ 农作物收获：阻止破坏作物方块（独立于denyBlockBreak）
-        if (ac != null && ac.denyCropHarvest) {
-            Material blockMat = e.getBlock().getType();
-            if (isCropBlock(blockMat)) {
+        if (ac == null) return;
+
+        Material blockMat = e.getBlock().getType();
+
+        // ★ 农作物权限分层：农作物由denyCropHarvest独立控制，不受denyBlockBreak影响
+        if (isCropBlock(blockMat)) {
+            if (getEffectiveDeny(p, ac, "denyCropHarvest")) {
                 e.setCancelled(true);
                 p.sendMessage("§c§l[区域防护] §f禁止收获农作物");
             }
+            return; // 农作物不走denyBlockBreak
+        }
+
+        // 非农作物：正常denyBlockBreak检查
+        if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
         }
     }
 
@@ -4706,9 +4725,22 @@ public class AreaProtection implements Listener {
                 || mat.name().contains("SMOKER") || mat == Material.HOPPER
                 || mat.name().contains("DISPENSER") || mat.name().contains("DROPPER")
                 || mat == Material.BEACON || mat.name().contains("LECTERN")
-                // ★ 展示架/展示柜（1.21+新方块）：宽泛匹配所有变种
-                || mat.name().contains("DISPLAY") || mat.name().contains("SHOWCASE")
-                || mat.name().contains("DECORATED_POT");
+                // ★ 展示架/展示柜（1.21.5+新方块）：SHELF是MC 1.21.5 Spring Drop加入的
+                || mat.name().contains("SHELF") || mat.name().contains("DISPLAY")
+                || mat.name().contains("SHOWCASE") || mat.name().contains("DECORATED_POT");
+    }
+
+    // ★ 判断物品是否为可种植的农作物种子（用于BlockPlaceEvent分层权限）
+    private boolean isCropSeed(Material mat) {
+        String name = mat.name();
+        return name.contains("SEEDS") || name.contains("SAPLING")
+                || mat == Material.BAMBOO || mat == Material.SUGAR_CANE
+                || mat == Material.CACTUS || mat == Material.COCOA_BEANS
+                || mat == Material.NETHER_WART || mat == Material.KELP
+                || mat == Material.TWISTING_VINES || mat == Material.WEEPING_VINES
+                || mat == Material.CHORUS_FLOWER || mat == Material.SWEET_BERRY_BUSH
+                || mat == Material.MELON_STEM || mat == Material.ATTACHED_MELON_STEM
+                || mat == Material.PUMPKIN_STEM || mat == Material.ATTACHED_PUMPKIN_STEM;
     }
 
     // ★ 检查是否为动物食物（包括玩家食物+动物专用食物）
@@ -6568,6 +6600,11 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c用法: /protect addvisitor <玩家>");
                     return true;
                 }
+                // ★ 领地主不能作为成员添加
+                if (args[1].equalsIgnoreCase(ac.owner)) {
+                    sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
+                    return true;
+                }
                 addPlayerToAreaWhitelist(ac.name, args[1]);
                 sender.sendMessage("§a已添加 §e" + args[1] + " §a为 §e" + ac.name + " §a的访客");
                 return true;
@@ -6577,6 +6614,11 @@ public class AreaProtection implements Listener {
             AreaConfig ac = areas.get(areaName);
             if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            // ★ 领地主不能作为成员添加
+            if (playerName.equalsIgnoreCase(ac.owner)) {
+                sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
                 return true;
             }
             // ★ 删除冷却期间添加成员 → 自动取消删除

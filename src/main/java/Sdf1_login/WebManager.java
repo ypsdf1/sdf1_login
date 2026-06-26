@@ -2804,11 +2804,22 @@ public class WebManager {
                     sb.append(mapToJson(lands.get(i)));
                 }
                 sb.append("]");
+                // ★ 调试日志
+                plugin.getLogger().info("[防护-sync] 准备同步 " + lands.size() + " 个领地到PHP");
+                if (!lands.isEmpty()) {
+                    Map<String, Object> first = lands.get(0);
+                    plugin.getLogger().info("[防护-sync] 第1个领地: name=" + first.getOrDefault("name", "?")
+                        + " owner=" + first.getOrDefault("owner", "?")
+                        + " deny_block_break=" + first.getOrDefault("deny_block_break", "?")
+                        + " deny_crop_harvest=" + first.getOrDefault("deny_crop_harvest", "?")
+                        + " deny_container=" + first.getOrDefault("deny_container", "?"));
+                }
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("action", "sync_lands");
                 params.put("secret", secretKey);
                 params.put("lands", sb.toString());
-                httpGet("api/sync.php", params);
+                String resp = httpGet("api/sync.php", params);
+                plugin.getLogger().info("[防护-sync] PHP响应: " + resp);
             }
 
             // 2. 同步权限商店数据
