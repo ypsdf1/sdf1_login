@@ -452,6 +452,17 @@ public class AreaGUIManager implements Listener {
             boolean isOverridden = playerPerms.containsKey(field);
             boolean effective = isOverridden ? playerPerms.get(field) : landDefault;
 
+            // ★ denyRaid/denyFire/denyCropHarvest 动态名称
+            if (field.equals("denyRaid")) {
+                name = landDefault ? "禁止袭击" : "启用袭击";
+            }
+            if (field.equals("denyFire")) {
+                name = landDefault ? "禁止点燃" : "启用点燃";
+            }
+            if (field.equals("denyCropHarvest")) {
+                name = landDefault ? "禁用农作物收获" : "启用农作物收获";
+            }
+
             // enabled = true 表示"允许操作"（即deny=false）
             boolean allowed = !effective;
             Material mat = allowed ? Material.LIME_DYE : Material.GRAY_DYE;
@@ -586,7 +597,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry(land.denyRaid ? "禁止袭击" : "启用袭击", !land.denyRaid));
         perms.add(new PermEntry("弓箭射击", !land.denyBow));
         perms.add(new PermEntry("药水效果", !land.denyPotion));
-        perms.add(new PermEntry("点燃", !land.denyFire));
+        perms.add(new PermEntry(land.denyFire ? "禁止点燃" : "启用点燃", !land.denyFire));
         perms.add(new PermEntry("火焰蔓延", !land.denyFireSpread));
         perms.add(new PermEntry("禁止拾取", !land.denyPickup));
         perms.add(new PermEntry("丢弃物品", !land.denyDrop));
@@ -600,7 +611,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermEntry("音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermEntry("拴绳使用", !land.denyLead));
-        perms.add(new PermEntry("农作物收获", !land.denyCropHarvest));
+        perms.add(new PermEntry(land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermEntry("投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
@@ -1407,7 +1418,7 @@ public class AreaGUIManager implements Listener {
 
             inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
             inv.setItem(53, createItem(Material.BOOK, "§a§l添加效果",
-                    "§7点击后在聊天栏输入效果名（如：缓慢、中毒）"));
+                    "§7点击选择要清除的效果"));
 
             p.openInventory(inv);
         }
@@ -1433,7 +1444,7 @@ public class AreaGUIManager implements Listener {
 
             inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
             inv.setItem(53, createItem(Material.BOOK, "§a§l添加增益",
-                    "§7点击后在聊天栏输入: 效果名 等级 秒数"));
+                    "§7点击选择要添加的增益效果"));
 
             p.openInventory(inv);
         }

@@ -621,7 +621,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("raid", land.denyRaid ? "禁止袭击" : "启用袭击", !land.denyRaid));
         perms.add(new PermItem("bow", "弓箭射击", !land.denyBow));
         perms.add(new PermItem("potion", "药水效果", !land.denyPotion));
-        perms.add(new PermItem("fire", "点燃", !land.denyFire));
+        perms.add(new PermItem("fire", land.denyFire ? "禁止点燃" : "启用点燃", !land.denyFire));
         perms.add(new PermItem("fire_spread", "火焰蔓延", !land.denyFireSpread));
         perms.add(new PermItem("pickup", "禁止拾取", !land.denyPickup));
         perms.add(new PermItem("drop", "丢弃物品", !land.denyDrop));
@@ -635,7 +635,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("door", "禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermItem("audio", "音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
-        perms.add(new PermItem("crop_harvest", "农作物收获", !land.denyCropHarvest));
+        perms.add(new PermItem("crop_harvest", land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", "投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
@@ -999,6 +999,14 @@ public class AreaCLIManager {
             // 特殊处理：denyRaid的显示名称
             if (field.equals("denyRaid")) {
                 name = landDefault ? "禁止袭击" : "启用袭击";
+            }
+            // ★ denyFire显示名称
+            if (field.equals("denyFire")) {
+                name = landDefault ? "禁止点燃" : "启用点燃";
+            }
+            // ★ denyCropHarvest显示名称
+            if (field.equals("denyCropHarvest")) {
+                name = landDefault ? "禁用农作物收获" : "启用农作物收获";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认

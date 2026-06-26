@@ -4064,6 +4064,15 @@ public class AreaProtection implements Listener {
         if (ac != null && getEffectiveDeny(p, ac, "denyBlockBreak")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
+            return;
+        }
+        // ★ 农作物收获：阻止破坏作物方块（独立于denyBlockBreak）
+        if (ac != null && ac.denyCropHarvest) {
+            Material blockMat = e.getBlock().getType();
+            if (isCropBlock(blockMat)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止收获农作物");
+            }
         }
     }
 
@@ -4248,6 +4257,36 @@ public class AreaProtection implements Listener {
                 e.setCancelled(true);
                 p.sendMessage("§c§l[区域防护] §f禁止使用此物品");
                 return;
+            }
+        }
+
+        // ★ 农作物收获：右键检测（南瓜/西瓜用剪刀收获）
+        if (ac.denyCropHarvest && e.getAction() == Action.RIGHT_CLICK_BLOCK) {
+            Block clicked = e.getClickedBlock();
+            if (clicked != null) {
+                Material clickedMat = clicked.getType();
+                if (clickedMat == Material.PUMPKIN || clickedMat == Material.MELON) {
+                    if (getEffectiveDeny(p, ac, "denyCropHarvest")) {
+                        e.setCancelled(true);
+                        p.sendMessage("§c§l[区域防护] §f禁止收获农作物");
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ★ 容器交互扩展：检测非Container类型UI方块（工作台、砂轮、制图台、告示牌等）
+        if (ac.denyContainer && e.getAction() == Action.RIGHT_CLICK_BLOCK) {
+            Block clicked = e.getClickedBlock();
+            if (clicked != null) {
+                Material clickedMat = clicked.getType();
+                if (isUIBlock(clickedMat)) {
+                    if (getEffectiveDeny(p, ac, "denyContainer")) {
+                        e.setCancelled(true);
+                        p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
+                        return;
+                    }
+                }
             }
         }
 
@@ -4536,6 +4575,40 @@ public class AreaProtection implements Listener {
         if (ac != null && ac.denyCropHarvest) {
             e.setCancelled(true);
         }
+    }
+
+    // ★ 判断方块是否为农作物
+    private boolean isCropBlock(Material mat) {
+        String name = mat.name();
+        return name.contains("WHEAT") || name.contains("CARROT")
+                || name.contains("POTATO") || name.contains("BEETROOT")
+                || name.contains("MELON") || name.contains("PUMPKIN")
+                || name.contains("COCOA") || name.contains("CROP")
+                || name.contains("SWEET_BERRY") || name.contains("BAMBOO")
+                || name.contains("SUGAR_CANE") || name.contains("NETHER_WART")
+                || name.contains("KELP") || name.contains("SEA_PICKLE")
+                || name.contains("CHORUS") || name.contains("TWISTING_VINES")
+                || name.contains("WEEPING_VINES") || mat == Material.MELON_STEM
+                || mat == Material.ATTACHED_MELON_STEM
+                || mat == Material.PUMPKIN_STEM
+                || mat == Material.ATTACHED_PUMPKIN_STEM;
+    }
+
+    // ★ 判断方块是否为UI交互方块（非Container类型，需要单独检测）
+    private boolean isUIBlock(Material mat) {
+        return mat == Material.CRAFTING_TABLE || mat == Material.STONECUTTER
+                || mat == Material.GRINDSTONE || mat == Material.ANVIL
+                || mat == Material.CHIPPED_ANVIL || mat == Material.DAMAGED_ANVIL
+                || mat == Material.CARTOGRAPHY_TABLE || mat == Material.LOOM
+                || mat == Material.SMITHING_TABLE || mat == Material.ENCHANTING_TABLE
+                || mat == Material.BREWING_STAND || mat == Material.LEGACY_BREWING_STAND
+                || mat.name().contains("SIGN") || mat.name().contains("BANNER")
+                || mat == Material.BARREL || mat.name().contains("SHULKER_BOX")
+                || mat == Material.ENDER_CHEST || mat.name().contains("CHEST")
+                || mat.name().contains("FURNACE") || mat.name().contains("BLAST_FURNACE")
+                || mat.name().contains("SMOKER") || mat == Material.HOPPER
+                || mat.name().contains("DISPENSER") || mat.name().contains("DROPPER")
+                || mat == Material.BEACON || mat.name().contains("LECTERN");
     }
 
     // ★ 采集羊毛检测
@@ -7953,7 +8026,7 @@ public class AreaProtection implements Listener {
         AreaConfig ac = getArea(
                 block.getWorld().getName(),
                 block.getX(), block.getY(), block.getZ());
-        if (ac != null && ac.denyFireSpread) {
+        if (ac != null && ac.denyFire) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
         }
