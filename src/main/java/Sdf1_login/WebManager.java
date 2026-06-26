@@ -874,7 +874,7 @@ public class WebManager {
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 // 普通同步操作低优先级（每个任务间随机间隔2-4秒，避免PHP端DB锁）
-                submitNormalDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
+                submitDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}

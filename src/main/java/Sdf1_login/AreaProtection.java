@@ -1996,15 +1996,25 @@ public class AreaProtection implements Listener {
             if (!ac.peaceMode) continue;
 
             // 对该区域边界内的实体扫描
-            // 简化：扫描该区域周围一定范围的实体
             double centerX = (ac.x1 + ac.x2) / 2.0;
             double centerZ = (ac.z1 + ac.z2) / 2.0;
             World world = Bukkit.getWorld(ac.world);
             if (world == null) continue;
 
-            // 扫描区域中心 ±50 格的实体
+            // ★ 根据领地实际大小计算扫描范围（取x和z范围的最大值，加边距）
+            int rangeX = Math.abs(ac.x2 - ac.x1) / 2 + 10;
+            int rangeZ = Math.abs(ac.z2 - ac.z1) / 2 + 10;
+            int range = Math.max(rangeX, rangeZ);
+            // 限制最大扫描范围避免性能问题
+            range = Math.min(range, 200);
+
+            // ★ 使用世界实际高度范围
+            int minY = world.getMinHeight();
+            int maxY = world.getMaxHeight();
+            int heightRange = (maxY - minY) / 2;
+
             List<Entity> nearby = new java.util.ArrayList<>(world.getNearbyEntities(
-                    new Location(world, centerX, world.getMaxHeight() / 2, centerZ), 50, 50, 50));
+                    new Location(world, centerX, (minY + maxY) / 2.0, centerZ), range, heightRange, range));
 
             for (Entity ent : nearby) {
                 if (!isHostile(ent.getType().name())) continue;
@@ -2025,8 +2035,8 @@ public class AreaProtection implements Listener {
                 Long protectUntil = protectedEntities.get(uid);
                 if (protectUntil != null && (protectUntil - now) > 0) continue;
 
-                // 清理
-                banEntity(ent);
+                // ★ 直接删除实体（传送可能卡住或重新刷新）
+                ent.remove();
                 cleared++;
             }
         }
