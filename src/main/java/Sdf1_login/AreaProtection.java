@@ -4705,7 +4705,10 @@ public class AreaProtection implements Listener {
                 || mat.name().contains("FURNACE") || mat.name().contains("BLAST_FURNACE")
                 || mat.name().contains("SMOKER") || mat == Material.HOPPER
                 || mat.name().contains("DISPENSER") || mat.name().contains("DROPPER")
-                || mat == Material.BEACON || mat.name().contains("LECTERN");
+                || mat == Material.BEACON || mat.name().contains("LECTERN")
+                // ★ 展示架/展示柜（1.21+新方块）：宽泛匹配所有变种
+                || mat.name().contains("DISPLAY") || mat.name().contains("SHOWCASE")
+                || mat.name().contains("DECORATED_POT");
     }
 
     // ★ 检查是否为动物食物（包括玩家食物+动物专用食物）

@@ -2730,15 +2730,70 @@ public class WebManager {
             List<Map<String, Object>> lands = areaProtect.getAllLandsForSync();
             List<Map<String, Object>> shopItems = areaProtect.getPermissionShopForSync();
 
-            // ★ 无变化静默：用JSON内容hash检测（比hashCode更可靠）
+            // ★ 无变化静默：用JSON内容hash检测（覆盖所有关键字段）
+            // 只要有任何一个字段变化就触发同步
             StringBuilder hashBuilder = new StringBuilder();
             for (Map<String, Object> land : lands) {
+                // 基础字段
                 hashBuilder.append(land.getOrDefault("id", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("owner", "")).append(":");
+                hashBuilder.append(land.getOrDefault("name", "")).append(":");
+                hashBuilder.append(land.getOrDefault("world", "")).append(":");
+                hashBuilder.append(land.getOrDefault("x1", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("z1", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("x2", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("z2", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("y_min", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("y_max", 0)).append(":");
+                // 所有deny权限
+                hashBuilder.append(land.getOrDefault("deny_block_break", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_block_place", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_fluid", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_pvp", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_fire_spread", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_item_frame", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_move", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_pickup", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_drop", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_explosion", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_fall_damage", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_hunger", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_container", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_thrown_projectiles", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_glowing", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_redstone_interaction", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_door_interaction", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_noteblock_jukebox", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_lead", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_crop_harvest", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_wool_shear", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_animal_feeding", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_mob_attack", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_fire", 0)).append(":");
-                hashBuilder.append(land.getOrDefault("warp_x", 0)).append("|");
+                hashBuilder.append(land.getOrDefault("deny_all_effects", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_all_damage", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_ender_pearl", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_mount", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_bow", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_potion", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_raid", 0)).append(":");
+                // 效果和消息
+                hashBuilder.append(land.getOrDefault("peace_mode", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("peace_mode_duration", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("enforce_game_mode", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("enter_msg", "")).append(":");
+                hashBuilder.append(land.getOrDefault("leave_msg", "")).append(":");
+                hashBuilder.append(land.getOrDefault("confiscate_msg", "")).append(":");
+                hashBuilder.append(land.getOrDefault("clear_effects", "")).append(":");
+                hashBuilder.append(land.getOrDefault("give_effects", "")).append(":");
+                hashBuilder.append(land.getOrDefault("clear_all_bad_effects", 0)).append(":");
+                // 传送点
+                hashBuilder.append(land.getOrDefault("warp_x", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_y", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_z", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_yaw", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_pitch", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("warp_world", "")).append("|");
             }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
             if (currentHash.equals(lastLandDataHash)) return;
