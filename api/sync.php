@@ -457,10 +457,33 @@ function syncLands() {
         synced_at INTEGER DEFAULT 0
     )");
 
+    // ★ 效果迁移
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN give_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
-        (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at)
-        VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced)");
+        (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at,
+         peace_mode, peace_mode_duration, peace_whitelist, enforce_game_mode, mode_exempt,
+         enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
+         deny_block_break, deny_block_place, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
+         deny_item_frame, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
+         deny_all_damage, clear_effects, give_effects, clear_all_bad_effects, deny_all_effects,
+         admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
+         deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
+         warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world)
+        VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced,
+                0, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
+                :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
+                1, 1, 1, 1, 1, 0, 0,
+                0, 1, 1, 0, 0, 0,
+                0, '', '', 0, 0,
+                0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0,
+                :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world)");
     $count = 0;
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -476,6 +499,22 @@ function syncLands() {
         $stmt->bindValue(':size', (int)($land['area_size'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':created', (int)($land['created_at'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->bindValue(':peace_dur', (int)($land['peace_mode_duration'] ?? 5), SQLITE3_INTEGER);
+        $stmt->bindValue(':peace_wl', $land['peace_whitelist'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':enforce_gm', $land['enforce_game_mode'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':mode_exempt', $land['mode_exempt'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':enter_msg', $land['enter_msg'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':leave_msg', $land['leave_msg'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':confiscate_msg', $land['confiscate_msg'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':announce', (int)($land['enable_announce'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':announce_tpl', $land['announce_template'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':warp_x', (double)($land['warp_x'] ?? 0), SQLITE3_DOUBLE);
+        $stmt->bindValue(':warp_y', (double)($land['warp_y'] ?? 0), SQLITE3_DOUBLE);
+        $stmt->bindValue(':warp_z', (double)($land['warp_z'] ?? 0), SQLITE3_DOUBLE);
+        $stmt->bindValue(':warp_yaw', (float)($land['warp_yaw'] ?? 0), SQLITE3_FLOAT);
+        $stmt->bindValue(':warp_pitch', (float)($land['warp_pitch'] ?? 0), SQLITE3_FLOAT);
+        $stmt->bindValue(':warp_world', $land['warp_world'] ?? '', SQLITE3_TEXT);
         $stmt->execute();
         $count++;
     }

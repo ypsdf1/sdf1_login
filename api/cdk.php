@@ -182,14 +182,36 @@ function cdkExchange($token) {
             $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
             $stmt2->execute();
         } else {
-            // 远程CDK：只记录日志流水（status=completed，不走pending同步）
-            $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem_remote', :amount, :reason, :detail, 'completed', :time)");
+            // 远程CDK：PHP也更新bond_cache + 写pending交易，与本地兑换逻辑一致
+            // 注意：远程CDK已在sdf1侧标记used，PHP只需要同步债券
+            if ($row) {
+                $stmt = $db->prepare("UPDATE bond_cache SET amount = :amount, updated_at = :time WHERE player_name = :name");
+                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
+                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
+                $stmt->execute();
+            } else {
+                $stmt = $db->prepare("INSERT INTO bond_cache (player_name, amount, updated_at) VALUES (:name, :amount, :time)");
+                $stmt->bindValue(':name', $player, SQLITE3_TEXT);
+                $stmt->bindValue(':amount', $newBalance, SQLITE3_INTEGER);
+                $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt->execute();
+            }
+
+            // 写pending交易，Java端pullPendingTransactions拉取后通知sdf1加券
+            $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'cdk_redeem', :amount, :reason, :detail, 'pending', :time)");
             $stmt->bindValue(':player', $player, SQLITE3_TEXT);
             $stmt->bindValue(':amount', $cdk['amount'], SQLITE3_INTEGER);
             $stmt->bindValue(':reason', "CDK远程兑换: {$code}", SQLITE3_TEXT);
             $stmt->bindValue(':detail', json_encode(['code' => $code, 'remote' => true], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
             $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
             $stmt->execute();
+
+            $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+            $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+            $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+            $stmt2->bindValue(':time', $now, SQLITE3_INTEGER);
+            $stmt2->execute();
         }
 
         $db->exec('COMMIT');

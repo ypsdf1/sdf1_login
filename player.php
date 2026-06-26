@@ -1195,23 +1195,46 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (IS_PREVIEW) { toast('预览模式下无法购买', 'error'); return; }
         if (stock == 0) { toast('商品已售罄', 'error'); return; }
         document.getElementById('modalTitle').textContent = '购买: ' + name;
+        const needPwd = price > 1000;
         document.getElementById('modalBody').innerHTML = `
             <div class="row"><label>单价: ${price} 债券</label></div>
             <div class="row"><label>数量</label><input type="number" id="buyAmount" value="1" min="1" max="${stock > 0 ? stock : 64}"></div>
             <div class="row"><label>小计: <span id="buyTotal">${price}</span> 债券</label></div>
-            <div class="row"><label>密码确认</label><input type="password" id="buyPassword" placeholder="输入游戏登录密码"></div>`;
+            ${needPwd ? '<div class="row"><label>密码确认</label><input type="password" id="buyPassword" placeholder="输入游戏登录密码"></div>' : '<div style="color:var(--dim);font-size:12px;text-align:center;margin-top:4px">小额交易（≤1000债券），免密码确认</div>'}`;
         document.getElementById('modalConfirm').onclick = () => doBuy(id);
-        document.getElementById('buyAmount').oninput = function() { document.getElementById('buyTotal').textContent = this.value * price; };
+        document.getElementById('buyAmount').oninput = function() {
+            const total = this.value * price;
+            document.getElementById('buyTotal').textContent = total;
+            // 动态切换密码框
+            const pwdRow = document.getElementById('buyPassword');
+            const hintEl = document.querySelector('#modalBody > div:last-child');
+            if (total > 1000 && !pwdRow) {
+                // 需要密码框
+                const newDiv = document.createElement('div');
+                newDiv.className = 'row';
+                newDiv.innerHTML = '<label>密码确认</label><input type="password" id="buyPassword" placeholder="输入游戏登录密码">';
+                document.getElementById('buyTotal').parentElement.parentElement.insertAdjacentElement('afterend', newDiv);
+                if (hintEl) hintEl.remove();
+            } else if (total <= 1000 && pwdRow) {
+                // 不需要密码框
+                pwdRow.parentElement.remove();
+                const hint = document.createElement('div');
+                hint.style.cssText = 'color:var(--dim);font-size:12px;text-align:center;margin-top:4px';
+                hint.textContent = '小额交易（≤1000债券），免密码确认';
+                document.getElementById('buyTotal').parentElement.parentElement.insertAdjacentElement('afterend', hint);
+            }
+        };
         document.getElementById('modalOverlay').style.display = 'flex';
     }
 
     async function doBuy(itemId) {
         const amount = parseInt(document.getElementById('buyAmount').value);
-        const password = document.getElementById('buyPassword').value;
-        if (!password) { toast('请输入密码确认', 'error'); return; }
+        const total = parseInt(document.getElementById('buyTotal').textContent);
+        const password = document.getElementById('buyPassword')?.value || '';
+        if (total > 1000 && !password) { toast('请输入密码确认', 'error'); return; }
         const res = await fetch(API + 'shop.php?action=buy', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({token: TOKEN, item_id: itemId, amount: amount, player: currentPlayer, password: password})
+            body: JSON.stringify({token: TOKEN, item_id: itemId, amount: amount, player: currentPlayer, password: password || undefined})
         });
         const data = await res.json();
         if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
@@ -1314,7 +1337,6 @@ if ($currentVersion !== $BUILD_VERSION) {
                 ${IS_PREVIEW ? '<div class="preview-badge" style="margin-bottom:12px">预览模式 - 兑换不会生效</div>' : ''}
                 <div class="cdk-input" style="flex-direction:column;gap:8px">
                     <input type="text" id="cdkCode" placeholder="请输入CDK兑换码..." maxlength="64">
-                    <input type="password" id="cdkPassword" placeholder="输入游戏登录密码" style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
                     <button class="btn btn-green" onclick="doCDKExchange()">兑换</button>
                 </div>
                 <div id="cdkResult" style="margin-top:12px"></div>
@@ -1323,12 +1345,10 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     async function doCDKExchange() {
         const code = document.getElementById('cdkCode').value.trim();
-        const password = document.getElementById('cdkPassword').value;
         if (!code) { toast('请输入CDK码', 'error'); return; }
-        if (!password) { toast('请输入密码确认', 'error'); return; }
         const res = await fetch(API + 'cdk.php?action=exchange', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({token: TOKEN, code: code, player: currentPlayer, password: password})
+            body: JSON.stringify({token: TOKEN, code: code, player: currentPlayer})
         });
         const data = await res.json();
         if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
@@ -2248,7 +2268,6 @@ async function renderLandDetail(el, landName) {
         html += `<div style="margin-bottom:16px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="margin:0;color:var(--fg)">👥 访客管理 (${visitors.length})</h3>
-                <button class="btn" style="font-size:12px;padding:4px 12px" onclick="landsState.view='member_perms';landsState.currentLand='${escHtml(land.name)}';renderLands(document.getElementById('content'))">🎯 成员权限</button>
             </div>
             <div style="display:flex;gap:8px;margin-bottom:12px">
                 <input type="text" id="newVisitorName" placeholder="输入玩家名" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:13px">
@@ -2262,7 +2281,7 @@ async function renderLandDetail(el, landName) {
             for (const v of visitors) {
                 const grantDate = v.granted_at ? new Date(v.granted_at * 1000).toLocaleString('zh-CN') : '未知';
                 html += `<tr>
-                    <td><strong>${escHtml(v.player_name)}</strong></td>
+                    <td><strong>${escHtml(v.player_name)}</strong> <button class="btn" style="font-size:10px;padding:1px 6px;color:var(--accent);border-color:var(--accent)" onclick="event.stopPropagation();landsState.view='member_perm_detail';landsState.currentLand='${escHtml(land.name)}';landsState.currentMember='${escHtml(v.player_name)}';renderLands(document.getElementById('content'))">权限</button></td>
                     <td><span style="color:var(--accent)">${escHtml(v.role)}</span></td>
                     <td style="font-size:12px;color:var(--dim)">${grantDate}</td>
                     <td><button class="btn" style="color:var(--red);font-size:11px;padding:3px 8px" onclick="removeLandVisitor('${escHtml(land.name)}','${escHtml(v.player_name)}')">移除</button></td>
@@ -2271,6 +2290,75 @@ async function renderLandDetail(el, landName) {
             html += `</tbody></table>`;
         }
         html += `</div></div>`;
+
+        // ★★★ 效果管理 ★★★
+        const clearEffects = land.clear_effects ? JSON.parse(land.clear_effects) : [];
+        const giveEffects = land.give_effects ? JSON.parse(land.give_effects) : [];
+        const clearAllBad = !!parseInt(land.clear_all_bad_effects || 0);
+        const denyAll = !!parseInt(land.deny_all_effects || 0);
+
+        html += `<div class="card" style="margin-top:12px">
+            <h3 style="margin:0 0 12px;color:var(--fg)">✨ 效果管理</h3>
+            <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+                <span onclick="toggleLandField('${escHtml(land.name)}','clear_all_bad_effects')"
+                    style="padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:all 0.2s;
+                    background:${clearAllBad ? 'var(--green)' : 'var(--bg)'};color:${clearAllBad ? '#fff' : 'var(--dim)'};
+                    border:1px solid ${clearAllBad ? 'var(--green)' : 'var(--border)'}">
+                    🧹 全清负面 ${clearAllBad ? '✓' : ''}
+                </span>
+                <span onclick="toggleLandField('${escHtml(land.name)}','deny_all_effects')"
+                    style="padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:all 0.2s;
+                    background:${denyAll ? 'var(--accent)' : 'var(--bg)'};color:${denyAll ? '#fff' : 'var(--dim)'};
+                    border:1px solid ${denyAll ? 'var(--accent)' : 'var(--border)'}">
+                    🚫 禁止所有效果 ${denyAll ? '✓' : ''}
+                </span>
+            </div>`;
+
+        // 清除效果列表
+        html += `<div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="color:var(--fg);font-size:13px;font-weight:500">清除效果 (${clearEffects.length})</span>
+                <button class="btn" style="font-size:11px;padding:2px 8px" onclick="addClearEffect('${escHtml(land.name)}')">+ 添加</button>
+            </div>`;
+        if (clearEffects.length === 0) {
+            html += `<p style="color:var(--dim);font-size:12px">暂无清除效果</p>`;
+        } else {
+            html += `<div style="display:flex;gap:6px;flex-wrap:wrap">`;
+            for (const eff of clearEffects) {
+                html += `<span style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--fg)">
+                    ${escHtml(eff)}
+                    <span onclick="removeLandEffect('${escHtml(land.name)}','clear_effects','${escHtml(eff)}')" style="cursor:pointer;color:var(--red);margin-left:4px">✕</span>
+                </span>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+
+        // 增益效果列表
+        html += `<div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="color:var(--fg);font-size:13px;font-weight:500">增益效果 (${giveEffects.length})</span>
+                <button class="btn" style="font-size:11px;padding:2px 8px" onclick="addGiveEffect('${escHtml(land.name)}')">+ 添加</button>
+            </div>`;
+        if (giveEffects.length === 0) {
+            html += `<p style="color:var(--dim);font-size:12px">暂无增益效果</p>`;
+        } else {
+            html += `<div style="display:flex;gap:6px;flex-wrap:wrap">`;
+            for (const eff of giveEffects) {
+                const effName = Array.isArray(eff) ? eff[0] : eff;
+                const effLevel = Array.isArray(eff) && eff[1] ? ' Lv' + eff[1] : '';
+                const effDur = Array.isArray(eff) && eff[2] ? ' ' + eff[2] + 's' : '';
+                html += `<span style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--fg)">
+                    ${escHtml(effName)}${effLevel}${effDur}
+                    <span onclick="removeLandEffect('${escHtml(land.name)}','give_effects','${escHtml(Array.isArray(eff) ? JSON.stringify(eff) : eff)}')" style="cursor:pointer;color:var(--red);margin-left:4px">✕</span>
+                </span>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+
+        html += `</div>`;
+
         el.innerHTML = html;
     } catch (e) {
         el.innerHTML = `<div class="card"><p style="color:var(--red)">加载失败: ${e.message}</p></div>`;
@@ -2378,6 +2466,162 @@ async function removeLandVisitor(landName, player) {
 
 function buyLandPermission(landName, itemId) {
     glassAlert('请在游戏中使用 /protect shop 购买领地权限', '🎮');
+}
+
+// ★★★ 效果管理辅助函数 ★★★
+
+async function toggleLandField(landName, field) {
+    try {
+        // 先读取当前状态
+        const detailUrl = new URL(API + 'land_api.php', location.href);
+        detailUrl.searchParams.set('action', 'land_detail');
+        detailUrl.searchParams.set('token', TOKEN);
+        detailUrl.searchParams.set('name', landName);
+        const detailRes = await fetch(detailUrl);
+        const detailData = await detailRes.json();
+        if (!detailData.success) { glassAlert(detailData.error); return; }
+
+        const currentVal = !!parseInt(detailData.land[field] || 0);
+        const newVal = currentVal ? '0' : '1';
+
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_land_field');
+        url.searchParams.set('token', TOKEN);
+        const body = new URLSearchParams();
+        body.set('name', landName);
+        body.set('field', field);
+        body.set('value', newVal);
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+async function addClearEffect(landName) {
+    const eff = await glassPrompt('输入要清除的效果英文名', '', '如: SLOWNESS, WEAKNESS, POISON');
+    if (!eff || eff === false) return;
+    const trimmed = eff.trim().toUpperCase();
+    if (!trimmed) return;
+
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        const detailUrl = new URL(API + 'land_api.php', location.href);
+        detailUrl.searchParams.set('action', 'land_detail');
+        detailUrl.searchParams.set('token', TOKEN);
+        detailUrl.searchParams.set('name', landName);
+        const detailRes = await fetch(detailUrl);
+        const detailData = await detailRes.json();
+        if (!detailData.success) { glassAlert(detailData.error); return; }
+        const current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : [];
+        if (current.includes(trimmed)) { glassAlert('该效果已在清除列表中'); return; }
+        current.push(trimmed);
+
+        const body = new URLSearchParams();
+        body.set('name', landName);
+        body.set('field', 'clear_effects');
+        body.set('value', JSON.stringify(current));
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+async function addGiveEffect(landName) {
+    const eff = await glassPrompt('输入效果英文名', '', '如: SPEED, STRENGTH, REGENERATION');
+    if (!eff || eff === false) return;
+    const trimmed = eff.trim().toUpperCase();
+    if (!trimmed) return;
+
+    const levelStr = await glassPrompt('等级 (1-255)', '1', '默认1级，管理员最高255级');
+    if (levelStr === null || levelStr === false) return;
+    const level = parseInt(levelStr) || 1;
+
+    const durStr = await glassPrompt('时长（秒）', '300', '默认300秒');
+    if (durStr === null || durStr === false) return;
+    const duration = parseInt(durStr) || 300;
+
+    const entry = JSON.stringify([trimmed, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        const detailUrl = new URL(API + 'land_api.php', location.href);
+        detailUrl.searchParams.set('action', 'land_detail');
+        detailUrl.searchParams.set('token', TOKEN);
+        detailUrl.searchParams.set('name', landName);
+        const detailRes = await fetch(detailUrl);
+        const detailData = await detailRes.json();
+        if (!detailData.success) { glassAlert(detailData.error); return; }
+        const current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : [];
+        current.push([trimmed, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+
+        const body = new URLSearchParams();
+        body.set('name', landName);
+        body.set('field', 'give_effects');
+        body.set('value', JSON.stringify(current));
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+async function removeLandEffect(landName, field, effValue) {
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        const detailUrl = new URL(API + 'land_api.php', location.href);
+        detailUrl.searchParams.set('action', 'land_detail');
+        detailUrl.searchParams.set('token', TOKEN);
+        detailUrl.searchParams.set('name', landName);
+        const detailRes = await fetch(detailUrl);
+        const detailData = await detailRes.json();
+        if (!detailData.success) { glassAlert(detailData.error); return; }
+
+        let current = detailData.land[field] ? JSON.parse(detailData.land[field]) : [];
+        if (field === 'clear_effects') {
+            current = current.filter(e => e !== effValue);
+        } else {
+            // give_effects: try matching by name or full JSON
+            current = current.filter(e => {
+                const jsonStr = JSON.stringify(e);
+                return jsonStr !== effValue && e[0] !== effValue;
+            });
+        }
+
+        const body = new URLSearchParams();
+        body.set('name', landName);
+        body.set('field', field);
+        body.set('value', JSON.stringify(current));
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
 }
 
 async function renderMemberPermDetail(el, landName, targetPlayer) {

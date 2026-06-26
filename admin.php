@@ -75,6 +75,10 @@
         .glass-alert-card .alert-btns .ag-ok{background:#58a6ff;color:#fff}
         .glass-alert-card .alert-btns .ag-cancel{background:rgba(255,255,255,0.08);color:#8b949e}
         .glass-alert-card .alert-btns button:hover{opacity:0.85;transform:scale(1.03)}
+        .glass-alert-card .alert-input{width:100%;padding:10px 12px;background:rgba(13,17,23,0.8);border:1px solid rgba(88,166,255,0.3);border-radius:8px;color:#e6edf3;font-size:13px;outline:none;box-sizing:border-box;transition:border 0.2s;text-align:center;margin-bottom:16px}
+        .glass-alert-card .alert-input:focus{border-color:#58a6ff;box-shadow:0 0 0 2px rgba(88,166,255,0.15)}
+        .glass-alert-card .alert-hint{font-size:11px;color:#8b949e;margin:-12px 0 16px;text-align:left}
+        .glass-alert-card .alert-label{font-size:12px;color:#8b949e;margin-bottom:4px;text-align:left}
         @keyframes glassFadeIn{from{opacity:0}to{opacity:1}}
         @keyframes glassSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
     </style>
@@ -2394,13 +2398,20 @@ async function saveLandConfig() {
     }
 }
 
-function changeLandOwner(name, currentOwner) {
-    const newOwner = prompt('领地 [' + name + '] 当前所有者: ' + (currentOwner||'无') + '\n输入新所有者:', currentOwner);
-    if (newOwner === null || newOwner === currentOwner) return;
+async function changeLandOwner(name, currentOwner) {
+    const newOwner = await glassPrompt('领地 [' + name + '] 新所有者', currentOwner||'', '仅允许英文字母、数字和下划线，2-16位');
+    if (newOwner === null || newOwner === false || newOwner === undefined) return;
+    const trimmed = newOwner.trim();
+    if (trimmed === '' || trimmed === currentOwner) return;
+    // 前端验证：Minecraft玩家名格式
+    if (!/^[a-zA-Z0-9_]{2,16}$/.test(trimmed)) {
+        glassAlert('玩家名格式无效：仅允许英文字母、数字和下划线，2-16位');
+        return;
+    }
     fetch('api/land_api.php?action=update_land_owner', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(newOwner) + '&secret=sdf1_web_comm_2026_ypshidifu'
+        body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else glassAlert('失败: ' + (d.error||''));
@@ -2436,6 +2447,9 @@ async function deleteShopItem(id) {
     <div class="glass-alert-card" onclick="event.stopPropagation()">
         <div class="alert-icon" id="glassAlertIcon">⚠️</div>
         <div class="alert-msg" id="glassAlertMsg"></div>
+        <div class="alert-label" id="glassAlertLabel" style="display:none"></div>
+        <input class="alert-input" id="glassAlertInput" style="display:none" onkeydown="if(event.key==='Enter')glassAlertResolve(true)">
+        <div class="alert-hint" id="glassAlertHint" style="display:none"></div>
         <div class="alert-btns" id="glassAlertBtns">
             <button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>
         </div>
@@ -2444,14 +2458,25 @@ async function deleteShopItem(id) {
 <script>
 let _glassAlertResolve = null;
 function glassAlertResolve(val) {
-    document.getElementById('glassAlertOverlay').classList.remove('show');
-    if (_glassAlertResolve) { _glassAlertResolve(val); _glassAlertResolve = null; }
+    const overlay = document.getElementById('glassAlertOverlay');
+    overlay.classList.remove('show');
+    if (_glassAlertResolve) {
+        const input = document.getElementById('glassAlertInput');
+        // 如果输入框可见且点了确定，返回输入值
+        const result = (val && input.style.display !== 'none') ? input.value : val;
+        _glassAlertResolve(result);
+        _glassAlertResolve = null;
+    }
 }
 function glassAlert(msg, icon = '⚠️') {
     return new Promise(resolve => {
         _glassAlertResolve = resolve;
         document.getElementById('glassAlertIcon').textContent = icon;
         document.getElementById('glassAlertMsg').textContent = msg;
+        document.getElementById('glassAlertMsg').style.display = '';
+        document.getElementById('glassAlertLabel').style.display = 'none';
+        document.getElementById('glassAlertInput').style.display = 'none';
+        document.getElementById('glassAlertHint').style.display = 'none';
         document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
         document.getElementById('glassAlertOverlay').classList.add('show');
     });
@@ -2461,8 +2486,31 @@ function glassConfirm(msg, icon = '❓') {
         _glassAlertResolve = resolve;
         document.getElementById('glassAlertIcon').textContent = icon;
         document.getElementById('glassAlertMsg').textContent = msg;
+        document.getElementById('glassAlertMsg').style.display = '';
+        document.getElementById('glassAlertLabel').style.display = 'none';
+        document.getElementById('glassAlertInput').style.display = 'none';
+        document.getElementById('glassAlertHint').style.display = 'none';
         document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-cancel" onclick="glassAlertResolve(false)">取消</button><button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
         document.getElementById('glassAlertOverlay').classList.add('show');
+    });
+}
+function glassPrompt(label, currentVal, hint = '') {
+    return new Promise(resolve => {
+        _glassAlertResolve = resolve;
+        document.getElementById('glassAlertIcon').textContent = '✏️';
+        document.getElementById('glassAlertMsg').style.display = 'none';
+        document.getElementById('glassAlertLabel').textContent = label;
+        document.getElementById('glassAlertLabel').style.display = '';
+        const input = document.getElementById('glassAlertInput');
+        input.value = currentVal;
+        input.style.display = '';
+        input.selectionStart = input.selectionEnd = input.value.length;
+        const hintEl = document.getElementById('glassAlertHint');
+        if (hint) { hintEl.textContent = '💡 ' + hint; hintEl.style.display = ''; }
+        else { hintEl.style.display = 'none'; }
+        document.getElementById('glassAlertBtns').innerHTML = '<button class="ag-cancel" onclick="glassAlertResolve(false)">取消</button><button class="ag-ok" onclick="glassAlertResolve(true)">确定</button>';
+        document.getElementById('glassAlertOverlay').classList.add('show');
+        setTimeout(() => input.focus(), 100);
     });
 }
 </script>

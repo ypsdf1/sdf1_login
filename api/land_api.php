@@ -33,6 +33,8 @@ try {
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item'];
     // 玩家端action：需要token
     $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission'];
+    // ★ 玩家端领地字段更新（效果管理、开关等）
+    $playerFieldActions = ['update_land_field'];
     // ★ 玩家端权限操作action
     $playerPermActions = ['update_visitor_perm', 'get_visitor_perm'];
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
@@ -62,7 +64,7 @@ try {
             echo json_encode(['success' => false, 'error' => '需要管理员认证']);
             exit;
         }
-    } elseif (in_array($action, $playerActions) || in_array($action, $playerPermActions) || in_array($action, $memberPermActions)) {
+    } elseif (in_array($action, $playerActions) || in_array($action, $playerPermActions) || in_array($action, $memberPermActions) || in_array($action, $playerFieldActions)) {
         // 玩家端：需要token
         $token = $_GET['token'] ?? '';
         if (empty($token)) {
@@ -224,6 +226,15 @@ try {
             handleClearMemberPerm($db, $playerName, $_POST);
             break;
 
+        // ===== 玩家端：更新领地字段（效果管理、开关等）=====
+        case 'update_land_field':
+            if ($method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'POST only']);
+                exit;
+            }
+            handleUpdateLandField($db, $playerName, $_POST);
+            break;
+
         // ===== Java端轮询PHP管理员变更 =====
         case 'poll_admin_changes':
             handlePollAdminChanges($db, $_GET);
@@ -256,6 +267,14 @@ function initLandTables($db) {
         created_at INTEGER DEFAULT 0,
         synced_at INTEGER DEFAULT 0
     )");
+
+    // ★ 效果管理字段迁移（兼容已有表）
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN give_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    // ★ 管理变更标记
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
 
     $db->exec("CREATE TABLE IF NOT EXISTS web_area_shop (
         id INTEGER PRIMARY KEY,
@@ -443,12 +462,31 @@ function handleUpdateLandOwner($db, $post) {
         return;
     }
 
+    // ★ 验证新所有者
+    if (empty($owner)) {
+        echo json_encode(['success' => false, 'error' => '新所有者不能为空']);
+        return;
+    }
+    if (!preg_match('/^[a-zA-Z0-9_]{2,16}$/', $owner)) {
+        echo json_encode(['success' => false, 'error' => '玩家名格式无效：仅允许英文字母、数字和下划线，2-16位']);
+        return;
+    }
+    if (!playerExists($db, $owner)) {
+        echo json_encode(['success' => false, 'error' => "玩家 §e{$owner} §f未注册，请确认后再试"]);
+        return;
+    }
+
     // 获取旧所有者
     $stmt = $db->prepare("SELECT owner FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $result = $stmt->execute();
     $row = $result->fetchArray(SQLITE3_ASSOC);
     $oldOwner = $row ? ($row['owner'] ?? '') : '';
+
+    if ($oldOwner === $owner) {
+        echo json_encode(['success' => false, 'error' => '新旧所有者相同，无需更改']);
+        return;
+    }
 
     // 更新所有者
     $stmt2 = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
@@ -665,6 +703,60 @@ function playerExists($db, $playerName) {
     }
 
     return false;
+}
+
+// ==================== 玩家端：更新领地字段（效果管理）====================
+
+function handleUpdateLandField($db, $playerName, $post) {
+    $name = $post['name'] ?? '';
+    $field = $post['field'] ?? '';
+    $value = $post['value'] ?? '';
+
+    if (empty($name) || empty($field)) {
+        echo json_encode(['success' => false, 'error' => '缺少参数']);
+        return;
+    }
+
+    // 允许的字段白名单
+    $allowedFields = ['clear_effects', 'give_effects', 'clear_all_bad_effects', 'deny_all_effects'];
+    if (!in_array($field, $allowedFields)) {
+        echo json_encode(['success' => false, 'error' => '不允许的字段: ' . $field]);
+        return;
+    }
+
+    // 校验领地所有权
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者']);
+        return;
+    }
+
+    // 确保字段存在（容错）
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN {$field} TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+
+    // 更新
+    $stmt2 = $db->prepare("UPDATE web_area_lands SET {$field} = :value, admin_changed = 1 WHERE name = :name");
+    $stmt2->bindValue(':value', $value, SQLITE3_TEXT);
+    $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt2->execute();
+
+    // 记录变更到变更队列（Java端轮询）
+    $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('land_field_change', :lid, :name, :data, :now)");
+    $stmt3->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt3->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt3->bindValue(':data', json_encode(['field' => $field, 'value' => $value]), SQLITE3_TEXT);
+    $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt3->execute();
+
+    echo json_encode(['success' => true]);
 }
 
 // ==================== 玩家端：移除访客 ====================
