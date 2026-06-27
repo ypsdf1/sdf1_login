@@ -2352,6 +2352,39 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 获取所有领地的成员权限数据（用于同步到PHP端）
+     */
+    public List<Map<String, Object>> getAllPermsForSync() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        if (dbConnection == null) return list;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT p.id, p.land_id, l.name AS land_name, p.player_name, p.role, "
+                            + "p.permissions, p.granted_at, p.expires_at "
+                            + "FROM area_land_permissions p "
+                            + "JOIN area_lands l ON p.land_id = l.id "
+                            + "ORDER BY p.land_id, p.player_name");
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> entry = new HashMap<>();
+                entry.put("land_id", rs.getInt("land_id"));
+                entry.put("land_name", rs.getString("land_name"));
+                entry.put("player_name", rs.getString("player_name"));
+                entry.put("role", rs.getString("role"));
+                entry.put("permissions", rs.getString("permissions"));
+                entry.put("granted_at", rs.getLong("granted_at"));
+                entry.put("expires_at", rs.getLong("expires_at"));
+                list.add(entry);
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] getAllPermsForSync失败: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /**
      * 检查玩家是否是某领地的管理员（role='admin'）
      */
     public boolean isLandAdmin(String landName, String playerName) {

@@ -2952,9 +2952,47 @@ public class WebManager {
                 plugin.getLogger().info("[防护-sync] 配置同步: " + cfgResp);
             }
 
+            // 4. 同步成员权限数据（area_land_permissions → web_area_permissions）
+            syncPermissions(areaProtect);
+
             plugin.getLogger().fine("[Web通信] 领地数据同步完成");
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 领地同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 同步成员权限数据到PHP端
+     */
+    private void syncPermissions(AreaProtection areaProtect) {
+        try {
+            List<Map<String, Object>> perms = areaProtect.getAllPermsForSync();
+            if (perms.isEmpty()) return;
+
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < perms.size(); i++) {
+                if (i > 0) sb.append(",");
+                Map<String, Object> p = perms.get(i);
+                sb.append("{");
+                sb.append("\"land_id\":").append(p.getOrDefault("land_id", 0)).append(",");
+                sb.append("\"land_name\":\"").append(escapeJson(String.valueOf(p.getOrDefault("land_name", "")))).append("\",");
+                sb.append("\"player_name\":\"").append(escapeJson(String.valueOf(p.getOrDefault("player_name", "")))).append("\",");
+                sb.append("\"role\":\"").append(escapeJson(String.valueOf(p.getOrDefault("role", "")))).append("\",");
+                sb.append("\"permissions\":\"").append(escapeJson(String.valueOf(p.getOrDefault("permissions", "")))).append("\",");
+                sb.append("\"granted_at\":").append(p.getOrDefault("granted_at", 0)).append(",");
+                sb.append("\"expires_at\":").append(p.getOrDefault("expires_at", 0));
+                sb.append("}");
+            }
+            sb.append("]");
+
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "sync_permissions");
+            params.put("secret", secretKey);
+            params.put("permissions", sb.toString());
+            String resp = httpGet("api/sync.php", params);
+            plugin.getLogger().fine("[防护-sync] 权限同步: " + perms.size() + "条 → " + resp);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 权限同步异常: " + e.getMessage());
         }
     }
 
