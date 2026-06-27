@@ -621,6 +621,8 @@ function syncConfig() {
     $now = time();
     $count = 0;
     foreach ($config as $key => $val) {
+        // ★ 去除前导零：01 → 1，防止静默失败
+        if (is_numeric($val)) $val = (string)(int)$val;
         $stmt = $db->prepare("INSERT INTO web_area_config (key, value) VALUES (:key, :val) "
             . "ON CONFLICT(key) DO UPDATE SET value = :val2");
         $stmt->bindValue(':key', $key, SQLITE3_TEXT);

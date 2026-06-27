@@ -605,6 +605,9 @@ function handleUpdateConfig($db, $post) {
         return;
     }
 
+    // ★ 去除前导零：01 → 1，防止静默失败
+    if (is_numeric($value)) $value = (string)(int)$value;
+
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_config (key, value) VALUES (:key, :val)");
     $stmt->bindValue(':key', $key, SQLITE3_TEXT);
     $stmt->bindValue(':val', $value, SQLITE3_TEXT);
