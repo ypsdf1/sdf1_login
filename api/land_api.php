@@ -35,6 +35,40 @@ function convertEffectsForFrontend($row) {
     return $row;
 }
 
+// ★ 29种权限类型定义（必须在try之前，否则handleGetMemberPerms调用时变量未定义）
+$PERM_TYPES = [
+    'denyMove' => '移动',
+    'denyBlockPlace' => '放置方块',
+    'denyBlockBreak' => '破坏方块',
+    'denyContainer' => '容器管理',
+    'denyPVP' => 'PVP战斗',
+    'denyMount' => '骑乘',
+    'denyEnderPearl' => '末影珍珠',
+    'denyThrownProjectiles' => '投掷物',
+    'denyRaid' => '袭击',
+    'denyBow' => '弓箭',
+    'denyPotion' => '药水',
+    'denyFire' => '点火',
+    'denyFireSpread' => '火焰蔓延',
+    'denyPickup' => '拾取物品',
+    'denyDrop' => '丢弃物品',
+    'denyExplosion' => '爆炸',
+    'denyFallDamage' => '摔落伤害',
+    'denyHunger' => '饥饿',
+    'denyAllDamage' => '所有伤害',
+    'denyAllEffects' => '所有效果',
+    'denyItemFrame' => '物品展示框',
+    'denyRedstoneInteraction' => '红石交互',
+    'denyDoorInteraction' => '门禁交互',
+    'denyNoteblockJukebox' => '音符盒/唱片机',
+    'denyLead' => '拴绳',
+    'denyCropHarvest' => '收割作物',
+    'denyWoolShear' => '剪羊毛',
+    'denyAnimalFeeding' => '投喂动物',
+    'denyGlowing' => '发光效果',
+    'denyPeaceMode' => '和平模式'
+];
+
 try {
     // ★ 加载core.php（与sync.php相同的加载方式）
     $coreFile = dirname(__DIR__) . '/core.php';
@@ -1144,42 +1178,6 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
 }
 
 // ==================== 成员独立权限操作 ====================
-
-/**
- * 29种权限类型定义
- */
-$PERM_TYPES = [
-    'denyMove' => '移动',
-    'denyBlockPlace' => '放置方块',
-    'denyBlockBreak' => '破坏方块',
-    'denyContainer' => '容器管理',
-    'denyPVP' => 'PVP战斗',
-    'denyMount' => '骑乘',
-    'denyEnderPearl' => '末影珍珠',
-    'denyThrownProjectiles' => '投掷物',
-    'denyRaid' => '袭击',
-    'denyBow' => '弓箭',
-    'denyPotion' => '药水',
-    'denyFire' => '点火',
-    'denyFireSpread' => '火焰蔓延',
-    'denyPickup' => '拾取物品',
-    'denyDrop' => '丢弃物品',
-    'denyExplosion' => '爆炸',
-    'denyFallDamage' => '摔落伤害',
-    'denyHunger' => '饥饿',
-    'denyAllDamage' => '所有伤害',
-    'denyAllEffects' => '所有效果',
-    'denyItemFrame' => '物品展示框',
-    'denyRedstoneInteraction' => '红石交互',
-    'denyDoorInteraction' => '门禁交互',
-    'denyNoteblockJukebox' => '音符盒/唱片机',
-    'denyLead' => '拴绳',
-    'denyCropHarvest' => '收割作物',
-    'denyWoolShear' => '剪羊毛',
-    'denyAnimalFeeding' => '投喂动物',
-    'denyGlowing' => '发光效果',
-    'denyPeaceMode' => '和平模式'
-];
 
 function handleGetMemberPerms($db, $playerName, $landName) {
     global $PERM_TYPES;
