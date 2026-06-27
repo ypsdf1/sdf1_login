@@ -60,11 +60,12 @@ public class WebManager {
     private final ConcurrentHashMap<String, Long> javaLoginRecords = new ConcurrentHashMap<>();
     private static final long JAVA_LOGIN_RECORD_EXPIRE_MS = 300000; // 5分钟过期
 
-    // ★ 合并定时器错峰调度（v17：3个定时器替代6个）
+    // ★ 合并定时器错峰调度（v19：4个定时器）
     private static final int TIMER_A = 0; // 注册登录 0~5秒
     private static final int TIMER_B = 1; // 交易 0~10秒
     private static final int TIMER_C = 2; // 其它 10~20秒
-    private final long[] lastRunTimestamps = new long[3];
+    private static final int TIMER_D = 3; // 领地数据同步 15~25秒（独立，防SQL锁）
+    private final long[] lastRunTimestamps = new long[4];
     private final Object scheduleLock = new Object();
 
     // ★ PHP锁库退避：检测到database is locked时暂停所有非关键定时器
@@ -1347,9 +1348,11 @@ public class WebManager {
                 timersBCPaused = false;
                 long randB = (long)(Math.random() * 10) * 2;
                 long randC = (long)(Math.random() * 10) * 2;
+                long randD = (long)(Math.random() * 10) * 2;
                 scheduleTimerB(40L + randB);  // 2秒后重启B
                 scheduleTimerC(120L + randC); // 6秒后重启C
-                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s)");
+                scheduleTimerD(180L + randD); // 9秒后重启D
+                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C/D已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s)");
             }
 
             // 玩家在线：全量批处理
@@ -1371,8 +1374,7 @@ public class WebManager {
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
-            submitNormalDbTask("周期-syncLandData", () -> syncLandData());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            // ★ syncLandData已由Timer D独立定时器处理（15~25秒），不再放批处理队列防SQL锁
             submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
 
             checkSyncNotify();
@@ -1466,7 +1468,7 @@ public class WebManager {
             if (phpBusyUntil > now) {
                 delayMs = Math.max(delayMs, phpBusyUntil - now + 2000);
             }
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 4; i++) {
                 if (i == timerId) continue;
                 long otherLast = lastRunTimestamps[i];
                 if (otherLast == 0) continue;
@@ -1500,10 +1502,12 @@ public class WebManager {
         long randA = (long)(Math.random() * 10) * 2; // 0~10秒(偶数tick)
         long randB = (long)(Math.random() * 10) * 2;
         long randC = (long)(Math.random() * 10) * 2;
+        long randD = (long)(Math.random() * 10) * 2;
         scheduleTimerA(40L + randA);
         scheduleTimerB(140L + randB);
         scheduleTimerC(240L + randC);
-        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s)");
+        scheduleTimerD(340L + randD);
+        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s)");
     }
 
     // Timer A 内部计数器：每N轮同步一次在线玩家（保持PHP心跳不断）
@@ -1676,6 +1680,44 @@ public class WebManager {
 
                 // 自调度下一轮（10~20秒，错峰）
                 scheduleTimerC(calcStaggeredDelay(TIMER_C, 10, 20));
+            }
+        }.runTaskLaterAsynchronously(plugin, ticks);
+    }
+
+    /**
+     * 定时器D — 领地数据独立同步（15~25秒，独立防SQL锁）
+     * ★ 只做syncLandData()，不与其他定时器共享任务队列
+     */
+    private void scheduleTimerD(long ticks) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                long now = System.currentTimeMillis();
+                synchronized (scheduleLock) { lastRunTimestamps[TIMER_D] = now; }
+
+                // ★ 全员下线暂停
+                if (timersBCPaused) {
+                    return;
+                }
+
+                // ★ PHP锁库退避检查
+                if (phpBusyUntil > now) {
+                    scheduleTimerD(calcStaggeredDelay(TIMER_D, 15, 25));
+                    return;
+                }
+
+                // 领地数据同步（独立执行，不走doActiveSyncBatch队列）
+                if (!Bukkit.getOnlinePlayers().isEmpty()) {
+                    try {
+                        lastLandDataHash = ""; // 每轮强制检查hash变化
+                        syncLandData();
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[领地同步D] 异常: " + e.getMessage());
+                    }
+                }
+
+                // 自调度下一轮（15~25秒，错峰）
+                scheduleTimerD(calcStaggeredDelay(TIMER_D, 15, 25));
             }
         }.runTaskLaterAsynchronously(plugin, ticks);
     }
