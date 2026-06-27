@@ -391,6 +391,7 @@ function initLandTables($db) {
         'txt_content' => "TEXT DEFAULT ''",
         'deny_fluid' => "INTEGER DEFAULT 0",
         'clear_all_bad' => "INTEGER DEFAULT 0",
+        'is_public_building' => "INTEGER DEFAULT 0",
     ];
     foreach ($permColumns as $col => $type) {
         try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN $col $type"); } catch (\Throwable $e) {}
@@ -479,7 +480,7 @@ function handleSyncLands($db, $post) {
          deny_wool_shear, deny_animal_feeding,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
          deny_container, deny_mob_attack,
-         enable_announce, announce_template, txt_content, deny_fluid)
+         enable_announce, announce_template, txt_content, deny_fluid, is_public_building)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax,
                 :size, :created, :synced,
                 :confiscate_items, :deny_use_items, :give_effects, :clear_effects, :clear_all_bad,
@@ -494,7 +495,7 @@ function handleSyncLands($db, $post) {
                 :deny_wool_shear, :deny_animal_feeding,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
                 :deny_container, :deny_mob_attack,
-                :enable_announce, :announce_template, :txt_content, :deny_fluid)");
+                :enable_announce, :announce_template, :txt_content, :deny_fluid, :is_public_building)");
 
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -567,6 +568,7 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':announce_template', $land['announce_template'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_fluid', (int)($land['deny_fluid'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':is_public_building', (int)($land['is_public_building'] ?? 0), SQLITE3_INTEGER);
         $stmt->execute();
     }
 
