@@ -1603,6 +1603,12 @@ public class WebManager {
                             } catch (Exception e) { /* 静默 */ }
                         });
                     }
+                    // ★ PHP→Java变更轮询（管理员在PHP改了配置/领地，Java及时拉取）
+                    if (initialSyncComplete) {
+                        submitNormalDbTask("TimerA-pollAdminChanges", () -> {
+                            try { pollAdminChanges(); } catch (Exception e) { /* 静默 */ }
+                        });
+                    }
                 }
 
                 // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
@@ -3106,6 +3112,16 @@ public class WebManager {
                             if (!field.isEmpty() && !targetName.isEmpty()) {
                                 areaProtect.updateLandFieldFromWeb(targetName, field, value);
                                 plugin.getLogger().info("[Web通信] PHP端更新领地字段: " + targetName + "." + field);
+                                hadChange = true;
+                            }
+                            break;
+                        }
+                        case "config_change": {
+                            String configKey = String.valueOf(changeData.getOrDefault("key", ""));
+                            String configValue = String.valueOf(changeData.getOrDefault("value", ""));
+                            if (!configKey.isEmpty()) {
+                                areaProtect.setAreaConfigValue(configKey, configValue);
+                                plugin.getLogger().info("[Web通信] PHP端更新全局配置: " + configKey + " = " + configValue);
                                 hadChange = true;
                             }
                             break;
