@@ -5005,7 +5005,8 @@ public class AreaProtection implements Listener {
                 "取消删除", "canceldelete",
                 "removemember", "addmember",
                 "config", "配置",
-                "public", "公共", "listpublic", "公共列表", "tpb", "传送公共"
+                "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
+                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig"
         ));
 
         String first = original[0].toLowerCase();
@@ -5489,22 +5490,27 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c区域已存在");
                 return true;
             }
-            // ★ 检查每人领地数量上限
+            // ★ 检查每人领地数量上限（用户组专属上限）
             long playerLandCount = areas.values().stream()
                     .filter(a -> p.getName().equalsIgnoreCase(a.owner))
                     .count();
-            if (playerLandCount >= globalMaxLandsPerPlayer) {
-                p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + globalMaxLandsPerPlayer + " §f个领地");
+            UserGroupManager ugm = plugin.getUserGroup();
+            int playerMaxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
+            if (playerLandCount >= playerMaxLands) {
+                String groupHint = (ugm != null && ugm.getHighestGroup(p.getName()) != null)
+                        ? "（用户组: " + ugm.getHighestGroup(p.getName()).displayName + "）" : "";
+                p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + playerMaxLands + " §f个领地" + groupHint);
                 return true;
             }
             Location l1 = pos1.get(u);
             Location l2 = pos2.get(u);
 
-            // ★ 领地计费：计算面积并扣除余额
+            // ★ 领地计费：计算面积并扣除余额（用户组专属价格）
             int width = Math.abs(l2.getBlockX() - l1.getBlockX()) + 1;
             int length = Math.abs(l2.getBlockZ() - l1.getBlockZ()) + 1;
             int area = width * length;
-            int cost = area * globalCreatePricePerSqm;
+            int effectivePricePerSqm = (ugm != null) ? ugm.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
+            int cost = area * effectivePricePerSqm;
             if (cost > 0) {
                 BondManager bm = plugin.getBonds();
                 if (bm != null) {
@@ -5513,11 +5519,12 @@ public class AreaProtection implements Listener {
                         p.sendMessage("§c§l[防护] §f余额不足！需要 §e" + cost + " §f债券，当前余额 §e" + balance);
                         return true;
                     }
-                    if (!bm.deductBonds(p.getName(), cost, "land_create", p.getName(), p.getName(), "创建领地: " + areaName + " (" + area + "㎡×" + globalCreatePricePerSqm + ")")) {
+                    if (!bm.deductBonds(p.getName(), cost, "land_create", p.getName(), p.getName(), "创建领地: " + areaName + " (" + area + "㎡×" + effectivePricePerSqm + ")")) {
                         p.sendMessage("§c§l[防护] §f扣费失败，请稍后重试");
                         return true;
                     }
-                    p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cost + " §f债券（" + area + "㎡×" + globalCreatePricePerSqm + "/㎡）");
+                    String priceSource = (effectivePricePerSqm != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
+                    p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cost + " §f债券（" + area + "㎡×" + effectivePricePerSqm + "/㎡）" + priceSource);
                 }
             }
 
@@ -5881,6 +5888,130 @@ public class AreaProtection implements Listener {
             }
             p.teleport(dest);
             sender.sendMessage("§a已传送至公共建筑: §f" + target.name);
+            return true;
+        }
+
+        // ===== 用户组管理 =====
+        if (sub.equals("grouplist") || sub.equals("用户组")) {
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            Map<String, UserGroupManager.UserGroupConfig> groups = ugm.getGroupConfigs();
+            if (groups.isEmpty()) {
+                sender.sendMessage("§e暂无用户组定义");
+            } else {
+                sender.sendMessage("§a§l=== 用户组列表 ===");
+                for (UserGroupManager.UserGroupConfig cfg : groups.values()) {
+                    String priceStr = cfg.landPricePerSqm >= 0 ? cfg.landPricePerSqm + "/㎡" : "全局默认";
+                    String maxStr = cfg.maxLands >= 0 ? String.valueOf(cfg.maxLands) : "全局默认";
+                    sender.sendMessage("§f" + cfg.displayColor + cfg.displayName
+                            + " §7(name=" + cfg.name + ", 优先级=" + cfg.priority
+                            + ", 价格=" + priceStr + ", 上限=" + maxStr + ")");
+                }
+            }
+            return true;
+        }
+
+        if (sub.equals("groupset")) {
+            if (!sender.hasPermission("sdf1.admin")) {
+                sender.sendMessage("§c需要管理员权限"); return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect groupset <组名> [显示名] [颜色] [优先级] [每㎡价格] [最大领地数]");
+                return true;
+            }
+            String groupName = args[1].toLowerCase();
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+            if (cfg == null) cfg = new UserGroupManager.UserGroupConfig();
+            cfg.name = groupName;
+            if (args.length >= 3) cfg.displayName = args[2];
+            if (args.length >= 4) cfg.displayColor = args[3];
+            if (args.length >= 5) {
+                try { cfg.priority = Integer.parseInt(args[4]); } catch (Exception ignored) {}
+            }
+            if (args.length >= 6) {
+                try { cfg.landPricePerSqm = Integer.parseInt(args[5]); } catch (Exception ignored) {}
+            }
+            if (args.length >= 7) {
+                try { cfg.maxLands = Integer.parseInt(args[6]); } catch (Exception ignored) {}
+            }
+            if (cfg.displayName.isEmpty()) cfg.displayName = groupName;
+            ugm.saveGroupConfigToDB(cfg);
+            ugm.loadGroupConfigs();
+            sender.sendMessage("§a已创建/更新用户组: §f" + cfg.displayColor + cfg.displayName
+                    + " §7(name=" + groupName + ", 价格=" + cfg.landPricePerSqm + "/㎡"
+                    + ", 上限=" + cfg.maxLands + ")");
+            return true;
+        }
+
+        if (sub.equals("groupdelconfig")) {
+            if (!sender.hasPermission("sdf1.admin")) {
+                sender.sendMessage("§c需要管理员权限"); return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect groupdelconfig <组名>");
+                return true;
+            }
+            String groupName = args[1].toLowerCase();
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            if (groupName.equals(UserGroupManager.DEFAULT_GROUP)) {
+                sender.sendMessage("§c不能删除默认组"); return true;
+            }
+            if (ugm.deleteGroupConfig(groupName)) {
+                sender.sendMessage("§a已删除用户组: " + groupName);
+            } else {
+                sender.sendMessage("§c未找到用户组: " + groupName);
+            }
+            return true;
+        }
+
+        if (sub.equals("groupadd")) {
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect groupadd <玩家> <组名>");
+                return true;
+            }
+            String playerName = args[1];
+            String groupName = args[2].toLowerCase();
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            if (ugm.getGroupConfig(groupName) == null) {
+                sender.sendMessage("§c未找到用户组: " + groupName);
+                return true;
+            }
+            if (ugm.addPlayer(playerName, groupName, sender.getName(), 0)) {
+                UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+                sender.sendMessage("§a已将 §f" + playerName + " §a加入用户组: §f" + (cfg != null ? cfg.displayName : groupName));
+                // 通知在线玩家
+                Player target = plugin.getServer().getPlayerExact(playerName);
+                if (target != null) {
+                    target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + (cfg != null ? cfg.displayName : groupName));
+                }
+            } else {
+                sender.sendMessage("§c操作失败");
+            }
+            return true;
+        }
+
+        if (sub.equals("groupdel")) {
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect groupdel <玩家> <组名>");
+                return true;
+            }
+            String playerName = args[1];
+            String groupName = args[2].toLowerCase();
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            if (ugm.removePlayer(playerName, groupName)) {
+                sender.sendMessage("§a已将 §f" + playerName + " §a移出用户组: " + groupName);
+                Player target = plugin.getServer().getPlayerExact(playerName);
+                if (target != null) {
+                    target.sendMessage("§a§l[用户组] §f你已被移出用户组: §e" + groupName);
+                }
+            } else {
+                sender.sendMessage("§c操作失败（玩家可能不在此组）");
+            }
             return true;
         }
 

@@ -7,14 +7,24 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.*;
-import java.util.Base64;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * 用户组管理器（重构版）
+ * 负责：
+ *   1. 用户组定义（名称、颜色、优先级）
+ *   2. 领地相关参数：创建价格倍率、每人最大领地数、默认权限
+ *   3. 玩家↔用户组关联（带过期时间）
+ *   4. 给玩家发送展示名前缀（scoreboard tag）
+ */
 public class UserGroupManager {
 
     private final Main plugin;
     private Connection db;
     private final Map<String, UserGroupConfig> groupConfigs = new ConcurrentHashMap<>();
+
+    // 默认组名（所有玩家都属于此组，不需要手动加入）
+    public static final String DEFAULT_GROUP = "default";
 
     public UserGroupManager(Main plugin) {
         this.plugin = plugin;
@@ -23,7 +33,7 @@ public class UserGroupManager {
         startExpiryChecker();
     }
 
-    // ===== DB =====
+    // ==================== DB ====================
 
     private void initDB() {
         try {
@@ -32,18 +42,23 @@ public class UserGroupManager {
             db = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             Statement st = db.createStatement();
             st.execute("PRAGMA journal_mode=WAL");
+
+            // 主表：用户组配置
             st.execute("CREATE TABLE IF NOT EXISTS user_group_config ("
                     + "group_name TEXT PRIMARY KEY,"
                     + "display_name TEXT DEFAULT '',"
                     + "display_color TEXT DEFAULT '§f',"
                     + "display_emoji TEXT DEFAULT '',"
                     + "priority INTEGER DEFAULT 0,"
-                    + "is_permanent INTEGER DEFAULT 1,"
-                    + "duration_minutes INTEGER DEFAULT 0,"
-                    + "pack_url TEXT DEFAULT '',"
-                    + "pack_hash TEXT DEFAULT '',"
-                    + "pack_prompt TEXT DEFAULT 'Custom Resource Pack',"
-                    + "pack_size INTEGER DEFAULT 0)");
+                    // === 领地相关 ===
+                    + "land_price_per_sqm INTEGER DEFAULT -1,"   // -1 = 使用全局值
+                    + "max_lands INTEGER DEFAULT -1,"             // -1 = 使用全局值
+                    + "default_perms TEXT DEFAULT '{}',"          // JSON: 默认deny_*标志
+                    + "is_permanent INTEGER DEFAULT 1,"           // 保留兼容
+                    + "duration_minutes INTEGER DEFAULT 0"        // 保留兼容
+                    + ")");
+
+            // 玩家↔用户组关联
             st.execute("CREATE TABLE IF NOT EXISTS user_group_member ("
                     + "player_name TEXT NOT NULL,"
                     + "group_name TEXT NOT NULL,"
@@ -51,16 +66,58 @@ public class UserGroupManager {
                     + "added_time INTEGER DEFAULT 0,"
                     + "expiry_time INTEGER DEFAULT 0,"
                     + "PRIMARY KEY(player_name, group_name))");
+
+            // === 迁移：给旧表加新列 ===
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN land_price_per_sqm INTEGER DEFAULT -1"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_lands INTEGER DEFAULT -1"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN default_perms TEXT DEFAULT '{}'"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN is_permanent INTEGER DEFAULT 1"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN duration_minutes INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+
             st.close();
         } catch (Exception e) {
             throw new RuntimeException("[UserGroup] DB init failed: " + e.getMessage(), e);
         }
     }
 
-    // ===== 配置加载 =====
+    // ==================== 配置加载 ====================
 
+    /** 从 usergroup.db 加载所有组配置到内存 */
     public void loadGroupConfigs() {
         groupConfigs.clear();
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery("SELECT * FROM user_group_config");
+            while (rs.next()) {
+                UserGroupConfig cfg = new UserGroupConfig();
+                cfg.name = rs.getString("group_name");
+                cfg.displayName = rs.getString("display_name");
+                cfg.displayColor = rs.getString("display_color");
+                cfg.displayEmoji = rs.getString("display_emoji");
+                cfg.priority = rs.getInt("priority");
+                cfg.landPricePerSqm = rs.getInt("land_price_per_sqm");
+                cfg.maxLands = rs.getInt("max_lands");
+                cfg.defaultPerms = rs.getString("default_perms");
+                cfg.permanent = rs.getInt("is_permanent") == 1;
+                cfg.durationMinutes = rs.getInt("duration_minutes");
+                if (cfg.name != null && !cfg.name.isEmpty()) {
+                    groupConfigs.put(cfg.name, cfg);
+                }
+            }
+            rs.close();
+            st.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[UserGroup] loadGroupConfigs failed: " + e.getMessage());
+        }
+
+        // 同时从 txt 文件加载（兼容旧格式，覆盖DB中的同名组）
+        loadFromTxtFiles();
+
+        plugin.getLogger().info("[UserGroup] 已加载 " + groupConfigs.size() + " 个用户组");
+    }
+
+    /** 从 pluginDir/用户组/*.txt 加载旧格式配置 */
+    private void loadFromTxtFiles() {
         File dir = new File(plugin.getDataFolder(), "用户组");
         if (!dir.exists()) dir.mkdirs();
         File[] files = dir.listFiles((d, n) -> n.endsWith(".txt"));
@@ -68,46 +125,40 @@ public class UserGroupManager {
 
         for (File f : files) {
             try {
-                List<String> lines = java.nio.file.Files.readAllLines(
-                        f.toPath(), StandardCharsets.UTF_8);
-                UserGroupConfig cfg = parseGroupConfig(lines);
+                List<String> lines = java.nio.file.Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+                UserGroupConfig cfg = parseTxtGroupConfig(lines);
                 if (cfg != null) {
                     groupConfigs.put(cfg.name, cfg);
                     saveGroupConfigToDB(cfg);
                 }
             } catch (Exception e) {
-                plugin.getLogger().warning("[UserGroup] Failed to load: " + f.getName());
+                plugin.getLogger().warning("[UserGroup] Failed to load txt: " + f.getName());
             }
         }
     }
 
-    private UserGroupConfig parseGroupConfig(List<String> lines) {
+    private UserGroupConfig parseTxtGroupConfig(List<String> lines) {
         UserGroupConfig cfg = new UserGroupConfig();
         boolean inBlock = false;
 
         for (String raw : lines) {
             String l = raw;
-
-            // 块注释
             if (l.contains("<!--")) { inBlock = true; continue; }
             if (l.contains("-->")) { inBlock = false; continue; }
             if (l.contains("/*")) { inBlock = true; continue; }
             if (l.contains("*/")) { inBlock = false; continue; }
             if (inBlock) continue;
 
-            // 行注释
             l = l.trim();
             if (l.isEmpty()) continue;
             if (l.startsWith("#") || l.startsWith("//")) continue;
 
-            // 行内注释
             int h = l.indexOf('#');
             int s = l.indexOf("//");
             if (h >= 0) l = l.substring(0, h).trim();
             if (s >= 0 && (h < 0 || s < h)) l = l.substring(0, s).trim();
             if (l.isEmpty()) continue;
 
-            // 解析键值对
             String key = l;
             String val = "";
             int idx = l.indexOf('\uff1a');
@@ -120,38 +171,19 @@ public class UserGroupManager {
             }
 
             switch (key) {
-                case "组名":
-                case "name": cfg.name = val; break;
-                case "显示名":
-                case "display": cfg.displayName = val; break;
-                case "颜色":
-                case "color": cfg.displayColor = val; break;
-                case "符号":
-                case "emoji": cfg.displayEmoji = val; break;
-                case "优先级":
-                case "priority":
+                case "组名": case "name": cfg.name = val; break;
+                case "显示名": case "display": cfg.displayName = val; break;
+                case "颜色": case "color": cfg.displayColor = val; break;
+                case "符号": case "emoji": cfg.displayEmoji = val; break;
+                case "优先级": case "priority":
                     try { cfg.priority = Integer.parseInt(val); } catch (Exception ignored) {}
                     break;
-                case "类型":
-                case "type":
+                case "类型": case "type":
                     cfg.permanent = val.equalsIgnoreCase("永久") || val.equalsIgnoreCase("permanent");
                     break;
-                case "时长":
-                case "duration":
+                case "时长": case "duration":
                     try { cfg.durationMinutes = Integer.parseInt(val); } catch (Exception ignored) {}
                     break;
-                case "资源包URL":
-                case "pack_url": cfg.packUrl = val; break;
-                case "资源包Hash":
-                case "pack_hash": cfg.packHash = val; break;
-                case "资源包提示":
-                case "pack_prompt": cfg.packPrompt = val; break;
-                case "资源包大小":
-                case "pack_size":
-                    try { cfg.packSize = Integer.parseInt(val); } catch (Exception ignored) {}
-                    break;
-                case "本地文件":
-                case "local_file": cfg.localFile = val; break;
             }
         }
 
@@ -159,33 +191,47 @@ public class UserGroupManager {
         return cfg;
     }
 
-    private void saveGroupConfigToDB(UserGroupConfig cfg) {
+    /** 保存组配置到DB */
+    public void saveGroupConfigToDB(UserGroupConfig cfg) {
         try {
             PreparedStatement ps = db.prepareStatement(
                     "INSERT OR REPLACE INTO user_group_config "
                             + "(group_name, display_name, display_color, display_emoji,"
-                            + " priority, is_permanent, duration_minutes,"
-                            + " pack_url, pack_hash, pack_prompt, pack_size)"
-                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+                            + " priority, land_price_per_sqm, max_lands, default_perms,"
+                            + " is_permanent, duration_minutes)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?)");
             ps.setString(1, cfg.name);
             ps.setString(2, cfg.displayName);
             ps.setString(3, cfg.displayColor);
             ps.setString(4, cfg.displayEmoji);
             ps.setInt(5, cfg.priority);
-            ps.setInt(6, cfg.permanent ? 1 : 0);
-            ps.setInt(7, cfg.durationMinutes);
-            ps.setString(8, cfg.packUrl);
-            ps.setString(9, cfg.packHash);
-            ps.setString(10, cfg.packPrompt);
-            ps.setInt(11, cfg.packSize);
+            ps.setInt(6, cfg.landPricePerSqm);
+            ps.setInt(7, cfg.maxLands);
+            ps.setString(8, cfg.defaultPerms != null ? cfg.defaultPerms : "{}");
+            ps.setInt(9, cfg.permanent ? 1 : 0);
+            ps.setInt(10, cfg.durationMinutes);
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
-            e.printStackTrace();
+            plugin.getLogger().warning("[UserGroup] saveGroupConfigToDB failed: " + e.getMessage());
         }
     }
 
-    // ===== 玩家操作 =====
+    /** 删除组配置 */
+    public boolean deleteGroupConfig(String groupName) {
+        try {
+            PreparedStatement ps = db.prepareStatement("DELETE FROM user_group_config WHERE group_name=?");
+            ps.setString(1, groupName);
+            int rows = ps.executeUpdate();
+            ps.close();
+            groupConfigs.remove(groupName);
+            return rows > 0;
+        } catch (SQLException e) {
+            return false;
+        }
+    }
+
+    // ==================== 玩家操作 ====================
 
     public boolean addPlayer(String player, String groupName, String addedBy, long durationMinutes) {
         UserGroupConfig cfg = groupConfigs.get(groupName);
@@ -207,11 +253,9 @@ public class UserGroupManager {
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
-            e.printStackTrace();
+            plugin.getLogger().warning("[UserGroup] addPlayer failed: " + e.getMessage());
             return false;
         }
-        Player p = plugin.getServer().getPlayerExact(player);
-        if (p != null) sendResourcePack(p);
         return true;
     }
 
@@ -225,11 +269,11 @@ public class UserGroupManager {
             ps.close();
             return rows > 0;
         } catch (SQLException e) {
-            e.printStackTrace();
             return false;
         }
     }
 
+    /** 获取玩家所属的所有有效组（排除过期） */
     public List<Map<String, Object>> getPlayerGroups(String player) {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
@@ -254,6 +298,10 @@ public class UserGroupManager {
         return list;
     }
 
+    /**
+     * 获取玩家最高优先级的有效用户组
+     * 如果没有加入任何组，返回 null（调用方应使用全局默认值）
+     */
     public UserGroupConfig getHighestGroup(String player) {
         List<Map<String, Object>> groups = getPlayerGroups(player);
         long now = System.currentTimeMillis();
@@ -284,7 +332,41 @@ public class UserGroupManager {
         }
     }
 
-    // ===== 过期自动移除 =====
+    // ==================== 领地相关查询 ====================
+
+    /**
+     * 获取玩家的领地创建价格（每㎡）
+     * 返回：组专属价格 或 全局默认
+     */
+    public int getPlayerLandPricePerSqm(String player, int globalDefault) {
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null) return globalDefault;
+        return cfg.landPricePerSqm >= 0 ? cfg.landPricePerSqm : globalDefault;
+    }
+
+    /**
+     * 获取玩家的最大领地持有数
+     * 返回：组专属上限 或 全局默认
+     */
+    public int getPlayerMaxLands(String player, int globalDefault) {
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null) return globalDefault;
+        return cfg.maxLands >= 0 ? cfg.maxLands : globalDefault;
+    }
+
+    /**
+     * 获取玩家的默认领地权限 JSON
+     * 返回：组默认权限 或 空JSON "{}"
+     */
+    public String getPlayerDefaultPerms(String player) {
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null || cfg.defaultPerms == null || cfg.defaultPerms.isEmpty()) {
+            return "{}";
+        }
+        return cfg.defaultPerms;
+    }
+
+    // ==================== 过期检查 ====================
 
     private void startExpiryChecker() {
         new BukkitRunnable() {
@@ -292,7 +374,7 @@ public class UserGroupManager {
             public void run() {
                 checkExpiry();
             }
-        }.runTaskTimerAsynchronously(plugin, 1200L, 1200L); // 每分钟检查
+        }.runTaskTimerAsynchronously(plugin, 1200L, 1200L); // 每60秒检查
     }
 
     private void checkExpiry() {
@@ -318,40 +400,37 @@ public class UserGroupManager {
                 del.setString(2, e[1]);
                 del.executeUpdate();
                 del.close();
-                plugin.getLogger().info("[UserGroup] 过期移除: " + e[0] + " -> " + e[1]);
+                plugin.getLogger().info("[UserGroup] 过期移除: " + e[0] + " → " + e[1]);
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
     }
 
-    // ===== 资源包分发 =====
-
-    public void sendResourcePack(Player p) {
-        UserGroupConfig cfg = getHighestGroup(p.getName());
-        if (cfg == null || cfg.packUrl == null || cfg.packUrl.isEmpty()) return;
-
-        String url = cfg.packUrl;
-        String prompt = cfg.packPrompt != null
-                ? cfg.packPrompt : "Custom Resource Pack";
-
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            try {
-                p.setResourcePack(url, new byte[0], prompt, false);
-                plugin.getLogger().info("[UserGroup] 资源包已发送: "
-                        + p.getName() + " -> " + cfg.displayName);
-            } catch (Exception e) {
-                plugin.getLogger().warning(
-                        "[UserGroup] 资源包发送失败: " + e.getMessage());
-            }
-        }, 40L);
-    }
+    // ==================== 工具方法 ====================
 
     public Map<String, UserGroupConfig> getGroupConfigs() {
         return groupConfigs;
     }
 
-    // ===== 配置类 =====
+    /** 获取所有组名列表 */
+    public Set<String> getAllGroupNames() {
+        return groupConfigs.keySet();
+    }
+
+    /** 获取组配置（返回副本） */
+    public UserGroupConfig getGroupConfig(String groupName) {
+        return groupConfigs.get(groupName);
+    }
+
+    /** 获取全部组列表（含默认组） */
+    public List<UserGroupConfig> getAllGroups() {
+        List<UserGroupConfig> list = new ArrayList<>(groupConfigs.values());
+        list.sort((a, b) -> b.priority - a.priority);
+        return list;
+    }
+
+    // ==================== 配置类 ====================
 
     public static class UserGroupConfig {
         public String name;
@@ -359,12 +438,12 @@ public class UserGroupManager {
         public String displayColor = "§f";
         public String displayEmoji = "";
         public int priority = 0;
+        // 领地相关
+        public int landPricePerSqm = -1;   // -1 = 使用全局
+        public int maxLands = -1;          // -1 = 使用全局
+        public String defaultPerms = "{}"; // JSON
+        // 兼容旧字段
         public boolean permanent = true;
         public int durationMinutes = 0;
-        public String packUrl = "";
-        public String packHash = "";
-        public String packPrompt = "Custom Resource Pack";
-        public int packSize = 0;
-        public String localFile = "";
     }
 }

@@ -3026,6 +3026,42 @@ public class WebManager {
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 权限同步异常: " + e.getMessage());
         }
+
+        // 5. 同步用户组配置
+        try {
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm != null) {
+                Map<String, UserGroupManager.UserGroupConfig> groups = ugm.getGroupConfigs();
+                if (!groups.isEmpty()) {
+                    StringBuilder gs = new StringBuilder("[");
+                    boolean first = true;
+                    for (UserGroupManager.UserGroupConfig cfg : groups.values()) {
+                        if (!first) gs.append(",");
+                        gs.append("{");
+                        gs.append("\"group_name\":\"").append(escapeJson(cfg.name)).append("\",");
+                        gs.append("\"display_name\":\"").append(escapeJson(cfg.displayName)).append("\",");
+                        gs.append("\"display_color\":\"").append(escapeJson(cfg.displayColor)).append("\",");
+                        gs.append("\"display_emoji\":\"").append(escapeJson(cfg.displayEmoji)).append("\",");
+                        gs.append("\"priority\":").append(cfg.priority).append(",");
+                        gs.append("\"land_price_per_sqm\":").append(cfg.landPricePerSqm).append(",");
+                        gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
+                        gs.append("\"default_perms\":\"").append(escapeJson(cfg.defaultPerms != null ? cfg.defaultPerms : "{}")).append("\"");
+                        gs.append("}");
+                        first = false;
+                    }
+                    gs.append("]");
+
+                    Map<String, String> gParams = new LinkedHashMap<>();
+                    gParams.put("action", "sync_user_groups");
+                    gParams.put("secret", secretKey);
+                    gParams.put("groups", gs.toString());
+                    String gResp = httpGet("api/sync.php", gParams);
+                    plugin.getLogger().fine("[防护-sync] 用户组同步: " + groups.size() + "个 → " + gResp);
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 用户组同步异常: " + e.getMessage());
+        }
     }
 
     /**
