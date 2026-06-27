@@ -307,6 +307,32 @@ try {
             handleAckAdminChanges($db, $_POST + $_GET);
             break;
 
+        // ===== 用户组管理 =====
+        case 'list_user_groups':
+            handleListUserGroups($db);
+            break;
+        case 'get_user_group':
+            handleGetUserGroup($db, $_GET['name'] ?? '');
+            break;
+        case 'update_user_group':
+            handleUpdateUserGroup($db, $_POST + $_GET);
+            break;
+        case 'delete_user_group':
+            handleDeleteUserGroup($db, $_GET['name'] ?? '');
+            break;
+        case 'list_group_members':
+            handleListGroupMembers($db, $_GET['group'] ?? '');
+            break;
+        case 'add_group_member':
+            handleAddGroupMember($db, $_POST + $_GET);
+            break;
+        case 'remove_group_member':
+            handleRemoveGroupMember($db, $_POST + $_GET);
+            break;
+        case 'get_player_groups':
+            handleGetPlayerGroups($db, $_GET['player'] ?? '');
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'unknown action']);
     }
@@ -1413,6 +1439,177 @@ function handleAckAdminChanges($db, $post) {
     $stmt->execute();
 
     echo json_encode(['success' => true, 'acked' => count($idList)]);
+}
+
+// ===== 用户组管理函数 =====
+
+function handleListUserGroups($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
+    )");
+    $rs = $db->query("SELECT * FROM web_user_groups ORDER BY priority DESC");
+    $groups = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $groups[] = $row;
+    }
+    echo json_encode(['success' => true, 'groups' => $groups]);
+}
+
+function handleGetUserGroup($db, $name) {
+    if (empty($name)) { echo json_encode(['success' => false, 'error' => 'missing name']); return; }
+    $stmt = $db->prepare("SELECT * FROM web_user_groups WHERE group_name = :name");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$row) { echo json_encode(['success' => false, 'error' => 'group not found']); return; }
+    echo json_encode(['success' => true, 'group' => $row]);
+}
+
+function handleUpdateUserGroup($db, $data) {
+    $name = $data['name'] ?? $data['group_name'] ?? '';
+    if (empty($name)) { echo json_encode(['success' => false, 'error' => 'missing name']); return; }
+
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $displayName = $data['display_name'] ?? '';
+    $displayColor = $data['display_color'] ?? '§f';
+    $displayEmoji = $data['display_emoji'] ?? '';
+    $priority = (int)($data['priority'] ?? 0);
+    $pricePerSqm = (int)($data['land_price_per_sqm'] ?? -1);
+    $maxLands = (int)($data['max_lands'] ?? -1);
+    $defaultPerms = $data['default_perms'] ?? '{}';
+
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
+        (group_name, display_name, display_color, display_emoji, priority,
+         land_price_per_sqm, max_lands, default_perms, synced_at)
+        VALUES (:name, :display, :color, :emoji, :priority,
+                :price, :maxlands, :perms, :synced)");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt->bindValue(':display', $displayName, SQLITE3_TEXT);
+    $stmt->bindValue(':color', $displayColor, SQLITE3_TEXT);
+    $stmt->bindValue(':emoji', $displayEmoji, SQLITE3_TEXT);
+    $stmt->bindValue(':priority', $priority, SQLITE3_INTEGER);
+    $stmt->bindValue(':price', $pricePerSqm, SQLITE3_INTEGER);
+    $stmt->bindValue(':maxlands', $maxLands, SQLITE3_INTEGER);
+    $stmt->bindValue(':perms', $defaultPerms, SQLITE3_TEXT);
+    $stmt->bindValue(':synced', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+    echo json_encode(['success' => true, 'message' => "用户组 {$name} 已更新"]);
+}
+
+function handleDeleteUserGroup($db, $name) {
+    if (empty($name)) { echo json_encode(['success' => false, 'error' => 'missing name']); return; }
+    $stmt = $db->prepare("DELETE FROM web_user_groups WHERE group_name = :name");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt->execute();
+    echo json_encode(['success' => true, 'message' => "用户组 {$name} 已删除"]);
+}
+
+function handleListGroupMembers($db, $group) {
+    if (empty($group)) { echo json_encode(['success' => false, 'error' => 'missing group']); return; }
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $stmt = $db->prepare("SELECT * FROM web_user_group_members WHERE group_name = :group");
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $members = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $members[] = $row;
+    }
+    echo json_encode(['success' => true, 'members' => $members]);
+}
+
+function handleAddGroupMember($db, $data) {
+    $player = $data['player'] ?? $data['player_name'] ?? '';
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => 'missing player or group']);
+        return;
+    }
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $addedBy = $data['added_by'] ?? 'admin';
+    $now = time();
+    $expiry = (int)($data['expiry_time'] ?? 0);
+
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
+        (player_name, group_name, added_by, added_time, expiry_time)
+        VALUES (:player, :group, :addedby, :added, :expiry)");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $stmt->bindValue(':addedby', $addedBy, SQLITE3_TEXT);
+    $stmt->bindValue(':added', $now, SQLITE3_INTEGER);
+    $stmt->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
+    $stmt->execute();
+
+    echo json_encode(['success' => true, 'message' => "{$player} 已加入用户组 {$group}"]);
+}
+
+function handleRemoveGroupMember($db, $data) {
+    $player = $data['player'] ?? $data['player_name'] ?? '';
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => 'missing player or group']);
+        return;
+    }
+    $stmt = $db->prepare("DELETE FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $stmt->execute();
+    echo json_encode(['success' => true, 'message' => "{$player} 已移出用户组 {$group}"]);
+}
+
+function handleGetPlayerGroups($db, $player) {
+    if (empty($player)) { echo json_encode(['success' => false, 'error' => 'missing player']); return; }
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $stmt = $db->prepare("SELECT m.*, g.display_name, g.display_color, g.priority
+        FROM web_user_group_members m
+        LEFT JOIN web_user_groups g ON m.group_name = g.group_name
+        WHERE m.player_name = :player");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $groups = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $groups[] = $row;
+    }
+    echo json_encode(['success' => true, 'groups' => $groups]);
 }
 
 function validateSecret($secret) {

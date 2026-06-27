@@ -312,6 +312,9 @@ switch ($action) {
     case 'sync_permissions':
         syncPermissions();
         break;
+    case 'sync_user_groups':
+        syncUserGroups();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -676,6 +679,88 @@ function syncPermissions() {
         $count++;
     }
     success("访客权限同步成功: {$count}个");
+}
+
+// ===== 用户组同步 =====
+function syncUserGroups() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $groupsRaw = getParam('groups');
+    if (!$groupsRaw) error('缺少groups参数');
+    $groups = is_array($groupsRaw) ? $groupsRaw : json_decode($groupsRaw, true);
+    if (!is_array($groups)) error('groups格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $now = time();
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
+        (group_name, display_name, display_color, display_emoji, priority,
+         land_price_per_sqm, max_lands, default_perms, synced_at)
+        VALUES (:name, :display, :color, :emoji, :priority,
+                :price, :maxlands, :perms, :synced)");
+    $count = 0;
+    foreach ($groups as $g) {
+        $stmt->bindValue(':name', $g['group_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':display', $g['display_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':color', $g['display_color'] ?? '§f', SQLITE3_TEXT);
+        $stmt->bindValue(':emoji', $g['display_emoji'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':priority', (int)($g['priority'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':price', (int)($g['land_price_per_sqm'] ?? -1), SQLITE3_INTEGER);
+        $stmt->bindValue(':maxlands', (int)($g['max_lands'] ?? -1), SQLITE3_INTEGER);
+        $stmt->bindValue(':perms', $g['default_perms'] ?? '{}', SQLITE3_TEXT);
+        $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+        $count++;
+    }
+    success("用户组同步成功: {$count}个");
+}
+
+// ===== 用户组成员同步 =====
+function syncUserGroupMembers() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $membersRaw = getParam('members');
+    if (!$membersRaw) error('缺少members参数');
+    $members = is_array($membersRaw) ? $membersRaw : json_decode($membersRaw, true);
+    if (!is_array($members)) error('members格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
+        (player_name, group_name, added_by, added_time, expiry_time)
+        VALUES (:player, :group, :addedby, :added, :expiry)");
+    $count = 0;
+    foreach ($members as $m) {
+        $stmt->bindValue(':player', $m['player_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':group', $m['group_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':addedby', $m['added_by'] ?? 'system', SQLITE3_TEXT);
+        $stmt->bindValue(':added', (int)($m['added_time'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':expiry', (int)($m['expiry_time'] ?? 0), SQLITE3_INTEGER);
+        $stmt->execute();
+        $count++;
+    }
+    success("用户组成员同步成功: {$count}条");
 }
 
 // ===== 插件推送债券余额 =====
