@@ -1740,7 +1740,7 @@ public class WebManager {
                 // 领地数据同步（独立执行，不走doActiveSyncBatch队列）
                 if (!Bukkit.getOnlinePlayers().isEmpty()) {
                     try {
-                        lastLandDataHash = ""; // 每轮强制检查hash变化
+                        // ★ 不再强制清空hash — syncLandData内部hash比较已足够检测变化
                         syncLandData();
                     } catch (Exception e) {
                         plugin.getLogger().warning("[领地同步D] 异常: " + e.getMessage());
@@ -2928,22 +2928,12 @@ public class WebManager {
                     sb.append(mapToJson(lands.get(i)));
                 }
                 sb.append("]");
-                // ★ 调试日志
-                plugin.getLogger().info("[防护-sync] 准备同步 " + lands.size() + " 个领地到PHP");
-                if (!lands.isEmpty()) {
-                    Map<String, Object> first = lands.get(0);
-                    plugin.getLogger().info("[防护-sync] 第1个领地: name=" + first.getOrDefault("name", "?")
-                        + " owner=" + first.getOrDefault("owner", "?")
-                        + " deny_block_break=" + first.getOrDefault("deny_block_break", "?")
-                        + " deny_crop_harvest=" + first.getOrDefault("deny_crop_harvest", "?")
-                        + " deny_container=" + first.getOrDefault("deny_container", "?"));
-                }
                 Map<String, String> params = new LinkedHashMap<>();
                 params.put("action", "sync_lands");
                 params.put("secret", secretKey);
                 params.put("lands", sb.toString());
                 String resp = httpGet("api/sync.php", params);
-                plugin.getLogger().info("[防护-sync] PHP响应: " + resp);
+                plugin.getLogger().fine("[防护-sync] 领地同步: " + resp);
             }
 
             // 2. 同步权限商店数据
@@ -2990,7 +2980,7 @@ public class WebManager {
                 cfgParams.put("secret", secretKey);
                 cfgParams.put("config", cfgSb.toString());
                 String cfgResp = httpGet("api/sync.php", cfgParams);
-                plugin.getLogger().info("[防护-sync] 配置同步: " + cfgResp);
+                plugin.getLogger().fine("[防护-sync] 配置同步: " + cfgResp);
             }
 
             // 4. 同步成员权限数据（area_land_permissions → web_area_permissions）
