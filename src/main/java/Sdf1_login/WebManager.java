@@ -3162,6 +3162,16 @@ public class WebManager {
                             }
                             break;
                         }
+                        case "group_change": {
+                            // ★ PHP端用户组变更 → 重新加载本地用户组配置
+                            UserGroupManager ugm = plugin.getUserGroup();
+                            if (ugm != null) {
+                                ugm.loadGroupConfigs();
+                                plugin.getLogger().info("[Web通信] PHP端用户组变更，已重新加载用户组配置");
+                                applied = true;
+                            }
+                            break;
+                        }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }

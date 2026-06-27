@@ -38,6 +38,10 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.Bukkit;
 import java.util.Iterator;
+
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
 import java.util.Set;
 import java.util.HashSet;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -5841,10 +5845,15 @@ public class AreaProtection implements Listener {
             int idx = 1;
             for (AreaConfig ac : publicLands) {
                 String warpInfo = (ac.warpX != 0 || ac.warpZ != 0) ? "§a[有传送点]" : "§7[无传送点]";
-                sender.sendMessage("§e" + idx + ". §f" + ac.name + " §7所有者:" + ac.owner + " " + warpInfo);
+                // 可点击传送的列表项
+                p.sendMessage(Component.empty()
+                        .append(Component.text("§e" + idx + ". §f" + ac.name + " §7所有者:" + ac.owner + " " + warpInfo))
+                        .append(Component.text(" §a[传送到此]"))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击传送到 " + ac.name)))
+                        .clickEvent(ClickEvent.runCommand("/protect tpb " + ac.name))
+                );
                 idx++;
             }
-            sender.sendMessage("§7使用 /protect tpb <序号或名字> 传送");
             return true;
         }
         if (sub.equals("tpb") || sub.equals("传送公共")) {
@@ -5898,6 +5907,17 @@ public class AreaProtection implements Listener {
             Map<String, UserGroupManager.UserGroupConfig> groups = ugm.getGroupConfigs();
             if (groups.isEmpty()) {
                 sender.sendMessage("§e暂无用户组定义");
+                if (sender instanceof Player) {
+                    Player pp = (Player) sender;
+                    if (pp.hasPermission("sdf1.admin")) {
+                        pp.sendMessage(Component.empty()
+                                .append(Component.text("§a点击此处"))
+                                .append(Component.text("§e创建第一个用户组"))
+                                .hoverEvent(HoverEvent.showText(Component.text("§e点击开始交互式创建")))
+                                .clickEvent(ClickEvent.suggestCommand("/protect groupset "))
+                        );
+                    }
+                }
             } else {
                 sender.sendMessage("§a§l=== 用户组列表 ===");
                 for (UserGroupManager.UserGroupConfig cfg : groups.values()) {
@@ -5906,6 +5926,15 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§f" + cfg.displayColor + cfg.displayName
                             + " §7(name=" + cfg.name + ", 优先级=" + cfg.priority
                             + ", 价格=" + priceStr + ", 上限=" + maxStr + ")");
+                }
+                if (sender instanceof Player && ((Player) sender).hasPermission("sdf1.admin")) {
+                    Player pp = (Player) sender;
+                    pp.sendMessage(Component.empty()
+                            .append(Component.text("§a点击此处"))
+                            .append(Component.text("§e创建新用户组"))
+                            .hoverEvent(HoverEvent.showText(Component.text("§e点击开始交互式创建")))
+                            .clickEvent(ClickEvent.suggestCommand("/protect groupset "))
+                    );
                 }
             }
             return true;

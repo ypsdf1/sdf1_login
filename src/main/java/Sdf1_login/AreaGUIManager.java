@@ -66,6 +66,7 @@ public class AreaGUIManager implements Listener {
      */
     // ★ 管理员面板标题
     private static final String T_ADMIN_PANEL = "§6§l管理员配置面板";
+    private static final String T_PUBLIC_BUILDING = "§b§l公共建筑传送";
 
     public void openMainMenu(Player p) {
         Inventory inv = Bukkit.createInventory(null, 54, T_MAIN);
@@ -798,9 +799,9 @@ public class AreaGUIManager implements Listener {
                     p.sendMessage("§cCLI管理器未初始化");
                 }
             } else if (raw == 41) {
-                // ★ 公共设施传送
-                p.closeInventory();
-                p.performCommand("protect listpublic");
+                // ★ 公共设施传送 - 打开GUI直接传送
+                event.setCancelled(true);
+                openPublicBuildingList(p);
             } else if (raw == 49) {
                 plugin.getGui().openMain(p);
             }
@@ -1160,6 +1161,40 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
+        // ★ 公共建筑传送
+        if (T_PUBLIC_BUILDING.equals(title)) {
+            event.setCancelled(true);
+            if (raw == 49) {
+                openMainMenu(p);
+                return;
+            }
+            if (raw < 0 || raw >= 45) return;
+            // 获取公共建筑列表
+            java.util.List<AreaProtection.AreaConfig> publicLands = new ArrayList<>();
+            for (AreaProtection.AreaConfig ac : areaProtect.getAllLands().values()) {
+                if (ac.isPublicBuilding) publicLands.add(ac);
+            }
+            if (raw < publicLands.size()) {
+                AreaProtection.AreaConfig target = publicLands.get(raw);
+                p.closeInventory();
+                // 传送（优先传送点，否则领地中心）
+                org.bukkit.Location dest;
+                if (target.warpX != 0 || target.warpZ != 0 || target.warpY != 0) {
+                    org.bukkit.World w = Bukkit.getWorld(target.warpWorld != null && !target.warpWorld.isEmpty() ? target.warpWorld : p.getWorld().getName());
+                    if (w == null) w = p.getWorld();
+                    dest = new org.bukkit.Location(w, target.warpX + 0.5, target.warpY, target.warpZ + 0.5, target.warpYaw, target.warpPitch);
+                } else {
+                    dest = new org.bukkit.Location(p.getWorld(),
+                            (target.x1 + target.x2) / 2.0 + 0.5,
+                            p.getWorld().getHighestBlockYAt((target.x1 + target.x2) / 2, (target.z1 + target.z2) / 2) + 1,
+                            (target.z1 + target.z2) / 2.0 + 0.5);
+                }
+                p.teleport(dest);
+                p.sendMessage("§a已传送至公共建筑: §f" + target.name);
+            }
+            return;
+        }
+
         // 效果选择列表
         if (title.startsWith("§a§l选择效果 - ")) {
             event.setCancelled(true);
@@ -1336,6 +1371,15 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e左键+600 / 右键-600"));
 
+        // ★ 用户组管理（位置31）
+        UserGroupManager ugm = plugin.getUserGroup();
+        int groupCount = (ugm != null) ? ugm.getGroupConfigs().size() : 0;
+        inv.setItem(31, createItem(Material.PLAYER_HEAD, "§6§l用户组管理",
+                "§7当前: §f" + groupCount + " 个用户组",
+                "§7管理用户组的独立价格、上限和默认权限",
+                "",
+                "§e点击进入管理"));
+
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回主菜单", ""));
 
@@ -1412,7 +1456,48 @@ public class AreaGUIManager implements Listener {
             areaProtect.setPendingConfigInput(p.getUniqueId(), "peace_mode_max_duration");
         } else if (raw == 48) {
             openMainMenu(p);
+        } else if (raw == 31) {
+            // ★ 用户组管理 - 打开CLI交互（GUI暂不支持复杂交互）
+            p.closeInventory();
+            p.performCommand("protect grouplist");
         }
+    }
+
+    // ==================== 公共建筑传送 GUI ====================
+
+    /**
+     * 打开公共建筑列表，点击直接传送
+     */
+    public void openPublicBuildingList(Player p) {
+        // 收集所有公共建筑
+        java.util.List<AreaProtection.AreaConfig> publicLands = new ArrayList<>();
+        for (AreaProtection.AreaConfig ac : areaProtect.getAllLands().values()) {
+            if (ac.isPublicBuilding) publicLands.add(ac);
+        }
+
+        Inventory inv = Bukkit.createInventory(null, 54, T_PUBLIC_BUILDING);
+
+        if (publicLands.isEmpty()) {
+            inv.setItem(22, createItem(Material.BARRIER, "§7暂无公共建筑设施",
+                    "§7管理员可通过 /protect public <领地标记> 创建"));
+        } else {
+            int slot = 0;
+            for (AreaProtection.AreaConfig ac : publicLands) {
+                if (slot >= 45) break;
+                String warpInfo = (ac.warpX != 0 || ac.warpZ != 0) ? "§a有传送点" : "§7无传送点（将传送到领地中心）";
+                inv.setItem(slot, createItem(Material.BELL, "§b§l" + ac.name,
+                        "§7所有者: §f" + ac.owner,
+                        "§7传送: " + warpInfo,
+                        "",
+                        "§e点击传送到此公共建筑"));
+                slot++;
+            }
+        }
+
+        // 返回按钮
+        inv.setItem(49, createItem(Material.ARROW, "§c§l返回主菜单", ""));
+
+        p.openInventory(inv);
     }
 
     // ==================== 效果管理 GUI ====================
