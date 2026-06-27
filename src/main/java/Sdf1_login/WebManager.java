@@ -3075,6 +3075,7 @@ public class WebManager {
         try {
             Map<String, String> params = new LinkedHashMap<>();
             params.put("action", "list_user_groups");
+            params.put("secret", secretKey);
             String resp = httpGet("api/land_api.php", params);
             if (resp == null || resp.isEmpty()) return;
 
