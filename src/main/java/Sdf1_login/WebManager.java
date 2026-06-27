@@ -1189,6 +1189,42 @@ public class WebManager {
         submitNormalDbTask("即时拉取-交易", () -> pullPendingTransactions());
     }
 
+    // ★ 领地即时同步触发器：领地设置变更后立即推送数据到PHP
+    private volatile long lastImmediateLandSyncTime = 0;
+    private static final long MIN_IMMEDIATE_LAND_SYNC_MS = 10000; // 最小间隔10秒，防抖
+    private volatile boolean pendingImmediateLandSync = false;
+
+    /**
+     * 领地设置变更后调用：立即推送领地数据到PHP
+     * 防抖：10秒内多次调用只执行一次
+     */
+    public void requestImmediateLandSync() {
+        long now = System.currentTimeMillis();
+        if (now - lastImmediateLandSyncTime < MIN_IMMEDIATE_LAND_SYNC_MS) {
+            pendingImmediateLandSync = true;
+            return;
+        }
+        lastImmediateLandSyncTime = now;
+        pendingImmediateLandSync = false;
+        submitNormalDbTask("即时同步-领地", () -> {
+            try {
+                lastLandDataHash = ""; // ★ 强制刷新hash，确保一定推送
+                syncLandData();
+            } catch (Exception e) {
+                plugin.getLogger().warning("[领地即时同步] 异常: " + e.getMessage());
+            }
+            if (pendingImmediateLandSync) {
+                pendingImmediateLandSync = false;
+                submitNormalDbTask("即时同步-领地(延迟)", () -> {
+                    try {
+                        lastLandDataHash = "";
+                        syncLandData();
+                    } catch (Exception e) {}
+                });
+            }
+        });
+    }
+
     // ★ 交易即时推送触发器：交易发生后立即推送交易记录到PHP
     private volatile long lastImmediateTxSyncTime = 0;
     private static final long MIN_IMMEDIATE_TX_SYNC_MS = 3000; // 最小间隔3秒，防止频繁推送
@@ -3784,7 +3820,8 @@ public class WebManager {
                     + "&expire_seconds=" + tokenExpireSeconds
                     + "&online=1"
                     + "&registered=" + (isRegistered ? "1" : "0")
-                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8");
+                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
+                    + "&login_verified=1"; // ★ 玩家在游戏里已认证，直接告诉PHP放行
 
             String response = doGet(urlStr);
             if (response != null) {
@@ -3855,7 +3892,8 @@ public class WebManager {
                     + "&expire_seconds=" + tokenExpireSeconds
                     + "&online=1"
                     + "&registered=" + (isRegistered ? "1" : "0")
-                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8");
+                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
+                    + "&login_verified=1"; // ★ 玩家刚登录游戏已认证，直接告诉PHP放行
 
             String response = doGet(urlStr);
             if (response != null) {

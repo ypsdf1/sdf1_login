@@ -7086,6 +7086,12 @@ public class AreaProtection implements Listener {
             stmt.setInt(63, ac.denyMobAttack ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
+            // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
+            try {
+                if (plugin.webManager != null) {
+                    plugin.webManager.requestImmediateLandSync();
+                }
+            } catch (Exception ignored) {}
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 保存到DB失败: " + ac.name + " - " + e.getMessage());
         }
@@ -7101,6 +7107,12 @@ public class AreaProtection implements Listener {
             stmt.setString(1, name);
             stmt.executeUpdate();
             stmt.close();
+            // ★ 领地删除：立即触发PHP同步
+            try {
+                if (plugin.webManager != null) {
+                    plugin.webManager.requestImmediateLandSync();
+                }
+            } catch (Exception ignored) {}
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 从DB删除领地失败: " + name + " - " + e.getMessage());
         }
