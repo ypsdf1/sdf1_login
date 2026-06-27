@@ -7246,6 +7246,54 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ PHP端修改领地字段时调用（效果管理等）
+     * field: give_effects, clear_effects, clear_all_bad_effects, deny_all_effects等
+     * value: 新值（已转为Java格式）
+     */
+    public void updateLandFieldFromWeb(String landName, String field, String value) {
+        if (dbConnection == null) return;
+        try {
+            // 白名单校验字段名（防SQL注入）
+            java.util.Set<String> allowedFields = new java.util.HashSet<>(java.util.Arrays.asList(
+                "give_effects", "clear_effects", "clear_all_bad_effects", "deny_all_effects",
+                "deny_block_place", "deny_block_break", "deny_pvp", "deny_fall_damage",
+                "deny_hunger", "deny_all_damage", "deny_drop", "deny_mount", "deny_ender_pearl",
+                "deny_bow", "deny_potion", "deny_explosion", "deny_raid", "deny_fire_spread",
+                "deny_all_effects", "deny_item_frame", "deny_move", "deny_pickup", "deny_fire",
+                "confiscate_items", "deny_use_items", "punish_commands",
+                "peace_mode", "peace_mode_duration", "enforce_game_mode",
+                "enter_msg", "leave_msg", "confiscate_msg",
+                "deny_thrown_projectiles", "deny_glowing", "deny_redstone_interaction",
+                "deny_door_interaction", "deny_noteblock_jukebox", "deny_lead",
+                "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding",
+                "deny_container", "deny_mob_attack", "deny_fluid"
+            ));
+            if (!allowedFields.contains(field)) {
+                plugin.getLogger().warning("[防护] PHP端更新未知字段: " + field);
+                return;
+            }
+
+            PreparedStatement ps = dbConnection.prepareStatement(
+                "UPDATE area_lands SET " + field + " = ? WHERE name = ?");
+            ps.setString(1, value);
+            ps.setString(2, landName);
+            int affected = ps.executeUpdate();
+            ps.close();
+
+            if (affected > 0) {
+                // 更新内存缓存
+                AreaConfig ac = getLand(landName);
+                if (ac != null) {
+                    reloadAreaConfigFromDb(); // 简单起见重新加载
+                }
+                plugin.getLogger().info("[防护] PHP端更新领地字段: " + landName + "." + field + " = " + value);
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] PHP端更新领地字段失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * PHP端更新访客/成员权限时调用
      * landName 可能是JSON数组格式 "[领地名]" 或纯领地名
      */

@@ -3027,6 +3027,16 @@ public class WebManager {
                             }
                             break;
                         }
+                        case "land_field_change": {
+                            String field = String.valueOf(changeData.getOrDefault("field", ""));
+                            String value = String.valueOf(changeData.getOrDefault("value", ""));
+                            if (!field.isEmpty() && !targetName.isEmpty()) {
+                                areaProtect.updateLandFieldFromWeb(targetName, field, value);
+                                plugin.getLogger().info("[Web通信] PHP端更新领地字段: " + targetName + "." + field);
+                                hadChange = true;
+                            }
+                            break;
+                        }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }
