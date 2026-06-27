@@ -7343,6 +7343,24 @@ public class AreaProtection implements Listener {
         updateAreaConfig(key, value);
     }
 
+    /**
+     * ★ 获取全部area_config配置（用于同步到PHP）
+     */
+    public Map<String, String> getAllAreaConfigForSync() {
+        Map<String, String> config = new LinkedHashMap<>();
+        if (dbConnection == null) return config;
+        try {
+            ResultSet rs = dbConnection.createStatement().executeQuery("SELECT key, value FROM area_config");
+            while (rs.next()) {
+                config.put(rs.getString("key"), rs.getString("value"));
+            }
+            rs.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护] 读取配置同步数据失败: " + e.getMessage());
+        }
+        return config;
+    }
+
     // ==================== 管理员配置输入（GUI→聊天栏） ====================
 
     /**

@@ -2792,6 +2792,11 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("warp_pitch", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("warp_world", "")).append("|");
             }
+            // ★ 配置变化也触发同步
+            Map<String, String> cfgForHash = areaProtect.getAllAreaConfigForSync();
+            for (Map.Entry<String, String> entry : cfgForHash.entrySet()) {
+                hashBuilder.append("cfg:").append(entry.getKey()).append("=").append(entry.getValue()).append(":");
+            }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
             if (currentHash.equals(lastLandDataHash)) return;
             lastLandDataHash = currentHash;
@@ -2847,6 +2852,26 @@ public class WebManager {
                 params.put("secret", secretKey);
                 params.put("items", "[" + sb.toString() + "]");
                 httpGet("api/sync.php", params);
+            }
+
+            // 3. 同步全局配置（area_config → web_area_config）
+            Map<String, String> config = areaProtect.getAllAreaConfigForSync();
+            if (!config.isEmpty()) {
+                StringBuilder cfgSb = new StringBuilder("{");
+                boolean first = true;
+                for (Map.Entry<String, String> entry : config.entrySet()) {
+                    if (!first) cfgSb.append(",");
+                    cfgSb.append("\"").append(escapeJson(entry.getKey())).append("\":\"")
+                         .append(escapeJson(entry.getValue())).append("\"");
+                    first = false;
+                }
+                cfgSb.append("}");
+                Map<String, String> cfgParams = new LinkedHashMap<>();
+                cfgParams.put("action", "sync_config");
+                cfgParams.put("secret", secretKey);
+                cfgParams.put("config", cfgSb.toString());
+                String cfgResp = httpGet("api/sync.php", cfgParams);
+                plugin.getLogger().info("[防护-sync] 配置同步: " + cfgResp);
             }
 
             plugin.getLogger().fine("[Web通信] 领地数据同步完成");

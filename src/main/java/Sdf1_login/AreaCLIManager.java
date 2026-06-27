@@ -868,19 +868,6 @@ public class AreaCLIManager {
 
         p.sendMessage(header(targetPlayer + " 的独立权限"));
 
-        // 领地主可以切换普通成员的管理员身份
-        if (isOwner && !targetPlayer.equalsIgnoreCase(land.owner)) {
-            Component adminLine = Component.empty();
-            adminLine = adminLine.append(Component.text("§7✘ §f身份: §7普通成员"));
-            adminLine = adminLine.append(Component.text(" "));
-            adminLine = adminLine.append(Component.text("§a[设为管理员]")
-                    .hoverEvent(HoverEvent.showText(Component.text("§a授予该玩家管理员身份（自动获得所有权限）")))
-                    .clickEvent(ClickEvent.runCommand(
-                            "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
-            p.sendMessage(adminLine);
-            p.sendMessage(Component.text(""));
-        }
-
         // 显示说明
         p.sendMessage(Component.text("§7§l说明:"));
         p.sendMessage(Component.text("  §a✔ 已启用 §7= 允许该操作"));
@@ -932,6 +919,19 @@ public class AreaCLIManager {
             p.sendMessage(pagination);
         }
 
+        // ★ 设为管理员按钮（全局置顶，打印在最后=聊天窗口最底部）
+        if (isOwner && !targetPlayer.equalsIgnoreCase(land.owner)) {
+            Component adminLine = Component.empty();
+            adminLine = adminLine.append(Component.text("§7✘ §f身份: §7普通成员"));
+            adminLine = adminLine.append(Component.text(" "));
+            adminLine = adminLine.append(Component.text("§a[设为管理员]")
+                    .hoverEvent(HoverEvent.showText(Component.text("§a授予该玩家管理员身份（自动获得所有权限）")))
+                    .clickEvent(ClickEvent.runCommand(
+                            "/protect cli toggleadmin " + land.name + " " + targetPlayer + " " + page)));
+            p.sendMessage(adminLine);
+            p.sendMessage(Component.text(""));
+        }
+
         // 清除按钮
         p.sendMessage(Component.empty()
                 .append(Component.text("§c[清除所有自定义权限]")
@@ -940,10 +940,11 @@ public class AreaCLIManager {
                         .clickEvent(ClickEvent.runCommand(
                                 "/protect cli clearplayerperm " + land.name + " " + targetPlayer))));
 
+        // ★ 修复：返回成员管理（含删除按钮），不是成员权限列表
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回成员列表]")
                         .clickEvent(ClickEvent.runCommand(
-                                "/protect cli memberperm " + land.name + " 1"))));
+                                "/protect cli members " + land.name + " 1"))));
         p.sendMessage(Component.text("§7§l───────────────────────────────"));
     }
 
