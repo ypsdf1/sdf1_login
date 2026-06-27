@@ -3041,6 +3041,8 @@ public class WebManager {
      * 轮询PHP管理员变更（所有者变更、权限清除等）
      */
     private long lastPollAdminChangesId = 0;
+    /** 已处理过的变更ID集合（防重复打印），最多保留500条 */
+    private final java.util.HashSet<Integer> processedChangeIds = new java.util.HashSet<>();
 
     public void pollAdminChanges() {
         if (!enabled) return;
@@ -3060,9 +3062,8 @@ public class WebManager {
             List<Map<String, Object>> changes = (List<Map<String, Object>>) result.get("changes");
             if (changes == null || changes.isEmpty()) return;
 
-            // 无变更静默
-            boolean hadChange = false;
             List<Integer> ackedIds = new ArrayList<>();
+            int maxId = 0;
 
             for (Map<String, Object> change : changes) {
                 int id = ((Number) change.getOrDefault("id", 0)).intValue();
@@ -3070,10 +3071,19 @@ public class WebManager {
                 String targetName = String.valueOf(change.getOrDefault("target_name", ""));
                 String changeDataStr = String.valueOf(change.getOrDefault("change_data", "{}"));
 
+                if (id > maxId) maxId = id;
+
+                // ★ 去重：已处理过的变更不再打印/执行
+                if (processedChangeIds.contains(id)) {
+                    ackedIds.add(id);
+                    continue;
+                }
+
                 Map<String, Object> changeData = parseJson(changeDataStr);
                 if (changeData == null) changeData = new HashMap<>();
 
                 try {
+                    boolean applied = false;
                     switch (changeType) {
                         case "owner_change": {
                             String newOwner = String.valueOf(changeData.getOrDefault("new_owner", ""));
@@ -3081,7 +3091,7 @@ public class WebManager {
                             if (!newOwner.isEmpty() && !landName.isEmpty()) {
                                 areaProtect.setLandOwnerFromWeb(landName, newOwner);
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
-                                hadChange = true;
+                                applied = true;
                             }
                             break;
                         }
@@ -3091,7 +3101,7 @@ public class WebManager {
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
                                 areaProtect.clearPlayerPermFromWeb(landNameJson, playerName);
                                 plugin.getLogger().info("[Web通信] PHP端清除成员权限: " + playerName + " @ " + landNameJson);
-                                hadChange = true;
+                                applied = true;
                             }
                             break;
                         }
@@ -3102,7 +3112,7 @@ public class WebManager {
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
                                 areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson);
                                 plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson);
-                                hadChange = true;
+                                applied = true;
                             }
                             break;
                         }
@@ -3112,7 +3122,7 @@ public class WebManager {
                             if (!field.isEmpty() && !targetName.isEmpty()) {
                                 areaProtect.updateLandFieldFromWeb(targetName, field, value);
                                 plugin.getLogger().info("[Web通信] PHP端更新领地字段: " + targetName + "." + field);
-                                hadChange = true;
+                                applied = true;
                             }
                             break;
                         }
@@ -3122,26 +3132,38 @@ public class WebManager {
                             if (!configKey.isEmpty()) {
                                 areaProtect.setAreaConfigValue(configKey, configValue);
                                 plugin.getLogger().info("[Web通信] PHP端更新全局配置: " + configKey + " = " + configValue);
-                                hadChange = true;
+                                applied = true;
                             }
                             break;
                         }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }
+                    // ★ 标记已处理（无论applied与否，防止无效条目反复拉取）
+                    processedChangeIds.add(id);
                     ackedIds.add(id);
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web通信] 处理变更失败(id=" + id + "): " + e.getMessage());
+                    processedChangeIds.add(id);
+                    ackedIds.add(id);
                 }
             }
 
-            if (!hadChange) return; // 无实际变更则静默
+            // ★ 更新lastId游标，下次跳过已处理的
+            if (maxId > lastPollAdminChangesId) {
+                lastPollAdminChangesId = maxId;
+            }
 
-            // 确认已处理的变更
+            // ★ 无论是否有实际变更，都发送ack（防止无效条目永久堆积）
             if (!ackedIds.isEmpty()) {
                 String idsStr = String.join(",", ackedIds.stream().map(String::valueOf).collect(Collectors.toList()));
                 String ackUrl = webBaseUrl + "/api/land_api.php?action=ack_admin_changes&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8") + "&ids=" + java.net.URLEncoder.encode(idsStr, "UTF-8");
                 doGet(ackUrl);
+            }
+
+            // ★ 清理去重集合，防止内存泄漏
+            if (processedChangeIds.size() > 500) {
+                processedChangeIds.clear();
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 轮询PHP管理员变更异常: " + e.getMessage());
