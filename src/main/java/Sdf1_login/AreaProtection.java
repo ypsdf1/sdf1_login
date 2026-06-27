@@ -996,6 +996,7 @@ public class AreaProtection implements Listener {
                 try { ac.warpYaw = rs.getFloat("warp_yaw"); } catch (Exception ignored) {}
                 try { ac.warpPitch = rs.getFloat("warp_pitch"); } catch (Exception ignored) {}
                 try { ac.warpWorld = rs.getString("warp_world"); } catch (Exception ignored) {}
+                try { ac.isPublicBuilding = rs.getInt("is_public_building") == 1; } catch (Exception ignored) {}
                 ac.peaceMode = rs.getInt("peace_mode") == 1;
                 ac.peaceModeDuration = rs.getInt("peace_mode_duration") * 1000; // 转毫秒
                 ac.peaceWhitelist = new HashSet<>(splitToList(rs.getString("peace_whitelist")));
@@ -1185,6 +1186,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 玩家攻击生物权限列
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 公共建筑标记
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -1967,9 +1970,15 @@ public class AreaProtection implements Listener {
             Long protectUntil = protectedEntities.get(entUid);
             String customName = ent.getCustomName();
 
-            // 白名单命名生物：永久保留
+            // 白名单命名生物：永久保留（含保护期内贴标的）
             if (customName != null && !customName.isEmpty() && ac.peaceWhitelist.contains(customName)) {
-                if (protectUntil != null) protectedEntities.remove(entUid);
+                if (protectUntil != null) {
+                    protectedEntities.remove(entUid); // ★ 取消清理倒计时
+                    // ★ 保护期内贴标：立即确认
+                    if (protectUntil - now > 0) {
+                        p.sendMessage("§a§l[和平模式] §f" + ent.getType().name() + " §a已被白名单保护，永久保留");
+                    }
+                }
                 saved++;
                 continue;
             }
@@ -1981,7 +1990,7 @@ public class AreaProtection implements Listener {
                     waiting++;
                     continue;
                 }
-                // 保护期到期 → 移除记录并检查白名单
+                // 保护期到期 → 移除记录并检查白名单（最后一刻贴标也有效）
                 protectedEntities.remove(entUid);
                 if (customName != null && !customName.isEmpty() && ac.peaceWhitelist.contains(customName)) {
                     saved++;
@@ -2978,6 +2987,14 @@ public class AreaProtection implements Listener {
                         && !newAc.enterMsg.isEmpty()) {
                     p.sendMessage(
                             formatAreaMsg(newAc.enterMsg));
+                }
+                // ★ 公共建筑设施：访客自动获得传送、免疫伤害、攻击敌对生物权限
+                if (newAc.isPublicBuilding && !p.getName().equalsIgnoreCase(newAc.owner) && !isAreaAdmin(p)) {
+                    p.sendMessage("§a§l[公共建筑] §f欢迎来到公共设施: §e" + newAc.name);
+                    p.sendMessage("§7你在此区域享有: 传送、免疫伤害、攻击敌对生物权限");
+                    // 暂时移除伤害限制：给玩家5秒免疫效果
+                    p.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.RESISTANCE, 100, 255, false, false, true));
                 }
                 applyRegionEffects(p, uid, newArea, newAc);
                 // 清除效果
@@ -4987,7 +5004,8 @@ public class AreaProtection implements Listener {
                 "menu", "菜单", "sdf1debug", "testclear", "cli",
                 "取消删除", "canceldelete",
                 "removemember", "addmember",
-                "config", "配置"
+                "config", "配置",
+                "public", "公共", "listpublic", "公共列表", "tpb", "传送公共"
         ));
 
         String first = original[0].toLowerCase();
@@ -5772,6 +5790,97 @@ public class AreaProtection implements Listener {
             reload();
             sender.sendMessage("§a已重载 "
                     + areas.size() + " 个区域");
+            return true;
+        }
+
+        // ===== 公共建筑设施 =====
+        if (sub.equals("public") || sub.equals("公共")) {
+            if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                sender.sendMessage("§c用法: /protect public <领地名>");
+                return true;
+            }
+            String landName = args[1];
+            AreaConfig ac = areas.get(landName);
+            if (ac == null) { sender.sendMessage("§c领地不存在: " + landName); return true; }
+            // 检查权限
+            if (!p.getName().equalsIgnoreCase(ac.owner) && !isAreaAdmin(sender)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+            ac.isPublicBuilding = !ac.isPublicBuilding;
+            saveAreaToDb(ac);
+            if (ac.isPublicBuilding) {
+                sender.sendMessage("§a§l[公共建筑] §f" + landName + " §a已设为公共建筑设施");
+                sender.sendMessage("§7所有访客将自动获得传送、免疫伤害、攻击敌对生物权限");
+            } else {
+                sender.sendMessage("§a§l[公共建筑] §f" + landName + " §7已取消公共建筑标记");
+            }
+            return true;
+        }
+        if (sub.equals("listpublic") || sub.equals("公共列表")) {
+            if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
+            Player p = (Player) sender;
+            java.util.List<AreaConfig> publicLands = new ArrayList<>();
+            for (AreaConfig ac : areas.values()) {
+                if (ac.isPublicBuilding) publicLands.add(ac);
+            }
+            if (publicLands.isEmpty()) {
+                sender.sendMessage("§7当前没有公共建筑设施");
+                return true;
+            }
+            sender.sendMessage("§e§l==== 公共建筑设施 ====");
+            int idx = 1;
+            for (AreaConfig ac : publicLands) {
+                String warpInfo = (ac.warpX != 0 || ac.warpZ != 0) ? "§a[有传送点]" : "§7[无传送点]";
+                sender.sendMessage("§e" + idx + ". §f" + ac.name + " §7所有者:" + ac.owner + " " + warpInfo);
+                idx++;
+            }
+            sender.sendMessage("§7使用 /protect tpb <序号或名字> 传送");
+            return true;
+        }
+        if (sub.equals("tpb") || sub.equals("传送公共")) {
+            if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                sender.sendMessage("§c用法: /protect tpb <序号或领地名>");
+                return true;
+            }
+            java.util.List<AreaConfig> publicLands = new ArrayList<>();
+            for (AreaConfig ac : areas.values()) {
+                if (ac.isPublicBuilding) publicLands.add(ac);
+            }
+            if (publicLands.isEmpty()) { sender.sendMessage("§c没有公共建筑设施"); return true; }
+            AreaConfig target = null;
+            // 尝试序号
+            try {
+                int num = Integer.parseInt(args[1]);
+                if (num >= 1 && num <= publicLands.size()) {
+                    target = publicLands.get(num - 1);
+                }
+            } catch (NumberFormatException ignored) {}
+            // 尝试名字
+            if (target == null) {
+                for (AreaConfig ac : publicLands) {
+                    if (ac.name.equalsIgnoreCase(args[1])) { target = ac; break; }
+                }
+            }
+            if (target == null) { sender.sendMessage("§c未找到公共建筑: " + args[1]); return true; }
+            // 传送（优先用传送点，否则传送到领地中心）
+            Location dest;
+            if (target.warpX != 0 || target.warpZ != 0 || target.warpY != 0) {
+                World w = Bukkit.getWorld(target.warpWorld != null && !target.warpWorld.isEmpty() ? target.warpWorld : p.getWorld().getName());
+                if (w == null) w = p.getWorld();
+                dest = new Location(w, target.warpX, target.warpY, target.warpZ, target.warpYaw, target.warpPitch);
+            } else {
+                dest = new Location(p.getWorld(),
+                    (target.x1 + target.x2) / 2.0 + 0.5,
+                    p.getWorld().getHighestBlockYAt((target.x1 + target.x2) / 2, (target.z1 + target.z2) / 2) + 1,
+                    (target.z1 + target.z2) / 2.0 + 0.5);
+            }
+            p.teleport(dest);
+            sender.sendMessage("§a已传送至公共建筑: §f" + target.name);
             return true;
         }
 
@@ -7062,8 +7171,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -7130,6 +7239,7 @@ public class AreaProtection implements Listener {
             stmt.setString(61, ac.warpWorld != null ? ac.warpWorld : "");
             stmt.setInt(62, ac.denyContainer ? 1 : 0);
             stmt.setInt(63, ac.denyMobAttack ? 1 : 0);
+            stmt.setInt(64, ac.isPublicBuilding ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -8194,6 +8304,33 @@ public class AreaProtection implements Listener {
         Entity entity = e.getEntity();
         String typeName = entity.getType().name();
 
+        // ★ 和平模式攻击免疫：敌对生物（含投射物）对玩家的攻击无效
+        if (entity instanceof Player) {
+            boolean hostileAttack = false;
+            Entity damager = e.getDamager();
+            if (isHostile(damager.getType().name())) {
+                hostileAttack = true;
+            } else if (damager instanceof org.bukkit.entity.Projectile) {
+                // 投射物（箭/三叉戟等）：检查shooter是否敌对生物
+                org.bukkit.entity.Projectile proj = (org.bukkit.entity.Projectile) damager;
+                if (proj.getShooter() instanceof Entity) {
+                    hostileAttack = isHostile(((Entity) proj.getShooter()).getType().name());
+                }
+            }
+            if (hostileAttack) {
+                Player victim = (Player) entity;
+                AreaConfig pac = getArea(
+                        victim.getWorld().getName(),
+                        victim.getLocation().getBlockX(),
+                        victim.getLocation().getBlockY(),
+                        victim.getLocation().getBlockZ());
+                if (pac != null && pac.peaceMode) {
+                    e.setCancelled(true);
+                    return;
+                }
+            }
+        }
+
         if (typeName.equals("ITEM_FRAME")
                 || typeName.equals("GLOW_ITEM_FRAME")) {
             if (!(e.getDamager() instanceof Player)) return;
@@ -8218,9 +8355,12 @@ public class AreaProtection implements Listener {
                 mobAttacker.getLocation().getBlockY(),
                 mobAttacker.getLocation().getBlockZ());
         if (acMob != null && getEffectiveDeny(mobAttacker, acMob, "denyMobAttack")) {
-            e.setCancelled(true);
-            mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
-            return;
+            // ★ 公共建筑设施：访客允许攻击敌对生物
+            if (!acMob.isPublicBuilding || mobAttacker.getName().equalsIgnoreCase(acMob.owner) || isAreaAdmin(mobAttacker)) {
+                e.setCancelled(true);
+                mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
+                return;
+            }
         }
 
         // ===== PVP 逻辑 =====
@@ -8742,6 +8882,8 @@ public class AreaProtection implements Listener {
         public double warpX = 0, warpY = 0, warpZ = 0;
         public float warpYaw = 0, warpPitch = 0;
         public String warpWorld = "";
+        // ★ 公共建筑标记
+        public boolean isPublicBuilding = false;
 
 
 

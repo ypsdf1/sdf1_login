@@ -2889,6 +2889,7 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("deny_bow", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_potion", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_raid", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("is_public_building", 0)).append(":");
                 // 效果和消息
                 hashBuilder.append(land.getOrDefault("peace_mode", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("peace_mode_duration", 0)).append(":");
