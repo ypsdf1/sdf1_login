@@ -5742,6 +5742,13 @@ public class AreaProtection implements Listener {
                         sender.sendMessage("§c未知配置项: " + key);
                         return true;
                 }
+                // ★ 配置变更：立即触发PHP同步
+                try {
+                    if (plugin.webManager != null) {
+                        plugin.webManager.requestImmediateLandSync();
+                    }
+                } catch (Exception ignored) {}
+
                 // ★ 更新后显示完整配置页面（而非仅打印"已更新"）
                 if (plugin.areaCLIManager != null) {
                     plugin.areaCLIManager.showConfigPage((Player) sender);

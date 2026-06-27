@@ -1246,11 +1246,20 @@ public class WebManager {
             } catch (Exception e) {
                 plugin.getLogger().warning("[Web交易即时] 推送异常: " + e.getMessage());
             }
+            // ★ 关键修复：交易处理后立即推送余额快照到PHP
+            // 解决全员离线时Timer C暂停导致PHP余额不同步的bug
+            try {
+                lastBondBalanceHash = ""; // 清除hash缓存，强制推送
+                syncBondBalances();
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web交易即时] 余额推送异常: " + e.getMessage());
+            }
             // 检查是否有待处理的推送
             if (pendingImmediateTxSync) {
                 pendingImmediateTxSync = false;
                 submitDbTask("即时推送-交易(延迟)", () -> {
                     try { syncBondTransactions(); } catch (Exception e) {}
+                    try { lastBondBalanceHash = ""; syncBondBalances(); } catch (Exception e) {}
                 });
             }
         });
@@ -1344,15 +1353,14 @@ public class WebManager {
             lastSyncDone = false;
 
             // ★ 玩家上线恢复：重启Timer B/C（之前全员下线时已暂停）
+            // ★ Timer D已独立运行，不再需要重启
             if (timersBCPaused) {
                 timersBCPaused = false;
                 long randB = (long)(Math.random() * 10) * 2;
                 long randC = (long)(Math.random() * 10) * 2;
-                long randD = (long)(Math.random() * 10) * 2;
                 scheduleTimerB(40L + randB);  // 2秒后重启B
                 scheduleTimerC(120L + randC); // 6秒后重启C
-                scheduleTimerD(180L + randD); // 9秒后重启D
-                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C/D已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s)");
+                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s)");
             }
 
             // 玩家在线：全量批处理
@@ -1715,10 +1723,7 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_D] = now; }
 
-                // ★ 全员下线暂停
-                if (timersBCPaused) {
-                    return;
-                }
+                // ★ Timer D独立：不检查timersBCPaused（v17重构设计）
 
                 // ★ PHP锁库退避检查
                 if (phpBusyUntil > now) {
@@ -2017,6 +2022,12 @@ public class WebManager {
                                     plugin.getBondManager().addBonds(playerName, amount, "cdk_redeem_web", cdkCode, "Web系统", "CDK远程兑换: " + cdkCode);
                                     int aft = plugin.getBondManager().getBonds(playerName);
                                     plugin.getLogger().info("[CDK远程验证] 直接加债券: " + playerName + " +" + amount + " (" + bef + "->" + aft + ")");
+
+                                    // ★ 修复：远程CDK加债券后立即推送余额到PHP
+                                    try {
+                                        lastBondBalanceHash = "";
+                                        syncBondBalances();
+                                    } catch (Exception ex) { /* 静默 */ }
 
                                     // 通知在线玩家
                                     Player targetPlayer = Bukkit.getPlayerExact(playerName);
@@ -2896,7 +2907,11 @@ public class WebManager {
                 hashBuilder.append("cfg:").append(entry.getKey()).append("=").append(entry.getValue()).append(":");
             }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
-            if (currentHash.equals(lastLandDataHash)) return;
+            if (currentHash.equals(lastLandDataHash)) {
+                // ★ hash未变化，静默跳过（但首次运行或强制刷新时会同步）
+                return;
+            }
+            plugin.getLogger().info("[防护-sync] hash变化: lands=" + lands.size() + " config=" + cfgForHash.size() + "项，开始同步");
             lastLandDataHash = currentHash;
 
             // 1. 同步领地列表（全字段）
