@@ -2277,6 +2277,7 @@ async function loadLands(el) {
 
         // 配置信息
         const cfg = configRes.config || {};
+        window._landCfgData = cfg; // 缓存供showLandConfig使用
         html += `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px">`;
         const lands = landsRes.lands || [];
         html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
@@ -2288,8 +2289,8 @@ async function loadLands(el) {
             <div style="font-size:24px;font-weight:bold;color:#4caf50">${shopItems.length}</div>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">在售权限</div>
         </div>`;
-        const pricePerSqM = cfg.land_price_per_sqm || '10';
-        const maxLands = cfg.max_lands || '5';
+        const pricePerSqM = cfg.create_price_per_sqm || '10';
+        const maxLands = cfg.max_lands_per_player || '5';
         html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
             <div style="font-size:24px;font-weight:bold;color:#ff9800">${pricePerSqM}</div>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">每平米价格(债券)</div>
@@ -2362,15 +2363,18 @@ async function loadLands(el) {
 }
 
 function showLandConfig() {
+    const cfg = window._landCfgData || {};
+    const price = cfg.create_price_per_sqm || '10';
+    const maxLands = cfg.max_lands_per_player || '5';
     const html = `<div style="padding:16px">
         <h3 style="margin:0 0 12px;color:var(--fg)">⚙️ 领地配置</h3>
         <div style="margin-bottom:12px">
             <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每平米价格(债券)</label>
-            <input id="cfgPrice" type="number" value="10" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            <input id="cfgPrice" type="number" value="${price}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
         </div>
         <div style="margin-bottom:12px">
             <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每人最大领地数</label>
-            <input id="cfgMaxLands" type="number" value="5" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            <input id="cfgMaxLands" type="number" value="${maxLands}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
         </div>
         <button onclick="saveLandConfig()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button>
     </div>`;
@@ -2384,12 +2388,12 @@ async function saveLandConfig() {
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=land_price_per_sqm&value=' + encodeURIComponent(price) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'key=create_price_per_sqm&value=' + encodeURIComponent(price) + '&secret=sdf1_web_comm_2026_ypshidifu'
         });
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=max_lands&value=' + encodeURIComponent(maxLands) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'key=max_lands_per_player&value=' + encodeURIComponent(maxLands) + '&secret=sdf1_web_comm_2026_ypshidifu'
         });
         document.querySelector('.modal-close')?.click();
         loadLands(document.getElementById('C'));

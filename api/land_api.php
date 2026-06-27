@@ -7,6 +7,34 @@
 header('Content-Type: application/json; charset=utf-8');
 error_reporting(E_ERROR | E_PARSE);
 
+/**
+ * ★ 将Java自定义格式转换为JSON数组
+ * give_effects: "夜视:1:99999|SPEED:2:60" → [["夜视","1","99999"],["SPEED","2","60"]]
+ * clear_effects: "POISON,WITHER" → ["POISON","WITHER"]
+ */
+function convertEffectsForFrontend($row) {
+    if (!empty($row['give_effects']) && $row['give_effects'][0] !== '[') {
+        $parts = explode('|', $row['give_effects']);
+        $arr = [];
+        foreach ($parts as $p) {
+            $p = trim($p);
+            if (empty($p)) continue;
+            $pieces = explode(':', $p);
+            if (count($pieces) >= 2) {
+                $arr[] = $pieces;
+            } else {
+                $arr[] = [$pieces[0], '1', '99999'];
+            }
+        }
+        $row['give_effects'] = json_encode($arr);
+    }
+    if (!empty($row['clear_effects']) && $row['clear_effects'][0] !== '[') {
+        $names = array_filter(explode(',', $row['clear_effects']), function($n) { return !empty(trim($n)); });
+        $row['clear_effects'] = json_encode(array_values(array_map('trim', $names)));
+    }
+    return $row;
+}
+
 try {
     // ★ 加载core.php（与sync.php相同的加载方式）
     $coreFile = dirname(__DIR__) . '/core.php';
@@ -546,7 +574,7 @@ function handleListLands($db) {
     $result = $db->query("SELECT * FROM web_area_lands ORDER BY synced_at DESC");
     $lands = [];
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $lands[] = $row;
+        $lands[] = convertEffectsForFrontend($row);
     }
     echo json_encode(['success' => true, 'lands' => $lands]);
 }
@@ -714,7 +742,7 @@ function handleMyLands($db, $playerName) {
 
     $lands = [];
     while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-        $lands[] = $row;
+        $lands[] = convertEffectsForFrontend($row);
     }
 
     echo json_encode(['success' => true, 'lands' => $lands, 'player' => $playerName]);
@@ -755,7 +783,7 @@ function handleLandDetail($db, $playerName, $landName) {
         $visitors[] = $row;
     }
 
-    echo json_encode(['success' => true, 'land' => $land, 'visitors' => $visitors]);
+    echo json_encode(['success' => true, 'land' => convertEffectsForFrontend($land), 'visitors' => $visitors]);
 }
 
 // ==================== 玩家端：添加访客 ====================
@@ -887,9 +915,34 @@ function handleUpdateLandField($db, $playerName, $post) {
     // 确保字段存在（容错）
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN {$field} TEXT DEFAULT ''"); } catch (\Throwable $e) {}
 
+    // ★ 将JSON数组转回Java格式再存储
+    $storeValue = $value;
+    if (($field === 'give_effects' || $field === 'clear_effects') && !empty($value) && $value[0] === '[') {
+        $arr = json_decode($value, true);
+        if (is_array($arr)) {
+            if ($field === 'give_effects') {
+                // [["夜视","1","99999"]] → "夜视:1:99999"
+                $parts = [];
+                foreach ($arr as $e) {
+                    if (is_array($e)) {
+                        $parts[] = implode(':', $e);
+                    } else {
+                        $parts[] = (string)$e;
+                    }
+                }
+                $storeValue = implode('|', $parts);
+            } else {
+                // clear_effects: ["POISON","WITHER"] → "POISON,WITHER"
+                $storeValue = implode(',', array_map(function($e) {
+                    return is_array($e) ? $e[0] : (string)$e;
+                }, $arr));
+            }
+        }
+    }
+
     // 更新
     $stmt2 = $db->prepare("UPDATE web_area_lands SET {$field} = :value, admin_changed = 1 WHERE name = :name");
-    $stmt2->bindValue(':value', $value, SQLITE3_TEXT);
+    $stmt2->bindValue(':value', $storeValue, SQLITE3_TEXT);
     $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt2->execute();
 
