@@ -540,9 +540,9 @@ function syncLands() {
         $stmt->bindValue(':deny_crop_harvest', (int)($land['deny_crop_harvest'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_wool_shear', (int)($land['deny_wool_shear'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_animal_feeding', (int)($land['deny_animal_feeding'] ?? 0), SQLITE3_INTEGER);
-        $stmt->bindValue(':warp_x', (double)($land['warp_x'] ?? 0), SQLITE3_DOUBLE);
-        $stmt->bindValue(':warp_y', (double)($land['warp_y'] ?? 0), SQLITE3_DOUBLE);
-        $stmt->bindValue(':warp_z', (double)($land['warp_z'] ?? 0), SQLITE3_DOUBLE);
+        $stmt->bindValue(':warp_x', (double)($land['warp_x'] ?? 0), SQLITE3_FLOAT);
+        $stmt->bindValue(':warp_y', (double)($land['warp_y'] ?? 0), SQLITE3_FLOAT);
+        $stmt->bindValue(':warp_z', (double)($land['warp_z'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_yaw', (float)($land['warp_yaw'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_pitch', (float)($land['warp_pitch'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_world', $land['warp_world'] ?? '', SQLITE3_TEXT);
