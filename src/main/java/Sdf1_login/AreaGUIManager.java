@@ -1161,6 +1161,45 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
+        // ★ 用户组管理面板
+        if (T_USER_GROUP_PANEL.equals(title)) {
+            event.setCancelled(true);
+            handleUserGroupPanelClick(p, raw);
+
+            // 右键删除用户组
+            if (event.isRightClick() && raw < 45) {
+                UserGroupManager ugm = plugin.getUserGroup();
+                if (ugm != null) {
+                    List<String> names = new ArrayList<>(ugm.getGroupConfigs().keySet());
+                    if (raw < names.size()) {
+                        String groupName = names.get(raw);
+                        if (p.hasPermission("sdf1.admin")) {
+                            ugm.deleteGroupConfig(groupName);
+                            // ★ 通知PHP同步
+                            try {
+                                java.net.URL url = new java.net.URL("https://caoyuan.ypshidifu.cn/plugin/api/land_api.php");
+                                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                                conn.setRequestMethod("POST");
+                                conn.setDoOutput(true);
+                                conn.setConnectTimeout(5000);
+                                conn.setReadTimeout(5000);
+                                String body = "action=delete_user_group&name=" + groupName + "&secret=sdf1_web_comm_2026_ypshidifu";
+                                java.io.OutputStream os = conn.getOutputStream();
+                                os.write(body.getBytes());
+                                os.flush();
+                                os.close();
+                                conn.getResponseCode(); // trigger
+                                conn.disconnect();
+                            } catch (Exception ignored) {}
+                            p.sendMessage("§a已删除用户组: " + groupName);
+                            openUserGroupPanel(p); // 刷新
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // ★ 公共建筑传送
         if (T_PUBLIC_BUILDING.equals(title)) {
             event.setCancelled(true);
@@ -1457,9 +1496,8 @@ public class AreaGUIManager implements Listener {
         } else if (raw == 48) {
             openMainMenu(p);
         } else if (raw == 31) {
-            // ★ 用户组管理 - 打开CLI交互（GUI暂不支持复杂交互）
-            p.closeInventory();
-            p.performCommand("protect grouplist");
+            // ★ 用户组管理 - 打开真正的GUI面板
+            openUserGroupPanel(p);
         }
     }
 
@@ -1498,6 +1536,81 @@ public class AreaGUIManager implements Listener {
         inv.setItem(49, createItem(Material.ARROW, "§c§l返回主菜单", ""));
 
         p.openInventory(inv);
+    }
+
+    // ==================== 用户组管理 GUI ====================
+
+    private static final String T_USER_GROUP_PANEL = "§6§l用户组管理面板";
+
+    /**
+     * ★ 打开用户组管理GUI面板
+     * 显示所有用户组，支持查看和管理
+     */
+    public void openUserGroupPanel(Player p) {
+        // ★ 先从PHP拉取最新用户组
+        if (plugin.webManager != null) {
+            plugin.webManager.pullUserGroupsFromPHP();
+        }
+
+        UserGroupManager ugm = plugin.getUserGroup();
+        Map<String, UserGroupManager.UserGroupConfig> groups = (ugm != null) ? ugm.getGroupConfigs() : new LinkedHashMap<>();
+
+        Inventory inv = Bukkit.createInventory(null, 54, T_USER_GROUP_PANEL);
+
+        // 显示所有用户组（每个组一个物品）
+        int slot = 0;
+        for (UserGroupManager.UserGroupConfig cfg : groups.values()) {
+            if (slot >= 45) break; // 留最后一行给操作按钮
+
+            String priceStr = cfg.landPricePerSqm >= 0 ? cfg.landPricePerSqm + "/㎡" : "全局默认";
+            String maxStr = cfg.maxLands >= 0 ? String.valueOf(cfg.maxLands) : "全局默认";
+
+            List<String> lore = new ArrayList<>();
+            lore.add("§7ID: §f" + cfg.name);
+            lore.add("§7优先级: §f" + cfg.priority);
+            lore.add("§7领地价格: §f" + priceStr);
+            lore.add("§7最大领地数: §f" + maxStr);
+            lore.add("§7默认权限: §f" + (cfg.defaultPerms != null ? cfg.defaultPerms : "{}"));
+            lore.add("");
+            lore.add("§c§l右键删除此用户组");
+
+            inv.setItem(slot, createItem(Material.PLAYER_HEAD, cfg.displayColor + "§l" + cfg.displayName,
+                    lore.toArray(new String[0])));
+            slot++;
+        }
+
+        // 空状态提示
+        if (groups.isEmpty()) {
+            inv.setItem(22, createItem(Material.BARRIER, "§e§l暂无用户组",
+                    "§7当前没有定义任何用户组",
+                    "§7可通过PHP管理后台创建用户组",
+                    "§7或使用CLI命令 §f/protect groupset <组名> 创建"));
+        }
+
+        // 返回按钮（位置48）
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回管理员面板", ""));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * ★ 处理用户组管理GUI点击事件
+     */
+    private void handleUserGroupPanelClick(Player p, int raw) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+
+        Map<String, UserGroupManager.UserGroupConfig> groups = ugm.getGroupConfigs();
+        List<String> groupNames = new ArrayList<>(groups.keySet());
+
+        if (raw == 48) {
+            // 返回管理员面板
+            openAdminPanel(p);
+        } else if (raw >= 0 && raw < 45 && raw < groupNames.size()) {
+            // 右键删除用户组（由事件处理区分）
+            // 左键 = 查看详情/成员
+            // 此处不做操作，由InventoryClickEvent处理
+        }
     }
 
     // ==================== 效果管理 GUI ====================

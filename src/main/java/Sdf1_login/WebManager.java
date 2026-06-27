@@ -3061,6 +3061,117 @@ public class WebManager {
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 用户组同步异常: " + e.getMessage());
         }
+
+        // 6. ★ 从PHP拉取用户组（PHP→Java反向同步）
+        pullUserGroupsFromPHP();
+    }
+
+    /**
+     * ★ 从PHP拉取用户组配置到Java本地
+     * PHP管理后台创建的用户组通过此方法同步到Java
+     */
+    public void pullUserGroupsFromPHP() {
+        if (!enabled) return;
+        try {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "list_user_groups");
+            String resp = httpGet("api/land_api.php", params);
+            if (resp == null || resp.isEmpty()) return;
+
+            // 简单解析JSON: {"success":true,"groups":[{...},{...}]}
+            if (!resp.contains("\"success\":true")) return;
+            int groupsStart = resp.indexOf("\"groups\":[");
+            if (groupsStart < 0) return;
+            String arrStr = resp.substring(groupsStart + 10);
+            // 找到数组的结束 ]
+            int depth = 0;
+            int arrEnd = -1;
+            for (int i = 0; i < arrStr.length(); i++) {
+                char c = arrStr.charAt(i);
+                if (c == '[') depth++;
+                else if (c == ']') {
+                    depth--;
+                    if (depth == 0) { arrEnd = i; break; }
+                }
+            }
+            if (arrEnd < 0) return;
+            arrStr = arrStr.substring(1, arrEnd); // 去掉 [ ]
+
+            if (arrStr.trim().isEmpty()) return; // 空数组
+
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) return;
+
+            // 拆分每个JSON对象
+            int imported = 0;
+            depth = 0;
+            int objStart = -1;
+            for (int i = 0; i < arrStr.length(); i++) {
+                char c = arrStr.charAt(i);
+                if (c == '{' && depth == 0) { objStart = i; depth = 1; }
+                else if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0 && objStart >= 0) {
+                        String obj = arrStr.substring(objStart + 1, i);
+                        UserGroupManager.UserGroupConfig cfg = parseGroupJson(obj);
+                        if (cfg != null && !cfg.name.isEmpty()) {
+                            ugm.saveGroupConfigToDB(cfg);
+                            imported++;
+                        }
+                        objStart = -1;
+                    }
+                }
+            }
+
+            if (imported > 0) {
+                ugm.loadGroupConfigs();
+                plugin.getLogger().info("[防护-sync] 从PHP拉取 " + imported + " 个用户组配置");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组失败: " + e.getMessage());
+        }
+    }
+
+    /** 从JSON对象字符串解析用户组配置 */
+    private UserGroupManager.UserGroupConfig parseGroupJson(String obj) {
+        try {
+            UserGroupManager.UserGroupConfig cfg = new UserGroupManager.UserGroupConfig();
+            cfg.name = extractJsonStringSafe(obj, "group_name");
+            cfg.displayName = extractJsonStringSafe(obj, "display_name");
+            cfg.displayColor = extractJsonStringSafe(obj, "display_color");
+            String priStr = extractJsonField(obj, "priority");
+            if (!priStr.isEmpty()) try { cfg.priority = Integer.parseInt(priStr); } catch (Exception ignored) {}
+            String priceStr = extractJsonField(obj, "land_price_per_sqm");
+            if (!priceStr.isEmpty()) try { cfg.landPricePerSqm = Integer.parseInt(priceStr); } catch (Exception ignored) {}
+            String maxStr = extractJsonField(obj, "max_lands");
+            if (!maxStr.isEmpty()) try { cfg.maxLands = Integer.parseInt(maxStr); } catch (Exception ignored) {}
+            cfg.defaultPerms = extractJsonStringSafe(obj, "default_perms");
+            return cfg;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 从JSON字符串提取字符串字段值（返回null表示未找到） */
+    private String extractJsonStringSafe(String json, String key) {
+        String result = extractJsonString(json, key);
+        return result != null ? result : "";
+    }
+
+    /** 从JSON字符串提取数值字段值 */
+    private String extractJsonField(String json, String key) {
+        String search = "\"" + key + "\":";
+        int start = json.indexOf(search);
+        if (start < 0) return "";
+        start += search.length();
+        int end = start;
+        while (end < json.length()) {
+            char c = json.charAt(end);
+            if (c == ',' || c == '}' || c == ' ') break;
+            end++;
+        }
+        return json.substring(start, end).trim();
     }
 
     /**
@@ -3163,13 +3274,13 @@ public class WebManager {
                             break;
                         }
                         case "group_change": {
-                            // ★ PHP端用户组变更 → 重新加载本地用户组配置
-                            UserGroupManager ugm = plugin.getUserGroup();
-                            if (ugm != null) {
-                                ugm.loadGroupConfigs();
-                                plugin.getLogger().info("[Web通信] PHP端用户组变更，已重新加载用户组配置");
-                                applied = true;
-                            }
+                            // ★ PHP端用户组变更 → 从PHP拉取最新用户组到Java本地
+                            String action = String.valueOf(changeData.getOrDefault("action", ""));
+                            String groupName = String.valueOf(changeData.getOrDefault("group_name", ""));
+                            // 直接从PHP拉取完整用户组数据（比仅reload本地更可靠）
+                            pullUserGroupsFromPHP();
+                            plugin.getLogger().info("[Web通信] PHP端用户组变更(" + action + ": " + groupName + ")，已从PHP同步");
+                            applied = true;
                             break;
                         }
                         default:

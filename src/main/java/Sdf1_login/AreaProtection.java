@@ -5902,41 +5902,55 @@ public class AreaProtection implements Listener {
 
         // ===== 用户组管理 =====
         if (sub.equals("grouplist") || sub.equals("用户组")) {
+            if (!sender.hasPermission("sdf1.admin")) {
+                sender.sendMessage("§c需要管理员权限"); return true;
+            }
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+
+            // ★ 先从PHP拉取最新用户组（确保PHP端创建的组能显示）
+            if (plugin.webManager != null) {
+                plugin.webManager.pullUserGroupsFromPHP();
+            }
+
             Map<String, UserGroupManager.UserGroupConfig> groups = ugm.getGroupConfigs();
+            sender.sendMessage("§a§l========== 用户组管理 ==========");
+
             if (groups.isEmpty()) {
-                sender.sendMessage("§e暂无用户组定义");
-                if (sender instanceof Player) {
-                    Player pp = (Player) sender;
-                    if (pp.hasPermission("sdf1.admin")) {
-                        pp.sendMessage(Component.empty()
-                                .append(Component.text("§a点击此处"))
-                                .append(Component.text("§e创建第一个用户组"))
-                                .hoverEvent(HoverEvent.showText(Component.text("§e点击开始交互式创建")))
-                                .clickEvent(ClickEvent.suggestCommand("/protect groupset "))
-                        );
-                    }
-                }
+                sender.sendMessage("§7当前暂无用户组定义");
+                sender.sendMessage("§7你可以通过以下方式创建用户组:");
+                sender.sendMessage("§e  /protect groupset <组名> [显示名] [颜色] [优先级] [价格] [上限]");
+                sender.sendMessage("§7或通过PHP管理后台创建");
             } else {
-                sender.sendMessage("§a§l=== 用户组列表 ===");
+                sender.sendMessage("§f共 §a" + groups.size() + " §f个用户组:");
+                sender.sendMessage("");
                 for (UserGroupManager.UserGroupConfig cfg : groups.values()) {
                     String priceStr = cfg.landPricePerSqm >= 0 ? cfg.landPricePerSqm + "/㎡" : "全局默认";
                     String maxStr = cfg.maxLands >= 0 ? String.valueOf(cfg.maxLands) : "全局默认";
-                    sender.sendMessage("§f" + cfg.displayColor + cfg.displayName
-                            + " §7(name=" + cfg.name + ", 优先级=" + cfg.priority
-                            + ", 价格=" + priceStr + ", 上限=" + maxStr + ")");
-                }
-                if (sender instanceof Player && ((Player) sender).hasPermission("sdf1.admin")) {
-                    Player pp = (Player) sender;
-                    pp.sendMessage(Component.empty()
-                            .append(Component.text("§a点击此处"))
-                            .append(Component.text("§e创建新用户组"))
-                            .hoverEvent(HoverEvent.showText(Component.text("§e点击开始交互式创建")))
-                            .clickEvent(ClickEvent.suggestCommand("/protect groupset "))
-                    );
+                    sender.sendMessage("§f" + cfg.displayColor + "§l" + cfg.displayName
+                            + " §7(ID=" + cfg.name + ", 优先级=" + cfg.priority + ")");
+                    sender.sendMessage("§7  价格=" + priceStr + " 上限=" + maxStr + " 默认权限=" + cfg.defaultPerms);
                 }
             }
+
+            // 操作入口
+            sender.sendMessage("");
+            if (sender instanceof Player) {
+                Player pp = (Player) sender;
+                // 创建新组
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§a[创建新用户组] §e点击交互式创建"))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击开始创建流程")))
+                        .clickEvent(ClickEvent.suggestCommand("/protect groupset "))
+                );
+                // 从PHP同步
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§b[从PHP同步] §e点击拉取PHP端用户组"))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e从管理后台同步用户组数据")))
+                        .clickEvent(ClickEvent.runCommand("/protect groupset sync"))
+                );
+            }
+            sender.sendMessage("§7§l─────────────────────────────────");
             return true;
         }
 
@@ -5946,6 +5960,18 @@ public class AreaProtection implements Listener {
             }
             if (args.length < 2) {
                 sender.sendMessage("§e用法: /protect groupset <组名> [显示名] [颜色] [优先级] [每㎡价格] [最大领地数]");
+                sender.sendMessage("§7或: /protect groupset sync §c(从PHP同步)");
+                return true;
+            }
+            // ★ groupset sync → 从PHP拉取用户组
+            if (args[1].equalsIgnoreCase("sync")) {
+                sender.sendMessage("§b正在从PHP拉取用户组...");
+                if (plugin.webManager != null) {
+                    plugin.webManager.pullUserGroupsFromPHP();
+                }
+                UserGroupManager ugmSync = plugin.getUserGroup();
+                int count = (ugmSync != null) ? ugmSync.getGroupConfigs().size() : 0;
+                sender.sendMessage("§a同步完成，当前共 " + count + " 个用户组");
                 return true;
             }
             String groupName = args[1].toLowerCase();
