@@ -324,6 +324,11 @@ function initLandTables($db) {
         'warp_yaw' => "REAL DEFAULT 0",
         'warp_pitch' => "REAL DEFAULT 0",
         'warp_world' => "TEXT DEFAULT ''",
+        'enable_announce' => "INTEGER DEFAULT 0",
+        'announce_template' => "TEXT DEFAULT ''",
+        'txt_content' => "TEXT DEFAULT ''",
+        'deny_fluid' => "INTEGER DEFAULT 0",
+        'clear_all_bad' => "INTEGER DEFAULT 0",
     ];
     foreach ($permColumns as $col => $type) {
         try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN $col $type"); } catch (\Throwable $e) {}
@@ -396,7 +401,7 @@ function handleSyncLands($db, $post) {
 
     $now = time();
 
-    // ★ 完整字段INSERT（与Java端area_lands表63列对应）
+    // ★ 完整字段INSERT（与Java端area_lands表全部列对应）
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max,
          area_size, created_at, synced_at,
@@ -411,7 +416,8 @@ function handleSyncLands($db, $post) {
          deny_door_interaction, deny_noteblock_jukebox, deny_lead, deny_crop_harvest,
          deny_wool_shear, deny_animal_feeding,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
-         deny_container, deny_mob_attack)
+         deny_container, deny_mob_attack,
+         enable_announce, announce_template, txt_content, deny_fluid)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax,
                 :size, :created, :synced,
                 :confiscate_items, :deny_use_items, :give_effects, :clear_effects, :clear_all_bad,
@@ -425,7 +431,8 @@ function handleSyncLands($db, $post) {
                 :deny_door_interaction, :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest,
                 :deny_wool_shear, :deny_animal_feeding,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
-                :deny_container, :deny_mob_attack)");
+                :deny_container, :deny_mob_attack,
+                :enable_announce, :announce_template, :txt_content, :deny_fluid)");
 
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -494,6 +501,10 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':warp_world', $land['warp_world'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_container', (int)($land['deny_container'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_mob_attack', (int)($land['deny_mob_attack'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':enable_announce', (int)($land['enable_announce'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':announce_template', $land['announce_template'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':deny_fluid', (int)($land['deny_fluid'] ?? 0), SQLITE3_INTEGER);
         $stmt->execute();
     }
 
