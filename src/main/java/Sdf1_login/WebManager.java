@@ -1577,6 +1577,26 @@ public class WebManager {
                     }, true);
                 }
 
+                // ★ CDK离线兑付：Timer A永不暂停，定期拉取CDK交易
+                // 解决全员下线时Timer B暂停导致CDK兑换不到账的bug
+                if (timerACycleCount % 5 == 0) { // 每5轮(~15-25秒)检查一次
+                    submitNormalDbTask("TimerA-cdkPull", () -> {
+                        try {
+                            // 本地CDK（web_transactions pending）
+                            doTransactionPollCheck();
+                        } catch (Exception e) { /* 静默 */ }
+                    });
+                    // 远程CDK（cdk_validate_requests，sdf1计分板CDK验证）
+                    if (initialSyncComplete) {
+                        submitNormalDbTask("TimerA-cdkRemotePull", () -> {
+                            try {
+                                pullWebCdkRequestsAndValidate();
+                                pullSdf1PendingAndValidateWeb();
+                            } catch (Exception e) { /* 静默 */ }
+                        });
+                    }
+                }
+
                 // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
                 scheduleTimerA(calcStaggeredDelay(TIMER_A, 3, 5));
             }
