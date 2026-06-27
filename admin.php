@@ -109,6 +109,7 @@
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
+        <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -132,7 +133,7 @@ if ('serviceWorker' in navigator) {
 }
 
 const A = 'api/admin.php';
-const _BUILD_TS = 1782098585; // 版本号，用于缓存失效
+const _BUILD_TS = 1782652854; // 版本号，用于缓存失效 - 用户组管理页面
 console.log('[INIT] Admin panel loaded, build:', _BUILD_TS);
 
 // ★ 自检：验证新代码是否加载
@@ -172,6 +173,7 @@ function go(p) {
     else if (p==='reset_requests') loadResetRequests(c);
     else if (p==='tickets') loadTickets(c);
     else if (p==='lands') loadLands(c);
+    else if (p==='usergroups') loadUserGroups(c);
 }
 
 // 检查登录状态
@@ -2450,6 +2452,358 @@ async function deleteShopItem(id) {
         if (d.success) loadLands(document.getElementById('C'));
         else glassAlert('失败: ' + (d.error||''));
     });
+}
+
+// ==================== 用户组管理 ====================
+const SECRET = 'sdf1_web_comm_2026_ypshidifu';
+const LAND_API = 'api/land_api.php';
+
+// 权限名称映射（中文名→Java key）
+const PERM_NAMES = {
+    denyBlockBreak: '破坏方块', denyBlockPlace: '放置方块', denyPVP: 'PvP',
+    denyFireSpread: '火势蔓延', denyExplosion: '爆炸', denyMobGrief: '怪物破坏',
+    denyMobAttack: '怪物攻击', denyLeavesDecay: '树叶消退', denyWeather: '天气影响',
+    denyCropTrample: '踩踏作物', denyItemDrop: '物品丢弃', denyItemPickup: '物品拾取',
+    denyXpPickup: '经验拾取', denyEnderPearl: '末影珍珠', denyEnderChest: '末影箱',
+    denyAnvil: '铁砧使用', denyCraftingTable: '工作台', denyFurnace: '熔炉',
+    denyBrewing: '炼药锅', denyBeacon: '信标', denyJukebox: '唱片机',
+    denyNoteblock: '音符盒', denyBed: '床使用', denySpawn: '怪物刷新',
+    denyProjectileLaunch: '投掷物发射', denyThrownProjectiles: '投掷物',
+    denyGlowing: '发光效果', denyRedstoneInteraction: '红石交互',
+    denyDoorInteraction: '门交互', denyNoteblockJukebox: '音符盒/唱片机',
+    denyLead: '拴绳', denyCropHarvest: '作物收获', denyWoolShear: '剪羊毛',
+    denyAnimalFeeding: '动物喂养', denyContainer: '容器访问',
+    denyEffects: '药水效果', denyAllEffects: '禁止所有效果',
+    isPublicBuilding: '公共建筑设施'
+};
+
+async function apiCall(action, params = {}, method = 'GET') {
+    const url = new URL(LAND_API, window.location.href);
+    url.searchParams.set('action', action);
+    url.searchParams.set('secret', SECRET);
+    if (method === 'GET') {
+        for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+        const r = await fetch(url);
+        return r.json();
+    } else {
+        const body = new URLSearchParams(params);
+        body.set('secret', SECRET);
+        const r = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: body.toString()
+        });
+        return r.json();
+    }
+}
+
+async function loadUserGroups(el) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
+    try {
+        const res = await apiCall('list_user_groups');
+        const groups = res.groups || [];
+
+        let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
+        html += '<h2 style="margin:0;color:var(--fg)">👥 用户组管理</h2>';
+        html += '<div style="display:flex;gap:8px">';
+        html += `<button onclick="showAddUserGroup()" style="padding:6px 12px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">+ 新建用户组</button>`;
+        html += `<button onclick="loadUserGroups(document.getElementById('C'))" style="padding:6px 12px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px">🔄 刷新</button>`;
+        html += '</div></div>';
+
+        // 统计卡片
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px">';
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:var(--accent)">${groups.length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">用户组总数</div>
+        </div>`;
+        html += '</div>';
+
+        // 用户组列表
+        if (groups.length === 0) {
+            html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无用户组<br><span style="font-size:11px">点击上方"新建用户组"来创建第一个用户组</span></div>';
+        } else {
+            for (const g of groups) {
+                const perms = JSON.parse(g.default_perms || '{}');
+                const permCount = Object.keys(perms).filter(k => perms[k] === true).length;
+                const hasCustomPrice = g.land_price_per_sqm >= 0;
+                const hasCustomMax = g.max_lands >= 0;
+
+                html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px">`;
+                html += `<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">`;
+                html += `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
+                html += `<span style="font-size:18px;font-weight:bold;color:${escAdmHtml(g.display_color || '#fff')}">${escAdmHtml(g.display_emoji || '👤')} ${escAdmHtml(g.display_name || g.group_name)}</span>`;
+                html += `<span style="font-size:11px;color:var(--dim);background:var(--bg);padding:2px 8px;border-radius:10px">ID: ${escAdmHtml(g.group_name)}</span>`;
+                html += `<span style="font-size:11px;color:var(--dim)">优先级: ${g.priority}</span>`;
+                html += `</div>`;
+                html += `<div style="display:flex;gap:6px;flex-wrap:wrap">`;
+                html += `<button onclick="showEditUserGroup('${escAdmHtml(g.group_name)}')" style="padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">编辑</button>`;
+                html += `<button onclick="showGroupMembers('${escAdmHtml(g.group_name)}')" style="padding:4px 10px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">成员</button>`;
+                html += `<button onclick="deleteUserGroup('${escAdmHtml(g.group_name)}')" style="padding:4px 10px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">删除</button>`;
+                html += `</div>`;
+                html += `</div>`;
+                // 详情行
+                html += `<div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;font-size:12px;color:var(--dim)">`;
+                html += `<span>💰 ${hasCustomPrice ? g.land_price_per_sqm+'债券/格²' : '默认'}</span>`;
+                html += `<span>🏗️ ${hasCustomMax ? '最多'+g.max_lands+'块' : '默认'}</span>`;
+                html += `<span>🔑 ${permCount}项默认权限</span>`;
+                html += `</div>`;
+                // 默认权限预览
+                if (permCount > 0) {
+                    const permTags = Object.entries(perms).filter(([,v]) => v === true).map(([k]) => {
+                        const name = PERM_NAMES[k] || k;
+                        return `<span style="display:inline-block;padding:1px 6px;background:rgba(76,175,80,0.15);color:#4caf50;border-radius:4px;font-size:10px;margin:1px">${name}</span>`;
+                    }).join('');
+                    html += `<div style="margin-top:6px;line-height:1.8">${permTags}</div>`;
+                }
+                html += `</div>`;
+            }
+        }
+
+        el.innerHTML = html;
+    } catch(e) {
+        console.error('[USERGROUPS] Error:', e);
+        el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+    }
+}
+
+function showAddUserGroup() {
+    const html = `<div style="padding:16px">
+        <h3 style="margin:0 0 12px;color:var(--fg)">+ 新建用户组</h3>
+        <div style="margin-bottom:10px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">组ID（英文标识）</label>
+            <input id="ugName" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="如 vip, mvp, builder">
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">显示名称</label>
+            <input id="ugDisplayName" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)" placeholder="如 VIP玩家">
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">显示颜色</label>
+                <select id="ugColor" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                    <option value="§f">白色</option><option value="§a">绿色</option><option value="§b">青色</option>
+                    <option value="§e">黄色</option><option value="§6">金色</option><option value="§c">红色</option>
+                    <option value="§5">紫色</option><option value="§9">蓝色</option><option value="§d">粉色</option>
+                </select>
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">优先级</label>
+                <input id="ugPriority" type="number" value="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地单价(债券/格², -1=默认)</label>
+                <input id="ugPrice" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">最大领地数(-1=默认)</label>
+                <input id="ugMaxLands" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
+        <button onclick="doAddUserGroup()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">创建用户组</button>
+    </div>`;
+    showModal('新建用户组', '', null, html);
+}
+
+async function doAddUserGroup() {
+    const name = document.getElementById('ugName')?.value?.trim();
+    const displayName = document.getElementById('ugDisplayName')?.value?.trim() || name;
+    const color = document.getElementById('ugColor')?.value || '§f';
+    const priority = document.getElementById('ugPriority')?.value || '0';
+    const price = document.getElementById('ugPrice')?.value || '-1';
+    const maxLands = document.getElementById('ugMaxLands')?.value || '-1';
+
+    if (!name || !/^[a-zA-Z0-9_]{2,20}$/.test(name)) {
+        glassAlert('组ID仅允许英文字母、数字和下划线，2-20位');
+        return;
+    }
+
+    try {
+        const res = await apiCall('update_user_group', {
+            name, display_name: displayName, display_color: color,
+            priority, land_price_per_sqm: price, max_lands: maxLands,
+            default_perms: '{}'
+        }, 'POST');
+        if (res.success) {
+            document.querySelector('.modal-close')?.click();
+            loadUserGroups(document.getElementById('C'));
+        } else {
+            glassAlert('创建失败: ' + (res.error || ''));
+        }
+    } catch(e) {
+        glassAlert('创建失败: ' + e.message);
+    }
+}
+
+async function showEditUserGroup(groupName) {
+    try {
+        const res = await apiCall('get_user_group', {name: groupName});
+        if (!res.success || !res.group) { glassAlert('获取失败: ' + (res.error || '')); return; }
+        const g = res.group;
+        const perms = JSON.parse(g.default_perms || '{}');
+
+        let html = `<div style="padding:16px;max-height:60vh;overflow-y:auto">`;
+        html += `<h3 style="margin:0 0 12px;color:var(--fg)">编辑用户组: ${escAdmHtml(g.group_name)}</h3>`;
+        html += `<div style="margin-bottom:10px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">显示名称</label>
+            <input id="eugDisplayName" value="${escAdmHtml(g.display_name || '')}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">显示颜色</label>
+            <select id="eugColor" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                ${['§f|白色','§a|绿色','§b|青色','§e|黄色','§6|金色','§c|红色','§5|紫色','§9|蓝色','§d|粉色'].map(c => {
+                    const [v,l] = c.split('|');
+                    return `<option value="${v}" ${g.display_color === v ? 'selected' : ''}>${l}</option>`;
+                }).join('')}
+            </select></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">优先级</label>
+            <input id="eugPriority" type="number" value="${g.priority}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地单价(债券/格²)</label>
+            <input id="eugPrice" type="number" value="${g.land_price_per_sqm}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">最大领地数</label>
+            <input id="eugMaxLands" type="number" value="${g.max_lands}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
+        // 默认权限列表
+        html += `<div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:6px">默认权限</label>`;
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px">';
+        for (const [key, label] of Object.entries(PERM_NAMES)) {
+            const checked = perms[key] === true;
+            html += `<label style="display:flex;align-items:center;gap:4px;padding:4px 6px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:11px;${checked ? 'background:rgba(76,175,80,0.15);border-color:#4caf50;color:#4caf50' : 'color:var(--dim)'}">
+                <input type="checkbox" data-perm="${key}" ${checked ? 'checked' : ''} style="accent-color:#4caf50;width:12px;height:12px">
+                ${label}
+            </label>`;
+        }
+        html += '</div></div>';
+        html += `<button onclick="doEditUserGroup('${escAdmHtml(g.group_name)}')" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">保存修改</button>`;
+        html += '</div>';
+
+        showModal('编辑用户组', '', null, html);
+    } catch(e) {
+        glassAlert('加载失败: ' + e.message);
+    }
+}
+
+async function doEditUserGroup(groupName) {
+    const displayName = document.getElementById('eugDisplayName')?.value?.trim() || '';
+    const color = document.getElementById('eugColor')?.value || '§f';
+    const priority = document.getElementById('eugPriority')?.value || '0';
+    const price = document.getElementById('eugPrice')?.value || '-1';
+    const maxLands = document.getElementById('eugMaxLands')?.value || '-1';
+
+    // 收集权限
+    const perms = {};
+    document.querySelectorAll('#glassAlertOverlay input[type=checkbox][data-perm]').forEach(cb => {
+        perms[cb.dataset.perm] = cb.checked;
+    });
+
+    try {
+        const res = await apiCall('update_user_group', {
+            name: groupName, display_name: displayName, display_color: color,
+            priority, land_price_per_sqm: price, max_lands: maxLands,
+            default_perms: JSON.stringify(perms)
+        }, 'POST');
+        if (res.success) {
+            document.querySelector('.modal-close')?.click();
+            loadUserGroups(document.getElementById('C'));
+        } else {
+            glassAlert('保存失败: ' + (res.error || ''));
+        }
+    } catch(e) {
+        glassAlert('保存失败: ' + e.message);
+    }
+}
+
+async function deleteUserGroup(groupName) {
+    if (!await glassConfirm('确定删除用户组 [' + groupName + '] ?\n已分配的成员将被移出该组。')) return;
+    try {
+        const res = await apiCall('delete_user_group', {name: groupName});
+        if (res.success) {
+            loadUserGroups(document.getElementById('C'));
+        } else {
+            glassAlert('删除失败: ' + (res.error || ''));
+        }
+    } catch(e) {
+        glassAlert('删除失败: ' + e.message);
+    }
+}
+
+// ===== 用户组成员管理 =====
+async function showGroupMembers(groupName) {
+    try {
+        const [membersRes, groupRes] = await Promise.all([
+            apiCall('list_group_members', {group: groupName}),
+            apiCall('get_user_group', {name: groupName})
+        ]);
+        const members = membersRes.members || [];
+        const g = groupRes.group || {};
+        const permCount = Object.keys(JSON.parse(g.default_perms || '{}')).filter(k => JSON.parse(g.default_perms || '{}')[k] === true).length;
+
+        let html = `<div style="padding:16px;max-height:60vh;overflow-y:auto">`;
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">`;
+        html += `<h3 style="margin:0;color:var(--fg)">${escAdmHtml(g.display_emoji || '👥')} ${escAdmHtml(g.display_name || groupName)} 成员管理</h3>`;
+        html += `<span style="font-size:12px;color:var(--dim)">${members.length} 人</span>`;
+        html += `</div>`;
+
+        // 添加成员
+        html += `<div style="display:flex;gap:8px;margin-bottom:12px">
+            <input id="ugNewMember" placeholder="玩家名" style="flex:1;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            <button onclick="doAddGroupMember('${escAdmHtml(groupName)}')" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">添加</button>
+        </div>`;
+
+        // 成员列表
+        if (members.length === 0) {
+            html += '<div style="text-align:center;padding:20px;color:var(--dim);font-size:13px">暂无成员</div>';
+        } else {
+            html += '<div style="overflow-x:auto"><table class="table"><tr><th>玩家名</th><th>添加者</th><th>操作</th></tr>';
+            for (const m of members) {
+                html += `<tr>
+                    <td><strong>${escAdmHtml(m.player_name)}</strong></td>
+                    <td style="font-size:12px;color:var(--dim)">${escAdmHtml(m.added_by || '-')}</td>
+                    <td><button onclick="doRemoveGroupMember('${escAdmHtml(groupName)}','${escAdmHtml(m.player_name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">移除</button></td>
+                </tr>`;
+            }
+            html += '</table></div>';
+        }
+        html += '</div>';
+
+        showModal('成员管理', '', null, html);
+    } catch(e) {
+        glassAlert('加载失败: ' + e.message);
+    }
+}
+
+async function doAddGroupMember(groupName) {
+    const player = document.getElementById('ugNewMember')?.value?.trim();
+    if (!player) { glassAlert('请输入玩家名'); return; }
+    if (!/^[a-zA-Z0-9_]{2,16}$/.test(player)) { glassAlert('玩家名格式无效'); return; }
+
+    try {
+        const res = await apiCall('add_group_member', {group: groupName, player}, 'POST');
+        if (res.success) {
+            showGroupMembers(groupName); // 刷新
+        } else {
+            glassAlert('添加失败: ' + (res.error || ''));
+        }
+    } catch(e) {
+        glassAlert('添加失败: ' + e.message);
+    }
+}
+
+async function doRemoveGroupMember(groupName, playerName) {
+    if (!await glassConfirm('确定将玩家 [' + playerName + '] 从用户组 [' + groupName + '] 中移除?')) return;
+    try {
+        const res = await apiCall('remove_group_member', {group: groupName, player: playerName}, 'POST');
+        if (res.success) {
+            showGroupMembers(groupName); // 刷新
+        } else {
+            glassAlert('移除失败: ' + (res.error || ''));
+        }
+    } catch(e) {
+        glassAlert('移除失败: ' + e.message);
+    }
 }
 </script>
 <!-- 毛玻璃弹窗 -->
