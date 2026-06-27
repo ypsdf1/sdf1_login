@@ -306,6 +306,9 @@ switch ($action) {
     case 'sync_land_shop':
         syncLandShop();
         break;
+    case 'sync_config':
+        syncConfig();
+        break;
     case 'sync_permissions':
         syncPermissions();
         break;
@@ -597,6 +600,36 @@ function syncLandShop() {
         $count++;
     }
     success("权限商店同步成功: {$count}个");
+}
+
+// ===== 插件推送全局配置 =====
+function syncConfig() {
+    $secret = getParam('secret');
+    if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+
+    $configRaw = getParam('config');
+    if (!$configRaw) error('缺少config参数');
+    $config = json_decode($configRaw, true);
+    if (!is_array($config)) error('config格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_area_config (
+        key TEXT PRIMARY KEY,
+        value TEXT DEFAULT ''
+    )");
+
+    $now = time();
+    $count = 0;
+    foreach ($config as $key => $val) {
+        $stmt = $db->prepare("INSERT INTO web_area_config (key, value) VALUES (:key, :val) "
+            . "ON CONFLICT(key) DO UPDATE SET value = :val2");
+        $stmt->bindValue(':key', $key, SQLITE3_TEXT);
+        $stmt->bindValue(':val', $val, SQLITE3_TEXT);
+        $stmt->bindValue(':val2', $val, SQLITE3_TEXT);
+        $stmt->execute();
+        $count++;
+    }
+    success("配置同步成功: {$count}项");
 }
 
 // ===== 插件推送访客权限数据 =====
