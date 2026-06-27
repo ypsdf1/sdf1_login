@@ -993,10 +993,11 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         // ★ 在线但未通过Java推送web_login_verified → 也需要密码（防止偷token自动登录）
         $isWebVerified = false;
         try {
-            $fiveMinAgo = time() - 300;
+            // ★ 使用token的有效期作为窗口（而非硬编码5分钟），确保与token生命周期一致
+            $verifiedWindow = time() - $expireSeconds;
             $wvStmt = $db->prepare("SELECT 1 FROM web_login_verified WHERE player_name = :player AND verified_at >= :expire");
             $wvStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $wvStmt->bindValue(':expire', $fiveMinAgo, SQLITE3_INTEGER);
+            $wvStmt->bindValue(':expire', $verifiedWindow, SQLITE3_INTEGER);
             $wvResult = $wvStmt->execute();
             $wvRow = $wvResult->fetchArray();
             if ($wvRow) $isWebVerified = true;

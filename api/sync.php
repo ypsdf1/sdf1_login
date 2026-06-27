@@ -1722,6 +1722,17 @@ function pushPlayerLoginStatus() {
         $playerIp = getParam('ip') ?: '';
     }
 
+    // ★ 读取login_verified参数：Java生成token时标记玩家已通过密码验证
+    $loginVerified = 0;
+    if (isset($_GET['login_verified'])) {
+        $loginVerified = (int)$_GET['login_verified'];
+    } elseif (isset($_POST['login_verified'])) {
+        $loginVerified = (int)$_POST['login_verified'];
+    } else {
+        $val = getParam('login_verified');
+        $loginVerified = $val ? (int)$val : 0;
+    }
+
     if (!$player || !$webToken) {
         @error_log("[pushPlayerLoginStatus] FAIL: missing player or web_token. player=" . var_export($player, true) . ", web_token=" . var_export($webToken, true));
         error('缺少player或web_token参数');
@@ -1743,6 +1754,16 @@ function pushPlayerLoginStatus() {
     $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
     $stmt->bindValue(':expire', $expireSeconds, SQLITE3_INTEGER);
     $stmt->execute();
+
+    // 1.5 ★ 如果Java标记login_verified=1，写入web_login_verified表（安全锁：Java验证过的玩家PHP直接放行）
+    if ($loginVerified) {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+        $verifiedStmt = $db->prepare("INSERT OR REPLACE INTO web_login_verified (player_name, verified_at) VALUES (:player, :time)");
+        $verifiedStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $verifiedStmt->bindValue(':time', $now, SQLITE3_INTEGER);
+        $verifiedStmt->execute();
+        @error_log("[pushPlayerLoginStatus] 写入web_login_verified: player=$player (Java已验证)");
+    }
 
     // 2. 如果玩家在游戏中已登录，更新online_players表（只更新已存在的记录，不凭空插入）
     if ($isOnline) {
