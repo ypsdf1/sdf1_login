@@ -1064,9 +1064,13 @@ function batchQueryIpLocations(ips) {
         console.log('[BatchIP] Batch #' + batchNum + ' requesting:', batch);
 
         const startTime = Date.now();
+        // ★ 前端超时15秒：防止PHP挂起后fetch永远不返回
+        const controller = new AbortController();
+        const abortTimer = setTimeout(() => controller.abort(), 15000);
         fetch('api/admin.php', {
             method: 'POST',
             credentials: 'same-origin',
+            signal: controller.signal,
             headers: {
                 'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest'
@@ -1077,6 +1081,7 @@ function batchQueryIpLocations(ips) {
             })
         })
         .then(r => {
+            clearTimeout(abortTimer);
             console.log('[BatchIP] Batch #' + batchNum + ' HTTP status:', r.status, 'time:', (Date.now() - startTime) + 'ms');
             return r.text();
         })
@@ -1097,7 +1102,8 @@ function batchQueryIpLocations(ips) {
             setTimeout(queryNext, 300);
         })
         .catch(e => {
-            console.error('[BatchIP] Batch #' + batchNum + ' fetch error:', e);
+            clearTimeout(abortTimer);
+            console.error('[BatchIP] Batch #' + batchNum + ' fetch error:', e.name === 'AbortError' ? 'TIMEOUT (15s)' : e);
             setTimeout(queryNext, 300);
         });
     }

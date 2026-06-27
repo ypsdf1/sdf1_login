@@ -751,6 +751,10 @@ function doQueryIpLocation($ip) {
     static $cache = [];
     if (isset($cache[$ip])) return $cache[$ip];
 
+    // ★ 单IP总超时控制：5秒内必须完成，防止4个API依次超时导致PHP挂起
+    $startTime = microtime(true);
+    $maxTimePerIp = 5; // 秒
+
     // 收集所有结果，优先选有效格式
     $bestResult = null;
 
@@ -761,16 +765,22 @@ function doQueryIpLocation($ip) {
         $r1Loc = trim($r1);
         @error_log("[IP_QUERY_API] PConline RESULT: $ip -> $r1Loc");
         if (isValidIpLocationFormat($r1Loc)) {
-            // 有效格式，直接返回
             @error_log("[IP_QUERY_API] PConline VALID: $ip -> $r1Loc");
             $cache[$ip] = ['location' => $r1Loc, 'ip' => $ip];
             return $cache[$ip];
         } else {
             @error_log("[IP_QUERY_API] PConline INVALID FORMAT (will try next): $ip -> $r1Loc");
-            $bestResult = $r1Loc; // 暂存，万一后面都没结果就用这个
+            $bestResult = $r1Loc;
         }
     } else {
         @error_log("[IP_QUERY_API] PConline FAILED: $ip");
+    }
+
+    // ★ 总超时检查
+    if (microtime(true) - $startTime > $maxTimePerIp) {
+        @error_log("[IP_QUERY_API] TIMEOUT after PConline: $ip (elapsed=" . round(microtime(true) - $startTime, 1) . "s)");
+        $cache[$ip] = ['location' => $bestResult ?: '查询失败'];
+        return $cache[$ip];
     }
 
     // ========== 线路2: 百度OpenData ==========
@@ -782,7 +792,7 @@ function doQueryIpLocation($ip) {
             if ($loc && $loc !== '--' && strpos($loc, '中国 ') !== 0) return $loc;
         }
         return null;
-    }, 3);
+    }, 2);
     if ($r2 !== null) {
         @error_log("[IP_QUERY_API] Baidu RESULT: $ip -> $r2");
         if (isValidIpLocationFormat($r2)) {
@@ -797,6 +807,13 @@ function doQueryIpLocation($ip) {
         @error_log("[IP_QUERY_API] Baidu FAILED: $ip");
     }
 
+    // ★ 总超时检查
+    if (microtime(true) - $startTime > $maxTimePerIp) {
+        @error_log("[IP_QUERY_API] TIMEOUT after Baidu: $ip (elapsed=" . round(microtime(true) - $startTime, 1) . "s)");
+        $cache[$ip] = ['location' => $bestResult ?: '查询失败'];
+        return $cache[$ip];
+    }
+
     // ========== 线路3: aa1.cn ==========
     @error_log("[IP_QUERY_API] Trying aa1.cn: $ip");
     $r3 = fetchIpApiWithTimeout('https://v.api.aa1.cn/api/ipcha-baidu/?ip=' . urlencode($ip), function($d) {
@@ -806,7 +823,7 @@ function doQueryIpLocation($ip) {
             if ($loc && $loc !== '未知' && strpos($loc, '中国 ') !== 0) return $loc;
         }
         return null;
-    }, 3);
+    }, 2);
     if ($r3 !== null) {
         @error_log("[IP_QUERY_API] aa1.cn RESULT: $ip -> $r3");
         if (isValidIpLocationFormat($r3)) {
@@ -819,6 +836,13 @@ function doQueryIpLocation($ip) {
         }
     } else {
         @error_log("[IP_QUERY_API] aa1.cn FAILED: $ip");
+    }
+
+    // ★ 总超时检查
+    if (microtime(true) - $startTime > $maxTimePerIp) {
+        @error_log("[IP_QUERY_API] TIMEOUT after aa1.cn: $ip (elapsed=" . round(microtime(true) - $startTime, 1) . "s)");
+        $cache[$ip] = ['location' => $bestResult ?: '查询失败'];
+        return $cache[$ip];
     }
 
     // ========== 线路4: IP9（兜底，格式最准） ==========
@@ -840,7 +864,7 @@ function doQueryIpLocation($ip) {
     }
 
     // ★ 所有接口都没返回有效格式：返回"查询失败"，不返回无效格式
-    @error_log("[IP_QUERY_API] ALL FAILED/INVALID: $ip (bestResult=" . ($bestResult ?: 'null') . ")");
+    @error_log("[IP_QUERY_API] ALL FAILED/INVALID: $ip (bestResult=" . ($bestResult ?: 'null') . ", elapsed=" . round(microtime(true) - $startTime, 1) . "s)");
     $cache[$ip] = ['location' => '查询失败'];
     return $cache[$ip];
 }
@@ -956,7 +980,7 @@ function queryIpLocationWithTimeout($ip, $timeout) {
 /**
  * 带超时的通用HTTP请求封装
  */
-function fetchIpApiWithTimeout($url, $parser, $timeout = 5) {
+function fetchIpApiWithTimeout($url, $parser, $timeout = 3) {
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -988,7 +1012,7 @@ function fetchPconline($ip) {
     $ctx = stream_context_create([
         'http' => [
             'method' => 'GET',
-            'timeout' => 3,
+            'timeout' => 2,
             'ignore_errors' => true,
             'header' => "Accept: application/json\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 SDF1_IP_Lookup/1.0"
         ]
@@ -1057,7 +1081,7 @@ function queryIpLocationFromIp9($ip) {
     $ctx = stream_context_create([
         'http' => [
             'method' => 'GET',
-            'timeout' => 5,
+            'timeout' => 3,
             'ignore_errors' => true,
             'header' => "Accept: application/json, text/plain, */*\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://ip9.com.cn/\r\nOrigin: https://ip9.com.cn"
         ],
@@ -1828,8 +1852,8 @@ function adminBatchQueryIps() {
             $ips = array_map('trim', $ips);
         }
 
-        // 限制每次最多3个
-        $batch = array_slice($ips, 0, 3);
+        // 限制每次最多2个（避免单批超时：每个IP最多5秒 × 2 = 10秒，安全于30秒PHP限制）
+        $batch = array_slice($ips, 0, 2);
         $results = [];
 
         foreach ($batch as $ip) {
@@ -1843,7 +1867,7 @@ function adminBatchQueryIps() {
         }
 
         // 返回结果和剩余未查询的IP
-        $remaining = array_slice($ips, 3);
+        $remaining = array_slice($ips, 2);
         exit(json_encode([
             'success' => true,
             'data' => $results,
