@@ -610,6 +610,17 @@ function handleUpdateConfig($db, $post) {
     $stmt->bindValue(':val', $value, SQLITE3_TEXT);
     $stmt->execute();
 
+    // ★ 写入变更队列，通知Java同步配置
+    try {
+        $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('config_change', 0, :key, :data, :now)");
+        $changeStmt->bindValue(':key', $key, SQLITE3_TEXT);
+        $changeStmt->bindValue(':data', json_encode(['key' => $key, 'value' => $value]), SQLITE3_TEXT);
+        $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
+        $changeStmt->execute();
+    } catch (\Throwable $e) {
+        // 非致命
+    }
+
     echo json_encode(['success' => true]);
 }
 
