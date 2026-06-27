@@ -2173,7 +2173,7 @@ public class AreaProtection implements Listener {
      * 获取玩家在指定领地的权限级别
      */
     public PermissionLevel getPermissionLevel(Player player, AreaConfig ac) {
-        // 1. 管理员权限
+        // 1. 全局管理员（ScoreboardTag）
         if (isAreaAdmin(player)) {
             return PermissionLevel.ADMIN;
         }
@@ -2185,17 +2185,23 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // 3. 访客权限（白名单 + 数据库购买权限）
+        // 3. 领地管理员（DB role='admin'，通过/protect setadmin设置）
+        // ★ 必须在VISITOR检查之前，否则白名单优先级会覆盖管理员身份
+        if (ac != null && isLandAdmin(ac.name, player.getName())) {
+            return PermissionLevel.ADMIN;
+        }
+
+        // 4. 访客权限（白名单 + 数据库购买权限）
         if (isPlayerWhitelisted(player.getName(), ac)) {
             return PermissionLevel.VISITOR;
         }
 
-        // 4. 数据库购买的访客权限（未过期）
+        // 5. 数据库购买的访客权限（未过期）
         if (hasValidVisitorPermission(player, ac)) {
             return PermissionLevel.VISITOR;
         }
 
-        // 5. 无权限
+        // 6. 无权限
         return null;
     }
 
