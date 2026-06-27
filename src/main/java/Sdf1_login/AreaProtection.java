@@ -7399,6 +7399,8 @@ public class AreaProtection implements Listener {
      */
     private void updateAreaConfig(String key, String value) {
         if (dbConnection == null) return;
+        // ★ 去除前导零：01 → 1，防止静默失败
+        try { value = String.valueOf(Integer.parseInt(value.trim())); } catch (Exception ignored) {}
         try {
             PreparedStatement ps = dbConnection.prepareStatement(
                     "INSERT INTO area_config (key, value) VALUES (?, ?) "
