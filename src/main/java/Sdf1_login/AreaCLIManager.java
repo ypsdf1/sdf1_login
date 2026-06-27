@@ -969,9 +969,9 @@ public class AreaCLIManager {
             return;
         }
 
-        // 检查目标是否为成员
+        // 检查目标是否为成员（成员名存为小写）
         Set<String> members = areaProtect.getLandMembers(landName);
-        if (!members.contains(targetPlayer)) {
+        if (!members.contains(targetPlayer) && !members.contains(targetPlayer.toLowerCase())) {
             p.sendMessage(Component.text("§c" + targetPlayer + " 不是该领地的成员"));
             return;
         }

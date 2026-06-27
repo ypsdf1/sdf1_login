@@ -2255,14 +2255,35 @@ public class AreaProtection implements Listener {
     public void setPlayerPermJson(int landId, String playerName, String permJson) {
         if (dbConnection == null) return;
         try {
+            // ★ 先尝试UPDATE，如果没有行则INSERT
             PreparedStatement stmt = dbConnection.prepareStatement(
                     "UPDATE area_land_permissions SET permissions = ? "
                             + "WHERE land_id = ? AND player_name = ?");
             stmt.setString(1, permJson != null ? permJson : "");
             stmt.setInt(2, landId);
             stmt.setString(3, playerName);
-            stmt.executeUpdate();
+            int affected = stmt.executeUpdate();
             stmt.close();
+            if (affected == 0) {
+                // 不存在行，先插入一条记录再UPDATE
+                PreparedStatement ins = dbConnection.prepareStatement(
+                        "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
+                                + "VALUES (?, ?, 'member', '', ?)");
+                ins.setInt(1, landId);
+                ins.setString(2, playerName);
+                ins.setLong(3, System.currentTimeMillis() / 1000);
+                ins.executeUpdate();
+                ins.close();
+                // 再次UPDATE
+                PreparedStatement upd = dbConnection.prepareStatement(
+                        "UPDATE area_land_permissions SET permissions = ? "
+                                + "WHERE land_id = ? AND player_name = ?");
+                upd.setString(1, permJson != null ? permJson : "");
+                upd.setInt(2, landId);
+                upd.setString(3, playerName);
+                upd.executeUpdate();
+                upd.close();
+            }
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 设置玩家权限失败: " + e.getMessage());
         }
