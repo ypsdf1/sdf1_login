@@ -302,9 +302,9 @@ try {
             handlePollAdminChanges($db, $_GET);
             break;
 
-        // ===== Java端确认已处理变更 =====
+        // ===== Java端确认已处理变更（GET/POST兼容）=====
         case 'ack_admin_changes':
-            handleAckAdminChanges($db, $_POST);
+            handleAckAdminChanges($db, $_POST + $_GET);
             break;
 
         default:
