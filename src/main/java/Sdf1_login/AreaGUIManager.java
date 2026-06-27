@@ -101,6 +101,13 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击查看"));
 
+        // ★ 公共设施传送（位置41）
+        inv.setItem(41, createItem(Material.BELL, "§b§l公共设施传送",
+                "§7查看公共建筑列表",
+                "§7点击传送到公共设施",
+                "",
+                "§e点击查看"));
+
         // ★ 管理员面板：只有tag管理员可见（位置4）
         if (areaProtect.isAreaAdmin(p)) {
             inv.setItem(4, createItem(Material.NETHER_STAR, "§c§l管理员面板",
@@ -638,6 +645,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry(land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
         perms.add(new PermEntry("和平模式", land.peaceMode));
+        perms.add(new PermEntry("公共建筑设施", land.isPublicBuilding));
         return perms;
     }
 
@@ -695,6 +703,7 @@ public class AreaGUIManager implements Listener {
             case "禁止攻击生物": case "允许攻击生物": land.denyMobAttack = !land.denyMobAttack; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
             case "和平模式": land.peaceMode = !land.peaceMode; break;
+            case "公共建筑设施": land.isPublicBuilding = !land.isPublicBuilding; break;
         }
         areaProtect.saveAreaToDb(land);
     }
@@ -788,6 +797,10 @@ public class AreaGUIManager implements Listener {
                 } else {
                     p.sendMessage("§cCLI管理器未初始化");
                 }
+            } else if (raw == 41) {
+                // ★ 公共设施传送
+                p.closeInventory();
+                p.performCommand("protect listpublic");
             } else if (raw == 49) {
                 plugin.getGui().openMain(p);
             }

@@ -5980,7 +5980,7 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c未找到用户组: " + groupName);
                 return true;
             }
-            if (ugm.addPlayer(playerName, groupName, sender.getName(), 0)) {
+            if (ugm.addPlayer(playerName, groupName, sender.getName())) {
                 UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
                 sender.sendMessage("§a已将 §f" + playerName + " §a加入用户组: §f" + (cfg != null ? cfg.displayName : groupName));
                 // 通知在线玩家

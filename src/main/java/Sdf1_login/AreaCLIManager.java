@@ -111,10 +111,16 @@ public class AreaCLIManager {
         p.sendMessage(clickableAction("ℹ", "当前领地信息",
                 "/protect info"));
 
+        // ★ 公共建筑传送
+        p.sendMessage(clickableAction("🏛", "公共设施列表/传送",
+                "/protect listpublic"));
+
         // ★ 管理员配置入口
         if (areaProtect.isAreaAdmin(p)) {
             p.sendMessage(clickableAction("⚙", "全局配置",
                     "/protect cli config"));
+            p.sendMessage(clickableAction("👥", "用户组管理",
+                    "/protect grouplist"));
         }
 
         // 设置
@@ -545,6 +551,7 @@ public class AreaCLIManager {
             case "mob_attack": oldState = land.denyMobAttack; land.denyMobAttack = !land.denyMobAttack; break;
             case "glowing": oldState = land.denyGlowing; land.denyGlowing = !land.denyGlowing; break;
             case "peace_mode": oldState = land.peaceMode; land.peaceMode = !land.peaceMode; break;
+            case "public_building": oldState = land.isPublicBuilding; land.isPublicBuilding = !land.isPublicBuilding; break;
         }
 
         areaProtect.saveAreaToDb(land);
@@ -600,6 +607,7 @@ public class AreaCLIManager {
             case "mob_attack": return "denyMobAttack";
             case "glowing": return "denyGlowing";
             case "peace_mode": return "peaceMode";
+            case "public_building": return "isPublicBuilding";
             default: return shortKey;
         }
     }
@@ -655,6 +663,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
         perms.add(new PermItem("peace_mode", "和平模式", land.peaceMode));
+        perms.add(new PermItem("public_building", "公共建筑设施", land.isPublicBuilding));
         return perms;
     }
 
@@ -691,6 +700,7 @@ public class AreaCLIManager {
             case "mob_attack": return "攻击生物";
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
+            case "public_building": return "公共建筑设施";
             default: return key;
         }
     }

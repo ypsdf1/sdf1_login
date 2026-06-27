@@ -3041,7 +3041,6 @@ public class WebManager {
                         gs.append("\"group_name\":\"").append(escapeJson(cfg.name)).append("\",");
                         gs.append("\"display_name\":\"").append(escapeJson(cfg.displayName)).append("\",");
                         gs.append("\"display_color\":\"").append(escapeJson(cfg.displayColor)).append("\",");
-                        gs.append("\"display_emoji\":\"").append(escapeJson(cfg.displayEmoji)).append("\",");
                         gs.append("\"priority\":").append(cfg.priority).append(",");
                         gs.append("\"land_price_per_sqm\":").append(cfg.landPricePerSqm).append(",");
                         gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
