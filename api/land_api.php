@@ -1286,6 +1286,18 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
     $stmt3->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
     $stmt3->execute();
 
+    // ★ 记录变更到变更队列（Java端轮询同步回本地）
+    try {
+        $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :lid, :name, :data, :now)");
+        $changeStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
+        $changeStmt->bindValue(':name', $targetPlayer, SQLITE3_TEXT);
+        $changeStmt->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $newJson], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
+        $changeStmt->execute();
+    } catch (\Throwable $e) {
+        // 非致命，只是Java同步会延迟
+    }
+
     echo json_encode(['success' => true, 'message' => "已更新 $targetPlayer 的 $permKey 权限"]);
 }
 
