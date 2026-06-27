@@ -1512,6 +1512,28 @@ function handleUpdateUserGroup($db, $data) {
     $stmt->bindValue(':perms', $defaultPerms, SQLITE3_TEXT);
     $stmt->bindValue(':synced', time(), SQLITE3_INTEGER);
     $stmt->execute();
+
+    // ★ 写入变更队列，通知Java端重新加载用户组
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0
+        )");
+        $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_change', :id, :name, :data, :time)");
+        $stmt2->bindValue(':id', $name, SQLITE3_TEXT);
+        $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt2->bindValue(':data', json_encode(['action' => 'update', 'group_name' => $name]), SQLITE3_TEXT);
+        $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+    } catch (\Throwable $e) { /* 静默 */ }
+
     echo json_encode(['success' => true, 'message' => "用户组 {$name} 已更新"]);
 }
 
@@ -1520,6 +1542,28 @@ function handleDeleteUserGroup($db, $name) {
     $stmt = $db->prepare("DELETE FROM web_user_groups WHERE group_name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->execute();
+
+    // ★ 写入变更队列，通知Java端重新加载用户组
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0
+        )");
+        $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_change', :id, :name, :data, :time)");
+        $stmt2->bindValue(':id', $name, SQLITE3_TEXT);
+        $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmt2->bindValue(':data', json_encode(['action' => 'delete', 'group_name' => $name]), SQLITE3_TEXT);
+        $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+    } catch (\Throwable $e) { /* 静默 */ }
+
     echo json_encode(['success' => true, 'message' => "用户组 {$name} 已删除"]);
 }
 
