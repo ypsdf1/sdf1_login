@@ -3097,7 +3097,7 @@ public class WebManager {
                 }
             }
             if (arrEnd < 0) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: 数组解析失败(未找到匹配的]), arrStr=" + arrStr.substring(0, Math.min(200, arrStr.length()))); return; }
-            arrStr = arrStr.substring(1, arrEnd); // 去掉开头 [ 和结尾 ]
+            arrStr = arrStr.substring(0, arrEnd); // 保留对象内容，去掉 ] 和后续 }
 
             if (arrStr.trim().isEmpty()) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 空数组"); return; } // 空数组
 
