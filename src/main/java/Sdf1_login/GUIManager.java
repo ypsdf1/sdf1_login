@@ -752,78 +752,12 @@ public class GUIManager implements Listener {
         Collections.shuffle(candidates);
 
         // 3. 主线程分批检测，每tick处理30个坐标
-        final int[] idx = {0};
-
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                World w = p.getWorld();
-                int end = Math.min(
-                        idx[0] + BIOME_BATCH,
-                        candidates.size());
-
-                for (int i = idx[0]; i < end; i++) {
-                    int x = candidates.get(i)[0];
-                    int z = candidates.get(i)[1];
-
-                    // 跳过未加载区块
-                    if (!w.isChunkLoaded(x >> 4, z >> 4))
-                        continue;
-
-                    // 获取地表高度
-                    int surfaceY =
-                            w.getHighestBlockYAt(x, z);
-
-                    // 在地表Y取群系（避免地下误判）
-                    String key = w.getBlockAt(
-                                    x, surfaceY, z)
-                            .getBiome()
-                            .getKey().toString();
-                    String cat =
-                            mapBiomeCategory(
-                                    key, w.getName());
-
-                    if (category.equals(cat)) {
-                        this.cancel();
-                        Bukkit.getScheduler()
-                                .runTask(plugin, () -> {
-                                    Location tp =
-                                            new Location(
-                                                    w,
-                                                    x + 0.5,
-                                                    surfaceY + 1,
-                                                    z + 0.5);
-                                    p.teleport(tp);
-                                    p.sendMessage(
-                                            "§a已传送到 "
-                                                    + category
-                                                    + " ("
-                                                    + x + ","
-                                                    + (surfaceY + 1)
-                                                    + ","
-                                                    + z + ")");
-                                });
-                        return;
-                    }
-                }
-
-                idx[0] = end;
-                if (idx[0] >= candidates.size()) {
-                    this.cancel();
-                    Bukkit.getScheduler()
-                            .runTask(plugin, () ->
-                                    p.sendMessage(
-                                            "§c附近未找到 "
-                                                    + category
-                                                    + "，请换个位置再试"));
-                }
-            }
-        }.runTaskTimer(plugin, 0L, 1L);
+        new BiomeScanTask(plugin, p, category, candidates).runTaskTimer(plugin, 0L, 1L);
     }
 
 
 
-    private String mapBiomeCategory(
+    private static String mapBiomeCategory(
             String biome, String worldName) {
         if (biome == null) return "平原";
         String b = biome.toLowerCase();
@@ -2916,5 +2850,56 @@ public class GUIManager implements Listener {
             it.setItemMeta(im);
         }
         return it;
+    }
+
+    /** 命名静态内部类替代匿名BukkitRunnable，修复Paper 26 ClassLoader兼容性 */
+    private static class BiomeScanTask extends BukkitRunnable {
+        private final Sdf1_login plugin;
+        private final Player p;
+        private final String category;
+        private final java.util.List<int[]> candidates;
+        private int idx = 0;
+
+        BiomeScanTask(Sdf1_login plugin, Player p, String category, java.util.List<int[]> candidates) {
+            this.plugin = plugin;
+            this.p = p;
+            this.category = category;
+            this.candidates = candidates;
+        }
+
+        @Override
+        public void run() {
+            World w = p.getWorld();
+            int end = Math.min(idx + BIOME_BATCH, candidates.size());
+
+            for (int i = idx; i < end; i++) {
+                int x = candidates.get(i)[0];
+                int z = candidates.get(i)[1];
+
+                if (!w.isChunkLoaded(x >> 4, z >> 4)) continue;
+
+                int surfaceY = w.getHighestBlockYAt(x, z);
+                String key = w.getBlockAt(x, surfaceY, z)
+                        .getBiome().getKey().toString();
+                String cat = mapBiomeCategory(key, w.getName());
+
+                if (category.equals(cat)) {
+                    this.cancel();
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        Location tp = new Location(w, x + 0.5, surfaceY + 1, z + 0.5);
+                        p.teleport(tp);
+                        p.sendMessage("§a已传送到 " + category + " (" + x + "," + (surfaceY + 1) + "," + z + ")");
+                    });
+                    return;
+                }
+            }
+
+            idx = end;
+            if (idx >= candidates.size()) {
+                this.cancel();
+                Bukkit.getScheduler().runTask(plugin, () ->
+                        p.sendMessage("§c附近未找到 " + category + "，请换个位置再试"));
+            }
+        }
     }
 }
