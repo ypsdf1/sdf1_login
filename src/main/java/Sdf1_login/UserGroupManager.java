@@ -143,7 +143,20 @@ public class UserGroupManager {
 
     // ==================== 玩家操作 ====================
 
+    /** 玩家名格式校验：3-16字符，仅字母数字下划线 */
+    private static final java.util.regex.Pattern MC_NAME_PATTERN = java.util.regex.Pattern.compile("^[a-zA-Z0-9_]{3,16}$");
+
+    private boolean isValidPlayerName(String name) {
+        return name != null && MC_NAME_PATTERN.matcher(name).matches();
+    }
+
     public boolean addPlayer(String player, String groupName, String addedBy) {
+        // ★ 校验玩家名格式
+        if (!isValidPlayerName(player)) {
+            plugin.getLogger().warning("[UserGroup] addPlayer失败: 玩家名格式无效 \"" + player + "\"（需要3-16位字母/数字/下划线）");
+            return false;
+        }
+
         UserGroupConfig cfg = getGroupConfig(groupName);
         if (cfg == null) return false;
         groupName = cfg.name; // 使用DB中实际的组名（保留大小写）
@@ -367,9 +380,17 @@ public class UserGroupManager {
         try {
             WebManager wm = plugin.webManager;
             if (wm == null) return;
-            String endpoint = "api/land_api.php?action=" + action + "_group_member";
-            String json = "{\"player\":\"" + player + "\",\"group\":\"" + groupName + "\",\"added_by\":\"Java\"}";
-            wm.httpPost(endpoint, json);
+            String endpoint = "api/land_api.php";
+            java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
+            params.put("action", action + "_group_member");
+            params.put("player", player);
+            params.put("group", groupName);
+            params.put("added_by", "Java");
+            params.put("secret", wm.getSecretKey());
+            String resp = wm.httpGet(endpoint, params);
+            if (resp != null && resp.contains("\"success\":false")) {
+                plugin.getLogger().warning("[UserGroup] pushMemberToPHP PHP拒绝: " + resp);
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[UserGroup] pushMemberToPHP failed: " + e.getMessage());
         }
