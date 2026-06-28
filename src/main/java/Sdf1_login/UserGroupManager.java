@@ -144,8 +144,9 @@ public class UserGroupManager {
     // ==================== 玩家操作 ====================
 
     public boolean addPlayer(String player, String groupName, String addedBy) {
-        UserGroupConfig cfg = groupConfigs.get(groupName);
+        UserGroupConfig cfg = getGroupConfig(groupName);
         if (cfg == null) return false;
+        groupName = cfg.name; // 使用DB中实际的组名（保留大小写）
         long now = System.currentTimeMillis();
         try {
             PreparedStatement ps = db.prepareStatement(
@@ -283,9 +284,15 @@ public class UserGroupManager {
         return groupConfigs.keySet();
     }
 
-    /** 获取组配置（返回副本） */
+    /** 获取组配置（大小写不敏感） */
     public UserGroupConfig getGroupConfig(String groupName) {
-        return groupConfigs.get(groupName);
+        UserGroupConfig cfg = groupConfigs.get(groupName);
+        if (cfg != null) return cfg;
+        // 大小写不敏感查找
+        for (UserGroupConfig c : groupConfigs.values()) {
+            if (c.name.equalsIgnoreCase(groupName)) return c;
+        }
+        return null;
     }
 
     /** 获取全部组列表（含默认组） */

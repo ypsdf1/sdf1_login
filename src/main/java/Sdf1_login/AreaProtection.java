@@ -4373,6 +4373,22 @@ public class AreaProtection implements Listener {
                                 + block.getX() + ", "
                                 + block.getY() + ", "
                                 + block.getZ());
+                        // ★ 两个位置都选好后，显示面积+价格预览
+                        if (pos1.containsKey(uid)) {
+                            Location lp1 = pos1.get(uid);
+                            Location lp2 = block.getLocation();
+                            int w = Math.abs(lp2.getBlockX() - lp1.getBlockX()) + 1;
+                            int l = Math.abs(lp2.getBlockZ() - lp1.getBlockZ()) + 1;
+                            int a = w * l;
+                            UserGroupManager ug = plugin.getUserGroup();
+                            int pricePerSqm = (ug != null) ? ug.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
+                            int totalCost = a * pricePerSqm;
+                            String src = (pricePerSqm != globalCreatePricePerSqm) ? " §7（用户组优惠价）" : "";
+                            BondManager bnd = plugin.getBonds();
+                            int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
+                            p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
+                            p.sendMessage("§7输入 §f/protect 创建 <领地名> §7开始创建，费用和面积将再次确认");
+                        }
                     }
                 }
                 return;
