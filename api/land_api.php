@@ -1658,6 +1658,24 @@ function handleAddGroupMember($db, $data) {
         echo json_encode(['success' => false, 'error' => 'missing player or group']);
         return;
     }
+    // ★ 玩家名格式校验：3-16位，仅字母数字下划线
+    if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $player)) {
+        echo json_encode(['success' => false, 'error' => "玩家名格式无效: {$player}（需要3-16位字母/数字/下划线）"]);
+        return;
+    }
+    // ★ 校验玩家是否存在（查login.db）
+    $loginDbPath = dirname(__DIR__) . '/db/login.db';
+    if (file_exists($loginDbPath)) {
+        $loginDb = new SQLite3($loginDbPath);
+        $stmt = $loginDb->prepare("SELECT 1 FROM users WHERE player_name = :name");
+        $stmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $exists = $stmt->execute()->fetchArray();
+        $loginDb->close();
+        if (!$exists) {
+            echo json_encode(['success' => false, 'error' => "玩家 {$player} 不存在于login.db"]);
+            return;
+        }
+    }
     $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
         player_name TEXT NOT NULL,
         group_name TEXT NOT NULL,
