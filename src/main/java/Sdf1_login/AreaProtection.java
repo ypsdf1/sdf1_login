@@ -7545,6 +7545,12 @@ public class AreaProtection implements Listener {
     public void setLandOwnerFromWeb(String landName, String newOwner) {
         if (dbConnection == null) return;
         try {
+            // ★ 幂等检查：如果所有者已相同则跳过，避免ack失败后重复打印
+            AreaConfig ac = getLand(landName);
+            if (ac != null && newOwner.equalsIgnoreCase(ac.owner)) {
+                return;
+            }
+
             // 更新数据库
             PreparedStatement ps = dbConnection.prepareStatement("UPDATE area_lands SET owner = ? WHERE name = ?");
             ps.setString(1, newOwner);
@@ -7553,7 +7559,6 @@ public class AreaProtection implements Listener {
             ps.close();
 
             // 更新内存中的AreaConfig
-            AreaConfig ac = getLand(landName);
             if (ac != null) {
                 ac.owner = newOwner;
             }

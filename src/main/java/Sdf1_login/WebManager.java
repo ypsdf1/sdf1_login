@@ -3077,35 +3077,37 @@ public class WebManager {
             params.put("action", "list_user_groups");
             params.put("secret", secretKey);
             String resp = httpGet("api/land_api.php", params);
-            if (resp == null || resp.isEmpty()) return;
+            if (resp == null || resp.isEmpty()) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 响应为空"); return; }
 
             // 简单解析JSON: {"success":true,"groups":[{...},{...}]}
-            if (!resp.contains("\"success\":true")) return;
+            if (!resp.contains("\"success\":true")) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: success!=true, resp=" + resp.substring(0, Math.min(200, resp.length()))); return; }
             int groupsStart = resp.indexOf("\"groups\":[");
-            if (groupsStart < 0) return;
-            String arrStr = resp.substring(groupsStart + 10);
-            // 找到数组的结束 ]
-            int depth = 0;
+            if (groupsStart < 0) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 未找到groups数组"); return; }
+            String arrStr = resp.substring(groupsStart + 10); // 跳过 "groups":[
+            // ★ 修复：用{}计数来找数组的结束 ]（去掉开头[后内容是{...},{...}]，不含嵌套[]）
+            int objDepth = 0;
             int arrEnd = -1;
             for (int i = 0; i < arrStr.length(); i++) {
                 char c = arrStr.charAt(i);
-                if (c == '[') depth++;
-                else if (c == ']') {
-                    depth--;
-                    if (depth == 0) { arrEnd = i; break; }
+                if (c == '{') objDepth++;
+                else if (c == '}') objDepth--;
+                else if (c == ']' && objDepth == 0) {
+                    arrEnd = i;
+                    break;
                 }
             }
-            if (arrEnd < 0) return;
-            arrStr = arrStr.substring(1, arrEnd); // 去掉 [ ]
+            if (arrEnd < 0) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 数组解析失败"); return; }
+            arrStr = arrStr.substring(1, arrEnd); // 去掉开头 [ 和结尾 ]
 
             if (arrStr.trim().isEmpty()) return; // 空数组
 
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) return;
 
+            plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 解析到 " + arrStr.length() + " 字符的数组内容");
             // 拆分每个JSON对象
             int imported = 0;
-            depth = 0;
+            int depth = 0;
             int objStart = -1;
             for (int i = 0; i < arrStr.length(); i++) {
                 char c = arrStr.charAt(i);
@@ -3309,9 +3311,11 @@ public class WebManager {
                 doGet(ackUrl);
             }
 
-            // ★ 清理去重集合，防止内存泄漏
+            // ★ 清理去重集合：只清理已过游标的旧ID，防止ACK失败后重复打印
             if (processedChangeIds.size() > 500) {
-                processedChangeIds.clear();
+                processedChangeIds.removeIf(id -> id < lastPollAdminChangesId);
+                // 如果清理后仍然过大，才全部清空（最后手段）
+                if (processedChangeIds.size() > 500) processedChangeIds.clear();
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 轮询PHP管理员变更异常: " + e.getMessage());
