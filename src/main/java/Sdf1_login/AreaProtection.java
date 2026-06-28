@@ -5012,7 +5012,7 @@ public class AreaProtection implements Listener {
                 "removemember", "addmember",
                 "config", "配置",
                 "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
-                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig",
+                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig", "groupmembers",
                 "confirm_create"
         ));
 
@@ -6094,6 +6094,62 @@ public class AreaProtection implements Listener {
             } else {
                 sender.sendMessage("§c操作失败（玩家可能不在此组）");
             }
+            return true;
+        }
+
+        // ===== 用户组成员管理面板 =====
+        if (sub.equals("groupmembers")) {
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect groupmembers <组名>");
+                return true;
+            }
+            String groupName = args[1].toLowerCase();
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+            if (cfg == null) { sender.sendMessage("§c未找到用户组: " + groupName); return true; }
+
+            java.util.List<Map<String, Object>> members = ugm.getGroupMembers(groupName);
+            sender.sendMessage("§a§l========== " + cfg.displayColor + cfg.displayName + " §a成员管理 ==========");
+            sender.sendMessage("§7共 §f" + members.size() + " §7名成员");
+
+            if (members.isEmpty()) {
+                sender.sendMessage("§7暂无成员");
+            } else {
+                for (Map<String, Object> m : members) {
+                    String pn = (String) m.get("player_name");
+                    String addedBy = (String) m.get("added_by");
+                    if (sender instanceof Player) {
+                        Player pp = (Player) sender;
+                        pp.sendMessage(Component.empty()
+                                .append(Component.text("  §f" + pn + " §7(添加者: " + (addedBy != null ? addedBy : "system") + ") "))
+                                .append(Component.text("§c[移除]"))
+                                .hoverEvent(HoverEvent.showText(Component.text("§c点击移除此成员")))
+                                .clickEvent(ClickEvent.runCommand("/protect groupdel " + pn + " " + groupName))
+                        );
+                    } else {
+                        sender.sendMessage("  §f" + pn + " §7(添加者: " + (addedBy != null ? addedBy : "system") + ")");
+                    }
+                }
+            }
+
+            // 操作入口
+            sender.sendMessage("");
+            if (sender instanceof Player) {
+                Player pp = (Player) sender;
+                // 添加在线玩家
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§a[添加在线玩家] "))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e输入玩家名添加到此组")))
+                        .clickEvent(ClickEvent.suggestCommand("/protect groupadd <玩家名> " + groupName))
+                );
+                // 返回用户组列表
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§c[返回用户组列表] "))
+                        .clickEvent(ClickEvent.runCommand("/protect grouplist"))
+                );
+            }
+            sender.sendMessage("§7§l─────────────────────────────────");
             return true;
         }
 
@@ -8335,6 +8391,12 @@ public class AreaProtection implements Listener {
                 // ★ 每个组提供编辑和删除操作入口
                 if (sender instanceof Player) {
                     Player pp = (Player) sender;
+                    // ★ 成员管理
+                    pp.sendMessage(Component.empty()
+                            .append(Component.text("  §a[成员管理] "))
+                            .hoverEvent(HoverEvent.showText(Component.text("§a管理此用户组的成员")))
+                            .clickEvent(ClickEvent.runCommand("/protect groupmembers " + cfg.name))
+                    );
                     pp.sendMessage(Component.empty()
                             .append(Component.text("  §e[编辑] "))
                             .hoverEvent(HoverEvent.showText(Component.text("§e编辑此用户组")))
