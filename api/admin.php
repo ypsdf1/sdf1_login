@@ -2172,7 +2172,6 @@ function adminGetStatsEx() {
     try {
         $onlineCount = 0;
         try {
-            // ★ 先检查心跳：如果超过120秒没收到Java推送，清空在线数据（防止残留旧数据）
             $hbCheck = $db->query("SELECT last_seen FROM online_player_hb LIMIT 1");
             $hbRow = $hbCheck ? $hbCheck->fetchArray(SQLITE3_ASSOC) : null;
             $heartbeatFresh = false;
@@ -2184,16 +2183,12 @@ function adminGetStatsEx() {
             }
 
             if ($heartbeatFresh) {
-                // ★ 修复：心跳有效时直接查询全部在线玩家（online_players表每次同步全量重建，无需login_time过滤）
-                // 旧代码 login_time >= time()-120 在Java推送间隔>120秒时会过滤掉所有玩家
                 $r = $db->query("SELECT COUNT(*) as cnt FROM online_players");
                 if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $onlineCount = (int)($row['cnt'] ?? 0); }
             } else {
-                // 心跳过期或无心跳，在线人数为0
                 $onlineCount = 0;
-                @error_log('[adminGetStatsEx] 心跳过期或无心跳，强制在线人数为0');
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log('[adminGetStatsEx] online_players error: ' . $e->getMessage());
         }
 
@@ -2203,7 +2198,7 @@ function adminGetStatsEx() {
             $stmt->bindValue(':cutoff', time() - 86400, SQLITE3_INTEGER);
             $r = $stmt->execute();
             if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $activeCount = (int)($row['cnt'] ?? 0); }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log('[adminGetStatsEx] users error: ' . $e->getMessage());
         }
 
@@ -2211,25 +2206,23 @@ function adminGetStatsEx() {
         try {
             $r = $db->query("SELECT COUNT(*) as cnt FROM users");
             if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $userCount = (int)($row['cnt'] ?? 0); }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log('[adminGetStatsEx] users count error: ' . $e->getMessage());
         }
 
         $totalBonds = 0;
         try {
-            // ★ 检查 bond_cache 表是否存在
             $tableCheck = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='bond_cache'");
             $hasBondCache = false;
             if ($tableCheck) {
                 $tableRow = $tableCheck->fetchArray();
                 $hasBondCache = ($tableRow && !empty($tableRow['name']));
             }
-            
             if ($hasBondCache) {
                 $r = $db->query("SELECT COALESCE(SUM(amount),0) as total FROM bond_cache");
                 if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $totalBonds = (int)($row['total'] ?? 0); }
             }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log('[adminGetStatsEx] bond_cache error: ' . $e->getMessage());
         }
 
@@ -2240,12 +2233,10 @@ function adminGetStatsEx() {
             $stmt->bindValue(':cutoff', $todayStart, SQLITE3_INTEGER);
             $r = $stmt->execute();
             if ($r) { $row = $r->fetchArray(SQLITE3_ASSOC); $todayCount = (int)($row['cnt'] ?? 0); }
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
             @error_log('[adminGetStatsEx] today count error: ' . $e->getMessage());
         }
 
-        @error_log('[adminGetStatsEx] Success: users=' . $userCount . ', online=' . $onlineCount . ', active=' . $activeCount);
-        
         exit(json_encode([
             'success' => true,
             'data' => [
@@ -2257,7 +2248,7 @@ function adminGetStatsEx() {
             ],
             'message' => 'ok'
         ], JSON_UNESCAPED_UNICODE));
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
         @error_log('[adminGetStatsEx] Error: ' . $e->getMessage() . ' ' . $e->getTraceAsString());
         exit(json_encode(['success' => false, 'message' => 'Internal error: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
     }
