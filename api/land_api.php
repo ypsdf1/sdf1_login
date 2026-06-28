@@ -368,7 +368,7 @@ function initLandTables($db) {
     // ★ 效果管理字段迁移（兼容已有表）
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN give_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
-    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     // ★ 管理变更标记
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
@@ -976,7 +976,7 @@ function handleUpdateLandField($db, $playerName, $post) {
     }
 
     // 允许的字段白名单
-    $allowedFields = ['clear_effects', 'give_effects', 'clear_all_bad_effects', 'deny_all_effects'];
+    $allowedFields = ['clear_effects', 'give_effects', 'clear_all_bad', 'deny_all_effects'];
     if (!in_array($field, $allowedFields)) {
         echo json_encode(['success' => false, 'error' => '不允许的字段: ' . $field]);
         return;
@@ -998,7 +998,8 @@ function handleUpdateLandField($db, $playerName, $post) {
     }
 
     // 确保字段存在（容错）
-    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN {$field} TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    $colType = ($field === 'clear_all_bad' || $field === 'deny_all_effects') ? 'INTEGER DEFAULT 0' : "TEXT DEFAULT ''";
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN {$field} $colType"); } catch (\Throwable $e) {}
 
     // ★ 将JSON数组转回Java格式再存储
     $storeValue = $value;
