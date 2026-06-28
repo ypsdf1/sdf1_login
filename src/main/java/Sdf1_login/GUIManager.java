@@ -2854,13 +2854,13 @@ public class GUIManager implements Listener {
 
     /** 命名静态内部类替代匿名BukkitRunnable，修复Paper 26 ClassLoader兼容性 */
     private static class BiomeScanTask extends BukkitRunnable {
-        private final Sdf1_login plugin;
+        private final Main plugin;
         private final Player p;
         private final String category;
         private final java.util.List<int[]> candidates;
         private int idx = 0;
 
-        BiomeScanTask(Sdf1_login plugin, Player p, String category, java.util.List<int[]> candidates) {
+        BiomeScanTask(Main plugin, Player p, String category, java.util.List<int[]> candidates) {
             this.plugin = plugin;
             this.p = p;
             this.category = category;

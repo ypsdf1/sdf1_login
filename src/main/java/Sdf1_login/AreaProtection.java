@@ -5010,7 +5010,8 @@ public class AreaProtection implements Listener {
                 "removemember", "addmember",
                 "config", "配置",
                 "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
-                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig"
+                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig",
+                "confirm_create"
         ));
 
         String first = original[0].toLowerCase();
@@ -5494,59 +5495,119 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c区域已存在");
                 return true;
             }
-            // ★ 检查每人领地数量上限（用户组专属上限）
+            // ★ 检查每人领地数量上限（用户组专属上限）— 同时查内存和DB兜底
+            UserGroupManager ugm = plugin.getUserGroup();
+            int playerMaxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
             long playerLandCount = areas.values().stream()
                     .filter(a -> p.getName().equalsIgnoreCase(a.owner))
                     .count();
-            UserGroupManager ugm = plugin.getUserGroup();
-            int playerMaxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
+            // ★ DB兜底：如果内存计数<上限但DB实际已有更多领地（内存可能过期）
+            if (playerLandCount < playerMaxLands && dbConnection != null) {
+                try {
+                    java.sql.PreparedStatement cntStmt = dbConnection.prepareStatement(
+                            "SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                    cntStmt.setString(1, p.getName());
+                    java.sql.ResultSet cntRs = cntStmt.executeQuery();
+                    if (cntRs.next()) {
+                        long dbCount = cntRs.getLong("cnt");
+                        if (dbCount > playerLandCount) playerLandCount = dbCount;
+                    }
+                    cntRs.close(); cntStmt.close();
+                } catch (Exception ignored) {}
+            }
             if (playerLandCount >= playerMaxLands) {
                 String groupHint = (ugm != null && ugm.getHighestGroup(p.getName()) != null)
                         ? "（用户组: " + ugm.getHighestGroup(p.getName()).displayName + "）" : "";
-                p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + playerMaxLands + " §f个领地" + groupHint);
+                p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + playerMaxLands + " §f个领地（当前: " + playerLandCount + "个）" + groupHint);
                 return true;
             }
             Location l1 = pos1.get(u);
             Location l2 = pos2.get(u);
 
-            // ★ 领地计费：计算面积并扣除余额（用户组专属价格）
+            // ★ 领地计费：计算面积并预估价格（用户组专属价格）
             int width = Math.abs(l2.getBlockX() - l1.getBlockX()) + 1;
             int length = Math.abs(l2.getBlockZ() - l1.getBlockZ()) + 1;
             int area = width * length;
             int effectivePricePerSqm = (ugm != null) ? ugm.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
             int cost = area * effectivePricePerSqm;
-            if (cost > 0) {
-                BondManager bm = plugin.getBonds();
-                if (bm != null) {
-                    int balance = bm.getBonds(p.getName());
-                    if (balance < cost) {
-                        p.sendMessage("§c§l[防护] §f余额不足！需要 §e" + cost + " §f债券，当前余额 §e" + balance);
-                        return true;
+            String priceSource = (effectivePricePerSqm != globalCreatePricePerSqm) ? "§7（用户组优惠价）" : "";
+
+            // ★ Issue 4: 创建确认提示 — 显示预估价格 + 交互链接
+            BondManager bm = plugin.getBonds();
+            int balance = (bm != null) ? bm.getBonds(p.getName()) : 0;
+            String balanceStr = (bm != null) ? String.valueOf(balance) : "?";
+            p.sendMessage("§e§l[防护] §f创建领地 §a" + areaName + " §f的预览:");
+            p.sendMessage("§7  面积: §f" + area + "㎡（" + width + "×" + length + "）");
+            p.sendMessage("§7  单价: §f" + effectivePricePerSqm + "/㎡" + priceSource);
+            p.sendMessage("§7  费用: §e" + cost + " §7债券  余额: §a" + balanceStr + " §7债券");
+            if (bm != null && balance < cost) {
+                p.sendMessage("§c§l[防护] §f余额不足！需要 §e" + cost + " §f，当前 §e" + balance);
+                return true;
+            }
+            if (p instanceof Player) {
+                Player pp = (Player) p;
+                String confirmCmd = "/protect confirm_create " + areaName;
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§a§l[✅ 点击确认创建]"))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击确认创建领地 §f" + areaName + "\n§7费用: " + cost + " 债券")))
+                        .clickEvent(ClickEvent.runCommand(confirmCmd))
+                );
+                pp.sendMessage(Component.text("§7或手动输入: §f/protect 创建 " + areaName));
+            }
+            return true;
+        }
+
+        // ===== 确认创建领地（交互链接触发） =====
+        if (sub.equals("confirm_create")) {
+            if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
+            if (args.length < 2) { sender.sendMessage("§c用法: /protect confirm_create <领地名>"); return true; }
+            Player cp = (Player) sender;
+            String confirmName = args[1];
+            // 检查选点
+            if (!pos1.containsKey(cp.getUniqueId()) || !pos2.containsKey(cp.getUniqueId())) {
+                cp.sendMessage("§c请先用工具选点"); return true;
+            }
+            // 检查重名
+            if (areas.containsKey(confirmName)) { cp.sendMessage("§c区域已存在"); return true; }
+            // ★ 检查上限（含DB兜底）
+            UserGroupManager cugm = plugin.getUserGroup();
+            int cMaxLands = (cugm != null) ? cugm.getPlayerMaxLands(cp.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
+            long cLandCount = areas.values().stream().filter(a -> cp.getName().equalsIgnoreCase(a.owner)).count();
+            if (cLandCount < cMaxLands && dbConnection != null) {
+                try {
+                    java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                    cs.setString(1, cp.getName());
+                    java.sql.ResultSet cr = cs.executeQuery();
+                    if (cr.next()) { long dbc = cr.getLong("cnt"); if (dbc > cLandCount) cLandCount = dbc; }
+                    cr.close(); cs.close();
+                } catch (Exception ignored) {}
+            }
+            if (cLandCount >= cMaxLands) { cp.sendMessage("§c§l[防护] §f已达领地上限！"); return true; }
+            Location cl1 = pos1.get(cp.getUniqueId());
+            Location cl2 = pos2.get(cp.getUniqueId());
+            int cw = Math.abs(cl2.getBlockX() - cl1.getBlockX()) + 1;
+            int cl = Math.abs(cl2.getBlockZ() - cl1.getBlockZ()) + 1;
+            int cArea = cw * cl;
+            int cPrice = (cugm != null) ? cugm.getPlayerLandPricePerSqm(cp.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
+            int cCost = cArea * cPrice;
+            // 扣费
+            if (cCost > 0) {
+                BondManager cbm = plugin.getBonds();
+                if (cbm != null) {
+                    if (!cbm.deductBonds(cp.getName(), cCost, "land_create", cp.getName(), cp.getName(), "创建领地: " + confirmName + " (" + cArea + "㎡×" + cPrice + ")")) {
+                        cp.sendMessage("§c§l[防护] §f扣费失败，请稍后重试"); return true;
                     }
-                    if (!bm.deductBonds(p.getName(), cost, "land_create", p.getName(), p.getName(), "创建领地: " + areaName + " (" + area + "㎡×" + effectivePricePerSqm + ")")) {
-                        p.sendMessage("§c§l[防护] §f扣费失败，请稍后重试");
-                        return true;
-                    }
-                    String priceSource = (effectivePricePerSqm != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
-                    p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cost + " §f债券（" + area + "㎡×" + effectivePricePerSqm + "/㎡）" + priceSource);
+                    String cSrc = (cPrice != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
+                    cp.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cCost + " §f债券（" + cArea + "㎡×" + cPrice + "/㎡）" + cSrc);
                 }
             }
-
-            // ★ 创建AreaConfig并保存到数据库
-            AreaConfig ac = new AreaConfig();
-            ac.name = areaName;
-            ac.owner = p.getName();
-            ac.world = l1.getWorld().getName();
-            ac.x1 = l1.getBlockX();
-            ac.z1 = l1.getBlockZ();
-            ac.x2 = l2.getBlockX();
-            ac.z2 = l2.getBlockZ();
-            ac.yMin = 0;
-            ac.yMax = 255;
-            saveAreaToDb(ac);
-
-            p.sendMessage("§a§l[防护] §f区域 "
-                    + areaName + " 已创建 (owner: " + p.getName() + ")");
+            AreaConfig cac = new AreaConfig();
+            cac.name = confirmName; cac.owner = cp.getName(); cac.world = cl1.getWorld().getName();
+            cac.x1 = cl1.getBlockX(); cac.z1 = cl1.getBlockZ(); cac.x2 = cl2.getBlockX(); cac.z2 = cl2.getBlockZ();
+            cac.yMin = 0; cac.yMax = 255;
+            saveAreaToDb(cac);
+            areas.put(confirmName, cac); // ★ 立即更新内存
+            cp.sendMessage("§a§l[防护] §f区域 " + confirmName + " 已创建 (owner: " + cp.getName() + ")");
             loadAllAreas();
             return true;
         }
@@ -5986,7 +6047,7 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        if (sub.equals("groupadd")) {
+        if (sub.equals("groupadd") || sub.equals("addmember")) {
             if (args.length < 3) {
                 sender.sendMessage("§e用法: /protect groupadd <玩家> <组名>");
                 return true;

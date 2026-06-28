@@ -1200,6 +1200,73 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
+        // ★ 用户组成员管理面板
+        if (title.startsWith(T_GROUP_MEMBER)) {
+            event.setCancelled(true);
+            String groupName = title.substring(T_GROUP_MEMBER.length()).trim();
+            UserGroupManager ugm2 = plugin.getUserGroup();
+            if (ugm2 == null) return;
+            UserGroupManager.UserGroupConfig cfg2 = ugm2.getGroupConfig(groupName);
+            if (cfg2 == null) { p.closeInventory(); return; }
+
+            if (raw == 48) {
+                // 返回用户组列表
+                openUserGroupPanel(p);
+            } else if (raw == 45) {
+                // ★ 添加在线玩家 — 打开在线玩家选择面板
+                openGroupAddPlayerPanel(p, groupName);
+            } else if (raw == 46) {
+                // CLI提示
+                p.closeInventory();
+                p.sendMessage("§e请输入: §f/protect groupadd <玩家名> " + groupName);
+            } else if (raw < 45) {
+                // 右键移除成员
+                if (event.isRightClick()) {
+                    UserGroupManager ugm3 = plugin.getUserGroup();
+                    if (ugm3 != null) {
+                        List<Map<String, Object>> members = ugm3.getGroupMembers(groupName);
+                        if (raw < members.size()) {
+                            String targetPlayer = (String) members.get(raw).get("player_name");
+                            ugm3.removePlayer(targetPlayer, groupName);
+                            p.sendMessage("§a已将 §f" + targetPlayer + " §a移出用户组: " + cfg2.displayName);
+                            Player online = plugin.getServer().getPlayerExact(targetPlayer);
+                            if (online != null) {
+                                online.sendMessage("§a§l[用户组] §f你已被移出用户组: §e" + cfg2.displayName);
+                            }
+                            openGroupMemberPanel(p, groupName); // 刷新
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        // ★ 用户组添加在线玩家面板
+        if (title.startsWith("§a§l选择玩家加入 - ")) {
+            event.setCancelled(true);
+            String groupName = title.substring("§a§l选择玩家加入 - ".length()).trim();
+            UserGroupManager ugm4 = plugin.getUserGroup();
+            if (ugm4 == null) return;
+            if (raw == 48) {
+                openGroupMemberPanel(p, groupName);
+            } else if (raw < 45) {
+                // 获取在线玩家列表
+                java.util.List<Player> onlinePlayers = new ArrayList<>(plugin.getServer().getOnlinePlayers());
+                if (raw < onlinePlayers.size()) {
+                    Player target = onlinePlayers.get(raw);
+                    if (ugm4.addPlayer(target.getName(), groupName, p.getName())) {
+                        UserGroupManager.UserGroupConfig cfg3 = ugm4.getGroupConfig(groupName);
+                        p.sendMessage("§a已将 §f" + target.getName() + " §a加入用户组: §f" + (cfg3 != null ? cfg3.displayName : groupName));
+                        target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + (cfg3 != null ? cfg3.displayName : groupName));
+                    } else {
+                        p.sendMessage("§c操作失败");
+                    }
+                    openGroupMemberPanel(p, groupName); // 刷新
+                }
+            }
+            return;
+        }
+
         // ★ 公共建筑传送
         if (T_PUBLIC_BUILDING.equals(title)) {
             event.setCancelled(true);
@@ -1604,13 +1671,98 @@ public class AreaGUIManager implements Listener {
         List<String> groupNames = new ArrayList<>(groups.keySet());
 
         if (raw == 48) {
-            // 返回管理员面板
             openAdminPanel(p);
         } else if (raw >= 0 && raw < 45 && raw < groupNames.size()) {
-            // 右键删除用户组（由事件处理区分）
-            // 左键 = 查看详情/成员
-            // 此处不做操作，由InventoryClickEvent处理
+            // 左键 = 打开成员管理面板
+            String groupName = groupNames.get(raw);
+            openGroupMemberPanel(p, groupName);
         }
+    }
+
+    // ==================== 用户组成员管理 GUI ====================
+    private static final String T_GROUP_MEMBER = "§6§l用户组成员 - ";
+
+    /**
+     * ★ 打开用户组成员管理面板
+     */
+    public void openGroupMemberPanel(Player p, String groupName) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+        if (cfg == null) return;
+
+        List<Map<String, Object>> groupMembers = ugm.getGroupMembers(groupName);
+
+        Inventory inv = Bukkit.createInventory(null, 54, T_GROUP_MEMBER + cfg.displayName);
+
+        // 显示成员列表
+        int slot = 0;
+        for (Map<String, Object> member : groupMembers) {
+            if (slot >= 45) break;
+            String playerName = (String) member.get("player_name");
+            String addedBy = (String) member.get("added_by");
+            inv.setItem(slot, createItem(Material.PLAYER_HEAD, "§a§l" + playerName,
+                    "§7操作人: §f" + (addedBy != null ? addedBy : "system"),
+                    "",
+                    "§c右键移除此成员"));
+            slot++;
+        }
+
+        if (groupMembers.isEmpty()) {
+            inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无成员",
+                    "§7使用 §f/protect groupadd <玩家> <组名> §7添加",
+                    "§7或点击下方按钮添加在线玩家"));
+        }
+
+        // ★ 添加在线玩家按钮
+        inv.setItem(45, createItem(Material.EMERALD, "§a§l添加在线玩家",
+                "§7点击选择在线玩家加入此组"));
+
+        // ★ CLI命令提示按钮
+        inv.setItem(46, createItem(Material.PAPER, "§e§lCLI添加",
+                "§7点击后在聊天栏输入玩家名"));
+
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回用户组列表", ""));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * ★ 打开在线玩家选择面板（添加到用户组）
+     */
+    public void openGroupAddPlayerPanel(Player p, String groupName) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+        if (cfg == null) return;
+
+        java.util.List<Player> onlinePlayers = new ArrayList<>(plugin.getServer().getOnlinePlayers());
+        // 已在组内的成员
+        List<Map<String, Object>> existing = ugm.getGroupMembers(groupName);
+        java.util.Set<String> existingNames = new java.util.HashSet<>();
+        for (Map<String, Object> m : existing) {
+            existingNames.add(((String) m.get("player_name")).toLowerCase());
+        }
+
+        Inventory inv = Bukkit.createInventory(null, 54, "§a§l选择玩家加入 - " + cfg.displayName);
+
+        int slot = 0;
+        for (Player target : onlinePlayers) {
+            if (slot >= 45) break;
+            boolean inGroup = existingNames.contains(target.getName().toLowerCase());
+            Material mat = inGroup ? Material.LIME_DYE : Material.PLAYER_HEAD;
+            String prefix = inGroup ? "§a✓ " : "";
+            inv.setItem(slot, createItem(mat, prefix + "§l" + target.getName(),
+                    inGroup ? "§7已在组内" : "§7点击加入 " + cfg.displayName));
+            slot++;
+        }
+
+        if (onlinePlayers.isEmpty()) {
+            inv.setItem(22, createItem(Material.BARRIER, "§7§l无在线玩家"));
+        }
+
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回成员列表", ""));
+        p.openInventory(inv);
     }
 
     // ==================== 效果管理 GUI ====================

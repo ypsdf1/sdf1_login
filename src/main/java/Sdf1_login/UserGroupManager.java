@@ -295,6 +295,32 @@ public class UserGroupManager {
         return list;
     }
 
+    // ==================== 成员查询 ====================
+
+    /**
+     * 获取指定用户组的所有成员
+     */
+    public List<Map<String, Object>> getGroupMembers(String groupName) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name, added_by, added_time FROM user_group_member WHERE group_name=?");
+            ps.setString(1, groupName);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("player_name", rs.getString("player_name"));
+                row.put("added_by", rs.getString("added_by"));
+                row.put("added_time", rs.getLong("added_time"));
+                list.add(row);
+            }
+            rs.close(); ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
     // ==================== 配置类 ====================
 
     public static class UserGroupConfig {
