@@ -27,6 +27,9 @@ define('WEBSUB_DIR', '/plugin');
 // ===== Java插件回调端口 =====
 define('CALLBACK_PORT', 9090);
 
+// ===== Java游戏服务器地址（PHP回调Java用） =====
+define('GAME_SERVER_HOST', '127.0.0.1');
+
 // ===== 辅助函数：构建相对路径 =====
 function webPath($path = '') {
     return trim(WEBSUB_DIR, '/') . ($path ? '/' . trim($path, '/') : '');

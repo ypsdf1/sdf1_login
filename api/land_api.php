@@ -729,7 +729,13 @@ function handleUpdateLandOwner($db, $post) {
         echo json_encode(['success' => false, 'error' => '玩家名格式无效：仅允许英文字母、数字和下划线，2-16位']);
         return;
     }
-    if (!playerExists($db, $owner)) {
+    // ★ 校验玩家是否存在于login.db（调Java回调验证）
+    $ownerValid = validatePlayerViaJava($owner);
+    if ($ownerValid === null) {
+        echo json_encode(['success' => false, 'error' => '无法连接游戏服务器进行验证，请稍后再试']);
+        return;
+    }
+    if (!$ownerValid) {
         echo json_encode(['success' => false, 'error' => "玩家 §e{$owner} §f未注册，请确认后再试"]);
         return;
     }
@@ -888,9 +894,14 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
-    // ★ 校验玩家是否存在于数据库（login.db或web用户表）
-    if (!playerExists($db, $visitor)) {
-        echo json_encode(['success' => false, 'error' => '玩家不存在: ' . $visitor . '，请确认玩家已注册']);
+    // ★ 校验玩家是否存在于login.db（调Java回调验证）
+    $visitorValid = validatePlayerViaJava($visitor);
+    if ($visitorValid === null) {
+        echo json_encode(['success' => false, 'error' => '无法连接游戏服务器进行验证，请稍后再试']);
+        return;
+    }
+    if (!$visitorValid) {
+        echo json_encode(['success' => false, 'error' => '玩家 §e' . $visitor . ' §f不存在，请确认玩家已注册']);
         return;
     }
 
@@ -921,6 +932,47 @@ function handleAddVisitor($db, $playerName, $req) {
     $stmt2->execute();
 
     echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
+}
+
+/**
+ * ★ 通过Java回调服务器验证玩家是否存在于login.db
+ * PHP无法直接读取Java本地的login.db，需调Java验证
+ * 返回: true=存在, false=不存在, null=验证失败(网络错误等)
+ */
+function validatePlayerViaJava($playerName) {
+    $host = GAME_SERVER_HOST;
+    $port = CALLBACK_PORT;
+    $timeout = 5; // 秒
+
+    $payload = json_encode([
+        'player' => $playerName,
+        'secret' => SECRET_KEY
+    ]);
+
+    $url = "http://{$host}:{$port}/validate_player";
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/json\r\nContent-Length: " . strlen($payload) . "\r\nConnection: close\r\n",
+            'content' => $payload,
+            'timeout' => $timeout,
+            'ignore_errors' => true
+        ]
+    ]);
+
+    $response = @file_get_contents($url, false, $context);
+    if ($response === false) {
+        debugLog("validatePlayerViaJava: 无法连接Java服务器 {$host}:{$port}");
+        return null; // 网络错误
+    }
+
+    $data = json_decode($response, true);
+    if (!$data || !isset($data['exists'])) {
+        debugLog("validatePlayerViaJava: Java返回无效响应", ['response' => $response]);
+        return null;
+    }
+
+    return (bool)$data['exists'];
 }
 
 /**
@@ -1663,18 +1715,15 @@ function handleAddGroupMember($db, $data) {
         echo json_encode(['success' => false, 'error' => "玩家名格式无效: {$player}（需要3-16位字母/数字/下划线）"]);
         return;
     }
-    // ★ 校验玩家是否存在（查login.db）
-    $loginDbPath = dirname(__DIR__) . '/db/login.db';
-    if (file_exists($loginDbPath)) {
-        $loginDb = new SQLite3($loginDbPath);
-        $stmt = $loginDb->prepare("SELECT 1 FROM users WHERE player_name = :name");
-        $stmt->bindValue(':name', $player, SQLITE3_TEXT);
-        $exists = $stmt->execute()->fetchArray();
-        $loginDb->close();
-        if (!$exists) {
-            echo json_encode(['success' => false, 'error' => "玩家 {$player} 不存在于login.db"]);
-            return;
-        }
+    // ★ 校验玩家是否存在（调Java回调服务器查login.db）
+    $playerValid = validatePlayerViaJava($player);
+    if ($playerValid === null) {
+        echo json_encode(['success' => false, 'error' => "无法连接游戏服务器进行验证，请稍后再试"]);
+        return;
+    }
+    if (!$playerValid) {
+        echo json_encode(['success' => false, 'error' => "玩家 §e{$player} §f不存在于login.db，请确认玩家已注册"]);
+        return;
     }
     $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
         player_name TEXT NOT NULL,
