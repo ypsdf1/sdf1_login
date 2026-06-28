@@ -1192,6 +1192,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 公共建筑标记
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 流体阻止
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_fluid INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -7619,7 +7621,7 @@ public class AreaProtection implements Listener {
 
     /**
      * ★ PHP端修改领地字段时调用（效果管理等）
-     * field: give_effects, clear_effects, clear_all_bad_effects, deny_all_effects等
+     * field: give_effects, clear_effects, clear_all_bad, deny_all_effects等
      * value: 新值（已转为Java格式）
      */
     public void updateLandFieldFromWeb(String landName, String field, String value) {
@@ -7627,7 +7629,7 @@ public class AreaProtection implements Listener {
         try {
             // 白名单校验字段名（防SQL注入）
             java.util.Set<String> allowedFields = new java.util.HashSet<>(java.util.Arrays.asList(
-                "give_effects", "clear_effects", "clear_all_bad_effects", "deny_all_effects",
+                "give_effects", "clear_effects", "clear_all_bad", "deny_all_effects",
                 "deny_block_place", "deny_block_break", "deny_pvp", "deny_fall_damage",
                 "deny_hunger", "deny_all_damage", "deny_drop", "deny_mount", "deny_ender_pearl",
                 "deny_bow", "deny_potion", "deny_explosion", "deny_raid", "deny_fire_spread",

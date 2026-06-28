@@ -2899,7 +2899,7 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("confiscate_msg", "")).append(":");
                 hashBuilder.append(land.getOrDefault("clear_effects", "")).append(":");
                 hashBuilder.append(land.getOrDefault("give_effects", "")).append(":");
-                hashBuilder.append(land.getOrDefault("clear_all_bad_effects", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("clear_all_bad", 0)).append(":");
                 // 传送点
                 hashBuilder.append(land.getOrDefault("warp_x", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("warp_y", 0)).append(":");
