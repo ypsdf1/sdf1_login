@@ -194,28 +194,21 @@ public class GiftManager {
             giveItem(p, Material.WOODEN_AXE);
             giveItem(p, Material.WOODEN_SHOVEL);
         } else if (stage == 2) {
-            if (plugin.getEconomy() != null) {
-                double before = plugin.getEconomy()
-                        .getBalance(p);
-                plugin.getEconomy()
-                        .depositPlayer(p, 500);
-                double after = plugin.getEconomy()
-                        .getBalance(p);
-                p.sendMessage("§a§l[礼包] §f游戏币: §e"
-                        + (long) before
-                        + "§f → §a" + (long) after);
+            // 游戏币改为债券
+            BondManager bm = plugin.getBonds();
+            if (bm != null) {
+                int before = bm.getBonds(p.getName());
+                bm.addBonds(p.getName(), 500, "gift_stage2", "", "新手礼包", "阶段2奖励");
+                int after = bm.getBonds(p.getName());
+                p.sendMessage("§a§l[礼包] §f债券: §e" + before + "§f → §a" + after);
             }
         } else if (stage == 3) {
-            if (plugin.getEconomy() != null) {
-                double before = plugin.getEconomy()
-                        .getBalance(p);
-                plugin.getEconomy()
-                        .depositPlayer(p, 1500);
-                double after = plugin.getEconomy()
-                        .getBalance(p);
-                p.sendMessage("§a§l[礼包] §f游戏币: §e"
-                        + (long) before
-                        + "§f → §a" + (long) after);
+            BondManager bm = plugin.getBonds();
+            if (bm != null) {
+                int before = bm.getBonds(p.getName());
+                bm.addBonds(p.getName(), 1500, "gift_stage3", "", "新手礼包", "阶段3奖励");
+                int after = bm.getBonds(p.getName());
+                p.sendMessage("§a§l[礼包] §f债券: §e" + before + "§f → §a" + after);
             }
             giveItem(p, Material.IRON_PICKAXE);
             giveItem(p, Material.IRON_AXE);
@@ -225,16 +218,12 @@ public class GiftManager {
             giveItem(p, Material.IRON_LEGGINGS);
             giveItem(p, Material.IRON_BOOTS);
         } else if (stage == 4) {
-            if (plugin.getEconomy() != null) {
-                double before = plugin.getEconomy()
-                        .getBalance(p);
-                plugin.getEconomy()
-                        .depositPlayer(p, 2000);
-                double after = plugin.getEconomy()
-                        .getBalance(p);
-                p.sendMessage("§a§l[礼包] §f游戏币: §e"
-                        + (long) before
-                        + "§f → §a" + (long) after);
+            BondManager bm = plugin.getBonds();
+            if (bm != null) {
+                int before = bm.getBonds(p.getName());
+                bm.addBonds(p.getName(), 2000, "gift_stage4", "", "新手礼包", "阶段4奖励");
+                int after = bm.getBonds(p.getName());
+                p.sendMessage("§a§l[礼包] §f债券: §e" + before + "§f → §a" + after);
             }
             giveItem(p, Material.DIAMOND_HELMET);
             giveItem(p, Material.DIAMOND_CHESTPLATE);

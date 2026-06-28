@@ -193,18 +193,7 @@ public class GUIManager implements Listener {
         }
         // 在 openMain 方法中，Row3 区域加：
 
-        // ★ 余额查询 - 所有人都能看 ★
-        double myBal = 0;
-        try {
-            var reg = plugin.getServer()
-                    .getServicesManager()
-                    .getRegistration(
-                            net.milkbowl.vault.economy
-                                    .Economy.class);
-            if (reg != null)
-                myBal = reg.getProvider()
-                        .getBalance(p);
-        } catch (Exception ignored) {}
+        // 余额查询已移除Vault支持，仅显示债券余额
         int myBonds = plugin.getBonds().getBonds(p.getName());
         g.setItem(32, mkItem(Material.EMERALD,
                 "§b§l我的钱包",
@@ -341,28 +330,19 @@ public class GUIManager implements Listener {
     public void openBalanceOps(Player p) {
         Inventory g = Bukkit.createInventory(null, 54, "§d§l余额操作");
         fillBg(g);
-
-        net.milkbowl.vault.economy.Economy eco = null;
-        try {
-            var reg = plugin.getServer().getServicesManager()
-                    .getRegistration(net.milkbowl.vault.economy.Economy.class);
-            if (reg != null) eco = reg.getProvider();
-        } catch (Exception ignored) {}
+        // Vault经济支持已移除，仅显示债券余额
 
         int slot = 0;
         for (Player op : Bukkit.getOnlinePlayers()) {
             if (slot >= 45) break;
-            double bal = 0;
-            if (eco != null) bal = eco.getBalance(op);
             boolean isSelf = op.getName().equals(p.getName());
             int bondBal = plugin.getBonds().getBonds(op.getName());
             g.setItem(slot, mkItem(
                     isSelf ? Material.EMERALD_BLOCK : Material.PLAYER_HEAD,
                     "§e" + op.getName(),
-                    "§7金币: §a$" + String.format("%.2f", bal),
                     "§7债券: §e" + bondBal + " §6枚",
                     "",
-                    "§a左键经济(±)  §6右键债券(±)"));
+                    "§a仅显示债券余额（Vault经济支持已移除）"));
             slot++;
         }
 
@@ -940,7 +920,7 @@ public class GUIManager implements Listener {
         // ===== 余额操作 =====
         if ("§d§l余额操作".equals(title)) {
             event.setCancelled(true);
-            if (raw == 49) { openAdmin(p); return; }
+            if (raw == 49) { plugin.openMyWallet(p); return; }
             if (raw < 0 || raw >= 45) return;
             ItemStack item = event.getView()
                     .getTopInventory().getItem(raw);

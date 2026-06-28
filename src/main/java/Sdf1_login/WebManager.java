@@ -1707,6 +1707,33 @@ public class WebManager {
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {
                     plugin.getLogger().info("[合并C] ★ 全员下线，Timer C已暂停");
+                    log.error("\n" +
+                            " __          __                             _                                                                    \n" +
+                            " \\ \\        / /                            | |                                                                   \n" +
+                            "  \\ \\  /\\  / /__  ___ ___  _ __ ___   ___  | |_ ___                                                              \n" +
+                            "   \\ \\/  \\/ / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                             \n" +
+                            "    \\  /\\  /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                            \n" +
+                            "     \\/  \\/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                _                                            \n" +
+                            "                                             | |                   (_)                                           \n" +
+                            "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __ \n" +
+                            "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|\n" +
+                            " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |   \n" +
+                            "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_| |_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_|    \\_/ \\___|_|   \n" +
+                            "  _                  __/ |  ___                   _     _     _ _  __                                            \n" +
+                            " (_)     _          |___/  |__ \\                 | |   (_)   | (_)/ _|                                           \n" +
+                            "  _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __                           \n" +
+                            " | | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\                          \n" +
+                            " | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |                         \n" +
+                            " |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|                         \n" +
+                            "   | |                             __/ | |                                                                       \n" +
+                            "   |_|            _       ____   _|___/|_|______ ___                                                             \n" +
+                            "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                            \n" +
+                            "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                           \n" +
+                            " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                           \n" +
+                            " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                            \n" +
+                            " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                             \n" +
+                            " | |                                                                                                             \n" +
+                            " |_|                                                                                                             ");
                     return; // 不调度下一轮，定时器自然停止
                 }
 
@@ -4366,43 +4393,41 @@ public class WebManager {
         boolean isRegistered = plugin.getDb().userExists(playerName);
 
         // ★ 使用push_player_login_status端点，推送玩家在线状态+token到PHP
-        boolean syncSuccess = false;
-        try {
-            // 用GET请求，所有参数通过URL传递
-            // ★ 获取玩家真实IP地址
-            String playerIp = "";
-            java.net.InetSocketAddress addr = player.getAddress();
-            if (addr != null && addr.getAddress() != null) {
-                playerIp = addr.getAddress().getHostAddress();
-            }
-            String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
-                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
-                    + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
-                    + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
-                    + "&expire_seconds=" + tokenExpireSeconds
-                    + "&online=1"
-                    + "&registered=" + (isRegistered ? "1" : "0")
-                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                    + "&login_verified=1"; // ★ 玩家刚登录游戏已认证，直接告诉PHP放行
-
-            String response = doGet(urlStr);
-            if (response != null) {
-                plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
-                if (response.contains("\"success\":true")) {
-                    syncSuccess = true;
+        // ★ 必须异步执行，不能在server thread上同步HTTP（会导致10秒阻塞！）
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            boolean syncSuccess = false;
+            try {
+                String playerIp = "";
+                java.net.InetSocketAddress addr = player.getAddress();
+                if (addr != null && addr.getAddress() != null) {
+                    playerIp = addr.getAddress().getHostAddress();
                 }
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 推送玩家登录状态失败: " + e.getMessage());
-        }
+                String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
+                        + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                        + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                        + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
+                        + "&expire_seconds=" + tokenExpireSeconds
+                        + "&online=1"
+                        + "&registered=" + (isRegistered ? "1" : "0")
+                        + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
+                        + "&login_verified=1";
 
-        // 延迟5秒发送消息，与登录消息一起打印，避免刷屏
-        final boolean[] syncSuccessHolder = {syncSuccess};
-        new BukkitRunnable() {
-            @Override
-            public void run() {
+                String response = doGet(urlStr);
+                if (response != null) {
+                    plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
+                    if (response.contains("\"success\":true")) {
+                        syncSuccess = true;
+                    }
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web通信] 推送玩家登录状态失败: " + e.getMessage());
+            }
+
+            // 回到主线程发送消息
+            final boolean finalSuccess = syncSuccess;
+            Bukkit.getScheduler().runTask(plugin, () -> {
                 if (player.isOnline()) {
-                    if (syncSuccessHolder[0]) {
+                    if (finalSuccess) {
                         player.sendMessage("§7[Web] §e请点击链接登录Web端:");
                         player.sendMessage("§b" + webBaseUrl + "/login.php?token=" + token);
                     } else {
@@ -4410,11 +4435,11 @@ public class WebManager {
                     }
                     player.sendMessage("§7[Web] 使用 §e/sdf1_login weblogin §7可重新获取");
                 }
-            }
-        }.runTaskLater(plugin, 100L);
+            });
 
-        // ★ 事件驱动：玩家加入时触发一次登录轮询
-        triggerLoginPoll();
+            // 事件驱动：玩家加入时触发一次登录轮询
+            triggerLoginPoll();
+        });
     }
 
     /**

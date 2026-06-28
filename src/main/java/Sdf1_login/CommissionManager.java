@@ -149,18 +149,8 @@ public class CommissionManager {
                 originalAmount * rate;
         if (commission <= 0) return;
 
-        // 通过 Vault 发放
-        var rsp = main.getServer()
-                .getServicesManager()
-                .getRegistration(
-                        net.milkbowl.vault
-                                .economy.Economy.class);
-        if (rsp == null) return;
-        net.milkbowl.vault.economy.Economy econ =
-                rsp.getProvider();
-        if (econ == null) return;
-
-        econ.depositPlayer(inviter, commission);
+        // Economy已移除，佣金提成功能不可用
+        // 邀请人可通过债券系统获取奖励
 
         // 通知邀请人
         Player inviterP =

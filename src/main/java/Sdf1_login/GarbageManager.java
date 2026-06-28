@@ -425,7 +425,7 @@ public class GarbageManager {
                     "§7已是最后一页"));
         }
 
-        // 52 格：返回
+        // 52 格：返回主菜单
         g.setItem(52, mk(Material.ARROW,
                 "§7返回",
                 "§7返回主菜单"));

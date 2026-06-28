@@ -1213,15 +1213,6 @@ public class QuestTracker {
         }
 
         Main main = (Main) plugin;
-        // ★ 读取配置：economy = Vault，bonds = 债券（默认）
-        boolean useEconomy = "economy".equalsIgnoreCase(
-                main.getConfigMgr().rewardChannel);
-
-        // Vault 经济引用（仅 useEconomy 时使用）
-        net.milkbowl.vault.economy.Economy econ = null;
-        if (useEconomy) {
-            econ = main.getEconomy();
-        }
 
         int sentCount = 0;
 
@@ -1247,53 +1238,17 @@ public class QuestTracker {
                 // 尝试识别经济金额
                 double amt = extractEconomyAmount(part);
                 if (amt > 0) {
-                    // ★ 根据配置分发
-                    if (useEconomy && econ != null) {
-                        // —— Vault 经济 ——
-                        double before =
-                                econ.getBalance(player);
-                        econ.depositPlayer(player, amt);
-                        double after =
-                                econ.getBalance(player);
-                        player.sendMessage(
-                                "§a§l[任务奖励] §f" + part
-                                        + " §7(余额: §e"
-                                        + String.format("%.2f", before)
-                                        + " §7→ §a"
-                                        + String.format("%.2f", after)
-                                        + "§7)");
-                        if (plugin instanceof Main) {
-                            ((Main) plugin).getCommission()
-                                    .payCommission(
-                                            player.getName(), amt);
-                        }
+                    // Economy已移除，全部转为债券发放
+                    // —— 债券 ——
+                    int bondAmt = (int) Math.round(amt);
+                    BondManager bonds = main.getBonds();
+                    if (bonds != null) {
+                        int before = bonds.getBonds(player.getName());
+                        bonds.addBonds(player.getName(), bondAmt, "quest_reward", qf.displayName, "任务系统", "任务奖励：" + qf.displayName);
+                        int after = bonds.getBonds(player.getName());
+                        player.sendMessage("§a§l[任务奖励] §f" + part + " §7(债券: §e" + before + " §7→ §a" + after + "§7)");
                     } else {
-                        // —— 债券（默认） ——
-                        int bondAmt =
-                                (int) Math.round(amt);
-                        BondManager bonds = main.getBonds();
-                        if (bonds != null) {
-                            int before = bonds.getBonds(
-                                    player.getName());
-                            bonds.addBonds(
-                                    player.getName(),
-                                    bondAmt,
-                                    "quest_reward",
-                                    qf.displayName,
-                                    "任务系统",
-                                    "任务奖励：" + qf.displayName);
-                            int after = bonds.getBonds(
-                                    player.getName());
-                            player.sendMessage(
-                                    "§a§l[任务奖励] §f" + part
-                                            + " §7(债券: §e"
-                                            + before
-                                            + " §7→ §a"
-                                            + after + "§7)");
-                        } else {
-                            player.sendMessage(
-                                    "§c债券系统不可用");
-                        }
+                        player.sendMessage("§c债券系统不可用");
                     }
                     sentCount++;
                     continue;

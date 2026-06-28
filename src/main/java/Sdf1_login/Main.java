@@ -1,7 +1,7 @@
 package Sdf1_login;
 
 
-import net.milkbowl.vault.economy.Economy;
+
 import org.bukkit.*;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -53,7 +53,6 @@ public class Main extends JavaPlugin
     private PointsManager points;
     public GUIManager gui;
     private ChatInputManager chatInput;
-    private Economy economy;
     private VerificationManager verification;
     private IPGroupManager ipGroup;
     private AccountRequestManager accountRequest;
@@ -216,9 +215,7 @@ public class Main extends JavaPlugin
         return email;
     }
 
-    public Economy getEconomy() {
-        return economy;
-    }
+    // getEconomy() 已移除 — Sdf1_login 放弃对 Vault Economy 的支持，使用 BondManager 替代
 
     public LoginManager getLoginMgr() {
         return loginMgr;
@@ -388,7 +385,8 @@ public class Main extends JavaPlugin
                 .registerEvents(new IronBlockElevator(), this);
 
         // ===== 8. 经济 =====
-        setupEconomy();
+        // 经济系统已移除，Sdf1_login 不再依赖 Vault
+        // 所有经济相关功能使用 BondManager（债券系统）替代
 
         // ===== 9. 注册命令 =====
         if (getCommand("sdf1_login") != null) {
@@ -712,16 +710,7 @@ public class Main extends JavaPlugin
         }
     }
 
-    private void setupEconomy() {
-        if (getServer().getPluginManager()
-                .getPlugin("Vault") == null) return;
-        RegisteredServiceProvider<Economy> rsp =
-                getServer().getServicesManager()
-                        .getRegistration(
-                                Economy.class);
-        if (rsp != null)
-            economy = rsp.getProvider();
-    }
+    // setupEconomy() 已移除 — Sdf1_login 放弃对 Vault Economy 的支持
 
     // ===== Timers =====
     private void startTimeoutCheck() {
@@ -3898,113 +3887,8 @@ public class Main extends JavaPlugin
             multiplier = 1.1;
         }
 
-        // ===== 3. 经济奖励（不再重复加积分） =====
-        if (economy == null) {
-            playSuccessSound(p);
-            return;
-        }
-
-        // 固定金额模式
-        if ("fixed".equals(
-                config.checkinRewardType)
-                && config.checkinRewardFixed > 0) {
-            final double reward =
-                    config.checkinRewardFixed;
-            final double m = multiplier;
-            p.sendMessage("§e§l[签到] §f"
-                    + "正在生成今日奖励...");
-            Bukkit.getScheduler()
-                    .runTaskLater(this, () -> {
-                        double rewardFinal =
-                                Math.round(
-                                        reward * m
-                                                * 100.0)
-                                        / 100.0;
-                        double before =
-                                economy
-                                        .getBalance(p);
-                        economy.depositPlayer(
-                                p, rewardFinal);
-                        double after =
-                                economy
-                                        .getBalance(p);
-                        p.sendMessage(
-                                "§6§l[签到] §f"
-                                        + "获得奖励: §a§l$"
-                                        + String.format(
-                                        "%.2f",
-                                        rewardFinal));
-                        p.sendMessage("§7余额: §e"
-                                + String.format(
-                                "%.2f", before)
-                                + " §7→ §a"
-                                + String.format(
-                                "%.2f", after));
-                        playSuccessSound(p);
-                    }, 30L);
-            return;
-        }
-
-        // 盲盒范围模式
-        if ("range".equals(
-                config.checkinRewardType)
-                && config.checkinRewardMin > 0
-                && config.checkinRewardMax
-                > config.checkinRewardMin) {
-            final double min =
-                    config.checkinRewardMin;
-            final double max =
-                    config.checkinRewardMax;
-            final double m = multiplier;
-            getLogger().info(
-                    "[签到] 盲盒: min="
-                            + min + " max=" + max
-                            + " multi=" + m);
-            p.sendMessage("§e§l[签到盲盒] "
-                    + "§f正在生成今日惊喜...");
-            Bukkit.getScheduler()
-                    .runTaskLater(this, () -> {
-                        double rand =
-                                Math.random();
-                        double reward = min
-                                + rand
-                                * (max - min);
-                        reward = Math.round(
-                                reward * m * 100.0)
-                                / 100.0;
-                        getLogger().info(
-                                "[签到] 盲盒结果: rand="
-                                        + String.format(
-                                        "%.4f", rand)
-                                        + " reward="
-                                        + reward);
-                        double before =
-                                economy
-                                        .getBalance(p);
-                        economy.depositPlayer(
-                                p, reward);
-                        double after =
-                                economy
-                                        .getBalance(p);
-                        p.sendMessage(
-                                "§6§l====== 签到盲盒 ======");
-                        p.sendMessage(
-                                "§7开出: §a§l$"
-                                        + String.format(
-                                        "%.2f",
-                                        reward));
-                        p.sendMessage("§7余额: §e"
-                                + String.format(
-                                "%.2f", before)
-                                + " §7→ §a"
-                                + String.format(
-                                "%.2f", after));
-                        p.sendMessage(
-                                "§6§l========================");
-                        playSuccessSound(p);
-                    }, 40L);
-            return;
-        }
+        // ===== 3. 经济奖励已移除 =====
+        // 签到不再通过Vault经济发放奖励，所有经济奖励已通过债券系统或积分系统替代
 
         // 无经济奖励
         playSuccessSound(p);

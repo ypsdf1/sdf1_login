@@ -176,58 +176,8 @@ public class CDKManager {
     private void handleEconInput(Player admin,
                                  String msg,
                                  String target) {
-        net.milkbowl.vault.economy.Economy econ
-                = null;
-        try {
-            var reg = plugin.getServer()
-                    .getServicesManager()
-                    .getRegistration(
-                            net.milkbowl.vault
-                                    .economy
-                                    .Economy.class);
-            if (reg != null)
-                econ = reg.getProvider();
-        } catch (Exception ignored) {}
-        if (econ == null) {
-            admin.sendMessage("§c经济系统不可用");
-            return;
-        }
-        if (!msg.startsWith("+")
-                && !msg.startsWith("-")) {
-            admin.sendMessage("§c格式: §a+100"
-                    + " §7或 §c-50");
-            return;
-        }
-        try {
-            String numStr =
-                    msg.substring(1).trim();
-            double amount =
-                    Double.parseDouble(numStr);
-            if (amount <= 0) {
-                admin.sendMessage("§c金额必须>0");
-                return;
-            }
-            if (msg.startsWith("-")) {
-                Player tp = plugin.getServer()
-                        .getPlayerExact(target);
-                if (tp == null) {
-                    admin.sendMessage("§c" + target
-                            + " 不在线");
-                    return;
-                }
-                if (!econ.has(tp, amount)) {
-                    admin.sendMessage("§c余额不足");
-                    return;
-                }
-                econ.withdrawPlayer(tp, amount);
-                admin.sendMessage("§a扣款成功");
-            } else {
-                econ.depositPlayer(target, amount);
-                admin.sendMessage("§a到账成功");
-            }
-        } catch (NumberFormatException e) {
-            admin.sendMessage("§c格式错误");
-        }
+        // Economy已移除，所有经济操作改用债券系统
+        admin.sendMessage("§c[经济操作] 功能已移除，请使用债券系统");
     }
 
     private void handleBondInput(Player admin,

@@ -259,20 +259,21 @@ public class PointsManager {
         switch (slot) {
             case 10:
                 if (points >= 100) {
-                    plugin.getDb().deductPoints(
-                            p.getName(), 100);
-                    if (plugin.getEconomy() != null) {
-                        plugin.getEconomy()
-                                .depositPlayer(p, 1000);
+                    BondManager bm = plugin.getBonds();
+                    if (bm != null) {
+                        int before = bm.getBonds(p.getName());
+                        bm.addBonds(p.getName(), 1000, "points_exchange", "", "积分商店", "积分兑换债券");
+                        int after = bm.getBonds(p.getName());
+                        plugin.getDb().deductPoints(p.getName(), 100);
+                        p.sendMessage(plugin.getConfig2().msg("points_purchase_success")
+                                .replace("{count}", "100"));
+                        p.sendMessage("§a[积分] §f债券: §e" + before + " → §a" + after);
+                    } else {
+                        p.sendMessage("§c债券系统不可用");
                     }
-                    p.sendMessage(plugin.getConfig2()
-                            .msg("points_purchase_success")
-                            .replace("{count}", "100"));
                 } else {
-                    p.sendMessage(plugin.getConfig2()
-                            .msg("points_insufficient")
-                            .replace("{points}",
-                                    String.valueOf(points)));
+                    p.sendMessage(plugin.getConfig2().msg("points_insufficient")
+                            .replace("{points}", String.valueOf(points)));
                 }
                 break;
             case 12:
