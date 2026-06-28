@@ -130,6 +130,49 @@ function smtpSendEmail($host, $port, $user, $pass, $to, $subject, $htmlBody, $he
     return true;
 }
 
+
+/**
+ * 检查玩家是否在 PHP 端已注册（供 Java 端回调查询）
+ * Java 端 PlayerJoinEvent 时调用此 action 拉取玩家数据
+ */
+function checkPlayerRegistered() {
+    $player = getParam('player', '');
+    $secret = getParam('secret', '');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
+    }
+    if (!$player) {
+        error('缺少玩家名称');
+    }
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("SELECT player_name, password_hash, salt, email, register_time, last_login_time, points, gift_stage, total_online_time, ip_address FROM users WHERE LOWER(player_name)=LOWER(:name) LIMIT 1");
+        $stmt->bindValue(':name', mb_strtolower($player, 'UTF-8'), SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $row = $res->fetchArray(SQLITE3_ASSOC);
+        if (!$row) {
+            success(['registered' => false, 'message' => 'not_registered']);
+        }
+        // 玩家已注册，返回完整数据
+        $userInfo = [
+            'registered' => true,
+            'player_name' => $row['player_name'],
+            'password_hash' => $row['password_hash'] ?? '',
+            'salt' => $row['salt'] ?? '',
+            'email' => $row['email'] ?? null,
+            'register_time' => $row['register_time'] ?? 0,
+            'last_login_time' => $row['last_login_time'] ?? 0,
+            'points' => $row['points'] ?? 0,
+            'gift_stage' => $row['gift_stage'] ?? 0,
+            'total_online_time' => $row['total_online_time'] ?? 0,
+            'ip_address' => $row['ip_address'] ?? null,
+        ];
+        success($userInfo);
+    } catch (\Throwable $e) {
+        error('查询失败: ' . $e->getMessage());
+    }
+}
+
 $action = getParam('action', '');
 
 try {
@@ -317,6 +360,9 @@ switch ($action) {
         break;
     case 'fix_db_permissions':
         fixDbPermissions();
+        break;
+    case 'check_player_registered':
+        checkPlayerRegistered();
         break;
     default:
         error('未知操作: ' . $action);
