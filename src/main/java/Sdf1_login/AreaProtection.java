@@ -4800,7 +4800,7 @@ public class AreaProtection implements Listener {
                 || mat == Material.CHIPPED_ANVIL || mat == Material.DAMAGED_ANVIL
                 || mat == Material.CARTOGRAPHY_TABLE || mat == Material.LOOM
                 || mat == Material.SMITHING_TABLE || mat == Material.ENCHANTING_TABLE
-                || mat == Material.BREWING_STAND || mat == Material.LEGACY_BREWING_STAND
+                || mat == Material.BREWING_STAND
                 || mat.name().contains("SIGN") || mat.name().contains("BANNER")
                 || mat == Material.BARREL || mat.name().contains("SHULKER_BOX")
                 || mat == Material.ENDER_CHEST || mat.name().contains("CHEST")
