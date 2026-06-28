@@ -3991,6 +3991,18 @@ public class AreaProtection implements Listener {
         return areas.keySet();
     }
 
+    /** 获取所有用户组名（tab补全用） */
+    public List<String> getUserGroupNames() {
+        List<String> names = new ArrayList<>();
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm != null) {
+            for (UserGroupManager.UserGroupConfig cfg : ugm.getAllGroups()) {
+                names.add(cfg.name);
+            }
+        }
+        return names;
+    }
+
     /**
      * 根据名称获取领地配置
      */
@@ -4368,26 +4380,47 @@ public class AreaProtection implements Listener {
                                 + block.getY() + ", "
                                 + block.getZ());
                     } else {
-                        pos2.put(uid, block.getLocation());
-                        p.sendMessage("§a§l[防护] §f位置2: "
-                                + block.getX() + ", "
-                                + block.getY() + ", "
-                                + block.getZ());
-                        // ★ 两个位置都选好后，显示面积+价格预览
-                        if (pos1.containsKey(uid)) {
-                            Location lp1 = pos1.get(uid);
-                            Location lp2 = block.getLocation();
-                            int w = Math.abs(lp2.getBlockX() - lp1.getBlockX()) + 1;
-                            int l = Math.abs(lp2.getBlockZ() - lp1.getBlockZ()) + 1;
-                            int a = w * l;
-                            UserGroupManager ug = plugin.getUserGroup();
-                            int pricePerSqm = (ug != null) ? ug.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
-                            int totalCost = a * pricePerSqm;
-                            String src = (pricePerSqm != globalCreatePricePerSqm) ? " §7（用户组优惠价）" : "";
-                            BondManager bnd = plugin.getBonds();
-                            int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
-                            p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
-                            p.sendMessage("§7输入 §f/protect 创建 <领地名> §7开始创建，费用和面积将再次确认");
+                        Location newLoc = block.getLocation();
+                        Location oldLoc = pos2.get(uid);
+                        boolean changed = oldLoc == null
+                                || oldLoc.getBlockX() != newLoc.getBlockX()
+                                || oldLoc.getBlockY() != newLoc.getBlockY()
+                                || oldLoc.getBlockZ() != newLoc.getBlockZ();
+                        pos2.put(uid, newLoc);
+                        if (changed) {
+                            p.sendMessage("§a§l[防护] §f位置2: "
+                                    + block.getX() + ", "
+                                    + block.getY() + ", "
+                                    + block.getZ());
+                            // ★ 两个位置都选好后，显示面积+价格预览 + 一键创建超链接
+                            if (pos1.containsKey(uid)) {
+                                Location lp1 = pos1.get(uid);
+                                int w = Math.abs(newLoc.getBlockX() - lp1.getBlockX()) + 1;
+                                int l = Math.abs(newLoc.getBlockZ() - lp1.getBlockZ()) + 1;
+                                int a = w * l;
+                                UserGroupManager ug = plugin.getUserGroup();
+                                int pricePerSqm = (ug != null) ? ug.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
+                                int totalCost = a * pricePerSqm;
+                                String src = (pricePerSqm != globalCreatePricePerSqm) ? " §7（用户组优惠价）" : "";
+                                BondManager bnd = plugin.getBonds();
+                                int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
+                                p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
+                                // ★ 一键创建超链接：自动用玩家名，冲突则加数字
+                                String autoName = p.getName();
+                                if (areas.containsKey(autoName)) {
+                                    for (int i = 0; i <= 99; i++) {
+                                        String candidate = autoName + i;
+                                        if (!areas.containsKey(candidate)) { autoName = candidate; break; }
+                                    }
+                                }
+                                String finalAutoName = autoName;
+                                p.sendMessage(Component.empty()
+                                        .append(Component.text("§a§l[✅ 点击一键创建]"))
+                                        .hoverEvent(HoverEvent.showText(Component.text("§e以 §f" + finalAutoName + " §e为名创建领地\n§7费用: " + totalCost + " 债券")))
+                                        .clickEvent(ClickEvent.runCommand("/protect confirm_create " + finalAutoName))
+                                );
+                                p.sendMessage(Component.text("§7或输入 §f/protect 创建 <自定义名> §7指定领地名"));
+                            }
                         }
                     }
                 }
@@ -6067,11 +6100,11 @@ public class AreaProtection implements Listener {
 
         if (sub.equals("groupadd") || sub.equals("addmember")) {
             if (args.length < 3) {
-                sender.sendMessage("§e用法: /protect groupadd <玩家> <组名>");
+                sender.sendMessage("§e用法: /protect groupadd <组名> <玩家名>");
                 return true;
             }
-            String playerName = args[1];
-            String groupName = args[2].toLowerCase();
+            String groupName = args[1].toLowerCase();
+            String playerName = args[2];
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
             if (ugm.getGroupConfig(groupName) == null) {
@@ -6094,11 +6127,11 @@ public class AreaProtection implements Listener {
 
         if (sub.equals("groupdel")) {
             if (args.length < 3) {
-                sender.sendMessage("§e用法: /protect groupdel <玩家> <组名>");
+                sender.sendMessage("§e用法: /protect groupdel <组名> <玩家名>");
                 return true;
             }
-            String playerName = args[1];
-            String groupName = args[2].toLowerCase();
+            String groupName = args[1].toLowerCase();
+            String playerName = args[2];
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
             if (ugm.removePlayer(playerName, groupName)) {
@@ -6141,7 +6174,7 @@ public class AreaProtection implements Listener {
                                 .append(Component.text("  §f" + pn + " §7(添加者: " + (addedBy != null ? addedBy : "system") + ") "))
                                 .append(Component.text("§c[移除]"))
                                 .hoverEvent(HoverEvent.showText(Component.text("§c点击移除此成员")))
-                                .clickEvent(ClickEvent.runCommand("/protect groupdel " + pn + " " + groupName))
+                                .clickEvent(ClickEvent.runCommand("/protect groupdel " + groupName + " " + pn))
                         );
                     } else {
                         sender.sendMessage("  §f" + pn + " §7(添加者: " + (addedBy != null ? addedBy : "system") + ")");
@@ -6157,12 +6190,17 @@ public class AreaProtection implements Listener {
                 pp.sendMessage(Component.empty()
                         .append(Component.text("§a[添加在线玩家] "))
                         .hoverEvent(HoverEvent.showText(Component.text("§e输入玩家名添加到此组")))
-                        .clickEvent(ClickEvent.suggestCommand("/protect groupadd <玩家名> " + groupName))
+                        .clickEvent(ClickEvent.suggestCommand("/protect groupadd " + groupName + " "))
                 );
                 // 返回用户组列表
                 pp.sendMessage(Component.empty()
                         .append(Component.text("§c[返回用户组列表] "))
                         .clickEvent(ClickEvent.runCommand("/protect grouplist"))
+                );
+                // 返回主菜单
+                pp.sendMessage(Component.empty()
+                        .append(Component.text("§7[返回主菜单] "))
+                        .clickEvent(ClickEvent.runCommand("/protect menu"))
                 );
             }
             sender.sendMessage("§7§l─────────────────────────────────");

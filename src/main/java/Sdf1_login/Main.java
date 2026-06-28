@@ -6033,6 +6033,11 @@ public class Main extends JavaPlugin
 
             // ===== 第二层 =====
             if (args.length == 2) {
+                // groupadd/groupdel: 第二层是用户组名
+                if (sub.equals("groupadd") || sub.equals("groupdel")
+                        || sub.equals("addmember") || sub.equals("removemember")) {
+                    return filterTab(areaProtection.getUserGroupNames(), args[1]);
+                }
                 // add/remove: 区域名 + global + 在线玩家
                 if (sub.equals("add") || sub.equals("remove")) {
                     List<String> all = new ArrayList<>();
@@ -6117,6 +6122,14 @@ public class Main extends JavaPlugin
 
             // ===== 第三层 =====
             if (args.length == 3) {
+                // groupadd/groupdel: 第三层是在线玩家名
+                if (sub.equals("groupadd") || sub.equals("groupdel")
+                        || sub.equals("addmember") || sub.equals("removemember")) {
+                    List<String> players = new ArrayList<>();
+                    for (Player pl : Bukkit.getOnlinePlayers())
+                        players.add(pl.getName());
+                    return filterTab(players, args[2]);
+                }
                 // add/remove: 第三层是玩家名
                 if (sub.equals("add") || sub.equals("remove")) {
                     List<String> players = new ArrayList<>();
