@@ -6103,21 +6103,22 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§e用法: /protect groupadd <组名> <玩家名>");
                 return true;
             }
-            String groupName = args[1].toLowerCase();
+            String inputName = args[1];
             String playerName = args[2];
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
-            if (ugm.getGroupConfig(groupName) == null) {
-                sender.sendMessage("§c未找到用户组: " + groupName);
+            UserGroupManager.UserGroupConfig cfgAdd = ugm.getGroupConfig(inputName);
+            if (cfgAdd == null) {
+                sender.sendMessage("§c未找到用户组: " + inputName);
                 return true;
             }
+            String groupName = cfgAdd.name; // 使用DB中的实际组名
             if (ugm.addPlayer(playerName, groupName, sender.getName())) {
-                UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
-                sender.sendMessage("§a已将 §f" + playerName + " §a加入用户组: §f" + (cfg != null ? cfg.displayName : groupName));
+                sender.sendMessage("§a已将 §f" + playerName + " §a加入用户组: §f" + cfgAdd.displayName);
                 // 通知在线玩家
                 Player target = plugin.getServer().getPlayerExact(playerName);
                 if (target != null) {
-                    target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + (cfg != null ? cfg.displayName : groupName));
+                    target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + cfgAdd.displayName);
                 }
             } else {
                 sender.sendMessage("§c操作失败");
@@ -6130,15 +6131,18 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§e用法: /protect groupdel <组名> <玩家名>");
                 return true;
             }
-            String groupName = args[1].toLowerCase();
+            String inputName = args[1];
             String playerName = args[2];
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            UserGroupManager.UserGroupConfig cfgDel = ugm.getGroupConfig(inputName);
+            String groupName = (cfgDel != null) ? cfgDel.name : inputName;
             if (ugm.removePlayer(playerName, groupName)) {
-                sender.sendMessage("§a已将 §f" + playerName + " §a移出用户组: " + groupName);
+                String displayName = (cfgDel != null) ? cfgDel.displayName : groupName;
+                sender.sendMessage("§a已将 §f" + playerName + " §a移出用户组: " + displayName);
                 Player target = plugin.getServer().getPlayerExact(playerName);
                 if (target != null) {
-                    target.sendMessage("§a§l[用户组] §f你已被移出用户组: §e" + groupName);
+                    target.sendMessage("§a§l[用户组] §f你已被移出用户组: §e" + displayName);
                 }
             } else {
                 sender.sendMessage("§c操作失败（玩家可能不在此组）");
@@ -6152,11 +6156,12 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§e用法: /protect groupmembers <组名>");
                 return true;
             }
-            String groupName = args[1].toLowerCase();
+            String inputName = args[1];
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
-            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
-            if (cfg == null) { sender.sendMessage("§c未找到用户组: " + groupName); return true; }
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(inputName);
+            if (cfg == null) { sender.sendMessage("§c未找到用户组: " + inputName); return true; }
+            String groupName = cfg.name; // 使用DB中的实际组名（保留大小写）
 
             java.util.List<Map<String, Object>> members = ugm.getGroupMembers(groupName);
             sender.sendMessage("§a§l========== " + cfg.displayColor + cfg.displayName + " §a成员管理 ==========");
@@ -6192,15 +6197,17 @@ public class AreaProtection implements Listener {
                         .hoverEvent(HoverEvent.showText(Component.text("§e输入玩家名添加到此组")))
                         .clickEvent(ClickEvent.suggestCommand("/protect groupadd " + groupName + " "))
                 );
-                // 返回用户组列表
+                // 返回用户组列表（上一层）
                 pp.sendMessage(Component.empty()
                         .append(Component.text("§c[返回用户组列表] "))
+                        .hoverEvent(HoverEvent.showText(Component.text("§c返回用户组管理列表")))
                         .clickEvent(ClickEvent.runCommand("/protect grouplist"))
                 );
-                // 返回主菜单
+                // 返回领地系统首页（CLI模式）
                 pp.sendMessage(Component.empty()
-                        .append(Component.text("§7[返回主菜单] "))
-                        .clickEvent(ClickEvent.runCommand("/protect menu"))
+                        .append(Component.text("§7[返回领地首页] "))
+                        .hoverEvent(HoverEvent.showText(Component.text("§7返回领地系统主菜单")))
+                        .clickEvent(ClickEvent.runCommand("/protect"))
                 );
             }
             sender.sendMessage("§7§l─────────────────────────────────");
@@ -8482,6 +8489,12 @@ public class AreaProtection implements Listener {
                     .append(Component.text("§b[从PHP同步] §e点击拉取PHP端用户组"))
                     .hoverEvent(HoverEvent.showText(Component.text("§e从管理后台同步用户组数据")))
                     .clickEvent(ClickEvent.runCommand("/protect groupset sync"))
+            );
+            // ★ 返回领地系统首页（CLI模式）
+            pp.sendMessage(Component.empty()
+                    .append(Component.text("§7[返回领地首页] "))
+                    .hoverEvent(HoverEvent.showText(Component.text("§7返回领地系统主菜单")))
+                    .clickEvent(ClickEvent.runCommand("/protect"))
             );
         }
         sender.sendMessage("§7§l─────────────────────────────────");

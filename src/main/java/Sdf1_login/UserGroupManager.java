@@ -169,7 +169,7 @@ public class UserGroupManager {
     public boolean removePlayer(String player, String groupName) {
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "DELETE FROM user_group_member WHERE player_name=? AND group_name=?");
+                    "DELETE FROM user_group_member WHERE player_name=? AND LOWER(group_name)=LOWER(?)");
             ps.setString(1, player);
             ps.setString(2, groupName);
             int rows = ps.executeUpdate();
@@ -311,7 +311,7 @@ public class UserGroupManager {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT player_name, added_by, added_time FROM user_group_member WHERE group_name=?");
+                    "SELECT player_name, added_by, added_time FROM user_group_member WHERE LOWER(group_name)=LOWER(?)");
             ps.setString(1, groupName);
             ResultSet rs = ps.executeQuery();
             while (rs.next()) {
