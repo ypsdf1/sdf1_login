@@ -976,40 +976,59 @@ public class WebManager {
             }
             if (request.length() == 0) return;
 
-            // 解析请求行：POST /register_callback HTTP/1.1 或 POST /api/notify_sync HTTP/1.1
+            // ★ 解析请求路径：POST /notify_sync HTTP/1.1 → /notify_sync
             String methodLine = request.toString().split("\n")[0];
-            boolean isNotifySync = methodLine.contains("notify_sync");
+            String path = "/";
+            String[] parts = methodLine.split(" ");
+            if (parts.length >= 2) {
+                path = parts[1]; // e.g. "/notify_sync", "/validate_player", "/register_callback"
+            }
 
-            // 如果是 notify_sync 请求，立即触发交易拉取（先处理，再处理注册回调，避免阻塞）
-            if (isNotifySync) {
+            // ★ 读取请求体（所有非GET路由共用）
+            int contentLength = 0;
+            for (String headerLine : request.toString().split("\n")) {
+                if (headerLine.toLowerCase().startsWith("content-length:")) {
+                    contentLength = Integer.parseInt(headerLine.split(":")[1].trim());
+                }
+            }
+            byte[] buf = new byte[contentLength];
+            if (contentLength > 0) {
+                socket.getInputStream().read(buf, 0, contentLength);
+            }
+            String body = new String(buf, StandardCharsets.UTF_8);
+
+            // ★ 路由分发
+            if (path.contains("notify_sync")) {
+                // ----- notify_sync: 触发交易拉取+登录轮询 -----
                 new BukkitRunnable() {
                     @Override
                     public void run() {
                         requestImmediateTransactionPull();
                     }
                 }.runTaskAsynchronously(plugin);
-                // ★ 事件驱动：PHP回调时触发一次登录轮询
                 triggerLoginPoll();
-            }
 
-            // 如果不是notify_sync，处理注册回调
-            if (!isNotifySync) {
-                // 解析content-length
-                int contentLength = 0;
-                for (String headerLine : request.toString().split("\n")) {
-                    if (headerLine.toLowerCase().startsWith("content-length:")) {
-                        contentLength = Integer.parseInt(headerLine.split(":")[1].trim());
-                    }
+            } else if (path.contains("validate_player")) {
+                // ★★★ validate_player: PHP调用验证玩家是否存在（login.db） ★★★
+                String playerName = extractJsonString(body, "player");
+                String reqSecret = extractJsonString(body, "secret");
+                if (playerName == null || playerName.isEmpty()) {
+                    sendCallbackResponse(socket, "{\"success\":false,\"error\":\"missing_player\"}");
+                    return;
                 }
-
-                // 读取请求体（JSON）
-                byte[] buf = new byte[contentLength];
-                if (contentLength > 0) {
-                    socket.getInputStream().read(buf, 0, contentLength);
+                // 验证密钥
+                if (reqSecret == null || !reqSecret.equals(secretKey)) {
+                    sendCallbackResponse(socket, "{\"success\":false,\"error\":\"invalid_secret\"}");
+                    return;
                 }
-                String body = new String(buf, StandardCharsets.UTF_8);
+                DatabaseManager dbMgr = plugin.getDb();
+                boolean exists = (dbMgr != null) && dbMgr.userExists(playerName);
+                String resp = "{\"success\":true,\"player\":\"" + escapeJson(playerName) + "\",\"exists\":" + exists + "}";
+                plugin.getLogger().info("[Web通信] PHP验证玩家: " + playerName + " → " + (exists ? "存在" : "不存在"));
+                sendCallbackResponse(socket, resp);
 
-                // 解析JSON
+            } else if (path.contains("register_callback")) {
+                // ----- register_callback: 注册回调 -----
                 String playerId = extractJsonString(body, "player");
                 if (playerId == null || playerId.isEmpty()) {
                     sendCallbackResponse(socket, "{\"success\":false,\"message\":\"missing_player\"}");
@@ -1018,21 +1037,17 @@ public class WebManager {
 
                 plugin.getLogger().info("[Web通信] 收到PHP回调：注册请求待处理 - " + playerId);
 
-                // 在主线程处理注册请求
                 final String fName = playerId;
                 DatabaseManager dbMgr = plugin.getDb();
                 if (dbMgr == null) return;
 
-                // 检查玩家是否已注册
                 Object existing = dbMgr.getField(fName, "password_salt");
                 if (existing != null && !((String) existing).isEmpty()) {
-                    // 已注册，直接返回成功
                     plugin.getLogger().info("[Web通信] 玩家 " + fName + " 已注册，回调跳过");
                     sendCallbackResponse(socket, "{\"success\":true,\"message\":\"already_registered\"}");
                     return;
                 }
 
-                // 从PHP拉取注册数据
                 String pullUrl = webBaseUrl + "/api/sync.php?action=check_player_registered&player="
                         + java.net.URLEncoder.encode(fName, "UTF-8") + "&secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8");
@@ -1048,7 +1063,6 @@ public class WebManager {
                     return;
                 }
 
-                // 解析数据
                 int dataStart = pullJson.indexOf("\"data\":");
                 if (dataStart < 0) return;
                 int dataObjStart = dataStart + 7;
@@ -1066,19 +1080,19 @@ public class WebManager {
                     return;
                 }
 
-                // 创建用户
                 dbMgr.createUser(fName, passwordHash, salt);
                 plugin.getLogger().info("[Web通信] 回调创建用户成功: " + fName);
 
-                // 确认PHP端注册完成
                 String confirmUrl = webBaseUrl + "/api/sync.php?action=complete_web_register_request&secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8")
                         + "&request_id=0"
                         + "&result=success";
                 doPost(confirmUrl, "{}");
 
-                // 返回成功
                 sendCallbackResponse(socket, "{\"success\":true,\"message\":\"user_created\"}");
+
+            } else {
+                sendCallbackResponse(socket, "{\"success\":false,\"error\":\"unknown_path\"}");
             }
         } catch (IOException e) {
             plugin.getLogger().warning("[Web通信] 回调处理异常: " + e.getMessage());
