@@ -315,6 +315,9 @@ switch ($action) {
     case 'sync_user_groups':
         syncUserGroups();
         break;
+    case 'fix_db_permissions':
+        fixDbPermissions();
+        break;
     default:
         error('未知操作: ' . $action);
 }

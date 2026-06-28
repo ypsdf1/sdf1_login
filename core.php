@@ -35,6 +35,27 @@ function getDB() {
         if (!is_dir($dbDir)) {
             @mkdir($dbDir, 0755, true);
         }
+
+        // ★ 检查并修复数据库文件/目录权限（防止 "attempt to write a readonly database"）
+        if (file_exists(DB_PATH)) {
+            if (!is_writable(DB_PATH)) {
+                @chmod(DB_PATH, 0666);
+                if (!is_writable(DB_PATH)) {
+                    debugLog("getDB: 数据库文件不可写: " . DB_PATH);
+                }
+            }
+        }
+        if (is_dir($dbDir) && !is_writable($dbDir)) {
+            @chmod($dbDir, 0777);
+        }
+        // ★ 同时修复WAL/SHM文件权限
+        foreach (['-wal', '-shm'] as $suffix) {
+            $sideFile = DB_PATH . $suffix;
+            if (file_exists($sideFile) && !is_writable($sideFile)) {
+                @chmod($sideFile, 0666);
+            }
+        }
+
         $db = new SQLite3(DB_PATH);
         $db->enableExceptions(true);
         // WAL模式 + 长等待超时防止database is locked
@@ -43,10 +64,76 @@ function getDB() {
         $db->exec('PRAGMA synchronous=NORMAL');
         $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
         $db->exec('PRAGMA wal_autocheckpoint=1000');
-        initTables($db);
-        migrateDatabase($db); // 迁移旧数据库
+
+        // ★ initTables/migrateDatabase加try-catch，防止初始化写入失败导致整个请求500
+        try {
+            initTables($db);
+        } catch (\Throwable $e) {
+            debugLog("getDB: initTables失败（可能数据库只读）: " . $e->getMessage());
+        }
+        try {
+            migrateDatabase($db); // 迁移旧数据库
+        } catch (\Throwable $e) {
+            debugLog("getDB: migrateDatabase失败: " . $e->getMessage());
+        }
     }
     return $db;
+}
+
+/**
+ * ★ 远程修复数据库权限（Java调用）
+ */
+function fixDbPermissions() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $results = [];
+    $dbPath = DB_PATH;
+    $dbDir = dirname($dbPath);
+
+    // 修复目录权限
+    if (is_dir($dbDir)) {
+        $oldPerms = substr(sprintf('%o', fileperms($dbDir)), -4);
+        @chmod($dbDir, 0777);
+        $newPerms = substr(sprintf('%o', fileperms($dbDir)), -4);
+        $results[] = "目录 $dbDir: $oldPerms → $newPerms (writable=" . (is_writable($dbDir) ? 'Y' : 'N') . ")";
+    } else {
+        @mkdir($dbDir, 0777, true);
+        $results[] = "目录 $dbDir: 已创建";
+    }
+
+    // 修复数据库文件权限
+    if (file_exists($dbPath)) {
+        $oldPerms = substr(sprintf('%o', fileperms($dbPath)), -4);
+        @chmod($dbPath, 0666);
+        $newPerms = substr(sprintf('%o', fileperms($dbPath)), -4);
+        $results[] = "数据库 $dbPath: $oldPerms → $newPerms (writable=" . (is_writable($dbPath) ? 'Y' : 'N') . ")";
+    } else {
+        $results[] = "数据库 $dbPath: 不存在（首次访问时自动创建）";
+    }
+
+    // 修复WAL/SHM文件权限
+    foreach (['-wal', '-shm'] as $suffix) {
+        $sideFile = $dbPath . $suffix;
+        if (file_exists($sideFile)) {
+            $oldPerms = substr(sprintf('%o', fileperms($sideFile)), -4);
+            @chmod($sideFile, 0666);
+            $newPerms = substr(sprintf('%o', fileperms($sideFile)), -4);
+            $results[] = "WAL文件 $sideFile: $oldPerms → $newPerms";
+        }
+    }
+
+    // 尝试写入测试
+    try {
+        $db = getDB();
+        $db->exec("CREATE TABLE IF NOT EXISTS _perm_test (id INTEGER)");
+        $db->exec("DROP TABLE IF EXISTS _perm_test");
+        $results[] = "写入测试: 通过";
+    } catch (\Throwable $e) {
+        $results[] = "写入测试: 失败 - " . $e->getMessage();
+    }
+
+    success(['results' => $results], "权限修复完成，" . count($results) . " 项");
 }
 
 /**
