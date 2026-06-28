@@ -3142,6 +3142,72 @@ public class WebManager {
         }
     }
 
+    /**
+     * 从PHP拉取指定用户组的成员列表，同步到Java本地DB
+     */
+    public void pullGroupMembersFromPHP(String groupName) {
+        if (!enabled || groupName == null || groupName.isEmpty()) return;
+        try {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "list_group_members");
+            params.put("secret", secretKey);
+            params.put("group", groupName);
+            String resp = httpGet("api/land_api.php", params);
+            if (resp == null || resp.isEmpty()) return;
+            if (!resp.contains("\"success\":true")) return;
+
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm == null) return;
+
+            // 解析 members 数组
+            int membersStart = resp.indexOf("\"members\":[");
+            if (membersStart < 0) return;
+            String arrStr = resp.substring(membersStart + 11);
+            int objDepth = 0;
+            int arrEnd = -1;
+            for (int i = 0; i < arrStr.length(); i++) {
+                char c = arrStr.charAt(i);
+                if (c == '{') objDepth++;
+                else if (c == '}') objDepth--;
+                else if (c == ']' && objDepth == 0) { arrEnd = i; break; }
+            }
+            if (arrEnd < 0) return;
+            arrStr = arrStr.substring(0, arrEnd);
+            if (arrStr.trim().isEmpty()) return;
+
+            // 先清除Java本地该组的所有成员，再从PHP重新插入
+            int deleted = ugm.clearGroupMembers(groupName);
+            plugin.getLogger().info("[防护-sync] 已清除Java本地组 " + groupName + " 的 " + deleted + " 个旧成员");
+
+            // 解析每个成员对象并插入
+            int imported = 0;
+            int depth = 0;
+            int objStart = -1;
+            for (int i = 0; i < arrStr.length(); i++) {
+                char c = arrStr.charAt(i);
+                if (c == '{' && depth == 0) { objStart = i; depth = 1; }
+                else if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 0 && objStart >= 0) {
+                        String obj = arrStr.substring(objStart + 1, i);
+                        String player = extractJsonStringSafe(obj, "player_name");
+                        String addedBy = extractJsonStringSafe(obj, "added_by");
+                        if (player != null && !player.isEmpty()) {
+                            // 直接写入本地DB（不触发PHP推送，避免循环）
+                            ugm.addPlayerLocal(player, groupName, addedBy);
+                            imported++;
+                        }
+                        objStart = -1;
+                    }
+                }
+            }
+            plugin.getLogger().info("[防护-sync] 从PHP拉取组 " + groupName + " 成员: " + imported + " 人");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 从PHP拉取组成员异常: " + e.getMessage());
+        }
+    }
+
     /** 从JSON对象字符串解析用户组配置 */
     private UserGroupManager.UserGroupConfig parseGroupJson(String obj) {
         try {
@@ -3305,11 +3371,13 @@ public class WebManager {
                             break;
                         }
                         case "group_change": {
-                            // ★ PHP端用户组变更 → 从PHP拉取最新用户组到Java本地
+                            // ★ PHP端用户组变更 → 从PHP拉取最新用户组+成员到Java本地
                             String action = String.valueOf(changeData.getOrDefault("action", ""));
                             String groupName = String.valueOf(changeData.getOrDefault("group_name", ""));
                             // 直接从PHP拉取完整用户组数据（比仅reload本地更可靠）
                             pullUserGroupsFromPHP();
+                            // ★ 同时拉取成员数据
+                            pullGroupMembersFromPHP(groupName);
                             plugin.getLogger().info("[Web通信] PHP端用户组变更(" + action + ": " + groupName + ")，已从PHP同步");
                             applied = true;
                             break;

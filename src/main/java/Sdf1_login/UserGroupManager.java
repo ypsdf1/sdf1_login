@@ -147,6 +147,14 @@ public class UserGroupManager {
         UserGroupConfig cfg = getGroupConfig(groupName);
         if (cfg == null) return false;
         groupName = cfg.name; // 使用DB中实际的组名（保留大小写）
+
+        // ★ 校验玩家是否存在（查login.db）
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null && !dbMgr.userExists(player)) {
+            plugin.getLogger().warning("[UserGroup] addPlayer失败: 玩家 " + player + " 不存在于login.db");
+            return false;
+        }
+
         long now = System.currentTimeMillis();
         try {
             PreparedStatement ps = db.prepareStatement(
@@ -163,6 +171,8 @@ public class UserGroupManager {
             plugin.getLogger().warning("[UserGroup] addPlayer failed: " + e.getMessage());
             return false;
         }
+        // ★ 推送到PHP
+        pushMemberToPHP(player, groupName, "add");
         return true;
     }
 
@@ -174,10 +184,58 @@ public class UserGroupManager {
             ps.setString(2, groupName);
             int rows = ps.executeUpdate();
             ps.close();
+            if (rows > 0) {
+                // ★ 推送到PHP
+                UserGroupConfig cfg = getGroupConfig(groupName);
+                pushMemberToPHP(player, cfg != null ? cfg.name : groupName, "remove");
+            }
             return rows > 0;
         } catch (SQLException e) {
             return false;
         }
+    }
+
+    /**
+     * 清除指定用户组的所有成员（本地操作，不推PHP）
+     * 用于PHP→Java同步时先清后写
+     */
+    public int clearGroupMembers(String groupName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "DELETE FROM user_group_member WHERE LOWER(group_name)=LOWER(?)");
+            ps.setString(1, groupName);
+            int rows = ps.executeUpdate();
+            ps.close();
+            return rows;
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] clearGroupMembers failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * 仅写入本地DB（不触发PHP推送，用于PHP→Java同步避免循环）
+     */
+    public boolean addPlayerLocal(String player, String groupName, String addedBy) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) return false;
+        groupName = cfg.name;
+        long now = System.currentTimeMillis();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR REPLACE INTO user_group_member "
+                            + "(player_name, group_name, added_by, added_time, expiry_time)"
+                            + " VALUES (?,?,?,?,0)");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            ps.setString(3, addedBy);
+            ps.setLong(4, now);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            return false;
+        }
+        return true;
     }
 
     /** 获取玩家所属的所有有效组（排除过期） */
@@ -300,6 +358,21 @@ public class UserGroupManager {
         List<UserGroupConfig> list = new ArrayList<>(groupConfigs.values());
         list.sort((a, b) -> b.priority - a.priority);
         return list;
+    }
+
+    // ==================== PHP同步 ====================
+
+    /** 推送成员变更到PHP */
+    private void pushMemberToPHP(String player, String groupName, String action) {
+        try {
+            WebManager wm = plugin.webManager;
+            if (wm == null) return;
+            String endpoint = "api/land_api.php?action=" + action + "_group_member";
+            String json = "{\"player\":\"" + player + "\",\"group\":\"" + groupName + "\",\"added_by\":\"Java\"}";
+            wm.httpPost(endpoint, json);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[UserGroup] pushMemberToPHP failed: " + e.getMessage());
+        }
     }
 
     // ==================== 成员查询 ====================
