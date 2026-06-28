@@ -6441,10 +6441,6 @@ public class AreaProtection implements Listener {
                 return true;
             }
             Player p = (Player) sender;
-            if (!isAreaAdmin(sender)) {
-                sender.sendMessage("§c需要管理员权限");
-                return true;
-            }
             if (args.length < 2) {
                 sender.sendMessage("§e用法: /protect 删除 <名>");
                 return true;
@@ -6455,6 +6451,13 @@ public class AreaProtection implements Listener {
             if (resolved != null) areaName = resolved;
             if (!areas.containsKey(areaName)) {
                 sender.sendMessage("§c领地不存在: " + areaName);
+                return true;
+            }
+            // ★ 领主或管理员均可删除
+            AreaProtection.AreaConfig delAc = areas.get(areaName);
+            boolean isOwner = delAc != null && p.getName().equalsIgnoreCase(delAc.owner);
+            if (!isAreaAdmin(sender) && !isOwner) {
+                sender.sendMessage("§c需要管理员权限或领地所有权");
                 return true;
             }
             // ★ 检查是否已有待删除请求
