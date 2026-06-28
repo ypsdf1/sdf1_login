@@ -1202,13 +1202,13 @@ public class Main extends JavaPlugin
                 String hash = PasswordUtils.hash(password, salt);
                 getLogger().info("[Web密码验证] 计算hash=" + hash + "  存储hash=" + storedHash + " 是否匹配=" + hash.equals(storedHash));
                 // ★ 与 /login 保持一致：先查主密码，再查临时密码
-                if (db.checkPassword(playerName, hash)) {
-                    getLogger().info("[Web密码验证] ★ 主密码验证成功");
-                    return "\"success\"";
-                }
-                getLogger().info("[Web密码验证] 主密码不匹配，检查临时密码...");
-                if (db.checkPasswordOrTemp(playerName, hash)) {
-                    getLogger().info("[Web密码验证] ★ 临时密码验证成功");
+                String pwdResult = db.checkPasswordWithFallback(playerName, hash);
+                if (pwdResult != null) {
+                    if ("main".equals(pwdResult)) {
+                        getLogger().info("[Web密码验证] ★ 主密码验证成功");
+                    } else {
+                        getLogger().info("[Web密码验证] ★ 临时密码验证成功");
+                    }
                     return "\"success\"";
                 }
                 getLogger().info("[Web密码验证] 临时密码也不匹配，密码验证失败");
@@ -5080,14 +5080,13 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                boolean mainOk = db.checkPassword(
+                String pwdResult = db.checkPasswordWithFallback(
                         p2.getName(), hash);
-                boolean tempOk = db.checkPasswordOrTemp(
-                        p2.getName(), hash);
-                if (!mainOk && !tempOk) {
+                if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));
                     return true;
                 }
+                boolean isTemp = "temp".equals(pwdResult);
                 String oldHash = (String) db.getField(
                         p2.getName(), "password_hash");
                 String newSalt = PasswordUtils.generateSalt();
@@ -5104,13 +5103,9 @@ public class Main extends JavaPlugin
                 Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                     webManager.pushWebLoginCredentials();
                 });
-                if (!mainOk && tempOk)
+                if (isTemp)
                     db.clearTempPassword(p2.getName());
-                // pw 命令改密码成功后
                 needsPasswordChange.remove(p2.getName());
-// 清除临时密码
-                if (!mainOk && tempOk)
-                    db.clearTempPassword(p2.getName());
 
                 return true;
             }
@@ -5120,18 +5115,16 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                boolean mainOk = db.checkPassword(
+                String pwdResult = db.checkPasswordWithFallback(
                         p2.getName(), hash);
-                boolean tempOk = db.checkPasswordOrTemp(
-                        p2.getName(), hash);
-                if (!mainOk && !tempOk) {
+                if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));
                     return true;
                 }
                 chatInput.getState(p2).type =
                         ChatInputManager.InputType.CHANGE_PWD_STEP2;
                 chatInput.getState(p2).ticketTitle =
-                        mainOk ? "main" : "temp";
+                        pwdResult;
                 p2.sendMessage("§e请输入新密码:");
                 return true;
             }
@@ -5353,17 +5346,15 @@ public class Main extends JavaPlugin
                     String hash =
                             PasswordUtils.hash(
                                     oldPwd, salt);
-                    boolean mainOk =
-                            db.checkPassword(
+                    String pwdResult =
+                            db.checkPasswordWithFallback(
                                     p2.getName(), hash);
-                    boolean tempOk =
-                            db.checkPasswordOrTemp(
-                                    p2.getName(), hash);
-                    if (!mainOk && !tempOk) {
+                    if (pwdResult == null) {
                         p2.sendMessage(config.msg(
                                 "password_wrong"));
                         return true;
                     }
+                    boolean isTemp = "temp".equals(pwdResult);
                     String oldHash =
                             (String) db.getField(
                                     p2.getName(),
@@ -5390,7 +5381,7 @@ public class Main extends JavaPlugin
                 Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                     self2.webManager.pushWebLoginCredentials();
                 });
-                    if (!mainOk && tempOk) {
+                    if (!isTemp) {
                         db.clearTempPassword(
                                 p2.getName());
                     }
@@ -5411,23 +5402,21 @@ public class Main extends JavaPlugin
                     String hash =
                             PasswordUtils.hash(
                                     oldPwd, salt);
-                    boolean mainOk =
-                            db.checkPassword(
+                    String pwdResult =
+                            db.checkPasswordWithFallback(
                                     p2.getName(), hash);
-                    boolean tempOk =
-                            db.checkPasswordOrTemp(
-                                    p2.getName(), hash);
-                    if (!mainOk && !tempOk) {
+                    if (pwdResult == null) {
                         p2.sendMessage(config.msg(
                                 "password_wrong"));
                         return true;
                     }
+                    boolean isTemp = "temp".equals(pwdResult);
                     chatInput.getState(p2).type =
                             ChatInputManager.InputType
                                     .CHANGE_PWD_STEP2;
                     chatInput.getState(p2)
                             .ticketTitle =
-                            mainOk ? "main" : "temp";
+                            pwdResult;
                     p2.sendMessage(
                             "§e请输入新密码:");
                     return true;

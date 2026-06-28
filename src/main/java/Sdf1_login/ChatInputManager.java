@@ -90,9 +90,8 @@ public class ChatInputManager {
                         name, "password_salt");
                 String hash =
                         PasswordUtils.hash(msg, salt);
-                boolean mainOk =
-                        db.checkPassword(name, hash);
-                if (mainOk) {
+                String result = db.checkPasswordWithFallback(name, hash);
+                if ("main".equals(result)) {
                     state.type =
                             InputType.CHANGE_PWD_STEP2;
                     state.ticketTitle = "main";
@@ -100,10 +99,7 @@ public class ChatInputManager {
                             "§e请输入新密码:");
                     return;
                 }
-                boolean tempOk =
-                        db.checkPasswordOrTemp(
-                                name, hash);
-                if (tempOk) {
+                if ("temp".equals(result)) {
                     state.type =
                             InputType.CHANGE_PWD_STEP2;
                     state.ticketTitle = "temp";

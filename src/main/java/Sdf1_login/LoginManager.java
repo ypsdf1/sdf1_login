@@ -209,11 +209,11 @@ public class LoginManager {
                 return true;
             }
 
-            boolean matchTemp =
+            String pwdResult =
                     plugin.getDb()
-                            .checkPasswordOrTemp(
+                            .checkPasswordWithFallback(
                                     name, hash);
-            if (matchTemp) {
+            if (pwdResult != null) {
                 plugin.getLoggedIn().add(name);
                 // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
                 if (plugin.webManager != null) {

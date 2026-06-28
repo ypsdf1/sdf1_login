@@ -482,9 +482,11 @@ public class DatabaseManager {
                 ? String.valueOf(ip) : null;
     }
 
-    public boolean checkPasswordOrTemp(
-            String name, String hash) {
-        // 先检查主密码
+    /**
+     * 验证密码（仅主密码）
+     * @return true if matched
+     */
+    public boolean checkPassword(String name, String hash) {
         try {
             PreparedStatement ps = db.prepareStatement(
                     "SELECT password_hash "
@@ -497,8 +499,7 @@ public class DatabaseManager {
                         rs.getString("password_hash");
                 rs.close();
                 ps.close();
-                if (hash.equals(mainHash))
-                    return true;
+                return hash.equals(mainHash);
             } else {
                 rs.close();
                 ps.close();
@@ -506,47 +507,51 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        // 再检查临时密码
+        return false;
+    }
+
+    /**
+     * 验证密码（主密码优先，不通过再查临时密码）
+     * 注意: 传入的 hash 必须是主密码的 hash
+     * @return "main" | "temp" | null
+     */
+    public String checkPasswordWithFallback(String name, String mainHash) {
+        // 先检查主密码
+        if (checkPassword(name, mainHash)) {
+            return "main";
+        }
+        // 主密码不匹配，检查临时密码
         try {
-            PreparedStatement ps2 = db.prepareStatement(
+            PreparedStatement ps = db.prepareStatement(
                     "SELECT temp_password, "
                             + "temp_pw_expire, "
                             + "temp_pw_used "
                             + "FROM users "
                             + "WHERE player_name=?");
-            ps2.setString(1, name);
-            ResultSet rs2 = ps2.executeQuery();
-            if (rs2.next()) {
-                String tempHash =
-                        rs2.getString(
-                                "temp_password");
-                long expire =
-                        rs2.getLong(
-                                "temp_pw_expire");
-                int used =
-                        rs2.getInt(
-                                "temp_pw_used");
-                rs2.close();
-                ps2.close();
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String tempHash = rs.getString("temp_password");
+                long expire = rs.getLong("temp_pw_expire");
+                int used = rs.getInt("temp_pw_used");
+                rs.close();
+                ps.close();
                 if (tempHash != null
                         && !tempHash.isEmpty()
-                        && hash.equals(tempHash)
-                        && System.currentTimeMillis()
-                        < expire
+                        && mainHash.equals(tempHash)
+                        && System.currentTimeMillis() < expire
                         && used != 1) {
-                    return true;
+                    return "temp";
                 }
             } else {
-                rs2.close();
-                ps2.close();
+                rs.close();
+                ps.close();
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        return false;
+        return null;
     }
-
-
     public Map<String, Object> getUser(String name) {
         Map<String, Object> r =
                 new LinkedHashMap<>();
@@ -612,32 +617,6 @@ public class DatabaseManager {
             return null;
         }
     }
-
-    public boolean checkPassword(String name,
-                                 String hash) {
-        try {
-            PreparedStatement ps = db.prepareStatement(
-                    "SELECT password_hash "
-                            + "FROM users "
-                            + "WHERE player_name=?");
-            ps.setString(1, name);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                String stored =
-                        rs.getString("password_hash");
-                rs.close();
-                ps.close();
-                return hash.equals(stored);
-            }
-            rs.close();
-            ps.close();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return false;
-    }
-
-
 
     public boolean isUsingTempPassword(String name) {
         String h = (String) getField(name,
