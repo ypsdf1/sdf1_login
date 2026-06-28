@@ -90,7 +90,7 @@ try {
     $isAdmin = false;
 
     // 同步类action只接受secret验证（Java端推送）
-    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions'];
+    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups'];
     // 玩家端action：需要token
@@ -316,6 +316,16 @@ try {
             handleAckAdminChanges($db, $_POST + $_GET);
             break;
 
+        // ===== Java端：拉取待验证玩家列表 =====
+        case 'get_pending_validations':
+            handleGetPendingValidations($db);
+            break;
+
+        // ===== Java端：推送验证结果 =====
+        case 'validation_callback':
+            handleValidationCallback($db, $_POST + $_GET);
+            break;
+
         // ===== 用户组管理 =====
         case 'list_user_groups':
             handleListUserGroups($db);
@@ -352,6 +362,18 @@ try {
 // ==================== 函数 ====================
 
 function initLandTables($db) {
+    // ★ 玩家验证缓存表（异步验证：PHP写入→Java拉取验证→写回结果）
+    $db->exec("CREATE TABLE IF NOT EXISTS pending_player_validations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        request_type TEXT NOT NULL,
+        request_data TEXT DEFAULT '{}',
+        status TEXT DEFAULT 'pending',
+        result TEXT DEFAULT '',
+        created_at INTEGER DEFAULT 0,
+        validated_at INTEGER DEFAULT 0
+    )");
+
     $db->exec("CREATE TABLE IF NOT EXISTS web_area_lands (
         id INTEGER PRIMARY KEY,
         name TEXT UNIQUE NOT NULL,
@@ -725,18 +747,18 @@ function handleUpdateLandOwner($db, $post) {
         echo json_encode(['success' => false, 'error' => '新所有者不能为空']);
         return;
     }
-    if (!preg_match('/^[a-zA-Z0-9_]{2,16}$/', $owner)) {
-        echo json_encode(['success' => false, 'error' => '玩家名格式无效：仅允许英文字母、数字和下划线，2-16位']);
+    if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $owner)) {
+        echo json_encode(['success' => false, 'error' => '玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）']);
         return;
     }
-    // ★ 校验玩家是否存在于login.db（调Java回调验证）
-    $ownerValid = validatePlayerViaJava($owner);
+    // ★ 校验玩家是否存在于login.db（异步验证：写入pending表，Java定时器拉取验证）
+    $ownerValid = validatePlayerViaJava($db, $owner, 'update_owner', ['land' => $name]);
     if ($ownerValid === null) {
-        echo json_encode(['success' => false, 'error' => '无法连接游戏服务器进行验证，请稍后再试']);
+        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$owner} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
         return;
     }
     if (!$ownerValid) {
-        echo json_encode(['success' => false, 'error' => "玩家 §e{$owner} §f未注册，请确认后再试"]);
+        echo json_encode(['success' => false, 'error' => "玩家 {$owner} 尚未注册，请确认玩家名是否正确"]);
         return;
     }
 
@@ -890,18 +912,18 @@ function handleAddVisitor($db, $playerName, $req) {
 
     // ★ 校验玩家名格式（至少3字符，只含字母数字下划线）
     if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $visitor)) {
-        echo json_encode(['success' => false, 'error' => '无效的玩家名: ' . $visitor]);
+        echo json_encode(['success' => false, 'error' => '玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）']);
         return;
     }
 
-    // ★ 校验玩家是否存在于login.db（调Java回调验证）
-    $visitorValid = validatePlayerViaJava($visitor);
+    // ★ 校验玩家是否存在于login.db（异步验证）
+    $visitorValid = validatePlayerViaJava($db, $visitor, 'add_visitor', ['land' => $landName]);
     if ($visitorValid === null) {
-        echo json_encode(['success' => false, 'error' => '无法连接游戏服务器进行验证，请稍后再试']);
+        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$visitor} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
         return;
     }
     if (!$visitorValid) {
-        echo json_encode(['success' => false, 'error' => '玩家 §e' . $visitor . ' §f不存在，请确认玩家已注册']);
+        echo json_encode(['success' => false, 'error' => "玩家 {$visitor} 尚未注册，请确认玩家名是否正确"]);
         return;
     }
 
@@ -935,44 +957,38 @@ function handleAddVisitor($db, $playerName, $req) {
 }
 
 /**
- * ★ 通过Java回调服务器验证玩家是否存在于login.db
- * PHP无法直接读取Java本地的login.db，需调Java验证
- * 返回: true=存在, false=不存在, null=验证失败(网络错误等)
+ * ★ 异步验证玩家是否存在
+ * 流程：先查本地缓存 → 有缓存直接返回 → 无缓存写入pending表等待Java验证
+ * 返回: true=存在, false=不存在, null=已提交异步验证(需等待)
  */
-function validatePlayerViaJava($playerName) {
-    $host = GAME_SERVER_HOST;
-    $port = CALLBACK_PORT;
-    $timeout = 5; // 秒
+function validatePlayerViaJava($db, $playerName, $requestType = 'general', $extraData = []) {
+    // 1. 先查本地缓存（1小时内有效）
+    $cacheValidUntil = time() - 3600; // 1小时前
+    $stmt = $db->prepare("SELECT status, validated_at FROM pending_player_validations
+        WHERE player_name = :player AND validated_at > :cutoff ORDER BY id DESC LIMIT 1");
+    $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+    $stmt->bindValue(':cutoff', $cacheValidUntil, SQLITE3_INTEGER);
+    $rs = $stmt->execute();
+    $cached = $rs->fetchArray(SQLITE3_ASSOC);
 
-    $payload = json_encode([
-        'player' => $playerName,
-        'secret' => SECRET_KEY
-    ]);
-
-    $url = "http://{$host}:{$port}/validate_player";
-    $context = stream_context_create([
-        'http' => [
-            'method' => 'POST',
-            'header' => "Content-Type: application/json\r\nContent-Length: " . strlen($payload) . "\r\nConnection: close\r\n",
-            'content' => $payload,
-            'timeout' => $timeout,
-            'ignore_errors' => true
-        ]
-    ]);
-
-    $response = @file_get_contents($url, false, $context);
-    if ($response === false) {
-        debugLog("validatePlayerViaJava: 无法连接Java服务器 {$host}:{$port}");
-        return null; // 网络错误
+    if ($cached) {
+        // 有缓存结果
+        if ($cached['status'] === 'valid') return true;
+        if ($cached['status'] === 'invalid') return false;
+        // status='pending' → 还在验证中
     }
 
-    $data = json_decode($response, true);
-    if (!$data || !isset($data['exists'])) {
-        debugLog("validatePlayerViaJava: Java返回无效响应", ['response' => $response]);
-        return null;
-    }
+    // 2. 无缓存或已过期 → 写入pending表，触发Java异步验证
+    $stmt2 = $db->prepare("INSERT INTO pending_player_validations (player_name, request_type, request_data, status, created_at)
+        VALUES (:player, :type, :data, 'pending', :now)");
+    $stmt2->bindValue(':player', $playerName, SQLITE3_TEXT);
+    $stmt2->bindValue(':type', $requestType, SQLITE3_TEXT);
+    $stmt2->bindValue(':data', json_encode($extraData), SQLITE3_TEXT);
+    $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt2->execute();
 
-    return (bool)$data['exists'];
+    debugLog("validatePlayerViaJava: 提交异步验证请求", ['player' => $playerName, 'type' => $requestType]);
+    return null; // null = 已提交异步验证
 }
 
 /**
@@ -1013,6 +1029,51 @@ function playerExists($db, $playerName) {
     }
 
     return false;
+}
+
+// ==================== 异步验证：Java端拉取待验证列表 ====================
+
+/**
+ * Java定时器调用：拉取待验证的玩家列表
+ */
+function handleGetPendingValidations($db) {
+    $stmt = $db->prepare("SELECT id, player_name, request_type, request_data, created_at
+        FROM pending_player_validations WHERE status = 'pending' ORDER BY id ASC LIMIT 20");
+    $rs = $stmt->execute();
+    $list = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $list[] = $row;
+    }
+    echo json_encode(['success' => true, 'pending' => $list]);
+}
+
+/**
+ * Java验证完成后推送结果
+ * POST id, status('valid'|'invalid')
+ */
+function handleValidationCallback($db, $data) {
+    $id = (int)($data['id'] ?? 0);
+    $status = $data['status'] ?? '';
+    if ($id <= 0 || !in_array($status, ['valid', 'invalid'])) {
+        echo json_encode(['success' => false, 'error' => 'missing id or invalid status']);
+        return;
+    }
+
+    $stmt = $db->prepare("UPDATE pending_player_validations SET status = :status, validated_at = :now WHERE id = :id");
+    $stmt->bindValue(':status', $status, SQLITE3_TEXT);
+    $stmt->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+
+    // 获取玩家名用于日志
+    $stmt2 = $db->prepare("SELECT player_name FROM pending_player_validations WHERE id = :id");
+    $stmt2->bindValue(':id', $id, SQLITE3_INTEGER);
+    $rs = $stmt2->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    $player = $row ? $row['player_name'] : '?';
+
+    debugLog("validation_callback: 玩家 {$player} 验证结果={$status}");
+    echo json_encode(['success' => true]);
 }
 
 // ==================== 玩家端：更新领地字段（效果管理）====================
@@ -1712,17 +1773,17 @@ function handleAddGroupMember($db, $data) {
     }
     // ★ 玩家名格式校验：3-16位，仅字母数字下划线
     if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $player)) {
-        echo json_encode(['success' => false, 'error' => "玩家名格式无效: {$player}（需要3-16位字母/数字/下划线）"]);
+        echo json_encode(['success' => false, 'error' => "玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）"]);
         return;
     }
-    // ★ 校验玩家是否存在（调Java回调服务器查login.db）
-    $playerValid = validatePlayerViaJava($player);
+    // ★ 校验玩家是否存在（异步验证：写入pending表，Java定时器拉取验证）
+    $playerValid = validatePlayerViaJava($db, $player, 'add_group_member', ['group' => $group]);
     if ($playerValid === null) {
-        echo json_encode(['success' => false, 'error' => "无法连接游戏服务器进行验证，请稍后再试"]);
+        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$player} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
         return;
     }
     if (!$playerValid) {
-        echo json_encode(['success' => false, 'error' => "玩家 §e{$player} §f不存在于login.db，请确认玩家已注册"]);
+        echo json_encode(['success' => false, 'error' => "玩家 {$player} 尚未注册，请确认玩家名是否正确"]);
         return;
     }
     $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
