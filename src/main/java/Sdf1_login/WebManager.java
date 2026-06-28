@@ -1623,6 +1623,12 @@ public class WebManager {
                             try { pollAdminChanges(); } catch (Exception e) { /* 静默 */ }
                         });
                     }
+                    // ★ 异步玩家验证轮询：拉取PHP的pending_player_validations，验证后推回结果
+                    if (initialSyncComplete) {
+                        submitNormalDbTask("TimerA-pollPlayerValidations", () -> {
+                            try { pullPendingPlayerValidations(); } catch (Exception e) { /* 静默 */ }
+                        });
+                    }
                 }
 
                 // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
@@ -3283,6 +3289,65 @@ public class WebManager {
             end++;
         }
         return json.substring(start, end).trim();
+    }
+
+    // ==================== 异步玩家验证：拉取PHP待验证列表 ====================
+
+    /**
+     * 拉取PHP的pending_player_validations，验证后推回结果
+     * PHP写入待验证 → Java拉取 → 查login.db → 推回结果
+     */
+    private void pullPendingPlayerValidations() {
+        if (!enabled) return;
+        try {
+            String url = webBaseUrl + "/api/land_api.php?action=get_pending_validations&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String json = doGet(url);
+            if (json == null || !json.contains("\"success\":true")) return;
+
+            // 解析pending列表
+            int pendingStart = json.indexOf("\"pending\":");
+            if (pendingStart < 0) return;
+            int arrStart = json.indexOf("[", pendingStart);
+            int arrEnd = findMatchingBracket(json, arrStart);
+            if (arrEnd < 0) return;
+            String arrJson = json.substring(arrStart, arrEnd + 1);
+
+            // 逐条处理
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr == null) return;
+
+            int idx = 0;
+            while (true) {
+                int objStart = arrJson.indexOf("{", idx);
+                if (objStart < 0) break;
+                int objEnd = findMatchingBracket(arrJson, objStart);
+                if (objEnd < 0) break;
+                String obj = arrJson.substring(objStart, objEnd + 1);
+
+                String idStr = extractJsonString(obj, "id");
+                String player = extractJsonString(obj, "player_name");
+                String reqType = extractJsonString(obj, "request_type");
+
+                if (idStr != null && player != null) {
+                    int id = Integer.parseInt(idStr);
+                    boolean exists = dbMgr.userExists(player);
+                    String status = exists ? "valid" : "invalid";
+
+                    // 推送结果回PHP
+                    String callbackUrl = webBaseUrl + "/api/land_api.php?action=validation_callback&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                            + "&id=" + id + "&status=" + status;
+                    doPost(callbackUrl, "{}");
+
+                    plugin.getLogger().info("[异步验证] 玩家 " + player + " → " + (exists ? "存在" : "不存在") + " (type=" + reqType + ")");
+                }
+
+                idx = objEnd + 1;
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[异步验证] 轮询异常: " + e.getMessage());
+        }
     }
 
     /**
