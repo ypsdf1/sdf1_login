@@ -1745,7 +1745,10 @@ async function doLogout() {
 // ===== 模态框输入（替代prompt）=====
 function showModal(title, message, defaultValue, customHtml) {
     return new Promise((resolve) => {
+        // ★ 移除所有旧的modal overlay，防止重复id导致输入框读取失败
+        document.querySelectorAll('[data-modal-overlay]').forEach(el => el.remove());
         const overlay = document.createElement('div');
+        overlay.dataset.modalOverlay = '1';
         overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:1000';
         if (customHtml) {
             overlay.innerHTML = `
@@ -2776,16 +2779,23 @@ async function showGroupMembers(groupName) {
 }
 
 async function doAddGroupMember(groupName) {
-    const player = document.getElementById('ugNewMember')?.value?.trim();
+    const inputEl = document.getElementById('ugNewMember');
+    const player = inputEl ? inputEl.value.trim() : '';
     if (!player) { glassAlert('请输入玩家名'); return; }
-    if (!/^[a-zA-Z0-9_]{2,16}$/.test(player)) { glassAlert('玩家名格式无效'); return; }
+    if (!/^[a-zA-Z0-9_]{3,16}$/.test(player)) { glassAlert('玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）'); return; }
 
     try {
         const res = await apiCall('add_group_member', {group: groupName, player}, 'POST');
         if (res.success) {
-            showGroupMembers(groupName); // 刷新
+            // pending=true 是异步验证响应，需要特殊处理
+            if (res.pending) {
+                glassAlert(res.message || '验证请求已提交，系统将在1-2分钟内自动完成验证');
+                showGroupMembers(groupName); // 刷新
+            } else {
+                showGroupMembers(groupName); // 刷新
+            }
         } else {
-            glassAlert('添加失败: ' + (res.error || ''));
+            glassAlert(res.error || '添加失败');
         }
     } catch(e) {
         glassAlert('添加失败: ' + e.message);
