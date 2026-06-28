@@ -98,7 +98,7 @@ try {
     // ★ 玩家端领地字段更新（效果管理、开关等）
     $playerFieldActions = ['update_land_field'];
     // ★ 玩家端权限操作action
-    $playerPermActions = ['update_visitor_perm', 'get_visitor_perm'];
+    $playerPermActions = ['update_visitor_perm', 'get_visitor_perm', 'change_visitor_role'];
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更
@@ -263,6 +263,15 @@ try {
                 exit;
             }
             handleUpdateVisitorPerm($db, $playerName, $_POST);
+            break;
+
+        // ===== 玩家端：切换访客角色（admin/visitor）=====
+        case 'change_visitor_role':
+            if ($method !== 'POST') {
+                echo json_encode(['success' => false, 'error' => 'POST only']);
+                exit;
+            }
+            handleChangeVisitorRole($db, $playerName, $_POST);
             break;
 
         // ===== 成员独立权限：获取成员权限列表 =====
@@ -1068,6 +1077,60 @@ function handleRemoveVisitor($db, $playerName, $req) {
     echo json_encode(['success' => true, 'message' => "已移除访客: $visitor"]);
 }
 
+// ==================== 玩家端：切换访客角色 ====================
+
+function handleChangeVisitorRole($db, $playerName, $post) {
+    $landName = $post['name'] ?? $post['land'] ?? '';
+    $visitor = $post['visitor'] ?? $post['player'] ?? '';
+    $newRole = $post['role'] ?? '';
+
+    if (empty($landName) || empty($visitor) || empty($newRole)) {
+        echo json_encode(['success' => false, 'error' => '缺少参数']);
+        return;
+    }
+
+    if (!in_array($newRole, ['admin', 'visitor'])) {
+        echo json_encode(['success' => false, 'error' => '无效角色: ' . $newRole]);
+        return;
+    }
+
+    // 获取领地
+    $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
+    $result = $stmt->execute();
+    $land = $result->fetchArray(SQLITE3_ASSOC);
+
+    if (!$land) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+
+    if ($land['owner'] !== $playerName) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者才能修改角色']);
+        return;
+    }
+
+    // 更新角色
+    $stmt2 = $db->prepare("UPDATE web_area_permissions SET role = :role WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':role', $newRole, SQLITE3_TEXT);
+    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $stmt2->execute();
+
+    // 写入变更队列通知Java同步
+    $now = time();
+    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land' => $landName]);
+    $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
+    $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
+    $stmt3->bindValue(':data', $changeData, SQLITE3_TEXT);
+    $stmt3->bindValue(':now', $now, SQLITE3_INTEGER);
+    $stmt3->execute();
+
+    $roleLabel = $newRole === 'admin' ? '管理员' : '访客';
+    echo json_encode(['success' => true, 'message' => "已将 $visitor 设为$roleLabel"]);
+}
+
 // ==================== 玩家端：访客列表 ====================
 
 function handleListVisitors($db, $landName) {
@@ -1460,7 +1523,7 @@ function handleListUserGroups($db) {
     while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
         $groups[] = $row;
     }
-    echo json_encode(['success' => true, 'groups' => $groups]);
+    echo json_encode(['success' => true, 'groups' => $groups], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 function handleGetUserGroup($db, $name) {

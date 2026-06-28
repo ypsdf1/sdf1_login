@@ -1501,6 +1501,42 @@ if ($currentVersion !== $BUILD_VERSION) {
         });
     }
 
+    // ★ 毛玻璃选择器弹窗（替代文本输入，提供可选项列表）
+    function glassSelect(label, options, hint = '') {
+        // options: [{value, label, desc?}] 或 string[]（自动转为{value,label}）
+        return new Promise(resolve => {
+            _glassAlertResolve = resolve;
+            _isGlassPrompt = false;
+            const icon = document.getElementById('glassAlertIcon');
+            icon.textContent = '📋';
+            const msgEl = document.getElementById('glassAlertMsg');
+            msgEl.style.display = 'none';
+            const labelEl = document.getElementById('glassAlertLabel');
+            labelEl.textContent = label;
+            labelEl.style.display = '';
+            const input = document.getElementById('glassAlertInput');
+            input.style.display = 'none';
+            const hintEl = document.getElementById('glassAlertHint');
+            if (hint) { hintEl.textContent = '💡 ' + hint; hintEl.style.display = ''; }
+            else { hintEl.style.display = 'none'; }
+            // 构建选项列表
+            const normalized = options.map(o => typeof o === 'string' ? {value: o, label: o} : o);
+            let listHtml = '<div style="max-height:300px;overflow-y:auto;margin:8px 0;display:flex;flex-direction:column;gap:4px">';
+            for (const opt of normalized) {
+                listHtml += `<div onclick="glassAlertResolve('${opt.value.replace(/'/g, "\\'")}')"
+                    style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all 0.15s;font-size:13px;color:var(--fg);background:var(--bg)"
+                    onmouseover="this.style.borderColor='var(--accent)';this.style.background='rgba(99,102,241,0.1)'"
+                    onmouseout="this.style.borderColor='var(--border)';this.style.background='var(--bg)'">
+                    <div style="font-weight:500">${opt.label}</div>
+                    ${opt.desc ? `<div style="font-size:11px;color:var(--dim);margin-top:2px">${opt.desc}</div>` : ''}
+                </div>`;
+            }
+            listHtml += '</div>';
+            document.getElementById('glassAlertBtns').innerHTML = listHtml + '<button class="ag-cancel" onclick="glassAlertResolve(false)" style="margin-top:8px">取消</button>';
+            document.getElementById('glassAlertOverlay').classList.add('show');
+        });
+    }
+
     // ===== 主题切换 =====
     function toggleLightTheme() {
         document.body.classList.toggle('light-theme');
@@ -2317,9 +2353,16 @@ async function renderLandDetail(el, landName) {
             html += `<table class="table"><thead><tr><th>玩家名</th><th>角色</th><th>授权时间</th><th>操作</th></tr></thead><tbody>`;
             for (const v of visitors) {
                 const grantDate = v.granted_at ? new Date(v.granted_at * 1000).toLocaleString('zh-CN') : '未知';
+                const isAdmin = v.role === 'admin';
+                const roleColor = isAdmin ? 'var(--accent)' : 'var(--dim)';
+                const roleBg = isAdmin ? 'rgba(99,102,241,0.15)' : 'rgba(107,114,128,0.1)';
+                const nextRoleLabel = isAdmin ? '设为访客' : '设为管理员';
                 html += `<tr>
                     <td><strong>${escHtml(v.player_name)}</strong> <button class="btn" style="font-size:10px;padding:1px 6px;color:var(--accent);border-color:var(--accent)" onclick="event.stopPropagation();landsState.view='member_perm_detail';landsState.currentLand='${escHtml(land.name)}';landsState.currentMember='${escHtml(v.player_name)}';renderLands(document.getElementById('content'))">权限</button></td>
-                    <td><span style="color:var(--accent)">${escHtml(v.role)}</span></td>
+                    <td><span onclick="changeVisitorRole('${escHtml(land.name)}','${escHtml(v.player_name)}','${escHtml(v.role)}')"
+                        style="cursor:pointer;padding:2px 8px;border-radius:12px;font-size:12px;background:${roleBg};color:${roleColor};border:1px solid ${roleColor};transition:all 0.2s"
+                        onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'"
+                        title="点击${nextRoleLabel}">${isAdmin ? '👑 管理员' : '👤 访客'}</span></td>
                     <td style="font-size:12px;color:var(--dim)">${grantDate}</td>
                     <td><button class="btn" style="color:var(--red);font-size:11px;padding:3px 8px" onclick="removeLandVisitor('${escHtml(land.name)}','${escHtml(v.player_name)}')">移除</button></td>
                 </tr>`;
@@ -2480,6 +2523,31 @@ async function addLandVisitor(landName) {
     }
 }
 
+async function changeVisitorRole(landName, player, currentRole) {
+    const newRole = currentRole === 'admin' ? 'visitor' : 'admin';
+    const roleLabel = newRole === 'admin' ? '管理员' : '访客';
+    if (!await glassConfirm(`确定将 ${player} 设为${roleLabel}吗？${newRole === 'admin' ? '\n管理员将拥有领地管理权限！' : ''}`)) return;
+    try {
+        const url = new URL(API + 'land_api.php', location.href);
+        const body = new URLSearchParams();
+        body.set('action', 'change_visitor_role');
+        body.set('token', TOKEN);
+        body.set('name', landName);
+        body.set('visitor', player);
+        body.set('role', newRole);
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
 async function removeLandVisitor(landName, player) {
     if (!await glassConfirm(`确定要移除访客 ${player} 吗？`)) return;
     try {
@@ -2542,13 +2610,41 @@ async function toggleLandField(landName, field) {
 }
 
 async function addClearEffect(landName) {
-    const eff = await glassPrompt('输入要清除的效果英文名', '', '如: SLOWNESS, WEAKNESS, POISON');
-    if (!eff || eff === false) return;
-    const trimmed = eff.trim().toUpperCase();
-    if (!trimmed) return;
+    // MC药水效果列表（用户选择而非手动输入）
+    const EFFECTS = [
+        {value:'SPEED',label:'🏃 速度',desc:'SPEED - 提升移动速度'},
+        {value:'SLOWNESS',label:'🐌 缓慢',desc:'SLOWNESS - 降低移动速度'},
+        {value:'HASTE',label:'⛏️ 急迫',desc:'HASTE - 提升挖掘和攻击速度'},
+        {value:'MINING_FATIGUE',label:'🔧 疲劳',desc:'MINING_FATIGUE - 降低挖掘速度'},
+        {value:'STRENGTH',label:'💪 力量',desc:'STRENGTH - 提升近战伤害'},
+        {value:'JUMP_BOOST',label:'🦘 跳跃提升',desc:'JUMP_BOOST - 提升跳跃高度'},
+        {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
+        {value:'REGENERATION',label:'❤️ 再生',desc:'REGENERATION - 缓慢恢复生命'},
+        {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
+        {value:'FIRE_RESISTANCE',label:'🔥 火焰抗性',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
+        {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
+        {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
+        {value:'BLINDNESS',label:' blinded 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
+        {value:'NIGHT_VISION',label:'🦉 夜视',desc:'NIGHT_VISION - 黑暗中看清一切'},
+        {value:'WEAKNESS',label:'😵 虚弱',desc:'WEAKNESS - 降低近战伤害'},
+        {value:'POISON',label:'☠️ 中毒',desc:'POISON - 持续失去生命'},
+        {value:'WITHER',label:'💀 凋零',desc:'WITHER - 持续失去生命（更严重）'},
+        {value:'HEALTH_BOOST',label:'💖 生命提升',desc:'HEALTH_BOOST - 增加最大生命值'},
+        {value:'ABSORPTION',label:'🥇 吸收',desc:'ABSORPTION - 提供额外黄色生命值'},
+        {value:'SATURATION',label:'🍖 饱和',desc:'SATURATION - 恢复饥饿值'},
+        {value:'GLOWING',label:'✨ 发光',desc:'GLOWING - 对所有人高亮显示'},
+        {value:'LEVITATION',label:'🎈 漂浮',desc:'LEVITATION - 向上飘浮'},
+        {value:'SLOW_FALLING',label:'🪂 缓降',desc:'SLOW_FALLING - 下落速度减慢'},
+        {value:'LUCK',label:'🍀 幸运',desc:'LUCK - 提升战利品品质'},
+        {value:'UNLUCK',label:'🤕 厄运',desc:'UNLUCK - 降低战利品品质'},
+        {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳'},
+        {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
+        {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
+        {value:'HERO_OF_THE_VILLAGE',label:'🏆 英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
+    ];
 
+    // 获取当前已有的清除效果，过滤掉已选的
     try {
-        const url = new URL(API + 'land_api.php', location.href);
         const detailUrl = new URL(API + 'land_api.php', location.href);
         detailUrl.searchParams.set('action', 'land_detail');
         detailUrl.searchParams.set('token', TOKEN);
@@ -2557,9 +2653,18 @@ async function addClearEffect(landName) {
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
         const current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : [];
-        if (current.includes(trimmed)) { glassAlert('该效果已在清除列表中'); return; }
-        current.push(trimmed);
 
+        // 过滤掉已添加的效果
+        const available = EFFECTS.filter(e => !current.includes(e.value));
+        if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
+
+        const eff = await glassSelect('选择要清除的效果', available, '点击选择效果，将在领地内自动清除该效果');
+        if (!eff || eff === false) return;
+
+        if (current.includes(eff)) { glassAlert('该效果已在清除列表中'); return; }
+        current.push(eff);
+
+        const url = new URL(API + 'land_api.php', location.href);
         const body = new URLSearchParams();
         body.set('name', landName);
         body.set('field', 'clear_effects');
@@ -2578,23 +2683,40 @@ async function addClearEffect(landName) {
 }
 
 async function addGiveEffect(landName) {
-    const eff = await glassPrompt('输入效果英文名', '', '如: SPEED, STRENGTH, REGENERATION');
-    if (!eff || eff === false) return;
-    const trimmed = eff.trim().toUpperCase();
-    if (!trimmed) return;
-
-    const levelStr = await glassPrompt('等级 (1-255)', '1', '默认1级，管理员最高255级');
-    if (levelStr === null || levelStr === false) return;
-    const level = parseInt(levelStr) || 1;
-
-    const durStr = await glassPrompt('时长（秒）', '300', '默认300秒');
-    if (durStr === null || durStr === false) return;
-    const duration = parseInt(durStr) || 300;
-
-    const entry = JSON.stringify([trimmed, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+    // MC药水效果列表
+    const EFFECTS = [
+        {value:'SPEED',label:'🏃 速度',desc:'SPEED - 提升移动速度'},
+        {value:'SLOWNESS',label:'🐌 缓慢',desc:'SLOWNESS - 降低移动速度'},
+        {value:'HASTE',label:'⛏️ 急迫',desc:'HASTE - 提升挖掘和攻击速度'},
+        {value:'MINING_FATIGUE',label:'🔧 疲劳',desc:'MINING_FATIGUE - 降低挖掘速度'},
+        {value:'STRENGTH',label:'💪 力量',desc:'STRENGTH - 提升近战伤害'},
+        {value:'JUMP_BOOST',label:'🦘 跳跃提升',desc:'JUMP_BOOST - 提升跳跃高度'},
+        {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
+        {value:'REGENERATION',label:'❤️ 再生',desc:'REGENERATION - 缓慢恢复生命'},
+        {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
+        {value:'FIRE_RESISTANCE',label:'🔥 火焰抗性',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
+        {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
+        {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
+        {value:'BLINDNESS',label:'🌑 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
+        {value:'NIGHT_VISION',label:'🦉 夜视',desc:'NIGHT_VISION - 黑暗中看清一切'},
+        {value:'WEAKNESS',label:'😵 虚弱',desc:'WEAKNESS - 降低近战伤害'},
+        {value:'POISON',label:'☠️ 中毒',desc:'POISON - 持续失去生命'},
+        {value:'WITHER',label:'💀 凋零',desc:'WITHER - 持续失去生命（更严重）'},
+        {value:'HEALTH_BOOST',label:'💖 生命提升',desc:'HEALTH_BOOST - 增加最大生命值'},
+        {value:'ABSORPTION',label:'🥇 吸收',desc:'ABSORPTION - 提供额外黄色生命值'},
+        {value:'SATURATION',label:'🍖 饱和',desc:'SATURATION - 恢复饥饿值'},
+        {value:'GLOWING',label:'✨ 发光',desc:'GLOWING - 对所有人高亮显示'},
+        {value:'LEVITATION',label:'🎈 漂浮',desc:'LEVITATION - 向上飘浮'},
+        {value:'SLOW_FALLING',label:'🪂 缓降',desc:'SLOW_FALLING - 下落速度减慢'},
+        {value:'LUCK',label:'🍀 幸运',desc:'LUCK - 提升战利品品质'},
+        {value:'UNLUCK',label:'🤕 厄运',desc:'UNLUCK - 降低战利品品质'},
+        {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳'},
+        {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
+        {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
+        {value:'HERO_OF_THE_VILLAGE',label:'🏆 英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
+    ];
 
     try {
-        const url = new URL(API + 'land_api.php', location.href);
         const detailUrl = new URL(API + 'land_api.php', location.href);
         detailUrl.searchParams.set('action', 'land_detail');
         detailUrl.searchParams.set('token', TOKEN);
@@ -2603,8 +2725,26 @@ async function addGiveEffect(landName) {
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
         const current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : [];
-        current.push([trimmed, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+        const existingNames = current.map(e => Array.isArray(e) ? e[0] : e);
 
+        // 过滤掉已添加的效果
+        const available = EFFECTS.filter(e => !existingNames.includes(e.value));
+        if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
+
+        const eff = await glassSelect('选择要添加的增益效果', available, '点击选择效果');
+        if (!eff || eff === false) return;
+
+        const levelStr = await glassPrompt('等级 (1-255)', '1', '默认1级，管理员最高255级');
+        if (levelStr === null || levelStr === false) return;
+        const level = parseInt(levelStr) || 1;
+
+        const durStr = await glassPrompt('时长（秒）', '300', '默认300秒，最长3600秒');
+        if (durStr === null || durStr === false) return;
+        const duration = parseInt(durStr) || 300;
+
+        current.push([eff, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+
+        const url = new URL(API + 'land_api.php', location.href);
         const body = new URLSearchParams();
         body.set('name', landName);
         body.set('field', 'give_effects');
