@@ -3077,12 +3077,12 @@ public class WebManager {
             params.put("action", "list_user_groups");
             params.put("secret", secretKey);
             String resp = httpGet("api/land_api.php", params);
-            if (resp == null || resp.isEmpty()) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 响应为空"); return; }
+            if (resp == null || resp.isEmpty()) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: 响应为空"); return; }
 
             // 简单解析JSON: {"success":true,"groups":[{...},{...}]}
-            if (!resp.contains("\"success\":true")) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: success!=true, resp=" + resp.substring(0, Math.min(200, resp.length()))); return; }
+            if (!resp.contains("\"success\":true")) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: success!=true, resp=" + resp.substring(0, Math.min(300, resp.length()))); return; }
             int groupsStart = resp.indexOf("\"groups\":[");
-            if (groupsStart < 0) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 未找到groups数组"); return; }
+            if (groupsStart < 0) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: 未找到groups数组, resp=" + resp.substring(0, Math.min(300, resp.length()))); return; }
             String arrStr = resp.substring(groupsStart + 10); // 跳过 "groups":[
             // ★ 修复：用{}计数来找数组的结束 ]（去掉开头[后内容是{...},{...}]，不含嵌套[]）
             int objDepth = 0;
@@ -3096,17 +3096,18 @@ public class WebManager {
                     break;
                 }
             }
-            if (arrEnd < 0) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 数组解析失败"); return; }
+            if (arrEnd < 0) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: 数组解析失败(未找到匹配的]), arrStr=" + arrStr.substring(0, Math.min(200, arrStr.length()))); return; }
             arrStr = arrStr.substring(1, arrEnd); // 去掉开头 [ 和结尾 ]
 
-            if (arrStr.trim().isEmpty()) return; // 空数组
+            if (arrStr.trim().isEmpty()) { plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 空数组"); return; } // 空数组
 
             UserGroupManager ugm = plugin.getUserGroup();
-            if (ugm == null) return;
+            if (ugm == null) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: ugm==null"); return; }
 
-            plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 解析到 " + arrStr.length() + " 字符的数组内容");
+            plugin.getLogger().info("[防护-sync] 从PHP拉取用户组: 解析到 " + arrStr.length() + " 字符的数组内容");
             // 拆分每个JSON对象
             int imported = 0;
+            int parseErrors = 0;
             int depth = 0;
             int objStart = -1;
             for (int i = 0; i < arrStr.length(); i++) {
@@ -3121,18 +3122,23 @@ public class WebManager {
                         if (cfg != null && !cfg.name.isEmpty()) {
                             ugm.saveGroupConfigToDB(cfg);
                             imported++;
+                            plugin.getLogger().fine("[防护-sync] 解析用户组: " + cfg.name + " (displayName=" + cfg.displayName + ", color=" + cfg.displayColor + ")");
+                        } else {
+                            parseErrors++;
+                            plugin.getLogger().warning("[防护-sync] 用户组解析失败: " + obj.substring(0, Math.min(150, obj.length())));
                         }
                         objStart = -1;
                     }
                 }
             }
 
-            if (imported > 0) {
+            if (imported > 0 || parseErrors > 0) {
                 ugm.loadGroupConfigs();
-                plugin.getLogger().info("[防护-sync] 从PHP拉取 " + imported + " 个用户组配置");
+                plugin.getLogger().info("[防护-sync] 从PHP拉取 " + imported + " 个用户组配置" + (parseErrors > 0 ? " (" + parseErrors + "个解析失败)" : ""));
             }
         } catch (Exception e) {
-            plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组失败: " + e.getMessage());
+            plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组异常: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -3141,8 +3147,8 @@ public class WebManager {
         try {
             UserGroupManager.UserGroupConfig cfg = new UserGroupManager.UserGroupConfig();
             cfg.name = extractJsonStringSafe(obj, "group_name");
-            cfg.displayName = extractJsonStringSafe(obj, "display_name");
-            cfg.displayColor = extractJsonStringSafe(obj, "display_color");
+            cfg.displayName = decodeJsonUnicode(extractJsonStringSafe(obj, "display_name"));
+            cfg.displayColor = decodeJsonUnicode(extractJsonStringSafe(obj, "display_color"));
             String priStr = extractJsonField(obj, "priority");
             if (!priStr.isEmpty()) try { cfg.priority = Integer.parseInt(priStr); } catch (Exception ignored) {}
             String priceStr = extractJsonField(obj, "land_price_per_sqm");
@@ -3154,6 +3160,28 @@ public class WebManager {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** 解码JSON中的 \\uXXXX Unicode转义（如 \\u00a7 → §） */
+    private String decodeJsonUnicode(String s) {
+        if (s == null || s.isEmpty()) return s;
+        if (!s.contains("\\u")) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            if (i + 5 < s.length() && s.charAt(i) == '\\' && s.charAt(i + 1) == 'u') {
+                try {
+                    String hex = s.substring(i + 2, i + 6);
+                    int codePoint = Integer.parseInt(hex, 16);
+                    sb.append((char) codePoint);
+                    i += 5;
+                } catch (NumberFormatException e) {
+                    sb.append(s.charAt(i));
+                }
+            } else {
+                sb.append(s.charAt(i));
+            }
+        }
+        return sb.toString();
     }
 
     /** 从JSON字符串提取字符串字段值（返回null表示未找到） */
