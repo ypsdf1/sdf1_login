@@ -1254,12 +1254,13 @@ public class AreaGUIManager implements Listener {
                 java.util.List<Player> onlinePlayers = new ArrayList<>(plugin.getServer().getOnlinePlayers());
                 if (raw < onlinePlayers.size()) {
                     Player target = onlinePlayers.get(raw);
-                    if (ugm4.addPlayer(target.getName(), groupName, p.getName())) {
+                    String err4 = ugm4.addPlayer(target.getName(), groupName, p.getName());
+                    if (err4 == null) {
                         UserGroupManager.UserGroupConfig cfg3 = ugm4.getGroupConfig(groupName);
                         p.sendMessage("§a已将 §f" + target.getName() + " §a加入用户组: §f" + (cfg3 != null ? cfg3.displayName : groupName));
                         target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + (cfg3 != null ? cfg3.displayName : groupName));
                     } else {
-                        p.sendMessage("§c操作失败");
+                        p.sendMessage("§c" + err4);
                     }
                     openGroupMemberPanel(p, groupName); // 刷新
                 }

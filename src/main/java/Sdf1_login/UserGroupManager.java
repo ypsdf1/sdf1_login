@@ -150,22 +150,28 @@ public class UserGroupManager {
         return name != null && MC_NAME_PATTERN.matcher(name).matches();
     }
 
-    public boolean addPlayer(String player, String groupName, String addedBy) {
+    /**
+     * 添加玩家到用户组
+     * @return null=成功, 非null=错误消息
+     */
+    public String addPlayer(String player, String groupName, String addedBy) {
         // ★ 校验玩家名格式
         if (!isValidPlayerName(player)) {
-            plugin.getLogger().warning("[UserGroup] addPlayer失败: 玩家名格式无效 \"" + player + "\"（需要3-16位字母/数字/下划线）");
-            return false;
+            String msg = "玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）";
+            plugin.getLogger().warning("[UserGroup] addPlayer失败: " + msg + " \"" + player + "\"");
+            return msg;
         }
 
         UserGroupConfig cfg = getGroupConfig(groupName);
-        if (cfg == null) return false;
+        if (cfg == null) return "未找到用户组: " + groupName;
         groupName = cfg.name; // 使用DB中实际的组名（保留大小写）
 
         // ★ 校验玩家是否存在（查login.db）
         DatabaseManager dbMgr = plugin.getDb();
         if (dbMgr != null && !dbMgr.userExists(player)) {
-            plugin.getLogger().warning("[UserGroup] addPlayer失败: 玩家 " + player + " 不存在于login.db");
-            return false;
+            String msg = "玩家 " + player + " 尚未注册，请确认玩家名是否正确";
+            plugin.getLogger().warning("[UserGroup] addPlayer失败: " + msg);
+            return msg;
         }
 
         long now = System.currentTimeMillis();
@@ -182,11 +188,11 @@ public class UserGroupManager {
             ps.close();
         } catch (SQLException e) {
             plugin.getLogger().warning("[UserGroup] addPlayer failed: " + e.getMessage());
-            return false;
+            return "数据库错误: " + e.getMessage();
         }
         // ★ 推送到PHP
         pushMemberToPHP(player, groupName, "add");
-        return true;
+        return null; // 成功
     }
 
     public boolean removePlayer(String player, String groupName) {

@@ -6113,7 +6113,8 @@ public class AreaProtection implements Listener {
                 return true;
             }
             String groupName = cfgAdd.name; // 使用DB中的实际组名
-            if (ugm.addPlayer(playerName, groupName, sender.getName())) {
+            String err = ugm.addPlayer(playerName, groupName, sender.getName());
+            if (err == null) {
                 sender.sendMessage("§a已将 §f" + playerName + " §a加入用户组: §f" + cfgAdd.displayName);
                 // 通知在线玩家
                 Player target = plugin.getServer().getPlayerExact(playerName);
@@ -6121,7 +6122,7 @@ public class AreaProtection implements Listener {
                     target.sendMessage("§a§l[用户组] §f你已被加入用户组: §e" + cfgAdd.displayName);
                 }
             } else {
-                sender.sendMessage("§c操作失败");
+                sender.sendMessage("§c" + err);
             }
             return true;
         }
