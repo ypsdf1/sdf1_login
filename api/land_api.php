@@ -1680,6 +1680,27 @@ function handleAddGroupMember($db, $data) {
     $stmt->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
     $stmt->execute();
 
+    // ★ 写入变更队列，通知Java端同步成员
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0
+        )");
+        $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_change', :id, :name, :data, :time)");
+        $stmt2->bindValue(':id', $group, SQLITE3_TEXT);
+        $stmt2->bindValue(':name', $group, SQLITE3_TEXT);
+        $stmt2->bindValue(':data', json_encode(['action' => 'add_member', 'group_name' => $group, 'player' => $player]), SQLITE3_TEXT);
+        $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+    } catch (\Throwable $e) { /* 静默 */ }
+
     echo json_encode(['success' => true, 'message' => "{$player} 已加入用户组 {$group}"]);
 }
 
@@ -1694,6 +1715,28 @@ function handleRemoveGroupMember($db, $data) {
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
     $stmt->bindValue(':group', $group, SQLITE3_TEXT);
     $stmt->execute();
+
+    // ★ 写入变更队列，通知Java端同步成员
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0
+        )");
+        $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_change', :id, :name, :data, :time)");
+        $stmt2->bindValue(':id', $group, SQLITE3_TEXT);
+        $stmt2->bindValue(':name', $group, SQLITE3_TEXT);
+        $stmt2->bindValue(':data', json_encode(['action' => 'remove_member', 'group_name' => $group, 'player' => $player]), SQLITE3_TEXT);
+        $stmt2->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+    } catch (\Throwable $e) { /* 静默 */ }
+
     echo json_encode(['success' => true, 'message' => "{$player} 已移出用户组 {$group}"]);
 }
 
