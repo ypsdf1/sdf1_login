@@ -5064,7 +5064,7 @@ public class AreaProtection implements Listener {
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
                 "menu", "菜单", "sdf1debug", "testclear", "cli",
-                "取消删除", "canceldelete",
+                "取消删除", "canceldelete", "canceladminchange",
                 "removemember", "addmember",
                 "config", "配置",
                 "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
@@ -6609,6 +6609,87 @@ public class AreaProtection implements Listener {
             }
             pd.task.cancel();
             sender.sendMessage("§a§l[防护] §f已取消删除领地: §e" + areaName);
+            return true;
+        }
+
+        // ===== 取消管理员改主 =====
+        if (sub.equals("canceladminchange")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect canceladminchange <领地名>");
+                return true;
+            }
+            String areaName = args[1];
+            String resolved = resolveAreaName(areaName);
+            if (resolved != null) areaName = resolved;
+
+            // 检查领地是否存在
+            AreaConfig ac = getLand(areaName);
+            if (ac == null) {
+                sender.sendMessage("§c领地不存在: " + areaName);
+                return true;
+            }
+
+            // 检查是否是原主人
+            if (!p.getName().equalsIgnoreCase(ac.owner)) {
+                sender.sendMessage("§c只有原主人才能撤回改主");
+                return true;
+            }
+
+            // 查找最近的管理员改主记录
+            try {
+                if (dbConnection == null) {
+                    sender.sendMessage("§c数据库未连接");
+                    return true;
+                }
+                PreparedStatement ps = dbConnection.prepareStatement(
+                    "SELECT id, change_data FROM web_admin_changes WHERE change_type = 'owner_change' AND target_name = ? AND status = 'completed' ORDER BY id DESC LIMIT 1");
+                ps.setString(1, areaName);
+                ResultSet rs = ps.executeQuery();
+                if (rs.next()) {
+                    int changeId = rs.getInt("id");
+                    String changeDataStr = rs.getString("change_data");
+                    java.util.Map<String, Object> changeData = WebManager.parseJson(changeDataStr);
+                    String newOwner = (String) changeData.get("new_owner");
+                    String oldOwner = (String) changeData.get("old_owner");
+
+                    // 验证当前owner是否是newOwner（即已经被改主了）
+                    if (!p.getName().equalsIgnoreCase(newOwner)) {
+                        sender.sendMessage("§c当前所有者不是你，无法撤回");
+                        rs.close();
+                        ps.close();
+                        return true;
+                    }
+
+                    // 回退owner
+                    PreparedStatement updatePs = dbConnection.prepareStatement(
+                        "UPDATE area_lands SET owner = ? WHERE name = ?");
+                    updatePs.setString(1, oldOwner);
+                    updatePs.setString(2, areaName);
+                    updatePs.executeUpdate();
+                    updatePs.close();
+
+                    // 更新内存
+                    ac.owner = oldOwner;
+
+                    // 通知PHP回滚
+                    plugin.webManager.callbackOwnerChangeToPHP(changeId, false, "原主人撤回");
+
+                    sender.sendMessage("§a§l[防护] §f已撤回领地 §e" + areaName + " §f的改主，恢复为 §a" + oldOwner);
+                    plugin.getLogger().info("[防护] " + p.getName() + " 撤回了领地 " + areaName + " 的管理员改主");
+                } else {
+                    sender.sendMessage("§c没有可撤回的改主记录");
+                }
+                rs.close();
+                ps.close();
+            } catch (Exception e) {
+                sender.sendMessage("§c撤回失败: " + e.getMessage());
+                plugin.getLogger().warning("[防护] 撤回管理员改主失败: " + e.getMessage());
+            }
             return true;
         }
 

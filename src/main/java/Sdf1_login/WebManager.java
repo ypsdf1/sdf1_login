@@ -2251,6 +2251,31 @@ public class WebManager {
             String resp = doPost(webBaseUrl + "/api/sync.php?action=receive_token", jsonBody);
             if (resp != null) {
                 plugin.getLogger().info("[Web通信] Token注册成功");
+                plugin.getLogger().warning("\n" +
+                        " __          __       _                            _                                                                     \n" +
+                        " \\ \\        / /      | |                          | |                                                                    \n" +
+                        "  \\ \\  /\\  / /__  ___| |__   ___  _ __ ___   ___  | |_ ___                                                               \n" +
+                        "   \\ \\/  \\/ / _ \\/ __| '_ \\ / _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                              \n" +
+                        "    \\  /\\  /  __/ (__| | | | (_) | | | | | |  __/ | || (_) |                                                             \n" +
+                        "     \\/  \\/ \\___|\\___|_| |_|\\___/|_| |_| |_|\\___|  \\__\\___/         _                                                    \n" +
+                        "                                             | |                   (_)                                                   \n" +
+                        "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __         \n" +
+                        "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|        \n" +
+                        " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |           \n" +
+                        "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_| |_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_|    \\_/ \\___|_|           \n" +
+                        "                     __/ |   _____ _____                     ___                   _     _     _ _  __                   \n" +
+                        "                    |___/   |_   _|  __ \\ _                 |__ \\                 | |   (_)   | (_)/ _|                  \n" +
+                        "  ___  ___ _ ____   _____ _ __| | | |__) (_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __  \n" +
+                        " / __|/ _ \\ '__\\ \\ / / _ \\ '__| | |  ___/    | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\ \n" +
+                        " \\__ \\  __/ |   \\ V /  __/ | _| |_| |     _  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |\n" +
+                        " |___/\\___|_|    \\_/ \\___|_||_____|_|   _(_)_|_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|\n" +
+                        "                 | |  _  |___ \\ / _ \\  / /____  / _ \\               __/ | |                                              \n" +
+                        "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |             |___/|_|                                              \n" +
+                        " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                                   \n" +
+                        " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                                    \n" +
+                        " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                                     \n" +
+                        " | |                                                                                                                     \n" +
+                        " |_|                                                                                                                     ");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] Token注册失败: " + e.getClass().getSimpleName() + " - " + e.getMessage());
@@ -3513,6 +3538,22 @@ public class WebManager {
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
                                 // 3. 回调PHP更新本地副本
                                 callbackOwnerChangeToPHP(id, true, "");
+                                // 4. 通知原主人（带撤回超链接）
+                                String oldOwner = String.valueOf(changeData.getOrDefault("old_owner", ""));
+                                if (!oldOwner.isEmpty()) {
+                                    org.bukkit.entity.Player oldOwnerPlayer = Bukkit.getPlayerExact(oldOwner);
+                                    if (oldOwnerPlayer != null && oldOwnerPlayer.isOnline()) {
+                                        net.kyori.adventure.text.Component msg = net.kyori.adventure.text.Component.empty()
+                                            .append(net.kyori.adventure.text.Component.text("§c§l[系统] §f§l你的领地 §e" + landName + " §f已被管理员变更为 §a" + newOwner))
+                                            .append(net.kyori.adventure.text.Component.text(" "))
+                                            .append(net.kyori.adventure.text.Component.text("§c§l[撤回]")
+                                                .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                                                    net.kyori.adventure.text.Component.text("§e点击撤回此次改主")))
+                                                .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/protect canceladminchange " + landName)));
+                                        oldOwnerPlayer.sendMessage(msg);
+                                        plugin.getLogger().info("[Web通信] 已通知原主人 " + oldOwner + " 关于领地 " + landName + " 的改主");
+                                    }
+                                }
                                 applied = true;
                             }
                             break;
@@ -3683,7 +3724,7 @@ public class WebManager {
     /**
      * ★ 回调PHP：管理面板改主执行结果
      */
-    private void callbackOwnerChangeToPHP(int changeId, boolean success, String reason) {
+    public void callbackOwnerChangeToPHP(int changeId, boolean success, String reason) {
         try {
             String url = webBaseUrl + "/api/land_api.php?action=owner_change_callback&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
                 + "&change_id=" + changeId
