@@ -3513,19 +3513,8 @@ public class WebManager {
                                 applied = true;
                             } else {
                                 // ★ 管理面板改主：验证新所有者 → 执行 → 回调PHP
-                                // 1. 验证新所有者是否存在
-                                org.bukkit.OfflinePlayer[] matches = Bukkit.getOfflinePlayers();
-                                boolean found = false;
-                                for (org.bukkit.OfflinePlayer op : matches) {
-                                    if (op.getName() != null && op.getName().equalsIgnoreCase(newOwner)) {
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    // 尝试通过login.db查询
-                                    found = plugin.getDb() != null && plugin.getDb().userExists(newOwner);
-                                }
+                                // 1. 验证新所有者是否在login.db注册（权威数据源，不用Bukkit缓存）
+                                boolean found = plugin.getDb() != null && plugin.getDb().userExists(newOwner);
                                 if (!found) {
                                     plugin.getLogger().warning("[Web通信] 管理面板改主失败: 玩家 " + newOwner + " 不存在");
                                     // 回调PHP标记失败
