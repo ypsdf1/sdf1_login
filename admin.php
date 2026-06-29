@@ -2426,7 +2426,7 @@ async function deleteLand(name) {
 }
 
 async function adminTransferLand(name, currentOwner) {
-    const newOwner = prompt('将领地 [' + name + '] 改主给谁？\n当前所有者: ' + (currentOwner||'无'), '');
+    const newOwner = await glassPrompt('将领地 [' + name + '] 改主给谁？', '', '当前所有者: ' + (currentOwner||'无'));
     if (!newOwner || !newOwner.trim()) return;
     const trimmed = newOwner.trim();
     if (!/^[a-zA-Z0-9_]{3,16}$/.test(trimmed)) {
