@@ -51,40 +51,32 @@ public class TeleportManager {
     /**
      * 判断是否为基岩版玩家（通过Geyser API）
      * 如果Geyser插件不存在，默认返回false（Java版）
+     * 
+     * Geyser API 检测顺序：
+     * 1. Geyser-BungeeCord (GeyserSpigot API)
+     * 2. Geyser Standalone (org.geysermc.connector.api.Geyser)
+     * 3. 降级为Java版
      */
     private boolean isBedrockPlayer(Player player) {
-        // 检查Geyser是否加载
+        // 检查 Geyser (BungeeCord/Velocity 网关)
         Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-BungeeCord");
         if (geyserPlugin != null && geyserPlugin.isEnabled()) {
             try {
-                // 尝试调用Geyser API（BungeeCord版本通过API端点）
                 java.lang.reflect.Method isBedrockMethod = geyserPlugin.getClass()
                     .getMethod("isBedrock", org.bukkit.entity.Player.class);
                 return (boolean) isBedrockMethod.invoke(geyserPlugin, player);
             } catch (Exception e) {
-                // 降级：尝试Geyser Spigot API
-                try {
-                    Class<?> geomerAPI = Class.forName("org.geysermc.api.Geyser");
-                    java.lang.reflect.Method method = geomerAPI.getMethod("isBedrockPlayer", org.bukkit.entity.Player.class);
-                    return (boolean) method.invoke(null, player);
-                } catch (ClassNotFoundException ex) {
-                    // Geyser未加载
-                    return false;
-                } catch (Exception ex2) {
-                    // 调用失败，降级处理
-                    return false;
-                }
+                // 尝试备用方法
             }
         }
-        // 尝试检测Geyser Standalone（Spigot插件）
+        // 检查 Geyser Standalone (Spigot 内置版)
         try {
-            Class<?> geomerAPI = Class.forName("org.geysermc.connector.GeysonAPI");
+            Class<?> geomerAPI = Class.forName("org.geysermc.api.Geyser");
             java.lang.reflect.Method method = geomerAPI.getMethod("isBedrockPlayer", org.bukkit.entity.Player.class);
             return (boolean) method.invoke(null, player);
-        } catch (ClassNotFoundException | NoSuchMethodException e) {
-            // Geyser未加载
-        } catch (Exception e) {
-            // 调用失败
+        } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | 
+                 java.lang.reflect.InvocationTargetException e) {
+            // Geyser 未加载或调用失败
         }
         return false;
     }
