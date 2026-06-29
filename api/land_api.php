@@ -101,8 +101,8 @@ try {
     $playerPermActions = ['update_visitor_perm', 'get_visitor_perm', 'change_visitor_role'];
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
-    // ★ Java端轮询PHP管理员变更
-    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes'];
+    // ★ Java端轮询PHP管理员变更 + Java回调过户结果
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -347,6 +347,11 @@ try {
         // ===== Java端：推送验证结果 =====
         case 'validation_callback':
             handleValidationCallback($db, $_POST + $_GET);
+            break;
+
+        // ===== Java端：过户验证结果回调 =====
+        case 'transfer_callback':
+            handleTransferCallback($db, $_POST + $_GET);
             break;
 
         // ===== 用户组管理 =====
@@ -1922,7 +1927,7 @@ function handleGetPlayerGroups($db, $player) {
 
 /**
  * 过户领地：领地主将自己的领地转让给其他玩家
- * 冷却1分钟，期间如果领地主取消或重新设置权限则取消转让
+ * 流程：PHP暂存pending → Java轮询验证 → 成功回调PHP才改owner → 冷却1分钟
  */
 function handleTransferLand($db, $playerName, $post) {
     $landName = $post['land'] ?? '';
@@ -1957,72 +1962,52 @@ function handleTransferLand($db, $playerName, $post) {
         return;
     }
 
-    // 检查是否已有进行中的过户（冷却中）
-    $stmt2 = $db->prepare("SELECT id, status, expires_at FROM web_land_transfers WHERE land_name = :land AND status = 'pending' ORDER BY id DESC LIMIT 1");
+    // 检查是否已有进行中的过户（pending或cooldown）
+    $stmt2 = $db->prepare("SELECT id, status, expires_at FROM web_land_transfers WHERE land_name = :land AND status IN ('pending', 'cooldown') ORDER BY id DESC LIMIT 1");
     $stmt2->bindValue(':land', $landName, SQLITE3_TEXT);
     $rs2 = $stmt2->execute();
     $pending = $rs2->fetchArray(SQLITE3_ASSOC);
     if ($pending) {
         if ($pending['expires_at'] > time()) {
             $remain = $pending['expires_at'] - time();
-            echo json_encode(['success' => false, 'error' => "该领地正在过户冷却中，还需 {$remain} 秒"]);
+            echo json_encode(['success' => false, 'error' => "该领地正在过户中（{$pending['status']}），还需 {$remain} 秒"]);
             return;
         }
         // 已过期，清理
-        $db->prepare("UPDATE web_land_transfers SET status = 'expired' WHERE id = :id")->bindValue(':id', (int)$pending['id'], SQLITE3_INTEGER);
         $db->query("UPDATE web_land_transfers SET status = 'expired' WHERE id = " . (int)$pending['id']);
     }
 
-    // 异步验证新所有者
-    $ownerValid = validatePlayerViaJava($db, $newOwner, 'transfer_land', ['land' => $landName, 'from' => $playerName]);
-    if ($ownerValid === null) {
-        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$newOwner} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
-        return;
-    }
-    if (!$ownerValid) {
-        echo json_encode(['success' => false, 'error' => "玩家 {$newOwner} 尚未注册，请确认玩家名是否正确"]);
-        return;
-    }
-
-    // 执行过户
+    // ★ 不再立即改owner，也不做异步验证 → 暂存为pending，等Java轮询拉走验证
     $now = time();
-    $cooldown = 60; // 1分钟冷却
+    $cooldown = 60; // 冷却时间（秒），Java验证通过后开始计时
 
-    // 写入过户记录
-    $stmt3 = $db->prepare("INSERT INTO web_land_transfers (land_name, old_owner, new_owner, status, created_at, completed_at, expires_at) VALUES (:land, :old, :new, 'cooldown', :now, :now, :expires)");
+    // 写入过户记录（status=pending，等Java验证）
+    $stmt3 = $db->prepare("INSERT INTO web_land_transfers (land_name, old_owner, new_owner, status, created_at, completed_at, expires_at) VALUES (:land, :old, :new, 'pending', :now, 0, :expires)");
     $stmt3->bindValue(':land', $landName, SQLITE3_TEXT);
     $stmt3->bindValue(':old', $playerName, SQLITE3_TEXT);
     $stmt3->bindValue(':new', $newOwner, SQLITE3_TEXT);
     $stmt3->bindValue(':now', $now, SQLITE3_INTEGER);
     $stmt3->bindValue(':expires', $now + $cooldown, SQLITE3_INTEGER);
     $stmt3->execute();
+    $transferId = $db->lastInsertRowID();
 
-    // 更新领地所有者
+    // 写入web_admin_changes让Java端验证+执行
     $landId = (int)$row['id'];
-    $stmtUpd = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
-    $stmtUpd->bindValue(':owner', $newOwner, SQLITE3_TEXT);
-    $stmtUpd->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmtUpd->execute();
-
-    // 记录变更
-    $stmt4 = $db->prepare("INSERT INTO web_land_owner_changes (land_id, land_name, old_owner, new_owner, created_at) VALUES (:lid, :name, :old, :new, :now)");
-    $stmt4->bindValue(':lid', $landId, SQLITE3_INTEGER);
-    $stmt4->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmt4->bindValue(':old', $playerName, SQLITE3_TEXT);
-    $stmt4->bindValue(':new', $newOwner, SQLITE3_TEXT);
-    $stmt4->bindValue(':now', $now, SQLITE3_INTEGER);
-    $stmt4->execute();
-
-    // 写入web_admin_changes让Java端执行
     $stmt5 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('owner_change', :id, :name, :data, :now)");
     $stmt5->bindValue(':id', $landId, SQLITE3_INTEGER);
     $stmt5->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmt5->bindValue(':data', json_encode(['old_owner' => $playerName, 'new_owner' => $newOwner, 'source' => 'player_transfer', 'cooldown' => $cooldown]), SQLITE3_TEXT);
+    $stmt5->bindValue(':data', json_encode([
+        'old_owner' => $playerName,
+        'new_owner' => $newOwner,
+        'source' => 'player_transfer',
+        'cooldown' => $cooldown,
+        'transfer_id' => (int)$transferId,
+    ]), SQLITE3_TEXT);
     $stmt5->bindValue(':now', $now, SQLITE3_INTEGER);
     $stmt5->execute();
 
-    debugLog("handleTransferLand: {$playerName} 过户 {$landName} → {$newOwner}, 冷却{$cooldown}秒");
-    echo json_encode(['success' => true, 'message' => "领地 [{$landName}] 已转让给 {$newOwner}，冷却 {$cooldown} 秒。冷却期间取消操作可撤回转让", 'cooldown' => $cooldown]);
+    debugLog("handleTransferLand: {$playerName} 过户 {$landName} → {$newOwner}，等待Java验证");
+    echo json_encode(['success' => true, 'message' => "过户请求已提交，等待系统验证玩家 {$newOwner}...", 'pending' => true, 'cooldown' => $cooldown]);
 }
 
 /**
@@ -2035,8 +2020,8 @@ function handleCancelTransfer($db, $playerName, $post) {
         return;
     }
 
-    // 查找进行中的过户
-    $stmt = $db->prepare("SELECT id, old_owner, new_owner, expires_at FROM web_land_transfers WHERE land_name = :land AND status = 'cooldown' ORDER BY id DESC LIMIT 1");
+    // 查找进行中的过户（pending=待验证, cooldown=冷却中）
+    $stmt = $db->prepare("SELECT id, status, old_owner, new_owner, expires_at FROM web_land_transfers WHERE land_name = :land AND status IN ('pending', 'cooldown') ORDER BY id DESC LIMIT 1");
     $stmt->bindValue(':land', $landName, SQLITE3_TEXT);
     $rs = $stmt->execute();
     $row = $rs->fetchArray(SQLITE3_ASSOC);
@@ -2045,7 +2030,7 @@ function handleCancelTransfer($db, $playerName, $post) {
         return;
     }
 
-    if (time() > $row['expires_at']) {
+    if ($row['status'] === 'cooldown' && time() > $row['expires_at']) {
         echo json_encode(['success' => false, 'error' => '冷却期已过，无法取消']);
         return;
     }
@@ -2055,34 +2040,105 @@ function handleCancelTransfer($db, $playerName, $post) {
         return;
     }
 
-    // 回退领地所有者
     $oldOwner = $row['old_owner'];
     $newOwner = $row['new_owner'];
-
-    $stmt2 = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
-    $stmt2->bindValue(':owner', $oldOwner, SQLITE3_TEXT);
-    $stmt2->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmt2->execute();
+    $status = $row['status'];
 
     // 标记过户为已取消
     $db->query("UPDATE web_land_transfers SET status = 'cancelled' WHERE id = " . (int)$row['id']);
 
-    // 记录回退变更
-    $stmt3 = $db->prepare("SELECT id FROM web_area_lands WHERE name = :name");
-    $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
-    $r3 = $stmt3->execute();
-    $r3Row = $r3->fetchArray(SQLITE3_ASSOC);
-    $landId = $r3Row ? (int)$r3Row['id'] : 0;
+    if ($status === 'cooldown') {
+        // cooldown状态：Java已改了owner，需要回退
+        $stmt2 = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
+        $stmt2->bindValue(':owner', $oldOwner, SQLITE3_TEXT);
+        $stmt2->bindValue(':name', $landName, SQLITE3_TEXT);
+        $stmt2->execute();
 
-    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('owner_change', :id, :name, :data, :now)");
-    $stmt4->bindValue(':id', $landId, SQLITE3_INTEGER);
-    $stmt4->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmt4->bindValue(':data', json_encode(['old_owner' => $newOwner, 'new_owner' => $oldOwner, 'source' => 'transfer_cancelled']), SQLITE3_TEXT);
-    $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
-    $stmt4->execute();
+        // 通知Java回退
+        $stmt3 = $db->prepare("SELECT id FROM web_area_lands WHERE name = :name");
+        $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
+        $r3 = $stmt3->execute();
+        $r3Row = $r3->fetchArray(SQLITE3_ASSOC);
+        $landId = $r3Row ? (int)$r3Row['id'] : 0;
 
-    debugLog("handleCancelTransfer: {$playerName} 取消过户 {$landName}: {$newOwner} → {$oldOwner}");
-    echo json_encode(['success' => true, 'message' => "过户已取消，领地 [{$landName}] 已恢复为 {$oldOwner} 的所有"]);
+        $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('owner_change', :id, :name, :data, :now)");
+        $stmt4->bindValue(':id', $landId, SQLITE3_INTEGER);
+        $stmt4->bindValue(':name', $landName, SQLITE3_TEXT);
+        $stmt4->bindValue(':data', json_encode(['old_owner' => $newOwner, 'new_owner' => $oldOwner, 'source' => 'transfer_cancelled']), SQLITE3_TEXT);
+        $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmt4->execute();
+
+        debugLog("handleCancelTransfer: {$playerName} 取消过户(cooldown回退) {$landName}: {$newOwner} → {$oldOwner}");
+        echo json_encode(['success' => true, 'message' => "过户已取消，领地 [{$landName}] 已恢复为 {$oldOwner} 的所有"]);
+    } else {
+        // pending状态：Java还没验证，只需取消即可，不需要回退owner（PHP没改过）
+        debugLog("handleCancelTransfer: {$playerName} 取消过户(pending撤回) {$landName}");
+        echo json_encode(['success' => true, 'message' => "过户请求已撤回"]);
+    }
+}
+
+/**
+ * Java端过户验证回调：验证通过→改owner+进入cooldown；验证失败→标记failed
+ */
+function handleTransferCallback($db, $post) {
+    $transferId = (int)($post['transfer_id'] ?? 0);
+    $result = $post['result'] ?? '';  // 'success' or 'failed'
+    $reason = $post['reason'] ?? '';
+
+    if ($transferId <= 0 || empty($result)) {
+        echo json_encode(['success' => false, 'error' => '参数不完整']);
+        return;
+    }
+
+    // 查找过户记录
+    $stmt = $db->prepare("SELECT * FROM web_land_transfers WHERE id = :id AND status = 'pending'");
+    $stmt->bindValue(':id', $transferId, SQLITE3_INTEGER);
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo json_encode(['success' => false, 'error' => '过户记录不存在或已处理']);
+        return;
+    }
+
+    $landName = $row['land_name'];
+    $oldOwner = $row['old_owner'];
+    $newOwner = $row['new_owner'];
+    $now = time();
+    $cooldown = 60;
+
+    if ($result === 'success') {
+        // ★ Java验证通过：更新PHP端owner
+        $stmtUpd = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
+        $stmtUpd->bindValue(':owner', $newOwner, SQLITE3_TEXT);
+        $stmtUpd->bindValue(':name', $landName, SQLITE3_TEXT);
+        $stmtUpd->execute();
+
+        // 标记过户为cooldown（冷却期开始）
+        $db->query("UPDATE web_land_transfers SET status = 'cooldown', completed_at = {$now}, expires_at = " . ($now + $cooldown) . " WHERE id = {$transferId}");
+
+        // 记录变更
+        $stmtLand = $db->prepare("SELECT id FROM web_area_lands WHERE name = :name");
+        $stmtLand->bindValue(':name', $landName, SQLITE3_TEXT);
+        $rLand = $stmtLand->execute();
+        $landRow = $rLand->fetchArray(SQLITE3_ASSOC);
+        $landId = $landRow ? (int)$landRow['id'] : 0;
+
+        $stmtChg = $db->prepare("INSERT INTO web_land_owner_changes (land_id, land_name, old_owner, new_owner, created_at) VALUES (:lid, :name, :old, :new, :now)");
+        $stmtChg->bindValue(':lid', $landId, SQLITE3_INTEGER);
+        $stmtChg->bindValue(':name', $landName, SQLITE3_TEXT);
+        $stmtChg->bindValue(':old', $oldOwner, SQLITE3_TEXT);
+        $stmtChg->bindValue(':new', $newOwner, SQLITE3_TEXT);
+        $stmtChg->bindValue(':now', $now, SQLITE3_INTEGER);
+        $stmtChg->execute();
+
+        debugLog("handleTransferCallback: 过户 {$landName} {$oldOwner}→{$newOwner} 验证通过，进入cooldown");
+        echo json_encode(['success' => true, 'message' => "验证通过，领地 [{$landName}] 已转让给 {$newOwner}，冷却 {$cooldown} 秒"]);
+    } else {
+        // ★ Java验证失败：标记过户失败
+        $db->query("UPDATE web_land_transfers SET status = 'failed' WHERE id = {$transferId}");
+        debugLog("handleTransferCallback: 过户 {$landName} {$oldOwner}→{$newOwner} 验证失败: {$reason}");
+        echo json_encode(['success' => true, 'message' => "过户验证失败: {$reason}"]);
+    }
 }
 
 /**
@@ -2107,9 +2163,11 @@ function handleTransferStatus($db, $playerName, $landName) {
     $now = time();
     $expires = (int)$row['expires_at'];
     $remain = max(0, $expires - $now);
-    $status = $remain > 0 ? $row['status'] : 'expired';
+    $status = $row['status'];
+    if ($status === 'cooldown' && $remain <= 0) $status = 'expired';
 
     echo json_encode(['success' => true, 'transfer' => [
+        'id' => (int)$row['id'],
         'status' => $status,
         'old_owner' => $row['old_owner'],
         'new_owner' => $row['new_owner'],
