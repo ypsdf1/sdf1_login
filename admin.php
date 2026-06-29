@@ -2439,20 +2439,35 @@ async function adminTransferLand(name, currentOwner) {
     }
     if (!await glassConfirm('确定将领地 [' + name + '] 改主为 [' + trimmed + '] ?\n（将写入待验证队列，等Java端确认后生效）')) return;
     try {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = '验证中...';
         const res = await fetch('api/land_api.php?action=update_land_owner', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&admin_token=' + (admToken||'')
         });
         const d = await res.json();
-        if (d.success) {
+        if (d.success && d.pending) {
             glassAlert(d.message || '已提交改主请求，等待Java端验证');
+            btn.textContent = '改主';
+            btn.disabled = false;
+            // 不立即刷新列表，改为5秒后轮询检查更新
+            setTimeout(() => loadLands(document.getElementById('C')), 5000);
+        } else if (d.success) {
+            glassAlert(d.message || '改主成功');
+            btn.textContent = '改主';
+            btn.disabled = false;
             loadLands(document.getElementById('C'));
         } else {
             glassAlert('失败: ' + (d.error || ''));
+            btn.textContent = '改主';
+            btn.disabled = false;
         }
     } catch(e) {
         glassAlert('请求失败: ' + e.message);
+        const btn = event.target;
+        if (btn) { btn.textContent = '改主'; btn.disabled = false; }
     }
 }
 

@@ -2203,10 +2203,15 @@ function handleOwnerChangeCallback($db, $post) {
         debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证通过，已更新PHP副本");
         echo json_encode(['success' => true, 'message' => '改主验证通过，已更新']);
     } else {
-        // ★ Java验证失败
+        // ★ Java验证失败：更新PHP副本为原始所有者（回退）+ 标记失败
+        $stmtRb = $db->prepare("UPDATE web_area_lands SET owner = :old_owner WHERE name = :name");
+        $stmtRb->bindValue(':old_owner', $oldOwner, SQLITE3_TEXT);
+        $stmtRb->bindValue(':name', $targetName, SQLITE3_TEXT);
+        $stmtRb->execute();
+
         $db->query("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = " . time() . " WHERE id = " . $changeId);
-        debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证失败: {$reason}");
-        echo json_encode(['success' => true, 'message' => "改主验证失败: {$reason}"]);
+        debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证失败: {$reason}，已回退为{$oldOwner}");
+        echo json_encode(['success' => true, 'message' => "改主验证失败: {$reason}，已回退"]);
     }
 }
 
