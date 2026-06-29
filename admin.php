@@ -2331,6 +2331,7 @@ async function loadLands(el) {
                     <td>${size} 格²</td>
                     <td>
                         <button onclick="changeLandOwner('${escAdmHtml(l.name)}','${escAdmHtml(l.owner)}')" style="padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">改主</button>
+                        <button onclick="adminTransferLand('${escAdmHtml(l.name)}','${escAdmHtml(l.owner)}')" style="padding:2px 8px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">过户</button>
                         <button onclick="deleteLand('${escAdmHtml(l.name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">删除</button>
                     </td>
                 </tr>`;
@@ -2414,13 +2415,13 @@ async function saveLandConfig() {
 }
 
 async function changeLandOwner(name, currentOwner) {
-    const newOwner = await glassPrompt('领地 [' + name + '] 新所有者', currentOwner||'', '仅允许英文字母、数字和下划线，2-16位');
+    const newOwner = await glassPrompt('领地 [' + name + '] 新所有者', currentOwner||'', '仅允许英文字母、数字和下划线，3-16位');
     if (newOwner === null || newOwner === false || newOwner === undefined) return;
     const trimmed = newOwner.trim();
     if (trimmed === '' || trimmed === currentOwner) return;
     // 前端验证：Minecraft玩家名格式
-    if (!/^[a-zA-Z0-9_]{2,16}$/.test(trimmed)) {
-        glassAlert('玩家名格式无效：仅允许英文字母、数字和下划线，2-16位');
+    if (!/^[a-zA-Z0-9_]{3,16}$/.test(trimmed)) {
+        glassAlert('玩家名格式无效：仅允许英文字母、数字和下划线，3-16位');
         return;
     }
     fetch('api/land_api.php?action=update_land_owner', {
@@ -2428,8 +2429,37 @@ async function changeLandOwner(name, currentOwner) {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&secret=sdf1_web_comm_2026_ypshidifu'
     }).then(r => r.json()).then(d => {
-        if (d.success) loadLands(document.getElementById('C'));
-        else glassAlert('失败: ' + (d.error||''));
+        if (d.success) {
+            glassAlert(d.message || '改主成功');
+            loadLands(document.getElementById('C'));
+        } else {
+            glassAlert('失败: ' + (d.error||''));
+        }
+    });
+}
+
+// ★ 管理面板过户（带冷却机制）
+async function adminTransferLand(name, currentOwner) {
+    const newOwner = await glassPrompt('过户领地 [' + name + ']\n新所有者（过户后有1分钟冷却，期间可取消）', currentOwner||'', '仅允许英文字母、数字和下划线，3-16位');
+    if (newOwner === null || newOwner === false || newOwner === undefined) return;
+    const trimmed = newOwner.trim();
+    if (trimmed === '' || trimmed === currentOwner) return;
+    if (!/^[a-zA-Z0-9_]{3,16}$/.test(trimmed)) {
+        glassAlert('玩家名格式无效：仅允许英文字母、数字和下划线，3-16位');
+        return;
+    }
+    if (!await glassConfirm('确认将领地 [' + name + '] 过户给 ' + trimmed + ' ?\n\n过户后1分钟内可以取消')) return;
+    fetch('api/land_api.php?action=transfer_land', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'land=' + encodeURIComponent(name) + '&new_owner=' + encodeURIComponent(trimmed) + '&secret=sdf1_web_comm_2026_ypshidifu'
+    }).then(r => r.json()).then(d => {
+        if (d.success) {
+            glassAlert(d.message || '过户成功');
+            loadLands(document.getElementById('C'));
+        } else {
+            glassAlert('失败: ' + (d.error||''));
+        }
     });
 }
 
