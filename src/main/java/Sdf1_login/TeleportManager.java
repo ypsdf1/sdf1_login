@@ -53,31 +53,55 @@ public class TeleportManager {
      * 如果Geyser插件不存在，默认返回false（Java版）
      * 
      * Geyser API 检测顺序：
-     * 1. Geyser-BungeeCord (GeyserSpigot API)
-     * 2. Geyser Standalone (org.geysermc.connector.api.Geyser)
-     * 3. 降级为Java版
+     * 1. Geyser-Spigot 插件（通过GeyserApi.api()获取实例）
+     * 2. 降级为Java版
      */
     private boolean isBedrockPlayer(Player player) {
-        // 检查 Geyser (BungeeCord/Velocity 网关)
-        Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-BungeeCord");
-        if (geyserPlugin != null && geyserPlugin.isEnabled()) {
-            try {
-                java.lang.reflect.Method isBedrockMethod = geyserPlugin.getClass()
-                    .getMethod("isBedrock", org.bukkit.entity.Player.class);
-                return (boolean) isBedrockMethod.invoke(geyserPlugin, player);
-            } catch (Exception e) {
-                // 尝试备用方法
+        // 检查 Geyser 插件是否加载
+        Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
+        if (geyserPlugin == null || !geyserPlugin.isEnabled()) {
+            // 尝试其他可能的插件名称
+            geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser");
+            if (geyserPlugin == null || !geyserPlugin.isEnabled()) {
+                return false;
             }
         }
-        // 检查 Geyser Standalone (Spigot 内置版)
+        
         try {
-            Class<?> geomerAPI = Class.forName("org.geysermc.api.Geyser");
-            java.lang.reflect.Method method = geomerAPI.getMethod("isBedrockPlayer", org.bukkit.entity.Player.class);
-            return (boolean) method.invoke(null, player);
-        } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | 
-                 java.lang.reflect.InvocationTargetException e) {
-            // Geyser 未加载或调用失败
+            // 使用Geyser API: GeyserApi.api().isBedrockPlayer(UUID)
+            Class<?> geyserApiClass = Class.forName("org.geysermc.geyser.api.GeyserApi");
+            java.lang.reflect.Method apiMethod = geyserApiClass.getMethod("api");
+            Object geyserApi = apiMethod.invoke(null);
+            
+            java.lang.reflect.Method isBedrockMethod = geyserApiClass.getMethod("isBedrockPlayer", java.util.UUID.class);
+            return (boolean) isBedrockMethod.invoke(geyserApi, player.getUniqueId());
+        } catch (ClassNotFoundException e) {
+            // Geyser API 类未找到，可能是旧版本
+            plugin.getLogger().warning("[传送] Geyser API 类未找到: " + e.getMessage());
+        } catch (NoSuchMethodException e) {
+            plugin.getLogger().warning("[传送] Geyser API 方法未找到: " + e.getMessage());
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            plugin.getLogger().warning("[传送] Geyser API 调用失败: " + e.getMessage());
+        } catch (Exception e) {
+            plugin.getLogger().warning("[传送] Geyser API 检测异常: " + e.getMessage());
         }
+        
+        // 降级检测：尝试通过Floodgate API（如果Geyser API不可用）
+        try {
+            Class<?> floodgateApiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
+            java.lang.reflect.Method instanceMethod = floodgateApiClass.getMethod("getInstance");
+            Object floodgateApi = instanceMethod.invoke(null);
+            
+            java.lang.reflect.Method isBedrockMethod = floodgateApiClass.getMethod("isFloodgatePlayer", java.util.UUID.class);
+            return (boolean) isBedrockMethod.invoke(floodgateApi, player.getUniqueId());
+        } catch (ClassNotFoundException e) {
+            // Floodgate API 类未找到
+        } catch (NoSuchMethodException e) {
+            // Floodgate API 方法未找到
+        } catch (Exception e) {
+            // Floodgate API 调用失败
+        }
+        
         return false;
     }
     
