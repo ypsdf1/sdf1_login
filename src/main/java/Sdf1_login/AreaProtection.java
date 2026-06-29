@@ -8532,7 +8532,7 @@ public class AreaProtection implements Listener {
         if (p instanceof Player) {
             Player pp = (Player) p;
             pp.sendMessage(Component.empty()
-                    .append(Component.text("§c[点击取消过户] "))
+                    .append(Component.text("§c§l[点击取消过户] "))
                     .hoverEvent(HoverEvent.showText(Component.text("§c点击立即取消领地 §e" + areaName + " §c的过户")))
                     .clickEvent(ClickEvent.runCommand("/protect canceltransfer " + areaName))
             );

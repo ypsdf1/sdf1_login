@@ -3611,6 +3611,27 @@ public class WebManager {
                             applied = true;
                             break;
                         }
+                        case "land_delete": {
+                            // ★ 管理面板删除领地：验证领地存在 → 删除 → 回调PHP
+                            String deleteLandName = targetName;
+                            if (!deleteLandName.isEmpty() && areaProtect.getLand(deleteLandName) != null) {
+                                areaProtect.deleteLand(deleteLandName);
+                                plugin.getLogger().info("[Web通信] 管理面板删除领地: " + deleteLandName);
+                                // 回调PHP确认删除成功
+                                String cbUrl = webBaseUrl + "/api/land_api.php?action=delete_land_callback&name=" + java.net.URLEncoder.encode(deleteLandName, "UTF-8") + "&success=true&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                                doPost(cbUrl, "{}");
+                                applied = true;
+                            } else if (deleteLandName.isEmpty()) {
+                                plugin.getLogger().warning("[Web通信] land_delete: 领地名为空");
+                            } else {
+                                // 领地不存在，直接回调PHP标记已处理
+                                plugin.getLogger().info("[Web通信] land_delete: 领地 " + deleteLandName + " 不存在，标记已处理");
+                                String cbUrl = webBaseUrl + "/api/land_api.php?action=delete_land_callback&name=" + java.net.URLEncoder.encode(deleteLandName, "UTF-8") + "&success=true&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                                doPost(cbUrl, "{}");
+                                applied = true;
+                            }
+                            break;
+                        }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }
