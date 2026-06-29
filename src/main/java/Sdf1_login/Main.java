@@ -544,6 +544,22 @@ public class Main extends JavaPlugin
         // ===== 传送系统 =====
         teleportMgr = new TeleportManager(this);
         
+        // 注册传送命令执行器和Tab补全
+        getCommand("tpa").setExecutor(this);
+        getCommand("tpaccept").setExecutor(this);
+        getCommand("tpdeny").setExecutor(this);
+        getCommand("tpauto").setExecutor(this);
+        getCommand("tpahere").setExecutor(this);
+        getCommand("tpaall").setExecutor(this);
+        getCommand("tpacancel").setExecutor(this);
+        getCommand("tpa").setTabCompleter(this);
+        getCommand("tpaccept").setTabCompleter(this);
+        getCommand("tpdeny").setTabCompleter(this);
+        getCommand("tpauto").setTabCompleter(this);
+        getCommand("tpahere").setTabCompleter(this);
+        getCommand("tpaall").setTabCompleter(this);
+        getCommand("tpacancel").setTabCompleter(this);
+        
         // 注册传送命令已在 onCommand 中通过条件分支完成
         
         getLogger().info("§b[Sdf1_login]启动完毕\n§lS欢迎使用sdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
@@ -4421,6 +4437,8 @@ public class Main extends JavaPlugin
                 return true;
             }
             try {
+                // ★ 重要：handleCommand 返回的是是否成功处理，不是是否允许命令执行
+                // 返回 true = 已处理，返回 false = 未处理（不应该发生，因为上面已覆盖了所有 case）
                 return teleportMgr.handleCommand((Player) sender, cmd.getName(), args);
             } catch (Exception e) {
                 sender.sendMessage("§c执行出错: " + e.getMessage());
@@ -4428,7 +4446,6 @@ public class Main extends JavaPlugin
                 return true;
             }
         }
-
 
 
         // ===== /printer [玩家名] =====
