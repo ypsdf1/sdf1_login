@@ -601,7 +601,33 @@ function syncLands() {
         $stmt->execute();
         $count++;
     }
-    success("领地同步成功: {$count}个");
+
+    // ★ 删除PHP中存在但Java同步列表中不存在的领地（解决Java删除后PHP残留问题）
+    $incomingNames = [];
+    foreach ($lands as $l) {
+        $n = $l['name'] ?? '';
+        if (!empty($n)) $incomingNames[] = $n;
+    }
+    $deletedCount = 0;
+    if (!empty($incomingNames)) {
+        $placeholders = implode(',', array_fill(0, count($incomingNames), '?'));
+        $delStmt = $db->prepare("DELETE FROM web_area_lands WHERE name NOT IN ($placeholders)");
+        foreach ($incomingNames as $i => $n) {
+            $delStmt->bindValue($i + 1, $n, SQLITE3_TEXT);
+        }
+        $delStmt->execute();
+        $deletedCount = $db->changes();
+    } else {
+        // Java同步列表为空，全删
+        $db->exec("DELETE FROM web_area_lands");
+        $deletedCount = $db->changes();
+    }
+
+    $msg = "领地同步成功: {$count}个";
+    if ($deletedCount > 0) {
+        $msg .= ", 清理PHP残留: {$deletedCount}个";
+    }
+    success($msg);
 }
 
 // ===== 领地权限商店同步 =====

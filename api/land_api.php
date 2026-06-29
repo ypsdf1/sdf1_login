@@ -102,7 +102,7 @@ try {
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更 + Java回调过户结果
-    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback'];
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -359,6 +359,10 @@ try {
         // ===== Java端：管理面板改主结果回调 =====
         case 'owner_change_callback':
             handleOwnerChangeCallback($db, $_POST + $_GET);
+            break;
+
+        case 'delete_land_callback':
+            handleDeleteLandCallback($db, $_GET);
             break;
 
         // ===== 用户组管理 =====
@@ -785,11 +789,36 @@ function handleDeleteLand($db, $post) {
         return;
     }
 
-    $stmt = $db->prepare("DELETE FROM web_area_lands WHERE name = :name");
+    // ★ 查询领地信息
+    $stmt = $db->prepare("SELECT id, owner FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
-    $stmt->execute();
+    $result = $stmt->execute();
+    $row = $result->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo json_encode(['success' => false, 'error' => '领地不存在']);
+        return;
+    }
+    $landId = (int)$row['id'];
 
-    echo json_encode(['success' => true]);
+    // ★ 检查是否已有pending的land_delete（防止重复提交）
+    $stmtCheck = $db->prepare("SELECT id FROM web_admin_changes WHERE change_type = 'land_delete' AND target_name = :name AND status = 'pending'");
+    $stmtCheck->bindValue(':name', $name, SQLITE3_TEXT);
+    $checkResult = $stmtCheck->execute();
+    if ($checkResult->fetchArray(SQLITE3_ASSOC)) {
+        echo json_encode(['success' => false, 'error' => '该领地已有待验证的删除请求，请等待Java端处理']);
+        return;
+    }
+
+    // ★ 不再直接删除PHP本地副本！写入web_admin_changes让Java端验证后执行
+    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at, status) VALUES ('land_delete', :id, :name, :data, :now, 'pending')");
+    $stmt4->bindValue(':id', $landId, SQLITE3_INTEGER);
+    $stmt4->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt4->bindValue(':data', json_encode(['source' => 'admin_panel']), SQLITE3_TEXT);
+    $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt4->execute();
+
+    debugLog("handleDeleteLand: 管理面板删除领地 {$name} (已写入pending队列，等待Java验证)");
+    echo json_encode(['success' => true, 'pending' => true, 'message' => "删除请求已提交: [{$name}]，等待Java端验证后生效"]);
 }
 
 function handleUpdateLandOwner($db, $post) {
@@ -2267,6 +2296,33 @@ function handleOwnerChangeCallback($db, $post) {
         debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证失败: {$reason}，已回退为{$oldOwner}");
         echo json_encode(['success' => true, 'message' => "改主验证失败: {$reason}，已回退"]);
     }
+}
+
+/**
+ * Java端删除领地回调：删除PHP本地副本 + 标记admin_change完成
+ */
+function handleDeleteLandCallback($db, $get) {
+    $name = $get['name'] ?? '';
+    $success = ($get['success'] ?? '') === 'true';
+
+    if (empty($name)) {
+        echo json_encode(['success' => false, 'error' => '缺少name参数']);
+        return;
+    }
+
+    // 删除PHP本地副本
+    $stmt = $db->prepare("DELETE FROM web_area_lands WHERE name = :name");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmt->execute();
+
+    // 标记对应的admin_change为completed
+    $stmtUpd = $db->prepare("UPDATE web_admin_changes SET status = 'completed', acknowledged = 1, acked_at = :now WHERE change_type = 'land_delete' AND target_name = :name AND status = 'pending'");
+    $stmtUpd->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmtUpd->bindValue(':name', $name, SQLITE3_TEXT);
+    $stmtUpd->execute();
+
+    debugLog("handleDeleteLandCallback: 删除领地 {$name} Java端处理成功，已删除PHP副本");
+    echo json_encode(['success' => true, 'message' => "领地 [{$name}] 已删除"]);
 }
 
 /**
