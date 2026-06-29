@@ -102,7 +102,7 @@ public class UserGroupManager {
             plugin.getLogger().warning("[UserGroup] loadGroupConfigs failed: " + e.getMessage());
         }
 
-        plugin.getLogger().info("[UserGroup] 已加载 " + groupConfigs.size() + " 个用户组");
+        plugin.getLogger().fine("[UserGroup] 已加载 " + groupConfigs.size() + " 个用户组");
     }
 
     /** 保存组配置到DB */

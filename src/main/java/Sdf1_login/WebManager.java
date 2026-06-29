@@ -3151,9 +3151,10 @@ public class WebManager {
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组: ugm==null"); return; }
 
-            plugin.getLogger().info("[防护-sync] 从PHP拉取用户组: 解析到 " + arrStr.length() + " 字符的数组内容");
+            plugin.getLogger().fine("[防护-sync] 从PHP拉取用户组: 解析到 " + arrStr.length() + " 字符的数组内容");
             // 拆分每个JSON对象
             int imported = 0;
+            int changed = 0;  // 实际发生变化的组数
             int parseErrors = 0;
             int depth = 0;
             int objStart = -1;
@@ -3167,9 +3168,21 @@ public class WebManager {
                         String obj = arrStr.substring(objStart + 1, i);
                         UserGroupManager.UserGroupConfig cfg = parseGroupJson(obj);
                         if (cfg != null && !cfg.name.isEmpty()) {
-                            ugm.saveGroupConfigToDB(cfg);
+                            // ★ 对比现有配置，仅在有变化时才写入
+                            UserGroupManager.UserGroupConfig existing = ugm.getGroupConfig(cfg.name);
+                            boolean isDifferent = existing == null
+                                    || !safeEq(existing.displayName, cfg.displayName)
+                                    || !safeEq(existing.displayColor, cfg.displayColor)
+                                    || existing.priority != cfg.priority
+                                    || existing.landPricePerSqm != cfg.landPricePerSqm
+                                    || existing.maxLands != cfg.maxLands
+                                    || !safeEq(existing.defaultPerms, cfg.defaultPerms);
+                            if (isDifferent) {
+                                ugm.saveGroupConfigToDB(cfg);
+                                changed++;
+                            }
                             imported++;
-                            plugin.getLogger().fine("[防护-sync] 解析用户组: " + cfg.name + " (displayName=" + cfg.displayName + ", color=" + cfg.displayColor + ")");
+                            plugin.getLogger().fine("[防护-sync] 解析用户组: " + cfg.name + " (changed=" + isDifferent + ")");
                         } else {
                             parseErrors++;
                             plugin.getLogger().warning("[防护-sync] 用户组解析失败: " + obj.substring(0, Math.min(150, obj.length())));
@@ -3179,9 +3192,12 @@ public class WebManager {
                 }
             }
 
-            if (imported > 0 || parseErrors > 0) {
+            // ★ 仅在有实际变化时才reload并打印日志
+            if (changed > 0) {
                 ugm.loadGroupConfigs();
-                plugin.getLogger().info("[防护-sync] 从PHP拉取 " + imported + " 个用户组配置" + (parseErrors > 0 ? " (" + parseErrors + "个解析失败)" : ""));
+                plugin.getLogger().info("[防护-sync] 从PHP拉取 " + imported + " 个用户组(" + changed + "个有变化)");
+            } else if (parseErrors > 0) {
+                plugin.getLogger().warning("[防护-sync] 从PHP拉取 " + imported + " 个用户组(" + parseErrors + "个解析失败)");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 从PHP拉取用户组异常: " + e.getMessage());
@@ -5776,6 +5792,12 @@ public class WebManager {
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 更新债券数据失败: " + e.getMessage());
         }
+    }
+
+    /** 安全字符串比较（null-safe） */
+    private static boolean safeEq(String a, String b) {
+        if (a == null) return b == null;
+        return a.equals(b);
     }
 
     /**

@@ -2495,6 +2495,15 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 用户组聊天前缀：检查玩家所属组，在名字前加 [组名] 前缀（颜色由组配置决定）
+        if (userGroupManager != null) {
+            UserGroupManager.UserGroupConfig highestGroup = userGroupManager.getHighestGroup(p.getName());
+            if (highestGroup != null) {
+                String prefix = highestGroup.displayColor + "[" + highestGroup.name + "]§f";
+                e.setFormat(prefix + "%1$s: %2$s");
+            }
+        }
+
         // ===== 聊天过滤 - 开关检查 =====
         if (!chatFilter.isEnabled()) return;
 
