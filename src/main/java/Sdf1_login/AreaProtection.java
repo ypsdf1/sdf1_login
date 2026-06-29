@@ -5535,18 +5535,33 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
             }
-            if (args.length < 2) {
-                sender.sendMessage(
-                        "§e用法: /protect 创建 <名>");
-                return true;
-            }
             Player p = (Player) sender;
             UUID u = p.getUniqueId();
-            if (!pos1.containsKey(u)
-                    || !pos2.containsKey(u)) {
-                p.sendMessage("§c请先用工具选点");
+
+            // ★ 无参数 → 快速创建（3×3以自身为中心）
+            if (args.length < 2) {
+                if (!pos1.containsKey(u) || !pos2.containsKey(u)) {
+                    // 无选点：快速创建3×3
+                    if (quickCreateLand(p)) {
+                        p.sendMessage("§7领地创建成功，如需精细控制请使用圈地工具选点后再次使用");
+                    }
+                } else {
+                    // 有选点但没有名字：用默认名创建
+                    String autoName = p.getName();
+                    if (areas.containsKey(autoName)) {
+                        for (int i = 0; i <= 999; i++) {
+                            String c = autoName + i;
+                            if (!areas.containsKey(c)) { autoName = c; break; }
+                        }
+                    }
+                    p.sendMessage("§e用法: /protect 创建 <自定义名>");
+                    p.sendMessage("§7自动创建领地名: §e" + autoName);
+                    // 通过confirm_create走标准流程
+                    p.performCommand("protect confirm_create " + autoName);
+                }
                 return true;
             }
+
             String areaName = args[1];
             // 检查重名（数据库+txt）
             if (areas.containsKey(areaName)) {

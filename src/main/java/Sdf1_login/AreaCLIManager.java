@@ -98,7 +98,7 @@ public class AreaCLIManager {
         p.sendMessage(clickableAction("⛏", "获取圈地工具",
                 "/protect 工具"));
         p.sendMessage(clickableAction("⚔", "创建领地",
-                "/protect cli create"));
+                "/protect 创建"));
         p.sendMessage(clickableAction("📋", "领地列表",
                 "/protect cli lands 1"));
         p.sendMessage(clickableAction("🏪", "权限商店",
@@ -222,7 +222,7 @@ public class AreaCLIManager {
         if (allLands.isEmpty()) {
             p.sendMessage(Component.text("§7暂无领地，点击创建:"));
             p.sendMessage(clickableAction("⚔", "创建领地",
-                    "/protect cli create"));
+                    "/protect 创建"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
             return;
         }
