@@ -121,6 +121,9 @@ public class AreaProtection implements Listener {
             new ConcurrentHashMap<>();
     private final Set<UUID> selecting =
             ConcurrentHashMap.newKeySet();
+
+    public boolean hasPos1(UUID uuid) { return pos1.containsKey(uuid); }
+    public boolean hasPos2(UUID uuid) { return pos2.containsKey(uuid); }
     public boolean denyRaid = false;
     // ===== 统一文件夹 =====
     private final File rootDir;
@@ -8140,9 +8143,11 @@ public class AreaProtection implements Listener {
         String configName = getConfigNameByKey(configKey);
         p.sendMessage("§a§l[配置] §f" + configName + " 已更新: §e" + currentValue + " → " + newValue);
 
-        // 刷新GUI
+        // 刷新GUI（必须切主线程：handleConfigInput来自AsyncPlayerChatEvent）
         if (plugin.areaGUIManager != null) {
-            plugin.areaGUIManager.openAdminPanel(p);
+            Sdf1_login.Main pl = plugin;
+            org.bukkit.entity.Player pp = p;
+            org.bukkit.Bukkit.getScheduler().runTask(pl, () -> pl.areaGUIManager.openAdminPanel(pp));
         }
         return true;
     }
@@ -8195,9 +8200,12 @@ public class AreaProtection implements Listener {
         addLandMember(landName, playerName);
         p.sendMessage("§a§l[添加成员] §f已成功添加 " + playerName + " 为领地成员");
 
-        // 刷新GUI
+        // 刷新GUI（必须切主线程）
         if (plugin.areaGUIManager != null) {
-            plugin.areaGUIManager.openAddMember(p, landName);
+            Sdf1_login.Main pl = plugin;
+            org.bukkit.entity.Player pp = p;
+            String ln = landName;
+            org.bukkit.Bukkit.getScheduler().runTask(pl, () -> pl.areaGUIManager.openAddMember(pp, ln));
         }
         return true;
     }
@@ -8351,9 +8359,13 @@ public class AreaProtection implements Listener {
             if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 3);
         }
 
-        // 刷新GUI，回到原来的subPage
+        // 刷新GUI，回到原来的subPage（必须切主线程）
         if (plugin.areaGUIManager != null) {
-            plugin.areaGUIManager.openEffectsManagement(p, landName, subPage);
+            Sdf1_login.Main pl = plugin;
+            org.bukkit.entity.Player pp = p;
+            String ln = landName;
+            int sp = subPage;
+            org.bukkit.Bukkit.getScheduler().runTask(pl, () -> pl.areaGUIManager.openEffectsManagement(pp, ln, sp));
         }
         return true;
     }
@@ -8446,7 +8458,10 @@ public class AreaProtection implements Listener {
         if (message.trim().equalsIgnoreCase("取消")) {
             p.sendMessage("§7已取消编辑");
             if (plugin.areaGUIManager != null) {
-                plugin.areaGUIManager.openGroupEditPanel(p, groupName);
+                Sdf1_login.Main pl = plugin;
+                org.bukkit.entity.Player pp = p;
+                String gn = groupName;
+                org.bukkit.Bukkit.getScheduler().runTask(pl, () -> pl.areaGUIManager.openGroupEditPanel(pp, gn));
             }
             return true;
         }
@@ -8509,9 +8524,12 @@ public class AreaProtection implements Listener {
         ugm.updateGroupConfig(cfg);
         p.sendMessage("§a已将用户组 §e" + cfg.displayName + " §a的 §f" + fieldLabel + " §a修改为 §e" + parsed);
 
-        // 刷新GUI
+        // 刷新GUI（必须切主线程）
         if (plugin.areaGUIManager != null) {
-            plugin.areaGUIManager.openGroupEditPanel(p, groupName);
+            Sdf1_login.Main pl = plugin;
+            org.bukkit.entity.Player pp = p;
+            String gn = groupName;
+            org.bukkit.Bukkit.getScheduler().runTask(pl, () -> pl.areaGUIManager.openGroupEditPanel(pp, gn));
         }
         return true;
     }
@@ -9794,5 +9812,105 @@ public class AreaProtection implements Listener {
 
             return c;
         }
+    }
+
+    // ==================== 快速创建领地（无选点，以自身为中心） ====================
+
+    /**
+     * ★ 快速创建领地：以玩家为中心3×3，自动命名+冲突数字0~999
+     * @return true成功创建，false失败
+     */
+    public boolean quickCreateLand(Player p) {
+        if (p == null || dbConnection == null) return false;
+
+        // ★ 检查领地上限
+        UserGroupManager ugm = plugin.getUserGroup();
+        int maxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
+        long landCount = areas.values().stream().filter(a -> p.getName().equalsIgnoreCase(a.owner)).count();
+        // DB兜底
+        if (landCount < maxLands) {
+            try {
+                java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                cs.setString(1, p.getName());
+                java.sql.ResultSet cr = cs.executeQuery();
+                if (cr.next()) { long dbc = cr.getLong("cnt"); if (dbc > landCount) landCount = dbc; }
+                cr.close(); cs.close();
+            } catch (Exception ignored) {}
+        }
+        if (landCount >= maxLands) {
+            p.sendMessage("§c§l[防护] §f已达领地上限！每人最多 §e" + maxLands + " §f个领地");
+            return false;
+        }
+
+        // ★ 以玩家为中心3×3
+        int cx = p.getLocation().getBlockX();
+        int cz = p.getLocation().getBlockZ();
+        int x1 = cx - 1, z1 = cz - 1;
+        int x2 = cx + 1, z2 = cz + 1;
+        int area = 9; // 3×3
+
+        // ★ 检查这个区域是否与其他领地重叠
+        for (AreaConfig other : areas.values()) {
+            if (!other.world.equalsIgnoreCase(p.getWorld().getName())) continue;
+            // AABB重叠检测
+            if (x1 <= other.x2 && x2 >= other.x1 && z1 <= other.z2 && z2 >= other.z1) {
+                p.sendMessage("§c§l[防护] §f该区域与领地 §e" + other.name + " §f重叠，请走远点再试");
+                return false;
+            }
+        }
+
+        // ★ 计算费用
+        UserGroupManager ug = plugin.getUserGroup();
+        int pricePerSqm = (ug != null) ? ug.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
+        int totalCost = area * pricePerSqm;
+
+        // ★ 检查余额
+        BondManager bm = plugin.getBonds();
+        if (bm != null && totalCost > 0) {
+            int bal = bm.getBonds(p.getName());
+            if (bal < totalCost) {
+                p.sendMessage("§c§l[防护] §f余额不足！需要 §e" + totalCost + " §f债券，当前 §a" + bal);
+                return false;
+            }
+        }
+
+        // ★ 自动命名：玩家名，冲突加数字0~999
+        String autoName = p.getName();
+        if (areas.containsKey(autoName)) {
+            boolean found = false;
+            for (int i = 0; i <= 999; i++) {
+                String candidate = p.getName() + i;
+                if (!areas.containsKey(candidate)) { autoName = candidate; found = true; break; }
+            }
+            if (!found) {
+                p.sendMessage("§c§l[防护] §f无法找到可用的领地名（已用尽0~999后缀）");
+                return false;
+            }
+        }
+
+        // ★ 扣费
+        if (bm != null && totalCost > 0) {
+            String src = (pricePerSqm != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
+            if (!bm.deductBonds(p.getName(), totalCost, "land_create", p.getName(), p.getName(),
+                    "快速创建领地: " + autoName + " (" + area + "㎡×" + pricePerSqm + ")")) {
+                p.sendMessage("§c§l[防护] §f扣费失败，请稍后重试");
+                return false;
+            }
+            p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + totalCost + " §f债券（" + area + "㎡×" + pricePerSqm + "/㎡）" + src);
+        }
+
+        // ★ 创建领地
+        AreaConfig ac = new AreaConfig();
+        ac.name = autoName;
+        ac.owner = p.getName();
+        ac.world = p.getWorld().getName();
+        ac.x1 = x1; ac.z1 = z1; ac.x2 = x2; ac.z2 = z2;
+        ac.yMin = 0; ac.yMax = 255;
+        saveAreaToDb(ac);
+        areas.put(autoName, ac);
+        loadAllAreas();
+
+        p.sendMessage("§a§l[防护] §f区域 §e" + autoName + " §f已创建（" + area + "㎡，以你为中心3×3）");
+        return true;
     }
     }

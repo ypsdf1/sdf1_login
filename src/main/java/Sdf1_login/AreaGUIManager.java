@@ -813,9 +813,15 @@ public class AreaGUIManager implements Listener {
                 p.closeInventory();
                 giveWandTool(p);
             } else if (raw == 12) {
-                // 创建领地 - 给予选择工具
+                // ★ 创建领地 - 无选点则快速创建（自身3×3），有选点则给工具
                 p.closeInventory();
-                p.performCommand("protect 工具");
+                boolean hasPos = areaProtect.hasPos1(p.getUniqueId()) && areaProtect.hasPos2(p.getUniqueId());
+                if (hasPos) {
+                    p.performCommand("protect 工具");
+                } else {
+                    // 快速创建：以自身为中心3×3
+                    areaProtect.quickCreateLand(p);
+                }
             } else if (raw == 14) {
                 openLandList(p, 0);
             } else if (raw == 22) {
