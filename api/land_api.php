@@ -92,7 +92,7 @@ try {
     // 同步类action只接受secret验证（Java端推送）
     $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
-    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups'];
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups', 'transfer_land_admin'];
     // 玩家端action：需要token
     $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
@@ -102,7 +102,7 @@ try {
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更 + Java回调过户结果
-    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback'];
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -201,9 +201,14 @@ try {
             handleDeleteLand($db, $_POST);
             break;
 
-        // ===== 管理面板：更新领地所有者 =====
+        // ===== 管理面板：更新领地所有者（含过户冷却机制）=====
         case 'update_land_owner':
             handleUpdateLandOwner($db, $_POST);
+            break;
+
+        // ===== 管理面板：领地过户（管理员专用，带冷却机制）=====
+        case 'transfer_land_admin':
+            handleTransferLandAdmin($db, $_POST);
             break;
 
         // ===== 管理面板：删除权限商品 =====
@@ -352,6 +357,11 @@ try {
         // ===== Java端：过户验证结果回调 =====
         case 'transfer_callback':
             handleTransferCallback($db, $_POST + $_GET);
+            break;
+
+        // ===== Java端：管理面板改主结果回调 =====
+        case 'owner_change_callback':
+            handleOwnerChangeCallback($db, $_POST + $_GET);
             break;
 
         // ===== 用户组管理 =====
@@ -525,8 +535,14 @@ function initLandTables($db) {
         change_data TEXT DEFAULT '',
         created_at INTEGER DEFAULT 0,
         acknowledged INTEGER DEFAULT 0,
-        acked_at INTEGER DEFAULT 0
+        acked_at INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'done'
     )");
+
+    // ★ 为已有表添加status字段（如果不存在）
+    try {
+        $db->exec("ALTER TABLE web_admin_changes ADD COLUMN status TEXT DEFAULT 'done'");
+    } catch (\Throwable $e) { /* 字段已存在 */ }
 
     // ★ 领地所有者变更表（记录PHP端修改的所有者变更）
     $db->exec("CREATE TABLE IF NOT EXISTS web_land_owner_changes (
@@ -791,7 +807,7 @@ function handleUpdateLandOwner($db, $post) {
         return;
     }
 
-    // ★ 管理面板改主：不走异步验证，直接写入变更队列让Java端执行
+    // ★ 查询领地信息
     $stmt = $db->prepare("SELECT id, owner FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $result = $stmt->execute();
@@ -808,31 +824,26 @@ function handleUpdateLandOwner($db, $post) {
         return;
     }
 
-    // 更新PHP本地副本
-    $stmt2 = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
-    $stmt2->bindValue(':owner', $owner, SQLITE3_TEXT);
-    $stmt2->bindValue(':name', $name, SQLITE3_TEXT);
-    $stmt2->execute();
+    // ★ 检查是否已有pending的owner_change（防止重复提交）
+    $stmtCheck = $db->prepare("SELECT id FROM web_admin_changes WHERE change_type = 'owner_change' AND target_name = :name AND status = 'pending'");
+    $stmtCheck->bindValue(':name', $name, SQLITE3_TEXT);
+    $checkResult = $stmtCheck->execute();
+    if ($checkResult->fetchArray(SQLITE3_ASSOC)) {
+        echo json_encode(['success' => false, 'error' => '该领地已有待验证的改主请求，请等待Java端处理']);
+        return;
+    }
 
-    // 记录变更
-    $stmt3 = $db->prepare("INSERT INTO web_land_owner_changes (land_id, land_name, old_owner, new_owner, created_at) VALUES (:lid, :name, :old, :new, :now)");
-    $stmt3->bindValue(':lid', $landId, SQLITE3_INTEGER);
-    $stmt3->bindValue(':name', $name, SQLITE3_TEXT);
-    $stmt3->bindValue(':old', $oldOwner, SQLITE3_TEXT);
-    $stmt3->bindValue(':new', $owner, SQLITE3_TEXT);
-    $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
-    $stmt3->execute();
-
-    // ★ 写入web_admin_changes让Java端pollAdminChanges拉取并执行
-    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('owner_change', :id, :name, :data, :now)");
+    // ★ 不再直接更新PHP本地副本！等Java端验证并回调后再更新
+    // 写入web_admin_changes让Java端pollAdminChanges拉取并验证执行
+    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at, status) VALUES ('owner_change', :id, :name, :data, :now, 'pending')");
     $stmt4->bindValue(':id', $landId, SQLITE3_INTEGER);
     $stmt4->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt4->bindValue(':data', json_encode(['old_owner' => $oldOwner, 'new_owner' => $owner, 'source' => 'admin_panel']), SQLITE3_TEXT);
     $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt4->execute();
 
-    debugLog("handleUpdateLandOwner: 管理面板改主 {$name}: {$oldOwner} → {$owner}");
-    echo json_encode(['success' => true, 'message' => "领地 [{$name}] 所有者已从 {$oldOwner} 变更为 {$owner}"]);
+    debugLog("handleUpdateLandOwner: 管理面板改主 {$name}: {$oldOwner} → {$owner} (已写入pending队列，等待Java验证)");
+    echo json_encode(['success' => true, 'pending' => true, 'message' => "改主请求已提交: [{$name}] {$oldOwner} → {$owner}，等待Java端验证后生效"]);
 }
 
 function handleDeleteShopItem($db, $post) {
@@ -2138,6 +2149,64 @@ function handleTransferCallback($db, $post) {
         $db->query("UPDATE web_land_transfers SET status = 'failed' WHERE id = {$transferId}");
         debugLog("handleTransferCallback: 过户 {$landName} {$oldOwner}→{$newOwner} 验证失败: {$reason}");
         echo json_encode(['success' => true, 'message' => "过户验证失败: {$reason}"]);
+    }
+}
+
+/**
+ * ★ Java端管理面板改主结果回调
+ * 验证通过→更新PHP本地副本+记录变更；验证失败→标记失败
+ */
+function handleOwnerChangeCallback($db, $post) {
+    $changeId = (int)($post['change_id'] ?? 0);
+    $success = (int)($post['success'] ?? 0);
+    $reason = $post['reason'] ?? '';
+
+    if ($changeId <= 0) {
+        echo json_encode(['success' => false, 'error' => '缺少change_id']);
+        return;
+    }
+
+    // 查找pending的owner_change记录
+    $stmt = $db->prepare("SELECT * FROM web_admin_changes WHERE id = :id AND change_type = 'owner_change' AND (status = 'pending' OR status IS NULL OR status = 'done')");
+    $stmt->bindValue(':id', $changeId, SQLITE3_INTEGER);
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo json_encode(['success' => false, 'error' => '变更记录不存在或已处理']);
+        return;
+    }
+
+    $targetName = $row['target_name'];
+    $changeData = json_decode($row['change_data'] ?? '{}', true);
+    $newOwner = $changeData['new_owner'] ?? '';
+    $oldOwner = $changeData['old_owner'] ?? '';
+
+    if ($success) {
+        // ★ Java验证通过：更新PHP本地副本
+        $stmtUpd = $db->prepare("UPDATE web_area_lands SET owner = :owner WHERE name = :name");
+        $stmtUpd->bindValue(':owner', $newOwner, SQLITE3_TEXT);
+        $stmtUpd->bindValue(':name', $targetName, SQLITE3_TEXT);
+        $stmtUpd->execute();
+
+        // 记录变更历史
+        $landId = (int)($row['target_id'] ?? 0);
+        $stmtChg = $db->prepare("INSERT INTO web_land_owner_changes (land_id, land_name, old_owner, new_owner, created_at) VALUES (:lid, :name, :old, :new, :now)");
+        $stmtChg->bindValue(':lid', $landId, SQLITE3_INTEGER);
+        $stmtChg->bindValue(':name', $targetName, SQLITE3_TEXT);
+        $stmtChg->bindValue(':old', $oldOwner, SQLITE3_TEXT);
+        $stmtChg->bindValue(':new', $newOwner, SQLITE3_TEXT);
+        $stmtChg->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmtChg->execute();
+
+        // 标记处理完成
+        $db->query("UPDATE web_admin_changes SET status = 'completed', acknowledged = 1, acked_at = " . time() . " WHERE id = " . $changeId);
+        debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证通过，已更新PHP副本");
+        echo json_encode(['success' => true, 'message' => '改主验证通过，已更新']);
+    } else {
+        // ★ Java验证失败
+        $db->query("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = " . time() . " WHERE id = " . $changeId);
+        debugLog("handleOwnerChangeCallback: 改主 {$targetName} {$oldOwner}→{$newOwner} Java验证失败: {$reason}");
+        echo json_encode(['success' => true, 'message' => "改主验证失败: {$reason}"]);
     }
 }
 
