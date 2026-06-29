@@ -145,6 +145,7 @@ public class Main extends JavaPlugin
     public AreaProtection areaProtection;
     public AreaGUIManager areaGUIManager;
     public AreaCLIManager areaCLIManager;
+    private TeleportManager teleportMgr;
 
 
     // 钱包流水查看目标（玩家名 → 查看目标）
@@ -539,7 +540,12 @@ public class Main extends JavaPlugin
         // ★ 启动时异步检查更新（GitHub/Gitee双通道）
         updateChecker = new UpdateChecker(this);
         updateChecker.checkOnEnable();
-
+        
+        // ===== 传送系统 =====
+        teleportMgr = new TeleportManager(this);
+        
+        // 注册传送命令已在 onCommand 中通过条件分支完成
+        
         getLogger().info("§b[Sdf1_login]启动完毕\n§lS欢迎使用sdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
         // 大字画
         getLogger().info("\n" +
@@ -1716,6 +1722,11 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
+        // ★ 传送联动：登录阶段自动开启接受传送
+        if (teleportMgr != null) {
+            teleportMgr.onPlayerLogin(name);
+        }
+
         // ★ 玩家加入时立即允许登录轮询（不等全量同步完成）
         if (webManager != null) {
             webManager.allowLoginPolling = true;
@@ -1915,6 +1926,11 @@ public class Main extends JavaPlugin
             radioDL.onPlayerQuit(
                     p.getUniqueId());
         pendingAdminAuth.remove(name);
+        
+        // ★ 传送联动：退出时关闭自动接受传送
+        if (teleportMgr != null) {
+            teleportMgr.onPlayerLogout(name);
+        }
     }
 
     private static final String MENU_SNOWBALL_TAG =
@@ -3879,6 +3895,12 @@ public class Main extends JavaPlugin
                 loginMgr.handleReset(p);
             }
         }
+        
+        // ===== 传送面板 =====
+        if (title.equals("§6§l待处理传送请求") && teleportMgr != null) {
+            teleportMgr.onInventoryClick(e);
+            return;
+        }
     }
 
             /*
@@ -4380,6 +4402,31 @@ public class Main extends JavaPlugin
             }
             return cypayCommand.onCommand(
                     sender, cmd, label, args);
+        }
+        
+        // ★ 传送系统命令
+        if (cmd.getName().equalsIgnoreCase("tpa")
+                || cmd.getName().equalsIgnoreCase("tpaccept")
+                || cmd.getName().equalsIgnoreCase("tpdeny")
+                || cmd.getName().equalsIgnoreCase("tpauto")
+                || cmd.getName().equalsIgnoreCase("tpahere")
+                || cmd.getName().equalsIgnoreCase("tpaall")
+                || cmd.getName().equalsIgnoreCase("tpacancel")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (teleportMgr == null) {
+                sender.sendMessage("§c传送系统未初始化");
+                return true;
+            }
+            try {
+                return teleportMgr.handleCommand((Player) sender, cmd.getName(), args);
+            } catch (Exception e) {
+                sender.sendMessage("§c执行出错: " + e.getMessage());
+                e.printStackTrace();
+                return true;
+            }
         }
 
 
@@ -6164,6 +6211,22 @@ public class Main extends JavaPlugin
         }
         if (cmd.getName().equalsIgnoreCase("cypay")) {
             return cypayCommand.onTabComplete(sender, cmd, label, args);
+        }
+
+        // ★ 传送系统命令 - Tab补全
+        if (cmd.getName().equalsIgnoreCase("tpa")
+                || cmd.getName().equalsIgnoreCase("tpaccept")
+                || cmd.getName().equalsIgnoreCase("tpdeny")
+                || cmd.getName().equalsIgnoreCase("tpahere")
+                || cmd.getName().equalsIgnoreCase("tpaall")
+                || cmd.getName().equalsIgnoreCase("tpacancel")) {
+            if (args.length == 1) {
+                Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
+                for (Player p : onlinePlayers) {
+                    list.add(p.getName());
+                }
+            }
+            return list;
         }
 
         return list;

@@ -114,3 +114,25 @@ commands:
   控制台:
     description: 生成Web端登录令牌(中文版)
     usage: /控制台
+  tpa:
+    description: tp传送指令
+    usage: /tpa
+  tpaccept:
+    description: 接受传送
+    usage: /tpaccept
+  tpdeny:
+    description: 拒绝传送
+    usage: /tpdeny
+  tpauto:
+    description: 自动接收传送
+    usage: /tpauto
+  tpacancel:
+    description: 取消传送请求
+    usage: /tpacancel
+  tpaall:
+    description: 请求传送所有人
+    usage: /tpaall
+  tpahere:
+    description: 请求传送ta到自己身边
+    usage: /tpahere
+
