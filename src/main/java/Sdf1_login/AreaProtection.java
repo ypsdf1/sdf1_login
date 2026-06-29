@@ -7459,6 +7459,28 @@ public class AreaProtection implements Listener {
                 return true;
             }
 
+            // ★ 验证玩家注册时间必须超过5分钟（防止注册秒退玩家接收领地）
+            if (dbMgr != null) {
+                long registerTime = 0;
+                try {
+                    Object regTimeObj = dbMgr.getField(newOwner, "register_time");
+                    if (regTimeObj instanceof Number) {
+                        registerTime = ((Number) regTimeObj).longValue();
+                    }
+                } catch (Exception e) {
+                    // 忽略异常
+                }
+                if (registerTime > 0) {
+                    long now = System.currentTimeMillis();
+                    long fiveMinutesMs = 5 * 60 * 1000;
+                    if (now - registerTime < fiveMinutesMs) {
+                        long minutesLeft = (fiveMinutesMs - (now - registerTime)) / 60000;
+                        sender.sendMessage("§c玩家 §e" + newOwner + " §c注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                        return true;
+                    }
+                }
+            }
+
             // ★ 执行转让
             ac.owner = newOwner;
             saveAreaToDb(ac);
@@ -8509,6 +8531,28 @@ public class AreaProtection implements Listener {
         if (dbMgr != null && !dbMgr.userExists(newOwner)) {
             p.sendMessage("§c玩家 §e" + newOwner + " §c尚未注册");
             return true;
+        }
+
+        // ★ 验证玩家注册时间必须超过5分钟（防止注册秒退玩家接收领地）
+        if (dbMgr != null) {
+            long registerTime = 0;
+            try {
+                Object regTimeObj = dbMgr.getField(newOwner, "register_time");
+                if (regTimeObj instanceof Number) {
+                    registerTime = ((Number) regTimeObj).longValue();
+                }
+            } catch (Exception e) {
+                // 忽略异常
+            }
+            if (registerTime > 0) {
+                long now = System.currentTimeMillis();
+                long fiveMinutesMs = 5 * 60 * 1000;
+                if (now - registerTime < fiveMinutesMs) {
+                    long minutesLeft = (fiveMinutesMs - (now - registerTime)) / 60000;
+                    p.sendMessage("§c玩家 §e" + newOwner + " §c注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                    return true;
+                }
+            }
         }
 
         // 执行转让

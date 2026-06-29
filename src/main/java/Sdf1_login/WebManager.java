@@ -3522,7 +3522,28 @@ public class WebManager {
                                     applied = false;
                                     break;
                                 }
-                                // 2. 执行改主
+                                // 2. 验证玩家注册时间必须超过5分钟（防止注册秒退玩家接收领地）
+                                long registerTime = 0;
+                                try {
+                                    Object regTimeObj = plugin.getDb().getField(newOwner, "register_time");
+                                    if (regTimeObj instanceof Number) {
+                                        registerTime = ((Number) regTimeObj).longValue();
+                                    }
+                                } catch (Exception e) {
+                                    // 忽略异常
+                                }
+                                if (registerTime > 0) {
+                                    long now = System.currentTimeMillis();
+                                    long fiveMinutesMs = 5 * 60 * 1000;
+                                    if (now - registerTime < fiveMinutesMs) {
+                                        long minutesLeft = (fiveMinutesMs - (now - registerTime)) / 60000;
+                                        plugin.getLogger().warning("[Web通信] 管理面板改主失败: 玩家 " + newOwner + " 注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                                        callbackOwnerChangeToPHP(id, false, "玩家 " + newOwner + " 注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                                        applied = false;
+                                        break;
+                                    }
+                                }
+                                // 3. 执行改主
                                 areaProtect.setLandOwnerFromWeb(landName, newOwner);
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
                                 // 3. 回调PHP更新本地副本
@@ -3675,6 +3696,27 @@ public class WebManager {
                 plugin.getLogger().info("[过户] 验证失败: 玩家 " + newOwner + " 不存在");
                 notifyTransferCallback(transferId, "failed", "玩家 " + newOwner + " 尚未注册");
                 return false;
+            }
+
+            // ★ 验证玩家注册时间必须超过5分钟（防止注册秒退玩家接收领地）
+            long registerTime = 0;
+            try {
+                Object regTimeObj = dbMgr.getField(newOwner, "register_time");
+                if (regTimeObj instanceof Number) {
+                    registerTime = ((Number) regTimeObj).longValue();
+                }
+            } catch (Exception e) {
+                // 忽略异常
+            }
+            if (registerTime > 0) {
+                long now = System.currentTimeMillis();
+                long fiveMinutesMs = 5 * 60 * 1000;
+                if (now - registerTime < fiveMinutesMs) {
+                    long minutesLeft = (fiveMinutesMs - (now - registerTime)) / 60000;
+                    plugin.getLogger().info("[过户] 验证失败: 玩家 " + newOwner + " 注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                    notifyTransferCallback(transferId, "failed", "玩家 " + newOwner + " 注册时间不足5分钟（还差" + minutesLeft + "分钟）");
+                    return false;
+                }
             }
 
             // ★ 验证通过：改Java本地DB
