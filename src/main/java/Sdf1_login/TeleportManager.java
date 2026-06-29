@@ -262,6 +262,7 @@ public class TeleportManager {
         player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
         
         // ★ 通知接收者：A传送了B，等待B同意
+        plugin.getLogger().info("[传送] 向玩家 " + targetName + " 发送传送请求消息");
         target.sendMessage("§e[传送] §f" + sender + " §e请求传送到你身边");
         target.sendMessage("§7────────────────────");
         target.sendMessage("§e【等待接受】§f" + sender + " §e已传送到你面前");
@@ -272,6 +273,7 @@ public class TeleportManager {
         if (!isBedrockPlayer(target)) {
             target.sendMessage("§7（输入 §e/tpaccept §7接受所有待处理请求）");
         }
+        plugin.getLogger().info("[传送] 已向玩家 " + targetName + " 发送所有消息");
         
         // 自动接受检查
         checkAutoAccept(targetName, sender);
