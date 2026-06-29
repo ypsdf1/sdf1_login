@@ -2450,10 +2450,61 @@ async function adminTransferLand(name, currentOwner) {
         const d = await res.json();
         if (d.success && d.pending) {
             glassAlert(d.message || '已提交改主请求，等待Java端验证');
-            btn.textContent = '改主';
-            btn.disabled = false;
-            // 不立即刷新列表，改为5秒后轮询检查更新
-            setTimeout(() => loadLands(document.getElementById('C')), 5000);
+            // 启动轮询，每5秒查询状态，最多等待1.05分钟
+            let elapsed = 0;
+            const maxWait = 65000; // 1.05分钟 = 65秒
+            const interval = 5000; // 5秒轮询一次
+            const poll = async () => {
+                try {
+                    const pollRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu');
+                    const pollData = await pollRes.json();
+                    if (pollData.success) {
+                        if (pollData.status === 'completed') {
+                            glassAlert('改主成功！领地 [' + name + '] 所有者已变更为 [' + trimmed + ']');
+                            btn.textContent = '改主';
+                            btn.disabled = false;
+                            loadLands(document.getElementById('C'));
+                            return;
+                        } else if (pollData.status === 'failed') {
+                            glassAlert('改主失败: ' + (pollData.reason || 'Java端验证失败'));
+                            btn.textContent = '改主';
+                            btn.disabled = false;
+                            loadLands(document.getElementById('C'));
+                            return;
+                        }
+                    }
+                    elapsed += interval;
+                    if (elapsed < maxWait) {
+                        setTimeout(poll, interval);
+                    } else {
+                        // 超时，检查最终状态
+                        const finalRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu');
+                        const finalData = await finalRes.json();
+                        if (finalData.success && finalData.status === 'completed') {
+                            glassAlert('改主成功！领地 [' + name + '] 所有者已变更为 [' + trimmed + ']');
+                        } else if (finalData.success && finalData.status === 'failed') {
+                            glassAlert('改主失败: ' + (finalData.reason || 'Java端验证失败'));
+                        } else {
+                            glassAlert('改主超时，可能是Java端处理延迟，请稍后刷新查看');
+                        }
+                        btn.textContent = '改主';
+                        btn.disabled = false;
+                        loadLands(document.getElementById('C'));
+                    }
+                } catch (pollErr) {
+                    console.error('轮询失败:', pollErr);
+                    elapsed += interval;
+                    if (elapsed < maxWait) {
+                        setTimeout(poll, interval);
+                    } else {
+                        glassAlert('轮询超时，请稍后刷新查看');
+                        btn.textContent = '改主';
+                        btn.disabled = false;
+                        loadLands(document.getElementById('C'));
+                    }
+                }
+            };
+            setTimeout(poll, interval);
         } else if (d.success) {
             glassAlert(d.message || '改主成功');
             btn.textContent = '改主';

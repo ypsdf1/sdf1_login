@@ -387,6 +387,11 @@ try {
             handleGetPlayerGroups($db, $_GET['player'] ?? '');
             break;
 
+        // ===== 管理面板：查询改主状态 =====
+        case 'get_owner_change_status':
+            handleGetOwnerChangeStatus($db, $_GET);
+            break;
+
         default:
             echo json_encode(['success' => false, 'error' => 'unknown action']);
     }
@@ -841,6 +846,58 @@ function handleUpdateLandOwner($db, $post) {
 
     debugLog("handleUpdateLandOwner: 管理面板改主 {$name}: {$oldOwner} → {$owner} (已写入pending队列，等待Java验证)");
     echo json_encode(['success' => true, 'pending' => true, 'message' => "改主请求已提交: [{$name}] {$oldOwner} → {$owner}，等待Java端验证后生效"]);
+}
+
+function handleGetOwnerChangeStatus($db, $get) {
+    $name = $get['name'] ?? '';
+    if (empty($name)) {
+        echo json_encode(['success' => false, 'error' => '缺少name参数']);
+        return;
+    }
+
+    $stmt = $db->prepare("SELECT status, change_data FROM web_admin_changes WHERE change_type = 'owner_change' AND target_name = :name ORDER BY id DESC LIMIT 1");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+
+    if (!$row) {
+        echo json_encode(['success' => true, 'status' => 'none', 'message' => '没有改主记录']);
+        return;
+    }
+
+    $status = $row['status'] ?? 'pending';
+    $changeData = json_decode($row['change_data'] ?? '{}', true);
+    $newOwner = $changeData['new_owner'] ?? '';
+
+    // 检查是否超时（1.05分钟 = 65秒）
+    $stmtTime = $db->prepare("SELECT created_at FROM web_admin_changes WHERE change_type = 'owner_change' AND target_name = :name ORDER BY id DESC LIMIT 1");
+    $stmtTime->bindValue(':name', $name, SQLITE3_TEXT);
+    $rsTime = $stmtTime->execute();
+    $rowTime = $rsTime->fetchArray(SQLITE3_ASSOC);
+
+    if ($rowTime && $status === 'pending') {
+        $createdAt = (int)($rowTime['created_at'] ?? 0);
+        $now = time();
+        if ($now - $createdAt > 65) {
+            // 超时，自动回滚
+            $stmtRollback = $db->prepare("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = :now WHERE change_type = 'owner_change' AND target_name = :name AND status = 'pending'");
+            $stmtRollback->bindValue(':now', $now, SQLITE3_INTEGER);
+            $stmtRollback->bindValue(':name', $name, SQLITE3_TEXT);
+            $stmtRollback->execute();
+
+            debugLog("handleGetOwnerChangeStatus: 改主 {$name} 超时（超过65秒未处理），已自动回滚");
+            echo json_encode(['success' => true, 'status' => 'failed', 'reason' => 'Java端处理超时', 'message' => '改主超时，已自动回滚']);
+            return;
+        }
+    }
+
+    if ($status === 'completed') {
+        echo json_encode(['success' => true, 'status' => 'completed', 'new_owner' => $newOwner, 'message' => '改主成功']);
+    } elseif ($status === 'failed') {
+        echo json_encode(['success' => true, 'status' => 'failed', 'message' => '改主失败']);
+    } else {
+        echo json_encode(['success' => true, 'status' => 'pending', 'message' => '等待Java端验证']);
+    }
 }
 
 function handleDeleteShopItem($db, $post) {
