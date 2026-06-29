@@ -127,6 +127,12 @@ public class UserGroupManager {
         }
     }
 
+    /** ★ 更新组配置（保存DB + 刷新内存） */
+    public void updateGroupConfig(UserGroupConfig cfg) {
+        saveGroupConfigToDB(cfg);
+        groupConfigs.put(cfg.name, cfg);
+    }
+
     /** 删除组配置 */
     public boolean deleteGroupConfig(String groupName) {
         try {

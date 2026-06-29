@@ -12,6 +12,9 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -38,6 +41,7 @@ public class AreaGUIManager implements Listener {
     private static final String T_EFFECTS_MGMT = "§b§l效果管理";
     private static final String T_EFFECTS_CLEAR = "§b§l单清效果";
     private static final String T_EFFECTS_GIVE = "§b§l增益效果";
+    private static final String T_LAND_TRANSFER = "§6§l过户领地";
 
     // 每页显示数量
     private static final int PAGE_SIZE = 45;
@@ -235,6 +239,11 @@ public class AreaGUIManager implements Listener {
 
         // 传送（位置31）
         inv.setItem(31, createItem(Material.ENDER_PEARL, "§a§l传送到领地", "§7点击传送"));
+
+        // 过户领地（位置32）
+        inv.setItem(32, createItem(Material.GOLD_INGOT, "§e§l过户领地",
+                "§7将领地所有权转移给他人",
+                "§7需要有领地所有者权限"));
 
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回领地列表", ""));
@@ -726,6 +735,37 @@ public class AreaGUIManager implements Listener {
     }
 
     /**
+     * mkItem: 从GUIManager继承的辅助方法
+     */
+    private ItemStack mkItem(Material mat, String name, String... lore) {
+        return createItem(mat, name, lore);
+    }
+
+    /**
+     * fillBg: 填充背景玻璃
+     */
+    private void fillBg(Inventory inv) {
+        ItemStack glass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+        ItemMeta gm = glass.getItemMeta();
+        if (gm != null) {
+            gm.setDisplayName(" ");
+            glass.setItemMeta(gm);
+        }
+        for (int i = 0; i < inv.getSize(); i++) {
+            if (inv.getItem(i) == null) {
+                inv.setItem(i, glass);
+            }
+        }
+    }
+
+    /**
+     * closeInventorySilently
+     */
+    private void closeInventorySilently(Player p) {
+        p.closeInventory();
+    }
+
+    /**
      * 安全传送位置搜索：优先中心点，然后随机40次寻找头顶≥2空气+脚下非实体方块+在领地范围内
      */
     private Location findSafeLocation(World w, int cx, int cz, int yMin, int yMax) {
@@ -870,6 +910,9 @@ public class AreaGUIManager implements Listener {
                 openLandSettings(p, landName);
             } else if (raw == 16) {
                 openEffectsManagement(p, landName, 1);
+            } else if (raw == 32) {
+                // 过户领地
+                openTransferLandPanel(p, landName);
             } else if (raw == 31) {
                 // 传送 - 优先传送点，否则安全搜索中心
                 p.closeInventory();
@@ -894,6 +937,16 @@ public class AreaGUIManager implements Listener {
                 }
             } else if (raw == 48) {
                 openLandList(p, 0);
+            }
+            return;
+        }
+
+        // 过户领地面板
+        if (title.startsWith(T_LAND_TRANSFER_PANEL)) {
+            event.setCancelled(true);
+            String landName = title.substring(T_LAND_TRANSFER_PANEL.length()).trim();
+            if (event.isLeftClick()) {
+                handleTransferLandPanelClick(p, landName, raw, true);
             }
             return;
         }
@@ -1200,6 +1253,14 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
+        // ★ 用户组配置编辑面板
+        if (title.startsWith(T_GROUP_EDIT)) {
+            event.setCancelled(true);
+            String groupName = title.substring(T_GROUP_EDIT.length()).trim();
+            handleGroupEditClick(p, groupName, raw, event.isLeftClick());
+            return;
+        }
+
         // ★ 用户组成员管理面板
         if (title.startsWith(T_GROUP_MEMBER)) {
             event.setCancelled(true);
@@ -1210,8 +1271,8 @@ public class AreaGUIManager implements Listener {
             if (cfg2 == null) { p.closeInventory(); return; }
 
             if (raw == 48) {
-                // 返回用户组列表
-                openUserGroupPanel(p);
+                // 返回用户组配置编辑面板
+                openGroupEditPanel(p, groupName);
             } else if (raw == 45) {
                 // ★ 添加在线玩家 — 打开在线玩家选择面板
                 openGroupAddPlayerPanel(p, groupName);
@@ -1674,10 +1735,146 @@ public class AreaGUIManager implements Listener {
         if (raw == 48) {
             openAdminPanel(p);
         } else if (raw >= 0 && raw < 45 && raw < groupNames.size()) {
-            // 左键 = 打开成员管理面板
+            // 左键 = 打开配置编辑面板
             String groupName = groupNames.get(raw);
-            openGroupMemberPanel(p, groupName);
+            openGroupEditPanel(p, groupName);
         }
+    }
+
+    // ==================== 用户组配置编辑 GUI ====================
+    private static final String T_GROUP_EDIT = "§6§l编辑用户组 - ";
+
+    /**
+     * ★ 打开用户组配置编辑面板
+     * 显示价格、最大领地数、优先级，支持+/-和手动输入
+     */
+    public void openGroupEditPanel(Player p, String groupName) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+        if (cfg == null) return;
+
+        Inventory inv = Bukkit.createInventory(null, 54, T_GROUP_EDIT + cfg.displayName);
+        fillBg(inv);
+
+        // 信息区域（位置4-5）
+        inv.setItem(4, createItem(Material.NAME_TAG, cfg.displayColor + "§l" + cfg.displayName,
+                "§7ID: §f" + cfg.name,
+                "§7优先级: §f" + cfg.priority));
+
+        // ★ 每㎡价格（位置10-12）: [-1] [当前值] [+1]
+        String priceLabel = cfg.landPricePerSqm >= 0 ? cfg.landPricePerSqm + "/㎡" : "全局默认(0)";
+        inv.setItem(10, createItem(Material.REDSTONE, "§c§l-1", "§7点击减少每㎡价格"));
+        inv.setItem(11, createItem(Material.GOLD_INGOT, "§e§l每㎡价格: " + priceLabel,
+                "§7当前: §f" + cfg.landPricePerSqm + "/㎡",
+                "§7-1=使用全局默认",
+                "",
+                "§e§l点击手动输入"));
+        inv.setItem(12, createItem(Material.EMERALD, "§a§l+1", "§7点击增加每㎡价格"));
+
+        // ★ 最大领地数（位置19-21）: [-1] [当前值] [+1]
+        String maxLabel = cfg.maxLands >= 0 ? String.valueOf(cfg.maxLands) : "全局默认(0)";
+        inv.setItem(19, createItem(Material.REDSTONE, "§c§l-1", "§7点击减少最大领地数"));
+        inv.setItem(20, createItem(Material.CHEST, "§e§l最大领地数: " + maxLabel,
+                "§7当前: §f" + cfg.maxLands,
+                "§7-1=使用全局默认",
+                "",
+                "§e§l点击手动输入"));
+        inv.setItem(21, createItem(Material.EMERALD, "§a§l+1", "§7点击增加最大领地数"));
+
+        // ★ 优先级（位置28-30）: [-1] [当前值] [+1]
+        inv.setItem(28, createItem(Material.REDSTONE, "§c§l-1", "§7点击减少优先级"));
+        inv.setItem(29, createItem(Material.PAPER, "§e§l优先级: " + cfg.priority,
+                "§7当前: §f" + cfg.priority,
+                "§7数值越高优先级越高",
+                "",
+                "§e§l点击手动输入"));
+        inv.setItem(30, createItem(Material.EMERALD, "§a§l+1", "§7点击增加优先级"));
+
+        // ★ 成员管理入口（位置40）
+        inv.setItem(40, createItem(Material.PLAYER_HEAD, "§b§l管理成员",
+                "§7点击查看和编辑此组的成员"));
+
+        // 返回按钮（位置48）
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回用户组列表", ""));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * ★ 处理用户组配置编辑GUI点击事件
+     */
+    private void handleGroupEditClick(Player p, String groupName, int slot, boolean leftClick) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+        if (cfg == null) return;
+
+        if (slot == 48) {
+            openUserGroupPanel(p);
+            return;
+        }
+
+        // ★ 成员管理入口
+        if (slot == 40) {
+            openGroupMemberPanel(p, groupName);
+            return;
+        }
+
+        // ★ 手动输入（点击当前值格子）
+        if (slot == 11 || slot == 20 || slot == 29) {
+            String field;
+            String fieldLabel;
+            String currentValue;
+            if (slot == 11) {
+                field = "price";
+                fieldLabel = "每㎡价格";
+                currentValue = String.valueOf(cfg.landPricePerSqm) + "/㎡";
+            } else if (slot == 20) {
+                field = "maxlands";
+                fieldLabel = "最大领地数";
+                currentValue = String.valueOf(cfg.maxLands);
+            } else {
+                field = "priority";
+                fieldLabel = "优先级";
+                currentValue = String.valueOf(cfg.priority);
+            }
+            // 记录等待输入状态
+            areaProtect.pendingGroupEditInput.put(p.getUniqueId(), new String[]{groupName, field});
+            p.closeInventory();
+            p.sendMessage("§e请输入新的" + fieldLabel + "（当前: §f" + currentValue + "§e）");
+            p.sendMessage("§7支持: 纯数字、中文数字、罗马数字、英文数字");
+            p.sendMessage("§7输入 §c取消§7 放弃编辑");
+            p.sendMessage("§7§l───────────────────────────────");
+            return;
+        }
+
+        // ★ +1/-1 按钮
+        boolean isPlus = (slot == 12 || slot == 21 || slot == 30);
+        boolean isMinus = (slot == 10 || slot == 19 || slot == 28);
+        if (!isPlus && !isMinus) return;
+
+        int delta = isPlus ? 1 : -1;
+
+        if (slot == 10 || slot == 12) {
+            // 每㎡价格 +1/-1
+            if (cfg.landPricePerSqm < 0) cfg.landPricePerSqm = 0;
+            cfg.landPricePerSqm = Math.max(0, Math.min(999999, cfg.landPricePerSqm + delta));
+            p.sendMessage("§a每㎡价格修改为 §e" + cfg.landPricePerSqm + "/㎡");
+        } else if (slot == 19 || slot == 21) {
+            // 最大领地数 +1/-1
+            if (cfg.maxLands < 0) cfg.maxLands = 0;
+            cfg.maxLands = Math.max(0, Math.min(999, cfg.maxLands + delta));
+            p.sendMessage("§a最大领地数修改为 §e" + cfg.maxLands);
+        } else if (slot == 28 || slot == 30) {
+            // 优先级 +1/-1
+            cfg.priority = Math.max(0, Math.min(100, cfg.priority + delta));
+            p.sendMessage("§a优先级修改为 §e" + cfg.priority);
+        }
+
+        // 保存并刷新面板
+        ugm.updateGroupConfig(cfg);
+        openGroupEditPanel(p, groupName);
     }
 
     // ==================== 用户组成员管理 GUI ====================
@@ -1723,7 +1920,7 @@ public class AreaGUIManager implements Listener {
         inv.setItem(46, createItem(Material.PAPER, "§e§lCLI添加",
                 "§7点击后在聊天栏输入玩家名"));
 
-        inv.setItem(48, createItem(Material.ARROW, "§c§l返回用户组列表", ""));
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回配置编辑", ""));
 
         p.openInventory(inv);
     }
@@ -1764,6 +1961,237 @@ public class AreaGUIManager implements Listener {
 
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回成员列表", ""));
         p.openInventory(inv);
+    }
+
+    // ==================== 过户领地 GUI ====================
+    private static final String T_LAND_TRANSFER_PANEL = "§6§l过户领地面板 - ";
+
+    /**
+     * 打开过户领地面板
+     */
+    public void openTransferLandPanel(Player p, String landName) {
+        managingLand.put(p.getUniqueId(), landName);
+        Inventory inv = Bukkit.createInventory(null, 27, T_LAND_TRANSFER_PANEL + landName);
+        fillBg(inv);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage("§c领地不存在");
+            p.closeInventory();
+            return;
+        }
+
+        // 显示领地信息和当前所有者
+        inv.setItem(11, createItem(Material.PLAYER_HEAD, "§e§l" + landName,
+                "§7当前所有者: §f" + (land.owner != null ? land.owner : "未知"),
+                "§7点击输入新所有者"));
+
+        // 提示冷却信息（如果有进行中的过户）
+        String cooldownInfo = "";
+        WebManager.TransferInfo ti = plugin.webManager.getActiveTransfer(landName);
+        if (ti != null) {
+            long remain = ti.expiresAt - System.currentTimeMillis();
+            if (remain > 0) {
+                cooldownInfo = "§c冷却中: §e" + (remain / 1000) + "秒后结束\n§7点击取消过户";
+            }
+        }
+
+        if (cooldownInfo.isEmpty()) {
+            inv.setItem(11, mkItem(Material.PLAYER_HEAD, "§e§l" + landName,
+                    "§7当前所有者: §f" + (land.owner != null ? land.owner : "未知"),
+                    "§7点击输入新所有者",
+                    "§7需要领地所有者权限",
+                    "§e点击过户"));
+        } else {
+            inv.setItem(11, mkItem(Material.PLAYER_HEAD, "§c§l" + landName,
+                    cooldownInfo));
+            // 取消过户按钮
+            inv.setItem(12, mkItem(Material.BARRIER, "§c§l取消过户",
+                    "§7点击取消当前过户冷却"));
+        }
+
+        // 返回按钮
+        inv.setItem(22, createItem(Material.ARROW, "§c§l返回管理面板", "§7点击返回"));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * 处理过户领地GUI点击事件
+     */
+    private void handleTransferLandPanelClick(Player p, String landName, int slot, boolean leftClick) {
+        if (leftClick && slot == 11) {
+            // ★ 打开输入新所有者 → 关闭GUI，转为聊天栏交互输入
+            AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+            if (land == null) {
+                p.sendMessage("§c领地不存在");
+                return;
+            }
+            p.closeInventory();
+            p.sendMessage("§e请在聊天栏输入新所有者名称（§c取消§e可取消操作）:");
+            p.sendMessage("§7当前所有者: §f" + (land.owner != null ? land.owner : "未知"));
+            // 设置待输入状态
+            if (plugin.areaProtection != null) {
+                plugin.areaProtection.pendingTransferInput.put(p.getUniqueId(), new String[]{landName});
+            }
+        } else if (leftClick && slot == 12) {
+            // 取消过户
+            cancelTransfer(p, landName);
+        } else if (slot == 22) {
+            // 返回管理面板
+            openLandManage(p, landName);
+        }
+    }
+
+    /**
+     * 打开输入面板（用于输入新所有者名称）
+     */
+    private void openTransferInputScreen(Player p, String landName) {
+        Inventory inv = Bukkit.createInventory(null, 27, "§6§l输入新所有者名称 - " + landName);
+        fillBg(inv);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) return;
+
+        // 显示提示
+        inv.setItem(11, createItem(Material.WRITABLE_BOOK, "§e§l新所有者",
+                "§7当前所有者: §f" + (land.owner != null ? land.owner : "未知"),
+                "§7请输入3-16位英文字母、数字或下划线"));
+
+        // 取消按钮
+        inv.setItem(15, createItem(Material.BARRIER, "§c§l取消", "§7取消过户操作"));
+
+        // 返回按钮
+        inv.setItem(22, createItem(Material.ARROW, "§c§l返回", "§7返回过户面板"));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * 处理输入新所有者点击事件
+     */
+    private void handleTransferInputClick(Player p, String landName, int slot, boolean leftClick) {
+        TransferInputState state = pendingTransferInputs.remove(p.getUniqueId());
+        if (state == null) return;
+
+        if (state.currentAction == TransferAction.SELECT) {
+            if (slot == 11 && leftClick) {
+                state.action = TransferAction.ENTER_NAME;
+                state.pendingInput = landName;
+                p.sendMessage("§e请输入新所有者名称:");
+                pendingTransferInputs.put(p.getUniqueId(), state);
+                return;
+            } else if (slot == 15) {
+                closeInventorySilently(p);
+                return;
+            } else if (slot == 22) {
+                openLandManage(p, landName);
+                return;
+            }
+        } else if (state.currentAction == TransferAction.ENTER_NAME) {
+            // 输入的名字会作为slot传递
+            String newName = state.pendingInput;
+            if (newName.isEmpty() || newName.length() < 3 || newName.length() > 16) {
+                p.sendMessage("§c玩家名格式无效：3-16位英文字母、数字或下划线");
+                openTransferLandPanel(p, state.pendingInput);
+                return;
+            }
+            if (!newName.matches("^[a-zA-Z0-9_]+$")) {
+                p.sendMessage("§c玩家名格式无效：仅允许英文字母、数字和下划线");
+                openTransferLandPanel(p, state.pendingInput);
+                return;
+            }
+            sendTransferRequest(p, state.pendingInput, newName);
+        }
+    }
+
+    private enum TransferAction {
+        SELECT, ENTER_NAME, INPUT_NAME
+    }
+
+    private static class TransferInputState {
+        TransferAction currentAction;
+        String pendingInput;
+        TransferAction action;
+    }
+
+    private final Map<UUID, TransferInputState> pendingTransferInputs = new HashMap<>();
+
+    /**
+     * 发送过户请求到PHP后端
+     */
+    private void sendTransferRequest(Player p, String landName, String newOwner) {
+        // 检查是否有进行中的过户
+        WebManager.TransferInfo existing = plugin.webManager.getActiveTransfer(landName);
+        if (existing != null && System.currentTimeMillis() < existing.expiresAt) {
+            long remain = (existing.expiresAt - System.currentTimeMillis()) / 1000;
+            p.sendMessage("§c该领地正在过户冷却中（还剩" + remain + "秒）");
+            openTransferLandPanel(p, landName);
+            return;
+        }
+
+        // 构建HTTP请求
+        String urlStr = plugin.webManager.getWebBaseUrl() + "/api/land_api.php?action=transfer_land&land=" + landName + "&new_owner=" + newOwner + "&secret=" + plugin.webManager.getSecretKey();
+
+        try {
+            java.net.URL url = new java.net.URL(urlStr);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(5000);
+
+            String body = "land=" + java.net.URLEncoder.encode(landName, "UTF-8")
+                    + "&new_owner=" + java.net.URLEncoder.encode(newOwner, "UTF-8");
+            java.io.OutputStream os = conn.getOutputStream();
+            os.write(body.getBytes("UTF-8"));
+            os.flush();
+            os.close();
+
+            int responseCode = conn.getResponseCode();
+            java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line);
+            br.close();
+
+            String response = sb.toString();
+            conn.disconnect();
+
+            if (responseCode == 200) {
+                // 简单解析响应（假设是JSON）
+                if (response.contains("\"success\":true")) {
+                    p.sendMessage("§a过户请求已提交，等待验证中...");
+                    // ★ 可点击取消超链接
+                    p.sendMessage(Component.empty()
+                            .append(Component.text("§c[点击取消过户] "))
+                            .hoverEvent(HoverEvent.showText(Component.text("§c点击取消领地 §e" + landName + " §c的过户")))
+                            .clickEvent(ClickEvent.runCommand("/protect canceltransfer " + landName))
+                    );
+                } else {
+                    p.sendMessage("§c过户失败: " + response);
+                }
+            } else {
+                p.sendMessage("§c连接PHP后端失败，HTTP " + responseCode);
+            }
+        } catch (Exception e) {
+            p.sendMessage("§c过户请求发送失败: " + e.getMessage());
+        }
+
+        openTransferLandPanel(p, landName);
+    }
+
+    /**
+     * 取消过户（关闭冷却期的进行中过户）
+     */
+    private void cancelTransfer(Player p, String landName) {
+        // 使用WebManager统一取消：回退owner + 通知PHP
+        if (plugin.webManager.cancelTransfer(landName, p.getName())) {
+            p.sendMessage("§a已取消领地 [§e" + landName + "§a] 的过户冷却");
+        } else {
+            p.sendMessage("§c没有进行中的过户");
+        }
+        openTransferLandPanel(p, landName);
     }
 
     // ==================== 效果管理 GUI ====================

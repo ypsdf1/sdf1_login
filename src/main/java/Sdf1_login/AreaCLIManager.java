@@ -331,6 +331,8 @@ public class AreaCLIManager {
         // ★ 新增：设置传送点
         p.sendMessage(clickableAction("📍", "设置传送点（当前位置）",
                 "/protect settp " + land.name));
+        p.sendMessage(clickableAction("🔄", "过户领地（需要所有者权限）",
+                "/protect transfeland " + land.name));
 
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回列表]")

@@ -2462,6 +2462,18 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 过户领地输入拦截（CLI输入新所有者名）
+        if (areaProtection != null && areaProtection.handleTransferInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
+        // ★ 用户组配置编辑输入拦截（CLI/GUI输入价格/数量等）
+        if (areaProtection != null && areaProtection.handleGroupEditInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
 // ===== 菜单聊天输入 =====
         if (getMenu().isEditing(p.getName())) {
             e.setCancelled(true);

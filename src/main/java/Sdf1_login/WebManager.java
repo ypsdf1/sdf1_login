@@ -3487,9 +3487,32 @@ public class WebManager {
                                 plugin.getLogger().info("[Web通信] 过户取消回退: " + landName + " → " + newOwner);
                                 applied = true;
                             } else {
-                                // ★ 管理面板改主：直接执行（管理员可信任）
+                                // ★ 管理面板改主：验证新所有者 → 执行 → 回调PHP
+                                // 1. 验证新所有者是否存在
+                                org.bukkit.OfflinePlayer[] matches = Bukkit.getOfflinePlayers();
+                                boolean found = false;
+                                for (org.bukkit.OfflinePlayer op : matches) {
+                                    if (op.getName() != null && op.getName().equalsIgnoreCase(newOwner)) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) {
+                                    // 尝试通过login.db查询
+                                    found = plugin.getDb() != null && plugin.getDb().userExists(newOwner);
+                                }
+                                if (!found) {
+                                    plugin.getLogger().warning("[Web通信] 管理面板改主失败: 玩家 " + newOwner + " 不存在");
+                                    // 回调PHP标记失败
+                                    callbackOwnerChangeToPHP(id, false, "玩家 " + newOwner + " 不存在");
+                                    applied = false;
+                                    break;
+                                }
+                                // 2. 执行改主
                                 areaProtect.setLandOwnerFromWeb(landName, newOwner);
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
+                                // 3. 回调PHP更新本地副本
+                                callbackOwnerChangeToPHP(id, true, "");
                                 applied = true;
                             }
                             break;
@@ -3658,10 +3681,31 @@ public class WebManager {
     }
 
     /**
+     * ★ 回调PHP：管理面板改主执行结果
+     */
+    private void callbackOwnerChangeToPHP(int changeId, boolean success, String reason) {
+        try {
+            String url = webBaseUrl + "/api/land_api.php?action=owner_change_callback&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                + "&change_id=" + changeId
+                + "&success=" + (success ? "1" : "0")
+                + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
+            String response = doPost(url, "{}");
+            plugin.getLogger().fine("[Web通信] 回调PHP改主结果: change_id=" + changeId + ", success=" + success);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 回调PHP改主结果失败: " + e.getMessage());
+        }
+    }
+
+    /**
      * 追踪过户（Java端发起时调用）
      */
     public void trackTransfer(String landName, TransferInfo info) {
         activeLandTransfers.put(landName, info);
+    }
+
+    /** ★ 获取进行中的过户信息 */
+    public TransferInfo getActiveTransfer(String landName) {
+        return activeLandTransfers.get(landName);
     }
 
     /**

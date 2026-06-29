@@ -102,6 +102,10 @@ public class AreaProtection implements Listener {
     private final Map<java.util.UUID, String> pendingAddMemberInput = new ConcurrentHashMap<>();
     // ★ 效果管理待处理输入：UUID → [landName, inputType]
     private final Map<java.util.UUID, String[]> pendingEffectInput = new ConcurrentHashMap<>();
+    // ★ 过户领地待输入新所有者：UUID → [landName]
+    public final Map<java.util.UUID, String[]> pendingTransferInput = new ConcurrentHashMap<>();
+    // ★ 用户组配置编辑待输入：UUID → [groupName, field("price"|"maxlands"|"priority")]
+    public final Map<java.util.UUID, String[]> pendingGroupEditInput = new ConcurrentHashMap<>();
 
     // ★ 全局配置默认值
     private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
@@ -5053,7 +5057,7 @@ public class AreaProtection implements Listener {
                 "工具", "wand", "expand", "contraction",
                 "on", "off", "tempon", "modeexempt",
                 "settp", "setwarp", "tp", "warp",
-                "setowner", "setadmin", "unsetadmin", "addvisitor", "removevisitor", "listvisitors", "transfer",
+                "setowner", "setadmin", "unsetadmin", "addvisitor", "removevisitor", "listvisitors", "transfer", "transfeland",
                 "info", "setowner", "addvisitor", "removevisitor",
                 "listvisitors", "transfer", "shop",
                 "menu", "菜单", "sdf1debug", "testclear", "cli",
@@ -5061,7 +5065,7 @@ public class AreaProtection implements Listener {
                 "removemember", "addmember",
                 "config", "配置",
                 "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
-                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupdelconfig", "groupmembers",
+                "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupedit", "groupdelconfig", "groupmembers",
                 "confirm_create"
         ));
 
@@ -6035,6 +6039,7 @@ public class AreaProtection implements Listener {
             }
             if (args.length < 2) {
                 sender.sendMessage("§e用法: /protect groupset <组名> [显示名] [颜色] [优先级] [每㎡价格] [最大领地数]");
+                sender.sendMessage("§7或: /protect groupset <组名> price <值> | maxlands <值> | priority <值>");
                 sender.sendMessage("§7或: /protect groupset sync §c(从PHP同步)");
                 return true;
             }
@@ -6051,6 +6056,43 @@ public class AreaProtection implements Listener {
             UserGroupManager ugm = plugin.getUserGroup();
             if (ugm == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
             UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+
+            // ★ 支持单字段编辑: /protect groupset <组名> price/maxlands/priority <值>
+            if (args.length == 4 && cfg != null) {
+                String field = args[2].toLowerCase();
+                String valStr = args[3];
+                // 智能数字解析（中文/罗马/英文数字）
+                Integer parsed = parseSmartNumberBase(valStr);
+                if (parsed == null) {
+                    sender.sendMessage("§c无法解析数字: " + valStr);
+                    return true;
+                }
+                int val = parsed;
+                switch (field) {
+                    case "price":
+                    case "价格":
+                        cfg.landPricePerSqm = val;
+                        break;
+                    case "maxlands":
+                    case "上限":
+                    case "领地上限":
+                        cfg.maxLands = val;
+                        break;
+                    case "priority":
+                    case "优先级":
+                        cfg.priority = val;
+                        break;
+                    default:
+                        sender.sendMessage("§c未知字段: " + field + "。支持: price/maxlands/priority");
+                        return true;
+                }
+                ugm.updateGroupConfig(cfg);
+                sender.sendMessage("§a已更新用户组 §f" + cfg.displayName + " §a的 " + field + " = " + val);
+                // 刷新编辑面板
+                if (sender instanceof Player) showGroupEditCLI((Player) sender, cfg);
+                return true;
+            }
+
             if (cfg == null) cfg = new UserGroupManager.UserGroupConfig();
             cfg.name = groupName;
             if (args.length >= 3) cfg.displayName = args[2];
@@ -6095,6 +6137,28 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c未找到用户组: " + groupName);
             }
             showGroupListPanel(sender);
+            return true;
+        }
+
+        // ★ 用户组交互式编辑（CLI模式）
+        if (sub.equals("groupedit")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用"); return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect groupedit <组名>");
+                return true;
+            }
+            Player gp = (Player) sender;
+            String gName = args[1];
+            UserGroupManager ugmEdit = plugin.getUserGroup();
+            if (ugmEdit == null) { sender.sendMessage("§c用户组系统未初始化"); return true; }
+            UserGroupManager.UserGroupConfig cfgEdit = ugmEdit.getGroupConfig(gName);
+            if (cfgEdit == null) {
+                sender.sendMessage("§c未找到用户组: " + gName);
+                return true;
+            }
+            showGroupEditCLI(gp, cfgEdit);
             return true;
         }
 
@@ -7237,15 +7301,33 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== transfer 转让领地 =====
-        if (sub.equals("transfer")) {
+        // ===== transfer / transfeland 转让领地 =====
+        if (sub.equals("transfer") || sub.equals("transfeland")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
             }
             Player p = (Player) sender;
-            if (args.length < 3) {
+            if (args.length < 2) {
                 sender.sendMessage("§e用法: /protect transfer <领地> <新所有者>");
+                return true;
+            }
+            // ★ 如果只给了领地名，进入交互式输入流程
+            if (args.length == 2) {
+                String areaName = resolveAreaName(args[1]);
+                if (areaName == null) {
+                    sender.sendMessage("§c领地不存在: " + args[1]);
+                    return true;
+                }
+                AreaConfig ac = areas.get(areaName);
+                if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                    sender.sendMessage("§c需要领地所有者或管理员权限");
+                    return true;
+                }
+                // 记录待输入状态
+                pendingTransferInput.put(p.getUniqueId(), new String[]{areaName});
+                p.sendMessage("§e请在聊天栏输入新所有者名称（输入 §c取消§e）");
+                p.sendMessage("§7§l───────────────────────────────");
                 return true;
             }
             String areaName = resolveAreaName(args[1]);
@@ -8276,6 +8358,164 @@ public class AreaProtection implements Listener {
         return true;
     }
 
+    /**
+     * ★ 检查并处理过户领地输入（新所有者名）
+     * @return true 如果是过户输入，已处理
+     */
+    public boolean handleTransferInput(Player p, String message) {
+        String[] data = pendingTransferInput.remove(p.getUniqueId());
+        if (data == null) return false;
+
+        String areaName = data[0];
+        if (message.trim().equalsIgnoreCase("取消")) {
+            p.sendMessage("§7已取消过户");
+            return true;
+        }
+
+        String newOwner = message.trim();
+        // 验证格式
+        if (!newOwner.matches("^[a-zA-Z0-9_]{3,16}$")) {
+            p.sendMessage("§c玩家名格式无效：仅允许英文字母、数字和下划线（3-16位）");
+            p.sendMessage("§7请重新输入（或输入 §c取消§7）");
+            pendingTransferInput.put(p.getUniqueId(), data); // 恢复等待状态
+            return true;
+        }
+
+        // 验证领地存在
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) {
+            p.sendMessage("§c领地不存在: " + areaName);
+            return true;
+        }
+        if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+            p.sendMessage("§c需要领地所有者或管理员权限");
+            return true;
+        }
+        if (newOwner.equalsIgnoreCase(ac.owner)) {
+            p.sendMessage("§c不能转让给自己");
+            return true;
+        }
+
+        // 验证新所有者是否存在
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null && !dbMgr.userExists(newOwner)) {
+            p.sendMessage("§c玩家 §e" + newOwner + " §c尚未注册");
+            return true;
+        }
+
+        // 执行转让
+        String oldOwner = ac.owner;
+        ac.owner = newOwner;
+        saveAreaToDb(ac);
+
+        // 获取权限快照 + 追踪cooldown
+        if (plugin.webManager != null) {
+            String snapshot = getLandPermissionsSnapshot(areaName);
+            long expiresAt = System.currentTimeMillis() + 60000;
+            WebManager.TransferInfo info = new WebManager.TransferInfo(
+                areaName, oldOwner, newOwner, expiresAt, 0, 0, snapshot
+            );
+            plugin.webManager.trackTransfer(areaName, info);
+            plugin.webManager.requestImmediateLandSync();
+        }
+
+        p.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + newOwner + "§a，§e60秒冷却期内可取消");
+        // ★ 可点击取消超链接
+        if (p instanceof Player) {
+            Player pp = (Player) p;
+            pp.sendMessage(Component.empty()
+                    .append(Component.text("§c[点击取消过户] "))
+                    .hoverEvent(HoverEvent.showText(Component.text("§c点击立即取消领地 §e" + areaName + " §c的过户")))
+                    .clickEvent(ClickEvent.runCommand("/protect canceltransfer " + areaName))
+            );
+        }
+        return true;
+    }
+
+    /**
+     * ★ 检查并处理用户组配置编辑输入
+     * @return true 如果是用户组编辑输入，已处理
+     */
+    public boolean handleGroupEditInput(Player p, String message) {
+        String[] data = pendingGroupEditInput.remove(p.getUniqueId());
+        if (data == null) return false;
+
+        String groupName = data[0];
+        String field = data[1]; // "price", "maxlands", "priority"
+
+        if (message.trim().equalsIgnoreCase("取消")) {
+            p.sendMessage("§7已取消编辑");
+            if (plugin.areaGUIManager != null) {
+                plugin.areaGUIManager.openGroupEditPanel(p, groupName);
+            }
+            return true;
+        }
+
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) {
+            p.sendMessage("§c用户组系统未初始化");
+            return true;
+        }
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(groupName);
+        if (cfg == null) {
+            p.sendMessage("§c用户组不存在: " + groupName);
+            return true;
+        }
+
+        // ★ 智能数字解析：支持中文、罗马、英文数字
+        Integer parsed = parseSmartNumberBase(message.trim());
+        if (parsed == null) {
+            p.sendMessage("§c无法解析数字: " + message.trim());
+            p.sendMessage("§7支持: 纯数字123、中文一二三、大写壹佰贰拾叁、罗马I II III、英文one two three");
+            p.sendMessage("§7或输入 §c取消§7 放弃编辑");
+            pendingGroupEditInput.put(p.getUniqueId(), data); // 恢复等待
+            return true;
+        }
+
+        String fieldLabel;
+        switch (field) {
+            case "price":
+                if (parsed < 0 || parsed > 999999) {
+                    p.sendMessage("§c价格范围: 0~999999（0=使用全局默认）");
+                    pendingGroupEditInput.put(p.getUniqueId(), data);
+                    return true;
+                }
+                cfg.landPricePerSqm = parsed;
+                fieldLabel = "每㎡价格";
+                break;
+            case "maxlands":
+                if (parsed < 0 || parsed > 999) {
+                    p.sendMessage("§c最大领地数范围: 0~999（0=使用全局默认）");
+                    pendingGroupEditInput.put(p.getUniqueId(), data);
+                    return true;
+                }
+                cfg.maxLands = parsed;
+                fieldLabel = "最大领地数";
+                break;
+            case "priority":
+                if (parsed < 0 || parsed > 100) {
+                    p.sendMessage("§c优先级范围: 0~100");
+                    pendingGroupEditInput.put(p.getUniqueId(), data);
+                    return true;
+                }
+                cfg.priority = parsed;
+                fieldLabel = "优先级";
+                break;
+            default:
+                return true;
+        }
+
+        // 保存
+        ugm.updateGroupConfig(cfg);
+        p.sendMessage("§a已将用户组 §e" + cfg.displayName + " §a的 §f" + fieldLabel + " §a修改为 §e" + parsed);
+
+        // 刷新GUI
+        if (plugin.areaGUIManager != null) {
+            plugin.areaGUIManager.openGroupEditPanel(p, groupName);
+        }
+        return true;
+    }
+
     private String getConfigNameByKey(String key) {
         switch (key) {
             case "create_price_per_sqm": return "创建价格(每㎡)";
@@ -8333,7 +8573,7 @@ public class AreaProtection implements Listener {
         return Math.max(abs, floor);
     }
 
-    private static Integer parseSmartNumberBase(String input) {
+    public static Integer parseSmartNumberBase(String input) {
         if (input == null || input.isEmpty()) return null;
         input = input.trim().toLowerCase();
 
@@ -8559,8 +8799,8 @@ public class AreaProtection implements Listener {
                     );
                     pp.sendMessage(Component.empty()
                             .append(Component.text("  §e[编辑] "))
-                            .hoverEvent(HoverEvent.showText(Component.text("§e编辑此用户组")))
-                            .clickEvent(ClickEvent.suggestCommand("/protect groupset " + cfg.name + " "))
+                            .hoverEvent(HoverEvent.showText(Component.text("§e交互式编辑此用户组配置")))
+                            .clickEvent(ClickEvent.runCommand("/protect groupedit " + cfg.name))
                     );
                     if (!cfg.name.equals(UserGroupManager.DEFAULT_GROUP)) {
                         pp.sendMessage(Component.empty()
@@ -8597,6 +8837,50 @@ public class AreaProtection implements Listener {
             );
         }
         sender.sendMessage("§7§l─────────────────────────────────");
+    }
+
+    /**
+     * ★ 用户组CLI交互式编辑面板
+     * 每个字段显示当前值，点击可输入新值
+     */
+    private void showGroupEditCLI(Player p, UserGroupManager.UserGroupConfig cfg) {
+        p.sendMessage(Component.text("§6§l────────── 编辑用户组: " + cfg.displayName + " ──────────"));
+
+        // 价格
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a每㎡价格: §f" + cfg.landPricePerSqm + " "))
+                .append(Component.text("§a[+1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " price " + (cfg.landPricePerSqm + 1))))
+                .append(Component.text("§c[-1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " price " + Math.max(0, cfg.landPricePerSqm - 1))))
+                .append(Component.text("§e[输入] ").clickEvent(ClickEvent.suggestCommand("/protect groupset " + cfg.name + " price ")))
+        );
+        p.sendMessage(Component.empty()
+                .append(Component.text("  §7点击§e[输入]§7后在聊天栏输入新值（支持中文/罗马数字）"))
+        );
+
+        // 最大领地数
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a最大领地数: §f" + cfg.maxLands + " "))
+                .append(Component.text("§a[+1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " maxlands " + (cfg.maxLands + 1))))
+                .append(Component.text("§c[-1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " maxlands " + Math.max(0, cfg.maxLands - 1))))
+                .append(Component.text("§e[输入] ").clickEvent(ClickEvent.suggestCommand("/protect groupset " + cfg.name + " maxlands ")))
+        );
+
+        // 优先级
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a优先级: §f" + cfg.priority + " "))
+                .append(Component.text("§a[+1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " priority " + (cfg.priority + 1))))
+                .append(Component.text("§c[-1] ").clickEvent(ClickEvent.runCommand("/protect groupset " + cfg.name + " priority " + Math.max(0, cfg.priority - 1))))
+                .append(Component.text("§e[输入] ").clickEvent(ClickEvent.suggestCommand("/protect groupset " + cfg.name + " priority ")))
+        );
+
+        p.sendMessage("");
+        // 返回按钮
+        p.sendMessage(Component.empty()
+                .append(Component.text("§c[返回用户组列表] "))
+                .hoverEvent(HoverEvent.showText(Component.text("§c返回用户组管理列表")))
+                .clickEvent(ClickEvent.runCommand("/protect grouplist"))
+        );
+        p.sendMessage(Component.text("§6§l─────────────────────────────────"));
     }
 
     private void showHelp(CommandSender s) {
