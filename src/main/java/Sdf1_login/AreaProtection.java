@@ -7258,10 +7258,74 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
                 return true;
             }
+            String newOwner = args[2];
             String oldOwner = ac.owner;
-            ac.owner = args[2];
+
+            // ★ 验证新所有者名格式
+            if (!newOwner.matches("^[a-zA-Z0-9_]{3,16}$")) {
+                sender.sendMessage("§c玩家名格式无效：仅允许英文字母、数字和下划线（3-16位）");
+                return true;
+            }
+            if (newOwner.equalsIgnoreCase(oldOwner)) {
+                sender.sendMessage("§c不能转让给自己");
+                return true;
+            }
+
+            // ★ 验证新所有者是否存在（login.db）
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr != null && !dbMgr.userExists(newOwner)) {
+                sender.sendMessage("§c玩家 §e" + newOwner + " §c尚未注册");
+                return true;
+            }
+
+            // ★ 执行转让
+            ac.owner = newOwner;
             saveAreaToDb(ac);
-            sender.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + args[2]);
+
+            // ★ 获取权限快照 + 追踪cooldown
+            if (plugin.webManager != null) {
+                String snapshot = getLandPermissionsSnapshot(areaName);
+                long expiresAt = System.currentTimeMillis() + 60000; // 60秒cooldown
+                WebManager.TransferInfo info = new WebManager.TransferInfo(
+                    areaName, oldOwner, newOwner, expiresAt, 0, 0, snapshot
+                );
+                plugin.webManager.trackTransfer(areaName, info);
+                // 通知PHP同步
+                plugin.webManager.requestImmediateLandSync();
+            }
+
+            sender.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + newOwner + "§a，§e60秒冷却期内可取消");
+            return true;
+        }
+
+        // ===== canceltransfer 取消过户 =====
+        if (sub.equals("canceltransfer")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (args.length < 2) {
+                sender.sendMessage("§e用法: /protect canceltransfer <领地>");
+                return true;
+            }
+            String areaName = resolveAreaName(args[1]);
+            if (areaName == null) {
+                sender.sendMessage("§c领地不存在: " + args[1]);
+                return true;
+            }
+            AreaConfig ac = areas.get(areaName);
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                sender.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
+
+            // ★ 查找并取消进行中的过户
+            if (plugin.webManager != null && plugin.webManager.cancelTransfer(areaName, p.getName())) {
+                sender.sendMessage("§a过户已取消，领地 §e" + areaName + " §a已恢复");
+            } else {
+                sender.sendMessage("§c没有可取消的过户（可能已过期或不存在）");
+            }
             return true;
         }
 
@@ -7684,6 +7748,37 @@ public class AreaProtection implements Listener {
             return id;
         } catch (SQLException e) {
             return -1;
+        }
+    }
+
+    /**
+     * 获取领地权限快照（用于过户cooldown期间检测权限变更）
+     * 返回JSON字符串，包含owner、members、visitors等关键字段
+     */
+    public String getLandPermissionsSnapshot(String landName) {
+        AreaConfig ac = areas.get(landName);
+        if (ac == null) return null;
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"owner\":\"").append(ac.owner != null ? ac.owner : "").append("\"");
+            // 成员列表（areaPlayerWhitelist）
+            sb.append(",\"members\":[");
+            Set<String> members = areaPlayerWhitelist.get(landName);
+            if (members != null && !members.isEmpty()) {
+                java.util.List<String> sorted = new java.util.ArrayList<>(members);
+                java.util.Collections.sort(sorted);
+                boolean first = true;
+                for (String m : sorted) {
+                    if (!first) sb.append(",");
+                    sb.append("\"").append(m).append("\"");
+                    first = false;
+                }
+            }
+            sb.append("]");
+            sb.append("}");
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
         }
     }
 

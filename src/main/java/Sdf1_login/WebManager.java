@@ -1622,6 +1622,10 @@ public class WebManager {
                         submitNormalDbTask("TimerA-pollAdminChanges", () -> {
                             try { pollAdminChanges(); } catch (Exception e) { /* 静默 */ }
                         });
+                        // ★ 过户cooldown检测：权限变更则取消过户
+                        submitNormalDbTask("TimerA-transferCancellations", () -> {
+                            try { handlePendingTransferCancellations(); } catch (Exception e) { /* 静默 */ }
+                        });
                     }
                     // ★ 异步玩家验证轮询：拉取PHP的pending_player_validations，验证后推回结果
                     if (initialSyncComplete) {
@@ -3400,6 +3404,30 @@ public class WebManager {
     /** 已处理过的变更ID集合（防重复打印），最多保留500条 */
     private final java.util.HashSet<Integer> processedChangeIds = new java.util.HashSet<>();
 
+    /** 进行中的过户追踪：key=landName, value=过户信息 */
+    private final Map<String, TransferInfo> activeLandTransfers = new HashMap<>();
+
+    public static class TransferInfo {
+        String landName;
+        String oldOwner;
+        String newOwner;
+        long expiresAt;       // cooldown到期时间戳(毫秒)
+        int changeId;         // web_admin_changes的id
+        int transferId;       // web_land_transfers的id
+        /** 过户发起时的领地权限快照（JSON），用于检测冷却期间是否被修改 */
+        String permissionsSnapshot;
+
+        TransferInfo(String landName, String oldOwner, String newOwner, long expiresAt, int changeId, int transferId, String permissionsSnapshot) {
+            this.landName = landName;
+            this.oldOwner = oldOwner;
+            this.newOwner = newOwner;
+            this.expiresAt = expiresAt;
+            this.changeId = changeId;
+            this.transferId = transferId;
+            this.permissionsSnapshot = permissionsSnapshot;
+        }
+    }
+
     public void pollAdminChanges() {
         if (!enabled) return;
 
@@ -3444,7 +3472,22 @@ public class WebManager {
                         case "owner_change": {
                             String newOwner = String.valueOf(changeData.getOrDefault("new_owner", ""));
                             String landName = targetName;
-                            if (!newOwner.isEmpty() && !landName.isEmpty()) {
+                            String source = String.valueOf(changeData.getOrDefault("source", ""));
+                            int transferId = ((Number) changeData.getOrDefault("transfer_id", 0)).intValue();
+
+                            if (newOwner.isEmpty() || landName.isEmpty()) break;
+
+                            if ("player_transfer".equals(source) && transferId > 0) {
+                                // ★ 玩家过户：需要验证新所有者 + cooldown + 回调PHP
+                                applied = handlePlayerTransfer(landName, newOwner, id, transferId, changeData);
+                            } else if ("transfer_cancelled".equals(source)) {
+                                // ★ 过户取消：回退owner
+                                areaProtect.setLandOwnerFromWeb(landName, newOwner);
+                                activeLandTransfers.remove(landName);
+                                plugin.getLogger().info("[Web通信] 过户取消回退: " + landName + " → " + newOwner);
+                                applied = true;
+                            } else {
+                                // ★ 管理面板改主：直接执行（管理员可信任）
                                 areaProtect.setLandOwnerFromWeb(landName, newOwner);
                                 plugin.getLogger().info("[Web通信] PHP端领地所有者变更: " + landName + " → " + newOwner);
                                 applied = true;
@@ -3537,6 +3580,152 @@ public class WebManager {
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 轮询PHP管理员变更异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 处理玩家过户请求：验证新所有者 → 通过则改DB+回调PHP → 追踪cooldown
+     */
+    private boolean handlePlayerTransfer(String landName, String newOwner, int changeId, int transferId, Map<String, Object> changeData) {
+        try {
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr == null) {
+                plugin.getLogger().warning("[过户] DatabaseManager不可用，无法验证玩家");
+                notifyTransferCallback(transferId, "failed", "服务端数据库不可用");
+                return false;
+            }
+
+            // ★ 验证新所有者是否存在
+            boolean exists = dbMgr.userExists(newOwner);
+            if (!exists) {
+                plugin.getLogger().info("[过户] 验证失败: 玩家 " + newOwner + " 不存在");
+                notifyTransferCallback(transferId, "failed", "玩家 " + newOwner + " 尚未注册");
+                return false;
+            }
+
+            // ★ 验证通过：改Java本地DB
+            AreaProtection areaProtect = plugin.getAreaProtection();
+            if (areaProtect == null) {
+                notifyTransferCallback(transferId, "failed", "防护模块不可用");
+                return false;
+            }
+
+            // 获取领地权限快照（用于cooldown期间检测变更）
+            String permSnapshot = areaProtect.getLandPermissionsSnapshot(landName);
+
+            areaProtect.setLandOwnerFromWeb(landName, newOwner);
+
+            // ★ 回调PHP：验证通过
+            notifyTransferCallback(transferId, "success", "");
+
+            // ★ 追踪cooldown
+            int cooldown = ((Number) changeData.getOrDefault("cooldown", 60)).intValue();
+            long expiresAt = System.currentTimeMillis() + (cooldown * 1000L);
+            activeLandTransfers.put(landName, new TransferInfo(
+                landName,
+                String.valueOf(changeData.getOrDefault("old_owner", "")),
+                newOwner,
+                expiresAt,
+                changeId,
+                transferId,
+                permSnapshot
+            ));
+
+            plugin.getLogger().info("[过户] 验证通过: " + landName + " → " + newOwner + "，cooldown " + cooldown + "秒");
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[过户] 处理过户异常: " + e.getMessage());
+            notifyTransferCallback(transferId, "failed", "服务端异常: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 通知PHP过户验证结果
+     */
+    private void notifyTransferCallback(int transferId, String result, String reason) {
+        try {
+            String url = webBaseUrl + "/api/land_api.php?action=transfer_callback&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                + "&transfer_id=" + transferId
+                + "&result=" + java.net.URLEncoder.encode(result, "UTF-8")
+                + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
+            // 用POST发送
+            String response = doPost(url, "{}");
+            plugin.getLogger().fine("[过户] 回调PHP: transfer_id=" + transferId + ", result=" + result);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[过户] 回调PHP失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 追踪过户（Java端发起时调用）
+     */
+    public void trackTransfer(String landName, TransferInfo info) {
+        activeLandTransfers.put(landName, info);
+    }
+
+    /**
+     * 取消过户：回退owner + 通知PHP
+     * @return true 如果有进行中的过户被取消
+     */
+    public boolean cancelTransfer(String landName, String operator) {
+        TransferInfo info = activeLandTransfers.remove(landName);
+        if (info == null) return false;
+
+        // 回退owner
+        AreaProtection areaProtect = plugin.getAreaProtection();
+        if (areaProtect != null) {
+            areaProtect.setLandOwnerFromWeb(landName, info.oldOwner);
+        }
+
+        // 通知PHP
+        if (info.transferId > 0) {
+            notifyTransferCallback(info.transferId, "failed", "玩家主动取消");
+        }
+
+        plugin.getLogger().info("[过户] " + operator + " 取消过户: " + landName + " → " + info.newOwner + "，已回退为 " + info.oldOwner);
+        return true;
+    }
+
+    /**
+     * 定期检查：cooldown期间如果领地权限被修改，则取消过户
+     * 由定时器每5秒调用一次
+     */
+    public void handlePendingTransferCancellations() {
+        if (activeLandTransfers.isEmpty()) return;
+
+        AreaProtection areaProtect = plugin.getAreaProtection();
+        if (areaProtect == null) return;
+
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<String, TransferInfo>> it = activeLandTransfers.entrySet().iterator();
+
+        while (it.hasNext()) {
+            Map.Entry<String, TransferInfo> entry = it.next();
+            TransferInfo info = entry.getValue();
+
+            // 检查cooldown是否已过
+            if (now >= info.expiresAt) {
+                // cooldown结束，过户完成
+                plugin.getLogger().info("[过户] 冷却完成: " + info.landName + " → " + info.newOwner);
+                it.remove();
+                continue;
+            }
+
+            // ★ 检查领地权限是否在cooldown期间被修改
+            String currentSnapshot = areaProtect.getLandPermissionsSnapshot(info.landName);
+            if (currentSnapshot != null && info.permissionsSnapshot != null && !currentSnapshot.equals(info.permissionsSnapshot)) {
+                // 权限被修改了，取消过户！
+                plugin.getLogger().info("[过户] 冷却期间权限被修改，取消过户: " + info.landName);
+
+                // 回退owner
+                areaProtect.setLandOwnerFromWeb(info.landName, info.oldOwner);
+
+                // 通知PHP取消（写admin_changes让PHP处理）
+                notifyTransferCallback(info.transferId, "failed", "冷却期间权限被修改");
+
+                it.remove();
+            }
         }
     }
 
