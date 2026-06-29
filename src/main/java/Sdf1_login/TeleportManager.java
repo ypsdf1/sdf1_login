@@ -2,10 +2,10 @@ package Sdf1_login;
 
 import org.bukkit.*;
 import org.bukkit.entity.Player;
-import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.sql.PreparedStatement;
@@ -16,6 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 传送系统管理器
  * 支持: tpa, tpaccept, tpdeny, tpauto, tpahere, tpaall, tpacancel, 无参tpa(面板)
+ * 
+ * 架构设计：
+ * - 基岩版(通过Geyser)：GUI面板交互，小屏友好
+ * - Java版：CLI命令行驱动交互，打字更直观
+ * - 登录联动：Java玩家登录时自动开启接受传送
  */
 public class TeleportManager {
     private final Main plugin;
@@ -33,9 +38,55 @@ public class TeleportManager {
     private final Map<String, Long> teleportCooldown = new ConcurrentHashMap<>();
     private static final long TELEPORT_COOLDOWN_MS = 30_000L; // 30秒冷却
     
+    // Inventory UUIDs currently open as teleport panels
+    private final Set<String> teleportPanelIds = ConcurrentHashMap.newKeySet();
+    
     // 数据库连接
     public TeleportManager(Main plugin) {
         this.plugin = plugin;
+    }
+    
+    // ==================== 判断玩家类型 ====================
+    
+    /**
+     * 判断是否为基岩版玩家（通过Geyser API）
+     * 如果Geyser插件不存在，默认返回false（Java版）
+     */
+    private boolean isBedrockPlayer(Player player) {
+        // 检查Geyser是否加载
+        Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-BungeeCord");
+        if (geyserPlugin != null && geyserPlugin.isEnabled()) {
+            try {
+                // 尝试调用Geyser API（BungeeCord版本通过API端点）
+                java.lang.reflect.Method isBedrockMethod = geyserPlugin.getClass()
+                    .getMethod("isBedrock", org.bukkit.entity.Player.class);
+                return (boolean) isBedrockMethod.invoke(geyserPlugin, player);
+            } catch (Exception e) {
+                // 降级：尝试Geyser Spigot API
+                try {
+                    Class<?> geomerAPI = Class.forName("org.geysermc.api.Geyser");
+                    java.lang.reflect.Method method = geomerAPI.getMethod("isBedrockPlayer", org.bukkit.entity.Player.class);
+                    return (boolean) method.invoke(null, player);
+                } catch (ClassNotFoundException ex) {
+                    // Geyser未加载
+                    return false;
+                } catch (Exception ex2) {
+                    // 调用失败，降级处理
+                    return false;
+                }
+            }
+        }
+        // 尝试检测Geyser Standalone（Spigot插件）
+        try {
+            Class<?> geomerAPI = Class.forName("org.geysermc.connector.GeysonAPI");
+            java.lang.reflect.Method method = geomerAPI.getMethod("isBedrockPlayer", org.bukkit.entity.Player.class);
+            return (boolean) method.invoke(null, player);
+        } catch (ClassNotFoundException | NoSuchMethodException e) {
+            // Geyser未加载
+        } catch (Exception e) {
+            // 调用失败
+        }
+        return false;
     }
     
     // ==================== 命令处理入口 ====================
@@ -45,13 +96,23 @@ public class TeleportManager {
      * @return true=已处理, false=未处理
      */
     public boolean handleCommand(Player player, String label, String[] args) {
+        String lowerLabel = label.toLowerCase();
+        
+        // ★ 根据玩家类型决定交互方式
+        boolean bedrock = isBedrockPlayer(player);
+        
         if (args.length == 0) {
-            // 无参数 → 打开传送面板
-            openTeleportPanel(player);
+            if (bedrock) {
+                // 基岩版：打开GUI面板
+                openTeleportPanel(player);
+            } else {
+                // Java版：CLI交互式提示
+                openCLITeleportMenu(player);
+            }
             return true;
         }
         
-        switch (label.toLowerCase()) {
+        switch (lowerLabel) {
             case "tpa":
                 return handleTPA(player, args[0]);
             case "tpaccept":
@@ -71,6 +132,80 @@ public class TeleportManager {
             default:
                 return false;
         }
+    }
+    
+    // ==================== CLI 交互菜单 ====================
+    
+    /**
+     * Java版：打开交互式CLI菜单
+     */
+    private void openCLITeleportMenu(Player player) {
+        String playerName = player.getName();
+        Set<String> senders = incomingRequests.get(playerName);
+        
+        if (senders == null || senders.isEmpty()) {
+            player.sendMessage("§a[传送] 你没有任何待处理的传送请求");
+            return;
+        }
+        
+        player.sendMessage("§6§l========== 待处理传送请求 ==========");
+        int index = 1;
+        for (String senderName : senders) {
+            Player senderPlayer = Bukkit.getServer().getPlayer(senderName);
+            boolean online = senderPlayer != null && senderPlayer.isOnline();
+            String status = online ? "§a[在线]" : "§c[离线]";
+            player.sendMessage("§e" + index + ". §f" + senderName + " §7" + status);
+            index++;
+        }
+        player.sendMessage("");
+        player.sendMessage("§7输入指令:");
+        player.sendMessage("§e/tpaccept <序号>     §7接受指定玩家的传送请求");
+        player.sendMessage("§e/tpdeny <序号>       §7拒绝指定玩家的传送请求");
+        player.sendMessage("§e/tpacancel           §7取消你发出的所有请求");
+        player.sendMessage("§6§l======================================");
+    }
+    
+    /**
+     * CLI版：接受指定序号的传送请求
+     * 内部调用，支持序号或玩家名
+     */
+    private boolean handleTPAcceptCLI(Player player, int index) {
+        Set<String> senders = incomingRequests.get(player.getName());
+        if (senders == null || senders.isEmpty()) {
+            player.sendMessage("§c[传送] 你没有待处理的传送请求");
+            return true;
+        }
+        
+        List<String> sendersList = new ArrayList<>(senders);
+        if (index < 1 || index > sendersList.size()) {
+            player.sendMessage("§c[传送] 无效的序号 " + index + "（共有 " + sendersList.size() + " 个请求）");
+            openCLITeleportMenu(player);
+            return true;
+        }
+        
+        String targetName = sendersList.get(index - 1);
+        return handleTPAccept(player, new String[]{targetName});
+    }
+    
+    /**
+     * CLI版：拒绝指定序号的传送请求
+     */
+    private boolean handleTPDenyCLI(Player player, int index) {
+        Set<String> senders = incomingRequests.get(player.getName());
+        if (senders == null || senders.isEmpty()) {
+            player.sendMessage("§c[传送] 你没有待处理的传送请求");
+            return true;
+        }
+        
+        List<String> sendersList = new ArrayList<>(senders);
+        if (index < 1 || index > sendersList.size()) {
+            player.sendMessage("§c[传送] 无效的序号 " + index + "（共有 " + sendersList.size() + " 个请求）");
+            openCLITeleportMenu(player);
+            return true;
+        }
+        
+        String targetName = sendersList.get(index - 1);
+        return handleTPDeny(player, new String[]{targetName});
     }
     
     // ==================== TPA - 传送到目标玩家 ====================
@@ -107,11 +242,41 @@ public class TeleportManager {
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         
+        // 通知发送者
         player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
+        
+        // ★ 通知接收者：A传送了B，等待B同意
         target.sendMessage("§e[传送] §f" + sender + " §e请求传送到你身边");
-        target.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
+        target.sendMessage("§7────────────────────");
+        target.sendMessage("§e【等待接受】§f" + sender + " §e已传送到你面前");
+        target.sendMessage("§7────────────────────");
+        target.sendMessage("§a使用 §e/tpaccept " + sender + " §a接受，§e/tpdeny " + sender + " §a拒绝");
+        
+        // 如果是Java版，提示目标玩家如何CLI接受
+        if (!isBedrockPlayer(target)) {
+            target.sendMessage("§7（输入 §e/tpaccept §7接受所有待处理请求）");
+        }
+        
+        // 自动接受检查
+        checkAutoAccept(targetName, sender);
         
         return true;
+    }
+    
+    // ==================== 自动接受检测 ====================
+    
+    private void checkAutoAccept(String targetName, String senderName) {
+        if (autoAcceptPlayers.contains(targetName)) {
+            Player target = Bukkit.getServer().getPlayer(targetName);
+            Player sender = Bukkit.getServer().getPlayer(senderName);
+            if (target != null && target.isOnline() && sender != null && sender.isOnline()) {
+                executeTeleport(sender, target);
+                plugin.getLogger().info("[传送] 玩家 " + targetName + " 开启了自动接受，已自动传送");
+            }
+            // 清理请求（自动接受了）
+            removeIncomingRequest(targetName, senderName);
+            removeOutgoingRequest(senderName, targetName);
+        }
     }
     
     // ==================== TPACCEPT - 接受传送 ====================
@@ -119,7 +284,16 @@ public class TeleportManager {
     private boolean handleTPAccept(Player player, String[] args) {
         String targetName = null;
         if (args.length > 0) {
-            targetName = args[0];
+            // 支持序号或玩家名
+            String arg = args[0];
+            try {
+                int index = Integer.parseInt(arg);
+                // CLI模式：使用序号
+                return handleTPAcceptCLI(player, index);
+            } catch (NumberFormatException e) {
+                // 玩家名字符串
+                targetName = arg;
+            }
         }
         
         if (targetName == null || targetName.isEmpty()) {
@@ -132,7 +306,12 @@ public class TeleportManager {
             if (senders.size() == 1) {
                 targetName = senders.iterator().next();
             } else {
-                openTeleportPanel(player);
+                // 基岩版打开GUI，Java版打开CLI菜单
+                if (isBedrockPlayer(player)) {
+                    openTeleportPanel(player);
+                } else {
+                    openCLITeleportMenu(player);
+                }
                 return true;
             }
         }
@@ -173,7 +352,14 @@ public class TeleportManager {
     private boolean handleTPDeny(Player player, String[] args) {
         String targetName = null;
         if (args.length > 0) {
-            targetName = args[0];
+            // 支持序号或玩家名
+            String arg = args[0];
+            try {
+                int index = Integer.parseInt(arg);
+                return handleTPDenyCLI(player, index);
+            } catch (NumberFormatException e) {
+                targetName = arg;
+            }
         }
         
         if (targetName == null || targetName.isEmpty()) {
@@ -186,7 +372,11 @@ public class TeleportManager {
             if (senders.size() == 1) {
                 targetName = senders.iterator().next();
             } else {
-                openTeleportPanel(player);
+                if (isBedrockPlayer(player)) {
+                    openTeleportPanel(player);
+                } else {
+                    openCLITeleportMenu(player);
+                }
                 return true;
             }
         }
@@ -261,6 +451,9 @@ public class TeleportManager {
         target.sendMessage("§e[传送] §f" + sender + " §e请求你传送到他身边");
         target.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
         
+        // 自动接受检查
+        checkAutoAccept(target.getName(), sender);
+        
         return true;
     }
     
@@ -297,6 +490,11 @@ public class TeleportManager {
             p.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
             
             count++;
+            
+            // 自动接受检查
+            if (autoAcceptPlayers.contains(name)) {
+                checkAutoAccept(name, sender);
+            }
         }
         
         player.sendMessage("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求");
@@ -336,54 +534,6 @@ public class TeleportManager {
         teleportCooldown.remove(sender);
     }
     
-    // ==================== TPACANCEL - 取消某个特定请求 ====================
-    
-    private void handleTPCancelSpecific(Player player, String targetName) {
-        String sender = player.getName();
-        Set<String> recipients = outgoingRequests.get(sender);
-        
-        if (recipients == null || !recipients.contains(targetName)) {
-            player.sendMessage("§c[传送] 没有向 §f" + targetName + " §c发送的请求");
-            return;
-        }
-        
-        recipients.remove(targetName);
-        if (recipients.isEmpty()) {
-            outgoingRequests.remove(sender);
-        }
-        
-        Set<String> senders = incomingRequests.get(targetName);
-        if (senders != null) {
-            senders.remove(sender);
-            if (senders.isEmpty()) {
-                incomingRequests.remove(targetName);
-            }
-        }
-        
-        Player targetPlayer = Bukkit.getServer().getPlayer(targetName);
-        if (targetPlayer != null && targetPlayer.isOnline()) {
-            targetPlayer.sendMessage("§c[传送] §f" + sender + " §c取消了给你的传送请求");
-        }
-        
-        player.sendMessage("§a[传送] 已取消向 §f" + targetName + " §a的传送请求");
-    }
-    
-    // ==================== 自动接受传送请求 ====================
-    
-    /**
-     * 处理收到的新传送请求（如果目标是auto模式则自动接受）
-     */
-    public void onIncomingRequest(String targetName, String senderName) {
-        if (autoAcceptPlayers.contains(targetName)) {
-            Player target = Bukkit.getServer().getPlayer(targetName);
-            Player sender = Bukkit.getServer().getPlayer(senderName);
-            if (target != null && target.isOnline() && sender != null && sender.isOnline()) {
-                executeTeleport(sender, target);
-                plugin.getLogger().info("[传送] 玩家 " + targetName + " 开启了自动接受，已自动传送");
-            }
-        }
-    }
-    
     // ==================== 执行传送 ====================
     
     private void executeTeleport(Player from, Player to) {
@@ -398,10 +548,8 @@ public class TeleportManager {
         from.getWorld().playEffect(from.getLocation(), Effect.ENDER_SIGNAL, 0);
     }
     
-    // Inventory UUIDs currently open as teleport panels
-    private final Set<String> teleportPanels = ConcurrentHashMap.newKeySet();
-    
-    // ==================== 传送面板 ====================
+    // ==================== 传送面板 (GUI) ====================
+    // 仅基岩版玩家使用
     
     private void openTeleportPanel(Player player) {
         Set<String> senders = incomingRequests.get(player.getName());
@@ -412,12 +560,14 @@ public class TeleportManager {
         
         // 创建GUI面板（最多9个请求）
         int rows = Math.min((senders.size() + 8) / 9, 6);
-        // 使用Inventory UUID做唯一标识（需配合InventoryCloseEvent清理）
-        int inventoryId = teleportPanels.size() + 1;
-        teleportPanels.add("tp_panel_" + inventoryId);
+        // 使用Inventory UUID做唯一标识
+        String panelId = "tp_gui_" + System.currentTimeMillis() + "_" + player.getUniqueId();
+        teleportPanelIds.add(panelId);
         
         // 创建实际Inventory
         Inventory inv = Bukkit.createInventory(null, rows * 9, "§6§l待处理传送请求");
+        
+        // 填充玻璃板
         ItemStack glass = createGlassPane();
         for (int i = 0; i < inv.getSize(); i++) {
             inv.setItem(i, glass);
@@ -452,7 +602,6 @@ public class TeleportManager {
                 
                 // 添加PotionMeta设置皮肤（如果有在线玩家）
                 if (senderPlayer != null && senderPlayer.isOnline()) {
-                    // 使用玩家头像（Spigot 1.12+ 支持）
                     meta.setDisplayName("§e" + senderPlayer.getName() + " §a(在线)");
                     item.setItemMeta(meta);
                 }
@@ -482,13 +631,6 @@ public class TeleportManager {
         inv.setItem(inv.getSize() - 2, back);
         
         player.openInventory(inv);
-    }
-    
-    /**
-     * 关闭面板时清理UUID注册
-     */
-    public void onPanelClosed(String panelId) {
-        teleportPanels.remove(panelId);
     }
     
     // ==================== GUI点击处理 ====================
