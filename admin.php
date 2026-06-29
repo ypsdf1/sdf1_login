@@ -2445,7 +2445,7 @@ async function adminTransferLand(name, currentOwner) {
         const res = await fetch('api/land_api.php?action=update_land_owner', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&admin_token=' + (admToken||'')
+            body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&secret=sdf1_web_comm_2026_ypshidifu'
         });
         const d = await res.json();
         if (d.success && d.pending) {

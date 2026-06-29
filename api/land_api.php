@@ -92,7 +92,7 @@ try {
     // 同步类action只接受secret验证（Java端推送）
     $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
-    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups', 'transfer_land_admin'];
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups'];
     // 玩家端action：需要token
     $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
@@ -125,6 +125,8 @@ try {
             // 没有admin_token，尝试secret
             echo json_encode(['success' => false, 'error' => '需要管理员认证']);
             exit;
+        } else {
+            $isAdmin = true;
         }
     } elseif (in_array($action, $playerActions) || in_array($action, $playerPermActions) || in_array($action, $memberPermActions) || in_array($action, $playerFieldActions)) {
         // 玩家端：需要token
@@ -204,11 +206,6 @@ try {
         // ===== 管理面板：更新领地所有者（含过户冷却机制）=====
         case 'update_land_owner':
             handleUpdateLandOwner($db, $_POST);
-            break;
-
-        // ===== 管理面板：领地过户（管理员专用，带冷却机制）=====
-        case 'transfer_land_admin':
-            handleTransferLandAdmin($db, $_POST);
             break;
 
         // ===== 管理面板：删除权限商品 =====
