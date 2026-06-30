@@ -1738,9 +1738,9 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
-        // ★ 传送联动：登录阶段自动开启接受传送
+        // ★ 传送联动：登录阶段自动开启接受传送（基岩版玩家跳过）
         if (teleportMgr != null) {
-            teleportMgr.onPlayerLogin(name);
+            teleportMgr.onPlayerLogin(p);
         }
 
         // ★ 玩家加入时立即允许登录轮询（不等全量同步完成）
@@ -3913,7 +3913,7 @@ public class Main extends JavaPlugin
         }
         
         // ===== 传送面板 =====
-        if (title.equals("§6§l待处理传送请求") && teleportMgr != null) {
+        if (title.equals("§6§l传送系统") && teleportMgr != null) {
             teleportMgr.onInventoryClick(e);
             return;
         }
