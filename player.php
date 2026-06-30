@@ -273,6 +273,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="lands" onclick="switchPage('lands')">🏡 领地管理</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
+            <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
         </div>
 
@@ -1038,6 +1039,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'lands') renderLands(c);
         else if (page === 'cdk') renderCDK(c);
         else if (page === 'balance') renderBalance(c);
+        else if (page === 'groups') renderGroups(c);
         else if (page === 'account') renderAccount(c);
         else if (page === 'ticket') renderTicket(c);
     }
@@ -1399,6 +1401,178 @@ if ($currentVersion !== $BUILD_VERSION) {
             }
         } catch(e) {
             document.getElementById('balanceResult').innerHTML = '<div class="card" style="border-color:var(--red)">查询失败: '+e.message+'</div>';
+        }
+    }
+
+    // ===== 用户组 =====
+    function renderGroups(el) {
+        if (!currentPlayer || (!AUTHENTICATED && NEED_PASSWORD)) {
+            el.innerHTML = '<div class="card"><h2>👥 用户组</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">请先登录游戏</p></div></div>';
+            return;
+        }
+        el.innerHTML = `
+            <div class="card">
+                <h2>👥 用户组</h2>
+                <div id="myGroupsResult" style="margin-top:12px"><div style="color:var(--dim);font-size:13px">加载中...</div></div>
+            </div>
+            <div class="card">
+                <h2>🛒 可购买的用户组</h2>
+                <div id="availableGroupsResult" style="margin-top:12px"><div style="color:var(--dim);font-size:13px">加载中...</div></div>
+            </div>`;
+        loadMyGroups();
+        loadAvailableGroups();
+    }
+
+    async function loadMyGroups() {
+        const div = document.getElementById('myGroupsResult');
+        try {
+            const res = await api('land_api.php', {action: 'get_player_groups', player: currentPlayer, token: TOKEN});
+            if (!res.success) { div.innerHTML = `<div style="color:var(--red);font-size:13px">${res.error || '加载失败'}</div>`; return; }
+            const groups = res.groups || [];
+            if (groups.length === 0) {
+                div.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 0">你还没有加入任何用户组</div>';
+                return;
+            }
+            let html = '';
+            groups.forEach(g => {
+                const now = Math.floor(Date.now() / 1000);
+                const expiry = parseInt(g.expiry_time) || 0;
+                let statusHtml = '';
+                let colorStyle = g.display_color ? g.display_color.replace(/§/g, '') : '';
+                // 将MC颜色代码转为CSS
+                const mcColors = {'0':'#000','1':'#00a','2':'#0a0','3':'#0aa','4':'#a00','5':'#a0a','6':'#fa0','7':'#aaa','8':'#555','9':'#55f','a':'#5f5','b':'#5ff','c':'#f55','d':'#f5f','e':'#ff5','f':'#fff'};
+                const mcBold = {'l':'font-weight:bold;'};
+                let cssColor = '';
+                let cssBold = '';
+                for (let i = 0; i < colorStyle.length; i++) {
+                    if (mcColors[colorStyle[i]]) cssColor = mcColors[colorStyle[i]];
+                    if (colorStyle[i] === 'l') cssBold = 'font-weight:bold;';
+                }
+                const displayName = g.display_name || g.group_name;
+                const displayNameHtml = `<span style="color:${cssColor};${cssBold}">${displayName}</span>`;
+
+                // 格式化有效期
+                const durMin = parseInt(g.duration_minutes) || 0;
+                let durStr = '';
+                if (durMin > 0) {
+                    durStr = durMin >= 1440 ? '有效期:' + Math.floor(durMin/1440) + '天' : '有效期:' + Math.floor(durMin/60) + '小时' + (durMin%60 ? ' '+(durMin%60)+'分钟' : '');
+                } else {
+                    durStr = '永久有效';
+                }
+                const homeLimit = g.home_limit != null ? g.home_limit : '默认';
+                const landPrice = parseInt(g.land_price_per_sqm) !== -1 ? g.land_price_per_sqm : -1;
+
+                if (expiry > 0) {
+                    const left = expiry - now;
+                    if (left <= 0) {
+                        statusHtml = '<span style="color:var(--red);font-size:12px">已过期</span>';
+                    } else {
+                        const days = Math.floor(left / 86400);
+                        const hours = Math.floor((left % 86400) / 3600);
+                        const mins = Math.floor((left % 3600) / 60);
+                        let timeStr = '';
+                        if (days > 0) timeStr += days + '天';
+                        if (hours > 0) timeStr += hours + '小时';
+                        timeStr += mins + '分钟';
+                        statusHtml = `<span style="color:var(--green);font-size:12px">剩余 ${timeStr}</span>`;
+                        if (g.auto_renew == 1) statusHtml += ' <span style="color:var(--purple);font-size:11px">[自动续费]</span>';
+                    }
+                } else {
+                    statusHtml = '<span style="color:var(--dim);font-size:12px">永久</span>';
+                }
+
+                let renewBtn = '';
+                if (expiry > 0 && expiry - now < 86400 && parseInt(g.renew_price) > 0) {
+                    renewBtn = ` <button class="btn btn-blue" style="font-size:11px;padding:3px 8px;margin-left:8px" onclick="doRenewGroup('${g.group_name}')">续费 ${g.renew_price}张</button>`;
+                }
+
+                html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);gap:8px;flex-wrap:wrap">
+                    <div>
+                        ${displayNameHtml}
+                        <div style="font-size:11px;color:var(--dim);margin-top:4px">
+                            ${durStr} · Home:${homeLimit} · 领地${landPrice === -1 ? '默认' : '('+landPrice+'张/格'+String.fromCharCode(178)+')'} · 加入${parseInt(g.join_price)>0?(g.join_price+'张'):((g.auto_renew==1?'可续费':'免费'))}
+                        </div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px">${statusHtml}${renewBtn}</div>
+                </div>`;
+            });
+            div.innerHTML = html;
+        } catch(e) {
+            div.innerHTML = `<div style="color:var(--red);font-size:13px">加载失败: ${e.message}</div>`;
+        }
+    }
+
+    async function loadAvailableGroups() {
+        const div = document.getElementById('availableGroupsResult');
+        window._availGroupsMap = window._availGroupsMap || {};
+        try {
+            const res = await api('land_api.php', {action: 'list_available_groups', token: TOKEN});
+            if (!res.success) { div.innerHTML = `<div style="color:var(--red);font-size:13px">${res.error || '加载失败'}</div>`; return; }
+            const groups = res.groups || [];
+            // Cache for buy dialog display
+            groups.forEach(g => { window._availGroupsMap[g.group_name] = g; });
+            if (groups.length === 0) {
+                div.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 0">暂无可购买的用户组</div>';
+                return;
+            }
+            let html = '<div class="grid">';
+            groups.forEach(g => {
+                const mcColors = {'0':'#000','1':'#00a','2':'#0a0','3':'#0aa','4':'#a00','5':'#a0a','6':'#fa0','7':'#aaa','8':'#555','9':'#55f','a':'#5f5','b':'#5ff','c':'#f55','d':'#f5f','e':'#ff5','f':'#fff'};
+                const colorCode = (g.display_color || '§f').replace(/§/g, '');
+                let cssColor = '#fff';
+                for (let i = 0; i < colorCode.length; i++) { if (mcColors[colorCode[i]]) cssColor = mcColors[colorCode[i]]; }
+                const dur = parseInt(g.duration_minutes) || 0;
+                let durStr = dur >= 1440 ? Math.floor(dur/1440) + '天' : dur >= 60 ? Math.floor(dur/60) + '小时' : dur + '分钟';
+                html += `<div class="item-card" style="border-color:var(--border)">
+                    <div style="display:flex;justify-content:space-between;align-items:start">
+                        <div class="name" style="color:${cssColor}">${g.display_emoji || ''} ${g.display_name || g.group_name}</div>
+                        <div class="price" style="color:var(--green);font-weight:600">${g.join_price}张</div>
+                    </div>
+                    <div style="color:var(--dim);font-size:12px;margin-top:6px">有效期: ${durStr} · Home:${g.home_limit || 0} · 续费:${g.renew_price}张</div>
+                    <div style="margin-top:10px"><button class="btn btn-blue" style="width:100%" onclick="doBuyGroup('${g.group_name}')">购买加入</button></div>
+                </div>`;
+            });
+            html += '</div>';
+            div.innerHTML = html;
+        } catch(e) {
+            div.innerHTML = `<div style="color:var(--red);font-size:13px">加载失败: ${e.message}</div>`;
+        }
+    }
+
+    async function doBuyGroup(groupName) {
+        const g = window._availGroupsMap?.[groupName];
+        const price = g ? g.join_price + ' 张债券' : '（价格未知）';
+        const dur = g ? (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时') : '未知';
+        if (!confirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`)) return;
+        try {
+            const res = await api('land_api.php', {action: 'buy_group', group: groupName, player: currentPlayer, token: TOKEN});
+            if (res.success) {
+                alert(res.message || '加入成功');
+                loadMyGroups();
+                loadAvailableGroups();
+            } else {
+                alert(res.error || '加入失败');
+            }
+        } catch(e) {
+            alert('请求失败: ' + e.message);
+        }
+    }
+
+    async function doRenewGroup(groupName) {
+        const g = window._availGroupsMap?.[groupName];
+        const price = g ? (parseInt(g.renew_price) > 0 ? g.renew_price + ' 张债券' : '免费') : '未知';
+        const dur = g && g.duration_minutes ? (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时') : '由用户组配置决定';
+        if (!confirm(`确认续费用户组「${g ? (g.display_name || groupName) : groupName}」？\n续费价格: ${price}\n延长有效期: ${dur}\n将从债券余额扣费。`)) return;
+        try {
+            const res = await api('land_api.php', {action: 'renew_group', group: groupName, player: currentPlayer, token: TOKEN});
+            if (res.success) {
+                alert(res.message || '续费请求已提交');
+                loadMyGroups();
+            } else {
+                alert(res.error || '续费失败');
+            }
+        } catch(e) {
+            alert('请求失败: ' + e.message);
         }
     }
 

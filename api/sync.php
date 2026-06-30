@@ -146,7 +146,8 @@ function checkPlayerRegistered() {
     }
     try {
         $db = getDB();
-        $stmt = $db->prepare("SELECT player_name, password_hash, salt, email, register_time, last_login_time, points, gift_stage, total_online_time, ip_address FROM users WHERE LOWER(player_name)=LOWER(:name) LIMIT 1");
+        // ★ 只查players_name，因为users表可能只有这两个字段
+        $stmt = $db->prepare("SELECT player_name, register_time, last_login_time, email, points, gift_stage, total_online_time FROM users WHERE LOWER(player_name)=LOWER(:name) LIMIT 1");
         $stmt->bindValue(':name', mb_strtolower($player, 'UTF-8'), SQLITE3_TEXT);
         $res = $stmt->execute();
         $row = $res->fetchArray(SQLITE3_ASSOC);
@@ -157,15 +158,15 @@ function checkPlayerRegistered() {
         $userInfo = [
             'registered' => true,
             'player_name' => $row['player_name'],
-            'password_hash' => $row['password_hash'] ?? '',
-            'salt' => $row['salt'] ?? '',
+            'password_hash' => '', // users表无密码字段，留空
+            'salt' => '',
             'email' => $row['email'] ?? null,
             'register_time' => $row['register_time'] ?? 0,
             'last_login_time' => $row['last_login_time'] ?? 0,
             'points' => $row['points'] ?? 0,
             'gift_stage' => $row['gift_stage'] ?? 0,
             'total_online_time' => $row['total_online_time'] ?? 0,
-            'ip_address' => $row['ip_address'] ?? null,
+            'ip_address' => null,
         ];
         success($userInfo);
     } catch (\Throwable $e) {
@@ -775,16 +776,42 @@ function syncUserGroups() {
         priority INTEGER DEFAULT 0,
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
         default_perms TEXT DEFAULT '{}',
         synced_at INTEGER DEFAULT 0
     )");
 
+    // 迁移：添加新列（如果缺失）
+    $columns = [];
+    $rs = $db->query("PRAGMA table_info(web_user_groups)");
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $columns[] = $row['name'];
+    }
+    $migrations = [
+        'home_limit' => 'ALTER TABLE web_user_groups ADD COLUMN home_limit INTEGER DEFAULT 0',
+        'join_price' => 'ALTER TABLE web_user_groups ADD COLUMN join_price INTEGER DEFAULT 0',
+        'auto_renew' => 'ALTER TABLE web_user_groups ADD COLUMN auto_renew INTEGER DEFAULT 0',
+        'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
+        'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
+    ];
+    foreach ($migrations as $col => $sql) {
+        if (!in_array($col, $columns)) {
+            try { $db->exec($sql); } catch (\Throwable $e) { /* 已存在 */ }
+        }
+    }
+
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
-         land_price_per_sqm, max_lands, default_perms, synced_at)
+         land_price_per_sqm, max_lands, home_limit, join_price, auto_renew,
+         renew_price, duration_minutes, default_perms, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
-                :price, :maxlands, :perms, :synced)");
+                :price, :maxlands, :homelimit, :joinprice, :autorenew,
+                :renewprice, :duration, :perms, :synced)");
     $count = 0;
     foreach ($groups as $g) {
         $stmt->bindValue(':name', $g['group_name'] ?? '', SQLITE3_TEXT);
@@ -794,6 +821,11 @@ function syncUserGroups() {
         $stmt->bindValue(':priority', (int)($g['priority'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':price', (int)($g['land_price_per_sqm'] ?? -1), SQLITE3_INTEGER);
         $stmt->bindValue(':maxlands', (int)($g['max_lands'] ?? -1), SQLITE3_INTEGER);
+        $stmt->bindValue(':homelimit', (int)($g['home_limit'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':joinprice', (int)($g['join_price'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':autorenew', (int)($g['auto_renew'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':renewprice', (int)($g['renew_price'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':duration', (int)($g['duration_minutes'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':perms', $g['default_perms'] ?? '{}', SQLITE3_TEXT);
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
         $stmt->execute();
@@ -995,24 +1027,10 @@ function syncTransactions() {
 
 // ===== 插件推送注册数据 =====
 function syncLogin() {
-    // ★ 支持两种认证：token 或 SECRET_KEY（防止token注册超时导致同步失败）
-    $token = getParam('token');
+    // ★ 纯secret认证（不依赖token，避免token过期/已使用导致同步失败）
     $secret = getParam('secret');
-
-    if ($token) {
-        $tokenInfo = validateToken($token);
-        if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
-            // token无效时，检查是否携带了secret
-            if ($secret && $secret === SECRET_KEY) {
-                // secret有效，继续执行
-            } else {
-                error('同步需要管理权限token或SECRET_KEY');
-            }
-        }
-    } elseif ($secret) {
-        if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
-    } else {
-        error('同步需要token或SECRET_KEY');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('同步需要SECRET_KEY验证', 403);
     }
 
     $users = getParam('users');

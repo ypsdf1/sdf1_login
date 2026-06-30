@@ -2681,6 +2681,32 @@ function showAddUserGroup() {
                 <input id="ugMaxLands" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=跟随默认)</label>
+                <input id="ugHomeLimit" type="number" value="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">有效期(分钟, 0=永久)</label>
+                <input id="ugDuration" type="number" value="0" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">加入价格(债券, 0=免费)</label>
+                <input id="ugJoinPrice" type="number" value="0" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">续费价格(债券, 0=免费)</label>
+                <input id="ugRenewPrice" type="number" value="0" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
+        <div style="margin-bottom:10px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);cursor:pointer">
+                <input type="checkbox" id="ugAutoRenew" style="accent-color:#4caf50;width:14px;height:14px">
+                启用自动续费（到期时从债券余额扣除续费价格自动延长）
+            </label>
+        </div>
         <button onclick="doAddUserGroup()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">创建用户组</button>
     </div>`;
     showModal('新建用户组', '', null, html);
@@ -2693,6 +2719,11 @@ async function doAddUserGroup() {
     const priority = document.getElementById('ugPriority')?.value || '0';
     const price = document.getElementById('ugPrice')?.value || '-1';
     const maxLands = document.getElementById('ugMaxLands')?.value || '-1';
+    const homeLimit = document.getElementById('ugHomeLimit')?.value || '0';
+    const joinPrice = document.getElementById('ugJoinPrice')?.value || '0';
+    const renewPrice = document.getElementById('ugRenewPrice')?.value || '0';
+    const duration = document.getElementById('ugDuration')?.value || '0';
+    const autoRenew = document.getElementById('ugAutoRenew')?.checked ? '1' : '0';
 
     if (!name || !/^[a-zA-Z0-9_]{2,20}$/.test(name)) {
         glassAlert('组ID仅允许英文字母、数字和下划线，2-20位');
@@ -2703,6 +2734,8 @@ async function doAddUserGroup() {
         const res = await apiCall('update_user_group', {
             name, display_name: displayName, display_color: color,
             priority, land_price_per_sqm: price, max_lands: maxLands,
+            home_limit: homeLimit, join_price: joinPrice, renew_price: renewPrice,
+            duration_minutes: duration, auto_renew: autoRenew,
             default_perms: '{}'
         }, 'POST');
         if (res.success) {
@@ -2746,6 +2779,24 @@ async function showEditUserGroup(groupName) {
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">最大领地数</label>
             <input id="eugMaxLands" type="number" value="${g.max_lands}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=默认)</label>
+            <input id="eugHomeLimit" type="number" value="${g.home_limit || 0}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">有效期(分钟, 0=永久)</label>
+            <input id="eugDuration" type="number" value="${g.duration_minutes || 0}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">加入价格(债券)</label>
+            <input id="eugJoinPrice" type="number" value="${g.join_price || 0}" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">续费价格(债券)</label>
+            <input id="eugRenewPrice" type="number" value="${g.renew_price || 0}" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
+        html += `<div style="margin-bottom:12px">
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);cursor:pointer">
+                <input type="checkbox" id="eugAutoRenew" ${g.auto_renew == 1 ? 'checked' : ''} style="accent-color:#4caf50;width:14px;height:14px">
+                启用自动续费
+            </label>
+        </div>`;
         // 默认权限列表
         html += `<div style="margin-bottom:12px"><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:6px">默认权限</label>`;
         html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px">';
@@ -2772,6 +2823,11 @@ async function doEditUserGroup(groupName) {
     const priority = document.getElementById('eugPriority')?.value || '0';
     const price = document.getElementById('eugPrice')?.value || '-1';
     const maxLands = document.getElementById('eugMaxLands')?.value || '-1';
+    const homeLimit = document.getElementById('eugHomeLimit')?.value || '0';
+    const duration = document.getElementById('eugDuration')?.value || '0';
+    const joinPrice = document.getElementById('eugJoinPrice')?.value || '0';
+    const renewPrice = document.getElementById('eugRenewPrice')?.value || '0';
+    const autoRenew = document.getElementById('eugAutoRenew')?.checked ? '1' : '0';
 
     // 收集权限
     const perms = {};
@@ -2783,6 +2839,8 @@ async function doEditUserGroup(groupName) {
         const res = await apiCall('update_user_group', {
             name: groupName, display_name: displayName, display_color: color,
             priority, land_price_per_sqm: price, max_lands: maxLands,
+            home_limit: homeLimit, duration_minutes: duration,
+            join_price: joinPrice, renew_price: renewPrice, auto_renew: autoRenew,
             default_perms: JSON.stringify(perms)
         }, 'POST');
         if (res.success) {

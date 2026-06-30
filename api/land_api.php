@@ -94,7 +94,7 @@ try {
     // 管理面板action：支持admin_token或secret
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups'];
     // 玩家端action：需要token
-    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status'];
+    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
     $playerFieldActions = ['update_land_field'];
     // ★ 玩家端权限操作action
@@ -274,6 +274,21 @@ try {
         // ===== 玩家端：查询过户状态 =====
         case 'transfer_status':
             handleTransferStatus($db, $playerName, $_GET['land'] ?? '');
+            break;
+
+        // ===== 玩家端：查看可购买的用户组 =====
+        case 'list_available_groups':
+            handleListAvailableGroups($db);
+            break;
+
+        // ===== 玩家端：付费加入用户组 =====
+        case 'buy_group':
+            handleBuyGroup($db, $playerName, $_POST + $_GET);
+            break;
+
+        // ===== 玩家端：续费用户组 =====
+        case 'renew_group':
+            handleRenewGroup($db, $playerName, $_POST + $_GET);
             break;
 
         // ===== 玩家端：获取访客权限 =====
@@ -1755,9 +1770,33 @@ function handleListUserGroups($db) {
         priority INTEGER DEFAULT 0,
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
         default_perms TEXT DEFAULT '{}',
         synced_at INTEGER DEFAULT 0
     )");
+    // 迁移：添加新列
+    $columns = [];
+    $rs = $db->query("PRAGMA table_info(web_user_groups)");
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $columns[] = $row['name'];
+    }
+    $migrations = [
+        'home_limit' => 'ALTER TABLE web_user_groups ADD COLUMN home_limit INTEGER DEFAULT 0',
+        'join_price' => 'ALTER TABLE web_user_groups ADD COLUMN join_price INTEGER DEFAULT 0',
+        'auto_renew' => 'ALTER TABLE web_user_groups ADD COLUMN auto_renew INTEGER DEFAULT 0',
+        'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
+        'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
+    ];
+    foreach ($migrations as $col => $sql) {
+        if (!in_array($col, $columns)) {
+            try { $db->exec($sql); } catch (\Throwable $e) { /* 已存在 */ }
+        }
+    }
+
     $rs = $db->query("SELECT * FROM web_user_groups ORDER BY priority DESC");
     $groups = [];
     while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
@@ -1788,6 +1827,11 @@ function handleUpdateUserGroup($db, $data) {
         priority INTEGER DEFAULT 0,
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
         default_perms TEXT DEFAULT '{}',
         synced_at INTEGER DEFAULT 0
     )");
@@ -1798,13 +1842,18 @@ function handleUpdateUserGroup($db, $data) {
     $priority = (int)($data['priority'] ?? 0);
     $pricePerSqm = (int)($data['land_price_per_sqm'] ?? -1);
     $maxLands = (int)($data['max_lands'] ?? -1);
+    $homeLimit = (int)($data['home_limit'] ?? 0);
+    $joinPrice = (int)($data['join_price'] ?? 0);
+    $renewPrice = (int)($data['renew_price'] ?? 0);
+    $durationMinutes = (int)($data['duration_minutes'] ?? 0);
+    $autoRenew = (int)($data['auto_renew'] ?? 0);
     $defaultPerms = $data['default_perms'] ?? '{}';
 
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
-         land_price_per_sqm, max_lands, default_perms, synced_at)
+         land_price_per_sqm, max_lands, home_limit, join_price, auto_renew, renew_price, duration_minutes, default_perms, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
-                :price, :maxlands, :perms, :synced)");
+                :price, :maxlands, :homeLimit, :joinPrice, :autoRenew, :renewPrice, :duration, :perms, :synced)");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':display', $displayName, SQLITE3_TEXT);
     $stmt->bindValue(':color', $displayColor, SQLITE3_TEXT);
@@ -1812,6 +1861,11 @@ function handleUpdateUserGroup($db, $data) {
     $stmt->bindValue(':priority', $priority, SQLITE3_INTEGER);
     $stmt->bindValue(':price', $pricePerSqm, SQLITE3_INTEGER);
     $stmt->bindValue(':maxlands', $maxLands, SQLITE3_INTEGER);
+    $stmt->bindValue(':homeLimit', $homeLimit, SQLITE3_INTEGER);
+    $stmt->bindValue(':joinPrice', $joinPrice, SQLITE3_INTEGER);
+    $stmt->bindValue(':autoRenew', $autoRenew, SQLITE3_INTEGER);
+    $stmt->bindValue(':renewPrice', $renewPrice, SQLITE3_INTEGER);
+    $stmt->bindValue(':duration', $durationMinutes, SQLITE3_INTEGER);
     $stmt->bindValue(':perms', $defaultPerms, SQLITE3_TEXT);
     $stmt->bindValue(':synced', time(), SQLITE3_INTEGER);
     $stmt->execute();
@@ -2004,7 +2058,8 @@ function handleGetPlayerGroups($db, $player) {
         expiry_time INTEGER DEFAULT 0,
         PRIMARY KEY(player_name, group_name)
     )");
-    $stmt = $db->prepare("SELECT m.*, g.display_name, g.display_color, g.priority
+    $stmt = $db->prepare("SELECT m.*, g.display_name, g.display_color, g.priority,
+        g.join_price, g.renew_price, g.auto_renew, g.duration_minutes, g.home_limit
         FROM web_user_group_members m
         LEFT JOIN web_user_groups g ON m.group_name = g.group_name
         WHERE m.player_name = :player");
@@ -2015,6 +2070,187 @@ function handleGetPlayerGroups($db, $player) {
         $groups[] = $row;
     }
     echo json_encode(['success' => true, 'groups' => $groups]);
+}
+
+/**
+ * 玩家端：查看可购买的用户组
+ */
+function handleListAvailableGroups($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
+    )");
+    // 返回开放付费加入的用户组（join_price > 0）
+    $rs = $db->query("SELECT group_name, display_name, display_color, display_emoji,
+        join_price, renew_price, duration_minutes
+        FROM web_user_groups WHERE join_price > 0 ORDER BY priority DESC");
+    $groups = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $groups[] = $row;
+    }
+    echo json_encode(['success' => true, 'groups' => $groups], JSON_UNESCAPED_UNICODE);
+}
+
+/**
+ * 玩家端：付费加入用户组（写入web_admin_changes，Java轮询拉取执行）
+ */
+function handleBuyGroup($db, $player, $data) {
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => '缺少玩家名或用户组名']);
+        return;
+    }
+
+    // 检查用户组是否存在且开放付费加入
+    $stmt = $db->prepare("SELECT * FROM web_user_groups WHERE group_name = :group");
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $cfg = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$cfg) {
+        echo json_encode(['success' => false, 'error' => '用户组不存在: ' . $group]);
+        return;
+    }
+    if ((int)$cfg['join_price'] <= 0) {
+        echo json_encode(['success' => false, 'error' => '该用户组不开放付费加入']);
+        return;
+    }
+    if ((int)$cfg['duration_minutes'] <= 0) {
+        echo json_encode(['success' => false, 'error' => '该用户组配置异常（有效时长未设置）']);
+        return;
+    }
+
+    // 检查该玩家是否已在组内
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $stmt2 = $db->prepare("SELECT * FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
+    $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt2->bindValue(':group', $group, SQLITE3_TEXT);
+    $rs2 = $stmt2->execute();
+    $member = $rs2->fetchArray(SQLITE3_ASSOC);
+    if ($member) {
+        echo json_encode(['success' => false, 'error' => '你已在该用户组中']);
+        return;
+    }
+
+    // 写入 web_admin_changes 等待Java拉取执行
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT 0,
+            processed_at INTEGER DEFAULT 0
+        )");
+        $now = time();
+        $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_buy', :id, :name, :data, :time)");
+        $stmt3->bindValue(':id', $group, SQLITE3_TEXT);
+        $stmt3->bindValue(':name', $player, SQLITE3_TEXT);
+        $stmt3->bindValue(':data', json_encode([
+            'action' => 'buy',
+            'group_name' => $group,
+            'player' => $player,
+            'join_price' => (int)$cfg['join_price'],
+            'duration_minutes' => (int)$cfg['duration_minutes']
+        ], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt3->bindValue(':time', $now, SQLITE3_INTEGER);
+        $stmt3->execute();
+        echo json_encode(['success' => true, 'message' => '购买请求已提交，请在游戏中确认扣费']);
+    } catch (\Throwable $e) {
+        echo json_encode(['success' => false, 'error' => '购买请求写入失败: ' . $e->getMessage()]);
+    }
+}
+
+/**
+ * 玩家端：续费用户组（写入web_admin_changes，Java轮询拉取执行）
+ */
+function handleRenewGroup($db, $player, $data) {
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => '缺少玩家名或用户组名']);
+        return;
+    }
+
+    // 检查该玩家是否在该组内
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $stmt = $db->prepare("SELECT * FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $rs = $stmt->execute();
+    $member = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$member) {
+        echo json_encode(['success' => false, 'error' => '你不在该用户组中']);
+        return;
+    }
+
+    // 获取用户组配置
+    $stmt2 = $db->prepare("SELECT * FROM web_user_groups WHERE group_name = :group");
+    $stmt2->bindValue(':group', $group, SQLITE3_TEXT);
+    $rs2 = $stmt2->execute();
+    $cfg = $rs2->fetchArray(SQLITE3_ASSOC);
+    if (!$cfg || (int)$cfg['renew_price'] <= 0) {
+        echo json_encode(['success' => false, 'error' => '该用户组不支持续费']);
+        return;
+    }
+
+    // 写入 web_admin_changes 等待Java拉取执行
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT 0,
+            processed_at INTEGER DEFAULT 0
+        )");
+        $now = time();
+        $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+            VALUES ('group_renew', :id, :name, :data, :time)");
+        $stmt3->bindValue(':id', $group, SQLITE3_TEXT);
+        $stmt3->bindValue(':name', $player, SQLITE3_TEXT);
+        $stmt3->bindValue(':data', json_encode([
+            'action' => 'renew',
+            'group_name' => $group,
+            'player' => $player,
+            'renew_price' => (int)$cfg['renew_price'],
+            'duration_minutes' => (int)$cfg['duration_minutes']
+        ], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt3->bindValue(':time', $now, SQLITE3_INTEGER);
+        $stmt3->execute();
+        echo json_encode(['success' => true, 'message' => '续费请求已提交，请在游戏中确认扣费']);
+    } catch (\Throwable $e) {
+        echo json_encode(['success' => false, 'error' => '续费请求写入失败: ' . $e->getMessage()]);
+    }
 }
 
 // ==================== 领地过户功能 ====================
