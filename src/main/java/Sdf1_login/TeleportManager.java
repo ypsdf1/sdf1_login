@@ -717,87 +717,63 @@ public class TeleportManager implements Listener {
     }
     
     // ==================== 传送面板 (GUI) ====================
-    // 仅基岩版玩家使用
-    
+    // 仅基岩版玩家使用 — 三级导航
+
     /**
-     * 基岩版GUI面板：完整操作（在线玩家传送、incoming接受/拒绝、自动接收开关、全服传送）
+     * Level 1 — 主面板（27格）
+     * slot 0: 进入玩家列表
+     * slot 1: incoming数量
+     * slot 3: 自动接收开关
+     * slot 4: 全服传送
+     * slot 5: 取消已发出请求
+     * slot 8: 关闭
      */
     private void openTeleportPanel(Player player) {
         String playerName = player.getName();
         Set<String> incoming = incomingRequests.get(playerName);
         boolean autoAccept = autoAcceptPlayers.contains(playerName);
-        
-        // 行数：在线玩家 + incoming + 功能按钮
-        Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
-        List<Player> others = new ArrayList<>();
-        for (Player p : onlinePlayers) {
-            if (!p.getName().equals(playerName)) others.add(p);
-        }
-        
-        int neededSlots = others.size() + (incoming != null ? incoming.size() : 0) + 4; // +4 for functional buttons
-        int rows = Math.max(1, Math.min((neededSlots + 8) / 9, 6));
-        int totalSlots = rows * 9;
-        
-        String panelId = "tp_gui_" + System.currentTimeMillis() + "_" + player.getUniqueId();
-        teleportPanelIds.add(panelId);
-        
-        Inventory inv = Bukkit.createInventory(null, totalSlots, "§6§l传送系统");
-        
+        int incomingCount = (incoming != null) ? incoming.size() : 0;
+
+        Inventory inv = Bukkit.createInventory(null, 27, "§6§l传送系统");
+
         // 玻璃板填充
         ItemStack glass = createGlassPane();
-        for (int i = 0; i < totalSlots; i++) {
-            inv.setItem(i, glass);
+        for (int i = 0; i < 27; i++) inv.setItem(i, glass);
+
+        // slot 0: 玩家列表入口
+        ItemStack listBtn = new ItemStack(Material.PLAYER_HEAD);
+        ItemMeta listMeta = listBtn.getItemMeta();
+        if (listMeta != null) {
+            listMeta.setDisplayName("§e§l玩家列表");
+            listMeta.setLore(Arrays.asList(
+                "",
+                "§7点击查看所有在线玩家",
+                "§7并发起传送请求"
+            ));
+            listBtn.setItemMeta(listMeta);
         }
-        
-        int slot = 0;
-        
-        // ── 在线玩家区（左键tpa，右键tpahere） ──
-        if (!others.isEmpty()) {
-            for (Player p : others) {
-                if (slot >= totalSlots - 9) break; // 留最后1行给功能按钮
-                ItemStack head = new ItemStack(Material.PLAYER_HEAD);
-                ItemMeta meta = head.getItemMeta();
-                if (meta != null) {
-                    boolean bedrock = isBedrockPlayer(p);
-                    meta.setDisplayName("§e" + p.getName() + (bedrock ? " §7[基岩]" : " §7[Java]"));
-                    meta.setLore(Arrays.asList(
-                        "",
-                        "§a左键: 请求传送到他身边",
-                        "§d右键: 请求他传送到你身边"
-                    ));
-                    head.setItemMeta(meta);
-                }
-                inv.setItem(slot, head);
-                slot++;
+        inv.setItem(0, listBtn);
+
+        // slot 1: incoming请求
+        ItemStack incomingBtn = new ItemStack(incomingCount > 0 ? Material.LIME_WOOL : Material.GRAY_WOOL);
+        ItemMeta incomingMeta = incomingBtn.getItemMeta();
+        if (incomingMeta != null) {
+            incomingMeta.setDisplayName("§a📥 待处理请求: " + incomingCount);
+            if (incomingCount > 0) {
+                List<String> lore = new ArrayList<>();
+                lore.add("");
+                for (String s : incoming) lore.add("§7• " + s);
+                lore.add("");
+                lore.add("§a请前往玩家列表处理");
+                incomingMeta.setLore(lore);
+            } else {
+                incomingMeta.setLore(Arrays.asList("§7暂无待处理的传送请求"));
             }
+            incomingBtn.setItemMeta(incomingMeta);
         }
-        
-        // ── Incoming请求区 ──
-        if (incoming != null && !incoming.isEmpty()) {
-            for (String senderName : incoming) {
-                if (slot >= totalSlots - 9) break;
-                ItemStack head = new ItemStack(Material.PLAYER_HEAD);
-                ItemMeta meta = head.getItemMeta();
-                if (meta != null) {
-                    Player senderPlayer = Bukkit.getServer().getPlayer(senderName);
-                    boolean online = senderPlayer != null && senderPlayer.isOnline();
-                    meta.setDisplayName("§a📥 " + senderName + (online ? " §7[在线]" : " §7[离线]"));
-                    meta.setLore(Arrays.asList(
-                        "",
-                        "§a左键: 接受传送",
-                        "§c右键: 拒绝传送"
-                    ));
-                    head.setItemMeta(meta);
-                }
-                inv.setItem(slot, head);
-                slot++;
-            }
-        }
-        
-        // ── 功能按钮区（最后1行） ──
-        int funcStart = totalSlots - 9;
-        
-        // 自动接收开关
+        inv.setItem(1, incomingBtn);
+
+        // slot 3: 自动接收开关
         ItemStack autoItem = new ItemStack(autoAccept ? Material.LIME_WOOL : Material.RED_WOOL);
         ItemMeta autoMeta = autoItem.getItemMeta();
         if (autoMeta != null) {
@@ -805,9 +781,9 @@ public class TeleportManager implements Listener {
             autoMeta.setLore(Arrays.asList("§7点击切换"));
             autoItem.setItemMeta(autoMeta);
         }
-        inv.setItem(funcStart, autoItem);
-        
-        // 全服传送
+        inv.setItem(3, autoItem);
+
+        // slot 4: 全服传送
         ItemStack tpaAllItem = new ItemStack(Material.NETHER_STAR);
         ItemMeta tpaAllMeta = tpaAllItem.getItemMeta();
         if (tpaAllMeta != null) {
@@ -815,9 +791,9 @@ public class TeleportManager implements Listener {
             tpaAllMeta.setLore(Arrays.asList("§7请求所有玩家传送到你身边"));
             tpaAllItem.setItemMeta(tpaAllMeta);
         }
-        inv.setItem(funcStart + 1, tpaAllItem);
-        
-        // 取消已发出的请求
+        inv.setItem(4, tpaAllItem);
+
+        // slot 5: 取消已发出请求
         Set<String> outgoing = outgoingRequests.get(playerName);
         boolean hasOutgoing = outgoing != null && !outgoing.isEmpty();
         ItemStack cancelItem = new ItemStack(hasOutgoing ? Material.BARRIER : Material.GRAY_DYE);
@@ -829,17 +805,240 @@ public class TeleportManager implements Listener {
             }
             cancelItem.setItemMeta(cancelMeta);
         }
-        inv.setItem(funcStart + 2, cancelItem);
-        
-        // 关闭面板
+        inv.setItem(5, cancelItem);
+
+        // slot 8: 关闭
         ItemStack close = new ItemStack(Material.ARROW);
         ItemMeta closeMeta = close.getItemMeta();
         if (closeMeta != null) {
             closeMeta.setDisplayName("§7关闭面板");
             close.setItemMeta(closeMeta);
         }
-        inv.setItem(totalSlots - 1, close);
-        
+        inv.setItem(8, close);
+
+        player.openInventory(inv);
+    }
+
+    /**
+     * Level 2 — 玩家列表（27格，25人/页，slot 18和26翻页）
+     * slot 0-17, 19-25: 玩家头颅（最多25个）
+     * slot 18: 上一页
+     * slot 26: 下一页
+     */
+    private void openPlayerListPanel(Player player, int page) {
+        String playerName = player.getName();
+
+        // 收集除自己外的在线玩家
+        List<Player> others = new ArrayList<>();
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!p.getName().equals(playerName)) others.add(p);
+        }
+
+        // 加入incoming请求者（可能已离线但请求仍在）
+        Set<String> incoming = incomingRequests.get(playerName);
+        Map<String, Boolean> incomingOnlineMap = new HashMap<>();
+        if (incoming != null) {
+            for (String s : incoming) {
+                Player sp = Bukkit.getServer().getPlayer(s);
+                incomingOnlineMap.put(s, sp != null && sp.isOnline());
+                // 不重复添加已在线的
+                boolean alreadyIn = false;
+                for (Player op : others) {
+                    if (op.getName().equals(s)) { alreadyIn = true; break; }
+                }
+                // 离线的incoming请求者也加入列表
+                if (!alreadyIn) {
+                    // 用虚拟方式标记：不加入others，仅在incoming区显示
+                }
+            }
+        }
+
+        int totalPlayers = others.size();
+        int perPage = 25;
+        int totalPages = Math.max(1, (int) Math.ceil((double) totalPlayers / perPage));
+        if (page < 0) page = 0;
+        if (page >= totalPages) page = totalPages - 1;
+
+        Inventory inv = Bukkit.createInventory(null, 27, "§6§l传送系统");
+
+        // 玻璃板填充
+        ItemStack glass = createGlassPane();
+        for (int i = 0; i < 27; i++) inv.setItem(i, glass);
+
+        // 放置玩家头颅 — slot 0-17, 19-25（跳过18和26）
+        int[] headSlots = new int[25];
+        int idx = 0;
+        for (int s = 0; s < 27; s++) {
+            if (s == 18 || s == 26) continue;
+            headSlots[idx++] = s;
+        }
+
+        int start = page * perPage;
+        int end = Math.min(start + perPage, totalPlayers);
+        for (int i = start; i < end; i++) {
+            Player p = others.get(i);
+            int slot = headSlots[i - start];
+            boolean bedrock = isBedrockPlayer(p);
+            boolean hasIncoming = incoming != null && incoming.contains(p.getName());
+
+            ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+            ItemMeta meta = head.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName("§e" + p.getName() + (bedrock ? " §7[基岩]" : " §7[Java]"));
+                List<String> lore = new ArrayList<>();
+                lore.add("");
+                if (hasIncoming) {
+                    lore.add("§a📥 该玩家向你发起了传送请求");
+                    lore.add("");
+                    lore.add("§a左键: 请求传送到他身边");
+                    lore.add("§d右键: 请求他传送到你身边");
+                } else {
+                    lore.add("§a左键: 请求传送到他身边");
+                    lore.add("§d右键: 请求他传送到你身边");
+                }
+                meta.setLore(lore);
+                head.setItemMeta(meta);
+            }
+            inv.setItem(slot, head);
+        }
+
+        // 空位提示
+        if (totalPlayers == 0) {
+            ItemStack empty = new ItemStack(Material.BARRIER);
+            ItemMeta emptyMeta = empty.getItemMeta();
+            if (emptyMeta != null) {
+                emptyMeta.setDisplayName("§7暂无其他玩家在线");
+                empty.setItemMeta(emptyMeta);
+            }
+            inv.setItem(12, empty);
+        }
+
+        // slot 18: 上一页
+        ItemStack prevBtn = new ItemStack(page > 0 ? Material.ARROW : Material.GRAY_DYE);
+        ItemMeta prevMeta = prevBtn.getItemMeta();
+        if (prevMeta != null) {
+            prevMeta.setDisplayName(page > 0
+                ? "§e§l← 上一页 (§f" + (page + 1) + "§e/§f" + totalPages + "§e)"
+                : "§7已经是第一页");
+            if (page > 0) prevMeta.setLore(Arrays.asList("§7点击翻到上一页"));
+            prevBtn.setItemMeta(prevMeta);
+        }
+        inv.setItem(18, prevBtn);
+
+        // slot 26: 下一页
+        ItemStack nextBtn = new ItemStack(page < totalPages - 1 ? Material.ARROW : Material.GRAY_DYE);
+        ItemMeta nextMeta = nextBtn.getItemMeta();
+        if (nextMeta != null) {
+            nextMeta.setDisplayName(page < totalPages - 1
+                ? "§e§l下一页 (§f" + (page + 1) + "§e/§f" + totalPages + "§e) →"
+                : "§7已经是最后一页");
+            if (page < totalPages - 1) nextMeta.setLore(Arrays.asList("§7点击翻到下一页"));
+            nextBtn.setItemMeta(nextMeta);
+        }
+        inv.setItem(26, nextBtn);
+
+        player.openInventory(inv);
+    }
+
+    /**
+     * Level 3 — 玩家操作面板（9格）
+     * 点击某个玩家后进入
+     */
+    private void openPlayerActionPanel(Player player, String targetName) {
+        Inventory inv = Bukkit.createInventory(null, 9, "§6§l传送系统");
+
+        ItemStack glass = createGlassPane();
+        for (int i = 0; i < 9; i++) inv.setItem(i, glass);
+
+        // slot 0: 目标玩家头颅
+        Player target = Bukkit.getServer().getPlayer(targetName);
+        ItemStack head = new ItemStack(Material.PLAYER_HEAD);
+        ItemMeta headMeta = head.getItemMeta();
+        if (headMeta != null) {
+            boolean bedrock = target != null && isBedrockPlayer(target);
+            headMeta.setDisplayName("§e" + targetName + (bedrock ? " §7[基岩]" : " §7[Java]"));
+            boolean online = target != null && target.isOnline();
+            headMeta.setLore(Arrays.asList(
+                "",
+                online ? "§a● 在线" : "§c● 离线"
+            ));
+            head.setItemMeta(headMeta);
+        }
+        inv.setItem(0, head);
+
+        // 检查是否有来自该玩家的incoming请求
+        Set<String> incoming = incomingRequests.get(player.getName());
+        boolean hasIncoming = incoming != null && incoming.contains(targetName);
+
+        // slot 3: 请求传送到他身边（左键tpa）
+        ItemStack tpaItem = new ItemStack(Material.ENDER_PEARL);
+        ItemMeta tpaMeta = tpaItem.getItemMeta();
+        if (tpaMeta != null) {
+            tpaMeta.setDisplayName("§a请求传送到他身边");
+            tpaMeta.setLore(Arrays.asList(
+                "§7向 " + targetName + " 发送传送请求",
+                "§7请求传送到他的位置"
+            ));
+            tpaItem.setItemMeta(tpaMeta);
+        }
+        inv.setItem(3, tpaItem);
+
+        // slot 4: 请求他传送到你身边（右键tpahere）
+        ItemStack tpaHereItem = new ItemStack(Material.COMPASS);
+        ItemMeta tpaHereMeta = tpaHereItem.getItemMeta();
+        if (tpaHereMeta != null) {
+            tpaHereMeta.setDisplayName("§d请求他传送到你身边");
+            tpaHereMeta.setLore(Arrays.asList(
+                "§7向 " + targetName + " 发送传送请求",
+                "§7请求他传送到你的位置"
+            ));
+            tpaHereItem.setItemMeta(tpaHereMeta);
+        }
+        inv.setItem(4, tpaHereItem);
+
+        // slot 5: 接受/拒绝该玩家的请求（如果有）
+        if (hasIncoming) {
+            ItemStack acceptItem = new ItemStack(Material.LIME_WOOL);
+            ItemMeta acceptMeta = acceptItem.getItemMeta();
+            if (acceptMeta != null) {
+                acceptMeta.setDisplayName("§a✓ 接受传送");
+                acceptMeta.setLore(Arrays.asList(
+                    "§7接受 " + targetName + " 的传送请求"
+                ));
+                acceptItem.setItemMeta(acceptMeta);
+            }
+            inv.setItem(5, acceptItem);
+
+            ItemStack denyItem = new ItemStack(Material.RED_WOOL);
+            ItemMeta denyMeta = denyItem.getItemMeta();
+            if (denyMeta != null) {
+                denyMeta.setDisplayName("§c✗ 拒绝传送");
+                denyMeta.setLore(Arrays.asList(
+                    "§7拒绝 " + targetName + " 的传送请求"
+                ));
+                denyItem.setItemMeta(denyMeta);
+            }
+            inv.setItem(6, denyItem);
+        }
+
+        // slot 7: 返回玩家列表
+        ItemStack backBtn = new ItemStack(Material.ARROW);
+        ItemMeta backMeta = backBtn.getItemMeta();
+        if (backMeta != null) {
+            backMeta.setDisplayName("§7← 返回玩家列表");
+            backBtn.setItemMeta(backMeta);
+        }
+        inv.setItem(7, backBtn);
+
+        // slot 8: 关闭
+        ItemStack close = new ItemStack(Material.BARRIER);
+        ItemMeta closeMeta = close.getItemMeta();
+        if (closeMeta != null) {
+            closeMeta.setDisplayName("§7关闭面板");
+            close.setItemMeta(closeMeta);
+        }
+        inv.setItem(8, close);
+
         player.openInventory(inv);
     }
     
@@ -851,77 +1050,190 @@ public class TeleportManager implements Listener {
         if (!"§6§l传送系统".equals(viewTitle)) {
             return;
         }
-        
-        // 调试日志
-        plugin.getLogger().info("[传送GUI] 点击事件到达! title=" + viewTitle + " slot=" + event.getRawSlot() + " cancelled=" + event.isCancelled());
-        
+
         Inventory panel = event.getInventory();
         if (panel == null) return;
-        
+
         event.setCancelled(true);
         Player player = (Player) event.getWhoClicked();
         int slot = event.getSlot();
         int totalSize = panel.getSize();
-        
-        // 关闭面板（右下角）
-        if (slot == totalSize - 1) {
-            player.closeInventory();
+
+        if (slot < 0) return; // 玩家背包区域
+
+        // ── 27格面板：区分 Level 1（主面板）和 Level 2（玩家列表） ──
+        if (totalSize == 27) {
+            // Level 2 特征：slot 18 是箭头/灰色染料 → 翻页按钮
+            ItemStack slot18 = panel.getItem(18);
+            if (slot18 != null && (slot18.getType() == Material.ARROW || slot18.getType() == Material.GRAY_DYE)
+                    && slot18.hasItemMeta() && slot18.getItemMeta().hasDisplayName()
+                    && (slot18.getItemMeta().getDisplayName().contains("上一页") || slot18.getItemMeta().getDisplayName().contains("第一页"))) {
+                handlePlayerListClick(event, player, panel, slot);
+            } else {
+                handleMainPanelClick(event, player, slot);
+            }
             return;
         }
-        
-        // 功能按钮区（最后1行的前几个）
-        int funcStart = totalSize - 9;
-        if (slot >= funcStart && slot < funcStart + 3) {
-            if (slot == funcStart) {
-                // 自动接收开关
+
+        // ── 9格面板：Level 3（玩家操作面板） ──
+        if (totalSize == 9) {
+            handlePlayerActionClick(event, player, panel, slot);
+            return;
+        }
+    }
+
+    /**
+     * Level 1 主面板点击处理
+     */
+    private void handleMainPanelClick(InventoryClickEvent event, Player player, int slot) {
+        switch (slot) {
+            case 0: // 进入玩家列表
+                event.setCancelled(true);
+                openPlayerListPanel(player, 0);
+                break;
+            case 1: // incoming请求提示（不可操作）
+                event.setCancelled(true);
+                break;
+            case 3: // 自动接收开关
+                event.setCancelled(true);
                 handleTPAuto(player);
-                player.closeInventory();
-                // 重新打开面板刷新状态
                 openTeleportPanel(player);
-            } else if (slot == funcStart + 1) {
-                // 全服传送
+                break;
+            case 4: // 全服传送
+                event.setCancelled(true);
                 handleTPAll(player);
                 player.closeInventory();
-            } else if (slot == funcStart + 2) {
-                // 取消已发出的请求
+                break;
+            case 5: // 取消已发出请求
+                event.setCancelled(true);
                 handleTPCancel(player);
-                player.closeInventory();
                 openTeleportPanel(player);
+                break;
+            case 8: // 关闭
+                event.setCancelled(true);
+                player.closeInventory();
+                break;
+            default:
+                event.setCancelled(true);
+                break;
+        }
+    }
+
+    /**
+     * Level 2 玩家列表点击处理
+     */
+    private void handlePlayerListClick(InventoryClickEvent event, Player player, Inventory panel, int slot) {
+        event.setCancelled(true);
+
+        // slot 18: 上一页
+        if (slot == 18) {
+            int currentPage = extractPageFromArrow(panel.getItem(18));
+            if (currentPage > 0) {
+                openPlayerListPanel(player, currentPage - 1);
             }
             return;
         }
-        
-        // 玩家头颅点击
-        if (slot >= 0 && slot < funcStart) {
-            ItemStack item = event.getCurrentItem();
+
+        // slot 26: 下一页
+        if (slot == 26) {
+            int currentPage = extractPageFromArrow(panel.getItem(18));
+            int totalPages = extractTotalPagesFromArrow(panel.getItem(26));
+            if (currentPage < totalPages - 1) {
+                openPlayerListPanel(player, currentPage + 1);
+            }
+            return;
+        }
+
+        // 其他slot: 玩家头颅
+        if (slot >= 0 && slot < 27 && slot != 18 && slot != 26) {
+            ItemStack item = panel.getItem(slot);
             if (item == null || item.getType() != Material.PLAYER_HEAD) return;
-            
+
             ItemMeta meta = item.getItemMeta();
-            String displayName = (meta != null && meta.hasDisplayName()) ? meta.getDisplayName() : "";
-            
-            // 提取玩家名（从显示名中解析）
+            if (meta == null || !meta.hasDisplayName()) return;
+            String displayName = meta.getDisplayName();
+
+            // 排除纯玻璃板/空项
             String pName = extractPlayerName(displayName);
             if (pName == null || pName.equals(player.getName())) return;
-            
-            if (displayName.contains("§a📥")) {
-                // Incoming请求：左键接受，右键拒绝
-                if (event.isLeftClick()) {
-                    handleTPAccept(player, new String[]{pName});
-                } else if (event.isRightClick()) {
-                    handleTPDeny(player, new String[]{pName});
-                }
-            } else {
-                // 在线玩家：左键tpa（传送到他），右键tpahere（他传来）
-                if (event.isLeftClick()) {
-                    handleTPA(player, pName);
-                } else if (event.isRightClick()) {
-                    handleTPAH(player, pName);
-                }
-            }
-            
-            player.closeInventory();
-            openTeleportPanel(player);
+
+            // 进入该玩家的操作面板
+            openPlayerActionPanel(player, pName);
         }
+    }
+
+    /**
+     * Level 3 玩家操作面板点击处理
+     */
+    private void handlePlayerActionClick(InventoryClickEvent event, Player player, Inventory panel, int slot) {
+        event.setCancelled(true);
+
+        // 从 slot 0 的头颅名提取目标玩家
+        ItemStack headItem = panel.getItem(0);
+        if (headItem == null) return;
+        ItemMeta headMeta = headItem.getItemMeta();
+        if (headMeta == null || !headMeta.hasDisplayName()) return;
+        String targetName = extractPlayerName(headMeta.getDisplayName());
+        if (targetName == null) return;
+
+        switch (slot) {
+            case 3: // 请求传送到他身边（tpa）
+                handleTPA(player, targetName);
+                player.closeInventory();
+                break;
+            case 4: // 请求他传送到你身边（tpahere）
+                handleTPAH(player, targetName);
+                player.closeInventory();
+                break;
+            case 5: // 接受传送（incoming）
+                handleTPAccept(player, new String[]{targetName});
+                player.closeInventory();
+                break;
+            case 6: // 拒绝传送（incoming）
+                handleTPDeny(player, new String[]{targetName});
+                player.closeInventory();
+                break;
+            case 7: // 返回玩家列表
+                openPlayerListPanel(player, 0);
+                break;
+            case 8: // 关闭
+                player.closeInventory();
+                break;
+            default:
+                break;
+        }
+    }
+
+    /**
+     * 从翻页箭头的显示名提取当前页码（从1开始）
+     * 格式: "§e§l← 上一页 (§f2§e/§f5§e)"
+     */
+    private int extractPageFromArrow(ItemStack arrow) {
+        if (arrow == null || !arrow.hasItemMeta()) return 0;
+        ItemMeta meta = arrow.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return 0;
+        String name = meta.getDisplayName();
+        // 提取第一个括号中的数字: (§f2§e/§f5§e)
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\(§f(\\d+)§e/§f(\\d+)§e\\)").matcher(name);
+        if (m.find()) {
+            return Integer.parseInt(m.group(1)) - 1; // 转为0-indexed
+        }
+        return 0;
+    }
+
+    /**
+     * 从下一页箭头提取总页数
+     */
+    private int extractTotalPagesFromArrow(ItemStack arrow) {
+        if (arrow == null || !arrow.hasItemMeta()) return 1;
+        ItemMeta meta = arrow.getItemMeta();
+        if (meta == null || !meta.hasDisplayName()) return 1;
+        String name = meta.getDisplayName();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\(§f(\\d+)§e/§f(\\d+)§e\\)").matcher(name);
+        if (m.find()) {
+            return Integer.parseInt(m.group(2));
+        }
+        return 1;
     }
     
     /**
