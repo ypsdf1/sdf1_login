@@ -7,6 +7,9 @@ import net.kyori.adventure.text.format.NamedTextColor;
 
 import org.bukkit.*;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -26,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * - Java版：CLI命令行驱动交互 + 可点击消息按钮
  * - 登录联动：玩家登录时自动开启接受传送
  */
-public class TeleportManager {
+public class TeleportManager implements Listener {
     private final Main plugin;
     
     // 玩家发出的待处理传送请求 (发件人 → 收件人集合)
@@ -111,12 +114,23 @@ public class TeleportManager {
         
         // ★ 需要面板的命令（tpa无参=打开面板，tpaccept无参=选择接受，tpdeny无参=选择拒绝）
         if (args.length == 0) {
-            if (bedrock) {
-                openTeleportPanel(player);
-            } else {
-                openCLITeleportMenu(player);
+            switch (lowerLabel) {
+                case "tpa":
+                    // 只有/tpa无参才区分Java/基岩面板
+                    if (bedrock) {
+                        openTeleportPanel(player);
+                    } else {
+                        openCLITeleportMenu(player);
+                    }
+                    return true;
+                case "tpaccept":
+                case "tpdeny":
+                    // 这两个无参都走CLI（基岩版玩家也用传统指令）
+                    openCLITeleportMenu(player);
+                    return true;
+                default:
+                    break;
             }
-            return true;
         }
         
         switch (lowerLabel) {
@@ -381,9 +395,20 @@ public class TeleportManager {
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         
-        // 通知发送者
-        player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
-        player.sendMessage("§7等待对方 §e/tpaccept §7或 §e/tpdeny §7处理");
+        // 通知发送者（Java版带撤回按钮，基岩版纯文本）
+        if (isBedrockPlayer(player)) {
+            player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
+            player.sendMessage("§7使用 §e/tpacancel §7撤回请求");
+        } else {
+            player.sendMessage(Component.empty()
+                .append(Component.text("§a[传送] 已向 §f" + targetName + " §a发送传送请求"))
+            );
+            player.sendMessage(Component.empty()
+                .append(Component.text("§7等待对方处理 "))
+                .append(Component.text("§c[撤回]")
+                    .clickEvent(ClickEvent.runCommand("/tpacancel"))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击撤回传送请求")))));
+        }
         
         // 通知接收者（可点击消息）
         sendClickableRequestNotice(target, sender);
@@ -569,8 +594,20 @@ public class TeleportManager {
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         
-        player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送到身边的请求");
-        player.sendMessage("§7等待对方 §e/tpaccept §7或 §e/tpdeny §7处理");
+        // 通知发送者
+        if (isBedrockPlayer(player)) {
+            player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送到身边的请求");
+            player.sendMessage("§7使用 §e/tpacancel §7撤回请求");
+        } else {
+            player.sendMessage(Component.empty()
+                .append(Component.text("§a[传送] 已向 §f" + targetName + " §a发送传送到身边的请求"))
+            );
+            player.sendMessage(Component.empty()
+                .append(Component.text("§7等待对方处理 "))
+                .append(Component.text("§c[撤回]")
+                    .clickEvent(ClickEvent.runCommand("/tpacancel"))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击撤回传送请求")))));
+        }
         
         // 可点击通知
         sendClickableTPAHNotice(target, sender);
@@ -795,10 +832,15 @@ public class TeleportManager {
     
     // ==================== GUI点击处理 ====================
     
-    public void onInventoryClick(org.bukkit.event.inventory.InventoryClickEvent event) {
-        if (!"§6§l传送系统".equals(event.getView().getTitle())) {
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        String viewTitle = event.getView().getTitle();
+        if (!"§6§l传送系统".equals(viewTitle)) {
             return;
         }
+        
+        // 调试日志
+        plugin.getLogger().info("[传送GUI] 点击事件到达! title=" + viewTitle + " slot=" + event.getRawSlot() + " cancelled=" + event.isCancelled());
         
         Inventory panel = event.getInventory();
         if (panel == null) return;

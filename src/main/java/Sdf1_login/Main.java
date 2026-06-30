@@ -543,6 +543,7 @@ public class Main extends JavaPlugin
         
         // ===== 传送系统 =====
         teleportMgr = new TeleportManager(this);
+        getServer().getPluginManager().registerEvents(teleportMgr, this);
         
         // 注册传送命令执行器和Tab补全
         getCommand("tpa").setExecutor(this);
@@ -3915,11 +3916,6 @@ public class Main extends JavaPlugin
             }
         }
         
-        // ===== 传送面板 =====
-        if (title.equals("§6§l传送系统") && teleportMgr != null) {
-            teleportMgr.onInventoryClick(e);
-            return;
-        }
     }
 
             /*
