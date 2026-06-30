@@ -16,6 +16,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -552,12 +553,15 @@ public class TeleportManager implements Listener {
     // ==================== TPAUTO - 自动接受传送 ====================
     
     private void handleTPAuto(Player player) {
-        if (autoAcceptPlayers.contains(player.getName())) {
-            autoAcceptPlayers.remove(player.getName());
+        String name = player.getName();
+        if (autoAcceptPlayers.contains(name)) {
+            autoAcceptPlayers.remove(name);
+            removeAutoAcceptFromDB(name);
             player.sendMessage("§a[传送] 已关闭自动接受传送请求");
         } else {
-            autoAcceptPlayers.add(player.getName());
-            player.sendMessage("§a[传送] 已开启自动接受传送请求（新加入的玩家默认开启）");
+            autoAcceptPlayers.add(name);
+            saveAutoAcceptToDB(name);
+            player.sendMessage("§a[传送] 已开启自动接受传送请求");
         }
     }
     
@@ -640,6 +644,19 @@ public class TeleportManager implements Listener {
             String name = p.getName();
             if (name.equalsIgnoreCase(sender)) continue;
             
+            // ★ tpaall不触发autoAccept，让每位玩家都能手动接受/拒绝
+            if (autoAcceptPlayers.contains(name)) {
+                // autoAccept玩家：直接传送不发通知
+                saveTeleportRequest(sender, name, "tpaall");
+                if (p.isOnline() && player.isOnline()) {
+                    executeTeleport(player, p);
+                    player.sendMessage("§a[传送] §f" + name + " §a已自动接受全服传送");
+                    p.sendMessage("§a[传送] §f" + sender + " §a请求全服传送，已自动接受");
+                }
+                count++;
+                continue;
+            }
+            
             // 存储到数据库
             saveTeleportRequest(sender, name, "tpaall");
             
@@ -651,9 +668,6 @@ public class TeleportManager implements Listener {
             sendClickableRequestNotice(p, sender);
             
             count++;
-            
-            // 自动接受检查
-            checkAutoAccept(name, sender);
         }
         
         player.sendMessage("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求");
@@ -1025,8 +1039,13 @@ public class TeleportManager implements Listener {
             return;
         }
         
-        autoAcceptPlayers.add(playerName);
-        plugin.getLogger().info("[传送] Java版玩家 " + playerName + " 登录，已开启自动接收传送");
+        // ★ 从数据库读取持久化的autoAccept设置
+        if (isAutoAcceptInDB(playerName)) {
+            autoAcceptPlayers.add(playerName);
+            plugin.getLogger().info("[传送] Java版玩家 " + playerName + " 登录，自动接收传送=开启(持久化)");
+        } else {
+            plugin.getLogger().info("[传送] Java版玩家 " + playerName + " 登录，自动接收传送=关闭");
+        }
     }
     
     public void onPlayerLogout(String playerName) {
@@ -1041,5 +1060,78 @@ public class TeleportManager implements Listener {
     public Set<String> getIncomingSenders(String playerName) {
         Set<String> senders = incomingRequests.get(playerName);
         return senders != null ? senders : Collections.emptySet();
+    }
+    
+    // ==================== autoAccept 持久化 ====================
+    
+    /**
+     * 初始化数据库表（在onEnable中调用）
+     */
+    public void initDatabase() {
+        try {
+            plugin.getDb().getDb().prepareStatement(
+                "CREATE TABLE IF NOT EXISTS teleport_auto_accept (" +
+                "player_name TEXT PRIMARY KEY)"
+            ).executeUpdate();
+            plugin.getLogger().info("[传送] teleport_auto_accept 表就绪");
+        } catch (SQLException e) {
+            plugin.getLogger().severe("[传送] 初始化teleport_auto_accept失败: " + e.getMessage());
+        }
+        loadAllAutoAccept();
+    }
+    
+    private void loadAllAutoAccept() {
+        try {
+            ResultSet rs = plugin.getDb().getDb().prepareStatement(
+                "SELECT player_name FROM teleport_auto_accept"
+            ).executeQuery();
+            int count = 0;
+            while (rs.next()) {
+                autoAcceptPlayers.add(rs.getString("player_name"));
+                count++;
+            }
+            rs.close();
+            plugin.getLogger().info("[传送] 加载 " + count + " 个自动接受传送的玩家");
+        } catch (SQLException e) {
+            plugin.getLogger().severe("[传送] 加载autoAccept数据失败: " + e.getMessage());
+        }
+    }
+    
+    private void saveAutoAcceptToDB(String playerName) {
+        try {
+            PreparedStatement ps = plugin.getDb().getDb().prepareStatement(
+                "INSERT OR REPLACE INTO teleport_auto_accept (player_name) VALUES (?)"
+            );
+            ps.setString(1, playerName);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) { }
+    }
+    
+    private void removeAutoAcceptFromDB(String playerName) {
+        try {
+            PreparedStatement ps = plugin.getDb().getDb().prepareStatement(
+                "DELETE FROM teleport_auto_accept WHERE player_name = ?"
+            );
+            ps.setString(1, playerName);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) { }
+    }
+    
+    private boolean isAutoAcceptInDB(String playerName) {
+        try {
+            PreparedStatement ps = plugin.getDb().getDb().prepareStatement(
+                "SELECT 1 FROM teleport_auto_accept WHERE player_name = ?"
+            );
+            ps.setString(1, playerName);
+            ResultSet rs = ps.executeQuery();
+            boolean exists = rs.next();
+            rs.close();
+            ps.close();
+            return exists;
+        } catch (SQLException e) {
+            return false;
+        }
     }
 }

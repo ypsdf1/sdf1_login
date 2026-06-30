@@ -544,6 +544,7 @@ public class Main extends JavaPlugin
         // ===== 传送系统 =====
         teleportMgr = new TeleportManager(this);
         getServer().getPluginManager().registerEvents(teleportMgr, this);
+        teleportMgr.initDatabase();
         
         // 注册传送命令执行器和Tab补全
         getCommand("tpa").setExecutor(this);
@@ -3187,7 +3188,8 @@ public class Main extends JavaPlugin
                 && !title.equals("§6§l任务面板")
                 && !title.equals("§6§l垃圾回收站")
                 && !title.equals("§6§l我的钱包")
-                && !title.equals("§6§l余额操作")) {
+                && !title.equals("§6§l余额操作")
+                && !title.equals("§6§l传送系统")) {
             e.setCancelled(true);
             if (slot == 49) {
                 gui.openMain(p);
