@@ -125,10 +125,9 @@ public class TeleportManager implements Listener {
                     }
                     return true;
                 case "tpaccept":
+                    return handleTPAccept(player, args);
                 case "tpdeny":
-                    // 这两个无参都走CLI（基岩版玩家也用传统指令）
-                    openCLITeleportMenu(player);
-                    return true;
+                    return handleTPDeny(player, args);
                 default:
                     break;
             }
