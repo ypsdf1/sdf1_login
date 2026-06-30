@@ -2937,12 +2937,15 @@ public class Main extends JavaPlugin
             return;
         Player p = (Player) e.getWhoClicked();
 
-        if (isFrozen(p)) {
-            e.setCancelled(true);
-            return;
-        }
-
         String title = e.getView().getTitle();
+
+        // 传送面板不受登录冻结限制（基岩版玩家免登录也要能用）
+        if (!title.equals("§6§l传送系统")) {
+            if (isFrozen(p)) {
+                e.setCancelled(true);
+                return;
+            }
+        }
         int slot = e.getRawSlot();
 
         // ===== 工单 =====
