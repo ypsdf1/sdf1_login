@@ -1,12 +1,16 @@
 package Sdf1_login;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
+
 import org.bukkit.*;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitRunnable;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -19,8 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 
  * 架构设计：
  * - 基岩版(通过Geyser)：GUI面板交互，小屏友好
- * - Java版：CLI命令行驱动交互，打字更直观
- * - 登录联动：Java玩家登录时自动开启接受传送
+ * - Java版：CLI命令行驱动交互 + 可点击消息按钮
+ * - 登录联动：玩家登录时自动开启接受传送
  */
 public class TeleportManager {
     private final Main plugin;
@@ -38,10 +42,9 @@ public class TeleportManager {
     private final Map<String, Long> teleportCooldown = new ConcurrentHashMap<>();
     private static final long TELEPORT_COOLDOWN_MS = 30_000L; // 30秒冷却
     
-    // Inventory UUIDs currently open as teleport panels
+    // Inventory追踪ID集合（基岩版GUI面板）
     private final Set<String> teleportPanelIds = ConcurrentHashMap.newKeySet();
     
-    // 数据库连接
     public TeleportManager(Main plugin) {
         this.plugin = plugin;
     }
@@ -49,18 +52,12 @@ public class TeleportManager {
     // ==================== 判断玩家类型 ====================
     
     /**
-     * 判断是否为基岩版玩家（通过Geyser API）
-     * 如果Geyser插件不存在，默认返回false（Java版）
-     * 
-     * Geyser API 检测顺序：
-     * 1. Geyser-Spigot 插件（通过GeyserApi.api()获取实例）
-     * 2. 降级为Java版
+     * 判断是否为基岩版玩家（通过Geyser/Floodgate API）
      */
     private boolean isBedrockPlayer(Player player) {
-        // 检查 Geyser 插件是否加载
+        // 检查 Geyser-Spigot 插件
         Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
         if (geyserPlugin == null || !geyserPlugin.isEnabled()) {
-            // 尝试其他可能的插件名称
             geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser");
             if (geyserPlugin == null || !geyserPlugin.isEnabled()) {
                 return false;
@@ -68,38 +65,24 @@ public class TeleportManager {
         }
         
         try {
-            // 使用Geyser API: GeyserApi.api().isBedrockPlayer(UUID)
             Class<?> geyserApiClass = Class.forName("org.geysermc.geyser.api.GeyserApi");
             java.lang.reflect.Method apiMethod = geyserApiClass.getMethod("api");
             Object geyserApi = apiMethod.invoke(null);
-            
             java.lang.reflect.Method isBedrockMethod = geyserApiClass.getMethod("isBedrockPlayer", java.util.UUID.class);
             return (boolean) isBedrockMethod.invoke(geyserApi, player.getUniqueId());
-        } catch (ClassNotFoundException e) {
-            // Geyser API 类未找到，可能是旧版本
-            plugin.getLogger().warning("[传送] Geyser API 类未找到: " + e.getMessage());
-        } catch (NoSuchMethodException e) {
-            plugin.getLogger().warning("[传送] Geyser API 方法未找到: " + e.getMessage());
-        } catch (java.lang.reflect.InvocationTargetException e) {
-            plugin.getLogger().warning("[传送] Geyser API 调用失败: " + e.getMessage());
-        } catch (Exception e) {
-            plugin.getLogger().warning("[传送] Geyser API 检测异常: " + e.getMessage());
+        } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | java.lang.reflect.InvocationTargetException e) {
+            // Geyser API 不可用
         }
         
-        // 降级检测：尝试通过Floodgate API（如果Geyser API不可用）
+        // 降级：Floodgate API
         try {
             Class<?> floodgateApiClass = Class.forName("org.geysermc.floodgate.api.FloodgateApi");
             java.lang.reflect.Method instanceMethod = floodgateApiClass.getMethod("getInstance");
             Object floodgateApi = instanceMethod.invoke(null);
-            
             java.lang.reflect.Method isBedrockMethod = floodgateApiClass.getMethod("isFloodgatePlayer", java.util.UUID.class);
             return (boolean) isBedrockMethod.invoke(floodgateApi, player.getUniqueId());
-        } catch (ClassNotFoundException e) {
-            // Floodgate API 类未找到
-        } catch (NoSuchMethodException e) {
-            // Floodgate API 方法未找到
-        } catch (Exception e) {
-            // Floodgate API 调用失败
+        } catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException | java.lang.reflect.InvocationTargetException e) {
+            // Floodgate API 也不可用
         }
         
         return false;
@@ -109,20 +92,28 @@ public class TeleportManager {
     
     /**
      * 处理传送相关命令
-     * @return true=已处理, false=未处理
      */
     public boolean handleCommand(Player player, String label, String[] args) {
         String lowerLabel = label.toLowerCase();
-        
-        // ★ 根据玩家类型决定交互方式
         boolean bedrock = isBedrockPlayer(player);
         
+        // ★ 无参数直接执行的命令（不走面板）
+        switch (lowerLabel) {
+            case "tpacancel":
+                handleTPCancel(player);
+                return true;
+            case "tpauto":
+                handleTPAuto(player);
+                return true;
+            case "tpaall":
+                return handleTPAll(player);
+        }
+        
+        // ★ 需要面板的命令（tpa无参=打开面板，tpaccept无参=选择接受，tpdeny无参=选择拒绝）
         if (args.length == 0) {
             if (bedrock) {
-                // 基岩版：打开GUI面板
                 openTeleportPanel(player);
             } else {
-                // Java版：CLI交互式提示
                 openCLITeleportMenu(player);
             }
             return true;
@@ -135,55 +126,170 @@ public class TeleportManager {
                 return handleTPAccept(player, args);
             case "tpdeny":
                 return handleTPDeny(player, args);
-            case "tpauto":
-                handleTPAuto(player);
-                return true;
             case "tpahere":
                 return handleTPAH(player, args[0]);
-            case "tpaall":
-                return handleTPAll(player);
-            case "tpacancel":
-                handleTPCancel(player);
-                return true;
             default:
                 return false;
+        }
+    }
+    
+    // ==================== Java版可点击消息工具 ====================
+    
+    /**
+     * 发送带可点击[接受][拒绝]按钮的传送请求通知（仅Java版）
+     */
+    private void sendClickableRequestNotice(Player target, String senderName) {
+        if (isBedrockPlayer(target)) {
+            // 基岩版用纯文本（GUI面板操作）
+            target.sendMessage("§e[传送] §f" + senderName + " §e请求传送到你身边");
+            target.sendMessage("§7────────────────────");
+            target.sendMessage("§e【等待接受】§f" + senderName + " §e已传送到你面前");
+            target.sendMessage("§7────────────────────");
+            target.sendMessage("§a使用 §e/tpaccept " + senderName + " §a接受，§e/tpdeny " + senderName + " §a拒绝");
+        } else {
+            // Java版：Adventure API 可点击消息
+            target.sendMessage(Component.text("§e[传送] §f" + senderName + " §e请求传送到你身边"));
+            target.sendMessage(Component.text("§7────────────────────"));
+            target.sendMessage(Component.text("§e【等待接受】§f" + senderName + " §e已传送到你面前"));
+            target.sendMessage(Component.text("§7────────────────────"));
+            
+            // 可点击按钮行：[✔ 接受]  [✘ 拒绝]
+            target.sendMessage(Component.empty()
+                .append(Component.text("§a[✔ 接受] ")
+                    .clickEvent(ClickEvent.runCommand("/tpaccept " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击接受 " + senderName + " 的传送请求"))))
+                .append(Component.text("  "))
+                .append(Component.text("§c[✘ 拒绝] ")
+                    .clickEvent(ClickEvent.runCommand("/tpdeny " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击拒绝 " + senderName + " 的传送请求")))));
+            
+            target.sendMessage(Component.text("§7或输入 §e/tpaccept §7查看全部待处理请求"));
+        }
+    }
+    
+    /**
+     * 发送带可点击按钮的tpahere通知
+     */
+    private void sendClickableTPAHNotice(Player target, String senderName) {
+        if (isBedrockPlayer(target)) {
+            target.sendMessage("§e[传送] §f" + senderName + " §e请求你传送到他身边");
+            target.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
+        } else {
+            target.sendMessage(Component.text("§e[传送] §f" + senderName + " §e请求你传送到他身边"));
+            target.sendMessage(Component.empty()
+                .append(Component.text("§a[✔ 接受] ")
+                    .clickEvent(ClickEvent.runCommand("/tpaccept " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击接受 " + senderName + " 的请求"))))
+                .append(Component.text("  "))
+                .append(Component.text("§c[✘ 拒绝] ")
+                    .clickEvent(ClickEvent.runCommand("/tpdeny " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击拒绝 " + senderName + " 的请求")))));
         }
     }
     
     // ==================== CLI 交互菜单 ====================
     
     /**
-     * Java版：打开交互式CLI菜单
+     * Java版：打开交互式CLI菜单（显示incoming + outgoing + 可点击按钮）
      */
     private void openCLITeleportMenu(Player player) {
         String playerName = player.getName();
-        Set<String> senders = incomingRequests.get(playerName);
+        Set<String> incoming = incomingRequests.get(playerName);
+        Set<String> outgoing = outgoingRequests.get(playerName);
         
-        if (senders == null || senders.isEmpty()) {
-            player.sendMessage("§a[传送] 你没有任何待处理的传送请求");
+        boolean hasIncoming = incoming != null && !incoming.isEmpty();
+        boolean hasOutgoing = outgoing != null && !outgoing.isEmpty();
+        
+        if (!hasIncoming && !hasOutgoing) {
+            player.sendMessage(Component.text("§6§l========== 传送系统 =========="));
+            player.sendMessage(Component.text("§7当前没有任何待处理的传送请求"));
+            player.sendMessage(Component.text(""));
+            player.sendMessage(Component.text("§7可用指令:"));
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpa <玩家名> ")
+                    .clickEvent(ClickEvent.suggestCommand("/tpa ")))
+                .append(Component.text("§7- 请求传送到玩家身边")));
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpahere <玩家名> ")
+                    .clickEvent(ClickEvent.suggestCommand("/tpahere ")))
+                .append(Component.text("§7- 请求玩家传送到你身边")));
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpaall ")
+                    .clickEvent(ClickEvent.runCommand("/tpaall")))
+                .append(Component.text("§7- 请求全服玩家传送到你身边")));
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpauto ")
+                    .clickEvent(ClickEvent.runCommand("/tpauto")))
+                .append(Component.text("§7- 切换自动接受传送")));
+            player.sendMessage(Component.text("§6§l======================================"));
             return;
         }
         
-        player.sendMessage("§6§l========== 待处理传送请求 ==========");
-        int index = 1;
-        for (String senderName : senders) {
-            Player senderPlayer = Bukkit.getServer().getPlayer(senderName);
-            boolean online = senderPlayer != null && senderPlayer.isOnline();
-            String status = online ? "§a[在线]" : "§c[离线]";
-            player.sendMessage("§e" + index + ". §f" + senderName + " §7" + status);
-            index++;
+        player.sendMessage(Component.text("§6§l========== 传送系统 =========="));
+        
+        // 收到的请求（incoming）
+        if (hasIncoming) {
+            player.sendMessage(Component.text("§a📥 收到的传送请求:"));
+            int index = 1;
+            for (String senderName : incoming) {
+                Player senderPlayer = Bukkit.getServer().getPlayer(senderName);
+                boolean online = senderPlayer != null && senderPlayer.isOnline();
+                String status = online ? "§a[在线]" : "§c[离线]";
+                
+                // 可点击的接受/拒绝按钮
+                player.sendMessage(Component.empty()
+                    .append(Component.text("  §e" + index + ". §f" + senderName + " §7" + status + " "))
+                    .append(Component.text("§a[✔]")
+                        .clickEvent(ClickEvent.runCommand("/tpaccept " + senderName))
+                        .hoverEvent(HoverEvent.showText(Component.text("点击接受 " + senderName + " 的传送请求"))))
+                    .append(Component.text(" "))
+                    .append(Component.text("§c[✘]")
+                        .clickEvent(ClickEvent.runCommand("/tpdeny " + senderName))
+                        .hoverEvent(HoverEvent.showText(Component.text("点击拒绝 " + senderName + " 的传送请求")))));
+                index++;
+            }
+            player.sendMessage(Component.text(""));
         }
-        player.sendMessage("");
-        player.sendMessage("§7输入指令:");
-        player.sendMessage("§e/tpaccept <序号>     §7接受指定玩家的传送请求");
-        player.sendMessage("§e/tpdeny <序号>       §7拒绝指定玩家的传送请求");
-        player.sendMessage("§e/tpacancel           §7取消你发出的所有请求");
-        player.sendMessage("§6§l======================================");
+        
+        // 发出的请求（outgoing）
+        if (hasOutgoing) {
+            player.sendMessage(Component.text("§e📤 已发出的传送请求:"));
+            int index = 1;
+            for (String targetName : outgoing) {
+                Player targetPlayer = Bukkit.getServer().getPlayer(targetName);
+                boolean online = targetPlayer != null && targetPlayer.isOnline();
+                String status = online ? "§a[在线]" : "§c[离线]";
+                player.sendMessage(Component.text("  §e" + index + ". §f" + targetName + " §7" + status + " §7(等待接受)"));
+                index++;
+            }
+            player.sendMessage(Component.text(""));
+        }
+        
+        // 操作提示
+        player.sendMessage(Component.text("§7输入指令:"));
+        if (hasIncoming) {
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpaccept <序号/玩家名> "))
+                .append(Component.text("§7接受传送请求")));
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpdeny <序号/玩家名> "))
+                .append(Component.text("§7拒绝传送请求")));
+        }
+        if (hasOutgoing) {
+            player.sendMessage(Component.empty()
+                .append(Component.text("§e/tpacancel ")
+                    .clickEvent(ClickEvent.runCommand("/tpacancel")))
+                .append(Component.text("§7取消所有发出的请求")));
+        }
+        player.sendMessage(Component.empty()
+            .append(Component.text("§e/tpauto ")
+                .clickEvent(ClickEvent.runCommand("/tpauto")))
+            .append(Component.text("§7切换自动接受传送")));
+        player.sendMessage(Component.text("§6§l======================================"));
     }
     
     /**
      * CLI版：接受指定序号的传送请求
-     * 内部调用，支持序号或玩家名
      */
     private boolean handleTPAcceptCLI(Player player, int index) {
         Set<String> senders = incomingRequests.get(player.getName());
@@ -248,10 +354,9 @@ public class TeleportManager {
             return true;
         }
         
-        // 记录发送时间
         teleportCooldown.put(sender, now);
         
-        // 存储传送请求到数据库
+        // 存储到数据库
         saveTeleportRequest(sender, target.getName(), "tpa");
         
         // 添加到内存
@@ -260,20 +365,10 @@ public class TeleportManager {
         
         // 通知发送者
         player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
+        player.sendMessage("§7等待对方 §e/tpaccept §7或 §e/tpdeny §7处理");
         
-        // ★ 通知接收者：A传送了B，等待B同意
-        plugin.getLogger().info("[传送] 向玩家 " + targetName + " 发送传送请求消息");
-        target.sendMessage("§e[传送] §f" + sender + " §e请求传送到你身边");
-        target.sendMessage("§7────────────────────");
-        target.sendMessage("§e【等待接受】§f" + sender + " §e已传送到你面前");
-        target.sendMessage("§7────────────────────");
-        target.sendMessage("§a使用 §e/tpaccept " + sender + " §a接受，§e/tpdeny " + sender + " §a拒绝");
-        
-        // 如果是Java版，提示目标玩家如何CLI接受
-        if (!isBedrockPlayer(target)) {
-            target.sendMessage("§7（输入 §e/tpaccept §7接受所有待处理请求）");
-        }
-        plugin.getLogger().info("[传送] 已向玩家 " + targetName + " 发送所有消息");
+        // 通知接收者（可点击消息）
+        sendClickableRequestNotice(target, sender);
         
         // 自动接受检查
         checkAutoAccept(targetName, sender);
@@ -290,8 +385,9 @@ public class TeleportManager {
             if (target != null && target.isOnline() && sender != null && sender.isOnline()) {
                 executeTeleport(sender, target);
                 plugin.getLogger().info("[传送] 玩家 " + targetName + " 开启了自动接受，已自动传送");
+                sender.sendMessage("§a[传送] §f" + targetName + " §a已自动接受传送请求");
             }
-            // 清理请求（自动接受了）
+            // 清理请求
             removeIncomingRequest(targetName, senderName);
             removeOutgoingRequest(senderName, targetName);
         }
@@ -302,20 +398,16 @@ public class TeleportManager {
     private boolean handleTPAccept(Player player, String[] args) {
         String targetName = null;
         if (args.length > 0) {
-            // 支持序号或玩家名
             String arg = args[0];
             try {
                 int index = Integer.parseInt(arg);
-                // CLI模式：使用序号
                 return handleTPAcceptCLI(player, index);
             } catch (NumberFormatException e) {
-                // 玩家名字符串
                 targetName = arg;
             }
         }
         
         if (targetName == null || targetName.isEmpty()) {
-            // 有多个待处理请求 → 打开面板
             Set<String> senders = incomingRequests.get(player.getName());
             if (senders == null || senders.isEmpty()) {
                 player.sendMessage("§c[传送] 你没有待处理的传送请求");
@@ -324,7 +416,6 @@ public class TeleportManager {
             if (senders.size() == 1) {
                 targetName = senders.iterator().next();
             } else {
-                // 基岩版打开GUI，Java版打开CLI菜单
                 if (isBedrockPlayer(player)) {
                     openTeleportPanel(player);
                 } else {
@@ -334,7 +425,6 @@ public class TeleportManager {
             }
         }
         
-        // 验证请求是否存在
         Set<String> senders = incomingRequests.get(player.getName());
         if (senders == null || !senders.contains(targetName)) {
             player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
@@ -370,7 +460,6 @@ public class TeleportManager {
     private boolean handleTPDeny(Player player, String[] args) {
         String targetName = null;
         if (args.length > 0) {
-            // 支持序号或玩家名
             String arg = args[0];
             try {
                 int index = Integer.parseInt(arg);
@@ -381,7 +470,6 @@ public class TeleportManager {
         }
         
         if (targetName == null || targetName.isEmpty()) {
-            // 有多个待处理请求 → 打开面板
             Set<String> senders = incomingRequests.get(player.getName());
             if (senders == null || senders.isEmpty()) {
                 player.sendMessage("§c[传送] 你没有待处理的传送请求");
@@ -399,7 +487,6 @@ public class TeleportManager {
             }
         }
         
-        // 验证请求是否存在
         Set<String> senders = incomingRequests.get(player.getName());
         if (senders == null || !senders.contains(targetName)) {
             player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
@@ -411,7 +498,6 @@ public class TeleportManager {
             senderPlayer.sendMessage("§c[传送] §f" + player.getName() + " §c拒绝了你的传送请求");
         }
         
-        // 清理请求
         removeIncomingRequest(player.getName(), targetName);
         removeOutgoingRequest(targetName, player.getName());
         
@@ -428,7 +514,7 @@ public class TeleportManager {
             player.sendMessage("§a[传送] 已关闭自动接受传送请求");
         } else {
             autoAcceptPlayers.add(player.getName());
-            player.sendMessage("§a[传送] 已开启自动接受传送请求");
+            player.sendMessage("§a[传送] 已开启自动接受传送请求（新加入的玩家默认开启）");
         }
     }
     
@@ -466,8 +552,10 @@ public class TeleportManager {
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         
         player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送到身边的请求");
-        target.sendMessage("§e[传送] §f" + sender + " §e请求你传送到他身边");
-        target.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
+        player.sendMessage("§7等待对方 §e/tpaccept §7或 §e/tpdeny §7处理");
+        
+        // 可点击通知
+        sendClickableTPAHNotice(target, sender);
         
         // 自动接受检查
         checkAutoAccept(target.getName(), sender);
@@ -504,15 +592,13 @@ public class TeleportManager {
             outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(name);
             incomingRequests.computeIfAbsent(name, k -> ConcurrentHashMap.newKeySet()).add(sender);
             
-            p.sendMessage("§e[传送] §f" + sender + " §e请求全服玩家传送到他身边");
-            p.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
+            // 可点击通知
+            sendClickableRequestNotice(p, sender);
             
             count++;
             
             // 自动接受检查
-            if (autoAcceptPlayers.contains(name)) {
-                checkAutoAccept(name, sender);
-            }
+            checkAutoAccept(name, sender);
         }
         
         player.sendMessage("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求");
@@ -531,7 +617,6 @@ public class TeleportManager {
         }
         
         for (String recipient : recipients) {
-            // 从收件人的待处理列表中移除
             Set<String> senders = incomingRequests.get(recipient);
             if (senders != null) {
                 senders.remove(sender);
@@ -546,16 +631,13 @@ public class TeleportManager {
             }
         }
         
-        player.sendMessage("§a[传送] 已取消所有发送的传送请求");
-        
-        // 清理冷却
+        player.sendMessage("§a[传送] 已取消 §e" + recipients.size() + " §a个发送的传送请求");
         teleportCooldown.remove(sender);
     }
     
     // ==================== 执行传送 ====================
     
     private void executeTeleport(Player from, Player to) {
-        // 传送到目标玩家身边（距离1格）
         Location loc = to.getLocation();
         loc.setX(loc.getX() + 1.5);
         loc.setY(loc.getY());
@@ -572,20 +654,23 @@ public class TeleportManager {
     private void openTeleportPanel(Player player) {
         Set<String> senders = incomingRequests.get(player.getName());
         if (senders == null || senders.isEmpty()) {
-            player.sendMessage("§a[传送] 你没有待处理的传送请求");
+            // 检查outgoing
+            Set<String> out = outgoingRequests.get(player.getName());
+            if (out == null || out.isEmpty()) {
+                player.sendMessage("§a[传送] 你没有任何待处理的传送请求");
+            } else {
+                player.sendMessage("§e[传送] 你有 §f" + out.size() + " §e个等待对方接受的请求");
+                player.sendMessage("§7使用 /tpacancel 取消所有请求");
+            }
             return;
         }
         
-        // 创建GUI面板（最多9个请求）
         int rows = Math.min((senders.size() + 8) / 9, 6);
-        // 使用Inventory UUID做唯一标识
         String panelId = "tp_gui_" + System.currentTimeMillis() + "_" + player.getUniqueId();
         teleportPanelIds.add(panelId);
         
-        // 创建实际Inventory
         Inventory inv = Bukkit.createInventory(null, rows * 9, "§6§l待处理传送请求");
         
-        // 填充玻璃板
         ItemStack glass = createGlassPane();
         for (int i = 0; i < inv.getSize(); i++) {
             inv.setItem(i, glass);
@@ -593,36 +678,21 @@ public class TeleportManager {
         
         int slot = 0;
         for (String senderName : senders) {
-            if (slot >= inv.getSize() - 2) break; // 留出返回按钮位置
+            if (slot >= inv.getSize() - 2) break;
             
             Player senderPlayer = Bukkit.getServer().getPlayer(senderName);
-            String displayName = senderName;
-            String statusColor = "§e";
-            String statusText = "§7(离线)";
-            
-            if (senderPlayer != null && senderPlayer.isOnline()) {
-                statusColor = "§a";
-                statusText = "§7(在线)";
-            }
+            boolean online = senderPlayer != null && senderPlayer.isOnline();
             
             ItemStack item = new ItemStack(Material.PLAYER_HEAD);
             ItemMeta meta = item.getItemMeta();
             if (meta != null) {
-                meta.setDisplayName("§e" + displayName);
-                List<String> lore = Arrays.asList(
-                    statusColor + "状态: " + statusText,
+                meta.setDisplayName("§e" + senderName + (online ? " §a(在线)" : " §7(离线)"));
+                meta.setLore(Arrays.asList(
                     "",
                     "§a左键: 接受传送",
-                    "§c左键: 拒绝传送"
-                );
-                meta.setLore(lore);
+                    "§c右键: 拒绝传送"
+                ));
                 item.setItemMeta(meta);
-                
-                // 添加PotionMeta设置皮肤（如果有在线玩家）
-                if (senderPlayer != null && senderPlayer.isOnline()) {
-                    meta.setDisplayName("§e" + senderPlayer.getName() + " §a(在线)");
-                    item.setItemMeta(meta);
-                }
             }
             
             inv.setItem(slot, item);
@@ -639,11 +709,11 @@ public class TeleportManager {
         }
         inv.setItem(inv.getSize() - 1, denyAll);
         
-        // 返回列表按钮
+        // 返回按钮
         ItemStack back = new ItemStack(Material.ARROW);
         ItemMeta backMeta = back.getItemMeta();
         if (backMeta != null) {
-            backMeta.setDisplayName("§7返回列表");
+            backMeta.setDisplayName("§7关闭面板");
             back.setItemMeta(backMeta);
         }
         inv.setItem(inv.getSize() - 2, back);
@@ -653,9 +723,6 @@ public class TeleportManager {
     
     // ==================== GUI点击处理 ====================
     
-    /**
-     * 处理GUI点击事件（从Main转发过来）
-     */
     public void onInventoryClick(org.bukkit.event.inventory.InventoryClickEvent event) {
         if (!"§6§l待处理传送请求".equals(event.getView().getTitle())) {
             return;
@@ -668,7 +735,7 @@ public class TeleportManager {
         Player player = (Player) event.getWhoClicked();
         int slot = event.getSlot();
         
-        // 返回列表
+        // 关闭面板
         if (slot == event.getInventory().getSize() - 2) {
             player.closeInventory();
             return;
@@ -686,18 +753,21 @@ public class TeleportManager {
             ItemStack item = event.getCurrentItem();
             if (item != null && item.getType() == Material.PLAYER_HEAD) {
                 ItemMeta meta = item.getItemMeta();
-                String displayName = (meta != null && meta.hasDisplayName()) 
-                    ? meta.getDisplayName().replace("§e", "").replace(" §a(在线)", "").replace(" §7(离线)", "").trim() 
+                String displayName = (meta != null && meta.hasDisplayName())
+                    ? meta.getDisplayName().replace("§e", "").replace(" §a(在线)", "").replace(" §7(离线)", "").trim()
                     : "unknown";
                 
-                // 如果显示的是玩家自己的名字，说明是自己点的，拒绝
                 if (displayName.equalsIgnoreCase(player.getName())) {
                     player.sendMessage("§c[传送] 你不能接受/拒绝自己的请求");
                     return;
                 }
                 
-                // 尝试接受请求（如果有参数就用参数，否则用面板选中的）
-                handleTPAccept(player, new String[]{displayName});
+                // 左键接受，右键拒绝
+                if (event.isLeftClick()) {
+                    handleTPAccept(player, new String[]{displayName});
+                } else if (event.isRightClick()) {
+                    handleTPDeny(player, new String[]{displayName});
+                }
             }
         }
     }
@@ -785,31 +855,21 @@ public class TeleportManager {
     
     // ==================== 登录联动 ====================
     
-    /**
-     * 玩家登录时自动开启接受传送
-     */
     public void onPlayerLogin(String playerName) {
         autoAcceptPlayers.add(playerName);
     }
     
-    /**
-     * 玩家登出时关闭接受传送
-     */
     public void onPlayerLogout(String playerName) {
         autoAcceptPlayers.remove(playerName);
     }
     
+    // ==================== Tab补全辅助 ====================
+    
     /**
-     * 清理过期的传送请求（例如超过5分钟）
+     * 获取玩家收到的待处理传送请求的发送者列表
      */
-    public void cleanupExpiredRequests() {
-        long cutoff = System.currentTimeMillis() - 5 * 60 * 1000; // 5分钟
-        
-        for (Iterator<Map.Entry<String, Long>> it = teleportCooldown.entrySet().iterator(); it.hasNext();) {
-            Map.Entry<String, Long> entry = it.next();
-            if (entry.getValue() < cutoff) {
-                it.remove();
-            }
-        }
+    public Set<String> getIncomingSenders(String playerName) {
+        Set<String> senders = incomingRequests.get(playerName);
+        return senders != null ? senders : Collections.emptySet();
     }
 }

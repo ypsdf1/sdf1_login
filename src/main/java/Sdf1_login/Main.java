@@ -6236,11 +6236,31 @@ public class Main extends JavaPlugin
                 || cmd.getName().equalsIgnoreCase("tpdeny")
                 || cmd.getName().equalsIgnoreCase("tpahere")
                 || cmd.getName().equalsIgnoreCase("tpaall")
-                || cmd.getName().equalsIgnoreCase("tpacancel")) {
+                || cmd.getName().equalsIgnoreCase("tpacancel")
+                || cmd.getName().equalsIgnoreCase("tpauto")) {
             if (args.length == 1) {
-                Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
-                for (Player p : onlinePlayers) {
-                    list.add(p.getName());
+                if (sender instanceof Player && teleportMgr != null) {
+                    String cmdName = cmd.getName().toLowerCase();
+                    // tpa/tpahere: 显示在线玩家名
+                    if (cmdName.equals("tpa") || cmdName.equals("tpahere")) {
+                        for (Player p : Bukkit.getOnlinePlayers()) {
+                            list.add(p.getName());
+                        }
+                    }
+                    // tpaccept/tpdeny: 显示待处理请求的发送者名
+                    else if (cmdName.equals("tpaccept") || cmdName.equals("tpdeny")) {
+                        Set<String> senders = teleportMgr.getIncomingSenders(((Player) sender).getName());
+                        for (String s : senders) {
+                            list.add(s);
+                        }
+                        // 如果没有待处理请求，fallback到在线玩家
+                        if (list.isEmpty()) {
+                            for (Player p : Bukkit.getOnlinePlayers()) {
+                                list.add(p.getName());
+                            }
+                        }
+                    }
+                    // tpacancel/tpauto/tpaall: 无参数补全
                 }
             }
             return list;
