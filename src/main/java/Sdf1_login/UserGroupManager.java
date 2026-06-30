@@ -1,5 +1,7 @@
 package Sdf1_login;
 
+import org.bukkit.entity.Player;
+
 import java.io.File;
 import java.sql.*;
 import java.util.*;
@@ -68,6 +70,13 @@ public class UserGroupManager {
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN default_perms TEXT DEFAULT '{}'"); } catch (Exception ignored) {}
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN is_permanent INTEGER DEFAULT 1"); } catch (Exception ignored) {}
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN duration_minutes INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // Home相关
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN home_limit INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // 付费相关
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN join_price INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN auto_renew INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN renew_price INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // duration_minutes已有(旧列)，复用
 
             st.close();
         } catch (Exception e) {
@@ -92,6 +101,11 @@ public class UserGroupManager {
                 cfg.landPricePerSqm = rs.getInt("land_price_per_sqm");
                 cfg.maxLands = rs.getInt("max_lands");
                 cfg.defaultPerms = rs.getString("default_perms");
+                cfg.homeLimit = rs.getInt("home_limit");
+                cfg.joinPrice = rs.getInt("join_price");
+                cfg.autoRenew = rs.getInt("auto_renew") == 1;
+                cfg.renewPrice = rs.getInt("renew_price");
+                cfg.durationMinutes = rs.getLong("duration_minutes");
                 if (cfg.name != null && !cfg.name.isEmpty()) {
                     groupConfigs.put(cfg.name, cfg);
                 }
@@ -111,8 +125,9 @@ public class UserGroupManager {
             PreparedStatement ps = db.prepareStatement(
                     "INSERT OR REPLACE INTO user_group_config "
                             + "(group_name, display_name, display_color,"
-                            + " priority, land_price_per_sqm, max_lands, default_perms)"
-                            + " VALUES (?,?,?,?,?,?,?)");
+                            + " priority, land_price_per_sqm, max_lands, default_perms,"
+                            + " home_limit, join_price, auto_renew, renew_price, duration_minutes)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
             ps.setString(1, cfg.name);
             ps.setString(2, cfg.displayName);
             ps.setString(3, cfg.displayColor);
@@ -120,6 +135,11 @@ public class UserGroupManager {
             ps.setInt(5, cfg.landPricePerSqm);
             ps.setInt(6, cfg.maxLands);
             ps.setString(7, cfg.defaultPerms != null ? cfg.defaultPerms : "{}");
+            ps.setInt(8, cfg.homeLimit);
+            ps.setInt(9, cfg.joinPrice);
+            ps.setInt(10, cfg.autoRenew ? 1 : 0);
+            ps.setInt(11, cfg.renewPrice);
+            ps.setLong(12, cfg.durationMinutes);
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
@@ -263,6 +283,391 @@ public class UserGroupManager {
         return true;
     }
 
+    /**
+     * 添加玩家到用户组（带到期时间）
+     * @param expiryTimeMillis 到期时间戳(ms), 0=永久
+     * @return null=成功, 非null=错误消息
+     */
+    public String addPlayerWithExpiry(String player, String groupName, String addedBy, long expiryTimeMillis) {
+        if (!isValidPlayerName(player)) {
+            return "玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）";
+        }
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) return "未找到用户组: " + groupName;
+        groupName = cfg.name;
+
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null && !dbMgr.userExists(player)) {
+            return "玩家 " + player + " 尚未注册，请确认玩家名是否正确";
+        }
+
+        long now = System.currentTimeMillis();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR REPLACE INTO user_group_member "
+                            + "(player_name, group_name, added_by, added_time, expiry_time)"
+                            + " VALUES (?,?,?,?,?)");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            ps.setString(3, addedBy);
+            ps.setLong(4, now);
+            ps.setLong(5, expiryTimeMillis);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] addPlayerWithExpiry failed: " + e.getMessage());
+            return "数据库错误: " + e.getMessage();
+        }
+        pushMemberToPHP(player, groupName, "add");
+        return null;
+    }
+
+    /**
+     * 付费加入用户组
+     * @return null=成功, 非null=错误消息
+     */
+    public String joinGroupByPrice(String player, String groupName) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) return "未找到用户组: " + groupName;
+        groupName = cfg.name;
+
+        if (cfg.joinPrice <= 0) return "该用户组不开放付费加入";
+
+        if (cfg.durationMinutes <= 0) return "该用户组配置异常（有效时长未设置）";
+
+        // 检查是否已在组内（有效期内）
+        if (isPlayerInGroup(player, groupName)) {
+            List<Map<String, Object>> groups = getPlayerGroups(player);
+            long now = System.currentTimeMillis();
+            for (Map<String, Object> g : groups) {
+                if (groupName.equals(g.get("group_name"))) {
+                    long expiry = (long) g.get("expiry_time");
+                    if (expiry <= 0 || expiry > now) {
+                        return "你已经是该用户组的成员" + (expiry > 0 ? "（到期: " + formatExpiry(expiry) + "）" : "（永久）");
+                    }
+                }
+            }
+        }
+
+        // 扣费
+        BondManager bondMgr = plugin.getBondManager();
+        if (bondMgr == null) return "债券系统未初始化";
+
+        int balance = bondMgr.getBonds(player);
+        if (balance < cfg.joinPrice) {
+            return "债券不足！需要 " + cfg.joinPrice + " 张，当前 " + balance + " 张";
+        }
+
+        boolean deducted = bondMgr.deductBonds(player, cfg.joinPrice,
+                "group_join", "", "system",
+                "付费加入用户组: " + groupName);
+        if (!deducted) return "扣费失败，请稍后重试";
+
+        // 计算到期时间
+        long now = System.currentTimeMillis();
+        long expiryTime = now + (long) cfg.durationMinutes * 60 * 1000;
+
+        // 加入组
+        String err = addPlayerWithExpiry(player, groupName, "paid_join", expiryTime);
+        if (err != null) {
+            // 回退扣费
+            bondMgr.addBonds(player, cfg.joinPrice, "group_join_refund", "", "system", "加入失败退款: " + groupName);
+            return err;
+        }
+
+        plugin.getLogger().info("[UserGroup] " + player + " 付费加入用户组 " + groupName + "，扣费 " + cfg.joinPrice + " 张，到期: " + formatExpiry(expiryTime));
+        return null;
+    }
+
+    /**
+     * 续费用户组（延长到期时间）
+     * @return null=成功, 非null=错误消息
+     */
+    public String renewGroup(String player, String groupName) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) return "未找到用户组: " + groupName;
+        groupName = cfg.name;
+
+        if (cfg.renewPrice <= 0) return "该用户组不支持续费";
+
+        // 查找当前成员记录
+        long currentExpiry = 0;
+        boolean found = false;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT expiry_time FROM user_group_member WHERE player_name=? AND group_name=?");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                currentExpiry = rs.getLong("expiry_time");
+                found = true;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            return "数据库错误: " + e.getMessage();
+        }
+
+        if (!found) return "你不在该用户组中，请先 /group buy " + groupName;
+
+        // 如果已过期，不能续费，需要重新购买
+        long now = System.currentTimeMillis();
+        if (currentExpiry > 0 && currentExpiry <= now) {
+            return "用户组已过期，请重新购买";
+        }
+
+        // 扣费
+        BondManager bondMgr = plugin.getBondManager();
+        if (bondMgr == null) return "债券系统未初始化";
+
+        int balance = bondMgr.getBonds(player);
+        if (balance < cfg.renewPrice) {
+            return "债券不足！需要 " + cfg.renewPrice + " 张，当前 " + balance + " 张";
+        }
+
+        boolean deducted = bondMgr.deductBonds(player, cfg.renewPrice,
+                "group_renew", "", "system",
+                "续费用户组: " + groupName);
+        if (!deducted) return "扣费失败，请稍后重试";
+
+        // 延长到期时间：从当前到期时间往后延（如果已过期则从当前时间开始）
+        long baseTime = (currentExpiry > now) ? currentExpiry : now;
+        long newExpiry = baseTime + (long) cfg.durationMinutes * 60 * 1000;
+
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE user_group_member SET expiry_time=? WHERE player_name=? AND group_name=?");
+            ps.setLong(1, newExpiry);
+            ps.setString(2, player);
+            ps.setString(3, groupName);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            return "数据库错误: " + e.getMessage();
+        }
+
+        pushMemberToPHP(player, groupName, "add");
+        plugin.getLogger().info("[UserGroup] " + player + " 续费用户组 " + groupName + "，扣费 " + cfg.renewPrice + " 张，新到期: " + formatExpiry(newExpiry));
+        return null;
+    }
+
+    /**
+     * 检查并移除已过期的玩家用户组（用于登录时调用）
+     * @return 过期被移除的组列表 [{player, group}]
+     */
+    public List<Map<String, Object>> checkAndRemoveExpired() {
+        List<Map<String, Object>> expired = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name, group_name FROM user_group_member WHERE expiry_time > 0 AND expiry_time <= ?");
+            ps.setLong(1, now);
+            ResultSet rs = ps.executeQuery();
+            List<String[]> toRemove = new ArrayList<>();
+            while (rs.next()) {
+                String[] item = new String[]{rs.getString("player_name"), rs.getString("group_name")};
+                toRemove.add(item);
+            }
+            rs.close();
+            ps.close();
+
+            for (String[] item : toRemove) {
+                String player = item[0];
+                String group = item[1];
+                // 删除过期记录
+                PreparedStatement del = db.prepareStatement(
+                        "DELETE FROM user_group_member WHERE player_name=? AND group_name=?");
+                del.setString(1, player);
+                del.setString(2, group);
+                del.executeUpdate();
+                del.close();
+                pushMemberToPHP(player, group, "remove");
+                expired.add(Map.of("player", player, "group", group));
+            }
+
+            if (!expired.isEmpty()) {
+                plugin.getLogger().info("[UserGroup] 自动清理 " + expired.size() + " 个过期用户组成员");
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] checkAndRemoveExpired failed: " + e.getMessage());
+        }
+        return expired;
+    }
+
+    /**
+     * 检查指定玩家的过期并移除
+     */
+    public List<String> checkAndRemoveExpiredForPlayer(String player) {
+        List<String> expiredGroups = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT group_name FROM user_group_member WHERE player_name=? AND expiry_time > 0 AND expiry_time <= ?");
+            ps.setString(1, player);
+            ps.setLong(2, now);
+            ResultSet rs = ps.executeQuery();
+            List<String> toRemove = new ArrayList<>();
+            while (rs.next()) {
+                toRemove.add(rs.getString("group_name"));
+            }
+            rs.close();
+            ps.close();
+
+            for (String group : toRemove) {
+                PreparedStatement del = db.prepareStatement(
+                        "DELETE FROM user_group_member WHERE player_name=? AND group_name=?");
+                del.setString(1, player);
+                del.setString(2, group);
+                del.executeUpdate();
+                del.close();
+                pushMemberToPHP(player, group, "remove");
+                expiredGroups.add(group);
+            }
+
+            if (!expiredGroups.isEmpty()) {
+                plugin.getLogger().info("[UserGroup] " + player + " 过期用户组已清理: " + String.join(", ", expiredGroups));
+            }
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] checkAndRemoveExpiredForPlayer failed: " + e.getMessage());
+        }
+        return expiredGroups;
+    }
+
+    /**
+     * 自动续费（到期前自动扣费延长）
+     * @return true=续费成功, false=续费失败或不需要
+     */
+    public boolean autoRenewGroup(String player, String groupName) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null || !cfg.autoRenew || cfg.renewPrice <= 0) return false;
+
+        // 查当前到期时间
+        long currentExpiry = 0;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT expiry_time FROM user_group_member WHERE player_name=? AND group_name=?");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                currentExpiry = rs.getLong("expiry_time");
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            return false;
+        }
+
+        // 只在即将到期时续费（10分钟内）
+        long now = System.currentTimeMillis();
+        if (currentExpiry <= 0 || currentExpiry > now + 10 * 60 * 1000) return false;
+
+        // 扣费
+        BondManager bondMgr = plugin.getBondManager();
+        if (bondMgr == null) return false;
+
+        int balance = bondMgr.getBonds(player);
+        if (balance < cfg.renewPrice) {
+            plugin.getLogger().info("[UserGroup] " + player + " 自动续费失败: 债券不足(" + balance + "/" + cfg.renewPrice + ")");
+            return false;
+        }
+
+        boolean deducted = bondMgr.deductBonds(player, cfg.renewPrice,
+                "group_auto_renew", "", "system",
+                "自动续费用户组: " + groupName);
+        if (!deducted) return false;
+
+        long newExpiry = now + (long) cfg.durationMinutes * 60 * 1000;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE user_group_member SET expiry_time=? WHERE player_name=? AND group_name=?");
+            ps.setLong(1, newExpiry);
+            ps.setString(2, player);
+            ps.setString(3, groupName);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            return false;
+        }
+
+        pushMemberToPHP(player, groupName, "add");
+
+        // 通知在线玩家
+        Player onlinePlayer = plugin.getServer().getPlayerExact(player);
+        if (onlinePlayer != null && onlinePlayer.isOnline()) {
+            onlinePlayer.sendMessage("§a用户组 §e" + (cfg.displayName.isEmpty() ? groupName : cfg.displayName) + " §a已自动续费！");
+            onlinePlayer.sendMessage("§7新到期时间: §e" + formatExpiry(newExpiry));
+        }
+        return true;
+    }
+
+    /**
+     * 获取玩家用户组到期时间
+     * @return 到期时间戳(ms), 0=永久, -1=不在组内
+     */
+    public long getExpiryTime(String player, String groupName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT expiry_time FROM user_group_member WHERE player_name=? AND group_name=?");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            ResultSet rs = ps.executeQuery();
+            long expiry = -1;
+            if (rs.next()) {
+                expiry = rs.getLong("expiry_time");
+            }
+            rs.close();
+            ps.close();
+            return expiry;
+        } catch (SQLException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 获取即将到期的玩家列表（10分钟内到期且开启自动续费的）
+     * 用于定时器轮询提醒
+     */
+    public List<Map<String, Object>> getExpiringGroups() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        long tenMinLater = now + 10 * 60 * 1000;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT m.player_name, m.group_name, m.expiry_time, "
+                            + "c.auto_renew, c.renew_price "
+                            + "FROM user_group_member m "
+                            + "LEFT JOIN user_group_config c ON m.group_name = c.group_name "
+                            + "WHERE m.expiry_time > 0 AND m.expiry_time <= ? AND m.expiry_time > ?");
+            ps.setLong(1, tenMinLater);
+            ps.setLong(2, now);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("player", rs.getString("player_name"));
+                row.put("group", rs.getString("group_name"));
+                row.put("expiry", rs.getLong("expiry_time"));
+                row.put("autoRenew", rs.getInt("auto_renew") == 1);
+                row.put("renewPrice", rs.getInt("renew_price"));
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] getExpiringGroups failed: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /**
+     * 格式化到期时间为可读字符串
+     */
+    private String formatExpiry(long expiryTimeMillis) {
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+        return sdf.format(new java.util.Date(expiryTimeMillis));
+    }
+
     /** 获取玩家所属的所有有效组（排除过期） */
     public List<Map<String, Object>> getPlayerGroups(String player) {
         List<Map<String, Object>> list = new ArrayList<>();
@@ -306,6 +711,18 @@ public class UserGroupManager {
             }
         }
         return best;
+    }
+
+    /**
+     * 获取用户组的Home数量限制
+     * @return 0=跟随全局, >0=独立限制, -1=无限
+     */
+    public int getHomeLimit(String groupName) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) {
+            return 0; // 默认跟随全局
+        }
+        return cfg.homeLimit;
     }
 
     public boolean isPlayerInGroup(String player, String groupName) {
@@ -445,5 +862,12 @@ public class UserGroupManager {
         public int landPricePerSqm = -1;   // -1 = 使用全局
         public int maxLands = -1;          // -1 = 使用全局
         public String defaultPerms = "{}"; // JSON
+        // Home相关
+        public int homeLimit = 0;          // 0=跟随全局, >0=独立限制, -1=无限
+        // 付费相关
+        public int joinPrice = 0;          // 加入价格(债券), 0=不开放付费
+        public boolean autoRenew = false;  // 是否自动续费
+        public int renewPrice = 0;         // 续费价格(债券)
+        public long durationMinutes = 0;   // 有效时长(分钟), 0=永久
     }
 }

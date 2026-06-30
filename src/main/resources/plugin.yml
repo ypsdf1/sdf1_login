@@ -135,4 +135,19 @@ commands:
   tpahere:
     description: 请求传送ta到自己身边
     usage: /tpahere
+  sethome:
+    description: 设置一个家
+    usage: /sethome <名称>
+  delhome:
+    description: 删除一个家
+    usage: /delhome <名称>
+  home:
+    description: 传送到家
+    usage: /home [名称]
+  homes:
+    description: 查看所有家
+    usage: /homes
+  group:
+    description: 用户组管理
+    usage: /group <buy|renew|info> [组名]
 

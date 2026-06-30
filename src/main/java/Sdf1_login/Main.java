@@ -146,6 +146,7 @@ public class Main extends JavaPlugin
     public AreaGUIManager areaGUIManager;
     public AreaCLIManager areaCLIManager;
     private TeleportManager teleportMgr;
+    private HomeManager homeMgr;
 
 
     // 钱包流水查看目标（玩家名 → 查看目标）
@@ -545,7 +546,7 @@ public class Main extends JavaPlugin
         teleportMgr = new TeleportManager(this);
         getServer().getPluginManager().registerEvents(teleportMgr, this);
         teleportMgr.initDatabase();
-        
+
         // 注册传送命令执行器和Tab补全
         getCommand("tpa").setExecutor(this);
         getCommand("tpaccept").setExecutor(this);
@@ -561,6 +562,18 @@ public class Main extends JavaPlugin
         getCommand("tpahere").setTabCompleter(this);
         getCommand("tpaall").setTabCompleter(this);
         getCommand("tpacancel").setTabCompleter(this);
+
+        // ===== Home传送点系统 =====
+        homeMgr = new HomeManager(this);
+        getServer().getPluginManager().registerEvents(homeMgr, this);
+        getCommand("sethome").setExecutor(this);
+        getCommand("delhome").setExecutor(this);
+        getCommand("home").setExecutor(this);
+        getCommand("homes").setExecutor(this);
+        getCommand("sethome").setTabCompleter(this);
+        getCommand("delhome").setTabCompleter(this);
+        getCommand("home").setTabCompleter(this);
+        getCommand("homes").setTabCompleter(this);
         
         // 注册传送命令已在 onCommand 中通过条件分支完成
         
@@ -673,14 +686,18 @@ public class Main extends JavaPlugin
         if (garbage != null) garbage.close();
         if (questTracker != null)
             questTracker.shutdown();
+        if (homeMgr != null)
+            homeMgr.shutdown();
         if (areaProtection != null) {
             areaProtection.stopEnforceTask();
         }
-        for (BukkitTask task : areaProtection.getPendingTasks()) {
-            task.cancel();
+        if (areaProtection != null) {
+            for (BukkitTask task : areaProtection.getPendingTasks()) {
+                task.cancel();
+            }
+            areaProtection.saveWhitelists();
+            areaProtection.stopEnforceTask();
         }
-        areaProtection.saveWhitelists();
-        areaProtection.stopEnforceTask();
         // 取消所有延时清理任务，立即清理
         if (areaProtection != null) {
             for (Map.Entry<UUID, BukkitTask> entry
@@ -1743,6 +1760,36 @@ public class Main extends JavaPlugin
         // ★ 传送联动：登录阶段自动开启接受传送（基岩版玩家跳过）
         if (teleportMgr != null) {
             teleportMgr.onPlayerLogin(p);
+        }
+
+        // ★ 用户组到期检查：登录时自动移除过期用户组
+        if (userGroupManager != null) {
+            List<String> expiredGroups = userGroupManager.checkAndRemoveExpiredForPlayer(p.getName());
+            if (!expiredGroups.isEmpty()) {
+                p.sendMessage("§c以下用户组已过期并自动移除: §e" + String.join("§c, §e", expiredGroups));
+                p.sendMessage("§7使用 §e/group buy <组名> §7重新购买");
+            }
+
+            // ★ 到期提醒：10分钟内到期的用户组
+            List<Map<String, Object>> expiring = userGroupManager.getExpiringGroups();
+            for (Map<String, Object> g : expiring) {
+                String group = (String) g.get("group");
+                long expiry = (long) g.get("expiry");
+                if (p.getName().equalsIgnoreCase((String) g.get("player"))) {
+                    long remaining = expiry - System.currentTimeMillis();
+                    if (remaining > 0) {
+                        UserGroupManager.UserGroupConfig cfg = userGroupManager.getGroupConfig(group);
+                        String displayName = cfg != null && !cfg.displayName.isEmpty() ? cfg.displayName : group;
+                        int minutes = (int) (remaining / 60000);
+                        p.sendMessage("§e§l提醒: §f用户组 §e" + displayName + " §f将在 §c" + minutes + " 分钟 §f后到期！");
+                        if (cfg != null && cfg.autoRenew && cfg.renewPrice > 0) {
+                            p.sendMessage("§7已开启自动续费，到期时将自动扣费 §e" + cfg.renewPrice + " 张债券");
+                        } else {
+                            p.sendMessage("§7使用 §e/group renew " + group + " §7手动续费");
+                        }
+                    }
+                }
+            }
         }
 
         // ★ 玩家加入时立即允许登录轮询（不等全量同步完成）
@@ -4448,6 +4495,176 @@ public class Main extends JavaPlugin
             }
         }
 
+        // ★ Home传送点命令
+        if (cmd.getName().equalsIgnoreCase("sethome")
+                || cmd.getName().equalsIgnoreCase("delhome")
+                || cmd.getName().equalsIgnoreCase("home")
+                || cmd.getName().equalsIgnoreCase("homes")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (homeMgr == null) {
+                sender.sendMessage("§cHome系统未初始化");
+                return true;
+            }
+            try {
+                return homeMgr.handleCommand((Player) sender, cmd.getName(), args);
+            } catch (Exception e) {
+                sender.sendMessage("§c执行出错: " + e.getMessage());
+                e.printStackTrace();
+                return true;
+            }
+        }
+
+        // ===== /group buy|renew|info [组名] =====
+        if (label.equalsIgnoreCase("group")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (userGroupManager == null) {
+                sender.sendMessage("§c用户组系统未初始化");
+                return true;
+            }
+            Player p = (Player) sender;
+
+            // 检查登录状态
+            if (!loggedIn.contains(p.getName())) {
+                p.sendMessage("§c请先登录");
+                return true;
+            }
+
+            if (args.length == 0) {
+                // /group → 显示帮助
+                p.sendMessage("§6§l用户组§7 命令列表:");
+                p.sendMessage("§7────────────────────");
+                p.sendMessage("§e/group buy <组名> §7- 付费加入用户组");
+                p.sendMessage("§e/group renew <组名> §7- 续费用户组");
+                p.sendMessage("§e/group info §7- 查看我的用户组");
+                p.sendMessage("§7────────────────────");
+
+                // 显示可购买的用户组
+                List<UserGroupManager.UserGroupConfig> allGroups = userGroupManager.getAllGroups();
+                boolean hasBuyable = false;
+                for (UserGroupManager.UserGroupConfig cfg : allGroups) {
+                    if (cfg.joinPrice > 0) {
+                        if (!hasBuyable) {
+                            p.sendMessage("§6可购买的用户组:");
+                            hasBuyable = true;
+                        }
+                        String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+                        p.sendMessage("§e  • " + displayName + " §7- " + cfg.joinPrice + " 张债券 | 有效期 " + cfg.durationMinutes + " 分钟");
+                    }
+                }
+                if (!hasBuyable) {
+                    p.sendMessage("§7暂无可购买的用户组");
+                }
+                return true;
+            }
+
+            if (sub.equals("buy")) {
+                // /group buy <组名>
+                if (args.length < 2) {
+                    p.sendMessage("§c用法: /group buy <组名>");
+                    return true;
+                }
+                String groupName = args[1];
+                UserGroupManager.UserGroupConfig cfg = userGroupManager.getGroupConfig(groupName);
+                if (cfg == null) {
+                    p.sendMessage("§c未找到用户组: " + groupName);
+                    return true;
+                }
+
+                p.sendMessage("§7正在处理加入请求...");
+                String err = userGroupManager.joinGroupByPrice(p.getName(), cfg.name);
+                if (err != null) {
+                    p.sendMessage("§c" + err);
+                } else {
+                    String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+                    p.sendMessage("§a§l成功！ §7你已加入用户组 §e" + displayName);
+                    p.sendMessage("§7到期时间: §e" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date(System.currentTimeMillis() + cfg.durationMinutes * 60 * 1000)));
+                }
+                return true;
+
+            } else if (sub.equals("renew")) {
+                // /group renew <组名>
+                if (args.length < 2) {
+                    p.sendMessage("§c用法: /group renew <组名>");
+                    return true;
+                }
+                String groupName = args[1];
+                UserGroupManager.UserGroupConfig cfg = userGroupManager.getGroupConfig(groupName);
+                if (cfg == null) {
+                    p.sendMessage("§c未找到用户组: " + groupName);
+                    return true;
+                }
+
+                p.sendMessage("§7正在处理续费请求...");
+                String err = userGroupManager.renewGroup(p.getName(), cfg.name);
+                if (err != null) {
+                    p.sendMessage("§c" + err);
+                } else {
+                    long newExpiry = userGroupManager.getExpiryTime(p.getName(), cfg.name);
+                    String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+                    p.sendMessage("§a§l续费成功！ §7用户组 §e" + displayName + " §7已续期");
+                    if (newExpiry > 0) {
+                        p.sendMessage("§7新到期时间: §e" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date(newExpiry)));
+                    }
+                }
+                return true;
+
+            } else if (sub.equals("info")) {
+                // /group info
+                List<Map<String, Object>> groups = userGroupManager.getPlayerGroups(p.getName());
+                long now = System.currentTimeMillis();
+
+                if (groups.isEmpty()) {
+                    p.sendMessage("§e你还没有加入任何用户组");
+                    p.sendMessage("§7使用 §e/group buy <组名> §7付费加入用户组");
+                    return true;
+                }
+
+                p.sendMessage("§6§l我的用户组§7 (" + groups.size() + "个)");
+                p.sendMessage("§7────────────────────");
+
+                for (Map<String, Object> g : groups) {
+                    String groupName = (String) g.get("group_name");
+                    long expiry = (long) g.get("expiry_time");
+                    boolean expired = (boolean) g.get("expired");
+
+                    UserGroupManager.UserGroupConfig cfg = userGroupManager.getGroupConfig(groupName);
+                    String displayName = cfg != null && !cfg.displayName.isEmpty() ? cfg.displayName : groupName;
+                    String color = cfg != null ? cfg.displayColor : "§f";
+
+                    if (expired) {
+                        p.sendMessage(color + "  • " + displayName + " §c[已过期]");
+                    } else if (expiry > 0) {
+                        long remaining = expiry - now;
+                        String timeLeft;
+                        if (remaining > 3600000) {
+                            timeLeft = (remaining / 3600000) + "小时";
+                        } else if (remaining > 60000) {
+                            timeLeft = (remaining / 60000) + "分钟";
+                        } else {
+                            timeLeft = (remaining / 1000) + "秒";
+                        }
+                        p.sendMessage(color + "  • " + displayName + " §7[剩余 §e" + timeLeft + " §7]");
+                    } else {
+                        p.sendMessage(color + "  • " + displayName + " §a[永久]");
+                    }
+                }
+
+                p.sendMessage("§7────────────────────");
+                return true;
+
+            } else {
+                p.sendMessage("§c未知子命令: " + sub);
+                p.sendMessage("§7用法: /group <buy|renew|info> [组名]");
+                return true;
+            }
+        }
+
 
         // ===== /printer [玩家名] =====
         if (label.equalsIgnoreCase("printer")) {
@@ -6229,6 +6446,16 @@ public class Main extends JavaPlugin
         }
         if (cmd.getName().equalsIgnoreCase("cypay")) {
             return cypayCommand.onTabComplete(sender, cmd, label, args);
+        }
+
+        // ★ Home传送点命令 - Tab补全
+        if (cmd.getName().equalsIgnoreCase("sethome")
+                || cmd.getName().equalsIgnoreCase("delhome")
+                || cmd.getName().equalsIgnoreCase("home")
+                || cmd.getName().equalsIgnoreCase("homes")) {
+            if (sender instanceof Player && homeMgr != null) {
+                return homeMgr.onTabComplete(sender, cmd, label, args);
+            }
         }
 
         // ★ 传送系统命令 - Tab补全

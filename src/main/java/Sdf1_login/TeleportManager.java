@@ -44,13 +44,70 @@ public class TeleportManager implements Listener {
     
     // 传送冷却时间 (玩家名 → 最后发送时间戳)
     private final Map<String, Long> teleportCooldown = new ConcurrentHashMap<>();
-    private static final long TELEPORT_COOLDOWN_MS = 30_000L; // 30秒冷却
+    
+    // 请求过期时间 (请求ID/发送者→ 创建时间戳)，配置化
+    private final Map<String, Long> teleportRequestTimes = new ConcurrentHashMap<>();
+    private volatile long teleportCooldownMs = 30_000L; // 可配置的冷却时间
     
     // Inventory追踪ID集合（基岩版GUI面板）
     private final Set<String> teleportPanelIds = ConcurrentHashMap.newKeySet();
     
     public TeleportManager(Main plugin) {
         this.plugin = plugin;
+    }
+    
+    /**
+     * 获取传送请求有效时间（秒），从ConfigManager读取
+     */
+    private int getTpRequestValidSeconds() {
+        if (plugin.getConfigMgr() != null) return plugin.getConfigMgr().tpRequestValidSeconds;
+        return 90;
+    }
+    
+    /**
+     * 获取传送发送间隔（秒），从ConfigManager读取
+     */
+    private int getTpSendIntervalSeconds() {
+        if (plugin.getConfigMgr() != null) return plugin.getConfigMgr().tpSendIntervalSeconds;
+        return 10;
+    }
+    
+    /**
+     * 检查传送请求是否过期（由配置决定）
+     */
+    private boolean isTeleportRequestExpired(String key) {
+        Long createTime = teleportRequestTimes.get(key);
+        if (createTime == null) return true;
+        long elapsed = (System.currentTimeMillis() - createTime) / 1000;
+        return elapsed > getTpRequestValidSeconds();
+    }
+    
+    /**
+     * 清理已过期的传送请求
+     */
+    private void cleanupExpiredRequests(String playerName) {
+        int validSec = getTpRequestValidSeconds();
+        long now = System.currentTimeMillis();
+        
+        // 清理过期的incoming
+        Set<String> incoming = incomingRequests.get(playerName);
+        if (incoming != null) {
+            incoming.removeIf(sender -> {
+                String key = playerName + ":" + sender;
+                Long t = teleportRequestTimes.get(key);
+                return t != null && (now - t) > (validSec * 1000L);
+            });
+        }
+        
+        // 清理过期的outgoing
+        Set<String> outgoing = outgoingRequests.get(playerName);
+        if (outgoing != null) {
+            outgoing.removeIf(target -> {
+                String key = playerName + ":" + target + ":out";
+                Long t = teleportRequestTimes.get(key);
+                return t != null && (now - t) > (validSec * 1000L);
+            });
+        }
     }
     
     // ==================== 判断玩家类型 ====================
@@ -101,14 +158,16 @@ public class TeleportManager implements Listener {
         String lowerLabel = label.toLowerCase();
         boolean bedrock = isBedrockPlayer(player);
         
+        // ★ 进入命令时先清理过期请求
+        cleanupExpiredRequests(player.getName());
+        
         // ★ 无参数直接执行的命令（不走面板）
         switch (lowerLabel) {
             case "tpacancel":
                 handleTPCancel(player);
                 return true;
             case "tpauto":
-                handleTPAuto(player);
-                return true;
+                return handleTPAuto(player, args);
             case "tpaall":
                 return handleTPAll(player);
         }
@@ -380,8 +439,8 @@ public class TeleportManager implements Listener {
         String sender = player.getName();
         long now = System.currentTimeMillis();
         Long lastTime = teleportCooldown.get(sender);
-        if (lastTime != null && now - lastTime < TELEPORT_COOLDOWN_MS) {
-            long remaining = (TELEPORT_COOLDOWN_MS - (now - lastTime)) / 1000;
+        if (lastTime != null && now - lastTime < teleportCooldownMs) {
+            long remaining = (teleportCooldownMs - (now - lastTime)) / 1000;
             player.sendMessage("§c[传送] 请等待 §e" + remaining + " §c秒后再发送传送请求");
             return true;
         }
@@ -394,10 +453,15 @@ public class TeleportManager implements Listener {
         // 添加到内存
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
+        // 记录请求创建时间
+        teleportRequestTimes.put(sender + ":" + target.getName(), now);
         
         // 通知发送者（Java版带撤回按钮，基岩版纯文本）
         if (isBedrockPlayer(player)) {
             player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
+            // 显示请求剩余有效时间
+            int validSec = getTpRequestValidSeconds();
+            player.sendMessage("§7请求有效 §e" + validSec + " §7秒，间隔 §e" + getTpSendIntervalSeconds() + " §7秒");
             player.sendMessage("§7使用 §e/tpacancel §7撤回请求");
         } else {
             player.sendMessage(Component.empty()
@@ -442,11 +506,17 @@ public class TeleportManager implements Listener {
         String targetName = null;
         if (args.length > 0) {
             String arg = args[0];
-            try {
-                int index = Integer.parseInt(arg);
-                return handleTPAcceptCLI(player, index);
-            } catch (NumberFormatException e) {
+            // ★ 优先当玩家名处理，只有在纯数字且作为序号能找到时才当CLI处理
+            Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
+            if (possiblePlayer != null && possiblePlayer.isOnline()) {
                 targetName = arg;
+            } else {
+                try {
+                    int index = Integer.parseInt(arg);
+                    return handleTPAcceptCLI(player, index);
+                } catch (NumberFormatException e) {
+                    targetName = arg;
+                }
             }
         }
         
@@ -504,11 +574,17 @@ public class TeleportManager implements Listener {
         String targetName = null;
         if (args.length > 0) {
             String arg = args[0];
-            try {
-                int index = Integer.parseInt(arg);
-                return handleTPDenyCLI(player, index);
-            } catch (NumberFormatException e) {
+            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
+            Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
+            if (possiblePlayer != null && possiblePlayer.isOnline()) {
                 targetName = arg;
+            } else {
+                try {
+                    int index = Integer.parseInt(arg);
+                    return handleTPDenyCLI(player, index);
+                } catch (NumberFormatException e) {
+                    targetName = arg;
+                }
             }
         }
         
@@ -551,8 +627,30 @@ public class TeleportManager implements Listener {
     
     // ==================== TPAUTO - 自动接受传送 ====================
     
-    private void handleTPAuto(Player player) {
+    private boolean handleTPAuto(Player player, String[] args) {
         String name = player.getName();
+        
+        // ★ 识别插件管理员（检查Tag）
+        boolean isAdmin = player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
+        
+        if (args == null || args.length == 0) {
+            // 无参 = 切换自动接受
+            handleTPAutoToggle(player, name);
+            return true;
+        }
+        
+        // ★ 管理员可以通过CLI参数配置传送参数
+        if (isAdmin) {
+            handleTPAdminConfig(player, args);
+            return true;
+        }
+        
+        // 普通玩家有多个参数但非管理员 → 切换
+        handleTPAutoToggle(player, name);
+        return true;
+    }
+    
+    private void handleTPAutoToggle(Player player, String name) {
         if (autoAcceptPlayers.contains(name)) {
             autoAcceptPlayers.remove(name);
             removeAutoAcceptFromDB(name);
@@ -562,6 +660,44 @@ public class TeleportManager implements Listener {
             saveAutoAcceptToDB(name);
             player.sendMessage("§a[传送] 已开启自动接受传送请求");
         }
+    }
+    
+    /**
+     * 管理员通过CLI配置传送参数
+     * 支持语法：/tpauto valid 90、/tpauto interval 10、/tpauto valid 1:30、/tpauto interval 一分钟三十秒
+     */
+    private boolean handleTPAdminConfig(Player player, String[] args) {
+        if (args.length != 2) {
+            player.sendMessage("§6[传送管理] §7用法:");
+            player.sendMessage("§e  /tpauto valid <时间>  — 设置请求有效时间");
+            player.sendMessage("§e  /tpauto interval <时间>  — 设置发送间隔");
+            player.sendMessage("§e  /tpauto show  — 查看当前配置");
+            player.sendMessage("§7支持语法: 90 | 1:30 | 1.30 | 一分钟三十秒 | Ninety | One minute thirty seconds 等");
+            return true;
+        }
+        
+        String key = args[0].toLowerCase();
+        String val = args[1];
+        int seconds = plugin.getConfigMgr().parseIntFromString(val);
+        
+        if ("valid".equals(key)) {
+            plugin.getConfigMgr().tpRequestValidSeconds = seconds;
+            plugin.getConfigMgr().saveSettings();
+            player.sendMessage("§a[传送管理] 请求有效时间已设置为 §e" + seconds + " 秒");
+        } else if ("interval".equals(key)) {
+            plugin.getConfigMgr().tpSendIntervalSeconds = seconds;
+            teleportCooldownMs = seconds * 1000L;
+            plugin.getConfigMgr().saveSettings();
+            player.sendMessage("§a[传送管理] 发送间隔已设置为 §e" + seconds + " 秒");
+        } else if ("show".equals(key)) {
+            player.sendMessage("§6[传送管理] §7当前配置:");
+            player.sendMessage("§e  请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒");
+            player.sendMessage("§e  发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒");
+        } else {
+            player.sendMessage("§c[传送管理] 未知参数: " + key);
+            player.sendMessage("§e  可用参数: valid, interval, show");
+        }
+        return true;
     }
     
     // ==================== TPAHERE - 请求传送到自己身边 ====================
@@ -582,8 +718,8 @@ public class TeleportManager implements Listener {
         String sender = player.getName();
         long now = System.currentTimeMillis();
         Long lastTime = teleportCooldown.get(sender);
-        if (lastTime != null && now - lastTime < TELEPORT_COOLDOWN_MS) {
-            long remaining = (TELEPORT_COOLDOWN_MS - (now - lastTime)) / 1000;
+        if (lastTime != null && now - lastTime < teleportCooldownMs) {
+            long remaining = (teleportCooldownMs - (now - lastTime)) / 1000;
             player.sendMessage("§c[传送] 请等待 §e" + remaining + " §c秒后再发送传送请求");
             return true;
         }
@@ -630,8 +766,8 @@ public class TeleportManager implements Listener {
         
         // 检查冷却
         Long lastTime = teleportCooldown.get(sender);
-        if (lastTime != null && now - lastTime < TELEPORT_COOLDOWN_MS) {
-            long remaining = (TELEPORT_COOLDOWN_MS - (now - lastTime)) / 1000;
+        if (lastTime != null && now - lastTime < teleportCooldownMs) {
+            long remaining = (teleportCooldownMs - (now - lastTime)) / 1000;
             player.sendMessage("§c[传送] 请等待 §e" + remaining + " §c秒后再发送传送请求");
             return true;
         }
@@ -1096,7 +1232,7 @@ public class TeleportManager implements Listener {
                 break;
             case 3: // 自动接收开关
                 event.setCancelled(true);
-                handleTPAuto(player);
+                handleTPAuto(player, new String[]{});
                 openTeleportPanel(player);
                 break;
             case 4: // 全服传送

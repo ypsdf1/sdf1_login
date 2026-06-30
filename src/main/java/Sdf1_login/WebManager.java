@@ -65,7 +65,8 @@ public class WebManager {
     private static final int TIMER_B = 1; // 交易 0~10秒
     private static final int TIMER_C = 2; // 其它 10~20秒
     private static final int TIMER_D = 3; // 领地数据同步 15~25秒（独立，防SQL锁）
-    private final long[] lastRunTimestamps = new long[4];
+    private static final int TIMER_E = 4; // 用户组续费轮询 20~30秒（独立，防SQL锁）
+    private final long[] lastRunTimestamps = new long[5];
     private final Object scheduleLock = new Object();
 
     // ★ PHP锁库退避：检测到database is locked时暂停所有非关键定时器
@@ -1366,15 +1367,17 @@ public class WebManager {
             syncAfterAllOffline = false;
             lastSyncDone = false;
 
-            // ★ 玩家上线恢复：重启Timer B/C（之前全员下线时已暂停）
+            // ★ 玩家上线恢复：重启Timer B/C/E（之前全员下线时已暂停）
             // ★ Timer D已独立运行，不再需要重启
             if (timersBCPaused) {
                 timersBCPaused = false;
                 long randB = (long)(Math.random() * 10) * 2;
                 long randC = (long)(Math.random() * 10) * 2;
-                scheduleTimerB(40L + randB);  // 2秒后重启B
-                scheduleTimerC(120L + randC); // 6秒后重启C
-                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s)");
+                long randE = (long)(Math.random() * 10) * 2;
+                scheduleTimerB(40L + randB);   // 2秒后重启B
+                scheduleTimerC(120L + randC);  // 6秒后重启C
+                scheduleTimerE(240L + randE);  // 12秒后重启E
+                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C/E已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s E=" + (randE/20) + "s)");
             }
 
             // 玩家在线：全量批处理
@@ -1525,11 +1528,13 @@ public class WebManager {
         long randB = (long)(Math.random() * 10) * 2;
         long randC = (long)(Math.random() * 10) * 2;
         long randD = (long)(Math.random() * 10) * 2;
+        long randE = (long)(Math.random() * 10) * 2;
         scheduleTimerA(40L + randA);
         scheduleTimerB(140L + randB);
         scheduleTimerC(240L + randC);
         scheduleTimerD(340L + randD);
-        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s)");
+        scheduleTimerE(440L + randE);
+        plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s E=" + (randE/20) + "s)");
     }
 
     // Timer A 内部计数器：每N轮同步一次在线玩家（保持PHP心跳不断）
@@ -1802,6 +1807,169 @@ public class WebManager {
                 scheduleTimerD(calcStaggeredDelay(TIMER_D, 15, 25));
             }
         }.runTaskLaterAsynchronously(plugin, ticks);
+    }
+
+    /**
+     * 定时器E — 用户组续费轮询（20~30秒，独立防SQL锁）
+     * ★ 拉取PHP发起的续费请求，随玩家离线自动关停
+     */
+    private void scheduleTimerE(long ticks) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                long now = System.currentTimeMillis();
+                synchronized (scheduleLock) { lastRunTimestamps[TIMER_E] = now; }
+
+                // ★ 全员下线暂停：不调度下一轮
+                if (timersBCPaused) {
+                    plugin.getLogger().info("[续费轮询E] ★ 全员下线，Timer E已暂停");
+                    return; // 不调度下一轮，定时器自然停止
+                }
+
+                // ★ PHP锁库退避检查
+                if (phpBusyUntil > now) {
+                    scheduleTimerE(calcStaggeredDelay(TIMER_E, 20, 30));
+                    return;
+                }
+
+                // 拉取PHP续费请求
+                try {
+                    pollGroupRenewRequests();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[续费轮询E] 异常: " + e.getMessage());
+                }
+
+                // ★ 到期提醒检查（每轮执行）
+                try {
+                    checkAndNotifyExpiringGroups();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[续费轮询E] 到期提醒异常: " + e.getMessage());
+                }
+
+                // 自调度下一轮（20~30秒，错峰）
+                scheduleTimerE(calcStaggeredDelay(TIMER_E, 20, 30));
+            }
+        }.runTaskLaterAsynchronously(plugin, ticks);
+    }
+
+    /**
+     * 拉取PHP发起的用户组续费请求
+     * PHP写入web_group_renew表（player_name, group_name, action=pending）
+     * Java拉取后执行续费扣费，完成后回调PHP
+     */
+    private void pollGroupRenewRequests() {
+        try {
+            String endpoint = "api/land_api.php";
+            java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
+            params.put("action", "poll_group_renews");
+            params.put("secret", secretKey);
+            String resp = httpGet(endpoint, params);
+            if (resp == null || resp.isEmpty()) return;
+
+            detectPhpBusy(resp);
+
+            // 解析JSON: {"success":true, "renews":[{player_name, group_name, req_id}]}
+            if (!resp.contains("\"success\":true") || !resp.contains("\"renews\"")) return;
+
+            // 提取renews数组
+            int arrStart = resp.indexOf("\"renews\":[");
+            if (arrStart < 0) return;
+            arrStart += 10;
+            int arrEnd = resp.indexOf("]", arrStart);
+            if (arrEnd < 0) return;
+            String arr = resp.substring(arrStart, arrEnd).trim();
+            if (arr.isEmpty() || arr.equals("null")) return;
+
+            // 逐个处理（简单JSON解析）
+            String[] items = arr.split("\\},\\s*\\{");
+            for (String item : items) {
+                item = item.replaceAll("[\\{\\}]", "").trim();
+                if (item.isEmpty()) continue;
+
+                String playerName = extractJsonString(item, "player_name");
+                String groupName = extractJsonString(item, "group_name");
+                String reqId = extractJsonString(item, "req_id");
+
+                if (playerName == null || groupName == null || reqId == null) continue;
+
+                // 执行续费
+                UserGroupManager ugm = plugin.getUserGroup();
+                if (ugm == null) continue;
+
+                String err = ugm.renewGroup(playerName, groupName);
+
+                // 回调PHP
+                String callbackAction = (err == null) ? "renew_group_callback" : "renew_group_callback";
+                String result = (err == null) ? "success" : "failed:" + err;
+                String callbackBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"req_id\":\"" + escapeJson(reqId) + "\",\"result\":\"" + escapeJson(result) + "\"}";
+
+                try {
+                    String callbackResp = httpPost("api/land_api.php?action=" + callbackAction, callbackBody);
+                    detectPhpBusy(callbackResp);
+                } catch (Exception cbEx) {
+                    plugin.getLogger().warning("[续费轮询E] 回调PHP失败: " + cbEx.getMessage());
+                }
+
+                plugin.getLogger().info("[续费轮询E] 处理续费请求: " + playerName + " → " + groupName + " → " + (err == null ? "成功" : "失败: " + err));
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[续费轮询E] pollGroupRenewRequests异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 检查即将到期的用户组并发送提醒
+     * 10分钟内到期 → 提醒，5分钟内到期且自动续费 → 尝试扣费
+     */
+    private void checkAndNotifyExpiringGroups() {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return;
+
+        List<Map<String, Object>> expiring = ugm.getExpiringGroups();
+        long now = System.currentTimeMillis();
+
+        for (Map<String, Object> g : expiring) {
+            String player = (String) g.get("player");
+            String group = (String) g.get("group");
+            long expiry = (long) g.get("expiry");
+            boolean autoRenew = (boolean) g.get("autoRenew");
+
+            long remaining = expiry - now;
+            if (remaining <= 0) continue;
+
+            // 在线玩家发送提醒
+            Player onlinePlayer = plugin.getServer().getPlayerExact(player);
+            if (onlinePlayer != null && onlinePlayer.isOnline()) {
+                UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(group);
+                String displayName = cfg != null && !cfg.displayName.isEmpty() ? cfg.displayName : group;
+                int minutes = (int) (remaining / 60000);
+
+                if (minutes <= 1 && autoRenew) {
+                    // 1分钟内到期，尝试自动续费
+                    boolean renewed = ugm.autoRenewGroup(player, group);
+                    if (!renewed) {
+                        onlinePlayer.sendMessage("§c§l自动续费失败！ §e用户组 " + displayName + " §c将在 " + minutes + " 分钟后到期");
+                        onlinePlayer.sendMessage("§7请使用 §e/group renew " + group + " §7手动续费");
+                    }
+                } else if (minutes <= 5) {
+                    // 5分钟内到期
+                    onlinePlayer.sendMessage("§e§l紧急提醒: §f用户组 §e" + displayName + " §f将在 §c" + minutes + " 分钟 §f后到期！");
+                    if (autoRenew && cfg != null && cfg.renewPrice > 0) {
+                        onlinePlayer.sendMessage("§7自动续费将在到期时执行，扣费 §e" + cfg.renewPrice + " 张债券");
+                    } else {
+                        onlinePlayer.sendMessage("§7使用 §e/group renew " + group + " §7手动续费");
+                    }
+                } else if (minutes <= 10) {
+                    // 10分钟内到期
+                    onlinePlayer.sendMessage("§e提醒: 用户组 §e" + displayName + " §7将在 §c" + minutes + " 分钟 §7后到期");
+                    if (autoRenew && cfg != null && cfg.renewPrice > 0) {
+                        onlinePlayer.sendMessage("§7已开启自动续费");
+                    } else {
+                        onlinePlayer.sendMessage("§7使用 §e/group renew " + group + " §7续费");
+                    }
+                }
+            }
+        }
     }
 
     // ==================== 高频轮询器失败计数 ====================
@@ -3095,6 +3263,11 @@ public class WebManager {
                         gs.append("\"priority\":").append(cfg.priority).append(",");
                         gs.append("\"land_price_per_sqm\":").append(cfg.landPricePerSqm).append(",");
                         gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
+                        gs.append("\"home_limit\":").append(cfg.homeLimit).append(",");
+                        gs.append("\"join_price\":").append(cfg.joinPrice).append(",");
+                        gs.append("\"auto_renew\":").append(cfg.autoRenew ? 1 : 0).append(",");
+                        gs.append("\"renew_price\":").append(cfg.renewPrice).append(",");
+                        gs.append("\"duration_minutes\":").append(cfg.durationMinutes).append(",");
                         gs.append("\"default_perms\":\"").append(escapeJson(cfg.defaultPerms != null ? cfg.defaultPerms : "{}")).append("\"");
                         gs.append("}");
                         first = false;
@@ -3180,6 +3353,11 @@ public class WebManager {
                                     || existing.priority != cfg.priority
                                     || existing.landPricePerSqm != cfg.landPricePerSqm
                                     || existing.maxLands != cfg.maxLands
+                                    || existing.homeLimit != cfg.homeLimit
+                                    || existing.joinPrice != cfg.joinPrice
+                                    || existing.autoRenew != cfg.autoRenew
+                                    || existing.renewPrice != cfg.renewPrice
+                                    || existing.durationMinutes != cfg.durationMinutes
                                     || !safeEq(existing.defaultPerms, cfg.defaultPerms);
                             if (isDifferent) {
                                 ugm.saveGroupConfigToDB(cfg);
@@ -3288,6 +3466,16 @@ public class WebManager {
             if (!priceStr.isEmpty()) try { cfg.landPricePerSqm = Integer.parseInt(priceStr); } catch (Exception ignored) {}
             String maxStr = extractJsonField(obj, "max_lands");
             if (!maxStr.isEmpty()) try { cfg.maxLands = Integer.parseInt(maxStr); } catch (Exception ignored) {}
+            String homeLimStr = extractJsonField(obj, "home_limit");
+            if (!homeLimStr.isEmpty()) try { cfg.homeLimit = Integer.parseInt(homeLimStr); } catch (Exception ignored) {}
+            String joinStr = extractJsonField(obj, "join_price");
+            if (!joinStr.isEmpty()) try { cfg.joinPrice = Integer.parseInt(joinStr); } catch (Exception ignored) {}
+            String autoRenStr = extractJsonField(obj, "auto_renew");
+            if (!autoRenStr.isEmpty()) try { cfg.autoRenew = Integer.parseInt(autoRenStr) == 1; } catch (Exception ignored) {}
+            String renewStr = extractJsonField(obj, "renew_price");
+            if (!renewStr.isEmpty()) try { cfg.renewPrice = Integer.parseInt(renewStr); } catch (Exception ignored) {}
+            String durStr = extractJsonField(obj, "duration_minutes");
+            if (!durStr.isEmpty()) try { cfg.durationMinutes = Long.parseLong(durStr); } catch (Exception ignored) {}
             cfg.defaultPerms = extractJsonStringSafe(obj, "default_perms");
             return cfg;
         } catch (Exception e) {
@@ -3615,6 +3803,54 @@ public class WebManager {
                                 doPost(cbUrl, "{}");
                                 applied = true;
                             }
+                            break;
+                        }
+                        case "group_buy": {
+                            // ★ 玩家端付费加入用户组：PHP写入pending → Java拉取执行
+                            String buyGroup = String.valueOf(changeData.getOrDefault("group_name", ""));
+                            String buyPlayer = String.valueOf(changeData.getOrDefault("player", ""));
+
+                            if (buyGroup.isEmpty() || buyPlayer.isEmpty()) {
+                                plugin.getLogger().warning("[Web通信] group_buy: 参数缺失");
+                                break;
+                            }
+
+                            // 执行付费加入
+                            UserGroupManager ugm2 = plugin.getUserGroup();
+                            if (ugm2 != null) {
+                                String err = ugm2.joinGroupByPrice(buyPlayer, buyGroup);
+                                if (err != null) {
+                                    plugin.getLogger().warning("[Web通信] 付费加入失败: " + err);
+                                } else {
+                                    plugin.getLogger().info("[Web通信] 玩家付费加入用户组: " + buyPlayer + " → " + buyGroup);
+                                }
+                            }
+                            applied = true;
+                            break;
+                        }
+                        case "group_renew": {
+                            // ★ 玩家端续费用户组：PHP写入pending → Java拉取执行
+                            String renewGroup = String.valueOf(changeData.getOrDefault("group_name", ""));
+                            String renewPlayer = String.valueOf(changeData.getOrDefault("player", ""));
+                            int renewPrice = ((Number) changeData.getOrDefault("renew_price", 0)).intValue();
+                            int durationMinutes = ((Number) changeData.getOrDefault("duration_minutes", 0)).intValue();
+
+                            if (renewGroup.isEmpty() || renewPlayer.isEmpty()) {
+                                plugin.getLogger().warning("[Web通信] group_renew: 参数缺失");
+                                break;
+                            }
+
+                            // 执行续费
+                            UserGroupManager ugm = plugin.getUserGroup();
+                            if (ugm != null) {
+                                String err = ugm.renewGroup(renewPlayer, renewGroup);
+                                if (err != null) {
+                                    plugin.getLogger().warning("[Web通信] 续费失败: " + err);
+                                } else {
+                                    plugin.getLogger().info("[Web通信] 玩家续费用户组: " + renewPlayer + " → " + renewGroup);
+                                }
+                            }
+                            applied = true;
                             break;
                         }
                         default:
@@ -4006,8 +4242,8 @@ public class WebManager {
                 syncData.add(u);
             }
 
-            // ★ 无变化静默：对比用户数据hash
-            String currentHash = syncData.size() + ":" + syncData.hashCode();
+            // ★ 无变化静默：对比MD5 hash，避免无效网络请求
+            String currentHash = syncData.toString().hashCode() + "_" + syncData.size();
             if (currentHash.equals(lastUserRegistrationHash)) return; // 无变化，跳过
             lastUserRegistrationHash = currentHash;
 

@@ -258,6 +258,23 @@ public class DatabaseManager {
                     + ")");
             safeAdd(st, "menu_snowball",
                     "INTEGER DEFAULT 1");
+
+            // Home传送点表 — 先DROP旧表再重建，确保结构一致
+            st.execute("DROP TABLE IF EXISTS homes;");
+            st.execute("CREATE TABLE homes ("
+                    + "player_name TEXT NOT NULL,"
+                    + "home_name TEXT NOT NULL,"
+                    + "world TEXT NOT NULL,"
+                    + "x REAL NOT NULL,"
+                    + "y REAL NOT NULL,"
+                    + "z REAL NOT NULL,"
+                    + "yaw REAL DEFAULT 0,"
+                    + "pitch REAL DEFAULT 0,"
+                    + "created_at INTEGER DEFAULT 0,"
+                    + "PRIMARY KEY(player_name, home_name)"
+                    + ")");
+            safeAdd(st, "menu_snowball",
+                    "INTEGER DEFAULT 1");
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
         } catch (Exception e) {
@@ -283,6 +300,10 @@ public class DatabaseManager {
                 db.close();
         } catch (Exception ignored) {
         }
+    }
+
+    public Connection getConnection() {
+        return db;
     }
 
     // ==================== UI偏好 ====================

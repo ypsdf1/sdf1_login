@@ -104,6 +104,17 @@ public class LoginManager {
             }
         } catch (Exception ignored) {
         }
+
+        // ★ 注册后立即同步用户数据到PHP
+        if (plugin.webManager != null) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try { plugin.webManager.syncUserRegistrations(); }
+                catch (Exception e) {
+                    plugin.getLogger().warning("[Web通信] 注册后同步用户异常: " + e.getMessage());
+                }
+            });
+        }
+
         return true;
     }
 

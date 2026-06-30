@@ -55,6 +55,10 @@ public class ConfigManager {
     public double areaProtectPricePerSqM = 10.0; // 每平米价格(债券)
     public int areaProtectMaxLands = 3; // 每个玩家最大领地数
 
+    // ===== 传送配置 =====
+    public int tpRequestValidSeconds = 90; // 请求有效时间（秒）
+    public int tpSendIntervalSeconds = 10; // 发送间隔（秒）
+
     // ★ 构造函数接收 File，和 Main.java 调用一致 ★
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
@@ -195,6 +199,9 @@ public class ConfigManager {
         areaProtectPricePerSqM = parseDouble(m.getOrDefault("区域防护_每平米价格", "10"), 10.0);
         areaProtectMaxLands = parseInt(m.getOrDefault("区域防护_最大领地数", "3"), 3);
 
+        tpRequestValidSeconds = parseIntFromString(m.getOrDefault("传送_请求有效秒", "90"));
+        tpSendIntervalSeconds = parseIntFromString(m.getOrDefault("传送_发送间隔秒", "10"));
+
 // 验证合法值
         if (!"economy".equalsIgnoreCase(rewardChannel)
                 && !"bonds".equalsIgnoreCase(rewardChannel)) {
@@ -281,6 +288,8 @@ public class ConfigManager {
         L.add("签到债券最大=" + checkinBondMax);
         L.add("补签积分倍率=" + backCheckPointMultiplier);
         L.add("奖励发放方式=债券");
+        L.add("传送_请求有效秒=" + tpRequestValidSeconds);
+        L.add("传送_发送间隔秒=" + tpSendIntervalSeconds);
         writeLines(file, L);
     }
 
@@ -314,6 +323,8 @@ public class ConfigManager {
         L.add("区域防护_管理员Tag=admin");
         L.add("区域防护_每平米价格=10");
         L.add("区域防护_最大领地数=3");
+        L.add("传送_请求有效秒=90");
+        L.add("传送_发送间隔秒=10");
         writeLines(f, L);
     }
     public List<String> getAfkWhitelist() {
@@ -386,4 +397,140 @@ public class ConfigManager {
 
     private double parseDouble(String s, double def) { try { return Double.parseDouble(s.trim()); } catch (Exception e) { return def; } }
     private int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; } }
+    
+    /**
+     * 将自然语言时间字符串解析为秒数
+     * 支持：1:30、1分30秒、1.30、90、一分钟三十秒、壹分种叁拾秒、Ninety、Ninety秒、IX〇秒、One minute thirty seconds等
+     */
+    public int parseIntFromString(String s) {
+        if (s == null) return 90;
+        s = s.trim().toLowerCase();
+        
+        // 规则1：纯数字
+        try { return Integer.parseInt(s); } catch (Exception ignored) {}
+        
+        // 规则2：冒号分隔 mm:ss
+        if (s.contains(":")) {
+            String[] parts = s.split(":");
+            try {
+                int min = Integer.parseInt(parts[0]);
+                int sec = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+                return min * 60 + sec;
+            } catch (Exception ignored) {}
+        }
+        
+        // 规则3：点号分隔 mm.ss
+        if (s.matches("\\d+\\.\\d+")) {
+            String[] parts = s.split("\\.");
+            try {
+                int min = Integer.parseInt(parts[0]);
+                int sec = Integer.parseInt(parts[1]);
+                return min * 60 + sec;
+            } catch (Exception ignored) {}
+        }
+        
+        // 规则4：中文/英文混合解析 —— 逐字扫描
+        // 中文数字映射
+        java.util.Map<String, Integer> cnNum = new java.util.LinkedHashMap<>();
+        cnNum.put("零", 0); cnNum.put("一", 1); cnNum.put("壹", 1); cnNum.put("二", 2); cnNum.put("贰", 2); cnNum.put("两", 2);
+        cnNum.put("三", 3); cnNum.put("叁", 3); cnNum.put("四", 4); cnNum.put("肆", 4); cnNum.put("五", 5); cnNum.put("伍", 5);
+        cnNum.put("六", 6); cnNum.put("陆", 6); cnNum.put("七", 7); cnNum.put("漆", 7); cnNum.put("八", 8); cnNum.put("捌", 8);
+        cnNum.put("九", 9); cnNum.put("玖", 9);
+        
+        // 罗马数字映射（简单支持）
+        java.util.Map<Character, Integer> romanNum = new java.util.HashMap<>();
+        romanNum.put('I', 1); romanNum.put('V', 5); romanNum.put('X', 10); romanNum.put('L', 50); romanNum.put('C', 100);
+        
+        // 单位映射：中文
+        java.util.regex.Pattern unitPat = java.util.regex.Pattern.compile("(\\d+)(分[钟钟]?|秒|分钟)?");
+        
+        // 尝试拆分"X分Y秒"格式
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)[分钟]?(?:秒)?(\\d+(?:\\.\\d+)?[秒]?)?").matcher(s);
+        if (m.find()) {
+            try {
+                int minVal = (int) Float.parseFloat(m.group(1));
+                int secVal = 0;
+                if (m.group(2) != null) {
+                    secVal = (int) Float.parseFloat(m.group(2).replaceAll("[^\\d\\.]", ""));
+                }
+                // 如果没有"分"关键字而是直接数字+秒，整个算秒
+                if (!s.contains("分") && !s.contains("minute")) {
+                    return (int) Float.parseFloat(s.replaceAll("[^\\d\\.]", ""));
+                }
+                return minVal * 60 + secVal;
+            } catch (Exception ignored) {}
+        }
+        
+        // 尝试英文解析："ninety seconds", "one minute thirty seconds"
+        java.util.Map<String, Integer> enNum = new java.util.LinkedHashMap<>();
+        enNum.put("zero", 0); enNum.put("one", 1); enNum.put("two", 2); enNum.put("three", 3); enNum.put("four", 4);
+        enNum.put("five", 5); enNum.put("six", 6); enNum.put("seven", 7); enNum.put("eight", 8); enNum.put("nine", 9);
+        enNum.put("ten", 10); enNum.put("eleven", 11); enNum.put("twelve", 12); enNum.put("thirteen", 13);
+        enNum.put("fourteen", 14); enNum.put("fifteen", 15); enNum.put("sixteen", 16); enNum.put("seventeen", 17);
+        enNum.put("eighteen", 18); enNum.put("nineteen", 19); enNum.put("twenty", 20);
+        enNum.put("thirty", 30); enNum.put("forty", 40); enNum.put("fifty", 50); enNum.put("sixty", 60);
+        enNum.put("minute", 60); enNum.put("minutes", 60); enNum.put("second", 1); enNum.put("seconds", 1); enNum.put("sec", 1);
+        
+        // 计算罗马数字
+        if (s.chars().allMatch(c -> "IVXLCDM".indexOf(c) >= 0)) {
+            int total = 0;
+            int prev = 0;
+            for (int i = s.length() - 1; i >= 0; i--) {
+                int curr = romanNum.getOrDefault(s.charAt(i), 0);
+                if (curr < prev) total -= curr; else total += curr;
+                prev = curr;
+            }
+            if (total > 0) return total; // 纯罗马数字当作秒
+        }
+        
+        // 尝试解析英文短语："one minute thirty seconds", "ninety seconds", "one fifty"
+        try {
+            String[] words = s.split("\\s+");
+            int totalSeconds = 0;
+            boolean foundUnit = false;
+            for (String word : words) {
+                word = word.toLowerCase().replaceAll("[^a-z]", "");
+                if (word.isEmpty()) continue;
+                Integer val = enNum.get(word);
+                if (val != null) {
+                    if (word.contains("second") || word.equals("sec")) {
+                        totalSeconds += val; foundUnit = true;
+                    } else if (word.equals("minute") || word.equals("minutes")) {
+                        totalSeconds += val; foundUnit = true;
+                    } else if (word.matches("\\d+")) {
+                        totalSeconds += val; // 纯数字(英文单词形式)，当作最小单位（秒或分取决于上下文）
+                    } else {
+                        totalSeconds += val * 60; // 当作分钟数
+                    }
+                } else {
+                    // 尝试阿拉伯数字
+                    try {
+                        int num = Integer.parseInt(word);
+                        if (foundUnit && totalSeconds > 0) {
+                            // 已经有单位了，这应该是个额外的数字
+                            totalSeconds += num;
+                        } else if (num <= 60) {
+                            totalSeconds = num;
+                        } else {
+                            // 如"130" -> 130秒
+                            totalSeconds = num;
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
+            if (foundUnit || totalSeconds > 0) return totalSeconds;
+        } catch (Exception ignored) {}
+        
+        // 兜底：提取所有数字
+        java.util.regex.Matcher nm = java.util.regex.Pattern.compile("\\d+").matcher(s);
+        List<Integer> nums = new ArrayList<>();
+        while (nm.find()) nums.add(Integer.parseInt(nm.group()));
+        if (nums.size() == 1) return nums.get(0);
+        if (nums.size() == 2) {
+            // 第一个当分钟，第二个当秒
+            return nums.get(0) * 60 + nums.get(1);
+        }
+        
+        return 90; // 默认
+    }
 }
