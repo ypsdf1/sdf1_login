@@ -44,10 +44,14 @@ public class TeleportManager implements Listener {
     
     // 传送冷却时间 (玩家名 → 最后发送时间戳)
     private final Map<String, Long> teleportCooldown = new ConcurrentHashMap<>();
-    
+
     // 请求过期时间 (请求ID/发送者→ 创建时间戳)，配置化
     private final Map<String, Long> teleportRequestTimes = new ConcurrentHashMap<>();
     private volatile long teleportCooldownMs = 30_000L; // 可配置的冷却时间
+
+    // ★ 管理员配置状态 (玩家名 → 配置状态)
+    // 状态值: "valid" = 等待输入有效时间, "interval" = 等待输入间隔时间
+    private final Map<String, String> adminConfigState = new ConcurrentHashMap<>();
     
     // Inventory追踪ID集合（基岩版GUI面板）
     private final Set<String> teleportPanelIds = ConcurrentHashMap.newKeySet();
@@ -157,9 +161,18 @@ public class TeleportManager implements Listener {
     public boolean handleCommand(Player player, String label, String[] args) {
         String lowerLabel = label.toLowerCase();
         boolean bedrock = isBedrockPlayer(player);
-        
+
         // ★ 进入命令时先清理过期请求
         cleanupExpiredRequests(player.getName());
+
+        // ★ 检查是否处于管理员配置状态
+        if (adminConfigState.containsKey(player.getName())) {
+            // 将整个命令作为输入处理（如果是空参数，则使用空字符串）
+            String input = args.length > 0 ? String.join(" ", args) : "";
+            if (handleAdminConfigInput(player, input)) {
+                return true;
+            }
+        }
         
         // ★ 无参数直接执行的命令（不走面板）
         switch (lowerLabel) {
@@ -657,22 +670,32 @@ public class TeleportManager implements Listener {
     
     private boolean handleTPAuto(Player player, String[] args) {
         String name = player.getName();
-        
+
         // ★ 识别插件管理员（检查Tag）
         boolean isAdmin = player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
-        
+
         if (args == null || args.length == 0) {
-            // 无参 = 切换自动接受
-            handleTPAutoToggle(player, name);
-            return true;
+            // 无参：管理员显示配置菜单，普通玩家切换自动接受
+            if (isAdmin) {
+                openAdminConfigMenu(player);
+                return true;
+            } else {
+                handleTPAutoToggle(player, name);
+                return true;
+            }
         }
-        
+
         // ★ 管理员可以通过CLI参数配置传送参数
         if (isAdmin) {
+            // 检查是否为 config 命令
+            if ("config".equalsIgnoreCase(args[0])) {
+                openAdminConfigMenu(player);
+                return true;
+            }
             handleTPAdminConfig(player, args);
             return true;
         }
-        
+
         // 普通玩家有多个参数但非管理员 → 切换
         handleTPAutoToggle(player, name);
         return true;
@@ -727,7 +750,109 @@ public class TeleportManager implements Listener {
         }
         return true;
     }
-    
+
+    /**
+     * 显示管理员配置菜单（交互式）
+     */
+    private void openAdminConfigMenu(Player player) {
+        player.sendMessage(Component.text(""));
+        player.sendMessage(Component.text("§6§l══════════ 传送系统配置 ══════════"));
+        player.sendMessage(Component.text(""));
+        player.sendMessage(Component.text("§7当前配置:"));
+        player.sendMessage(Component.text("  §e1. 请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒"));
+        player.sendMessage(Component.text("  §e2. 发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒"));
+        player.sendMessage(Component.text(""));
+        player.sendMessage(Component.text("§e请选择操作 (输入数字):"));
+        player.sendMessage(Component.empty()
+            .append(Component.text("  §a[1] "))
+            .append(Component.text("§b设置请求有效时间 ")
+                .clickEvent(ClickEvent.runCommand("/tpauto valid "))
+                .hoverEvent(HoverEvent.showText(Component.text("设置请求有效时间")))));
+        player.sendMessage(Component.empty()
+            .append(Component.text("  §a[2] "))
+            .append(Component.text("§b设置发送间隔 ")
+                .clickEvent(ClickEvent.runCommand("/tpauto interval "))
+                .hoverEvent(HoverEvent.showText(Component.text("设置发送间隔")))));
+        player.sendMessage(Component.empty()
+            .append(Component.text("  §a[3] "))
+            .append(Component.text("§b查看当前配置 ")
+                .clickEvent(ClickEvent.runCommand("/tpauto show"))
+                .hoverEvent(HoverEvent.showText(Component.text("查看当前配置")))));
+        player.sendMessage(Component.text(""));
+        player.sendMessage(Component.text("§7或直接输入: §e/tpauto valid <时间> §7或 §e/tpauto interval <时间>"));
+        player.sendMessage(Component.text("§7支持语法: 90 | 1:30 | 一分钟三十秒 | Ninety | One minute thirty seconds 等"));
+        player.sendMessage(Component.text(""));
+        player.sendMessage(Component.text("§6§l══════════════════════════════════════"));
+        player.sendMessage(Component.text(""));
+
+        // 设置配置状态，等待玩家输入数字
+        adminConfigState.put(player.getName(), "waiting_for_choice");
+    }
+
+    /**
+     * 处理管理员配置状态下的输入
+     * @return true 如果处理了输入，false 如果没有处于配置状态
+     */
+    private boolean handleAdminConfigInput(Player player, String input) {
+        String state = adminConfigState.get(player.getName());
+        if (state == null) {
+            return false;
+        }
+
+        String name = player.getName();
+
+        if ("waiting_for_choice".equals(state)) {
+            // 等待选择操作
+            if ("1".equals(input.trim())) {
+                adminConfigState.put(name, "waiting_for_valid");
+                player.sendMessage("§e[传送管理] 请输入请求有效时间 (支持: 90 | 1:30 | 一分钟三十秒 等):");
+                return true;
+            } else if ("2".equals(input.trim())) {
+                adminConfigState.put(name, "waiting_for_interval");
+                player.sendMessage("§e[传送管理] 请输入发送间隔时间 (支持: 10 | 0:10 | 十秒 等):");
+                return true;
+            } else if ("3".equals(input.trim())) {
+                player.sendMessage("§6[传送管理] §7当前配置:");
+                player.sendMessage("§e  请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒");
+                player.sendMessage("§e  发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒");
+                adminConfigState.remove(name);
+                return true;
+            } else {
+                player.sendMessage("§c[传送管理] 无效的选择，请输入 1、2 或 3");
+                return true;
+            }
+        } else if ("waiting_for_valid".equals(state)) {
+            // 等待输入有效时间
+            int seconds = plugin.getConfigMgr().parseIntFromString(input.trim());
+            if (seconds > 0) {
+                plugin.getConfigMgr().tpRequestValidSeconds = seconds;
+                plugin.getConfigMgr().saveSettings();
+                player.sendMessage("§a[传送管理] 请求有效时间已设置为 §e" + seconds + " 秒");
+            } else {
+                player.sendMessage("§c[传送管理] 无效的时间格式，请重新输入");
+                return true;
+            }
+            adminConfigState.remove(name);
+            return true;
+        } else if ("waiting_for_interval".equals(state)) {
+            // 等待输入间隔时间
+            int seconds = plugin.getConfigMgr().parseIntFromString(input.trim());
+            if (seconds > 0) {
+                plugin.getConfigMgr().tpSendIntervalSeconds = seconds;
+                teleportCooldownMs = seconds * 1000L;
+                plugin.getConfigMgr().saveSettings();
+                player.sendMessage("§a[传送管理] 发送间隔已设置为 §e" + seconds + " 秒");
+            } else {
+                player.sendMessage("§c[传送管理] 无效的时间格式，请重新输入");
+                return true;
+            }
+            adminConfigState.remove(name);
+            return true;
+        }
+
+        return false;
+    }
+
     // ==================== TPAHERE - 请求传送到自己身边 ====================
     
     private boolean handleTPAH(Player player, String targetName) {
