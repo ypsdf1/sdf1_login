@@ -156,6 +156,41 @@ public class ConfigManager {
         Map<String, String> m = new LinkedHashMap<>();
         loadMap(file, m);
 
+        // 检查是否需要补充新配置项
+        boolean hasNewKey = false;
+        String[][] newKeys = {
+            {"签到债券最小", String.valueOf(checkinBondMin)},
+            {"签到债券最大", String.valueOf(checkinBondMax)},
+            {"奖励发放方式", "债券"},
+            {"区域防护_管理员模式", areaProtectAdminMode},
+            {"区域防护_管理员Tag", areaProtectAdminTag},
+            {"区域防护_每平米价格", String.valueOf(areaProtectPricePerSqM)},
+            {"区域防护_最大领地数", String.valueOf(areaProtectMaxLands)},
+            {"传送_请求有效秒", String.valueOf(tpRequestValidSeconds)},
+            {"传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds)},
+        };
+        for (String[] nk : newKeys) {
+            if (!m.containsKey(nk[0])) { hasNewKey = true; }
+        }
+        if (hasNewKey) {
+            try {
+                FileWriter fw = new FileWriter(file, true);
+                BufferedWriter bw = new BufferedWriter(fw);
+                bw.newLine();
+                bw.write("# ===== 新增配置项 =====");
+                bw.newLine();
+                for (String[] nk : newKeys) {
+                    if (!m.containsKey(nk[0])) {
+                        bw.write(nk[0] + "=" + nk[1]);
+                        bw.newLine();
+                    }
+                }
+                bw.flush(); bw.close();
+                System.out.println("[Config] 已补充缺失的配置项");
+            } catch (IOException ignored) {}
+        }
+
+        // 读取ConfigManager管理的配置项
         adminTag = m.getOrDefault("管理标签", adminTag);
         adminPassword = m.getOrDefault("管理密码", adminPassword);
         maxAccountsPerIP = parseInt(m.getOrDefault("每IP最大账号数", "3"), 3);
@@ -206,40 +241,6 @@ public class ConfigManager {
         if (!"economy".equalsIgnoreCase(rewardChannel)
                 && !"bonds".equalsIgnoreCase(rewardChannel)) {
             rewardChannel = "bonds";
-        }
-
-
-
-        // ★ 自动补充新配置项 ★
-        boolean needAppend = false;
-        List<String> newKeys = new ArrayList<>();
-        if (!m.containsKey("签到债券最小")) { needAppend = true; newKeys.add("签到债券最小=" + checkinBondMin); }
-        if (!m.containsKey("签到债券最大")) { needAppend = true; newKeys.add("签到债券最大=" + checkinBondMax); }
-        if (!m.containsKey("奖励发放方式")) {
-            needAppend = true;
-            newKeys.add("奖励发放方式=债券");
-        }
-        if (needAppend) {
-            try {
-                FileWriter fw = new FileWriter(file, true);
-                BufferedWriter bw = new BufferedWriter(fw);
-                bw.newLine();
-                for (String key : newKeys) { bw.write(key); bw.newLine(); }
-                bw.flush(); bw.close();
-                System.out.println("[Config] 已补充签到债券配置");
-
-            } catch (IOException ignored) {}
-            if (!m.containsKey("奖励发放方式")) {
-                try {
-                    FileWriter fw = new FileWriter(file, true);
-                    BufferedWriter bw = new BufferedWriter(fw);
-                    bw.newLine();
-                    bw.write("奖励发放方式=bonds");
-                    bw.newLine();
-                    bw.flush(); bw.close();
-                } catch (IOException ignored) {}
-            }
-
         }
     }
     /**
