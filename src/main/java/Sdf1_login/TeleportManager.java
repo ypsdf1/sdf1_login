@@ -763,21 +763,10 @@ public class TeleportManager implements Listener {
         player.sendMessage(Component.text("  §e2. 发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒"));
         player.sendMessage(Component.text(""));
         player.sendMessage(Component.text("§e请选择操作 (输入数字):"));
-        player.sendMessage(Component.empty()
-            .append(Component.text("  §a[1] "))
-            .append(Component.text("§b设置请求有效时间 ")
-                .clickEvent(ClickEvent.runCommand("/tpauto valid "))
-                .hoverEvent(HoverEvent.showText(Component.text("设置请求有效时间")))));
-        player.sendMessage(Component.empty()
-            .append(Component.text("  §a[2] "))
-            .append(Component.text("§b设置发送间隔 ")
-                .clickEvent(ClickEvent.runCommand("/tpauto interval "))
-                .hoverEvent(HoverEvent.showText(Component.text("设置发送间隔")))));
-        player.sendMessage(Component.empty()
-            .append(Component.text("  §a[3] "))
-            .append(Component.text("§b查看当前配置 ")
-                .clickEvent(ClickEvent.runCommand("/tpauto show"))
-                .hoverEvent(HoverEvent.showText(Component.text("查看当前配置")))));
+        player.sendMessage(Component.text("  §a[1] §b设置请求有效时间"));
+        player.sendMessage(Component.text("  §a[2] §b设置发送间隔"));
+        player.sendMessage(Component.text("  §a[3] §b查看当前配置"));
+        player.sendMessage(Component.text("  §a[4] §b退出配置"));
         player.sendMessage(Component.text(""));
         player.sendMessage(Component.text("§7或直接输入: §e/tpauto valid <时间> §7或 §e/tpauto interval <时间>"));
         player.sendMessage(Component.text("§7支持语法: 90 | 1:30 | 一分钟三十秒 | Ninety | One minute thirty seconds 等"));
@@ -800,30 +789,35 @@ public class TeleportManager implements Listener {
         }
 
         String name = player.getName();
+        String trimmedInput = input.trim();
 
         if ("waiting_for_choice".equals(state)) {
             // 等待选择操作
-            if ("1".equals(input.trim())) {
+            if ("1".equals(trimmedInput) || "valid".equalsIgnoreCase(trimmedInput)) {
                 adminConfigState.put(name, "waiting_for_valid");
                 player.sendMessage("§e[传送管理] 请输入请求有效时间 (支持: 90 | 1:30 | 一分钟三十秒 等):");
                 return true;
-            } else if ("2".equals(input.trim())) {
+            } else if ("2".equals(trimmedInput) || "interval".equalsIgnoreCase(trimmedInput)) {
                 adminConfigState.put(name, "waiting_for_interval");
                 player.sendMessage("§e[传送管理] 请输入发送间隔时间 (支持: 10 | 0:10 | 十秒 等):");
                 return true;
-            } else if ("3".equals(input.trim())) {
+            } else if ("3".equals(trimmedInput) || "show".equalsIgnoreCase(trimmedInput)) {
                 player.sendMessage("§6[传送管理] §7当前配置:");
                 player.sendMessage("§e  请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒");
                 player.sendMessage("§e  发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒");
                 adminConfigState.remove(name);
                 return true;
+            } else if ("4".equals(trimmedInput) || "exit".equalsIgnoreCase(trimmedInput) || "quit".equalsIgnoreCase(trimmedInput)) {
+                player.sendMessage("§7[传送管理] 已退出配置模式");
+                adminConfigState.remove(name);
+                return true;
             } else {
-                player.sendMessage("§c[传送管理] 无效的选择，请输入 1、2 或 3");
+                player.sendMessage("§c[传送管理] 无效的选择，请输入 1、2、3 或 4");
                 return true;
             }
         } else if ("waiting_for_valid".equals(state)) {
             // 等待输入有效时间
-            int seconds = plugin.getConfigMgr().parseIntFromString(input.trim());
+            int seconds = plugin.getConfigMgr().parseIntFromString(trimmedInput);
             if (seconds > 0) {
                 plugin.getConfigMgr().tpRequestValidSeconds = seconds;
                 plugin.getConfigMgr().saveSettings();
@@ -836,7 +830,7 @@ public class TeleportManager implements Listener {
             return true;
         } else if ("waiting_for_interval".equals(state)) {
             // 等待输入间隔时间
-            int seconds = plugin.getConfigMgr().parseIntFromString(input.trim());
+            int seconds = plugin.getConfigMgr().parseIntFromString(trimmedInput);
             if (seconds > 0) {
                 plugin.getConfigMgr().tpSendIntervalSeconds = seconds;
                 teleportCooldownMs = seconds * 1000L;

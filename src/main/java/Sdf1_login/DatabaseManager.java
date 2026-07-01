@@ -259,9 +259,8 @@ public class DatabaseManager {
             safeAdd(st, "menu_snowball",
                     "INTEGER DEFAULT 1");
 
-            // Home传送点表 — 先DROP旧表再重建，确保结构一致
-            st.execute("DROP TABLE IF EXISTS homes;");
-            st.execute("CREATE TABLE homes ("
+            // Home传送点表 — 只在不存在时创建，不删除已有数据
+            st.execute("CREATE TABLE IF NOT EXISTS homes ("
                     + "player_name TEXT NOT NULL,"
                     + "home_name TEXT NOT NULL,"
                     + "world TEXT NOT NULL,"
