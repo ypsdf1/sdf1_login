@@ -63,7 +63,7 @@ public class ConfigManager {
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
     }
-    public String rewardChannel = "债券";  // bonds = 债券，economy = Vault经济
+    public String rewardChannel = "economy";  // economy = 经济（Vault经济系统）
 
 
     // ==================== 消息 ====================
@@ -225,7 +225,7 @@ public class ConfigManager {
         if (checkinRewardFixed > 0) checkinRewardType = "fixed";
         else if (checkinRewardMin > 0 && checkinRewardMax > checkinRewardMin) checkinRewardType = "range";
         else checkinRewardType = "none";
-        rewardChannel = m.getOrDefault("奖励发放方式", "债券");
+        rewardChannel = m.getOrDefault("奖励发放方式", "economy");
         rewardChannel = normalizeRewardChannel(rewardChannel);
 
         // ===== 区域防护配置 =====
@@ -237,30 +237,23 @@ public class ConfigManager {
         tpRequestValidSeconds = parseIntFromString(m.getOrDefault("传送_请求有效秒", "90"));
         tpSendIntervalSeconds = parseIntFromString(m.getOrDefault("传送_发送间隔秒", "10"));
 
-// 验证合法值
-        if (!"economy".equalsIgnoreCase(rewardChannel)
-                && !"bonds".equalsIgnoreCase(rewardChannel)) {
-            rewardChannel = "bonds";
-        }
+        // rewardChannel 已标准化为 "economy"（默认）
     }
     /**
      * 奖励方式标准化：中英文全兼容
-     * "债券" "bonds" "Bond" "BONDS" → "bonds"
-     * "经济" "economy" "Economy" "ECONOMY" → "economy"
-     * 其他任何值 → "bonds"（默认债券）
+     * "经济" "economy" "Economy" "ECONOMY" "vault" → "economy"
+     * 其他任何值 → "economy"（默认经济）
      */
     private String normalizeRewardChannel(String raw) {
-        if (raw == null) return "bonds";
+        if (raw == null) return "economy";
         String s = raw.trim().toLowerCase();
         // 中文
-        if (s.contains("债券")) return "bonds";
         if (s.contains("经济")) return "economy";
         // 英文
-        if (s.contains("bond")) return "bonds";
         if (s.contains("econ")) return "economy";
-        if (s.contains("Vault")) return "economy";
-        // 兜底
-        return "bonds";
+        if (s.contains("vault")) return "economy";
+        // 兜底：全部用经济系统
+        return "economy";
     }
 
     public void saveSettings() {
@@ -307,7 +300,7 @@ public class ConfigManager {
         managed.put("签到债券最小", String.valueOf(checkinBondMin));
         managed.put("签到债券最大", String.valueOf(checkinBondMax));
         managed.put("补签积分倍率", String.valueOf(backCheckPointMultiplier));
-        managed.put("奖励发放方式", "债券");
+        managed.put("奖励发放方式", "经济");
         managed.put("传送_请求有效秒", String.valueOf(tpRequestValidSeconds));
         managed.put("传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds));
 
@@ -392,7 +385,7 @@ public class ConfigManager {
         L.add("签到债券最小=1");
         L.add("签到债券最大=3");
         L.add("补签积分倍率=5");
-        L.add("奖励发放方式=债券");
+        L.add("奖励发放方式=经济");
         // 区域防护配置
         L.add("区域防护_管理员模式=tag");
         L.add("区域防护_管理员Tag=admin");
@@ -564,25 +557,24 @@ public class ConfigManager {
 
     /** 解析中文时间字符串，返回秒数或-1(无法解析) */
     private int parseChineseTime(String s) {
-        // 中文数字映射（含繁体/大写）
+        // 中文数字映射（含繁体/大写/各种变体）
         java.util.Map<String, Integer> cn = new java.util.LinkedHashMap<>();
         cn.put("零", 0); cn.put("\u3007", 0); // 〇
         cn.put("一", 1); cn.put("壹", 1); cn.put("幺", 1);
-        cn.put("二", 2); cn.put("贰", 2); cn.put("貳", 2); cn.put("两", 2); cn.put("贰", 2);
-        cn.put("三", 3); cn.put("叁", 3); cn.put("參", 3); cn.put("叁", 3);
-        cn.put("四", 4); cn.put("肆", 4); cn.put("肆", 4);
-        cn.put("五", 5); cn.put("伍", 5); cn.put("伍", 5);
-        cn.put("六", 6); cn.put("陆", 6); cn.put("陸", 6); cn.put("陆", 6);
+        cn.put("二", 2); cn.put("贰", 2); cn.put("貳", 2); cn.put("两", 2); cn.put("弐", 2);
+        cn.put("三", 3); cn.put("叁", 3); cn.put("參", 3);
+        cn.put("四", 4); cn.put("肆", 4);
+        cn.put("五", 5); cn.put("伍", 5);
+        cn.put("六", 6); cn.put("陆", 6); cn.put("陸", 6);
         cn.put("七", 7); cn.put("柒", 7); cn.put("漆", 7);
-        cn.put("八", 8); cn.put("捌", 8); cn.put("捌", 8);
-        cn.put("九", 9); cn.put("玖", 9); cn.put("玖", 9);
+        cn.put("八", 8); cn.put("捌", 8);
+        cn.put("九", 9); cn.put("玖", 9);
 
-        // 检测是否包含中文数字字符
+        // 检测是否包含中文数字字符（数字本身或乘法单位）
         boolean hasCnDigit = false;
         for (char c : s.toCharArray()) {
             if (cn.containsKey(String.valueOf(c))) { hasCnDigit = true; break; }
         }
-        // 也检查乘法单位（十百千万）
         if (!hasCnDigit) {
             if (s.contains("十") || s.contains("拾") || s.contains("百") || s.contains("佰")
                     || s.contains("千") || s.contains("仟") || s.contains("万")) {
@@ -611,12 +603,16 @@ public class ConfigManager {
             }
             String ch = String.valueOf(s.charAt(i));
             Integer digit = cn.get(ch);
-            if (digit != null && digit < 10) {
-                current = current * 10 + digit; // 支持连续数字如"十二"→12
-                // 但如果current已经很大了（来自乘法），重新开始
-                if (current > 100) current = digit;
+            if (digit != null && digit >= 0 && digit <= 9) {
+                // 单个中文数字：如果已经有乘法器累积的值，则追加；否则直接赋值
+                if (current > 0 && total == 0) {
+                    // 连续数字如"一二"→12
+                    current = current * 10 + digit;
+                } else {
+                    current = digit;
+                }
             } else if (ch.equals("十") || ch.equals("拾")) {
-                if (current == 0) current = 1;
+                if (current == 0) current = 1; // "十二"→12, "十" alone→10
                 total += current * 10;
                 current = 0;
             } else if (ch.equals("百") || ch.equals("佰")) {
@@ -635,11 +631,14 @@ public class ConfigManager {
                 total += current;
                 current = 0;
                 hasTimeUnit = true;
-            } else if (ch.equals("分") || ch.equals("鐘")) {
+            } else if (ch.equals("分")) {
+                // 分后面可能跟"钟"单独出现，这里处理"分"作为分钟单位
                 total = (total + current) * 60;
                 current = 0;
                 hasTimeUnit = true;
-            } else if (ch.equals("钟")) {
+            } else if (ch.equals("钟") || ch.equals("鐘")) {
+                // 单独出现的"钟"跟在"分"后面——已经被前面的分处理过了
+                // 如果"钟"单独出现（极少见），也当分钟处理
                 total = (total + current) * 60;
                 current = 0;
                 hasTimeUnit = true;
@@ -654,7 +653,7 @@ public class ConfigManager {
 
     /** 解析英文时间字符串，返回秒数或-1(无法解析) */
     private int parseEnglishTime(String s) {
-        // 英文数字映射
+        // 英文数字映射（1-90, 100, 1000）
         java.util.Map<String, Integer> en = new java.util.LinkedHashMap<>();
         en.put("zero", 0); en.put("one", 1); en.put("two", 2); en.put("three", 3); en.put("four", 4);
         en.put("five", 5); en.put("six", 6); en.put("seven", 7); en.put("eight", 8); en.put("nine", 9);
@@ -665,13 +664,13 @@ public class ConfigManager {
         en.put("seventy", 70); en.put("eighty", 80); en.put("ninety", 90);
         en.put("hundred", 100); en.put("thousand", 1000);
 
-        // 单位倍率
+        // 单位倍率（值 = 换算为秒的乘数）
         java.util.Map<String, Integer> units = new java.util.LinkedHashMap<>();
-        units.put("second", 1); units.put("seconds", 1); units.put("sec", 1); units.put("secs", 1); units.put("s", 1);
-        units.put("minute", 60); units.put("minutes", 60); units.put("min", 60); units.put("mins", 60); units.put("m", 60);
-        units.put("hour", 3600); units.put("hours", 3600); units.put("hr", 3600); units.put("hrs", 3600); units.put("h", 3600);
+        units.put("second", 1); units.put("seconds", 1); units.put("sec", 1); units.put("secs", 1);
+        units.put("minute", 60); units.put("minutes", 60); units.put("min", 60); units.put("mins", 60);
+        units.put("hour", 3600); units.put("hours", 3600); units.put("hr", 3600); units.put("hrs", 3600);
 
-        // 检测是否有英文单位
+        // 检测是否有英文时间单位
         boolean hasEnUnit = false;
         for (String u : units.keySet()) {
             if (s.contains(" " + u + " ") || s.endsWith(" " + u) || s.startsWith(u + " ") || s.equals(u)) {
@@ -685,30 +684,33 @@ public class ConfigManager {
         String[] words = s.split("\\s+");
         int totalSeconds = 0;
         int currentNum = 0;
+        boolean hasSeenUnit = false; // 是否已见过明确的时间单位
 
         for (String word : words) {
             String clean = word.toLowerCase().replaceAll("[^a-z0-9]", "");
             if (clean.isEmpty()) continue;
 
-            // 检查是否是单位
+            // 1. 检查是否是单位
             Integer unitMul = units.get(clean);
             if (unitMul != null) {
                 if (currentNum == 0) currentNum = 1;
                 totalSeconds += currentNum * unitMul;
                 currentNum = 0;
+                hasSeenUnit = true;
                 continue;
             }
 
-            // 检查是否是阿拉伯数字
+            // 2. 检查是否是阿拉伯数字
             try {
                 currentNum = Integer.parseInt(clean);
                 continue;
             } catch (Exception ignored) {}
 
-            // 检查是否是英文数字单词
+            // 3. 检查是否是英文数字单词
             Integer numVal = en.get(clean);
             if (numVal != null) {
                 if (numVal >= 100) {
+                    // hundred/thousand: currentNum * 100 or * 1000
                     if (currentNum == 0) currentNum = 1;
                     currentNum *= numVal;
                 } else {
@@ -717,7 +719,7 @@ public class ConfigManager {
                 continue;
             }
 
-            // 检查连字符数字（twenty-one）
+            // 4. 检查连字符数字（twenty-one, thirty-five）
             if (clean.contains("-")) {
                 String[] parts = clean.split("-");
                 int compound = 0;
