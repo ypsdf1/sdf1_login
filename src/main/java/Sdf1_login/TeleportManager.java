@@ -59,6 +59,21 @@ public class TeleportManager implements Listener {
     public TeleportManager(Main plugin) {
         this.plugin = plugin;
     }
+
+    /** 检查玩家是否为插件管理员 */
+    public boolean isAdmin(Player player) {
+        return player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
+    }
+
+    /**
+     * 处理传送系统管理员配置的聊天输入（由 Main.onChat 调用）
+     * @return true 表示已处理（取消聊天消息）
+     */
+    public boolean handleTeleportAdminChat(Player player, String msg) {
+        String state = adminConfigState.get(player.getName());
+        if (state == null) return false;
+        return handleAdminConfigInput(player, msg);
+    }
     
     /**
      * 获取传送请求有效时间（秒），从ConfigManager读取
@@ -189,7 +204,7 @@ public class TeleportManager implements Listener {
         if (args.length == 0) {
             switch (lowerLabel) {
                 case "tpa":
-                    // 只有/tpa无参才区分Java/基岩面板
+                    // 所有人都显示传送面板，管理员面板内含配置区
                     if (bedrock) {
                         openTeleportPanel(player);
                     } else {
@@ -207,6 +222,10 @@ public class TeleportManager implements Listener {
         
         switch (lowerLabel) {
             case "tpa":
+                // 管理员配置触发器：/tpa _cfg_valid, /tpa _cfg_interval, /tpa _cfg_show
+                if (args[0].startsWith("_cfg_") && isAdmin(player)) {
+                    return handleTPAConfigTrigger(player, args[0]);
+                }
                 return handleTPA(player, args[0]);
             case "tpaccept":
                 return handleTPAccept(player, args);
@@ -388,30 +407,30 @@ public class TeleportManager implements Listener {
         }
         
         // ── 5. 管理员配置区（仅显示给插件管理员） ──
-        boolean isAdmin = player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
-        if (isAdmin) {
+        if (isAdmin(player)) {
             player.sendMessage(Component.text(""));
             player.sendMessage(Component.text("§6§l🔧 管理员配置"));
             player.sendMessage(Component.text("§7当前配置:"));
             player.sendMessage(Component.text("  §e请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒"));
             player.sendMessage(Component.text("  §e发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒"));
             player.sendMessage(Component.text(""));
-            player.sendMessage(Component.text("§7管理命令:"));
+            player.sendMessage(Component.text("§7点击选项后直接在聊天栏输入值:"));
             player.sendMessage(Component.empty()
-                .append(Component.text("  §e/tpauto show "))
-                .append(Component.text("§b[查看当前配置] ")
-                    .clickEvent(ClickEvent.runCommand("/tpauto show"))
+                .append(Component.text("  §a[1] "))
+                .append(Component.text("§b设置请求有效时间 ")
+                    .clickEvent(ClickEvent.runCommand("/tpa _cfg_valid"))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击后在聊天栏输入时间值，如 90、1:30")))));
+            player.sendMessage(Component.empty()
+                .append(Component.text("  §a[2] "))
+                .append(Component.text("§b设置发送间隔 ")
+                    .clickEvent(ClickEvent.runCommand("/tpa _cfg_interval"))
+                    .hoverEvent(HoverEvent.showText(Component.text("点击后在聊天栏输入时间值，如 10、十秒")))));
+            player.sendMessage(Component.empty()
+                .append(Component.text("  §a[3] "))
+                .append(Component.text("§b查看当前配置 ")
+                    .clickEvent(ClickEvent.runCommand("/tpa _cfg_show"))
                     .hoverEvent(HoverEvent.showText(Component.text("查看传送系统全局配置")))));
-            player.sendMessage(Component.empty()
-                .append(Component.text("  §e/tpauto valid <时间> "))
-                .append(Component.text("§b[设置请求有效时间] ")
-                    .clickEvent(ClickEvent.runCommand("/tpauto valid "))
-                    .hoverEvent(HoverEvent.showText(Component.text("设置请求有效时间，支持: 90 | 1:30 | 一分钟三十秒")))));
-            player.sendMessage(Component.empty()
-                .append(Component.text("  §e/tpauto interval <时间> "))
-                .append(Component.text("§b[设置发送间隔] ")
-                    .clickEvent(ClickEvent.runCommand("/tpauto interval "))
-                    .hoverEvent(HoverEvent.showText(Component.text("设置发送间隔时间，支持: 10 | 0:10 | 十秒")))));
+            player.sendMessage(Component.text("§7支持语法: 90 | 1:30 | 一分钟三十秒 | Ninety 等"));
             player.sendMessage(Component.text(""));
         }
         
@@ -670,33 +689,7 @@ public class TeleportManager implements Listener {
     
     private boolean handleTPAuto(Player player, String[] args) {
         String name = player.getName();
-
-        // ★ 识别插件管理员（检查Tag）
-        boolean isAdmin = player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
-
-        if (args == null || args.length == 0) {
-            // 无参：管理员显示配置菜单，普通玩家切换自动接受
-            if (isAdmin) {
-                openAdminConfigMenu(player);
-                return true;
-            } else {
-                handleTPAutoToggle(player, name);
-                return true;
-            }
-        }
-
-        // ★ 管理员可以通过CLI参数配置传送参数
-        if (isAdmin) {
-            // 检查是否为 config 命令
-            if ("config".equalsIgnoreCase(args[0])) {
-                openAdminConfigMenu(player);
-                return true;
-            }
-            handleTPAdminConfig(player, args);
-            return true;
-        }
-
-        // 普通玩家有多个参数但非管理员 → 切换
+        // tpauto 只用于切换自动接受传送（所有人通用）
         handleTPAutoToggle(player, name);
         return true;
     }
@@ -747,6 +740,35 @@ public class TeleportManager implements Listener {
         } else {
             player.sendMessage("§c[传送管理] 未知参数: " + key);
             player.sendMessage("§e  可用参数: valid, interval, show");
+        }
+        return true;
+    }
+
+    /**
+     * 处理管理员配置触发器（从传送面板可点击按钮触发）
+     * /tpa _cfg_valid → 进入等待输入有效时间状态
+     * /tpa _cfg_interval → 进入等待输入间隔时间状态
+     * /tpa _cfg_show → 直接显示配置
+     */
+    private boolean handleTPAConfigTrigger(Player player, String trigger) {
+        String name = player.getName();
+        switch (trigger) {
+            case "_cfg_valid":
+                adminConfigState.put(name, "waiting_for_valid");
+                player.sendMessage(Component.text("§e[传送管理] 请输入请求有效时间 (支持: 90 | 1:30 | 一分钟三十秒 等):"));
+                break;
+            case "_cfg_interval":
+                adminConfigState.put(name, "waiting_for_interval");
+                player.sendMessage(Component.text("§e[传送管理] 请输入发送间隔时间 (支持: 10 | 0:10 | 十秒 等):"));
+                break;
+            case "_cfg_show":
+                player.sendMessage(Component.text("§6[传送管理] §7当前配置:"));
+                player.sendMessage(Component.text("§e  请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒"));
+                player.sendMessage(Component.text("§e  发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒"));
+                break;
+            default:
+                player.sendMessage(Component.text("§c[传送管理] 未知配置触发器"));
+                break;
         }
         return true;
     }

@@ -2555,6 +2555,12 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 传送系统管理员配置聊天输入拦截
+        if (teleportMgr != null && teleportMgr.handleTeleportAdminChat(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
 // ===== 菜单聊天输入 =====
         if (getMenu().isEditing(p.getName())) {
             e.setCancelled(true);
