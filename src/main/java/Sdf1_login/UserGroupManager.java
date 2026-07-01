@@ -333,7 +333,8 @@ public class UserGroupManager {
 
         if (cfg.joinPrice <= 0) return "该用户组不开放付费加入";
 
-        if (cfg.durationMinutes <= 0) return "该用户组配置异常（有效时长未设置）";
+        // durationMinutes <= 0 表示永久（expiry_time=0）
+        // 不再报错，允许购买永久用户组
 
         // 检查是否已在组内（有效期内）
         if (isPlayerInGroup(player, groupName)) {
@@ -365,7 +366,12 @@ public class UserGroupManager {
 
         // 计算到期时间
         long now = System.currentTimeMillis();
-        long expiryTime = now + (long) cfg.durationMinutes * 60 * 1000;
+        long expiryTime;
+        if (cfg.durationMinutes <= 0) {
+            expiryTime = 0; // 永久
+        } else {
+            expiryTime = now + (long) cfg.durationMinutes * 60 * 1000;
+        }
 
         // 加入组
         String err = addPlayerWithExpiry(player, groupName, "paid_join", expiryTime);
@@ -432,8 +438,13 @@ public class UserGroupManager {
         if (!deducted) return "扣费失败，请稍后重试";
 
         // 延长到期时间：从当前到期时间往后延（如果已过期则从当前时间开始）
-        long baseTime = (currentExpiry > now) ? currentExpiry : now;
-        long newExpiry = baseTime + (long) cfg.durationMinutes * 60 * 1000;
+        long newExpiry;
+        if (cfg.durationMinutes <= 0) {
+            newExpiry = 0; // 永久
+        } else {
+            long baseTime = (currentExpiry > now) ? currentExpiry : now;
+            newExpiry = baseTime + (long) cfg.durationMinutes * 60 * 1000;
+        }
 
         try {
             PreparedStatement ps = db.prepareStatement(

@@ -437,6 +437,62 @@ public class ConfigManager {
         cnNum.put("六", 6); cnNum.put("陆", 6); cnNum.put("七", 7); cnNum.put("漆", 7); cnNum.put("八", 8); cnNum.put("捌", 8);
         cnNum.put("九", 9); cnNum.put("玖", 9);
         
+        // 中文数字转阿拉伯数字：逐字扫描法
+        // 支持：一百二十、三千五百、十二万三千四百五十六
+        // 单位：十(10)、百(100)、千(1000)、万(10000)
+        boolean hasChineseDigit = false;
+        for (char c : s.toCharArray()) {
+            if (cnNum.containsKey(String.valueOf(c))) {
+                hasChineseDigit = true;
+                break;
+            }
+        }
+        if (hasChineseDigit) {
+            int total = 0;
+            int current = 0;
+            boolean hasUnit = false;
+            for (int i = 0; i < s.length(); i++) {
+                String ch = String.valueOf(s.charAt(i));
+                Integer digit = cnNum.get(ch);
+                if (digit != null) {
+                    current = digit;
+                    hasUnit = false;
+                } else if (ch.equals("十")) {
+                    if (current == 0) current = 1; // 十二 → 12
+                    total += current * 10;
+                    current = 0;
+                    hasUnit = true;
+                } else if (ch.equals("百")) {
+                    if (current == 0) current = 1;
+                    total += current * 100;
+                    current = 0;
+                    hasUnit = true;
+                } else if (ch.equals("千")) {
+                    if (current == 0) current = 1;
+                    total += current * 1000;
+                    current = 0;
+                    hasUnit = true;
+                } else if (ch.equals("万")) {
+                    if (current == 0) current = 1;
+                    total += current * 10000;
+                    current = 0;
+                    hasUnit = true;
+                } else if (ch.equals("秒") || ch.equals("分") || ch.equals("钟")) {
+                    // 单位字符，跳过
+                    continue;
+                }
+            }
+            total += current; // 加上最后剩余的数字
+            // 如果有单位（秒/分钟），根据单位决定返回秒还是分钟
+            if (s.contains("秒")) {
+                return total;
+            } else if (s.contains("分") || s.contains("钟")) {
+                return total * 60;
+            } else {
+                return total; // 默认当作秒
+            }
+        }
+        
         // 罗马数字映射（简单支持）
         java.util.Map<Character, Integer> romanNum = new java.util.HashMap<>();
         romanNum.put('I', 1); romanNum.put('V', 5); romanNum.put('X', 10); romanNum.put('L', 50); romanNum.put('C', 100);
