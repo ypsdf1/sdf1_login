@@ -311,10 +311,28 @@ public class ConfigManager {
         managed.put("传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds));
 
         // ★ 保留非ConfigManager管理的配置行（如web通信-*等）
+        // ★ 同时保留连续的注释块（如 "# ===== Web通信配置 ====="）
         java.util.List<String> preservedLines = new ArrayList<>();
         for (String line : existingLines) {
             String trimmed = line.trim();
-            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+            if (trimmed.isEmpty()) continue;
+            // 如果是注释行，检查后面是否有非管理配置，保留这种注释块
+            if (trimmed.startsWith("#")) {
+                // 检查后续是否有非管理配置
+                int idx = existingLines.indexOf(line);
+                boolean hasNonManaged = false;
+                for (int j = idx + 1; j < existingLines.size(); j++) {
+                    String next = existingLines.get(j).trim();
+                    if (next.isEmpty() || next.startsWith("#")) continue;
+                    if (next.contains("=")) {
+                        int eq = next.indexOf('=');
+                        String k = next.substring(0, eq).trim();
+                        if (!managed.containsKey(k)) { hasNonManaged = true; break; }
+                    }
+                }
+                if (hasNonManaged) preservedLines.add(line);
+                continue;
+            }
             if (!trimmed.contains("=")) continue;
             int eq = trimmed.indexOf('=');
             String key = trimmed.substring(0, eq).trim();
@@ -323,7 +341,7 @@ public class ConfigManager {
             }
         }
 
-        // ★ 写入完整配置
+        // ★ 写入完整配置：管理的配置在前，其他模块配置在后（带注释分隔）
         List<String> L = new ArrayList<>();
         L.add("# ===== Sdf1_login 插件设置 =====");
         for (java.util.Map.Entry<String, String> e : managed.entrySet()) {
@@ -332,8 +350,19 @@ public class ConfigManager {
         // 追加保留的其他模块配置
         if (!preservedLines.isEmpty()) {
             L.add("");
-            L.add("# ===== 其他模块配置 =====");
-            L.addAll(preservedLines);
+            // 从 preservedLines 中找出开头的注释块并添加
+            int firstDataIdx = 0;
+            for (int i = 0; i < preservedLines.size(); i++) {
+                if (preservedLines.get(i).startsWith("#")) {
+                    L.add(preservedLines.get(i));
+                    firstDataIdx = i + 1;
+                } else {
+                    break;
+                }
+            }
+            for (int i = firstDataIdx; i < preservedLines.size(); i++) {
+                L.add(preservedLines.get(i));
+            }
         }
         writeLines(file, L);
     }
@@ -444,9 +473,21 @@ public class ConfigManager {
     }
 
     private void writeLines(File file, List<String> lines) {
-        try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8))) {
+        // ★ 原子写入：先写临时文件再rename，防止写入中断导致文件损坏
+        File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
+        try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8))) {
             for (String l : lines) { w.write(l); w.newLine(); }
-        } catch (IOException ignored) {}
+            w.flush(); // 强制刷盘
+            w.close(); // 确保关闭
+            // renameTo 是原子操作，成功则替换失败则保留原文件
+            if (!file.renameTo(tmp) && !tmp.renameTo(file)) {
+                // 如果rename失败，删除临时文件
+                tmp.delete();
+            }
+        } catch (IOException ignored) {
+            // 写入失败时删除临时文件，保留原文件不变
+            tmp.delete();
+        }
     }
 
     private double parseDouble(String s, double def) { try { return Double.parseDouble(s.trim()); } catch (Exception e) { return def; } }
