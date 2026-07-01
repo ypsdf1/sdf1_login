@@ -2422,7 +2422,7 @@ async function renderLands(el) {
                     <div style="font-size:13px;color:var(--dim);margin-bottom:4px">🌍 ${escHtml(land.world || '未知')}</div>
                     <div style="font-size:13px;color:var(--dim);margin-bottom:4px">📐 ${coordStr}</div>
                     <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-top:8px">
-                        <span>📏 ${areaSize} 格²</span>
+                        <span>📏 ${areaSize} 格${String.fromCharCode(178)}</span>
                         <span>📅 ${createdAt}</span>
                     </div>
                 </div>`;
@@ -2503,7 +2503,7 @@ async function renderLandDetail(el, landName) {
                 </div>
                 <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
                     <div style="color:var(--dim);font-size:12px;margin-bottom:4px">📏 面积</div>
-                    <div style="color:var(--fg);font-size:14px">${land.area_size || 0} 格²</div>
+                    <div style="color:var(--fg);font-size:14px">${land.area_size || 0} 格${String.fromCharCode(178)}</div>
                 </div>
                 <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
                     <div style="color:var(--dim);font-size:12px;margin-bottom:4px">📅 创建时间</div>
