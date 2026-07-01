@@ -92,9 +92,9 @@ try {
     // 同步类action只接受secret验证（Java端推送）
     $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
-    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_player_groups'];
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member'];
     // 玩家端action：需要token
-    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group'];
+    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group', 'get_player_groups'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
     $playerFieldActions = ['update_land_field'];
     // ★ 玩家端权限操作action
