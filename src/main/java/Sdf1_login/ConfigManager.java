@@ -452,195 +452,243 @@ public class ConfigManager {
     private double parseDouble(String s, double def) { try { return Double.parseDouble(s.trim()); } catch (Exception e) { return def; } }
     private int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; } }
     
+
     /**
      * 将自然语言时间字符串解析为秒数
-     * 支持：1:30、1分30秒、1.30、90、一分钟三十秒、壹分种叁拾秒、Ninety、Ninety秒、IX〇秒、One minute thirty seconds等
+     * 支持：1:30、1分30秒、1.30、90、一分钟三十秒、壹贰分叁拾秒、
+     *       1 hour 30 minutes、one minute thirty seconds、1小时30分钟、
+     *       贰分、90秒、ninety seconds、罗马数字等
      */
     public int parseIntFromString(String s) {
-        if (s == null) return 90;
+        if (s == null || s.trim().isEmpty()) return 90;
         s = s.trim().toLowerCase();
-        
-        // 规则1：纯数字
+
+        // ====== 1. 纯数字 ======
         try { return Integer.parseInt(s); } catch (Exception ignored) {}
-        
-        // 规则2：冒号分隔 mm:ss
+
+        // ====== 2. 冒号分隔 mm:ss ======
         if (s.contains(":")) {
             String[] parts = s.split(":");
             try {
-                int min = Integer.parseInt(parts[0]);
-                int sec = parts.length > 1 ? Integer.parseInt(parts[1]) : 0;
+                int min = Integer.parseInt(parts[0].trim());
+                int sec = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 0;
                 return min * 60 + sec;
             } catch (Exception ignored) {}
         }
-        
-        // 规则3：点号分隔 mm.ss
-        if (s.matches("\\d+\\.\\d+")) {
-            String[] parts = s.split("\\.");
+
+        // ====== 3. 点号分隔 mm.ss ======
+        if (s.matches(".*\\d+\\.\\d+.*")) {
             try {
-                int min = Integer.parseInt(parts[0]);
-                int sec = Integer.parseInt(parts[1]);
-                return min * 60 + sec;
+                String[] parts = s.split("\\.");
+                if (parts.length == 2 && parts[0].matches("\\d+") && parts[1].matches("\\d+")) {
+                    int min = Integer.parseInt(parts[0]);
+                    int sec = Integer.parseInt(parts[1]);
+                    return min * 60 + sec;
+                }
             } catch (Exception ignored) {}
         }
-        
-        // 规则4：中文/英文混合解析 —— 逐字扫描
-        // 中文数字映射
-        java.util.Map<String, Integer> cnNum = new java.util.LinkedHashMap<>();
-        cnNum.put("零", 0); cnNum.put("一", 1); cnNum.put("壹", 1); cnNum.put("二", 2); cnNum.put("贰", 2); cnNum.put("两", 2);
-        cnNum.put("三", 3); cnNum.put("叁", 3); cnNum.put("四", 4); cnNum.put("肆", 4); cnNum.put("五", 5); cnNum.put("伍", 5);
-        cnNum.put("六", 6); cnNum.put("陆", 6); cnNum.put("七", 7); cnNum.put("漆", 7); cnNum.put("八", 8); cnNum.put("捌", 8);
-        cnNum.put("九", 9); cnNum.put("玖", 9);
-        
-        // 中文数字转阿拉伯数字：逐字扫描法
-        // 支持：一百二十、三千五百、十二万三千四百五十六
-        // 单位：十(10)、百(100)、千(1000)、万(10000)
-        boolean hasChineseDigit = false;
-        for (char c : s.toCharArray()) {
-            if (cnNum.containsKey(String.valueOf(c))) {
-                hasChineseDigit = true;
-                break;
-            }
-        }
-        if (hasChineseDigit) {
-            int total = 0;
-            int current = 0;
-            boolean hasUnit = false;
-            for (int i = 0; i < s.length(); i++) {
-                String ch = String.valueOf(s.charAt(i));
-                Integer digit = cnNum.get(ch);
-                if (digit != null) {
-                    current = digit;
-                    hasUnit = false;
-                } else if (ch.equals("十")) {
-                    if (current == 0) current = 1; // 十二 → 12
-                    total += current * 10;
-                    current = 0;
-                    hasUnit = true;
-                } else if (ch.equals("百")) {
-                    if (current == 0) current = 1;
-                    total += current * 100;
-                    current = 0;
-                    hasUnit = true;
-                } else if (ch.equals("千")) {
-                    if (current == 0) current = 1;
-                    total += current * 1000;
-                    current = 0;
-                    hasUnit = true;
-                } else if (ch.equals("万")) {
-                    if (current == 0) current = 1;
-                    total += current * 10000;
-                    current = 0;
-                    hasUnit = true;
-                } else if (ch.equals("秒") || ch.equals("分") || ch.equals("钟")) {
-                    // 单位字符，跳过
-                    continue;
-                }
-            }
-            total += current; // 加上最后剩余的数字
-            // 如果有单位（秒/分钟），根据单位决定返回秒还是分钟
-            if (s.contains("秒")) {
-                return total;
-            } else if (s.contains("分") || s.contains("钟")) {
-                return total * 60;
-            } else {
-                return total; // 默认当作秒
-            }
-        }
-        
-        // 罗马数字映射（简单支持）
-        java.util.Map<Character, Integer> romanNum = new java.util.HashMap<>();
-        romanNum.put('I', 1); romanNum.put('V', 5); romanNum.put('X', 10); romanNum.put('L', 50); romanNum.put('C', 100);
-        
-        // 单位映射：中文
-        java.util.regex.Pattern unitPat = java.util.regex.Pattern.compile("(\\d+)(分[钟钟]?|秒|分钟)?");
-        
-        // 尝试拆分"X分Y秒"格式
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)[分钟]?(?:秒)?(\\d+(?:\\.\\d+)?[秒]?)?").matcher(s);
-        if (m.find()) {
-            try {
-                int minVal = (int) Float.parseFloat(m.group(1));
-                int secVal = 0;
-                if (m.group(2) != null) {
-                    secVal = (int) Float.parseFloat(m.group(2).replaceAll("[^\\d\\.]", ""));
-                }
-                // 如果没有"分"关键字而是直接数字+秒，整个算秒
-                if (!s.contains("分") && !s.contains("minute")) {
-                    return (int) Float.parseFloat(s.replaceAll("[^\\d\\.]", ""));
-                }
-                return minVal * 60 + secVal;
-            } catch (Exception ignored) {}
-        }
-        
-        // 尝试英文解析："ninety seconds", "one minute thirty seconds"
-        java.util.Map<String, Integer> enNum = new java.util.LinkedHashMap<>();
-        enNum.put("zero", 0); enNum.put("one", 1); enNum.put("two", 2); enNum.put("three", 3); enNum.put("four", 4);
-        enNum.put("five", 5); enNum.put("six", 6); enNum.put("seven", 7); enNum.put("eight", 8); enNum.put("nine", 9);
-        enNum.put("ten", 10); enNum.put("eleven", 11); enNum.put("twelve", 12); enNum.put("thirteen", 13);
-        enNum.put("fourteen", 14); enNum.put("fifteen", 15); enNum.put("sixteen", 16); enNum.put("seventeen", 17);
-        enNum.put("eighteen", 18); enNum.put("nineteen", 19); enNum.put("twenty", 20);
-        enNum.put("thirty", 30); enNum.put("forty", 40); enNum.put("fifty", 50); enNum.put("sixty", 60);
-        enNum.put("minute", 60); enNum.put("minutes", 60); enNum.put("second", 1); enNum.put("seconds", 1); enNum.put("sec", 1);
-        
-        // 计算罗马数字
-        if (s.chars().allMatch(c -> "IVXLCDM".indexOf(c) >= 0)) {
-            int total = 0;
-            int prev = 0;
+
+        // ====== 4. 中文数字解析 ======
+        int cnResult = parseChineseTime(s);
+        if (cnResult >= 0) return cnResult;
+
+        // ====== 5. 英文解析（复合格式） ======
+        int enResult = parseEnglishTime(s);
+        if (enResult >= 0) return enResult;
+
+        // ====== 6. 罗马数字 ======
+        if (s.chars().allMatch(c -> "ivxlcdm".indexOf(c) >= 0) && !s.isEmpty()) {
+            java.util.Map<Character, Integer> romanNum = new java.util.HashMap<>();
+            romanNum.put('i', 1); romanNum.put('v', 5); romanNum.put('x', 10);
+            romanNum.put('l', 50); romanNum.put('c', 100); romanNum.put('d', 500); romanNum.put('m', 1000);
+            int total = 0, prev = 0;
             for (int i = s.length() - 1; i >= 0; i--) {
                 int curr = romanNum.getOrDefault(s.charAt(i), 0);
                 if (curr < prev) total -= curr; else total += curr;
                 prev = curr;
             }
-            if (total > 0) return total; // 纯罗马数字当作秒
+            if (total > 0) return total;
         }
-        
-        // 尝试解析英文短语："one minute thirty seconds", "ninety seconds", "one fifty"
-        try {
-            String[] words = s.split("\\s+");
-            int totalSeconds = 0;
-            boolean foundUnit = false;
-            for (String word : words) {
-                word = word.toLowerCase().replaceAll("[^a-z]", "");
-                if (word.isEmpty()) continue;
-                Integer val = enNum.get(word);
-                if (val != null) {
-                    if (word.contains("second") || word.equals("sec")) {
-                        totalSeconds += val; foundUnit = true;
-                    } else if (word.equals("minute") || word.equals("minutes")) {
-                        totalSeconds += val; foundUnit = true;
-                    } else if (word.matches("\\d+")) {
-                        totalSeconds += val; // 纯数字(英文单词形式)，当作最小单位（秒或分取决于上下文）
-                    } else {
-                        totalSeconds += val * 60; // 当作分钟数
-                    }
-                } else {
-                    // 尝试阿拉伯数字
-                    try {
-                        int num = Integer.parseInt(word);
-                        if (foundUnit && totalSeconds > 0) {
-                            // 已经有单位了，这应该是个额外的数字
-                            totalSeconds += num;
-                        } else if (num <= 60) {
-                            totalSeconds = num;
-                        } else {
-                            // 如"130" -> 130秒
-                            totalSeconds = num;
-                        }
-                    } catch (Exception ignored) {}
-                }
-            }
-            if (foundUnit || totalSeconds > 0) return totalSeconds;
-        } catch (Exception ignored) {}
-        
-        // 兜底：提取所有数字
+
+        // ====== 7. 兜底：提取所有数字 ======
         java.util.regex.Matcher nm = java.util.regex.Pattern.compile("\\d+").matcher(s);
-        List<Integer> nums = new ArrayList<>();
+        java.util.List<Integer> nums = new java.util.ArrayList<>();
         while (nm.find()) nums.add(Integer.parseInt(nm.group()));
         if (nums.size() == 1) return nums.get(0);
-        if (nums.size() == 2) {
-            // 第一个当分钟，第二个当秒
-            return nums.get(0) * 60 + nums.get(1);
+        if (nums.size() >= 2) return nums.get(0) * 60 + nums.get(1);
+
+        return 90;
+    }
+
+    /** 解析中文时间字符串，返回秒数或-1(无法解析) */
+    private int parseChineseTime(String s) {
+        // 中文数字映射（含繁体/大写）
+        java.util.Map<String, Integer> cn = new java.util.LinkedHashMap<>();
+        cn.put("零", 0); cn.put("\u3007", 0); // 〇
+        cn.put("一", 1); cn.put("壹", 1); cn.put("幺", 1);
+        cn.put("二", 2); cn.put("贰", 2); cn.put("貳", 2); cn.put("两", 2); cn.put("贰", 2);
+        cn.put("三", 3); cn.put("叁", 3); cn.put("參", 3); cn.put("叁", 3);
+        cn.put("四", 4); cn.put("肆", 4); cn.put("肆", 4);
+        cn.put("五", 5); cn.put("伍", 5); cn.put("伍", 5);
+        cn.put("六", 6); cn.put("陆", 6); cn.put("陸", 6); cn.put("陆", 6);
+        cn.put("七", 7); cn.put("柒", 7); cn.put("漆", 7);
+        cn.put("八", 8); cn.put("捌", 8); cn.put("捌", 8);
+        cn.put("九", 9); cn.put("玖", 9); cn.put("玖", 9);
+
+        // 检测是否包含中文数字字符
+        boolean hasCnDigit = false;
+        for (char c : s.toCharArray()) {
+            if (cn.containsKey(String.valueOf(c))) { hasCnDigit = true; break; }
         }
-        
-        return 90; // 默认
+        // 也检查乘法单位（十百千万）
+        if (!hasCnDigit) {
+            if (s.contains("十") || s.contains("拾") || s.contains("百") || s.contains("佰")
+                    || s.contains("千") || s.contains("仟") || s.contains("万")) {
+                hasCnDigit = true;
+            }
+        }
+        if (!hasCnDigit) return -1;
+
+        // 逐字扫描中文数字 + 时间单位
+        int total = 0;
+        int current = 0;
+        int i = 0;
+        boolean hasTimeUnit = false;
+        while (i < s.length()) {
+            // 检查"小时"（两个字符的单位）
+            if (i + 1 < s.length()) {
+                String twoChar = s.substring(i, i + 2);
+                if (twoChar.equals("小时") || twoChar.equals("小時")) {
+                    if (current == 0) current = 1;
+                    total = (total + current) * 3600;
+                    current = 0;
+                    hasTimeUnit = true;
+                    i += 2;
+                    continue;
+                }
+            }
+            String ch = String.valueOf(s.charAt(i));
+            Integer digit = cn.get(ch);
+            if (digit != null && digit < 10) {
+                current = current * 10 + digit; // 支持连续数字如"十二"→12
+                // 但如果current已经很大了（来自乘法），重新开始
+                if (current > 100) current = digit;
+            } else if (ch.equals("十") || ch.equals("拾")) {
+                if (current == 0) current = 1;
+                total += current * 10;
+                current = 0;
+            } else if (ch.equals("百") || ch.equals("佰")) {
+                if (current == 0) current = 1;
+                total += current * 100;
+                current = 0;
+            } else if (ch.equals("千") || ch.equals("仟")) {
+                if (current == 0) current = 1;
+                total += current * 1000;
+                current = 0;
+            } else if (ch.equals("万")) {
+                if (current == 0) current = 1;
+                total += current * 10000;
+                current = 0;
+            } else if (ch.equals("秒")) {
+                total += current;
+                current = 0;
+                hasTimeUnit = true;
+            } else if (ch.equals("分") || ch.equals("鐘")) {
+                total = (total + current) * 60;
+                current = 0;
+                hasTimeUnit = true;
+            } else if (ch.equals("钟")) {
+                total = (total + current) * 60;
+                current = 0;
+                hasTimeUnit = true;
+            }
+            i++;
+        }
+        total += current;
+
+        if (hasTimeUnit) return total;
+        return hasCnDigit ? total : -1;
+    }
+
+    /** 解析英文时间字符串，返回秒数或-1(无法解析) */
+    private int parseEnglishTime(String s) {
+        // 英文数字映射
+        java.util.Map<String, Integer> en = new java.util.LinkedHashMap<>();
+        en.put("zero", 0); en.put("one", 1); en.put("two", 2); en.put("three", 3); en.put("four", 4);
+        en.put("five", 5); en.put("six", 6); en.put("seven", 7); en.put("eight", 8); en.put("nine", 9);
+        en.put("ten", 10); en.put("eleven", 11); en.put("twelve", 12); en.put("thirteen", 13);
+        en.put("fourteen", 14); en.put("fifteen", 15); en.put("sixteen", 16); en.put("seventeen", 17);
+        en.put("eighteen", 18); en.put("nineteen", 19); en.put("twenty", 20);
+        en.put("thirty", 30); en.put("forty", 40); en.put("fifty", 50); en.put("sixty", 60);
+        en.put("seventy", 70); en.put("eighty", 80); en.put("ninety", 90);
+        en.put("hundred", 100); en.put("thousand", 1000);
+
+        // 单位倍率
+        java.util.Map<String, Integer> units = new java.util.LinkedHashMap<>();
+        units.put("second", 1); units.put("seconds", 1); units.put("sec", 1); units.put("secs", 1); units.put("s", 1);
+        units.put("minute", 60); units.put("minutes", 60); units.put("min", 60); units.put("mins", 60); units.put("m", 60);
+        units.put("hour", 3600); units.put("hours", 3600); units.put("hr", 3600); units.put("hrs", 3600); units.put("h", 3600);
+
+        // 检测是否有英文单位
+        boolean hasEnUnit = false;
+        for (String u : units.keySet()) {
+            if (s.contains(" " + u + " ") || s.endsWith(" " + u) || s.startsWith(u + " ") || s.equals(u)) {
+                hasEnUnit = true;
+                break;
+            }
+        }
+        if (!hasEnUnit) return -1;
+
+        // 按空格分割，逐词扫描
+        String[] words = s.split("\\s+");
+        int totalSeconds = 0;
+        int currentNum = 0;
+
+        for (String word : words) {
+            String clean = word.toLowerCase().replaceAll("[^a-z0-9]", "");
+            if (clean.isEmpty()) continue;
+
+            // 检查是否是单位
+            Integer unitMul = units.get(clean);
+            if (unitMul != null) {
+                if (currentNum == 0) currentNum = 1;
+                totalSeconds += currentNum * unitMul;
+                currentNum = 0;
+                continue;
+            }
+
+            // 检查是否是阿拉伯数字
+            try {
+                currentNum = Integer.parseInt(clean);
+                continue;
+            } catch (Exception ignored) {}
+
+            // 检查是否是英文数字单词
+            Integer numVal = en.get(clean);
+            if (numVal != null) {
+                if (numVal >= 100) {
+                    if (currentNum == 0) currentNum = 1;
+                    currentNum *= numVal;
+                } else {
+                    currentNum += numVal;
+                }
+                continue;
+            }
+
+            // 检查连字符数字（twenty-one）
+            if (clean.contains("-")) {
+                String[] parts = clean.split("-");
+                int compound = 0;
+                for (String p : parts) {
+                    Integer pv = en.get(p);
+                    if (pv != null) compound += pv;
+                }
+                if (compound > 0) {
+                    currentNum += compound;
+                }
+            }
+        }
+
+        return totalSeconds > 0 ? totalSeconds : -1;
     }
 }
