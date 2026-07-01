@@ -102,7 +102,7 @@ try {
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更 + Java回调过户结果
-    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback'];
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback', 'poll_group_renews', 'renew_group_callback'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -404,6 +404,16 @@ try {
             break;
         case 'get_player_groups':
             handleGetPlayerGroups($db, $_GET['player'] ?? '');
+            break;
+
+        // ===== Java端：轮询PHP发起的用户组续费请求 =====
+        case 'poll_group_renews':
+            handlePollGroupRenews($db);
+            break;
+
+        // ===== Java端：续费结果回调 =====
+        case 'renew_group_callback':
+            handleRenewGroupCallback($db, $_POST + $_GET);
             break;
 
         // ===== 管理面板：查询改主状态 =====
@@ -2221,36 +2231,100 @@ function handleRenewGroup($db, $player, $data) {
         return;
     }
 
-    // 写入 web_admin_changes 等待Java拉取执行
+    // ★ 写入 web_group_renew 表，供 Java TimerE 拉取执行
     try {
-        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+        $db->exec("CREATE TABLE IF NOT EXISTS web_group_renew (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            change_type TEXT NOT NULL,
-            target_id TEXT DEFAULT '',
-            target_name TEXT DEFAULT '',
-            change_data TEXT DEFAULT '{}',
+            player_name TEXT NOT NULL,
+            group_name TEXT NOT NULL,
+            renew_price INTEGER DEFAULT 0,
+            duration_minutes INTEGER DEFAULT 0,
             status TEXT DEFAULT 'pending',
-            created_at INTEGER DEFAULT 0,
-            processed_at INTEGER DEFAULT 0
+            req_id TEXT DEFAULT '',
+            created_at INTEGER DEFAULT 0
         )");
         $now = time();
-        $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
-            VALUES ('group_renew', :id, :name, :data, :time)");
-        $stmt3->bindValue(':id', $group, SQLITE3_TEXT);
-        $stmt3->bindValue(':name', $player, SQLITE3_TEXT);
-        $stmt3->bindValue(':data', json_encode([
-            'action' => 'renew',
-            'group_name' => $group,
-            'player' => $player,
-            'renew_price' => (int)$cfg['renew_price'],
-            'duration_minutes' => (int)$cfg['duration_minutes']
-        ], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $uuid = uniqid('gr_', true);
+        $stmt3 = $db->prepare("INSERT INTO web_group_renew (player_name, group_name, renew_price, duration_minutes, req_id, created_at)
+            VALUES (:player, :group, :price, :duration, :req_id, :time)");
+        $stmt3->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt3->bindValue(':group', $group, SQLITE3_TEXT);
+        $stmt3->bindValue(':price', (int)$cfg['renew_price'], SQLITE3_INTEGER);
+        $stmt3->bindValue(':duration', (int)$cfg['duration_minutes'], SQLITE3_INTEGER);
+        $stmt3->bindValue(':req_id', $uuid, SQLITE3_TEXT);
         $stmt3->bindValue(':time', $now, SQLITE3_INTEGER);
         $stmt3->execute();
-        echo json_encode(['success' => true, 'message' => '续费请求已提交，请在游戏中确认扣费']);
+        echo json_encode(['success' => true, 'message' => '续费请求已提交，请在游戏中确认扣费', 'req_id' => $uuid]);
     } catch (\Throwable $e) {
         echo json_encode(['success' => false, 'error' => '续费请求写入失败: ' . $e->getMessage()]);
     }
+}
+
+// ==================== 用户组续费轮询 & 回调 ====================
+
+/**
+ * Java端轮询：获取PHP发起的续费请求
+ * PHP handleRenewGroup 写入 web_group_renew 表（status=pending）
+ * Java拉取后执行扣费+加入用户组，完成后回调 renew_group_callback
+ */
+function handlePollGroupRenews($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS web_group_renew (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'pending',
+        req_id TEXT DEFAULT '',
+        created_at INTEGER DEFAULT 0
+    )");
+
+    $stmt = $db->prepare("SELECT id, player_name, group_name, req_id, renew_price, duration_minutes
+        FROM web_group_renew WHERE status = 'pending' ORDER BY id ASC LIMIT 50");
+    $rs = $stmt->execute();
+    $renews = [];
+    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+        $renews[] = [
+            'player_name' => $row['player_name'],
+            'group_name' => $row['group_name'],
+            'req_id' => $row['req_id'],
+            'renew_price' => (int)$row['renew_price'],
+            'duration_minutes' => (int)$row['duration_minutes']
+        ];
+    }
+    echo json_encode(['success' => true, 'renews' => $renews]);
+}
+
+/**
+ * Java端续费结果回调
+ * POST secret, req_id, result('success'/'failed:reason')
+ * PHP标记对应记录为 done/failed
+ */
+function handleRenewGroupCallback($db, $data) {
+    $secret = $data['secret'] ?? '';
+    if (!validateSecret($secret)) {
+        echo json_encode(['success' => false, 'error' => 'invalid secret']);
+        return;
+    }
+
+    $reqId = $data['req_id'] ?? '';
+    $result = $data['result'] ?? '';
+
+    if (empty($reqId) || empty($result)) {
+        echo json_encode(['success' => false, 'error' => 'missing req_id or result']);
+        return;
+    }
+
+    $status = ($result === 'success') ? 'done' : 'failed';
+    $remark = ($result !== 'success') ? substr($result, strlen('failed:')) : '';
+
+    $stmt = $db->prepare("UPDATE web_group_renew SET status = :status, remark = :remark WHERE req_id = :req_id AND status = 'pending'");
+    $stmt->bindValue(':status', $status, SQLITE3_TEXT);
+    $stmt->bindValue(':remark', $remark, SQLITE3_TEXT);
+    $stmt->bindValue(':req_id', $reqId, SQLITE3_TEXT);
+    $stmt->execute();
+
+    echo json_encode(['success' => true]);
 }
 
 // ==================== 领地过户功能 ====================
