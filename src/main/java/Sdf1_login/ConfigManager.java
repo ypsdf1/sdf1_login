@@ -63,7 +63,7 @@ public class ConfigManager {
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;
     }
-    public String rewardChannel = "economy";  // economy = 经济（Vault经济系统）
+    public String rewardChannel = "债券";  // bonds = 债券，economy = Vault经济
 
 
     // ==================== 消息 ====================
@@ -225,7 +225,7 @@ public class ConfigManager {
         if (checkinRewardFixed > 0) checkinRewardType = "fixed";
         else if (checkinRewardMin > 0 && checkinRewardMax > checkinRewardMin) checkinRewardType = "range";
         else checkinRewardType = "none";
-        rewardChannel = m.getOrDefault("奖励发放方式", "economy");
+        rewardChannel = m.getOrDefault("奖励发放方式", "债券");
         rewardChannel = normalizeRewardChannel(rewardChannel);
 
         // ===== 区域防护配置 =====
@@ -237,23 +237,26 @@ public class ConfigManager {
         tpRequestValidSeconds = parseIntFromString(m.getOrDefault("传送_请求有效秒", "90"));
         tpSendIntervalSeconds = parseIntFromString(m.getOrDefault("传送_发送间隔秒", "10"));
 
-        // rewardChannel 已标准化为 "economy"（默认）
+        // rewardChannel 已标准化为 bonds/economy，默认bonds
     }
     /**
      * 奖励方式标准化：中英文全兼容
-     * "经济" "economy" "Economy" "ECONOMY" "vault" → "economy"
-     * 其他任何值 → "economy"（默认经济）
+     * "债券" "bonds" "Bond" "BONDS" → "bonds"
+     * "经济" "economy" "Economy" "ECONOMY" → "economy"
+     * 其他任何值 → "bonds"（默认债券）
      */
     private String normalizeRewardChannel(String raw) {
-        if (raw == null) return "economy";
+        if (raw == null) return "bonds";
         String s = raw.trim().toLowerCase();
         // 中文
+        if (s.contains("债券")) return "bonds";
         if (s.contains("经济")) return "economy";
         // 英文
+        if (s.contains("bond")) return "bonds";
         if (s.contains("econ")) return "economy";
-        if (s.contains("vault")) return "economy";
-        // 兜底：全部用经济系统
-        return "economy";
+        if (s.contains("Vault")) return "economy";
+        // 兜底
+        return "bonds";
     }
 
     public void saveSettings() {
@@ -300,7 +303,7 @@ public class ConfigManager {
         managed.put("签到债券最小", String.valueOf(checkinBondMin));
         managed.put("签到债券最大", String.valueOf(checkinBondMax));
         managed.put("补签积分倍率", String.valueOf(backCheckPointMultiplier));
-        managed.put("奖励发放方式", "经济");
+        managed.put("奖励发放方式", "债券");
         managed.put("传送_请求有效秒", String.valueOf(tpRequestValidSeconds));
         managed.put("传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds));
 
@@ -385,7 +388,7 @@ public class ConfigManager {
         L.add("签到债券最小=1");
         L.add("签到债券最大=3");
         L.add("补签积分倍率=5");
-        L.add("奖励发放方式=经济");
+        L.add("奖励发放方式=债券");
         // 区域防护配置
         L.add("区域防护_管理员模式=tag");
         L.add("区域防护_管理员Tag=admin");
