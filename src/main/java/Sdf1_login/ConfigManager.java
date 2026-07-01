@@ -264,32 +264,77 @@ public class ConfigManager {
 
     public void saveSettings() {
         File file = new File(dataFolder, "插件设置.txt");
+
+        // ★ 读取已有配置，保留Web通信等其他模块管理的配置行
+        java.util.LinkedHashMap<String, String> existingPairs = new java.util.LinkedHashMap<>();
+        java.util.List<String> existingLines = new ArrayList<>();
+        if (file.exists()) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    existingLines.add(line);
+                    String trimmed = line.trim();
+                    if (!trimmed.isEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+                        int eq = trimmed.indexOf('=');
+                        String k = trimmed.substring(0, eq).trim();
+                        existingPairs.put(k, trimmed.substring(eq + 1).trim());
+                    }
+                }
+            } catch (IOException ignored) {}
+        }
+
+        // ★ ConfigManager管理的配置项
+        java.util.LinkedHashMap<String, String> managed = new java.util.LinkedHashMap<>();
+        managed.put("管理标签", adminTag);
+        managed.put("管理密码", adminPassword);
+        managed.put("每IP最大账号数", String.valueOf(maxAccountsPerIP));
+        managed.put("审批模式", approvalMode);
+        managed.put("自动审批延迟分钟", String.valueOf(autoApproveDelayMinutes));
+        managed.put("登录超时秒数", String.valueOf(loginTimeout));
+        managed.put("挂机踢出", String.valueOf(afkEnabled));
+        managed.put("挂机超时秒数", String.valueOf(afkTimeout));
+        managed.put("resource-pack-url", broadcastServerUrl);
+        managed.put("http-port", String.valueOf(httpPort));
+        managed.put("垃圾站_启用", String.valueOf(garbageEnabled));
+        managed.put("垃圾站_清理间隔秒", String.valueOf(garbageInterval));
+        managed.put("垃圾站_保留轮数", String.valueOf(garbageMaxRounds));
+        managed.put("签到固定金额", String.valueOf(checkinRewardFixed));
+        managed.put("签到最小金额", String.valueOf(checkinRewardMin));
+        managed.put("签到最大金额", String.valueOf(checkinRewardMax));
+        managed.put("签到给积分", String.valueOf(checkinGivePoints));
+        managed.put("签到积分数量", String.valueOf(checkinPoints));
+        managed.put("签到债券最小", String.valueOf(checkinBondMin));
+        managed.put("签到债券最大", String.valueOf(checkinBondMax));
+        managed.put("补签积分倍率", String.valueOf(backCheckPointMultiplier));
+        managed.put("奖励发放方式", "债券");
+        managed.put("传送_请求有效秒", String.valueOf(tpRequestValidSeconds));
+        managed.put("传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds));
+
+        // ★ 保留非ConfigManager管理的配置行（如web通信-*等）
+        java.util.List<String> preservedLines = new ArrayList<>();
+        for (String line : existingLines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) continue;
+            if (!trimmed.contains("=")) continue;
+            int eq = trimmed.indexOf('=');
+            String key = trimmed.substring(0, eq).trim();
+            if (!managed.containsKey(key)) {
+                preservedLines.add(key + "=" + trimmed.substring(eq + 1).trim());
+            }
+        }
+
+        // ★ 写入完整配置
         List<String> L = new ArrayList<>();
         L.add("# ===== Sdf1_login 插件设置 =====");
-        L.add("管理标签=" + adminTag);
-        L.add("管理密码=" + adminPassword);
-        L.add("每IP最大账号数=" + maxAccountsPerIP);
-        L.add("审批模式=" + approvalMode);
-        L.add("自动审批延迟分钟=" + autoApproveDelayMinutes);
-        L.add("登录超时秒数=" + loginTimeout);
-        L.add("挂机踢出=" + afkEnabled);
-        L.add("挂机超时秒数=" + afkTimeout);
-        L.add("resource-pack-url=" + broadcastServerUrl);
-        L.add("http-port=" + httpPort);
-        L.add("垃圾站_启用=" + garbageEnabled);
-        L.add("垃圾站_清理间隔秒=" + garbageInterval);
-        L.add("垃圾站_保留轮数=" + garbageMaxRounds);
-        L.add("签到固定金额=" + checkinRewardFixed);
-        L.add("签到最小金额=" + checkinRewardMin);
-        L.add("签到最大金额=" + checkinRewardMax);
-        L.add("签到给积分=" + checkinGivePoints);
-        L.add("签到积分数量=" + checkinPoints);
-        L.add("签到债券最小=" + checkinBondMin);
-        L.add("签到债券最大=" + checkinBondMax);
-        L.add("补签积分倍率=" + backCheckPointMultiplier);
-        L.add("奖励发放方式=债券");
-        L.add("传送_请求有效秒=" + tpRequestValidSeconds);
-        L.add("传送_发送间隔秒=" + tpSendIntervalSeconds);
+        for (java.util.Map.Entry<String, String> e : managed.entrySet()) {
+            L.add(e.getKey() + "=" + e.getValue());
+        }
+        // 追加保留的其他模块配置
+        if (!preservedLines.isEmpty()) {
+            L.add("");
+            L.add("# ===== 其他模块配置 =====");
+            L.addAll(preservedLines);
+        }
         writeLines(file, L);
     }
 
@@ -325,6 +370,15 @@ public class ConfigManager {
         L.add("区域防护_最大领地数=3");
         L.add("传送_请求有效秒=90");
         L.add("传送_发送间隔秒=10");
+        // Web通信配置（默认禁用，需手动开启）
+        L.add("");
+        L.add("# ===== Web通信配置 =====");
+        L.add("web通信-启用=false");
+        L.add("web通信-地址=https://caoyuan.ypshidifu.cn/plugin");
+        L.add("web通信-Token有效期秒=600");
+        L.add("web通信-同步间隔分钟=5");
+        L.add("web通信-回调端口=9090");
+        L.add("web通信-密钥=sdf1_web_comm_2026_ypshidifu");
         writeLines(f, L);
     }
     public List<String> getAfkWhitelist() {
