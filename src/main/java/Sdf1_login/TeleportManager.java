@@ -374,6 +374,34 @@ public class TeleportManager implements Listener {
                     .hoverEvent(HoverEvent.showText(Component.text("取消所有你发出的传送请求")))));
         }
         
+        // ── 5. 管理员配置区（仅显示给插件管理员） ──
+        boolean isAdmin = player.getScoreboardTags().contains(plugin.getConfig2().adminTag);
+        if (isAdmin) {
+            player.sendMessage(Component.text(""));
+            player.sendMessage(Component.text("§6§l🔧 管理员配置"));
+            player.sendMessage(Component.text("§7当前配置:"));
+            player.sendMessage(Component.text("  §e请求有效时间: §f" + plugin.getConfigMgr().tpRequestValidSeconds + " 秒"));
+            player.sendMessage(Component.text("  §e发送间隔: §f" + plugin.getConfigMgr().tpSendIntervalSeconds + " 秒"));
+            player.sendMessage(Component.text(""));
+            player.sendMessage(Component.text("§7管理命令:"));
+            player.sendMessage(Component.empty()
+                .append(Component.text("  §e/tpauto show "))
+                .append(Component.text("§b[查看当前配置] ")
+                    .clickEvent(ClickEvent.runCommand("/tpauto show"))
+                    .hoverEvent(HoverEvent.showText(Component.text("查看传送系统全局配置")))));
+            player.sendMessage(Component.empty()
+                .append(Component.text("  §e/tpauto valid <时间> "))
+                .append(Component.text("§b[设置请求有效时间] ")
+                    .clickEvent(ClickEvent.runCommand("/tpauto valid "))
+                    .hoverEvent(HoverEvent.showText(Component.text("设置请求有效时间，支持: 90 | 1:30 | 一分钟三十秒")))));
+            player.sendMessage(Component.empty()
+                .append(Component.text("  §e/tpauto interval <时间> "))
+                .append(Component.text("§b[设置发送间隔] ")
+                    .clickEvent(ClickEvent.runCommand("/tpauto interval "))
+                    .hoverEvent(HoverEvent.showText(Component.text("设置发送间隔时间，支持: 10 | 0:10 | 十秒")))));
+            player.sendMessage(Component.text(""));
+        }
+        
         player.sendMessage(Component.text(""));
         player.sendMessage(Component.text("§6§l══════════════════════════════════════"));
         player.sendMessage(Component.text(""));
