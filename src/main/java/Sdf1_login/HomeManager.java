@@ -27,9 +27,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class HomeManager implements Listener {
     private final Main plugin;
     
-    // 缓存: player_name → homes列表
-    private final Map<String, List<HomeData>> homesCache = new ConcurrentHashMap<>();
-    
     // 床位置缓存: player_name → Location (用于自动记录床位置)
     private final Map<String, Location> bedLocations = new ConcurrentHashMap<>();
     
@@ -316,12 +313,6 @@ public class HomeManager implements Listener {
     }
     
     private List<HomeData> getHomes(String playerName) {
-        // 先查缓存
-        List<HomeData> cached = homesCache.get(playerName);
-        if (cached != null) {
-            return cached;
-        }
-        
         List<HomeData> homes = new ArrayList<>();
         try {
             java.sql.Connection db = plugin.getDb().getConnection();
@@ -347,9 +338,6 @@ public class HomeManager implements Listener {
             
             rs.close();
             ps.close();
-            
-            // 缓存
-            homesCache.put(playerName, homes);
         } catch (SQLException e) {
             plugin.getLogger().warning("[Home] 获取家列表失败: " + e.getMessage());
         }
@@ -386,9 +374,6 @@ public class HomeManager implements Listener {
             ps.setLong(9, System.currentTimeMillis());
             ps.executeUpdate();
             ps.close();
-            
-            // 清除缓存
-            homesCache.remove(playerName);
         } catch (SQLException e) {
             plugin.getLogger().warning("[Home] 保存家失败: " + e.getMessage());
         }
@@ -409,9 +394,6 @@ public class HomeManager implements Listener {
             ps.setString(2, homeName);
             ps.executeUpdate();
             ps.close();
-            
-            // 清除缓存
-            homesCache.remove(playerName);
         } catch (SQLException e) {
             plugin.getLogger().warning("[Home] 删除家失败: " + e.getMessage());
         }
@@ -475,7 +457,6 @@ public class HomeManager implements Listener {
     // ==================== 清理 ====================
     
     public void shutdown() {
-        homesCache.clear();
         bedLocations.clear();
     }
 }

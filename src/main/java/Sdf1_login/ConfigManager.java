@@ -405,6 +405,9 @@ public class ConfigManager {
         L.add("web通信-同步间隔分钟=5");
         L.add("web通信-回调端口=9090");
         L.add("web通信-密钥=sdf1_web_comm_2026_ypshidifu");
+        L.add("");
+        L.add("# ===== 其他模块配置 =====");
+        // 始终附加空行和注释分隔符，让后续追加逻辑更容易识别边界
         writeLines(f, L);
     }
     public List<String> getAfkWhitelist() {
@@ -476,9 +479,10 @@ public class ConfigManager {
             for (String l : lines) { w.write(l); w.newLine(); }
             w.flush(); // 强制刷盘
             w.close(); // 确保关闭
-            // renameTo 是原子操作，成功则替换失败则保留原文件
-            if (!file.renameTo(tmp) && !tmp.renameTo(file)) {
-                // 如果rename失败，删除临时文件
+            // ★ 原子替换：将.tmp文件重命名为目标文件
+            // 不能反过来(file→tmp)，否则Linux上file.renameTo(tmp)会成功覆盖.tmp→丢失新内容+原文件被删
+            if (!tmp.renameTo(file)) {
+                // 替换失败，删除临时文件
                 tmp.delete();
             }
         } catch (IOException ignored) {
@@ -493,20 +497,34 @@ public class ConfigManager {
 
     /**
      * 将自然语言时间字符串解析为秒数
-     * 支持：1:30、1分30秒、1.30、90、一分钟三十秒、壹贰分叁拾秒、
-     *       1 hour 30 minutes、one minute thirty seconds、1小时30分钟、
-     *       贰分、90秒、ninety seconds、罗马数字等
+     * 支持：90 | 1:30 | 1.30 | 一分钟三十秒 | 2分钟 | 90秒 | minute | min | II | IX | 贰分 | Roman numerals
      */
     public int parseIntFromString(String s) {
         if (s == null || s.trim().isEmpty()) return 90;
-        s = s.trim().toLowerCase();
+        String trimmed = s.trim();
 
-        // ====== 1. 纯数字 ======
-        try { return Integer.parseInt(s); } catch (Exception ignored) {}
+        // ====== 0. 中文混合解析（优先：支持"2分钟"、"一分钟三十秒"、"贰分钟"等） ======
+        String testTrimmed = trimmed;
+        boolean hasChinese = false;
+        for (int ci = 0; ci < testTrimmed.length(); ci++) {
+            char cc = testTrimmed.charAt(ci);
+            if (cc >= '\u4e00' && cc <= '\u9fff') { hasChinese = true; break; }
+        }
+        if (hasChinese) {
+            int cnResult = parseChineseTime(testTrimmed);
+            if (cnResult >= 0) return cnResult;
+        }
 
-        // ====== 2. 冒号分隔 mm:ss ======
-        if (s.contains(":")) {
-            String[] parts = s.split(":");
+        // ====== 1. 英文混合解析（支持"2 minutes"、"one hour thirty seconds"等） ======
+        int enResult = parseEnglishTime(testTrimmed.toLowerCase());
+        if (enResult >= 0) return enResult;
+
+        // ====== 2. 纯数字（秒） ======
+        try { return Integer.parseInt(testTrimmed); } catch (Exception ignored) {}
+
+        // ====== 3. 冒号分隔 mm:ss ======
+        if (testTrimmed.contains(":")) {
+            String[] parts = testTrimmed.split(":");
             try {
                 int min = Integer.parseInt(parts[0].trim());
                 int sec = parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 0;
@@ -514,10 +532,10 @@ public class ConfigManager {
             } catch (Exception ignored) {}
         }
 
-        // ====== 3. 点号分隔 mm.ss ======
-        if (s.matches(".*\\d+\\.\\d+.*")) {
+        // ====== 4. 点号分隔 mm.ss ======
+        if (testTrimmed.matches(".*\\d+\\.\\d+.*")) {
             try {
-                String[] parts = s.split("\\.");
+                String[] parts = testTrimmed.split("\\.");
                 if (parts.length == 2 && parts[0].matches("\\d+") && parts[1].matches("\\d+")) {
                     int min = Integer.parseInt(parts[0]);
                     int sec = Integer.parseInt(parts[1]);
@@ -526,30 +544,21 @@ public class ConfigManager {
             } catch (Exception ignored) {}
         }
 
-        // ====== 4. 中文数字解析 ======
-        int cnResult = parseChineseTime(s);
-        if (cnResult >= 0) return cnResult;
-
-        // ====== 5. 英文解析（复合格式） ======
-        int enResult = parseEnglishTime(s);
-        if (enResult >= 0) return enResult;
-
-        // ====== 6. 罗马数字 ======
-        if (s.chars().allMatch(c -> "ivxlcdm".indexOf(c) >= 0) && !s.isEmpty()) {
-            java.util.Map<Character, Integer> romanNum = new java.util.HashMap<>();
-            romanNum.put('i', 1); romanNum.put('v', 5); romanNum.put('x', 10);
-            romanNum.put('l', 50); romanNum.put('c', 100); romanNum.put('d', 500); romanNum.put('m', 1000);
-            int total = 0, prev = 0;
-            for (int i = s.length() - 1; i >= 0; i--) {
-                int curr = romanNum.getOrDefault(s.charAt(i), 0);
-                if (curr < prev) total -= curr; else total += curr;
-                prev = curr;
+        // ====== 5. 罗马数字（支持含空格：如"ii ii"→10） ======
+        String testLower = testTrimmed.toLowerCase();
+        if (testLower.chars().allMatch(c -> "ivxlcdm ".indexOf(c) >= 0) && !testTrimmed.replace(" ", "").isEmpty()) {
+            String[] parts = testTrimmed.split("\\s+");
+            int total = 0;
+            for (String part : parts) {
+                if (part.isEmpty()) continue;
+                int val = parseRoman(part);
+                if (val > 0) total += val;
             }
             if (total > 0) return total;
         }
 
-        // ====== 7. 兜底：提取所有数字 ======
-        java.util.regex.Matcher nm = java.util.regex.Pattern.compile("\\d+").matcher(s);
+        // ====== 6. 兜底：提取所有数字 ======
+        java.util.regex.Matcher nm = java.util.regex.Pattern.compile("\\d+").matcher(testTrimmed);
         java.util.List<Integer> nums = new java.util.ArrayList<>();
         while (nm.find()) nums.add(Integer.parseInt(nm.group()));
         if (nums.size() == 1) return nums.get(0);
@@ -558,100 +567,256 @@ public class ConfigManager {
         return 90;
     }
 
-    /** 解析中文时间字符串，返回秒数或-1(无法解析) */
-    private int parseChineseTime(String s) {
-        // 中文数字映射（含繁体/大写/各种变体）
-        java.util.Map<String, Integer> cn = new java.util.LinkedHashMap<>();
-        cn.put("零", 0); cn.put("\u3007", 0); // 〇
-        cn.put("一", 1); cn.put("壹", 1); cn.put("幺", 1);
-        cn.put("二", 2); cn.put("贰", 2); cn.put("貳", 2); cn.put("两", 2); cn.put("弐", 2);
-        cn.put("三", 3); cn.put("叁", 3); cn.put("參", 3);
-        cn.put("四", 4); cn.put("肆", 4);
-        cn.put("五", 5); cn.put("伍", 5);
-        cn.put("六", 6); cn.put("陆", 6); cn.put("陸", 6);
-        cn.put("七", 7); cn.put("柒", 7); cn.put("漆", 7);
-        cn.put("八", 8); cn.put("捌", 8);
-        cn.put("九", 9); cn.put("玖", 9);
-
-        // 检测是否包含中文数字字符（数字本身或乘法单位）
-        boolean hasCnDigit = false;
-        for (char c : s.toCharArray()) {
-            if (cn.containsKey(String.valueOf(c))) { hasCnDigit = true; break; }
+    /** 解析单个罗马数字串 */
+    private int parseRoman(String s) {
+        s = s.toLowerCase();
+        java.util.Map<Character, Integer> m = new java.util.HashMap<>();
+        m.put('i', 1); m.put('v', 5); m.put('x', 10);
+        m.put('l', 50); m.put('c', 100); m.put('d', 500); m.put('m', 1000);
+        int total = 0, prev = 0;
+        for (int i = s.length() - 1; i >= 0; i--) {
+            int curr = m.getOrDefault(s.charAt(i), 0);
+            if (curr < prev) total -= curr; else total += curr;
+            prev = curr;
         }
-        if (!hasCnDigit) {
-            if (s.contains("十") || s.contains("拾") || s.contains("百") || s.contains("佰")
-                    || s.contains("千") || s.contains("仟") || s.contains("万")) {
-                hasCnDigit = true;
+        return total;
+    }
+
+    /**
+     * 中文时间解析（含阿拉伯数字+中文单位混合，如"2分钟"、"90秒"、"一分钟三十秒"、"贰分"等）
+     * 返回秒数，无法解析返回-1
+     */
+    private int parseChineseTime(String raw) {
+        // 中文数字映射（含繁体/大写/各种变体）
+        java.util.Map<String, Integer> cnDigit = new java.util.LinkedHashMap<>();
+        cnDigit.put("零", 0); cnDigit.put("\u3007", 0);
+        cnDigit.put("一", 1); cnDigit.put("壹", 1); cnDigit.put("幺", 1);
+        cnDigit.put("二", 2); cnDigit.put("贰", 2); cnDigit.put("貳", 2); cnDigit.put("两", 2); cnDigit.put("弐", 2);
+        cnDigit.put("三", 3); cnDigit.put("叁", 3); cnDigit.put("參", 3);
+        cnDigit.put("四", 4); cnDigit.put("肆", 4);
+        cnDigit.put("五", 5); cnDigit.put("伍", 5);
+        cnDigit.put("六", 6); cnDigit.put("陆", 6); cnDigit.put("陸", 6);
+        cnDigit.put("七", 7); cnDigit.put("柒", 7); cnDigit.put("漆", 7);
+        cnDigit.put("八", 8); cnDigit.put("捌", 8);
+        cnDigit.put("九", 9); cnDigit.put("玖", 9);
+
+        // 时间单位映射（优先匹配长单位）
+        java.util.List<java.util.Map.Entry<String, Integer>> unitsList = new java.util.ArrayList<>();
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("秒钟", 1));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("小时", 3600));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("小時", 3600));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("分钟", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("分鍾", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("分鐘", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("分種", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("秒", 1));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("分", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("钟", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("鐘", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("時", 3600));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("s", 1));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("m", 60));
+        unitsList.add(new java.util.AbstractMap.SimpleEntry<>("h", 3600));
+
+        java.util.Set<String> multipliers = new java.util.HashSet<>(
+            java.util.Arrays.asList("十", "拾", "百", "佰", "千", "仟", "万"));
+        
+        // 英文数字映射（混合解析用）
+        java.util.Map<String, Integer> enDigit = new java.util.LinkedHashMap<>();
+        enDigit.put("zero", 0); enDigit.put("one", 1); enDigit.put("two", 2); enDigit.put("three", 3); enDigit.put("four", 4);
+        enDigit.put("five", 5); enDigit.put("six", 6); enDigit.put("seven", 7); enDigit.put("eight", 8); enDigit.put("nine", 9);
+        enDigit.put("ten", 10); enDigit.put("eleven", 11); enDigit.put("twelve", 12); enDigit.put("thirteen", 13);
+        enDigit.put("fourteen", 14); enDigit.put("fifteen", 15); enDigit.put("sixteen", 16); enDigit.put("seventeen", 17);
+        enDigit.put("eighteen", 18); enDigit.put("nineteen", 19);
+        enDigit.put("twenty", 20); enDigit.put("thirty", 30); enDigit.put("forty", 40); enDigit.put("fifty", 50);
+        enDigit.put("sixty", 60); enDigit.put("seventy", 70); enDigit.put("eighty", 80); enDigit.put("ninety", 90);
+        enDigit.put("hundred", 100); enDigit.put("thousand", 1000);
+        
+        String s = raw;
+        int totalSeconds = 0;
+        int pendingValue = 0;
+
+        // ★ 第一步：按最大匹配原则分词
+        java.util.List<String> tokens = new java.util.ArrayList<>();
+        int i = 0;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (c >= '\u4e00' && c <= '\u9fff') {
+                // 尝试2字符匹配（先匹配单位复合词）
+                if (i + 1 < s.length() && s.charAt(i+1) >= '\u4e00' && s.charAt(i+1) <= '\u9fff') {
+                    String two = s.substring(i, i+2);
+                    boolean matchedUnit = false;
+                    for (var entry : unitsList) {
+                        if (entry.getKey().equals(two)) {
+                            tokens.add(two);
+                            i += 2;
+                            matchedUnit = true;
+                            break;
+                        }
+                    }
+                    if (matchedUnit) continue;
+                    
+                    // 检查两个中文字符串是否可以组合成中文数字（如"十五"→15、「三十」→30、「一百」→100）
+                    String firstChar = String.valueOf(s.charAt(i));
+                    String secondChar = String.valueOf(s.charAt(i+1));
+                    Integer dFirst = cnDigit.get(firstChar);
+                    Integer dSecond = cnDigit.get(secondChar);
+                    
+                    if (dFirst != null && dSecond != null) {
+                        // 两个都是数字 → 拼成一个完整中文数字（如"一二"→12, "二五"→25）
+                        tokens.add(firstChar + secondChar);
+                        i += 2;
+                        continue;
+                    }
+                    if (dFirst != null && multipliers.contains(secondChar)) {
+                        // 数字+乘法器（如"一二"中"二"不是乘法器，跳过这分支）
+                        // 实际上这种情况不会发生因为multipliers是{十,百,千,万}
+                    }
+                    // 不满足组合条件 → 拆开
+                    tokens.add(firstChar);
+                    i++;
+                } else {
+                    tokens.add(String.valueOf(c));
+                    i++;
+                }
+            } else if ((c >= '0' && c <= '9') || c == '.') {
+                int start = i;
+                while (i < s.length() && ((s.charAt(i) >= '0' && s.charAt(i) <= '9') || s.charAt(i) == '.')) i++;
+                tokens.add(s.substring(start, i));
+            } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                int start = i;
+                while (i < s.length() && ((s.charAt(i) >= 'a' && s.charAt(i) <= 'z') || (s.charAt(i) >= 'A' && s.charAt(i) <= 'Z'))) i++;
+                tokens.add(s.substring(start, i).toLowerCase());
+            } else {
+                i++;
             }
         }
-        if (!hasCnDigit) return -1;
 
-        // 逐字扫描中文数字 + 时间单位
-        int total = 0;
-        int current = 0;
-        int i = 0;
-        boolean hasTimeUnit = false;
-        while (i < s.length()) {
-            // 检查"小时"（两个字符的单位）
-            if (i + 1 < s.length()) {
-                String twoChar = s.substring(i, i + 2);
-                if (twoChar.equals("小时") || twoChar.equals("小時")) {
-                    if (current == 0) current = 1;
-                    total = (total + current) * 3600;
-                    current = 0;
-                    hasTimeUnit = true;
-                    i += 2;
+        // ★ 第二步：将token中的中文数字组合串解析为实际数值
+        // 如"十五"→15、"三十"→30、「一百二十」→120
+        java.util.List<Integer> parsedTokens = new java.util.ArrayList<>();
+        for (String tok : tokens) {
+            // 检查是否是多字符中文数字组合（如"十五"）
+            boolean isMultiCharNum = false;
+            for (String t : tokens) {
+                if (t.equals(tok) && t.length() > 1 && t.chars().allMatch(c -> (c >= '\u4e00' && c <= '\u9fff') || (c >= '0' && c <= '9'))) {
+                    // 所有字符都是中文数字或乘法器 → 解析中文数字组合
+                    int val = evalChineseCompoundNum(tok, cnDigit, multipliers);
+                    if (val >= 0) {
+                        parsedTokens.add(val);
+                        isMultiCharNum = true;
+                        break;
+                    }
+                }
+            }
+            if (isMultiCharNum) continue;
+            parsedTokens.add(null); // placeholder
+        }
+        
+        // ★ 第三步：遍历解析后的token序列，计算总值
+        for (int idx = 0; idx < tokens.size(); idx++) {
+            String tok = tokens.get(idx);
+            
+            // 检查是否是中文复合数字（已通过parsedTokens解析为整数）
+            if (parsedTokens.get(idx) != null) {
+                int val = parsedTokens.get(idx);
+                if (val >= 0) {
+                    pendingValue = val;
+                }
+                continue;
+            }
+            
+            // 中文数字映射
+            Integer digit = cnDigit.get(tok);
+            if (digit != null) {
+                pendingValue = digit;
+                continue;
+            }
+
+            // 乘法器（十百千万）
+            if (multipliers.contains(tok)) {
+                if (pendingValue == 0) pendingValue = 1;
+                if (tok.equals("十") || tok.equals("拾")) pendingValue *= 10;
+                else if (tok.equals("百") || tok.equals("佰")) pendingValue *= 100;
+                else if (tok.equals("千") || tok.equals("仟")) pendingValue *= 1000;
+                else if (tok.equals("万")) pendingValue *= 10000;
+                continue;
+            }
+
+            // 时间单位
+            Integer unitMul = null;
+            for (var entry : unitsList) {
+                if (entry.getKey().equals(tok)) {
+                    unitMul = entry.getValue();
+                    break;
+                }
+            }
+            if (unitMul != null) {
+                if (pendingValue == 0) pendingValue = 1;
+                totalSeconds += pendingValue * unitMul;
+                pendingValue = 0;
+                continue;
+            }
+
+            // 阿拉伯数字
+            try {
+                if (tok.contains(".")) pendingValue = (int) Double.parseDouble(tok);
+                else pendingValue = Integer.parseInt(tok);
+                continue;
+            } catch (Exception ignored) {}
+
+            // 英文数字单词（混合解析：如"壹零zero秒" → 100秒）
+            Integer enVal = enDigit.get(tok);
+            if (enVal != null) {
+                pendingValue = enVal;
+                continue;
+            }
+
+            // ★ 罗马数字（如"II分X秒"→2分10秒=130秒）
+            if (tok.length() > 0 && tok.chars().allMatch(c -> "ivxlcdm".indexOf(c) >= 0)) {
+                int romanVal = parseRoman(tok);
+                if (romanVal > 0) {
+                    pendingValue = romanVal;
                     continue;
                 }
             }
-            String ch = String.valueOf(s.charAt(i));
-            Integer digit = cn.get(ch);
-            if (digit != null && digit >= 0 && digit <= 9) {
-                // 单个中文数字：如果已经有乘法器累积的值，则追加；否则直接赋值
-                if (current > 0 && total == 0) {
-                    // 连续数字如"一二"→12
-                    current = current * 10 + digit;
-                } else {
-                    current = digit;
-                }
-            } else if (ch.equals("十") || ch.equals("拾")) {
-                if (current == 0) current = 1; // "十二"→12, "十" alone→10
-                total += current * 10;
-                current = 0;
-            } else if (ch.equals("百") || ch.equals("佰")) {
-                if (current == 0) current = 1;
-                total += current * 100;
-                current = 0;
-            } else if (ch.equals("千") || ch.equals("仟")) {
-                if (current == 0) current = 1;
-                total += current * 1000;
-                current = 0;
-            } else if (ch.equals("万")) {
-                if (current == 0) current = 1;
-                total += current * 10000;
-                current = 0;
-            } else if (ch.equals("秒")) {
+            
+            // 无法识别的token
+            pendingValue = 0;
+        }
+
+        // 剩余的pendingValue当作秒
+        totalSeconds += pendingValue;
+
+        return totalSeconds > 0 ? totalSeconds : -1;
+    }
+
+    /** 评估中文数字组合串（如"十五"→15、「一百二十三」→123） */
+    private int evalChineseCompoundNum(String s, java.util.Map<String, Integer> cnDigit, java.util.Set<String> multipliers) {
+        int total = 0, current = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            String ch = String.valueOf(c);
+            Integer d = cnDigit.get(ch);
+            if (d != null && d > 0) {
+                if (current > 0) current = current * 10 + d;
+                else current = d;
+            } else if (d != null && d == 0) {
+                // zero - skip
+            } else if (multipliers.contains(ch)) {
+                if (ch.equals("十") || ch.equals("拾")) current = (current == 0 ? 1 : current) * 10;
+                else if (ch.equals("百") || ch.equals("佰")) current = (current == 0 ? 1 : current) * 100;
+                else if (ch.equals("千") || ch.equals("仟")) current = (current == 0 ? 1 : current) * 1000;
+                else if (ch.equals("万")) current = (current == 0 ? 1 : current) * 10000;
                 total += current;
                 current = 0;
-                hasTimeUnit = true;
-            } else if (ch.equals("分")) {
-                // 分后面可能跟"钟"单独出现，这里处理"分"作为分钟单位
-                total = (total + current) * 60;
-                current = 0;
-                hasTimeUnit = true;
-            } else if (ch.equals("钟") || ch.equals("鐘")) {
-                // 单独出现的"钟"跟在"分"后面——已经被前面的分处理过了
-                // 如果"钟"单独出现（极少见），也当分钟处理
-                total = (total + current) * 60;
-                current = 0;
-                hasTimeUnit = true;
+            } else {
+                // non-digit, non-multiplier character → not a pure Chinese number
+                return -1;
             }
-            i++;
         }
         total += current;
-
-        if (hasTimeUnit) return total;
-        return hasCnDigit ? total : -1;
+        return total > 0 ? total : -1;
     }
 
     /** 解析英文时间字符串，返回秒数或-1(无法解析) */
@@ -667,53 +832,57 @@ public class ConfigManager {
         en.put("seventy", 70); en.put("eighty", 80); en.put("ninety", 90);
         en.put("hundred", 100); en.put("thousand", 1000);
 
-        // 单位倍率（值 = 换算为秒的乘数）
+        // 单位倍率
         java.util.Map<String, Integer> units = new java.util.LinkedHashMap<>();
         units.put("second", 1); units.put("seconds", 1); units.put("sec", 1); units.put("secs", 1);
-        units.put("minute", 60); units.put("minutes", 60); units.put("min", 60); units.put("mins", 60);
+        units.put("second", 1); units.put("minute", 60); units.put("minutes", 60); units.put("min", 60); units.put("mins", 60);
         units.put("hour", 3600); units.put("hours", 3600); units.put("hr", 3600); units.put("hrs", 3600);
+        // 单字母缩写
+        units.put("s", 1); units.put("m", 60); units.put("h", 3600);
 
-        // 检测是否有英文时间单位
-        boolean hasEnUnit = false;
-        for (String u : units.keySet()) {
-            if (s.contains(" " + u + " ") || s.endsWith(" " + u) || s.startsWith(u + " ") || s.equals(u)) {
-                hasEnUnit = true;
-                break;
-            }
-        }
-        if (!hasEnUnit) return -1;
-
-        // 按空格分割，逐词扫描
-        String[] words = s.split("\\s+");
+        // 按空格和逗号分割
+        String[] words = s.split("[\\s,]+");
         int totalSeconds = 0;
         int currentNum = 0;
-        boolean hasSeenUnit = false; // 是否已见过明确的时间单位
+        boolean hasUnit = false;
 
         for (String word : words) {
-            String clean = word.toLowerCase().replaceAll("[^a-z0-9]", "");
-            if (clean.isEmpty()) continue;
+            if (word.isEmpty()) continue;
 
-            // 1. 检查是否是单位
-            Integer unitMul = units.get(clean);
+            // 1. 检查是否是单位（可能紧跟数字，如"2min"→拆分为"2"和"min"，这里处理不含数字的情况）
+            // 由于已经按空格分割了，单位应该是独立的word
+            Integer unitMul = units.get(word);
             if (unitMul != null) {
                 if (currentNum == 0) currentNum = 1;
                 totalSeconds += currentNum * unitMul;
                 currentNum = 0;
-                hasSeenUnit = true;
+                hasUnit = true;
                 continue;
             }
 
             // 2. 检查是否是阿拉伯数字
             try {
-                currentNum = Integer.parseInt(clean);
+                // 可能是带单位的合并词如"2min"、"5h"
+                java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(\\d+)([a-z]+)").matcher(word);
+                if (matcher.matches()) {
+                    currentNum = Integer.parseInt(matcher.group(1));
+                    String unitStr = matcher.group(2);
+                    Integer uMul = units.get(unitStr);
+                    if (uMul != null) {
+                        totalSeconds += currentNum * uMul;
+                        currentNum = 0;
+                        hasUnit = true;
+                        continue;
+                    }
+                }
+                currentNum = Integer.parseInt(word);
                 continue;
             } catch (Exception ignored) {}
 
             // 3. 检查是否是英文数字单词
-            Integer numVal = en.get(clean);
+            Integer numVal = en.get(word);
             if (numVal != null) {
                 if (numVal >= 100) {
-                    // hundred/thousand: currentNum * 100 or * 1000
                     if (currentNum == 0) currentNum = 1;
                     currentNum *= numVal;
                 } else {
@@ -723,8 +892,8 @@ public class ConfigManager {
             }
 
             // 4. 检查连字符数字（twenty-one, thirty-five）
-            if (clean.contains("-")) {
-                String[] parts = clean.split("-");
+            if (word.contains("-")) {
+                String[] parts = word.split("-");
                 int compound = 0;
                 for (String p : parts) {
                     Integer pv = en.get(p);
@@ -736,6 +905,6 @@ public class ConfigManager {
             }
         }
 
-        return totalSeconds > 0 ? totalSeconds : -1;
+        return hasUnit ? totalSeconds : -1;
     }
 }

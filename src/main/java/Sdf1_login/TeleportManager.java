@@ -534,30 +534,39 @@ public class TeleportManager implements Listener {
                     .hoverEvent(HoverEvent.showText(Component.text("点击撤回传送请求")))));
         }
         
-        // 通知接收者（可点击消息）
-        sendClickableRequestNotice(target, sender);
+        // ★ 自动接受检查（先判断，避免打印多余通知）
+        if (checkAutoAccept(target.getName(), sender, "tpa")) {
+            return true;
+        }
         
-        // 自动接受检查
-        checkAutoAccept(targetName, sender);
+        // 通知接收者（可点击消息）——非自动接受时才打印
+        sendClickableRequestNotice(target, sender);
         
         return true;
     }
     
     // ==================== 自动接受检测 ====================
     
-    private void checkAutoAccept(String targetName, String senderName) {
-        if (autoAcceptPlayers.contains(targetName)) {
-            Player target = Bukkit.getServer().getPlayer(targetName);
-            Player sender = Bukkit.getServer().getPlayer(senderName);
-            if (target != null && target.isOnline() && sender != null && sender.isOnline()) {
-                executeTeleport(sender, target);
-                plugin.getLogger().info("[传送] 玩家 " + targetName + " 开启了自动接受，已自动传送");
-                sender.sendMessage("§a[传送] §f" + targetName + " §a已自动接受传送请求");
-            }
-            // 清理请求
-            removeIncomingRequest(targetName, senderName);
-            removeOutgoingRequest(senderName, targetName);
+    /**
+     * 自动接受检查。返回true表示已自动处理（调用方不应再发送通知）
+     */
+    private boolean checkAutoAccept(String targetName, String senderName, String requestType) {
+        // 仅tpa请求自动接受（发起者→接受者），tpahere/tpaall不触发
+        if (!"tpa".equals(requestType)) return false;
+        if (!autoAcceptPlayers.contains(targetName)) return false;
+        Player target = Bukkit.getServer().getPlayer(targetName);
+        Player sender = Bukkit.getServer().getPlayer(senderName);
+        if (target != null && target.isOnline() && sender != null && sender.isOnline()) {
+            executeTeleport(sender, target);
+            plugin.getLogger().info("[传送] 玩家 " + targetName + " 开启了自动接受，已自动传送");
+            // ★ 简化通知：只给发起者一条确认，不给接收者发请求通知
+            sender.sendMessage("§a[传送] §f" + targetName + " §a已自动接受传送请求");
+            target.sendMessage("§a[传送] 收到来自 §f" + senderName + " §a的传送请求，已自动通过");
         }
+        // 清理请求
+        removeIncomingRequest(targetName, senderName);
+        removeOutgoingRequest(senderName, targetName);
+        return true;
     }
     
     // ==================== TPACCEPT - 接受传送 ====================
@@ -566,7 +575,7 @@ public class TeleportManager implements Listener {
         String targetName = null;
         if (args.length > 0) {
             String arg = args[0];
-            // ★ 优先当玩家名处理，只有在纯数字且作为序号能找到时才当CLI处理
+            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
             Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
             if (possiblePlayer != null && possiblePlayer.isOnline()) {
                 targetName = arg;
@@ -600,8 +609,30 @@ public class TeleportManager implements Listener {
         
         Set<String> senders = incomingRequests.get(player.getName());
         if (senders == null || !senders.contains(targetName)) {
-            player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
-            return true;
+            // ★ DB fallback: 内存找不到时查数据库 (tpaall请求可能不在内存中)
+            boolean foundInDb = false;
+            try {
+                PreparedStatement psFallback = plugin.getDb().getDb().prepareStatement(
+                    "SELECT 1 FROM teleport_requests WHERE sender=? AND receiver=? LIMIT 1");
+                psFallback.setString(1, targetName);
+                psFallback.setString(2, player.getName());
+                ResultSet rsFallback = psFallback.executeQuery();
+                foundInDb = rsFallback.next();
+                rsFallback.close();
+                psFallback.close();
+            } catch (SQLException e) {
+                plugin.getLogger().warning("[传送] DB回退查询失败: " + e.getMessage());
+            }
+            
+            if (!foundInDb) {
+                player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+                return true;
+            }
+            
+            // DB中有请求 → 恢复内存状态
+            incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
+            outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
+            senders = incomingRequests.get(player.getName());
         }
         
         Player senderPlayer = Bukkit.getServer().getPlayer(targetName);
@@ -612,8 +643,33 @@ public class TeleportManager implements Listener {
             return true;
         }
         
-        // 执行传送
-        executeTeleport(senderPlayer, player);
+        // 检查请求类型（tpa vs tpaall vs tpahere）
+        String requestType = "tpa";
+        if (senders != null && senders.contains(targetName)) {
+            try {
+                PreparedStatement psCheck = plugin.getDb().getDb().prepareStatement(
+                    "SELECT type FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
+                psCheck.setString(1, targetName);
+                psCheck.setString(2, player.getName());
+                ResultSet rsCheck = psCheck.executeQuery();
+                if (rsCheck.next()) {
+                    requestType = rsCheck.getString("type");
+                }
+                rsCheck.close();
+                psCheck.close();
+            } catch (SQLException e) {
+                plugin.getLogger().warning("[传送] 查询请求类型失败: " + e.getMessage());
+            }
+        }
+        
+        // 执行传送 - 根据请求类型决定方向
+        if ("tpaall".equals(requestType) || "tpahere".equals(requestType)) {
+            // tpaall/tpahere: receiver(接受者)传送到sender(发起者)身边
+            executeTeleport(player, senderPlayer);
+        } else {
+            // 标准tpa: sender(发起者)传送到receiver(接受者)身边
+            executeTeleport(senderPlayer, player);
+        }
         
         // 清理请求
         removeIncomingRequest(player.getName(), targetName);
@@ -920,8 +976,8 @@ public class TeleportManager implements Listener {
         // 可点击通知
         sendClickableTPAHNotice(target, sender);
         
-        // 自动接受检查
-        checkAutoAccept(target.getName(), sender);
+        // 自动接受检查（tpahere不触发自动接受）
+        checkAutoAccept(target.getName(), sender, "tpahere");
         
         return true;
     }
@@ -947,19 +1003,6 @@ public class TeleportManager implements Listener {
         for (Player p : onlinePlayers) {
             String name = p.getName();
             if (name.equalsIgnoreCase(sender)) continue;
-            
-            // ★ tpaall不触发autoAccept，让每位玩家都能手动接受/拒绝
-            if (autoAcceptPlayers.contains(name)) {
-                // autoAccept玩家：直接传送不发通知
-                saveTeleportRequest(sender, name, "tpaall");
-                if (p.isOnline() && player.isOnline()) {
-                    executeTeleport(player, p);
-                    player.sendMessage("§a[传送] §f" + name + " §a已自动接受全服传送");
-                    p.sendMessage("§a[传送] §f" + sender + " §a请求全服传送，已自动接受");
-                }
-                count++;
-                continue;
-            }
             
             // 存储到数据库
             saveTeleportRequest(sender, name, "tpaall");
