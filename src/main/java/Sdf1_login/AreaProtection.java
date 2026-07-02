@@ -4534,7 +4534,6 @@ public class AreaProtection implements Listener {
     }
 
 
-
     @EventHandler
     public void onExplosion(EntityExplodeEvent e) {
         Iterator<Block> it = e.blockList().iterator();
@@ -4545,6 +4544,26 @@ public class AreaProtection implements Listener {
                     b.getX(), b.getY(), b.getZ());
             if (ac != null && ac.denyExplosion)
                 it.remove();
+        }
+    }
+
+    // ===== 火床/烈焰弹/三叉戟闪电也拦截 =====
+    @EventHandler
+    public void onBlockExplode(org.bukkit.event.block.BlockExplodeEvent e) {
+        for (Iterator<Block> it = e.blockList().iterator(); it.hasNext();) {
+            Block b = it.next();
+            AreaConfig ac = getArea(b.getWorld().getName(), b.getX(), b.getY(), b.getZ());
+            if (ac != null && ac.denyExplosion) it.remove();
+        }
+    }
+
+    @EventHandler
+    public void onEntityChangeBlock(org.bukkit.event.entity.EntityChangeBlockEvent e) {
+        // 拦截末影龙/末影螨改变方块（如把水变成源）
+        if (e.getBlock().getType() == Material.FIRE || e.getBlock().getType() == Material.LAVA) {
+            AreaConfig ac = getArea(e.getBlock().getWorld().getName(), 
+                    e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
+            if (ac != null && ac.denyFire) e.setCancelled(true);
         }
     }
 
@@ -9512,9 +9531,12 @@ public class AreaProtection implements Listener {
     @EventHandler
     public void onIgnite(BlockIgniteEvent e) {
         Player p = e.getPlayer();
+        Block tgtBlock = e.getBlock();
+        
         AreaConfig srcArea = null;
         AreaConfig tgtArea = null;
-        // 检查源领地（玩家所在位置）和目标领地（被点燃方块位置）
+        
+        // 检查源领地（玩家所在位置）
         if (p != null) {
             srcArea = getArea(
                     p.getWorld().getName(),
@@ -9522,15 +9544,44 @@ public class AreaProtection implements Listener {
                     p.getLocation().getBlockY(),
                     p.getLocation().getBlockZ());
         }
-        Block block = e.getBlock();
+        
+        // 检查目标领地（被点燃方块位置）
         tgtArea = getArea(
-                block.getWorld().getName(),
-                block.getX(), block.getY(), block.getZ());
+                tgtBlock.getWorld().getName(),
+                tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
+        
         // 任何一方denyFire=true就阻止
         if ((srcArea != null && srcArea.denyFire) || (tgtArea != null && tgtArea.denyFire)) {
             e.setCancelled(true);
             if (p != null) {
                 p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
+            }
+        }
+    }
+
+    // ===== TNT自爆防漏网：EntityExplodeEvent =====
+    @EventHandler
+    public void onEntityExplode(EntityExplodeEvent e) {
+        org.bukkit.entity.Entity ent = e.getEntity();
+        if (ent != null) {
+            // 如果是TNT引爆，检查引爆位置
+            AreaConfig ac = getArea(ent.getWorld().getName(), 
+                    (int) ent.getLocation().getBlockX(), 
+                    (int) ent.getLocation().getBlockY(), 
+                    (int) ent.getLocation().getBlockZ());
+            // 如果爆炸源在禁止火焰蔓延的区域，取消所有爆炸
+            if (ac != null && ac.denyFireSpread) {
+                e.blockList().clear();
+                return;
+            }
+        }
+        // 检查每个被爆炸的方块是否在禁止爆炸的区域
+        Iterator<Block> it = e.blockList().iterator();
+        while (it.hasNext()) {
+            Block b = it.next();
+            AreaConfig a = getArea(b.getWorld().getName(), b.getX(), b.getY(), b.getZ());
+            if (a != null && a.denyExplosion) {
+                it.remove();
             }
         }
     }
