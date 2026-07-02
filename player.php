@@ -1114,6 +1114,30 @@ if ($currentVersion !== $BUILD_VERSION) {
         setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 3000);
     }
 
+    // ★ 自定义玻璃拟态确认对话框
+    function showConfirm(msg) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:10000;display:flex;justify-content:center;align-items:center;animation:glassFadeIn 0.2s ease';
+            overlay.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:28px;width:420px;max-width:90%;box-shadow:0 16px 64px rgba(0,0,0,0.5)">';
+            overlay.innerHTML += '<p style="color:var(--text);white-space:pre-line;margin-bottom:20px;font-size:14px;line-height:1.6">' + escapeHtml(msg) + '</p>';
+            overlay.innerHTML += '<div style="display:flex;gap:10px;justify-content:flex-end">';
+            overlay.innerHTML += '<button id="_confirm_yes" class="btn btn-primary">确定</button>';
+            overlay.innerHTML += '<button id="_confirm_no" class="btn btn-dim">取消</button>';
+            overlay.innerHTML += '</div></div>';
+            document.body.appendChild(overlay);
+            const yesBtn = overlay.querySelector('#_confirm_yes');
+            const noBtn = overlay.querySelector('#_confirm_no');
+            const cleanup = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+            yesBtn.onclick = () => { cleanup(); resolve(true); };
+            noBtn.onclick = () => { cleanup(); resolve(false); };
+        });
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
     // 通知Java插件立即同步数据
     async function notifyJavaSync() {
         try {
@@ -1555,7 +1579,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         const g = window._availGroupsMap?.[groupName];
         const price = g ? g.join_price + ' 张债券' : '（价格未知）';
         const dur = g ? (g.duration_minutes == 0 ? '永久' : (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时')) : '未知';
-        if (!confirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`)) return;
+        if (!showConfirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`)) return;
         try {
             const res = await api('land_api.php', {action: 'buy_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {
@@ -1574,7 +1598,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         const g = window._availGroupsMap?.[groupName];
         const price = g ? (parseInt(g.renew_price) > 0 ? g.renew_price + ' 张债券' : '免费') : '未知';
         const dur = g && g.duration_minutes ? (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时') : '由用户组配置决定';
-        if (!confirm(`确认续费用户组「${g ? (g.display_name || groupName) : groupName}」？\n续费价格: ${price}\n延长有效期: ${dur}\n将从债券余额扣费。`)) return;
+        if (!showConfirm(`确认续费用户组「${g ? (g.display_name || groupName) : groupName}」？\n续费价格: ${price}\n延长有效期: ${dur}\n将从债券余额扣费。`)) return;
         try {
             const res = await api('land_api.php', {action: 'renew_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {
