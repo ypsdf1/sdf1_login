@@ -2060,6 +2060,39 @@ function handleRemoveGroupMember($db, $data) {
 
 function handleGetPlayerGroups($db, $player) {
     if (empty($player)) { echo json_encode(['success' => false, 'error' => 'missing player']); return; }
+    // ★ 先确保 web_user_groups 存在（Java同步可能还没推送）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
+    )");
+    // 迁移：添加新列（如果缺失）
+    $columns = [];
+    $rs_cols = $db->query("PRAGMA table_info(web_user_groups)");
+    while ($row = $rs_cols->fetchArray(SQLITE3_ASSOC)) { $columns[] = $row['name']; }
+    $migrations = [
+        'home_limit' => 'ALTER TABLE web_user_groups ADD COLUMN home_limit INTEGER DEFAULT 0',
+        'join_price' => 'ALTER TABLE web_user_groups ADD COLUMN join_price INTEGER DEFAULT 0',
+        'auto_renew' => 'ALTER TABLE web_user_groups ADD COLUMN auto_renew INTEGER DEFAULT 0',
+        'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
+        'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
+    ];
+    foreach ($migrations as $col => $sql) {
+        if (!in_array($col, $columns)) {
+            try { $db->exec($sql); } catch (\Throwable $e) { /* 已存在 */ }
+        }
+    }
     $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
         player_name TEXT NOT NULL,
         group_name TEXT NOT NULL,
@@ -2067,6 +2100,23 @@ function handleGetPlayerGroups($db, $player) {
         added_time INTEGER DEFAULT 0,
         expiry_time INTEGER DEFAULT 0,
         PRIMARY KEY(player_name, group_name)
+    )");
+    // ★ 先确保 web_user_groups 存在（Java同步可能还没推送）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+        group_name TEXT PRIMARY KEY,
+        display_name TEXT DEFAULT '',
+        display_color TEXT DEFAULT '§f',
+        display_emoji TEXT DEFAULT '',
+        priority INTEGER DEFAULT 0,
+        land_price_per_sqm INTEGER DEFAULT -1,
+        max_lands INTEGER DEFAULT -1,
+        home_limit INTEGER DEFAULT 0,
+        join_price INTEGER DEFAULT 0,
+        auto_renew INTEGER DEFAULT 0,
+        renew_price INTEGER DEFAULT 0,
+        duration_minutes INTEGER DEFAULT 0,
+        default_perms TEXT DEFAULT '{}',
+        synced_at INTEGER DEFAULT 0
     )");
     $stmt = $db->prepare("SELECT m.*, g.display_name, g.display_color, g.priority,
         g.join_price, g.renew_price, g.auto_renew, g.duration_minutes, g.home_limit
@@ -2086,6 +2136,7 @@ function handleGetPlayerGroups($db, $player) {
  * 玩家端：查看可购买的用户组
  */
 function handleListAvailableGroups($db) {
+    // ★ 确保 web_user_groups 存在 + 迁移缺失列
     $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
         group_name TEXT PRIMARY KEY,
         display_name TEXT DEFAULT '',
@@ -2102,6 +2153,20 @@ function handleListAvailableGroups($db) {
         default_perms TEXT DEFAULT '{}',
         synced_at INTEGER DEFAULT 0
     )");
+    $columns = [];
+    $rs_cols = $db->query("PRAGMA table_info(web_user_groups)");
+    while ($row = $rs_cols->fetchArray(SQLITE3_ASSOC)) { $columns[] = $row['name']; }
+    $migrations = [
+        'join_price' => 'ALTER TABLE web_user_groups ADD COLUMN join_price INTEGER DEFAULT 0',
+        'auto_renew' => 'ALTER TABLE web_user_groups ADD COLUMN auto_renew INTEGER DEFAULT 0',
+        'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
+        'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
+    ];
+    foreach ($migrations as $col => $sql) {
+        if (!in_array($col, $columns)) {
+            try { $db->exec($sql); } catch (\Throwable $e) { /* 已存在 */ }
+        }
+    }
     // 返回开放付费加入的用户组（join_price > 0）
     $rs = $db->query("SELECT group_name, display_name, display_color, display_emoji,
         join_price, renew_price, duration_minutes
@@ -2138,6 +2203,10 @@ function handleBuyGroup($db, $player, $data) {
     }
     if ((int)$cfg['duration_minutes'] <= 0) {
         echo json_encode(['success' => false, 'error' => '该用户组配置异常（有效时长未设置）']);
+        return;
+    }
+    if (!isset($cfg['join_price'])) {
+        echo json_encode(['success' => false, 'error' => '数据库缺少 join_price 列，请重新同步']);
         return;
     }
 
