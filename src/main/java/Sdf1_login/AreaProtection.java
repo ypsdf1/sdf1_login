@@ -9512,14 +9512,26 @@ public class AreaProtection implements Listener {
     @EventHandler
     public void onIgnite(BlockIgniteEvent e) {
         Player p = e.getPlayer();
-        if (p == null) return; // 非玩家点燃的（闪电等）
+        AreaConfig srcArea = null;
+        AreaConfig tgtArea = null;
+        // 检查源领地（玩家所在位置）和目标领地（被点燃方块位置）
+        if (p != null) {
+            srcArea = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+        }
         Block block = e.getBlock();
-        AreaConfig ac = getArea(
+        tgtArea = getArea(
                 block.getWorld().getName(),
                 block.getX(), block.getY(), block.getZ());
-        if (ac != null && ac.denyFire) {
+        // 任何一方denyFire=true就阻止
+        if ((srcArea != null && srcArea.denyFire) || (tgtArea != null && tgtArea.denyFire)) {
             e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
+            if (p != null) {
+                p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
+            }
         }
     }
 
@@ -9530,8 +9542,9 @@ public class AreaProtection implements Listener {
         AreaConfig ac = getArea(
                 block.getWorld().getName(),
                 block.getX(), block.getY(), block.getZ());
-        if (ac != null && ac.denyFireSpread)
+        if (ac != null && ac.denyFireSpread) {
             e.setCancelled(true);
+        }
     }
 
     // ===== ★ 拴绳使用（给生物拴绳或拉拽）=====
