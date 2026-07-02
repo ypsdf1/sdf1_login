@@ -141,11 +141,14 @@ if ($currentVersion !== $BUILD_VERSION) {
         .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
         .toast {
             position: fixed; top: 20px; right: 20px; padding: 12px 20px;
-            border-radius: 8px; font-size: 14px; z-index: 200;
+            border-radius: 12px; font-size: 14px; z-index: 200;
             animation: slideIn 0.3s ease;
+            backdrop-filter: blur(16px) saturate(180%); -webkit-backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid rgba(88,166,255,0.2);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
         }
-        .toast.success { background: var(--green); color: #fff; }
-        .toast.error { background: var(--red); color: #fff; }
+        .toast.success { background: rgba(63,185,80,0.85); color: #fff; }
+        .toast.error { background: rgba(248,81,73,0.85); color: #fff; }
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
         /* ★ 游客模式C位登录按钮 */
         .guest-center-login {
@@ -1102,6 +1105,15 @@ if ($currentVersion !== $BUILD_VERSION) {
         return await res.json();
     }
 
+    function showToast(msg, type = 'info') {
+        const t = document.createElement('div');
+        t.className = 'toast ' + type;
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateX(100%)'; }, 2500);
+        setTimeout(() => { if (t.parentNode) t.parentNode.removeChild(t); }, 3000);
+    }
+
     // 通知Java插件立即同步数据
     async function notifyJavaSync() {
         try {
@@ -1542,19 +1554,19 @@ if ($currentVersion !== $BUILD_VERSION) {
     async function doBuyGroup(groupName) {
         const g = window._availGroupsMap?.[groupName];
         const price = g ? g.join_price + ' 张债券' : '（价格未知）';
-        const dur = g ? (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时') : '未知';
+        const dur = g ? (g.duration_minutes == 0 ? '永久' : (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时')) : '未知';
         if (!confirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`)) return;
         try {
             const res = await api('land_api.php', {action: 'buy_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {
-                alert(res.message || '加入成功');
+                showToast(res.message || '加入成功', 'success');
                 loadMyGroups();
                 loadAvailableGroups();
             } else {
-                alert(res.error || '加入失败');
+                showToast(res.error || '加入失败', 'error');
             }
         } catch(e) {
-            alert('请求失败: ' + e.message);
+            showToast('请求失败: ' + e.message, 'error');
         }
     }
 
@@ -1566,13 +1578,13 @@ if ($currentVersion !== $BUILD_VERSION) {
         try {
             const res = await api('land_api.php', {action: 'renew_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {
-                alert(res.message || '续费请求已提交');
+                showToast(res.message || '续费请求已提交', 'success');
                 loadMyGroups();
             } else {
-                alert(res.error || '续费失败');
+                showToast(res.error || '续费失败', 'error');
             }
         } catch(e) {
-            alert('请求失败: ' + e.message);
+            showToast('请求失败: ' + e.message, 'error');
         }
     }
 

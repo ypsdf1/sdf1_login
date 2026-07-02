@@ -103,6 +103,8 @@ try {
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更 + Java回调过户结果
     $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback', 'poll_group_renews', 'renew_group_callback'];
+    // ★ Java同步扣费记录
+    $bondActions = ['sync_bond_record'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -404,6 +406,11 @@ try {
             break;
         case 'get_player_groups':
             handleGetPlayerGroups($db, $_GET['player'] ?? '');
+            break;
+
+        // ===== Java端：同步扣费记录 =====
+        case 'sync_bond_record':
+            handleSyncBondRecord($db, $_GET + $_POST);
             break;
 
         // ===== Java端：轮询PHP发起的用户组续费请求 =====
@@ -1966,10 +1973,11 @@ function handleAddGroupMember($db, $data) {
         echo json_encode(['success' => false, 'error' => "玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）"]);
         return;
     }
-    // ★ 校验玩家是否存在（异步验证：写入pending表，Java定时器拉取验证）
+    // ★ 校验玩家是否存在
     $playerValid = validatePlayerViaJava($db, $player, 'add_group_member', ['group' => $group]);
     if ($playerValid === null) {
-        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$player} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
+        // 异步验证中 → 稍后重试（不直接写DB，等Java验证）
+        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$player} 的验证请求已提交，系统正在验证，请稍候再试"]);
         return;
     }
     if (!$playerValid) {
@@ -2201,10 +2209,11 @@ function handleBuyGroup($db, $player, $data) {
         echo json_encode(['success' => false, 'error' => '该用户组不开放付费加入']);
         return;
     }
-    if ((int)$cfg['duration_minutes'] <= 0) {
-        echo json_encode(['success' => false, 'error' => '该用户组配置异常（有效时长未设置）']);
+    if ((int)$cfg['duration_minutes'] < 0) {
+        echo json_encode(['success' => false, 'error' => '该用户组配置异常（有效时长为负数）']);
         return;
     }
+    // ★ duration_minutes=0 表示永久，视为合法
     if (!isset($cfg['join_price'])) {
         echo json_encode(['success' => false, 'error' => '数据库缺少 join_price 列，请重新同步']);
         return;
@@ -2264,6 +2273,41 @@ function handleBuyGroup($db, $player, $data) {
 /**
  * 玩家端：续费用户组（写入web_admin_changes，Java轮询拉取执行）
  */
+function handleSyncBondRecord($db, $data) {
+    $player = $data['player'] ?? '';
+    $amount = (int)($data['amount'] ?? 0);
+    $type = $data['type'] ?? '';
+    $by = $data['by'] ?? 'system';
+    $desc = $data['desc'] ?? '';
+    
+    if (empty($player) || $amount <= 0) {
+        return;
+    }
+    
+    // 写入web_bond_records表
+    $db->exec("CREATE TABLE IF NOT EXISTS web_bond_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        amount INTEGER DEFAULT 0,
+        record_type TEXT DEFAULT '',
+        recorded_by TEXT DEFAULT 'system',
+        description TEXT DEFAULT '',
+        created_at INTEGER DEFAULT 0
+    )");
+    
+    $stmt = $db->prepare("INSERT INTO web_bond_records (player_name, amount, record_type, recorded_by, description, created_at) 
+        VALUES (:player, :amount, :type, :by, :desc, :time)");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+    $stmt->bindValue(':type', $type, SQLITE3_TEXT);
+    $stmt->bindValue(':by', $by, SQLITE3_TEXT);
+    $stmt->bindValue(':desc', $desc, SQLITE3_TEXT);
+    $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+    
+    error_log("[BondRecord] 同步扣费记录: player=$player, amount=$amount, type=$type, desc=$desc");
+}
+
 function handleRenewGroup($db, $player, $data) {
     $group = $data['group'] ?? $data['group_name'] ?? '';
     if (empty($player) || empty($group)) {
