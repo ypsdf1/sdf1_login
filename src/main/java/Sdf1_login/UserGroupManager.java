@@ -387,6 +387,9 @@ public class UserGroupManager {
 
         plugin.getLogger().info("[UserGroup] " + player + " 付费加入用户组 " + groupName + "，扣费 " + cfg.joinPrice + " 张，到期: " + formatExpiry(expiryTime));
         
+        // 推送成员到PHP
+        pushMemberToPHP(player, groupName, "add");
+        
         // 同步给在线玩家发送消息
         final long finalExpiryTime = expiryTime;
         final int finalJoinPrice = cfg.joinPrice;
