@@ -468,7 +468,7 @@ public class AreaGUIManager implements Listener {
                 {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                 {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                 {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
-                {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
+                {"允许拾取", "allowPickup"}, {"允许丢弃", "allowDrop"}, {"爆炸", "denyExplosion"},
                 {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
                 {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                 {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
@@ -503,8 +503,14 @@ public class AreaGUIManager implements Listener {
                 name = landDefault ? "禁止攻击生物" : "允许攻击生物";
             }
 
-            // enabled = true 表示"允许操作"（即deny=false）
-            boolean allowed = !effective;
+            // ★ 对于 allowPickup/allowDrop，enabled=true 表示"允许操作"（即 allow=true）
+            // 其他权限，enabled = true 表示"允许操作"（即 deny=false）
+            boolean allowed;
+            if (field.equals("allowPickup") || field.equals("allowDrop")) {
+                allowed = effective;
+            } else {
+                allowed = !effective;
+            }
             Material mat = allowed ? Material.LIME_DYE : Material.GRAY_DYE;
             String status = allowed ? "§a✔ 允许" : "§c✘ 禁止";
             String overrideTag = isOverridden ? " §e★自定义" : " §7[默认]";
@@ -555,8 +561,8 @@ public class AreaGUIManager implements Listener {
             case "denyPotion": return land.denyPotion;
             case "denyFire": return land.denyFire;
             case "denyFireSpread": return land.denyFireSpread;
-            case "denyPickup": return land.denyPickup;
-            case "denyDrop": return land.denyDrop;
+            case "allowPickup": return land.allowPickup;
+            case "allowDrop": return land.allowDrop;
             case "denyExplosion": return land.denyExplosion;
             case "denyFallDamage": return land.denyFallDamage;
             case "denyHunger": return land.denyHunger;
@@ -637,8 +643,8 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("药水效果", !land.denyPotion));
         perms.add(new PermEntry(land.denyFire ? "禁止点燃" : "启用点燃", !land.denyFire));
         perms.add(new PermEntry("火焰蔓延", !land.denyFireSpread));
-        perms.add(new PermEntry("禁止拾取", !land.denyPickup));
-        perms.add(new PermEntry("丢弃物品", !land.denyDrop));
+        perms.add(new PermEntry("允许拾取", land.allowPickup));
+        perms.add(new PermEntry("允许丢弃", land.allowDrop));
         perms.add(new PermEntry("爆炸", !land.denyExplosion));
         perms.add(new PermEntry("摔落伤害", !land.denyFallDamage));
         perms.add(new PermEntry("饥饿", !land.denyHunger));
@@ -693,8 +699,8 @@ public class AreaGUIManager implements Listener {
             case "禁止点燃": land.denyFire = !land.denyFire; break;
             case "启用点燃": land.denyFire = !land.denyFire; break;
             case "火焰蔓延": land.denyFireSpread = !land.denyFireSpread; break;
-            case "禁止拾取": land.denyPickup = !land.denyPickup; break;
-            case "丢弃物品": land.denyDrop = !land.denyDrop; break;
+            case "允许拾取": land.allowPickup = !land.allowPickup; break;
+            case "允许丢弃": land.allowDrop = !land.allowDrop; break;
             case "爆炸": land.denyExplosion = !land.denyExplosion; break;
             case "摔落伤害": land.denyFallDamage = !land.denyFallDamage; break;
             case "饥饿": land.denyHunger = !land.denyHunger; break;
@@ -1075,7 +1081,7 @@ public class AreaGUIManager implements Listener {
                         {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                         {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
                         {"药水效果", "denyPotion"}, {"点燃", "denyFire"}, {"火焰蔓延", "denyFireSpread"},
-                        {"禁止拾取", "denyPickup"}, {"丢弃物品", "denyDrop"}, {"爆炸", "denyExplosion"},
+                        {"允许拾取", "allowPickup"}, {"允许丢弃", "allowDrop"}, {"爆炸", "denyExplosion"},
                         {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
                         {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
                         {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},

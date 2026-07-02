@@ -516,7 +516,7 @@ public class TeleportManager implements Listener {
         // 记录请求创建时间
         teleportRequestTimes.put(sender + ":" + target.getName(), now);
         
-        // 通知发送者（Java版带撤回按钮，基岩版纯文本）
+        // 通知发送者（Java版带撤回按钮，基岩版纯文本）——非自动接受时才打印
         if (isBedrockPlayer(player)) {
             player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
             // 显示请求剩余有效时间
@@ -534,13 +534,10 @@ public class TeleportManager implements Listener {
                     .hoverEvent(HoverEvent.showText(Component.text("点击撤回传送请求")))));
         }
         
-        // ★ 自动接受检查（先判断，避免打印多余通知）
-        if (checkAutoAccept(target.getName(), sender, "tpa")) {
-            return true;
-        }
-        
         // 通知接收者（可点击消息）——非自动接受时才打印
-        sendClickableRequestNotice(target, sender);
+        if (!checkAutoAccept(target.getName(), sender, "tpa")) {
+            sendClickableRequestNotice(target, sender);
+        }
         
         return true;
     }

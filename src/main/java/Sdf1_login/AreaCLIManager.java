@@ -530,8 +530,8 @@ public class AreaCLIManager {
             case "potion": oldState = land.denyPotion; land.denyPotion = !land.denyPotion; break;
             case "fire": oldState = land.denyFire; land.denyFire = !land.denyFire; break;
             case "fire_spread": oldState = land.denyFireSpread; land.denyFireSpread = !land.denyFireSpread; break;
-            case "pickup": oldState = land.denyPickup; land.denyPickup = !land.denyPickup; break;
-            case "drop": oldState = land.denyDrop; land.denyDrop = !land.denyDrop; break;
+            case "pickup": oldState = land.allowPickup; land.allowPickup = !land.allowPickup; break;
+            case "drop": oldState = land.allowDrop; land.allowDrop = !land.allowDrop; break;
             case "explosion": oldState = land.denyExplosion; land.denyExplosion = !land.denyExplosion; break;
             case "fall_damage": oldState = land.denyFallDamage; land.denyFallDamage = !land.denyFallDamage; break;
             case "hunger": oldState = land.denyHunger; land.denyHunger = !land.denyHunger; break;
@@ -555,7 +555,6 @@ public class AreaCLIManager {
 
         String permName = getPermNameByKey(permKey);
         boolean newState = !oldState;
-        // ★ newState是deny值：true=禁止，false=允许
         p.sendMessage("§a已切换 §e" + permName + " §7→ " + (newState ? "§a已启用" : "§c已关闭"));
     }
 
@@ -586,8 +585,8 @@ public class AreaCLIManager {
             case "potion": return "denyPotion";
             case "fire": return "denyFire";
             case "fire_spread": return "denyFireSpread";
-            case "pickup": return "denyPickup";
-            case "drop": return "denyDrop";
+            case "pickup": return "allowPickup";
+            case "drop": return "allowDrop";
             case "explosion": return "denyExplosion";
             case "fall_damage": return "denyFallDamage";
             case "hunger": return "denyHunger";
@@ -642,8 +641,8 @@ public class AreaCLIManager {
         perms.add(new PermItem("potion", "药水效果", !land.denyPotion));
         perms.add(new PermItem("fire", land.denyFire ? "禁止点燃" : "启用点燃", !land.denyFire));
         perms.add(new PermItem("fire_spread", "火焰蔓延", !land.denyFireSpread));
-        perms.add(new PermItem("pickup", "禁止拾取", !land.denyPickup));
-        perms.add(new PermItem("drop", "丢弃物品", !land.denyDrop));
+        perms.add(new PermItem("pickup", "允许拾取", land.allowPickup));
+        perms.add(new PermItem("drop", "允许丢弃", land.allowDrop));
         perms.add(new PermItem("explosion", "爆炸", !land.denyExplosion));
         perms.add(new PermItem("fall_damage", "摔落伤害", !land.denyFallDamage));
         perms.add(new PermItem("hunger", "饥饿", !land.denyHunger));
@@ -679,8 +678,8 @@ public class AreaCLIManager {
             case "potion": return "药水效果";
             case "fire": return "点燃";
             case "fire_spread": return "火焰蔓延";
-            case "pickup": return "禁止拾取";
-            case "drop": return "丢弃物品";
+            case "pickup": return "允许拾取";
+            case "drop": return "允许丢弃";
             case "explosion": return "爆炸";
             case "fall_damage": return "摔落伤害";
             case "hunger": return "饥饿";
@@ -1033,7 +1032,7 @@ public class AreaCLIManager {
         areaProtect.setPlayerPerm(landId, targetPlayer, denyField, newVal);
 
         String permName = getPermNameByKey(permKey);
-        p.sendMessage("§a已设置 §e" + targetPlayer + " §a的 §e" + permName + " §7→ " + (!newVal ? "§a允许" : "§c禁止"));
+        p.sendMessage("§a已设置 §e" + targetPlayer + " §a的 §e" + permName + " §7→ " + (newVal ? "§a允许" : "§c禁止"));
 
         // 刷新页面
         showPlayerPerm(p, landName, targetPlayer, page);
@@ -1088,8 +1087,8 @@ public class AreaCLIManager {
                 {"potion", "药水效果", "denyPotion"},
                 {"fire", "点燃", "denyFire"},
                 {"fire_spread", "火焰蔓延", "denyFireSpread"},
-                {"pickup", "禁止拾取", "denyPickup"},
-                {"drop", "丢弃物品", "denyDrop"},
+                {"pickup", "允许拾取", "allowPickup"},
+                {"drop", "允许丢弃", "allowDrop"},
                 {"explosion", "爆炸", "denyExplosion"},
                 {"fall_damage", "摔落伤害", "denyFallDamage"},
                 {"hunger", "饥饿", "denyHunger"},
@@ -1166,8 +1165,8 @@ public class AreaCLIManager {
             case "denyPotion": return land.denyPotion;
             case "denyFire": return land.denyFire;
             case "denyFireSpread": return land.denyFireSpread;
-            case "denyPickup": return land.denyPickup;
-            case "denyDrop": return land.denyDrop;
+            case "denyPickup": return land.allowPickup;
+            case "denyDrop": return land.allowDrop;
             case "denyExplosion": return land.denyExplosion;
             case "denyFallDamage": return land.denyFallDamage;
             case "denyHunger": return land.denyHunger;

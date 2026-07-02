@@ -977,7 +977,7 @@ public class AreaProtection implements Listener {
                 ac.denyFallDamage = rs.getInt("deny_fall_damage") == 1;
                 ac.denyHunger = rs.getInt("deny_hunger") == 1;
                 ac.denyAllDamage = rs.getInt("deny_all_damage") == 1;
-                ac.denyDrop = rs.getInt("deny_drop") == 1;
+                ac.allowDrop = rs.getInt("deny_drop") == 1;
                 ac.denyMount = rs.getInt("deny_mount") == 1;
                 ac.denyEnderPearl = rs.getInt("deny_ender_pearl") == 1;
                 ac.denyBow = rs.getInt("deny_bow") == 1;
@@ -988,7 +988,7 @@ public class AreaProtection implements Listener {
                 ac.denyAllEffects = rs.getInt("deny_all_effects") == 1;
                 ac.denyItemFrame = rs.getInt("deny_item_frame") == 1;
                 try { ac.denyMove = rs.getInt("deny_move") == 1; } catch (Exception ignored) {}
-                try { ac.denyPickup = rs.getInt("deny_pickup") == 1; } catch (Exception ignored) {}
+                try { ac.allowPickup = rs.getInt("deny_pickup") == 1; } catch (Exception ignored) {}
                 try { ac.denyFire = rs.getInt("deny_fire") == 1; } catch (Exception ignored) {}
                 try { ac.denyThrownProjectiles = rs.getInt("deny_thrown_projectiles") == 1; } catch (Exception ignored) {}
                 try { ac.denyGlowing = rs.getInt("deny_glowing") == 1; } catch (Exception ignored) {}
@@ -1315,7 +1315,7 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(19, ac.denyFallDamage ? 1 : 0);
                     insertStmt.setInt(20, ac.denyHunger ? 1 : 0);
                     insertStmt.setInt(21, ac.denyAllDamage ? 1 : 0);
-                    insertStmt.setInt(22, ac.denyDrop ? 1 : 0);
+                    insertStmt.setInt(22, ac.allowDrop ? 1 : 0);
                     insertStmt.setInt(23, ac.denyMount ? 1 : 0);
                     insertStmt.setInt(24, ac.denyEnderPearl ? 1 : 0);
                     insertStmt.setInt(25, ac.denyBow ? 1 : 0);
@@ -1326,7 +1326,7 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(30, ac.denyAllEffects ? 1 : 0);
                     insertStmt.setInt(31, ac.denyItemFrame ? 1 : 0);
                     insertStmt.setInt(32, ac.denyMove ? 1 : 0);
-                    insertStmt.setInt(33, ac.denyPickup ? 1 : 0);
+                    insertStmt.setInt(33, ac.allowPickup ? 1 : 0);
                     insertStmt.setInt(34, ac.denyFire ? 1 : 0);
                     insertStmt.setInt(35, ac.peaceMode ? 1 : 0);
                     insertStmt.setInt(36, ac.peaceModeDuration / 1000); // 存秒
@@ -1653,8 +1653,8 @@ public class AreaProtection implements Listener {
                 ac.denyHunger = true;
             } else if (line.equals("禁止一切伤害")) {
                 ac.denyAllDamage = true;
-            } else if (line.equals("禁止丢弃物品")) {
-                ac.denyDrop = true;
+            } else if (line.equals("允许丢弃物品")) {
+                ac.allowDrop = true;
             } else if (line.equals("禁止末影珍珠")) {
                 ac.denyEnderPearl = true;
             } else if (line.equals("禁止使用弓箭")) {
@@ -2501,7 +2501,7 @@ public class AreaProtection implements Listener {
             case "denyFallDamage": return ac.denyFallDamage;
             case "denyHunger": return ac.denyHunger;
             case "denyAllDamage": return ac.denyAllDamage;
-            case "denyDrop": return ac.denyDrop;
+            case "denyDrop": return ac.allowDrop;
             case "denyMount": return ac.denyMount;
             case "denyEnderPearl": return ac.denyEnderPearl;
             case "denyBow": return ac.denyBow;
@@ -2511,7 +2511,7 @@ public class AreaProtection implements Listener {
             case "denyFireSpread": return ac.denyFireSpread;
             case "denyAllEffects": return ac.denyAllEffects;
             case "denyItemFrame": return ac.denyItemFrame;
-            case "denyPickup": return ac.denyPickup;
+            case "denyPickup": return ac.allowPickup;
             case "denyFire": return ac.denyFire;
             case "denyThrownProjectiles": return ac.denyThrownProjectiles;
             case "denyGlowing": return ac.denyGlowing;
@@ -4326,13 +4326,18 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyDrop")) {
+        if (ac != null && ac.allowDrop) {
+            // allowDrop=true 表示允许丢弃，不阻止
+            return;
+        }
+        // allowDrop=false 或 no land → 默认不允许丢弃
+        if (ac != null) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
         }
     }
 
-    // ★ 拾取限制：denyPickup=true时禁止拾取地上物品（节流5~10秒随机提示）
+    // ★ 拾取限制：allowPickup=true时允许拾取，false时禁止拾取
     @EventHandler
     public void onPlayerPickup(PlayerPickupItemEvent e) {
         Player p = e.getPlayer();
@@ -4341,7 +4346,12 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyPickup")) {
+        if (ac != null && ac.allowPickup) {
+            // allowPickup=true 表示允许拾取，不阻止
+            return;
+        }
+        // allowPickup=false 或 no land → 默认禁止拾取
+        if (ac != null) {
             e.setCancelled(true);
             // 节流：5~10秒随机间隔
             long now = System.currentTimeMillis();
@@ -7796,7 +7806,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(19, ac.denyFallDamage ? 1 : 0);
             stmt.setInt(20, ac.denyHunger ? 1 : 0);
             stmt.setInt(21, ac.denyAllDamage ? 1 : 0);
-            stmt.setInt(22, ac.denyDrop ? 1 : 0);
+            stmt.setInt(22, ac.allowDrop ? 1 : 0);
             stmt.setInt(23, ac.denyMount ? 1 : 0);
             stmt.setInt(24, ac.denyEnderPearl ? 1 : 0);
             stmt.setInt(25, ac.denyBow ? 1 : 0);
@@ -7807,7 +7817,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(30, ac.denyAllEffects ? 1 : 0);
             stmt.setInt(31, ac.denyItemFrame ? 1 : 0);
             stmt.setInt(32, ac.denyMove ? 1 : 0);
-            stmt.setInt(33, ac.denyPickup ? 1 : 0);
+            stmt.setInt(33, ac.allowPickup ? 1 : 0);
             stmt.setInt(34, ac.denyFire ? 1 : 0);
             stmt.setInt(35, ac.peaceMode ? 1 : 0);
             stmt.setInt(36, ac.peaceModeDuration / 1000);
@@ -9784,13 +9794,13 @@ public class AreaProtection implements Listener {
         public boolean denyHunger = false;
         public boolean denyAllDamage = false;
         public boolean denyMount = false;
-        public boolean denyDrop = false;
+        public boolean allowDrop = false;
         public boolean denyEnderPearl = false;
         public boolean denyBow = false;
         public boolean denyPotion = false;
         public boolean denyExplosion = false;
         public boolean denyMove = false;
-        public boolean denyPickup = false;
+        public boolean allowPickup = false;
         public boolean denyFire = false;
         // ★ 新增投掷物权限（三叉戟、雪球、风蛋、箭）
         public boolean denyThrownProjectiles = false;
@@ -9922,7 +9932,7 @@ public class AreaProtection implements Listener {
             if (denyFallDamage) c++;
             if (denyHunger) c++;
             if (denyAllDamage) c++;
-            if (denyDrop) c++;
+            if (allowDrop) c++;
             if (denyMount) c++;
             if (denyEnderPearl) c++;
             if (denyBow) c++;
