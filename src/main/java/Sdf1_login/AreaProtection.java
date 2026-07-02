@@ -2501,7 +2501,7 @@ public class AreaProtection implements Listener {
             case "denyFallDamage": return ac.denyFallDamage;
             case "denyHunger": return ac.denyHunger;
             case "denyAllDamage": return ac.denyAllDamage;
-            case "denyDrop": return ac.allowDrop;
+            case "denyDrop": return !ac.allowDrop;
             case "denyMount": return ac.denyMount;
             case "denyEnderPearl": return ac.denyEnderPearl;
             case "denyBow": return ac.denyBow;
@@ -2511,7 +2511,7 @@ public class AreaProtection implements Listener {
             case "denyFireSpread": return ac.denyFireSpread;
             case "denyAllEffects": return ac.denyAllEffects;
             case "denyItemFrame": return ac.denyItemFrame;
-            case "denyPickup": return ac.allowPickup;
+            case "denyPickup": return !ac.allowPickup;
             case "denyFire": return ac.denyFire;
             case "denyThrownProjectiles": return ac.denyThrownProjectiles;
             case "denyGlowing": return ac.denyGlowing;
@@ -4326,18 +4326,15 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.allowDrop) {
-            // allowDrop=true 表示允许丢弃，不阻止
-            return;
-        }
-        // allowDrop=false 或 no land → 默认不允许丢弃
-        if (ac != null) {
+        if (ac == null) return;
+        // 使用getEffectiveDeny，OWNER/Admin自动豁免，visitor走领地默认
+        if (getEffectiveDeny(p, ac, "denyDrop")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止丢弃物品");
         }
     }
 
-    // ★ 拾取限制：allowPickup=true时允许拾取，false时禁止拾取
+    // ★ 拾取限制：allowPickup=false时禁止拾取（denyPickup映射到allowPickup）
     @EventHandler
     public void onPlayerPickup(PlayerPickupItemEvent e) {
         Player p = e.getPlayer();
@@ -4346,12 +4343,9 @@ public class AreaProtection implements Listener {
                 p.getLocation().getBlockX(),
                 p.getLocation().getBlockY(),
                 p.getLocation().getBlockZ());
-        if (ac != null && ac.allowPickup) {
-            // allowPickup=true 表示允许拾取，不阻止
-            return;
-        }
-        // allowPickup=false 或 no land → 默认禁止拾取
-        if (ac != null) {
+        if (ac == null) return;
+        // 使用getEffectiveDeny，OWNER/Admin自动豁免，visitor走领地默认
+        if (getEffectiveDeny(p, ac, "denyPickup")) {
             e.setCancelled(true);
             // 节流：5~10秒随机间隔
             long now = System.currentTimeMillis();
