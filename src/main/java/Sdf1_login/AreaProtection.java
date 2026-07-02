@@ -9550,6 +9550,10 @@ public class AreaProtection implements Listener {
                 tgtBlock.getWorld().getName(),
                 tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
         
+        // OWNER/ADMIN 豁免
+        if (p != null && srcArea != null && hasPermission(p, srcArea, PermissionLevel.OWNER)) return;
+        if (p != null && tgtArea != null && hasPermission(p, tgtArea, PermissionLevel.OWNER)) return;
+        
         // 任何一方denyFire=true就阻止
         if ((srcArea != null && srcArea.denyFire) || (tgtArea != null && tgtArea.denyFire)) {
             e.setCancelled(true);
@@ -9566,11 +9570,12 @@ public class AreaProtection implements Listener {
         Action action = e.getAction();
         Material mat = e.getItem() == null ? null : e.getItem().getType();
         
-        // 只拦截 RIGHT_CLICK_BLOCK/AIR 使用打火石/火床/TNT
+        // 只拦截 RIGHT_CLICK_BLOCK/AIR 使用打火石/火床/TNT/岩浆桶
         if (action != Action.RIGHT_CLICK_BLOCK && action != Action.RIGHT_CLICK_AIR) return;
-        if (mat != Material.FLINT_AND_STEEL && mat != Material.FIRE_CHARGE && mat != Material.CAMPFIRE && mat != Material.SOUL_CAMPFIRE) {
-            // 如果是打火石或火球，检查使用的物品
-            if (mat != Material.TNT) return;
+        if (mat != Material.FLINT_AND_STEEL && mat != Material.FIRE_CHARGE 
+                && mat != Material.CAMPFIRE && mat != Material.SOUL_CAMPFIRE
+                && mat != Material.LAVA_BUCKET) {
+            return;
         }
         
         // 检查目标方块或玩家所处领地
@@ -9587,6 +9592,10 @@ public class AreaProtection implements Listener {
             ac2 = getArea(clickedBlock.getWorld().getName(),
                     clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
         }
+        
+        // OWNER/ADMIN 豁免
+        if (hasPermission(p, ac1, PermissionLevel.OWNER)) return;
+        if (hasPermission(p, ac2, PermissionLevel.OWNER)) return;
         
         if ((ac1 != null && ac1.denyFire) || (ac2 != null && ac2.denyFire)) {
             e.setCancelled(true);
