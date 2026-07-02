@@ -4559,11 +4559,45 @@ public class AreaProtection implements Listener {
 
     @EventHandler
     public void onEntityChangeBlock(org.bukkit.event.entity.EntityChangeBlockEvent e) {
-        // 拦截末影龙/末影螨改变方块（如把水变成源）
         if (e.getBlock().getType() == Material.FIRE || e.getBlock().getType() == Material.LAVA) {
             AreaConfig ac = getArea(e.getBlock().getWorld().getName(), 
                     e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
             if (ac != null && ac.denyFire) e.setCancelled(true);
+        }
+    }
+
+    // ===== BlockIgniteEvent: 处理火把放置、打火石打地面等非玩家直接使用物品的场景 =====
+    @EventHandler
+    public void onIgniteBlock(BlockIgniteEvent e) {
+        Player p = e.getPlayer();
+        Block tgtBlock = e.getBlock();
+        
+        // 非玩家触发（如火蔓延、TNT引爆）-> 不拦截，由BlockBurnEvent处理
+        if (p == null) return;
+        
+        AreaConfig srcArea = getArea(p.getWorld().getName(),
+                p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
+        AreaConfig tgtArea = getArea(tgtBlock.getWorld().getName(),
+                tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
+        
+        // 使用统一豁免
+        boolean srcDenied = getEffectiveDeny(p, srcArea, "denyFire");
+        boolean tgtDenied = getEffectiveDeny(p, tgtArea, "denyFire");
+        if (srcDenied || tgtDenied) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
+        }
+    }
+
+    // ===== 火蔓延防漏网（非玩家触发） =====
+    @EventHandler
+    public void onFireSpreadNonPlayer(BlockIgniteEvent e) {
+        if (e.getPlayer() != null) return;
+        Block tgtBlock = e.getBlock();
+        AreaConfig ac = getArea(tgtBlock.getWorld().getName(),
+                tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
+        if (ac != null && ac.denyFireSpread) {
+            e.setCancelled(true);
         }
     }
 
@@ -9527,81 +9561,6 @@ public class AreaProtection implements Listener {
         }
     }
 
-    // ===== 区域内禁止点燃方块 =====
-    @EventHandler
-    public void onIgnite(BlockIgniteEvent e) {
-        Player p = e.getPlayer();
-        Block tgtBlock = e.getBlock();
-        
-        AreaConfig srcArea = null;
-        AreaConfig tgtArea = null;
-        
-        // 检查源领地（玩家所在位置）
-        if (p != null) {
-            srcArea = getArea(
-                    p.getWorld().getName(),
-                    p.getLocation().getBlockX(),
-                    p.getLocation().getBlockY(),
-                    p.getLocation().getBlockZ());
-        }
-        
-        // 检查目标领地（被点燃方块位置）
-        tgtArea = getArea(
-                tgtBlock.getWorld().getName(),
-                tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
-        
-        // OWNER/ADMIN 豁免
-        if (p != null && srcArea != null && hasPermission(p, srcArea, PermissionLevel.OWNER)) return;
-        if (p != null && tgtArea != null && hasPermission(p, tgtArea, PermissionLevel.OWNER)) return;
-        
-        // 任何一方denyFire=true就阻止
-        if ((srcArea != null && srcArea.denyFire) || (tgtArea != null && tgtArea.denyFire)) {
-            e.setCancelled(true);
-            if (p != null) {
-                p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
-            }
-        }
-    }
-
-    // ===== 玩家使用打火石/点燃物品时直接拦截 =====
-    @EventHandler
-    public void onPlayerInteractFire(PlayerInteractEvent e) {
-        Player p = e.getPlayer();
-        Action action = e.getAction();
-        Material mat = e.getItem() == null ? null : e.getItem().getType();
-        
-        // 只拦截 RIGHT_CLICK_BLOCK/AIR 使用打火石/火床/TNT/岩浆桶
-        if (action != Action.RIGHT_CLICK_BLOCK && action != Action.RIGHT_CLICK_AIR) return;
-        if (mat != Material.FLINT_AND_STEEL && mat != Material.FIRE_CHARGE 
-                && mat != Material.CAMPFIRE && mat != Material.SOUL_CAMPFIRE
-                && mat != Material.LAVA_BUCKET) {
-            return;
-        }
-        
-        // 检查目标方块或玩家所处领地
-        Block clickedBlock = e.getClickedBlock();
-        AreaConfig ac1 = null;
-        AreaConfig ac2 = null;
-        
-        // 玩家位置
-        ac1 = getArea(p.getWorld().getName(), 
-                p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
-        
-        // 点击的方块
-        if (clickedBlock != null) {
-            ac2 = getArea(clickedBlock.getWorld().getName(),
-                    clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
-        }
-        
-        // OWNER/ADMIN 豁免
-        if (hasPermission(p, ac1, PermissionLevel.OWNER)) return;
-        if (hasPermission(p, ac2, PermissionLevel.OWNER)) return;
-        
-        if ((ac1 != null && ac1.denyFire) || (ac2 != null && ac2.denyFire)) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
-        }
-    }
 
     // ===== 火焰弹/烈焰球拦截 =====
     @EventHandler
@@ -9655,6 +9614,81 @@ public class AreaProtection implements Listener {
                 block.getX(), block.getY(), block.getZ());
         if (ac != null && ac.denyFireSpread) {
             e.setCancelled(true);
+        }
+    }
+
+    // ===== PlayerInteractEvent: 打火石/火焰弹右键使用拦截(带豁免) =====
+    // 注：火床放置拦截在onBlockPlace事件中处理
+    @EventHandler
+    public void onPlayerInteractFire(PlayerInteractEvent e) {
+        Player p = e.getPlayer();
+        Action action = e.getAction();
+        if (action != Action.RIGHT_CLICK_BLOCK && action != Action.RIGHT_CLICK_AIR) return;
+        
+        Material mat = e.getItem() == null ? null : e.getItem().getType();
+        if (mat != Material.FLINT_AND_STEEL && mat != Material.FIRE_CHARGE
+                && mat != Material.CAMPFIRE && mat != Material.SOUL_CAMPFIRE
+                && mat != Material.LAVA_BUCKET) {
+            return;
+        }
+        
+        AreaConfig srcArea = getArea(p.getWorld().getName(),
+                p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
+        Block clickedBlock = e.getClickedBlock();
+        AreaConfig tgtArea = null;
+        if (clickedBlock != null) {
+            tgtArea = getArea(clickedBlock.getWorld().getName(),
+                    clickedBlock.getX(), clickedBlock.getY(), clickedBlock.getZ());
+        }
+        
+        // 使用统一的豁免逻辑（OWNER/ADMIN自动通过，visitor按领地默认权限）
+        boolean srcDenied = getEffectiveDeny(p, srcArea, "denyFire");
+        boolean tgtDenied = getEffectiveDeny(p, tgtArea, "denyFire");
+        if (srcDenied || tgtDenied) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
+        }
+    }
+
+    // ===== 火床放置拦截 =====
+    @EventHandler
+    public void onPlaceCampfire(BlockPlaceEvent e) {
+        Material placed = e.getItemInHand().getType();
+        if (placed != Material.CAMPFIRE && placed != Material.SOUL_CAMPFIRE) return;
+        
+        Player p = e.getPlayer();
+        AreaConfig ac = getArea(p.getWorld().getName(),
+                p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
+        
+        // OWNER/ADMIN 豁免
+        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        // visitor: 用领地默认权限
+        if (ac != null && ac.denyFire) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f此区域禁止放置火床");
+        }
+    }
+
+    // ===== BlockIgniteEvent: 处理火把放置、打火石打地面等非玩家直接使用物品的场景 =====
+    @EventHandler
+    public void onIgnite(BlockIgniteEvent e) {
+        Player p = e.getPlayer();
+        Block tgtBlock = e.getBlock();
+        
+        // 非玩家触发（如火蔓延、TNT引爆）-> 不拦截，由BlockBurnEvent处理
+        if (p == null) return;
+        
+        AreaConfig srcArea = getArea(p.getWorld().getName(),
+                p.getLocation().getBlockX(), p.getLocation().getBlockY(), p.getLocation().getBlockZ());
+        AreaConfig tgtArea = getArea(tgtBlock.getWorld().getName(),
+                tgtBlock.getX(), tgtBlock.getY(), tgtBlock.getZ());
+        
+        // 使用统一豁免
+        boolean srcDenied = getEffectiveDeny(p, srcArea, "denyFire");
+        boolean tgtDenied = getEffectiveDeny(p, tgtArea, "denyFire");
+        if (srcDenied || tgtDenied) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f此区域禁止点燃物品");
         }
     }
 
