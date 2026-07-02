@@ -105,6 +105,8 @@ try {
     $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback', 'poll_group_renews', 'renew_group_callback'];
     // ★ Java同步扣费记录
     $bondActions = ['sync_bond_record'];
+    // ★ Java端：推送成员变更到PHP（add/remove_group_member由secret调用）
+    $javaMemberActions = ['add_group_member_by_java', 'remove_group_member_by_java'];
 
     if (in_array($action, $syncActions) || in_array($action, $syncFromPhpActions)) {
         // 同步类：必须有secret
@@ -403,6 +405,13 @@ try {
             break;
         case 'remove_group_member':
             handleRemoveGroupMember($db, $_POST + $_GET);
+            break;
+        // ★ Java端推送成员变更（secret认证）
+        case 'add_group_member_by_java':
+            handleAddGroupMemberFromJava($db, $_GET + $_POST);
+            break;
+        case 'remove_group_member_by_java':
+            handleRemoveGroupMemberFromJava($db, $_GET + $_POST);
             break;
         case 'get_player_groups':
             handleGetPlayerGroups($db, $_GET['player'] ?? '');
@@ -2306,6 +2315,53 @@ function handleSyncBondRecord($db, $data) {
     $stmt->execute();
     
     error_log("[BondRecord] 同步扣费记录: player=$player, amount=$amount, type=$type, desc=$desc");
+}
+
+// ★ Java端推送成员变更到PHP（已验证玩家，直接写库）
+function handleAddGroupMemberFromJava($db, $data) {
+    $player = $data['player'] ?? '';
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => 'missing player or group']);
+        return;
+    }
+    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+        player_name TEXT NOT NULL,
+        group_name TEXT NOT NULL,
+        added_by TEXT DEFAULT 'system',
+        added_time INTEGER DEFAULT 0,
+        expiry_time INTEGER DEFAULT 0,
+        PRIMARY KEY(player_name, group_name)
+    )");
+    $addedBy = $data['added_by'] ?? 'Java';
+    $now = time();
+    $expiry = (int)($data['expiry_time'] ?? 0);
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
+        (player_name, group_name, added_by, added_time, expiry_time)
+        VALUES (:player, :group, :addedby, :added, :expiry)");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $stmt->bindValue(':addedby', $addedBy, SQLITE3_TEXT);
+    $stmt->bindValue(':added', $now, SQLITE3_INTEGER);
+    $stmt->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
+    $stmt->execute();
+    error_log("[UserGroup] Java推送add_member: $player → $group");
+    echo json_encode(['success' => true]);
+}
+
+function handleRemoveGroupMemberFromJava($db, $data) {
+    $player = $data['player'] ?? '';
+    $group = $data['group'] ?? $data['group_name'] ?? '';
+    if (empty($player) || empty($group)) {
+        echo json_encode(['success' => false, 'error' => 'missing player or group']);
+        return;
+    }
+    $stmt = $db->prepare("DELETE FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
+    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+    $stmt->execute();
+    error_log("[UserGroup] Java推送remove_member: $player ← $group");
+    echo json_encode(['success' => true]);
 }
 
 function handleRenewGroup($db, $player, $data) {
