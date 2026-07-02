@@ -381,7 +381,24 @@ public class UserGroupManager {
             return err;
         }
 
+        // 发送扣费记录到PHP（Java→PHP同步）
+        pushBondRecordToPHP(player, cfg.joinPrice, "group_join", "system", 
+                "付费加入用户组: " + groupName);
+
         plugin.getLogger().info("[UserGroup] " + player + " 付费加入用户组 " + groupName + "，扣费 " + cfg.joinPrice + " 张，到期: " + formatExpiry(expiryTime));
+        
+        // 同步给在线玩家发送消息
+        final long finalExpiryTime = expiryTime;
+        final int finalJoinPrice = cfg.joinPrice;
+        final String finalGroupName = groupName;
+        org.bukkit.Bukkit.getOnlinePlayers().forEach(p -> {
+            if (p.getName().equals(player)) {
+                String expStr = finalExpiryTime == 0 ? "永久" : 
+                    (finalExpiryTime - now) / 60000 + "分钟";
+                p.sendMessage("§a§l[用户组] §f恭喜你已加入用户组「§e" + finalGroupName + "§f」，扣费 §e" + finalJoinPrice + " §f张债券，有效期: §a" + expStr);
+            }
+        });
+        
         return null;
     }
 
@@ -830,9 +847,31 @@ public class UserGroupManager {
             String resp = wm.httpGet(endpoint, params);
             if (resp != null && resp.contains("\"success\":false")) {
                 plugin.getLogger().warning("[UserGroup] pushMemberToPHP PHP拒绝: " + resp);
+            } else {
+                plugin.getLogger().info("[UserGroup] pushMemberToPHP 成功: " + action + " " + player + " → " + groupName);
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[UserGroup] pushMemberToPHP failed: " + e.getMessage());
+        }
+    }
+
+    /** 推送扣费记录到PHP */
+    private void pushBondRecordToPHP(String player, int amount, String type, String by, String desc) {
+        try {
+            WebManager wm = plugin.webManager;
+            if (wm == null) return;
+            String endpoint = "api/land_api.php";
+            java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
+            params.put("action", "sync_bond_record");
+            params.put("player", player);
+            params.put("amount", String.valueOf(amount));
+            params.put("type", type);
+            params.put("by", by);
+            params.put("desc", desc);
+            params.put("secret", wm.getSecretKey());
+            wm.httpGet(endpoint, params);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[UserGroup] pushBondRecordToPHP failed: " + e.getMessage());
         }
     }
 
