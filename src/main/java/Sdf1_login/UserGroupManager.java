@@ -839,7 +839,7 @@ public class UserGroupManager {
             if (wm == null) return;
             String endpoint = "api/land_api.php";
             java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
-            params.put("action", action + "_group_member");
+            params.put("action", action + "_group_member_by_java");
             params.put("player", player);
             params.put("group", groupName);
             params.put("added_by", "Java");
