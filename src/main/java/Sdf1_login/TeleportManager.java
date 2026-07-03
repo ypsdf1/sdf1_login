@@ -680,21 +680,18 @@ public class TeleportManager implements Listener {
         // ★ 先检查是否有待处理请求且未过期
         String targetName = null;
         if (args.length > 0) {
-            targetName = args[0];
-        }
-        
-        // 如果是无参调用，收集 incoming senders 来判断
-        Set<String> currentIncoming = incomingRequests.get(player.getName());
-        if ((targetName == null || targetName.isEmpty()) && (currentIncoming == null || currentIncoming.isEmpty())) {
-            player.sendMessage("§c[传送] 你没有待处理的传送请求");
-            return true;
-        }
-        
-        // 如果有目标名，检查请求是否仍然有效
-        if (targetName != null && !targetName.isEmpty()) {
-            if (!isValidRequest(player.getName(), targetName)) {
-                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
-                return true;
+            String arg = args[0];
+            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
+            Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
+            if (possiblePlayer != null && possiblePlayer.isOnline()) {
+                targetName = arg;
+            } else {
+                try {
+                    int index = Integer.parseInt(arg);
+                    return handleTPAcceptCLI(player, index);
+                } catch (NumberFormatException e) {
+                    targetName = arg;
+                }
             }
         }
         
