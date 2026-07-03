@@ -1995,22 +1995,19 @@ function handleUpdateUserGroup($db, $data) {
 
 function handleDeleteUserGroup($db, $name) {
     if (empty($name)) { echo json_encode(['success' => false, 'error' => 'missing name']); return; }
+    // ★ 先删除成员表中的记录
+    try {
+        $stmtM = $db->prepare("DELETE FROM web_user_group_members WHERE group_name = :name");
+        $stmtM->bindValue(':name', $name, SQLITE3_TEXT);
+        $stmtM->execute();
+    } catch (\Throwable $e) { /* 成员表可能不存在 */ }
+
     $stmt = $db->prepare("DELETE FROM web_user_groups WHERE group_name = :name");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->execute();
 
     // ★ 写入变更队列，通知Java端重新加载用户组
     try {
-        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            change_type TEXT NOT NULL,
-            target_id TEXT DEFAULT '',
-            target_name TEXT DEFAULT '',
-            change_data TEXT DEFAULT '{}',
-            created_at INTEGER DEFAULT 0,
-            acknowledged INTEGER DEFAULT 0,
-            acked_at INTEGER DEFAULT 0
-        )");
         $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
             VALUES ('group_change', :id, :name, :data, :time)");
         $stmt2->bindValue(':id', $name, SQLITE3_TEXT);
