@@ -285,19 +285,38 @@ public class UserGroupManager {
      * 仅写入本地DB（不触发PHP推送，用于PHP→Java同步避免循环）
      */
     public boolean addPlayerLocal(String player, String groupName, String addedBy) {
+        return addPlayerLocalWithExpiry(player, groupName, addedBy, 0);
+    }
+    
+    /**
+     * 仅写入本地DB（带到期时间，不触发PHP推送，用于PHP→Java同步）
+     * @param expiryTimeMillis 到期时间戳(ms), 0=永久
+     */
+    public boolean addPlayerLocalWithExpiry(String player, String groupName, String addedBy, long expiryTimeMillis) {
         UserGroupConfig cfg = getGroupConfig(groupName);
         if (cfg == null) return false;
         groupName = cfg.name;
         long now = System.currentTimeMillis();
         try {
-            PreparedStatement ps = db.prepareStatement(
-                    "INSERT OR REPLACE INTO user_group_member "
-                            + "(player_name, group_name, added_by, added_time, expiry_time)"
-                            + " VALUES (?,?,?,?,0)");
+            PreparedStatement ps;
+            if (expiryTimeMillis == 0) {
+                ps = db.prepareStatement(
+                        "INSERT OR REPLACE INTO user_group_member "
+                                + "(player_name, group_name, added_by, added_time, expiry_time)"
+                                + " VALUES (?,?,?,?,0)");
+            } else {
+                ps = db.prepareStatement(
+                        "INSERT OR REPLACE INTO user_group_member "
+                                + "(player_name, group_name, added_by, added_time, expiry_time)"
+                                + " VALUES (?,?,?,?,?)");
+            }
             ps.setString(1, player);
             ps.setString(2, groupName);
             ps.setString(3, addedBy);
             ps.setLong(4, now);
+            if (expiryTimeMillis != 0) {
+                ps.setLong(5, expiryTimeMillis);
+            }
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {

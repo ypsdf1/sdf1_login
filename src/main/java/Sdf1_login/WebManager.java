@@ -3483,9 +3483,18 @@ public class WebManager {
                         String obj = arrStr.substring(objStart + 1, i);
                         String player = extractJsonStringSafe(obj, "player_name");
                         String addedBy = extractJsonStringSafe(obj, "added_by");
+                        String expiryStr = extractJsonField(obj, "expiry_time");
+                        long expiryTime = 0;
+                        if (!expiryStr.isEmpty()) {
+                            try {
+                                expiryTime = Long.parseLong(expiryStr) * 1000; // PHP存的是秒级时间戳
+                            } catch (Exception e) {
+                                // ignore
+                            }
+                        }
                         if (player != null && !player.isEmpty()) {
                             // 直接写入本地DB（不触发PHP推送，避免循环）
-                            ugm.addPlayerLocal(player, groupName, addedBy);
+                            ugm.addPlayerLocalWithExpiry(player, groupName, addedBy, expiryTime);
                             imported++;
                         }
                         objStart = -1;
