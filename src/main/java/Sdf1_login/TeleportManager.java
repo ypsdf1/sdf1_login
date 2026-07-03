@@ -144,7 +144,7 @@ public class TeleportManager implements Listener {
         Set<String> outgoing = outgoingRequests.get(playerName);
         if (outgoing != null) {
             outgoing.removeIf(target -> {
-                String key = playerName + ":" + target + ":out";
+                String key = playerName + ":" + target;
                 Long t = teleportRequestTimes.get(key);
                 return t != null && (now - t) > (validSec * 1000L);
             });
@@ -170,7 +170,7 @@ public class TeleportManager implements Listener {
             Iterator<String> targetIter = targets.iterator();
             while (targetIter.hasNext()) {
                 String target = targetIter.next();
-                String key = sender + ":" + target + ":out";
+                String key = sender + ":" + target; // 不带 :out 后缀
                 Long t = teleportRequestTimes.get(key);
                 if (t != null && (now - t) > (validSec * 1000L)) {
                     targetIter.remove();
