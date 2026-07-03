@@ -549,6 +549,7 @@ public class Main extends JavaPlugin
         teleportMgr = new TeleportManager(this);
         getServer().getPluginManager().registerEvents(teleportMgr, this);
         teleportMgr.initDatabase();
+        teleportMgr.startExpirationTimer(); // 启动请求过期定时器
 
         // 注册传送命令执行器和Tab补全
         getCommand("tpa").setExecutor(this);

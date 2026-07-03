@@ -14,6 +14,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.scheduler.BukkitRunnable;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -56,8 +57,29 @@ public class TeleportManager implements Listener {
     // Inventory追踪ID集合（基岩版GUI面板）
     private final Set<String> teleportPanelIds = ConcurrentHashMap.newKeySet();
     
+    // 传送请求定时器
+    private java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(false);
+    
     public TeleportManager(Main plugin) {
         this.plugin = plugin;
+    }
+    
+    /** 启动传送请求过期检查定时器 */
+    public void startExpirationTimer() {
+        if (running.compareAndSet(false, true)) {
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    expireOldRequests();
+                }
+            }.runTaskTimer(plugin, 20L, 20L); // 每秒执行一次
+            plugin.getLogger().info("[传送] 请求过期定时器已启动");
+        }
+    }
+    
+    /** 停止传送请求过期检查定时器 */
+    public void stopExpirationTimer() {
+        running.set(false);
     }
 
     /** 检查玩家是否为插件管理员 */
@@ -127,6 +149,91 @@ public class TeleportManager implements Listener {
                 return t != null && (now - t) > (validSec * 1000L);
             });
         }
+    }
+    
+    /**
+     * 每秒执行的过期请求清理任务
+     */
+    private void expireOldRequests() {
+        if (!running.get()) return;
+        
+        long now = System.currentTimeMillis();
+        int validSec = getTpRequestValidSeconds();
+        boolean changed = false;
+        
+        // 清理 outgoingRequests
+        Iterator<Map.Entry<String, Set<String>>> outIter = outgoingRequests.entrySet().iterator();
+        while (outIter.hasNext()) {
+            Map.Entry<String, Set<String>> entry = outIter.next();
+            String sender = entry.getKey();
+            Set<String> targets = entry.getValue();
+            Iterator<String> targetIter = targets.iterator();
+            while (targetIter.hasNext()) {
+                String target = targetIter.next();
+                String key = sender + ":" + target + ":out";
+                Long t = teleportRequestTimes.get(key);
+                if (t != null && (now - t) > (validSec * 1000L)) {
+                    targetIter.remove();
+                    changed = true;
+                    // 通知目标玩家
+                    Player targetPlayer = Bukkit.getServer().getPlayer(target);
+                    if (targetPlayer != null && targetPlayer.isOnline()) {
+                        targetPlayer.sendMessage("§c[传送] §f" + sender + " §c的传送请求已过期");
+                    }
+                }
+            }
+            if (targets.isEmpty()) {
+                outIter.remove();
+            }
+        }
+        
+        // 清理 incomingRequests
+        Iterator<Map.Entry<String, Set<String>>> inIter = incomingRequests.entrySet().iterator();
+        while (inIter.hasNext()) {
+            Map.Entry<String, Set<String>> entry = inIter.next();
+            String receiver = entry.getKey();
+            Set<String> senders = entry.getValue();
+            Iterator<String> senderIter = senders.iterator();
+            while (senderIter.hasNext()) {
+                String sender = senderIter.next();
+                String key = receiver + ":" + sender;
+                Long t = teleportRequestTimes.get(key);
+                if (t != null && (now - t) > (validSec * 1000L)) {
+                    senderIter.remove();
+                    changed = true;
+                    // 通知发送者
+                    Player senderPlayer = Bukkit.getServer().getPlayer(sender);
+                    if (senderPlayer != null && senderPlayer.isOnline()) {
+                        senderPlayer.sendMessage("§c[传送] §f" + receiver + " §c的传送请求已过期");
+                    }
+                }
+            }
+            if (senders.isEmpty()) {
+                inIter.remove();
+            }
+        }
+        
+        // 清理孤立的请求时间
+        Iterator<Map.Entry<String, Long>> timeIter = teleportRequestTimes.entrySet().iterator();
+        while (timeIter.hasNext()) {
+            Map.Entry<String, Long> entry = timeIter.next();
+            Long t = entry.getValue();
+            if ((now - t) > (validSec * 1000L + 5000L)) { // 额外5秒宽容
+                timeIter.remove();
+            }
+        }
+    }
+    
+    /**
+     * 检查传送请求是否有效（未被处理过且未过期）
+     */
+    private boolean isValidRequest(String receiver, String sender) {
+        Set<String> senders = incomingRequests.get(receiver);
+        if (senders == null || !senders.contains(sender)) {
+            return false;
+        }
+        String key = receiver + ":" + sender;
+        return !isTeleportRequestExpired(key);
     }
     
     // ==================== 判断玩家类型 ====================
@@ -569,20 +676,24 @@ public class TeleportManager implements Listener {
     // ==================== TPACCEPT - 接受传送 ====================
     
     private boolean handleTPAccept(Player player, String[] args) {
+        // ★ 先检查是否有待处理请求且未过期
         String targetName = null;
         if (args.length > 0) {
-            String arg = args[0];
-            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
-            Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
-            if (possiblePlayer != null && possiblePlayer.isOnline()) {
-                targetName = arg;
-            } else {
-                try {
-                    int index = Integer.parseInt(arg);
-                    return handleTPAcceptCLI(player, index);
-                } catch (NumberFormatException e) {
-                    targetName = arg;
-                }
+            targetName = args[0];
+        }
+        
+        // 如果是无参调用，收集 incoming senders 来判断
+        Set<String> currentIncoming = incomingRequests.get(player.getName());
+        if ((targetName == null || targetName.isEmpty()) && (currentIncoming == null || currentIncoming.isEmpty())) {
+            player.sendMessage("§c[传送] 你没有待处理的传送请求");
+            return true;
+        }
+        
+        // 如果有目标名，检查请求是否仍然有效
+        if (targetName != null && !targetName.isEmpty()) {
+            if (!isValidRequest(player.getName(), targetName)) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
+                return true;
             }
         }
         
@@ -722,6 +833,12 @@ public class TeleportManager implements Listener {
         Set<String> senders = incomingRequests.get(player.getName());
         if (senders == null || !senders.contains(targetName)) {
             player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+            return true;
+        }
+        
+        // ★ 检查请求是否仍然有效
+        if (!isValidRequest(player.getName(), targetName)) {
+            player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
             return true;
         }
         

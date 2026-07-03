@@ -2,12 +2,16 @@ package Sdf1_login;
 
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.scheduler.BukkitRunnable;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -62,12 +66,21 @@ public class DeathReport implements Listener {
         deathReports.put(player.getName(), data);
         saveToDB(data);
         
-        // 发送死亡报告消息
-        String locMsg = String.format("§c✦ 你已死亡 ✦§7 世界: §f%s §| §7坐标: §e%.1f, %.1f, %.1f§7 时间: §f%s",
-                data.worldName, data.x, data.y, data.z,
-                new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(data.deathTime)));
+        // 发送死亡报告消息，带可点击的返回按钮
+        String timeStr = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(data.deathTime));
         
-        player.sendMessage(locMsg);
+        Component header = Component.text("§c✦ 你已死亡 ✦ ").append(
+            Component.text("世界: §f" + data.worldName + " §| §7坐标: §e" +
+                String.format("%.1f, %.1f, %.1f", data.x, data.y, data.z) + " §7时间: §f" + timeStr)
+        );
+        
+        // "返回死亡地点" 按钮 - 通过 /back 命令
+        Component backButton = Component.text("§e[点击返回死亡地点] ")
+            .clickEvent(ClickEvent.runCommand("/back"))
+            .hoverEvent(HoverEvent.showText(Component.text("§7传送到你死亡的位置")));
+        
+        player.sendMessage(header);
+        player.sendMessage(backButton);
     }
 
     // ==================== 查询/获取 ====================
