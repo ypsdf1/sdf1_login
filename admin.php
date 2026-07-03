@@ -2886,19 +2886,29 @@ async function showGroupMembers(groupName) {
         html += `</div>`;
 
         // 添加成员
-        html += `<div style="display:flex;gap:8px;margin-bottom:12px">
-            <input id="ugNewMember" placeholder="玩家名" style="flex:1;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        html += `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <input id="ugNewMember" placeholder="玩家名" style="flex:1;min-width:120px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            <input id="ugNewMemberExpiry" placeholder="到期时间(Unix)" type="number" value="0" style="width:130px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             <button onclick="doAddGroupMember('${escAdmHtml(groupName)}')" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">添加</button>
-        </div>`;
+        </div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">到期留0则按用户组设置的duration_minutes自动计算</div>`;
 
         // 成员列表
         if (members.length === 0) {
             html += '<div style="text-align:center;padding:20px;color:var(--dim);font-size:13px">暂无成员</div>';
         } else {
-            html += '<div style="overflow-x:auto"><table class="table"><tr><th>玩家名</th><th>添加者</th><th>操作</th></tr>';
+            html += '<div style="overflow-x:auto"><table class="table"><tr><th>玩家名</th><th>到期时间</th><th>添加者</th><th>操作</th></tr>';
             for (const m of members) {
+                const expiry = m.expiry_time ? parseInt(m.expiry_time) : 0;
+                let expiryStr = '-';
+                if (expiry > 0) {
+                    expiryStr = new Date(expiry * 1000).toLocaleString('zh-CN');
+                } else {
+                    expiryStr = '<span style="color:var(--dim)">按组期限</span>';
+                }
                 html += `<tr>
                     <td><strong>${escAdmHtml(m.player_name)}</strong></td>
+                    <td style="font-size:12px;color:var(--dim)">${expiryStr}</td>
                     <td style="font-size:12px;color:var(--dim)">${escAdmHtml(m.added_by || '-')}</td>
                     <td><button onclick="doRemoveGroupMember('${escAdmHtml(groupName)}','${escAdmHtml(m.player_name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">移除</button></td>
                 </tr>`;
@@ -2915,12 +2925,15 @@ async function showGroupMembers(groupName) {
 
 async function doAddGroupMember(groupName) {
     const inputEl = document.getElementById('ugNewMember');
+    const expiryEl = document.getElementById('ugNewMemberExpiry');
     const player = inputEl ? inputEl.value.trim() : '';
     if (!player) { glassAlert('请输入玩家名'); return; }
     if (!/^[a-zA-Z0-9_]{3,16}$/.test(player)) { glassAlert('玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）'); return; }
 
+    const expiryTime = expiryEl ? (parseInt(expiryEl.value) || 0) : 0;
+
     try {
-        const res = await apiCall('add_group_member', {group: groupName, player}, 'POST');
+        const res = await apiCall('add_group_member', {group: groupName, player, expiry_time: expiryTime}, 'POST');
         if (res.success) {
             // pending=true 是异步验证响应，需要特殊处理
             if (res.pending) {
