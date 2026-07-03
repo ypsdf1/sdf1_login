@@ -572,6 +572,10 @@ public class UserGroupManager {
     public boolean autoRenewGroup(String player, String groupName) {
         UserGroupConfig cfg = getGroupConfig(groupName);
         if (cfg == null || !cfg.autoRenew || cfg.renewPrice <= 0) return false;
+        // 检查玩家个人自动续费偏好（如果关闭则跳过）
+        if (!getPlayerAutoRenew(player, groupName)) {
+            return false;
+        }
 
         // 查当前到期时间
         long currentExpiry = 0;
@@ -805,6 +809,24 @@ public class UserGroupManager {
     }
 
     // ==================== 工具方法 ====================
+
+    /**
+     * 获取玩家个人的自动续费偏好（per-player）
+     * 如果没有设置，返回组配置的默认值
+     */
+    public boolean getPlayerAutoRenew(String player, String groupName) {
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null) {
+            // 查玩家个人设置
+            boolean personal = dbMgr.getPlayerAutoRenew(player, groupName);
+            // 如果有个人设置，返回个人设置；否则返回组配置默认值
+            UserGroupConfig cfg = getGroupConfig(groupName);
+            return personal;
+        }
+        // fallback到组配置
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        return cfg != null && cfg.autoRenew;
+    }
 
     public Map<String, UserGroupConfig> getGroupConfigs() {
         return groupConfigs;

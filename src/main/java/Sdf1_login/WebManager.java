@@ -1716,33 +1716,6 @@ public class WebManager {
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {
                     plugin.getLogger().info("[合并C] ★ 全员下线，Timer C已暂停");
-                    log.error("\n" +
-                            " __          __                             _                                                                    \n" +
-                            " \\ \\        / /                            | |                                                                   \n" +
-                            "  \\ \\  /\\  / /__  ___ ___  _ __ ___   ___  | |_ ___                                                              \n" +
-                            "   \\ \\/  \\/ / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                             \n" +
-                            "    \\  /\\  /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                            \n" +
-                            "     \\/  \\/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                _                                            \n" +
-                            "                                             | |                   (_)                                           \n" +
-                            "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __ \n" +
-                            "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|\n" +
-                            " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |   \n" +
-                            "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_| |_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_|    \\_/ \\___|_|   \n" +
-                            "  _                  __/ |  ___                   _     _     _ _  __                                            \n" +
-                            " (_)     _          |___/  |__ \\                 | |   (_)   | (_)/ _|                                           \n" +
-                            "  _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __                           \n" +
-                            " | | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\                          \n" +
-                            " | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |                         \n" +
-                            " |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|                         \n" +
-                            "   | |                             __/ | |                                                                       \n" +
-                            "   |_|            _       ____   _|___/|_|______ ___                                                             \n" +
-                            "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                            \n" +
-                            "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                           \n" +
-                            " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                           \n" +
-                            " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                            \n" +
-                            " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                             \n" +
-                            " | |                                                                                                             \n" +
-                            " |_|                                                                                                             ");
                     return; // 不调度下一轮，定时器自然停止
                 }
 
@@ -1823,6 +1796,33 @@ public class WebManager {
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {
                     plugin.getLogger().info("[续费轮询E] ★ 全员下线，Timer E已暂停");
+                    log.error("\n" +
+                            " __          __                             _                                                                    \n" +
+                            " \\ \\        / /                            | |                                                                   \n" +
+                            "  \\ \\  /\\  / /__  ___ ___  _ __ ___   ___  | |_ ___                                                              \n" +
+                            "   \\ \\/  \\/ / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                             \n" +
+                            "    \\  /\\  /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                            \n" +
+                            "     \\/  \\/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                _                                            \n" +
+                            "                                             | |                   (_)                                           \n" +
+                            "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __ \n" +
+                            "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|\n" +
+                            " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |   \n" +
+                            "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_| |_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_|    \\_/ \\___|_|   \n" +
+                            "  _                  __/ |  ___                   _     _     _ _  __                                            \n" +
+                            " (_)     _          |___/  |__ \\                 | |   (_)   | (_)/ _|                                           \n" +
+                            "  _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __                           \n" +
+                            " | | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\                          \n" +
+                            " | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |                         \n" +
+                            " |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|                         \n" +
+                            "   | |                             __/ | |                                                                       \n" +
+                            "   |_|            _       ____   _|___/|_|______ ___                                                             \n" +
+                            "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                            \n" +
+                            "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                           \n" +
+                            " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                           \n" +
+                            " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                            \n" +
+                            " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                             \n" +
+                            " | |                                                                                                             \n" +
+                            " |_|                                                                                                             ");
                     return; // 不调度下一轮，定时器自然停止
                 }
 
@@ -1844,6 +1844,19 @@ public class WebManager {
                     checkAndNotifyExpiringGroups();
                 } catch (Exception e) {
                     plugin.getLogger().warning("[续费轮询E] 到期提醒异常: " + e.getMessage());
+                }
+
+                // ★ 自动清理过期用户组成员（每轮执行，确保不续费的玩家被移除）
+                try {
+                    UserGroupManager ugmCheck = plugin.getUserGroup();
+                    if (ugmCheck != null) {
+                        java.util.List<java.util.Map<String, Object>> expired = ugmCheck.checkAndRemoveExpired();
+                        if (!expired.isEmpty()) {
+                            plugin.getLogger().info("[续费轮询E] 自动清理 " + expired.size() + " 个过期用户组成员");
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[续费轮询E] 过期清理异常: " + e.getMessage());
                 }
 
                 // 自调度下一轮（20~30秒，错峰）
@@ -1898,13 +1911,16 @@ public class WebManager {
 
                 String err = ugm.renewGroup(playerName, groupName);
 
-                // 回调PHP
+                // 回调PHP（使用GET更可靠）
                 String callbackAction = (err == null) ? "renew_group_callback" : "renew_group_callback";
                 String result = (err == null) ? "success" : "failed:" + err;
-                String callbackBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"req_id\":\"" + escapeJson(reqId) + "\",\"result\":\"" + escapeJson(result) + "\"}";
+                java.util.Map<String, String> callbackParams = new java.util.LinkedHashMap<>();
+                callbackParams.put("secret", secretKey);
+                callbackParams.put("req_id", reqId);
+                callbackParams.put("result", result);
 
                 try {
-                    String callbackResp = httpPost("api/land_api.php?action=" + callbackAction, callbackBody);
+                    String callbackResp = httpGet("api/land_api.php", callbackParams);
                     detectPhpBusy(callbackResp);
                 } catch (Exception cbEx) {
                     plugin.getLogger().warning("[续费轮询E] 回调PHP失败: " + cbEx.getMessage());
@@ -1932,7 +1948,9 @@ public class WebManager {
             String player = (String) g.get("player");
             String group = (String) g.get("group");
             long expiry = (long) g.get("expiry");
-            boolean autoRenew = (boolean) g.get("autoRenew");
+            boolean groupAutoRenew = (boolean) g.get("autoRenew"); // 组配置默认值
+            // 获取玩家个人自动续费偏好（覆盖组配置）
+            boolean autoRenew = ugm.getPlayerAutoRenew(player, group);
 
             long remaining = expiry - now;
             if (remaining <= 0) continue;
@@ -3570,11 +3588,11 @@ public class WebManager {
                     boolean exists = dbMgr.userExists(player);
                     String status = exists ? "valid" : "invalid";
 
-                    // 推送结果回PHP
+                    // 推送结果回PHP（使用GET更可靠）
                     String callbackUrl = webBaseUrl + "/api/land_api.php?action=validation_callback&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8")
                             + "&id=" + id + "&status=" + status;
-                    doPost(callbackUrl, "{}");
+                    doGet(callbackUrl);
 
                     plugin.getLogger().info("[异步验证] 玩家 " + player + " → " + (exists ? "存在" : "不存在") + " (type=" + reqType + ")");
                 }
@@ -3791,9 +3809,9 @@ public class WebManager {
                             if (!deleteLandName.isEmpty() && areaProtect.getLand(deleteLandName) != null) {
                                 areaProtect.deleteLand(deleteLandName);
                                 plugin.getLogger().info("[Web通信] 管理面板删除领地: " + deleteLandName);
-                                // 回调PHP确认删除成功
+                                // 回调PHP确认删除成功（使用GET更可靠）
                                 String cbUrl = webBaseUrl + "/api/land_api.php?action=delete_land_callback&name=" + java.net.URLEncoder.encode(deleteLandName, "UTF-8") + "&success=true&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                                doPost(cbUrl, "{}");
+                                doGet(cbUrl);
                                 applied = true;
                             } else if (deleteLandName.isEmpty()) {
                                 plugin.getLogger().warning("[Web通信] land_delete: 领地名为空");
@@ -3801,7 +3819,7 @@ public class WebManager {
                                 // 领地不存在，直接回调PHP标记已处理
                                 plugin.getLogger().info("[Web通信] land_delete: 领地 " + deleteLandName + " 不存在，标记已处理");
                                 String cbUrl = webBaseUrl + "/api/land_api.php?action=delete_land_callback&name=" + java.net.URLEncoder.encode(deleteLandName, "UTF-8") + "&success=true&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                                doPost(cbUrl, "{}");
+                                doGet(cbUrl);
                                 applied = true;
                             }
                             break;
@@ -3977,8 +3995,8 @@ public class WebManager {
                 + "&transfer_id=" + transferId
                 + "&result=" + java.net.URLEncoder.encode(result, "UTF-8")
                 + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
-            // 用POST发送
-            String response = doPost(url, "{}");
+            // ★ 使用GET代替POST，更可靠（避免SSL body问题）
+            String response = doGet(url);
             plugin.getLogger().fine("[过户] 回调PHP: transfer_id=" + transferId + ", result=" + result);
         } catch (Exception e) {
             plugin.getLogger().warning("[过户] 回调PHP失败: " + e.getMessage());
@@ -3994,7 +4012,8 @@ public class WebManager {
                 + "&change_id=" + changeId
                 + "&success=" + (success ? "1" : "0")
                 + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
-            String response = doPost(url, "{}");
+            // ★ 使用GET代替POST，更可靠（避免SSL body问题）
+            String response = doGet(url);
             plugin.getLogger().fine("[Web通信] 回调PHP改主结果: change_id=" + changeId + ", success=" + success);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 回调PHP改主结果失败: " + e.getMessage());

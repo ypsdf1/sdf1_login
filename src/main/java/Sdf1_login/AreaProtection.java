@@ -2471,11 +2471,15 @@ public class AreaProtection implements Listener {
     public boolean getEffectiveDeny(Player player, AreaConfig ac, String permName) {
         // 如果ac为null（不在任何领地内），直接允许
         if (ac == null) return false;
-        
-        // ADMIN/OWNER不检查per-player deny
-        PermissionLevel level = getPermissionLevel(player, ac);
-        if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {
-            return false;
+
+        // ★ denyPVP和denyAllDamage是全局安全设置，ADMIN/OWNER也不例外
+        boolean isSecurityPerm = "denyPVP".equals(permName) || "denyAllDamage".equals(permName);
+        if (!isSecurityPerm) {
+            // ADMIN/OWNER不检查per-player deny（安全权限除外）
+            PermissionLevel level = getPermissionLevel(player, ac);
+            if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {
+                return false;
+            }
         }
 
         // 尝试读取per-player权限
@@ -4286,23 +4290,6 @@ public class AreaProtection implements Listener {
         if (getEffectiveDeny(p, ac, "denyFallDamage")
                 && e.getCause() == EntityDamageEvent.DamageCause.FALL)
             e.setCancelled(true);
-    }
-
-
-    @EventHandler
-    public void onPVP(EntityDamageByEntityEvent e) {
-        if (!(e.getDamager() instanceof Player)) return;
-        if (!(e.getEntity() instanceof Player)) return;
-        Player p = (Player) e.getEntity();
-        AreaConfig ac = getArea(
-                p.getWorld().getName(),
-                p.getLocation().getBlockX(),
-                p.getLocation().getBlockY(),
-                p.getLocation().getBlockZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyPVP")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止PVP");
-        }
     }
 
 
@@ -9378,16 +9365,7 @@ public class AreaProtection implements Listener {
         Player attacker = (Player) e.getDamager();
         Player victim = (Player) e.getEntity();
 
-        // 管理员互殴不受限
-        if (isAreaAdmin(attacker) && isAreaAdmin(victim)) return;
-        // 伤害者在自己领地无denyPVP时，跳过
-        AreaConfig acAttacker = getArea(
-                attacker.getWorld().getName(),
-                attacker.getLocation().getBlockX(),
-                attacker.getLocation().getBlockY(),
-                attacker.getLocation().getBlockZ());
-        if (acAttacker == null || !getEffectiveDeny(attacker, acAttacker, "denyPVP")) return;
-        // 受害者领地有denyPVP → 阻断
+        // 受害者领地禁止PVP → 阻断
         AreaConfig acVictim = getArea(
                 victim.getWorld().getName(),
                 victim.getLocation().getBlockX(),
@@ -9396,6 +9374,19 @@ public class AreaProtection implements Listener {
         if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
             e.setCancelled(true);
             attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
+            return;
+        }
+
+        // 攻击者领地禁止PVP → 阻断
+        AreaConfig acAttacker = getArea(
+                attacker.getWorld().getName(),
+                attacker.getLocation().getBlockX(),
+                attacker.getLocation().getBlockY(),
+                attacker.getLocation().getBlockZ());
+        if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyPVP")) {
+            e.setCancelled(true);
+            attacker.sendMessage("§c§l[区域防护] §f此区域禁止PVP");
+            return;
         }
     }
 
@@ -9477,32 +9468,7 @@ public class AreaProtection implements Listener {
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
             return;
         }
-
-        // ===== PVP 逻辑（原有的，不动）=====
-        if (!(e.getDamager() instanceof Player)) return;
-        if (!(e.getEntity() instanceof Player)) return;
-        Player attacker = (Player) e.getDamager();
-        Player victim = (Player) e.getEntity();
-
-        // 管理员互殴不受限
-        if (isAreaAdmin(attacker) && isAreaAdmin(victim)) return;
-        // 伤害者在自己领地无denyPVP时，跳过
-        AreaConfig acAttacker = getArea(
-                attacker.getWorld().getName(),
-                attacker.getLocation().getBlockX(),
-                attacker.getLocation().getBlockY(),
-                attacker.getLocation().getBlockZ());
-        if (acAttacker == null || !getEffectiveDeny(attacker, acAttacker, "denyPVP")) return;
-        // 受害者领地有denyPVP → 阻断
-        AreaConfig acVictim = getArea(
-                victim.getWorld().getName(),
-                victim.getLocation().getBlockX(),
-                victim.getLocation().getBlockY(),
-                victim.getLocation().getBlockZ());
-        if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
-            e.setCancelled(true);
-            attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
-        }
+        // PVP逻辑在onEntityDamage()中统一处理，此处不再重复
     }
     private AreaConfig findFrameArea(Entity frame) {
         Location loc = frame.getLocation();
@@ -9591,8 +9557,8 @@ public class AreaProtection implements Listener {
                     (int) ent.getLocation().getBlockX(), 
                     (int) ent.getLocation().getBlockY(), 
                     (int) ent.getLocation().getBlockZ());
-            // 如果爆炸源在禁止火焰蔓延的区域，取消所有爆炸
-            if (ac != null && ac.denyFireSpread) {
+            // 如果爆炸源在禁止爆炸的区域，取消所有爆炸
+            if (ac != null && ac.denyExplosion) {
                 e.blockList().clear();
                 return;
             }
