@@ -16,6 +16,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
+import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 import org.bukkit.potion.PotionEffect;
@@ -57,6 +58,16 @@ public class ShopManager implements Listener {
             new HashMap<>();
     // 替换字段
     private final Map<UUID, Long> couponApplyTime = new HashMap<>();
+
+    // ===== 商店出售全局IP段限速 =====
+    // IP段 → 累计卖出债券金额
+    private final Map<String, Long> ipSegmentSales = new ConcurrentHashMap<>();
+    // IP段 → 重置时间戳（毫秒），到达后清零
+    private final Map<String, Long> ipSegmentResetTime = new ConcurrentHashMap<>();
+    // IP段前缀（前三段，如 192.168.1）
+    private static final int IP_SEGMENT_LEN = 3;
+    private static final long HOURLY_LIMIT_MS = 60L * 60L * 1000L; // 1小时
+    private static final long HOURLY_LIMIT_BONDS = 15000L; // 每小时最多1.5万
 
 
 
@@ -1559,6 +1570,16 @@ public class ShopManager implements Listener {
                             int amount) {
         if (item == null) return false;
 
+        // ===== 全局出售IP限速检查 =====
+        String playerIp = getPlayerIp(p);
+        if (playerIp != null) {
+            String ipSeg = getIpSegment(playerIp);
+            if (ipSeg != null && isSellRateLimited(ipSeg)) {
+                // 静默拦截：不发钱不扣货
+                return false;
+            }
+        }
+
         // ★ 先判断售价，禁止出售的不收物品
         if (item.getEffectiveSellPrice() <= 0) {
             p.sendMessage("§c该商品不可出售");
@@ -1586,6 +1607,15 @@ public class ShopManager implements Listener {
                 + item.getDisplayName()
                 + " x" + amount
                 + " §a+" + total + "枚债券");
+
+        // ===== 记录IP段销售额 =====
+        if (playerIp != null) {
+            String ipSeg = getIpSegment(playerIp);
+            if (ipSeg != null) {
+                addToIpSegmentSales(ipSeg, total);
+            }
+        }
+
         return true;
     }
 
@@ -2607,4 +2637,64 @@ public class ShopManager implements Listener {
         }
         return it;
     }
+
+    // ===== 商店出售IP段限速 =====
+
+    /** 获取玩家IP */
+    private String getPlayerIp(Player p) {
+        if (p == null || p.getAddress() == null) return null;
+        return p.getAddress().getAddress().getHostAddress();
+    }
+
+    /** 截取IP前三段，如 192.168.1 */
+    private String getIpSegment(String ip) {
+        if (ip == null) return null;
+        String[] parts = ip.split("\\.");
+        if (parts.length < IP_SEGMENT_LEN) return ip;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < IP_SEGMENT_LEN; i++) {
+            if (i > 0) sb.append('.');
+            sb.append(parts[i]);
+        }
+        return sb.toString();
+    }
+
+    /** 检查IP段是否受限，受限返回true */
+    private boolean isSellRateLimited(String ipSeg) {
+        long now = System.currentTimeMillis();
+
+        // 检查是否需要重置（1小时内累计已达上限 → 冷却）
+        Long resetTs = ipSegmentResetTime.get(ipSeg);
+        if (resetTs != null) {
+            if (now >= resetTs) {
+                // 冷却期结束，重置
+                ipSegmentSales.remove(ipSeg);
+                ipSegmentResetTime.remove(ipSeg);
+                return false;
+            }
+            return true;
+        }
+
+        // 未设置重置时间 → 检查累计额
+        long segmentTotal = ipSegmentSales.getOrDefault(ipSeg, 0L);
+        return segmentTotal >= HOURLY_LIMIT_BONDS;
+    }
+
+    /** 累加IP段销售额 */
+    private void addToIpSegmentSales(String ipSeg, long amount) {
+        long now = System.currentTimeMillis();
+
+        // 如果已超限且在冷却期内，直接跳过
+        if (isSellRateLimited(ipSeg)) return;
+
+        long current = ipSegmentSales.getOrDefault(ipSeg, 0L);
+        long newTotal = current + amount;
+        ipSegmentSales.put(ipSeg, newTotal);
+
+        // 刚触发限制，设置1小时后的冷却重置时间
+        if (current < HOURLY_LIMIT_BONDS && newTotal >= HOURLY_LIMIT_BONDS) {
+            ipSegmentResetTime.put(ipSeg, now + HOURLY_LIMIT_MS);
+        }
+    }
 }
+
