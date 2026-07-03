@@ -2888,10 +2888,10 @@ async function showGroupMembers(groupName) {
         // 添加成员
         html += `<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
             <input id="ugNewMember" placeholder="玩家名" style="flex:1;min-width:120px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
-            <input id="ugNewMemberExpiry" placeholder="到期时间(Unix)" type="number" value="0" style="width:130px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            <input id="ugNewMemberExpiry" placeholder="例如 30 或 1小时 或 2026-07-03 23:00:00" style="flex:1;min-width:200px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             <button onclick="doAddGroupMember('${escAdmHtml(groupName)}')" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">添加</button>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">到期留0则按用户组设置的duration_minutes自动计算</div>`;
+        <div style="font-size:11px;color:var(--dim);margin-bottom:8px">到期留空则按用户组设置的duration_minutes自动计算，支持: 数字(分钟)/1小时/30天/2026-07-03 23:00:00</div>`;
 
         // 成员列表
         if (members.length === 0) {
@@ -2930,7 +2930,41 @@ async function doAddGroupMember(groupName) {
     if (!player) { glassAlert('请输入玩家名'); return; }
     if (!/^[a-zA-Z0-9_]{3,16}$/.test(player)) { glassAlert('玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）'); return; }
 
-    const expiryTime = expiryEl ? (parseInt(expiryEl.value) || 0) : 0;
+    // 解析到期时间：支持多种格式 → 转换为 Unix 时间戳
+    const expiryRaw = expiryEl ? expiryEl.value.trim() : '';
+    let expiryTime = 0;
+    if (expiryRaw) {
+        // 1. 纯数字 → 时间戳或分钟数
+        if (/^\d{10,}$/.test(expiryRaw)) {
+            expiryTime = parseInt(expiryRaw); // 时间戳
+        } else if (/^\d+$/.test(expiryRaw)) {
+            expiryTime = Math.floor(Date.now() / 1000) + parseInt(expiryRaw) * 60; // 分钟数
+        } else {
+            // 2. 中文格式: 1小时, 30天, 2个月, 1周
+            const cnMatch = expiryRaw.match(/^(\d+)\s*(秒|分|分钟|小时|天|周|月|年)$/);
+            if (cnMatch) {
+                const num = parseInt(cnMatch[1]);
+                const unit = cnMatch[2];
+                const mins = unit === '秒' ? num / 60 :
+                             unit === '分' || unit === '分钟' ? num :
+                             unit === '小时' ? num * 60 :
+                             unit === '天' ? num * 1440 :
+                             unit === '周' ? num * 10080 :
+                             unit === '月' ? num * 43200 :
+                             unit === '年' ? num * 525600 : 0;
+                expiryTime = Math.floor(Date.now() / 1000) + Math.round(mins);
+            } else {
+                // 3. 标准日期格式: yyyy-MM-dd HH:mm:ss 或 yyyy/MM/dd HH:mm:ss
+                const dateMatch = expiryRaw.replace('/', '-').match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):?(\d{2})?$/);
+                if (dateMatch) {
+                    expiryTime = Math.floor(new Date(expiryRaw.replace('/', '-')).getTime() / 1000);
+                } else {
+                    glassAlert('到期时间格式不支持，请填入: 数字(分钟)/1小时/30天/2026-07-03 23:00:00');
+                    return;
+                }
+            }
+        }
+    }
 
     try {
         const res = await apiCall('add_group_member', {group: groupName, player, expiry_time: expiryTime}, 'POST');
