@@ -2502,6 +2502,7 @@ public class WebManager {
             bodyWithSecret.put("secret", secretKey);
 
             String json = mapToJson(bodyWithSecret);
+            plugin.getLogger().info("[Web通信] POST+Token请求: " + endpoint + ", secret长度=" + (secretKey != null ? secretKey.length() : 0) + ", body长度=" + json.length());
             return doPostWithRetry(urlStr.toString(), json, maxRetries);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST+Token请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());

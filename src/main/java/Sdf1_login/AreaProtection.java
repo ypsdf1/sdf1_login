@@ -2469,6 +2469,9 @@ public class AreaProtection implements Listener {
      * @return true=限制生效，false=允许
      */
     public boolean getEffectiveDeny(Player player, AreaConfig ac, String permName) {
+        // 如果ac为null（不在任何领地内），直接允许
+        if (ac == null) return false;
+        
         // ADMIN/OWNER不检查per-player deny
         PermissionLevel level = getPermissionLevel(player, ac);
         if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {

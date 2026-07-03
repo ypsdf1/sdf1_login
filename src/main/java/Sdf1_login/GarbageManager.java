@@ -1,7 +1,6 @@
 package Sdf1_login;
 
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Item;
@@ -12,7 +11,6 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.*;
-import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.sql.Date;
@@ -287,11 +285,8 @@ public class GarbageManager {
                     .decode(base64);
             String json = new String(bytes,
                     StandardCharsets.UTF_8);
-            Type type = new TypeToken<
-                    Map<String, Object>>() {}
-                    .getType();
             Map<String, Object> map =
-                    new Gson().fromJson(json, type);
+                    new Gson().fromJson(json, Map.class);
             map = fixNumberTypes(map);
             return ItemStack.deserialize(map);
         } catch (Exception e) {
