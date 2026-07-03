@@ -469,6 +469,122 @@ function initTables(SQLite3 $db) {
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_assigned ON web_tickets(assigned_to)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_ticket_replies_ticket ON web_ticket_replies(ticket_id)");
 
+        // ★ 用户组相关表（从handler函数中提取到这里统一创建，避免并发请求锁竞争）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (
+            group_name TEXT PRIMARY KEY,
+            display_name TEXT DEFAULT '',
+            display_color TEXT DEFAULT '§f',
+            display_emoji TEXT DEFAULT '',
+            priority INTEGER DEFAULT 0,
+            land_price_per_sqm INTEGER DEFAULT -1,
+            max_lands INTEGER DEFAULT -1,
+            home_limit INTEGER DEFAULT 0,
+            join_price INTEGER DEFAULT 0,
+            auto_renew INTEGER DEFAULT 0,
+            renew_price INTEGER DEFAULT 0,
+            duration_minutes INTEGER DEFAULT 0,
+            default_perms TEXT DEFAULT '{}',
+            synced_at INTEGER DEFAULT 0
+        )");
+
+        // 用户组成员表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
+            player_name TEXT NOT NULL,
+            group_name TEXT NOT NULL,
+            added_by TEXT DEFAULT 'system',
+            added_time INTEGER DEFAULT 0,
+            expiry_time INTEGER DEFAULT 0,
+            PRIMARY KEY(player_name, group_name)
+        )");
+
+        // 管理员变更队列
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT DEFAULT '',
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending'
+        )");
+
+        // 待验证玩家表
+        $db->exec("CREATE TABLE IF NOT EXISTS pending_player_validations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT NOT NULL,
+            request_type TEXT DEFAULT 'general',
+            request_data TEXT DEFAULT '{}',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT 0,
+            validated_at INTEGER DEFAULT 0
+        )");
+
+        // 续费请求表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_group_renew (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT NOT NULL,
+            group_name TEXT NOT NULL,
+            renew_price INTEGER DEFAULT 0,
+            duration_minutes INTEGER DEFAULT 0,
+            req_id TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT 0,
+            processed_at INTEGER DEFAULT 0,
+            remark TEXT DEFAULT ''
+        )");
+
+        // 过户请求表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_land_transfers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            land_name TEXT NOT NULL,
+            old_owner TEXT NOT NULL,
+            new_owner TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER DEFAULT 0,
+            completed_at INTEGER DEFAULT 0,
+            expires_at INTEGER DEFAULT 0,
+            cooldown_until INTEGER DEFAULT 0
+        )");
+
+        // 领地表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_area_lands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            owner TEXT DEFAULT '',
+            world TEXT DEFAULT '',
+            x1 INTEGER DEFAULT 0,
+            z1 INTEGER DEFAULT 0,
+            x2 INTEGER DEFAULT 0,
+            z2 INTEGER DEFAULT 0,
+            y1 INTEGER DEFAULT 0,
+            y2 INTEGER DEFAULT 0,
+            area_size INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT 0,
+            admin_changed INTEGER DEFAULT 0,
+            deny_pvp INTEGER DEFAULT 0,
+            deny_fall_damage INTEGER DEFAULT 0,
+            deny_hunger INTEGER DEFAULT 0,
+            deny_all_damage INTEGER DEFAULT 0,
+            deny_fire_spread INTEGER DEFAULT 0,
+            deny_explosion INTEGER DEFAULT 0,
+            deny_mob_grief INTEGER DEFAULT 0,
+            deny_block_place INTEGER DEFAULT 0,
+            deny_block_break INTEGER DEFAULT 0
+        )");
+
+        // 领地权限表
+        $db->exec("CREATE TABLE IF NOT EXISTS web_area_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            land_id INTEGER NOT NULL,
+            player_name TEXT NOT NULL,
+            role TEXT DEFAULT 'visitor',
+            permissions TEXT DEFAULT '',
+            granted_at INTEGER DEFAULT 0,
+            synced_at INTEGER DEFAULT 0
+        )");
+
         $db->exec('COMMIT');
     } catch (Exception $e) {
         $db->exec('ROLLBACK');

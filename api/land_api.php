@@ -948,7 +948,7 @@ function handleGetOwnerChangeStatus($db, $get) {
     if ($rowTime && $status === 'pending') {
         $createdAt = (int)($rowTime['created_at'] ?? 0);
         $now = time();
-        if ($now - $createdAt > 65) {
+        if ($now - $createdAt > 15) {
             // 超时，自动回滚
             $stmtRollback = $db->prepare("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = :now WHERE change_type = 'owner_change' AND target_name = :name AND status = 'pending'");
             $stmtRollback->bindValue(':now', $now, SQLITE3_INTEGER);
@@ -1226,20 +1226,93 @@ function handleValidationCallback($db, $data) {
         return;
     }
 
+    // ★ 先读取完整记录（含request_type和request_data），再更新状态
+    $stmt0 = $db->prepare("SELECT player_name, request_type, request_data FROM pending_player_validations WHERE id = :id");
+    $stmt0->bindValue(':id', $id, SQLITE3_INTEGER);
+    $rs0 = $stmt0->execute();
+    $row = $rs0->fetchArray(SQLITE3_ASSOC);
+    $player = $row ? $row['player_name'] : '?';
+    $reqType = $row ? $row['request_type'] : '';
+    $reqData = $row ? json_decode($row['request_data'] ?? '{}', true) : [];
+
     $stmt = $db->prepare("UPDATE pending_player_validations SET status = :status, validated_at = :now WHERE id = :id");
     $stmt->bindValue(':status', $status, SQLITE3_TEXT);
     $stmt->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
     $stmt->execute();
 
-    // 获取玩家名用于日志
-    $stmt2 = $db->prepare("SELECT player_name FROM pending_player_validations WHERE id = :id");
-    $stmt2->bindValue(':id', $id, SQLITE3_INTEGER);
-    $rs = $stmt2->execute();
-    $row = $rs->fetchArray(SQLITE3_ASSOC);
-    $player = $row ? $row['player_name'] : '?';
+    debugLog("validation_callback: 玩家 {$player} 验证结果={$status}, type={$reqType}");
 
-    debugLog("validation_callback: 玩家 {$player} 验证结果={$status}");
+    // ★ 验证通过时，自动执行挂起的操作
+    if ($status === 'valid') {
+        // --- add_group_member: 自动将玩家加入用户组 ---
+        if ($reqType === 'add_group_member' && !empty($reqData['group'])) {
+            $group = $reqData['group'];
+            $now = time();
+            $expiry = (int)($reqData['expiry_time'] ?? 0);
+
+            // ★ 如果没指定expiry_time，根据用户组的duration_minutes计算
+            if ($expiry <= 0) {
+                try {
+                    $stmtCfg = $db->prepare("SELECT duration_minutes FROM web_user_groups WHERE group_name = :group");
+                    $stmtCfg->bindValue(':group', $group, SQLITE3_TEXT);
+                    $rsCfg = $stmtCfg->execute();
+                    $cfgRow = $rsCfg->fetchArray(SQLITE3_ASSOC);
+                    if ($cfgRow && (int)$cfgRow['duration_minutes'] > 0) {
+                        $expiry = $now + (int)$cfgRow['duration_minutes'] * 60;
+                    }
+                } catch (\Throwable $e) { /* 表可能不存在 */ }
+            }
+
+            try {
+                $stmt3 = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
+                    (player_name, group_name, added_by, added_time, expiry_time)
+                    VALUES (:player, :group, 'admin', :added, :expiry)");
+                $stmt3->bindValue(':player', $player, SQLITE3_TEXT);
+                $stmt3->bindValue(':group', $group, SQLITE3_TEXT);
+                $stmt3->bindValue(':added', $now, SQLITE3_INTEGER);
+                $stmt3->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
+                $stmt3->execute();
+
+                // 写入变更队列，通知Java端同步
+                $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+                    VALUES ('group_change', :id, :name, :data, :time)");
+                $stmt4->bindValue(':id', $group, SQLITE3_TEXT);
+                $stmt4->bindValue(':name', $group, SQLITE3_TEXT);
+                $stmt4->bindValue(':data', json_encode(['action' => 'add_member', 'group_name' => $group, 'player' => $player]), SQLITE3_TEXT);
+                $stmt4->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt4->execute();
+            } catch (\Throwable $e) { /* 静默 */ }
+
+            debugLog("validation_callback: 自动执行add_group_member", ['player' => $player, 'group' => $group]);
+        }
+
+        // --- add_visitor: 自动将玩家加入领地访客列表 ---
+        if ($reqType === 'add_visitor' && !empty($reqData['land'])) {
+            $landName = $reqData['land'];
+            $now = time();
+            try {
+                $stmt5 = $db->prepare("INSERT OR IGNORE INTO web_area_visitors (land_name, player_name, added_by, added_time)
+                    VALUES (:land, :player, 'admin', :time)");
+                $stmt5->bindValue(':land', $landName, SQLITE3_TEXT);
+                $stmt5->bindValue(':player', $player, SQLITE3_TEXT);
+                $stmt5->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt5->execute();
+
+                // 写入变更队列，通知Java端
+                $stmt6 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
+                    VALUES ('visitor_change', :id, :name, :data, :time)");
+                $stmt6->bindValue(':id', $landName, SQLITE3_TEXT);
+                $stmt6->bindValue(':name', $landName, SQLITE3_TEXT);
+                $stmt6->bindValue(':data', json_encode(['action' => 'add_visitor', 'player' => $player]), SQLITE3_TEXT);
+                $stmt6->bindValue(':time', $now, SQLITE3_INTEGER);
+                $stmt6->execute();
+            } catch (\Throwable $e) { /* 静默 */ }
+
+            debugLog("validation_callback: 自动执行add_visitor", ['player' => $player, 'land' => $landName]);
+        }
+    }
+
     echo json_encode(['success' => true]);
 }
 
@@ -1952,22 +2025,18 @@ function handleDeleteUserGroup($db, $name) {
 
 function handleListGroupMembers($db, $group) {
     if (empty($group)) { echo json_encode(['success' => false, 'error' => 'missing group']); return; }
-    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
-        player_name TEXT NOT NULL,
-        group_name TEXT NOT NULL,
-        added_by TEXT DEFAULT 'system',
-        added_time INTEGER DEFAULT 0,
-        expiry_time INTEGER DEFAULT 0,
-        PRIMARY KEY(player_name, group_name)
-    )");
-    $stmt = $db->prepare("SELECT * FROM web_user_group_members WHERE group_name = :group");
-    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
-    $rs = $stmt->execute();
-    $members = [];
-    while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
-        $members[] = $row;
+    try {
+        $stmt = $db->prepare("SELECT * FROM web_user_group_members WHERE group_name = :group");
+        $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+        $rs = $stmt->execute();
+        $members = [];
+        while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+            $members[] = $row;
+        }
+        echo json_encode(['success' => true, 'members' => $members]);
+    } catch (\Throwable $e) {
+        echo json_encode(['success' => false, 'error' => '数据库错误: ' . $e->getMessage()]);
     }
-    echo json_encode(['success' => true, 'members' => $members]);
 }
 
 function handleAddGroupMember($db, $data) {
@@ -1982,51 +2051,46 @@ function handleAddGroupMember($db, $data) {
         echo json_encode(['success' => false, 'error' => "玩家名格式不正确，仅支持英文字母、数字和下划线（3-16位）"]);
         return;
     }
-    // ★ 校验玩家是否存在
-    $playerValid = validatePlayerViaJava($db, $player, 'add_group_member', ['group' => $group]);
-    if ($playerValid === null) {
-        // 异步验证中 → 稍后重试（不直接写DB，等Java验证）
-        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$player} 的验证请求已提交，系统正在验证，请稍候再试"]);
-        return;
-    }
+    // ★ 管理面板操作：直接用本地playerExists验证（无需异步等待Java）
+    $playerValid = playerExists($db, $player);
     if (!$playerValid) {
         echo json_encode(['success' => false, 'error' => "玩家 {$player} 尚未注册，请确认玩家名是否正确"]);
         return;
     }
-    $db->exec("CREATE TABLE IF NOT EXISTS web_user_group_members (
-        player_name TEXT NOT NULL,
-        group_name TEXT NOT NULL,
-        added_by TEXT DEFAULT 'system',
-        added_time INTEGER DEFAULT 0,
-        expiry_time INTEGER DEFAULT 0,
-        PRIMARY KEY(player_name, group_name)
-    )");
     $addedBy = $data['added_by'] ?? 'admin';
     $now = time();
     $expiry = (int)($data['expiry_time'] ?? 0);
 
-    $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
-        (player_name, group_name, added_by, added_time, expiry_time)
-        VALUES (:player, :group, :addedby, :added, :expiry)");
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
-    $stmt->bindValue(':addedby', $addedBy, SQLITE3_TEXT);
-    $stmt->bindValue(':added', $now, SQLITE3_INTEGER);
-    $stmt->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
-    $stmt->execute();
+    // ★ 如果没指定expiry_time，根据用户组的duration_minutes计算
+    if ($expiry <= 0) {
+        try {
+            $stmtCfg = $db->prepare("SELECT duration_minutes FROM web_user_groups WHERE group_name = :group");
+            $stmtCfg->bindValue(':group', $group, SQLITE3_TEXT);
+            $rsCfg = $stmtCfg->execute();
+            $cfgRow = $rsCfg->fetchArray(SQLITE3_ASSOC);
+            if ($cfgRow && (int)$cfgRow['duration_minutes'] > 0) {
+                $expiry = $now + (int)$cfgRow['duration_minutes'] * 60;
+            }
+        } catch (\Throwable $e) { /* 表可能不存在 */ }
+    }
+
+    try {
+        $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_group_members
+            (player_name, group_name, added_by, added_time, expiry_time)
+            VALUES (:player, :group, :addedby, :added, :expiry)");
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+        $stmt->bindValue(':addedby', $addedBy, SQLITE3_TEXT);
+        $stmt->bindValue(':added', $now, SQLITE3_INTEGER);
+        $stmt->bindValue(':expiry', $expiry, SQLITE3_INTEGER);
+        $stmt->execute();
+    } catch (\Throwable $e) {
+        echo json_encode(['success' => false, 'error' => '数据库错误: ' . $e->getMessage()]);
+        return;
+    }
 
     // ★ 写入变更队列，通知Java端同步成员
     try {
-        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            change_type TEXT NOT NULL,
-            target_id TEXT DEFAULT '',
-            target_name TEXT DEFAULT '',
-            change_data TEXT DEFAULT '{}',
-            created_at INTEGER DEFAULT 0,
-            acknowledged INTEGER DEFAULT 0,
-            acked_at INTEGER DEFAULT 0
-        )");
         $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
             VALUES ('group_change', :id, :name, :data, :time)");
         $stmt2->bindValue(':id', $group, SQLITE3_TEXT);
@@ -2046,23 +2110,19 @@ function handleRemoveGroupMember($db, $data) {
         echo json_encode(['success' => false, 'error' => 'missing player or group']);
         return;
     }
-    $stmt = $db->prepare("DELETE FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
-    $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-    $stmt->bindValue(':group', $group, SQLITE3_TEXT);
-    $stmt->execute();
+    try {
+        $stmt = $db->prepare("DELETE FROM web_user_group_members WHERE player_name = :player AND group_name = :group");
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt->bindValue(':group', $group, SQLITE3_TEXT);
+        $stmt->execute();
+        $affected = $db->changes();
+    } catch (\Throwable $e) {
+        echo json_encode(['success' => false, 'error' => '数据库错误: ' . $e->getMessage()]);
+        return;
+    }
 
     // ★ 写入变更队列，通知Java端同步成员
     try {
-        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            change_type TEXT NOT NULL,
-            target_id TEXT DEFAULT '',
-            target_name TEXT DEFAULT '',
-            change_data TEXT DEFAULT '{}',
-            created_at INTEGER DEFAULT 0,
-            acknowledged INTEGER DEFAULT 0,
-            acked_at INTEGER DEFAULT 0
-        )");
         $stmt2 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
             VALUES ('group_change', :id, :name, :data, :time)");
         $stmt2->bindValue(':id', $group, SQLITE3_TEXT);
@@ -2072,7 +2132,11 @@ function handleRemoveGroupMember($db, $data) {
         $stmt2->execute();
     } catch (\Throwable $e) { /* 静默 */ }
 
-    echo json_encode(['success' => true, 'message' => "{$player} 已移出用户组 {$group}"]);
+    if ($affected > 0) {
+        echo json_encode(['success' => true, 'message' => "{$player} 已移出用户组 {$group}"]);
+    } else {
+        echo json_encode(['success' => false, 'error' => "玩家 {$player} 不在用户组 {$group} 中"]);
+    }
 }
 
 function handleGetPlayerGroups($db, $player) {

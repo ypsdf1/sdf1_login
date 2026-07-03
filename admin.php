@@ -2450,10 +2450,10 @@ async function adminTransferLand(name, currentOwner) {
         const d = await res.json();
         if (d.success && d.pending) {
             glassAlert(d.message || '已提交改主请求，等待Java端验证');
-            // 启动轮询，每5秒查询状态，最多等待1.05分钟
+            // 启动轮询，每3秒查询状态，最多等待15秒
             let elapsed = 0;
-            const maxWait = 65000; // 1.05分钟 = 65秒
-            const interval = 5000; // 5秒轮询一次
+            const maxWait = 15000; // 15秒
+            const interval = 3000; // 3秒轮询一次
             const poll = async () => {
                 try {
                     const pollRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu');
