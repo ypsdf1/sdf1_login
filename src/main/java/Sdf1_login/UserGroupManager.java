@@ -448,6 +448,128 @@ public class UserGroupManager {
     }
 
     /**
+     * 赠送用户组给其他玩家（送礼人付费，收礼人免费获得）
+     * @param senderName 送礼人（付费方）
+     * @param targetName 收礼人（免费获得用户组）
+     * @param groupName 用户组名
+     * @return null=成功, 非null=错误消息
+     */
+    public String giftGroupToPlayer(String senderName, String targetName, String groupName) {
+        UserGroupConfig cfg = getGroupConfig(groupName);
+        if (cfg == null) return "未找到用户组: " + groupName;
+        groupName = cfg.name;
+        
+        // 检查收礼人是否已在该组
+        boolean isTargetMember = isPlayerInGroup(targetName, groupName);
+        boolean needRenew = isTargetMember;
+        
+        // 确定价格（已在该组→续费价格，未在该组→加入价格）
+        int price = needRenew ? cfg.renewPrice : cfg.joinPrice;
+        if (price <= 0) {
+            return needRenew ? "该用户组不支持续费" : "该用户组不开放付费加入";
+        }
+        
+        // ★ 从送礼人扣费
+        BondManager bondMgr = plugin.getBondManager();
+        if (bondMgr == null) return "债券系统未初始化";
+        
+        int senderBalance = bondMgr.getBonds(senderName);
+        if (senderBalance < price) {
+            return "你的债券不足！需要 " + price + " 张，当前 " + senderBalance + " 张";
+        }
+        
+        boolean deducted = bondMgr.deductBonds(senderName, price,
+                "group_gift", targetName, "system",
+                "赠送用户组: " + groupName + " 给 " + targetName);
+        if (!deducted) return "扣费失败，请稍后重试";
+        
+        // 计算到期时间
+        long now = System.currentTimeMillis();
+        long expiryTime;
+        if (cfg.durationMinutes <= 0) {
+            expiryTime = 0; // 永久
+        } else {
+            expiryTime = now + (long) cfg.durationMinutes * 60 * 1000;
+        }
+        
+        // 给收礼人加入/续费用户组
+        String err;
+        if (needRenew) {
+            // 续费：延长到期时间
+            err = renewGroupForGift(targetName, groupName, expiryTime);
+        } else {
+            // 新加入
+            err = addPlayerWithExpiry(targetName, groupName, "gift_by_" + senderName, expiryTime);
+        }
+        
+        if (err != null) {
+            // 回退扣费
+            bondMgr.addBonds(senderName, price, "group_gift_refund", targetName, "system", "赠送失败退款: " + groupName);
+            return err;
+        }
+        
+        // 发送扣费记录到PHP（送礼人付费）
+        pushBondRecordToPHP(senderName, price, "group_gift", targetName, 
+                "赠送用户组: " + groupName + " 给 " + targetName);
+        
+        final String actionType = needRenew ? "续费" : "赠送";
+        final long finalExpiryTime = expiryTime;
+        final long finalNow = now;
+        final int finalPrice = price;
+        final String finalGroupName = groupName;
+        final String finalSenderName = senderName;
+        final String finalTargetName = targetName;
+        
+        plugin.getLogger().info("[UserGroup] " + senderName + " " + actionType + "用户组 " + groupName + 
+                " 给 " + targetName + "，扣费 " + price + " 张（送礼人付费），到期: " + formatExpiry(expiryTime));
+        
+        // 推送成员到PHP
+        pushMemberToPHP(targetName, groupName, "add");
+        
+        // 通知送礼人
+        org.bukkit.Bukkit.getOnlinePlayers().forEach(p -> {
+            if (p.getName().equals(finalSenderName)) {
+                String expStr = finalExpiryTime == 0 ? "永久" : 
+                    (finalExpiryTime - finalNow) / 60000 + "分钟";
+                p.sendMessage("§a§l[赠予] §f成功为 §e" + finalTargetName + " §f" + actionType + "用户组「§e" + finalGroupName + "§f」，扣费 §e" + finalPrice + " §f张债券，有效期: §a" + expStr);
+            }
+        });
+        
+        // 通知收礼人
+        org.bukkit.Bukkit.getOnlinePlayers().forEach(p -> {
+            if (p.getName().equals(finalTargetName)) {
+                String expStr = finalExpiryTime == 0 ? "永久" : 
+                    (finalExpiryTime - finalNow) / 60000 + "分钟";
+                p.sendMessage("§a§l[赠予] §7玩家 §e" + finalSenderName + " §7" + actionType + "了用户组 §e" + finalGroupName + " §7给你！有效期: §a" + expStr);
+            }
+        });
+        
+        return null;
+    }
+    
+    /**
+     * 续费用户组（用于赠送场景，不扣费，只延长到期时间）
+     * @return null=成功, 非null=错误消息
+     */
+    private String renewGroupForGift(String player, String groupName, long newExpiryTime) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE user_group_member SET expiry_time=? WHERE player_name=? AND group_name=?");
+            ps.setLong(1, newExpiryTime);
+            ps.setString(2, player);
+            ps.setString(3, groupName);
+            int rows = ps.executeUpdate();
+            ps.close();
+            if (rows <= 0) {
+                return "续费失败：未找到成员记录";
+            }
+            return null;
+        } catch (SQLException e) {
+            return "数据库错误: " + e.getMessage();
+        }
+    }
+
+    /**
      * 续费用户组（延长到期时间）
      * @return null=成功, 非null=错误消息
      */

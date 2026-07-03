@@ -2986,35 +2986,13 @@ public class GUIManager implements Listener {
             return;
         }
 
-        // 检查是否已加入
-        boolean isTargetMember = ugm.isPlayerInGroup(targetName, grpName);
-        if (isTargetMember) {
-            // 目标已加入 → 续费
-            p.sendMessage("§7玩家 §e" + targetName + " §7已拥有该组，执行续费...");
-            String err = ugm.renewGroup(targetName, cfg.name);
-            if (err != null) {
-                p.sendMessage("§c赠予续费失败: " + err);
-            } else {
-                p.sendMessage("§a§l赠予成功！ §7已为 §e" + targetName + " §7续费用户组 §e" + displayName);
-                // 通知目标玩家
-                Player target = plugin.getServer().getPlayerExact(targetName);
-                if (target != null) {
-                    target.sendMessage("§a§l[赠予] §7玩家 §e" + p.getName() + " §7为你续费了用户组 §e" + displayName);
-                }
-            }
+        // ★ 使用新的赠送方法：送礼人（p）付费，收礼人（targetName）免费获得
+        p.sendMessage("§7正在为 §e" + targetName + " §7购买用户组 §e" + displayName + " §7...");
+        String err = ugm.giftGroupToPlayer(p.getName(), targetName, cfg.name);
+        if (err != null) {
+            p.sendMessage("§c赠予失败: " + err);
         } else {
-            // 目标未加入 → 购买赠送
-            p.sendMessage("§7正在为 §e" + targetName + " §7购买用户组 §e" + displayName + " §7...");
-            String err = ugm.joinGroupByPrice(targetName, cfg.name);
-            if (err != null) {
-                p.sendMessage("§c赠予失败: " + err);
-            } else {
-                p.sendMessage("§a§l赠予成功！ §7已为 §e" + targetName + " §7购买用户组 §e" + displayName);
-                Player target = plugin.getServer().getPlayerExact(targetName);
-                if (target != null) {
-                    target.sendMessage("§a§l[赠予] §7玩家 §e" + p.getName() + " §7赠送了用户组 §e" + displayName + " §7给你！");
-                }
-            }
+            p.sendMessage("§a§l赠予成功！");
         }
     }
 
