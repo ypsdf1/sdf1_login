@@ -12,7 +12,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.util.Vector;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -35,17 +35,18 @@ public class QuickBack implements Listener, CommandExecutor, TabCompleter {
     
     // 冷却: player_name → next_available_time
     private final Map<String, Long> cooldowns = new ConcurrentHashMap<>();
-    private static final long COOLDOWN_MS = 5 * 60 * 1000; // 5分钟冷却
     
-    // 最大记录数 per player
-    private static final int MAX_RECORDS = 50;
+    // ★ 定时器引用（用于 shutdown 时取消）
+    private BukkitTask scheduleTask = null;
+    
+    private static final long COOLDOWN_MS = 5 * 60 * 1000; // 5分钟冷却
 
     public QuickBack(Main plugin) {
         this.plugin = plugin;
         loadAllFromDB();
         
         // 每分钟记录所有在线玩家的坐标
-        new BukkitRunnable() {
+        scheduleTask = new BukkitRunnable() {
             @Override
             public void run() {
                 for (Player p : Bukkit.getOnlinePlayers()) {
@@ -230,5 +231,15 @@ public class QuickBack implements Listener, CommandExecutor, TabCompleter {
         } catch (SQLException e) {
             plugin.getLogger().warning("[快速返回] 建表失败: " + e.getMessage());
         }
+    }
+    
+    // ==================== 关闭 ====================
+    
+    public void shutdown() {
+        if (scheduleTask != null) {
+            scheduleTask.cancel();
+        }
+        lastKnownLocations.clear();
+        cooldowns.clear();
     }
 }

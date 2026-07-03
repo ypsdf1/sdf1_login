@@ -704,8 +704,10 @@ public class Main extends JavaPlugin
             homeMgr.shutdown();
         if (deathReport != null)
             deathReport = null;
-        if (quickBack != null)
+        if (quickBack != null) {
+            quickBack.shutdown();
             quickBack = null;
+        }
         if (areaProtection != null) {
             areaProtection.stopEnforceTask();
         }
