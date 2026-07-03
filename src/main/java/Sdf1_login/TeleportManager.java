@@ -677,11 +677,10 @@ public class TeleportManager implements Listener {
     // ==================== TPACCEPT - 接受传送 ====================
     
     private boolean handleTPAccept(Player player, String[] args) {
-        // ★ 先检查是否有待处理请求且未过期
+        // 1. 确定 targetName
         String targetName = null;
         if (args.length > 0) {
             String arg = args[0];
-            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
             Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
             if (possiblePlayer != null && possiblePlayer.isOnline()) {
                 targetName = arg;
@@ -713,9 +712,16 @@ public class TeleportManager implements Listener {
             }
         }
         
+        // 2. 检查内存中的请求
         Set<String> senders = incomingRequests.get(player.getName());
-        if (senders == null || !senders.contains(targetName)) {
-            // ★ DB fallback: 内存找不到时查数据库 (tpaall请求可能不在内存中)
+        if (senders != null && senders.contains(targetName)) {
+            // 内存中存在 → 检查是否过期
+            if (!isValidRequest(player.getName(), targetName)) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
+                return true;
+            }
+        } else {
+            // 内存中没有 → DB fallback
             boolean foundInDb = false;
             Long dbTimestamp = null;
             try {
@@ -739,84 +745,70 @@ public class TeleportManager implements Listener {
                 return true;
             }
             
-            // ★ 检查数据库中的请求是否过期（基于数据库时间戳）
-            if (dbTimestamp != null) {
-                int validSec = getTpRequestValidSeconds();
-                long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
-                if (age > validSec) {
-                    player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
-                    // 清理DB中的过期记录
-                    try {
-                        PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
-                            "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
-                        psClean.setString(1, targetName);
-                        psClean.setString(2, player.getName());
-                        psClean.executeUpdate();
-                        psClean.close();
-                    } catch (SQLException ex) {
-                        plugin.getLogger().warning("[传送] DB清理过期请求失败: " + ex.getMessage());
-                    }
-                    return true;
-                }
-                // DB中有请求 → 恢复到内存并记录时间戳
-                incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
-                outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
-                teleportRequestTimes.put(targetName + ":" + player.getName(), dbTimestamp);
-                senders = incomingRequests.get(player.getName());
-            }
-        } else {
-            // ★ 内存中存在 → 也检查是否过期（刚才 isValidRequest 已经检查过，这里防竞态）
-            if (!isValidRequest(player.getName(), targetName)) {
-                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
+            // 检查数据库中请求是否过期
+            int validSec = getTpRequestValidSeconds();
+            long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
+            if (age > validSec) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
+                try {
+                    PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
+                        "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
+                    psClean.setString(1, targetName);
+                    psClean.setString(2, player.getName());
+                    psClean.executeUpdate();
+                    psClean.close();
+                } catch (SQLException ex) { /* ignore */ }
                 return true;
             }
+            
+            // 恢复内存状态
+            incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
+            outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
+            teleportRequestTimes.put(player.getName() + ":" + targetName, dbTimestamp);
+            teleportRequestTimes.put(targetName + ":" + player.getName(), dbTimestamp);
+            senders = incomingRequests.get(player.getName());
         }
         
-        Player senderPlayer = Bukkit.getServer().getPlayer(targetName);
-        if (senderPlayer == null || !senderPlayer.isOnline()) {
+        // 3. 检查目标玩家是否在线
+        Player actualSender = Bukkit.getServer().getPlayer(targetName);
+        if (actualSender == null || !actualSender.isOnline()) {
             player.sendMessage("§c[传送] 玩家 §f" + targetName + " §c已下线");
             removeIncomingRequest(player.getName(), targetName);
             removeOutgoingRequest(targetName, player.getName());
             return true;
         }
         
-        // 检查请求类型（tpa vs tpaall vs tpahere）
+        // 4. 查询请求类型
         String requestType = "tpa";
-        if (senders != null && senders.contains(targetName)) {
-            try {
-                PreparedStatement psCheck = plugin.getDb().getDb().prepareStatement(
-                    "SELECT type FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
-                psCheck.setString(1, targetName);
-                psCheck.setString(2, player.getName());
-                ResultSet rsCheck = psCheck.executeQuery();
-                if (rsCheck.next()) {
-                    requestType = rsCheck.getString("type");
-                }
-                rsCheck.close();
-                psCheck.close();
-            } catch (SQLException e) {
-                plugin.getLogger().warning("[传送] 查询请求类型失败: " + e.getMessage());
+        try {
+            PreparedStatement psCheck = plugin.getDb().getDb().prepareStatement(
+                "SELECT type FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
+            psCheck.setString(1, targetName);
+            psCheck.setString(2, player.getName());
+            ResultSet rsCheck = psCheck.executeQuery();
+            if (rsCheck.next()) {
+                requestType = rsCheck.getString("type");
             }
+            rsCheck.close();
+            psCheck.close();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[传送] 查询请求类型失败: " + e.getMessage());
         }
         
-        // 执行传送 - 根据请求类型决定方向
+        // 5. 执行传送
         if ("tpaall".equals(requestType) || "tpahere".equals(requestType)) {
-            // tpaall/tpahere: receiver(接受者)传送到sender(发起者)身边
-            executeTeleport(player, senderPlayer);
+            executeTeleport(player, actualSender);
         } else {
-            // 标准tpa: sender(发起者)传送到receiver(接受者)身边
-            executeTeleport(senderPlayer, player);
+            executeTeleport(actualSender, player);
         }
         
-        // 清理请求
+        // 6. 清理
         removeIncomingRequest(player.getName(), targetName);
         removeOutgoingRequest(targetName, player.getName());
         
         player.sendMessage("§a[传送] 已传送到 §f" + targetName + " §a身边");
-        senderPlayer.sendMessage("§a[传送] §f" + player.getName() + " §a已接受请求");
-        
-        // 清理冷却
-        teleportCooldown.remove(senderPlayer.getName());
+        actualSender.sendMessage("§a[传送] §f" + player.getName() + " §a已接受请求");
+        teleportCooldown.remove(actualSender.getName());
         
         return true;
     }
@@ -827,7 +819,6 @@ public class TeleportManager implements Listener {
         String targetName = null;
         if (args.length > 0) {
             String arg = args[0];
-            // ★ 优先当玩家名处理，在线则直接走玩家名逻辑
             Player possiblePlayer = Bukkit.getServer().getPlayer(arg);
             if (possiblePlayer != null && possiblePlayer.isOnline()) {
                 targetName = arg;
@@ -859,21 +850,62 @@ public class TeleportManager implements Listener {
             }
         }
         
+        // 检查内存中的请求
         Set<String> senders = incomingRequests.get(player.getName());
-        if (senders == null || !senders.contains(targetName)) {
-            player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
-            return true;
+        if (senders != null && senders.contains(targetName)) {
+            if (!isValidRequest(player.getName(), targetName)) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
+                return true;
+            }
+        } else {
+            // DB fallback: 查数据库找请求
+            try {
+                PreparedStatement psFallback = plugin.getDb().getDb().prepareStatement(
+                    "SELECT timestamp FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
+                psFallback.setString(1, targetName);
+                psFallback.setString(2, player.getName());
+                ResultSet rsFallback = psFallback.executeQuery();
+                if (rsFallback.next()) {
+                    long dbTimestamp = rsFallback.getLong("timestamp");
+                    long validSec = getTpRequestValidSeconds();
+                    long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
+                    if (age > validSec) {
+                        rsFallback.close();
+                        psFallback.close();
+                        player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
+                        try {
+                            PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
+                                "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
+                            psClean.setString(1, targetName);
+                            psClean.setString(2, player.getName());
+                            psClean.executeUpdate();
+                            psClean.close();
+                        } catch (SQLException ex) { /* ignore */ }
+                        rsFallback.close();
+                        psFallback.close();
+                        return true;
+                    }
+                    rsFallback.close();
+                    psFallback.close();
+                    incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
+                    outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
+                } else {
+                    rsFallback.close();
+                    psFallback.close();
+                    player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+                    return true;
+                }
+            } catch (SQLException e) {
+                plugin.getLogger().warning("[传送] DB回退查询失败: " + e.getMessage());
+                player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+                return true;
+            }
+            senders = incomingRequests.get(player.getName());
         }
         
-        // ★ 检查请求是否仍然有效
-        if (!isValidRequest(player.getName(), targetName)) {
-            player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
-            return true;
-        }
-        
-        Player senderPlayer = Bukkit.getServer().getPlayer(targetName);
-        if (senderPlayer != null && senderPlayer.isOnline()) {
-            senderPlayer.sendMessage("§c[传送] §f" + player.getName() + " §c拒绝了你的传送请求");
+        Player actualSender = Bukkit.getServer().getPlayer(targetName);
+        if (actualSender != null && actualSender.isOnline()) {
+            actualSender.sendMessage("§c[传送] §f" + player.getName() + " §c拒绝了你的传送请求");
         }
         
         removeIncomingRequest(player.getName(), targetName);
