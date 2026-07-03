@@ -2940,19 +2940,20 @@ async function doAddGroupMember(groupName) {
         } else if (/^\d+$/.test(expiryRaw)) {
             expiryTime = Math.floor(Date.now() / 1000) + parseInt(expiryRaw) * 60; // 分钟数
         } else {
-            // 2. 中文格式: 1小时, 30天, 2个月, 1周
+            // 2. 中文格式: 1小时, 30天, 2个月, 1周, 30分钟, 2分
             const cnMatch = expiryRaw.match(/^(\d+)\s*(秒|分|分钟|小时|天|周|月|年)$/);
             if (cnMatch) {
                 const num = parseInt(cnMatch[1]);
                 const unit = cnMatch[2];
-                const mins = unit === '秒' ? num / 60 :
-                             unit === '分' || unit === '分钟' ? num :
-                             unit === '小时' ? num * 60 :
-                             unit === '天' ? num * 1440 :
-                             unit === '周' ? num * 10080 :
-                             unit === '月' ? num * 43200 :
-                             unit === '年' ? num * 525600 : 0;
-                expiryTime = Math.floor(Date.now() / 1000) + Math.round(mins);
+                let secs = 0;
+                if (unit === '秒') secs = num;
+                else if (unit === '分' || unit === '分钟') secs = num * 60;
+                else if (unit === '小时') secs = num * 3600;
+                else if (unit === '天') secs = num * 86400;
+                else if (unit === '周') secs = num * 604800;
+                else if (unit === '月') secs = num * 2592000;
+                else if (unit === '年') secs = num * 31536000;
+                expiryTime = Math.floor(Date.now() / 1000) + secs;
             } else {
                 // 3. 标准日期格式: yyyy-MM-dd HH:mm:ss 或 yyyy/MM/dd HH:mm:ss
                 const dateMatch = expiryRaw.replace('/', '-').match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):?(\d{2})?$/);
