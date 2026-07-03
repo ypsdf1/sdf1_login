@@ -17,6 +17,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.ProjectileLaunchEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -147,6 +148,8 @@ public class Main extends JavaPlugin
     public AreaCLIManager areaCLIManager;
     private TeleportManager teleportMgr;
     private HomeManager homeMgr;
+    private DeathReport deathReport;
+    private QuickBack quickBack;
 
 
     // 钱包流水查看目标（玩家名 → 查看目标）
@@ -575,6 +578,17 @@ public class Main extends JavaPlugin
         getCommand("home").setTabCompleter(this);
         getCommand("homes").setTabCompleter(this);
         
+        // ===== 死亡报告系统 =====
+        deathReport = new DeathReport(this);
+        deathReport.initTable();
+        getServer().getPluginManager().registerEvents(deathReport, this);
+        
+        // ===== 快速返回系统 =====
+        quickBack = new QuickBack(this);
+        quickBack.initTable();
+        getCommand("back").setExecutor(quickBack);
+        getCommand("back").setTabCompleter(quickBack);
+        
         // 注册传送命令已在 onCommand 中通过条件分支完成
         
         getLogger().info("§b[Sdf1_login]启动完毕\n§lS欢迎使用sdf1系列插件，如有问题，您可在\nGitHub和Gitee提交反馈");
@@ -688,6 +702,10 @@ public class Main extends JavaPlugin
             questTracker.shutdown();
         if (homeMgr != null)
             homeMgr.shutdown();
+        if (deathReport != null)
+            deathReport = null;
+        if (quickBack != null)
+            quickBack = null;
         if (areaProtection != null) {
             areaProtection.stopEnforceTask();
         }
@@ -4668,6 +4686,18 @@ public class Main extends JavaPlugin
             }
         }
 
+        // ===== /back 快速返回 =====
+        if (label.equalsIgnoreCase("back")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c此命令仅限玩家使用");
+                return true;
+            }
+            if (quickBack == null) {
+                sender.sendMessage("§c快速返回系统未初始化");
+                return true;
+            }
+            return quickBack.onCommand(sender, cmd, label, args);
+        }
 
         // ===== /printer [玩家名] =====
         if (label.equalsIgnoreCase("printer")) {

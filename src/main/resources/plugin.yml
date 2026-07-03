@@ -42,9 +42,9 @@ commands:
   签到:
     description: 每日签到(中文)
     usage: /签到
-  #oa:
-  #  description: 申请删除账号
-  #  usage: /oa [玩家名]
+#oa:
+#  description: 申请删除账号
+#  usage: /oa [玩家名]
   删除账号:
     description: 申请删除账号(中文)
     usage: /删除账号 [玩家名]
@@ -97,8 +97,8 @@ commands:
     description: 打开商店
     usage: /商店
 # testorder:
-  #  description: 测试订单中心
-  #  usage: /testorder
+#  description: 测试订单中心
+#  usage: /testorder
   protect:
     description: 区域保护
     usage: /protect
@@ -150,4 +150,6 @@ commands:
   group:
     description: 用户组管理
     usage: /group <buy|renew|info> [组名]
-
+  back:
+    description: 快速返回最近记录点
+    usage: /back
