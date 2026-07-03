@@ -301,6 +301,56 @@ public class DatabaseManager {
         }
     }
 
+    // ==================== 自动续费偏好 ====================
+
+    /** 获取玩家的自动续费偏好 */
+    public boolean getPlayerAutoRenew(String player, String group) {
+        try {
+            Statement st = db.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS player_auto_renew (player_name TEXT NOT NULL, group_name TEXT NOT NULL, auto_renew INTEGER DEFAULT 0, PRIMARY KEY(player_name, group_name))");
+            String sql = "SELECT auto_renew FROM player_auto_renew WHERE player_name = ? AND group_name = ?";
+            PreparedStatement ps = db.prepareStatement(sql);
+            ps.setString(1, player);
+            ps.setString(2, group);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt("auto_renew") == 1;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    /** 设置玩家的自动续费偏好 */
+    public void setPlayerAutoRenew(String player, String group, boolean value) {
+        try {
+            Statement st = db.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS player_auto_renew (player_name TEXT NOT NULL, group_name TEXT NOT NULL, auto_renew INTEGER DEFAULT 0, PRIMARY KEY(player_name, group_name))");
+            String sql = "INSERT OR REPLACE INTO player_auto_renew (player_name, group_name, auto_renew) VALUES (?, ?, ?)";
+            PreparedStatement ps = db.prepareStatement(sql);
+            ps.setString(1, player);
+            ps.setString(2, group);
+            ps.setInt(3, value ? 1 : 0);
+            ps.executeUpdate();
+        } catch (Exception ignored) {}
+    }
+
+    /** 获取玩家所有自动续费开启的组 */
+    public List<Map<String, Object>> getAutoRenewGroups(String player) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        try {
+            Statement st = db.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS player_auto_renew (player_name TEXT NOT NULL, group_name TEXT NOT NULL, auto_renew INTEGER DEFAULT 0, PRIMARY KEY(player_name, group_name))");
+            String sql = "SELECT group_name FROM player_auto_renew WHERE player_name = ? AND auto_renew = 1";
+            PreparedStatement ps = db.prepareStatement(sql);
+            ps.setString(1, player);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("group_name", rs.getString("group_name"));
+                result.add(row);
+            }
+        } catch (Exception ignored) {}
+        return result;
+    }
+
     public void close() {
         try {
             if (db != null && !db.isClosed())

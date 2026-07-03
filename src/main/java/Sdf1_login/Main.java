@@ -4542,29 +4542,26 @@ public class Main extends JavaPlugin
             }
 
             if (args.length == 0) {
-                // /group → 显示帮助
-                p.sendMessage("§6§l用户组§7 命令列表:");
-                p.sendMessage("§7────────────────────");
-                p.sendMessage("§e/group buy <组名> §7- 付费加入用户组");
-                p.sendMessage("§e/group renew <组名> §7- 续费用户组");
-                p.sendMessage("§e/group info §7- 查看我的用户组");
-                p.sendMessage("§7────────────────────");
-
-                // 显示可购买的用户组
-                List<UserGroupManager.UserGroupConfig> allGroups = userGroupManager.getAllGroups();
-                boolean hasBuyable = false;
-                for (UserGroupManager.UserGroupConfig cfg : allGroups) {
-                    if (cfg.joinPrice > 0) {
-                        if (!hasBuyable) {
-                            p.sendMessage("§6可购买的用户组:");
-                            hasBuyable = true;
+                // /group → 打开用户组GUI
+                if (gui != null) {
+                    gui.openUserGroup(p);
+                } else {
+                    // 降级到文本帮助
+                    p.sendMessage("§6§l用户组§7 命令列表:");
+                    p.sendMessage("§7────────────────────");
+                    p.sendMessage("§e/group buy <组名> §7- 付费加入用户组");
+                    p.sendMessage("§e/group renew <组名> §7- 续费用户组");
+                    p.sendMessage("§e/group info §7- 查看我的用户组");
+                    p.sendMessage("§7────────────────────");
+                    List<UserGroupManager.UserGroupConfig> allGroups2 = userGroupManager.getAllGroups();
+                    boolean hasBuyable = false;
+                    for (UserGroupManager.UserGroupConfig cfg : allGroups2) {
+                        if (cfg.joinPrice > 0) {
+                            if (!hasBuyable) { p.sendMessage("§6可购买的用户组:"); hasBuyable = true; }
+                            String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+                            p.sendMessage("§e  • " + displayName + " §7- " + cfg.joinPrice + " 张债券");
                         }
-                        String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
-                        p.sendMessage("§e  • " + displayName + " §7- " + cfg.joinPrice + " 张债券 | 有效期 " + cfg.durationMinutes + " 分钟");
                     }
-                }
-                if (!hasBuyable) {
-                    p.sendMessage("§7暂无可购买的用户组");
                 }
                 return true;
             }

@@ -45,6 +45,8 @@ public class GUIManager implements Listener {
             "§6§l邀请数据";
     public static final String T_USER_MGMT =
             "§6§l用户管理";
+    public static final String T_USER_GROUP =
+            "§6§l用户组管理";
     public static final String T_TASK_CENTER =
             "§6§l任务中心";
     private final Map<UUID, Integer> userMgmtPages = new HashMap<>();
@@ -981,6 +983,13 @@ public class GUIManager implements Listener {
             plugin.getShopManager().handleCartClick(
                     p, raw, event.isLeftClick(),
                     event.isRightClick());
+            return;
+        }
+
+        // ===== 用户组管理 =====
+        if (T_USER_GROUP.equals(title)) {
+            event.setCancelled(true);
+            handleUserGroupClick(p, raw, event.isLeftClick(), event.isRightClick(), event.isShiftClick());
             return;
         }
 
@@ -2766,6 +2775,301 @@ public class GUIManager implements Listener {
     private boolean isAdmin(Player p) {
         return p.getScoreboardTags().contains(
                 plugin.getConfig2().adminTag);
+    }
+
+    // ==================== 用户组管理GUI ====================
+
+    /** 打开用户组管理主界面 */
+    public void openUserGroup(Player p) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) { p.sendMessage("§c用户组系统未初始化"); return; }
+
+        Inventory g = Bukkit.createInventory(null, 54, T_USER_GROUP);
+
+        int bonds = plugin.getBonds().getBonds(p.getName());
+        g.setItem(4, mkItem(Material.EMERALD, "§b§l我的债券: " + bonds + " 张", "§7用于购买/续费用户组"));
+
+        // Row1 (9-17): 可购买的用户组
+        List<UserGroupManager.UserGroupConfig> allGroups = ugm.getAllGroups();
+        int slot = 9;
+        for (UserGroupManager.UserGroupConfig cfg : allGroups) {
+            if (slot > 17) break;
+            if (cfg.joinPrice <= 0) continue; // 不开放付费的组不显示
+
+            boolean isMember = ugm.isPlayerInGroup(p.getName(), cfg.name);
+            String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+
+            if (isMember) {
+                // 已加入 → 显示在 Row2
+                continue;
+            }
+
+            Material mat = isMember ? Material.LIME_DYE : Material.WHITE_DYE;
+            List<String> lore = new ArrayList<>();
+            lore.add("§7价格: §e" + cfg.joinPrice + " 张债券");
+            if (cfg.durationMinutes > 0) {
+                long days = cfg.durationMinutes / 1440;
+                long hours = (cfg.durationMinutes % 1440) / 60;
+                String dur = days > 0 ? days + "天" : hours + "小时";
+                lore.add("§7有效期: §e" + dur);
+            } else {
+                lore.add("§7有效期: §a永久");
+            }
+            if (cfg.renewPrice > 0) {
+                lore.add("§7续费价格: §e" + cfg.renewPrice + " 张债券");
+            }
+            lore.add("");
+            lore.add("§a左键: 购买给自己");
+            lore.add("§b右键: 赠送给他人");
+
+            g.setItem(slot, mkItem(mat, cfg.displayColor + "§l" + displayName + " §7(购买)", lore.toArray(new String[0])));
+            slot++;
+        }
+
+        // Row2 (18-26): 我的用户组
+        slot = 18;
+        List<Map<String, Object>> myGroups = ugm.getPlayerGroups(p.getName());
+        for (Map<String, Object> grp : myGroups) {
+            if (slot > 26) break;
+            String grpName = String.valueOf(grp.get("group_name"));
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(grpName);
+            if (cfg == null) continue;
+
+            String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+            long expiry = ((Number) grp.getOrDefault("expiry_time", 0)).longValue();
+            long now = System.currentTimeMillis();
+
+            List<String> lore = new ArrayList<>();
+            if (expiry > 0) {
+                if (expiry <= now) {
+                    lore.add("§c已过期");
+                } else {
+                    long remainMs = expiry - now;
+                    long remainMin = remainMs / 60000;
+                    long rDays = remainMin / 1440;
+                    long rHours = (remainMin % 1440) / 60;
+                    lore.add("§7剩余: §e" + (rDays > 0 ? rDays + "天" : rHours + "小时"));
+                    lore.add("§7到期: §7" + new java.text.SimpleDateFormat("MM-dd HH:mm").format(new java.util.Date(expiry)));
+                }
+            } else {
+                lore.add("§7有效期: §a永久");
+            }
+            // 自动续费状态
+            boolean autoRenew = getAutoRenew(p.getName(), grpName);
+            lore.add("§7自动续费: " + (autoRenew ? "§a开启" : "§c关闭"));
+            lore.add("");
+            lore.add("§a左键: 续费");
+            lore.add("§b右键: 赠送给他人");
+            lore.add("§eShift+右键: " + (autoRenew ? "§c关闭" : "§a开启") + "自动续费");
+
+            g.setItem(slot, mkItem(Material.LIME_DYE, cfg.displayColor + "§l" + displayName, lore.toArray(new String[0])));
+            slot++;
+        }
+
+        // Row4 (40): 赠送入口
+        g.setItem(40, mkItem(Material.SPECTRAL_ARROW, "§e§l赠予用户组", "§7为其他玩家购买/续费用户组"));
+
+        // Row5 (49): 返回
+        g.setItem(49, mkItem(Material.ARROW, "§7返回"));
+
+        fillBg(g);
+        p.openInventory(g);
+    }
+
+    /** 处理用户组GUI点击 */
+    public boolean handleUserGroupClick(Player p, int raw, boolean left, boolean right, boolean shift) {
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return false;
+
+        if (raw == 49) { openMain(p); return true; } // 返回
+
+        // 赠送按钮
+        if (raw == 40) {
+            p.closeInventory();
+            p.sendMessage("§e§l[赠予] §7请输入要赠予的玩家名:");
+            plugin.getCDK().requestInput(p, "gift_target", "");
+            return true;
+        }
+
+        // Row1: 可购买的组 (9-17)
+        if (raw >= 9 && raw <= 17) {
+            ItemStack item = p.getOpenInventory().getTopInventory().getItem(raw);
+            if (item == null || item.getType() == Material.GRAY_STAINED_GLASS_PANE) return false;
+            String grpName = extractGroupNameFromItem(item);
+            if (grpName == null) return false;
+
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(grpName);
+            if (cfg == null) return false;
+
+            if (left && !right) {
+                // 购买给自己
+                p.closeInventory();
+                p.sendMessage("§7正在购买 §e" + (cfg.displayName.isEmpty() ? cfg.name : cfg.displayName) + " §7...");
+                String err = ugm.joinGroupByPrice(p.getName(), cfg.name);
+                if (err != null) {
+                    p.sendMessage("§c购买失败: " + err);
+                } else {
+                    p.sendMessage("§a§l购买成功！ §7你已加入用户组 §e" + (cfg.displayName.isEmpty() ? cfg.name : cfg.displayName));
+                }
+                return true;
+            } else if (right && !left) {
+                // 赠送给他人
+                p.closeInventory();
+                // 记住赠送的组名
+                pendingGiftGroup.put(p.getName(), grpName);
+                p.sendMessage("§e§l[赠予] §7请输入要赠予的玩家名:");
+                plugin.getCDK().requestInput(p, "gift_target", grpName);
+                return true;
+            }
+        }
+
+        // Row2: 我的组 (18-26)
+        if (raw >= 18 && raw <= 26) {
+            ItemStack item = p.getOpenInventory().getTopInventory().getItem(raw);
+            if (item == null || item.getType() == Material.GRAY_STAINED_GLASS_PANE) return false;
+            String grpName = extractGroupNameFromItem(item);
+            if (grpName == null) return false;
+
+            UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(grpName);
+            if (cfg == null) return false;
+
+            if (shift && right) {
+                // Shift+右键: 切换自动续费
+                boolean current = getAutoRenew(p.getName(), grpName);
+                setAutoRenew(p.getName(), grpName, !current);
+                p.sendMessage("§a自动续费已" + (!current ? "开启" : "关闭") + ": §e" + (cfg.displayName.isEmpty() ? cfg.name : cfg.displayName));
+                openUserGroup(p); // 刷新界面
+                return true;
+            }
+
+            if (left && !right) {
+                // 续费
+                p.closeInventory();
+                p.sendMessage("§7正在续费 §e" + (cfg.displayName.isEmpty() ? cfg.name : cfg.displayName) + " §7...");
+                String err = ugm.renewGroup(p.getName(), cfg.name);
+                if (err != null) {
+                    p.sendMessage("§c续费失败: " + err);
+                } else {
+                    p.sendMessage("§a§l续费成功！ §7用户组 §e" + (cfg.displayName.isEmpty() ? cfg.name : cfg.displayName) + " §7已续期");
+                }
+                return true;
+            } else if (right && !left && !shift) {
+                // 赠送给他人
+                p.closeInventory();
+                pendingGiftGroup.put(p.getName(), grpName);
+                p.sendMessage("§e§l[赠予] §7请输入要赠予的玩家名:");
+                plugin.getCDK().requestInput(p, "gift_target", grpName);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** 处理赠予玩家名输入 */
+    public void handleGiftTargetInput(Player p, String targetName) {
+        String grpName = pendingGiftGroup.remove(p.getName());
+        if (grpName == null) return;
+
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) { p.sendMessage("§c用户组系统未初始化"); return; }
+
+        UserGroupManager.UserGroupConfig cfg = ugm.getGroupConfig(grpName);
+        if (cfg == null) { p.sendMessage("§c用户组不存在: " + grpName); return; }
+
+        String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+
+        // 检查目标玩家是否存在
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null && !dbMgr.userExists(targetName)) {
+            p.sendMessage("§c玩家 §e" + targetName + " §c不存在");
+            return;
+        }
+
+        // 检查是否已加入
+        boolean isTargetMember = ugm.isPlayerInGroup(targetName, grpName);
+        if (isTargetMember) {
+            // 目标已加入 → 续费
+            p.sendMessage("§7玩家 §e" + targetName + " §7已拥有该组，执行续费...");
+            String err = ugm.renewGroup(targetName, cfg.name);
+            if (err != null) {
+                p.sendMessage("§c赠予续费失败: " + err);
+            } else {
+                p.sendMessage("§a§l赠予成功！ §7已为 §e" + targetName + " §7续费用户组 §e" + displayName);
+                // 通知目标玩家
+                Player target = plugin.getServer().getPlayerExact(targetName);
+                if (target != null) {
+                    target.sendMessage("§a§l[赠予] §7玩家 §e" + p.getName() + " §7为你续费了用户组 §e" + displayName);
+                }
+            }
+        } else {
+            // 目标未加入 → 购买赠送
+            p.sendMessage("§7正在为 §e" + targetName + " §7购买用户组 §e" + displayName + " §7...");
+            String err = ugm.joinGroupByPrice(targetName, cfg.name);
+            if (err != null) {
+                p.sendMessage("§c赠予失败: " + err);
+            } else {
+                p.sendMessage("§a§l赠予成功！ §7已为 §e" + targetName + " §7购买用户组 §e" + displayName);
+                Player target = plugin.getServer().getPlayerExact(targetName);
+                if (target != null) {
+                    target.sendMessage("§a§l[赠予] §7玩家 §e" + p.getName() + " §7赠送了用户组 §e" + displayName + " §7给你！");
+                }
+            }
+        }
+    }
+
+    // ★ 赠予流程：记录赠送的组名
+    private final Map<String, String> pendingGiftGroup = new ConcurrentHashMap<>();
+
+    // ★ 自动续费偏好（per-player）
+    private final Map<String, Boolean> autoRenewCache = new ConcurrentHashMap<>();
+
+    private boolean getAutoRenew(String player, String group) {
+        String key = player + "|" + group;
+        if (autoRenewCache.containsKey(key)) return autoRenewCache.get(key);
+        // 从数据库读取
+        boolean val = false;
+        try {
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr != null) {
+                val = dbMgr.getPlayerAutoRenew(player, group);
+            }
+        } catch (Exception ignored) {}
+        autoRenewCache.put(key, val);
+        return val;
+    }
+
+    private void setAutoRenew(String player, String group, boolean value) {
+        String key = player + "|" + group;
+        autoRenewCache.put(key, value);
+        try {
+            DatabaseManager dbMgr = plugin.getDb();
+            if (dbMgr != null) {
+                dbMgr.setPlayerAutoRenew(player, group, value);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** 从GUI物品名称中提取用户组名（去掉格式化前缀和后缀） */
+    private String extractGroupNameFromItem(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) return null;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null || meta.getDisplayName() == null) return null;
+        String name = meta.getDisplayName();
+        // 去掉所有§格式化代码
+        name = name.replaceAll("§[0-9a-fk-orA-FK-OR]", "");
+        // 去掉后缀 " (购买)"
+        name = name.replaceAll("\\s*\\(购买\\)$", "").trim();
+        // 匹配已知组名
+        UserGroupManager ugm = plugin.getUserGroup();
+        if (ugm == null) return null;
+        for (UserGroupManager.UserGroupConfig cfg : ugm.getAllGroups()) {
+            String displayName = cfg.displayName.isEmpty() ? cfg.name : cfg.displayName;
+            if (name.equals(displayName) || name.equals(cfg.name)) {
+                return cfg.name;
+            }
+        }
+        return null;
     }
 
     private void fillBg(Inventory inv) {

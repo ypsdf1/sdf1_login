@@ -170,6 +170,21 @@ public class CDKManager {
         if ("points".equals(input.type)) {
             handlePointsInput(p, msg.trim(),
                     input.context);
+            return;
+        }
+
+        if ("gift_target".equals(input.type)) {
+            // 赠予用户组：输入目标玩家名
+            String targetName = msg.trim();
+            if (!targetName.isEmpty()) {
+                GUIManager guiMgr = plugin.getGui();
+                if (guiMgr != null) {
+                    guiMgr.handleGiftTargetInput(p, targetName);
+                }
+            } else {
+                p.sendMessage("§c请输入有效的玩家名");
+            }
+            return;
         }
     }
 
