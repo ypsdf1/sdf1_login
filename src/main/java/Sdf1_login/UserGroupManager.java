@@ -874,6 +874,21 @@ public class UserGroupManager {
         }
         for (String name : toRemove) {
             groupConfigs.remove(name);
+            // ★ 同步删除Java本地DB记录
+            try {
+                PreparedStatement ps = db.prepareStatement("DELETE FROM user_group_config WHERE group_name=?");
+                ps.setString(1, name);
+                ps.executeUpdate();
+                ps.close();
+
+                // 同时删除成员表中的记录
+                PreparedStatement ps2 = db.prepareStatement("DELETE FROM user_group_member WHERE group_name=?");
+                ps2.setString(1, name);
+                ps2.executeUpdate();
+                ps2.close();
+            } catch (SQLException e) {
+                plugin.getLogger().warning("[UserGroup] 删除用户组DB记录失败: " + name);
+            }
             removed++;
         }
         return removed;

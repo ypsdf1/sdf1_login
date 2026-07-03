@@ -9294,7 +9294,7 @@ public class AreaProtection implements Listener {
         plugin.getLogger().info("[防护] 已清空所有黑名单");
     }
 
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityDamage(
             org.bukkit.event.entity.EntityDamageByEntityEvent e) {
         Entity entity = e.getEntity();
@@ -9364,46 +9364,40 @@ public class AreaProtection implements Listener {
             Player attacker = (Player) e.getDamager();
             Player victim = (Player) e.getEntity();
 
-            // 受害者领地禁止所有伤害 → 阻断
-            AreaConfig acVictim = getArea(
-                    victim.getWorld().getName(),
-                    victim.getLocation().getBlockX(),
-                    victim.getLocation().getBlockY(),
-                    victim.getLocation().getBlockZ());
-            if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyAllDamage")) {
-                e.setCancelled(true);
-                return;
-            }
-
-            // 攻击者领地禁止所有伤害 → 阻断
+            // 攻击者和受害者领地位置
             AreaConfig acAttacker = getArea(
                     attacker.getWorld().getName(),
                     attacker.getLocation().getBlockX(),
                     attacker.getLocation().getBlockY(),
                     attacker.getLocation().getBlockZ());
-            if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyAllDamage")) {
-                e.setCancelled(true);
-                return;
-            }
-
-            // 受害者领地禁止PVP → 阻断
-            if (acVictim == null) acVictim = getArea(
+            AreaConfig acVictim = getArea(
                     victim.getWorld().getName(),
                     victim.getLocation().getBlockX(),
                     victim.getLocation().getBlockY(),
                     victim.getLocation().getBlockZ());
+
+            // ★ denyAllDamage：先检查（无论攻击者/受害者领地都拦）
+            // 受害者领地禁止所有伤害 → 阻断
+            if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyAllDamage")) {
+                e.setCancelled(true);
+                attacker.sendMessage("§c§l[区域防护] §f目标领地为绝对安全区");
+                return;
+            }
+            // 攻击者领地禁止所有伤害 → 阻断
+            if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyAllDamage")) {
+                e.setCancelled(true);
+                attacker.sendMessage("§c§l[区域防护] §f此区域禁止一切伤害行为");
+                return;
+            }
+
+            // ★ denyPVP：只要任意一方领地开启PVP禁止 → 完全阻断
+            // 受害者领地禁止PVP → 阻断
             if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
                 e.setCancelled(true);
                 attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
                 return;
             }
-
             // 攻击者领地禁止PVP → 阻断
-            if (acAttacker == null) acAttacker = getArea(
-                    attacker.getWorld().getName(),
-                    attacker.getLocation().getBlockX(),
-                    attacker.getLocation().getBlockY(),
-                    attacker.getLocation().getBlockZ());
             if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyPVP")) {
                 e.setCancelled(true);
                 attacker.sendMessage("§c§l[区域防护] §f此区域禁止PVP");
@@ -9468,9 +9462,10 @@ public class AreaProtection implements Listener {
     // 展示框保护：检查展示框本身+周围方块所属区域
 
     // ===== 展示框攻击拦截（左键/投射物破坏）=====
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityDamageByEntity(
             org.bukkit.event.entity.EntityDamageByEntityEvent e) {
+        // PVP逻辑在onEntityDamage()中统一处理，此处仅处理展示框攻击
         Entity entity = e.getEntity();
         String typeName = entity.getType().name();
 
@@ -9490,7 +9485,6 @@ public class AreaProtection implements Listener {
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
             return;
         }
-        // PVP逻辑在onEntityDamage()中统一处理，此处不再重复
     }
     private AreaConfig findFrameArea(Entity frame) {
         Location loc = frame.getLocation();
