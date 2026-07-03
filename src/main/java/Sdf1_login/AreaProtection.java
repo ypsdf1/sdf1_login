@@ -9342,51 +9342,73 @@ public class AreaProtection implements Listener {
         }
 
         // ===== 攻击生物逻辑 =====
-        if (!(e.getDamager() instanceof Player)) return;
-        if (e.getEntity() instanceof Player) return; // PVP走下面的逻辑
-        Player mobAttacker = (Player) e.getDamager();
-        AreaConfig acMob = getArea(
-                mobAttacker.getWorld().getName(),
-                mobAttacker.getLocation().getBlockX(),
-                mobAttacker.getLocation().getBlockY(),
-                mobAttacker.getLocation().getBlockZ());
-        if (acMob != null && getEffectiveDeny(mobAttacker, acMob, "denyMobAttack")) {
-            // ★ 公共建筑设施：访客允许攻击敌对生物
-            if (!acMob.isPublicBuilding || mobAttacker.getName().equalsIgnoreCase(acMob.owner) || isAreaAdmin(mobAttacker)) {
-                e.setCancelled(true);
-                mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
-                return;
+        if (e.getDamager() instanceof Player && !(e.getEntity() instanceof Player)) {
+            Player mobAttacker = (Player) e.getDamager();
+            AreaConfig acMob = getArea(
+                    mobAttacker.getWorld().getName(),
+                    mobAttacker.getLocation().getBlockX(),
+                    mobAttacker.getLocation().getBlockY(),
+                    mobAttacker.getLocation().getBlockZ());
+            if (acMob != null && getEffectiveDeny(mobAttacker, acMob, "denyMobAttack")) {
+                // ★ 公共建筑设施：访客允许攻击敌对生物
+                if (!acMob.isPublicBuilding || mobAttacker.getName().equalsIgnoreCase(acMob.owner) || isAreaAdmin(mobAttacker)) {
+                    e.setCancelled(true);
+                    mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
+                    return;
+                }
             }
         }
 
         // ===== PVP 逻辑 =====
-        if (!(e.getDamager() instanceof Player)) return;
-        if (!(e.getEntity() instanceof Player)) return;
-        Player attacker = (Player) e.getDamager();
-        Player victim = (Player) e.getEntity();
+        if (e.getDamager() instanceof Player && e.getEntity() instanceof Player) {
+            Player attacker = (Player) e.getDamager();
+            Player victim = (Player) e.getEntity();
 
-        // 受害者领地禁止PVP → 阻断
-        AreaConfig acVictim = getArea(
-                victim.getWorld().getName(),
-                victim.getLocation().getBlockX(),
-                victim.getLocation().getBlockY(),
-                victim.getLocation().getBlockZ());
-        if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
-            e.setCancelled(true);
-            attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
-            return;
-        }
+            // 受害者领地禁止所有伤害 → 阻断
+            AreaConfig acVictim = getArea(
+                    victim.getWorld().getName(),
+                    victim.getLocation().getBlockX(),
+                    victim.getLocation().getBlockY(),
+                    victim.getLocation().getBlockZ());
+            if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyAllDamage")) {
+                e.setCancelled(true);
+                return;
+            }
 
-        // 攻击者领地禁止PVP → 阻断
-        AreaConfig acAttacker = getArea(
-                attacker.getWorld().getName(),
-                attacker.getLocation().getBlockX(),
-                attacker.getLocation().getBlockY(),
-                attacker.getLocation().getBlockZ());
-        if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyPVP")) {
-            e.setCancelled(true);
-            attacker.sendMessage("§c§l[区域防护] §f此区域禁止PVP");
-            return;
+            // 攻击者领地禁止所有伤害 → 阻断
+            AreaConfig acAttacker = getArea(
+                    attacker.getWorld().getName(),
+                    attacker.getLocation().getBlockX(),
+                    attacker.getLocation().getBlockY(),
+                    attacker.getLocation().getBlockZ());
+            if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyAllDamage")) {
+                e.setCancelled(true);
+                return;
+            }
+
+            // 受害者领地禁止PVP → 阻断
+            if (acVictim == null) acVictim = getArea(
+                    victim.getWorld().getName(),
+                    victim.getLocation().getBlockX(),
+                    victim.getLocation().getBlockY(),
+                    victim.getLocation().getBlockZ());
+            if (acVictim != null && getEffectiveDeny(victim, acVictim, "denyPVP")) {
+                e.setCancelled(true);
+                attacker.sendMessage("§c§l[区域防护] §f该领地禁止PVP");
+                return;
+            }
+
+            // 攻击者领地禁止PVP → 阻断
+            if (acAttacker == null) acAttacker = getArea(
+                    attacker.getWorld().getName(),
+                    attacker.getLocation().getBlockX(),
+                    attacker.getLocation().getBlockY(),
+                    attacker.getLocation().getBlockZ());
+            if (acAttacker != null && getEffectiveDeny(attacker, acAttacker, "denyPVP")) {
+                e.setCancelled(true);
+                attacker.sendMessage("§c§l[区域防护] §f此区域禁止PVP");
+                return;
+            }
         }
     }
 

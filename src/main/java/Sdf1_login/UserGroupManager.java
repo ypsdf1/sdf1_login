@@ -855,6 +855,30 @@ public class UserGroupManager {
         return list;
     }
 
+    /** 删除不在PHP列表中的本地组（用于处理面板删除用户组后的同步） */
+    public int removeGroupsNotIn(Set<String> phpGroupNames) {
+        int removed = 0;
+        Set<String> toRemove = new HashSet<>();
+        for (String name : groupConfigs.keySet()) {
+            String lower = name.toLowerCase();
+            boolean found = false;
+            for (String phpName : phpGroupNames) {
+                if (phpName.equalsIgnoreCase(lower)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                toRemove.add(name);
+            }
+        }
+        for (String name : toRemove) {
+            groupConfigs.remove(name);
+            removed++;
+        }
+        return removed;
+    }
+
     // ==================== PHP同步 ====================
 
     /** 推送成员变更到PHP */

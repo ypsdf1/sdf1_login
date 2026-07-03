@@ -3393,6 +3393,32 @@ public class WebManager {
                 }
             }
 
+            // ★ 删除PHP中已不存在的组：从PHP返回的完整JSON中解析所有组名
+            Set<String> phpGroupNames = new HashSet<>();
+            try {
+                int idx = 0;
+                while (idx < resp.length()) {
+                    String key = "\"group_name\":\"";
+                    int gi = resp.indexOf(key, idx);
+                    if (gi < 0) break;
+                    int start = gi + key.length();
+                    int end = resp.indexOf("\"", start);
+                    if (end > start) {
+                        phpGroupNames.add(resp.substring(start, end));
+                    }
+                    idx = end > start ? end : start + 1;
+                }
+            } catch (Exception ignored) {}
+
+            // 删除不在PHP列表中的本地组
+            if (!phpGroupNames.isEmpty()) {
+                int removed = ugm.removeGroupsNotIn(phpGroupNames);
+                if (removed > 0) {
+                    changed++;
+                    plugin.getLogger().info("[防护-sync] 删除PHP中已不存在的用户组: " + removed + "个");
+                }
+            }
+
             // ★ 仅在有实际变化时才reload并打印日志
             if (changed > 0) {
                 ugm.loadGroupConfigs();
