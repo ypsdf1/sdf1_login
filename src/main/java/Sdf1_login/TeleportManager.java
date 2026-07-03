@@ -623,8 +623,9 @@ public class TeleportManager implements Listener {
         // 记录请求创建时间
         teleportRequestTimes.put(sender + ":" + target.getName(), now);
         
-        // 通知发送者（Java版带撤回按钮，基岩版纯文本）——非自动接受时才打印
+        // 通知发送者
         if (isBedrockPlayer(player)) {
+            player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送到身边的请求");
             player.sendMessage("§a[传送] 已向 §f" + targetName + " §a发送传送请求");
             // 显示请求剩余有效时间
             int validSec = getTpRequestValidSeconds();
@@ -719,13 +720,17 @@ public class TeleportManager implements Listener {
         if (senders == null || !senders.contains(targetName)) {
             // ★ DB fallback: 内存找不到时查数据库 (tpaall请求可能不在内存中)
             boolean foundInDb = false;
+            Long dbTimestamp = null;
             try {
                 PreparedStatement psFallback = plugin.getDb().getDb().prepareStatement(
-                    "SELECT 1 FROM teleport_requests WHERE sender=? AND receiver=? LIMIT 1");
+                    "SELECT timestamp FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
                 psFallback.setString(1, targetName);
                 psFallback.setString(2, player.getName());
                 ResultSet rsFallback = psFallback.executeQuery();
-                foundInDb = rsFallback.next();
+                if (rsFallback.next()) {
+                    foundInDb = true;
+                    dbTimestamp = rsFallback.getLong("timestamp");
+                }
                 rsFallback.close();
                 psFallback.close();
             } catch (SQLException e) {
@@ -737,10 +742,37 @@ public class TeleportManager implements Listener {
                 return true;
             }
             
-            // DB中有请求 → 恢复内存状态
-            incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
-            outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
-            senders = incomingRequests.get(player.getName());
+            // ★ 检查数据库中的请求是否过期（基于数据库时间戳）
+            if (dbTimestamp != null) {
+                int validSec = getTpRequestValidSeconds();
+                long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
+                if (age > validSec) {
+                    player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
+                    // 清理DB中的过期记录
+                    try {
+                        PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
+                            "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
+                        psClean.setString(1, targetName);
+                        psClean.setString(2, player.getName());
+                        psClean.executeUpdate();
+                        psClean.close();
+                    } catch (SQLException ex) {
+                        plugin.getLogger().warning("[传送] DB清理过期请求失败: " + ex.getMessage());
+                    }
+                    return true;
+                }
+                // DB中有请求 → 恢复到内存并记录时间戳
+                incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
+                outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
+                teleportRequestTimes.put(targetName + ":" + player.getName(), dbTimestamp);
+                senders = incomingRequests.get(player.getName());
+            }
+        } else {
+            // ★ 内存中存在 → 也检查是否过期（刚才 isValidRequest 已经检查过，这里防竞态）
+            if (!isValidRequest(player.getName(), targetName)) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期或不存在");
+                return true;
+            }
         }
         
         Player senderPlayer = Bukkit.getServer().getPlayer(targetName);
@@ -1071,6 +1103,7 @@ public class TeleportManager implements Listener {
         // 添加到内存
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
+        teleportRequestTimes.put(sender + ":" + target.getName(), now);
         
         // 通知发送者
         if (isBedrockPlayer(player)) {
@@ -1124,6 +1157,7 @@ public class TeleportManager implements Listener {
             // 添加到内存
             outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(name);
             incomingRequests.computeIfAbsent(name, k -> ConcurrentHashMap.newKeySet()).add(sender);
+            teleportRequestTimes.put(sender + ":" + name, now);
             
             // 可点击通知
             sendClickableRequestNotice(p, sender);
