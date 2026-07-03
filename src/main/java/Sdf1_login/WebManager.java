@@ -3818,14 +3818,40 @@ public class WebManager {
                             break;
                         }
                         case "group_change": {
-                            // ★ PHP端用户组变更 → 从PHP拉取最新用户组+成员到Java本地
+                            // ★ PHP端用户组变更 → 根据action分别处理
                             String action = String.valueOf(changeData.getOrDefault("action", ""));
                             String groupName = String.valueOf(changeData.getOrDefault("group_name", ""));
-                            // 直接从PHP拉取完整用户组数据（比仅reload本地更可靠）
-                            pullUserGroupsFromPHP();
-                            // ★ 同时拉取成员数据
-                            pullGroupMembersFromPHP(groupName);
-                            plugin.getLogger().info("[Web通信] PHP端用户组变更(" + action + ": " + groupName + ")，已从PHP同步");
+                            String player = String.valueOf(changeData.getOrDefault("player", ""));
+
+                            if ("add_member".equals(action) && !player.isEmpty()) {
+                                // 添加成员：从PHP拉取该组成员
+                                pullGroupMembersFromPHP(groupName);
+                                plugin.getLogger().info("[Web通信] PHP端添加用户组成员(" + player + " → " + groupName + ")，已从PHP同步");
+                            } else if ("remove_member".equals(action) && !player.isEmpty()) {
+                                // 删除成员：直接从Java本地删除，并通知PHP确认
+                                UserGroupManager ugm = plugin.getUserGroup();
+                                if (ugm != null) {
+                                    boolean removed = ugm.removePlayerLocal(player, groupName);
+                                    if (removed) {
+                                        plugin.getLogger().info("[Web通信] PHP端删除用户组成员(" + player + " ← " + groupName + ")，Java本地已删除");
+                                    } else {
+                                        plugin.getLogger().warning("[Web通信] PHP端删除用户组成员(" + player + " ← " + groupName + ")，Java本地未找到该成员");
+                                    }
+                                }
+                            } else if ("delete".equals(action)) {
+                                // 删除整个用户组：从PHP拉取（removeGroupsNotIn已处理）
+                                pullUserGroupsFromPHP();
+                                plugin.getLogger().info("[Web通信] PHP端删除用户组(" + groupName + ")，已同步");
+                            } else if ("update".equals(action)) {
+                                // 更新用户组配置：从PHP拉取
+                                pullUserGroupsFromPHP();
+                                plugin.getLogger().info("[Web通信] PHP端更新用户组(" + groupName + ")，已同步");
+                            } else {
+                                // 未知action，兜底全拉
+                                pullUserGroupsFromPHP();
+                                pullGroupMembersFromPHP(groupName);
+                                plugin.getLogger().info("[Web通信] PHP端用户组变更(未知action=" + action + ": " + groupName + ")");
+                            }
                             applied = true;
                             break;
                         }

@@ -1595,6 +1595,14 @@ public class ShopManager implements Listener {
 
         int total = item.getEffectiveSellPrice() * amount;
 
+        // ===== 记录IP段销售额（必须在扣货发钱之前）=====
+        if (playerIp != null) {
+            String ipSeg = getIpSegment(playerIp);
+            if (ipSeg != null) {
+                addToIpSegmentSales(ipSeg, total);
+            }
+        }
+
         p.getInventory().removeItem(
                 getShopStack(item, amount));
         plugin.getBonds().addBonds(
@@ -1607,15 +1615,6 @@ public class ShopManager implements Listener {
                 + item.getDisplayName()
                 + " x" + amount
                 + " §a+" + total + "枚债券");
-
-        // ===== 记录IP段销售额 =====
-        if (playerIp != null) {
-            String ipSeg = getIpSegment(playerIp);
-            if (ipSeg != null) {
-                addToIpSegmentSales(ipSeg, total);
-            }
-        }
-
         return true;
     }
 
@@ -2540,6 +2539,14 @@ public class ShopManager implements Listener {
     // ===== 批量出售某商品全部数量 =====
     private void sellAllOf(Player p, ShopItem item) {
         if (item == null) return;
+        // ★ 先做IP限速检查（在扫描背包之前，避免不必要的消耗）
+        String sellIp = getPlayerIp(p);
+        if (sellIp != null) {
+            String ipSeg = getIpSegment(sellIp);
+            if (ipSeg != null && isSellRateLimited(ipSeg)) {
+                return; // 静默拦截
+            }
+        }
         // ★ 补上禁止出售检查
         if (item.getEffectiveSellPrice() <= 0) {
             p.sendMessage("§c该商品不可出售");
@@ -2570,6 +2577,15 @@ public class ShopManager implements Listener {
             }
         }
         int money = item.getEffectiveSellPrice() * total;
+
+        // ===== 记录IP段销售额 =====
+        if (sellIp != null) {
+            String ipSeg = getIpSegment(sellIp);
+            if (ipSeg != null) {
+                addToIpSegmentSales(ipSeg, money);
+            }
+        }
+
         plugin.getBonds().addBonds(
                 p.getName(), money, "shop_sell",
                 item.getId(), "商店系统",

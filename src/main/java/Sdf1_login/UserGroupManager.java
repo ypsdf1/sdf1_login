@@ -241,6 +241,29 @@ public class UserGroupManager {
     }
 
     /**
+     * Java本地直接删除用户组成员（用于PHP删除操作同步）
+     * 删除后推送到PHP确认
+     */
+    public boolean removePlayerLocal(String player, String groupName) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "DELETE FROM user_group_member WHERE player_name=? AND LOWER(group_name)=LOWER(?)");
+            ps.setString(1, player);
+            ps.setString(2, groupName);
+            int rows = ps.executeUpdate();
+            ps.close();
+            if (rows > 0) {
+                // 推送删除到PHP确认
+                pushMemberToPHP(player, groupName, "remove");
+            }
+            return rows > 0;
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[UserGroup] removePlayerLocal failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * 清除指定用户组的所有成员（本地操作，不推PHP）
      * 用于PHP→Java同步时先清后写
      */
