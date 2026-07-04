@@ -528,15 +528,15 @@ public class ChatFilterManager {
 
     private static final Pattern URL_PATTERN =
             Pattern.compile(
-                    "(?i)(?:https?://\\S+)"
-                            + "|(?:(?:[a-zA-Z0-9]"
-                            + "(?:[a-zA-Z0-9\\-]*"
-                            + "[a-zA-Z0-9])?\\.)+"
-                            + "[a-zA-Z]{2,})"
-                            + "(?:/\\S*)?"
-                            + "|(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)[_.]"
-                            + "[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)*[_.]"
-                            + "[a-zA-Z]{2,}");
+                    "(?i)"
+                    // 1. 标准URL: http://xxx.com/...
+                    + "(?:https?://\\S+)"
+                    // 2. 点分隔域名: xxx.com, my.site.cn
+                    + "|(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z]{2,})(?:/\\S*)?"
+                    // 3. 下划线分隔域名: xxx_com, my_site.cn, 123_ypshidifu.cn
+                    + "|(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)"
+                    + "(?:[_.][a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)*"
+                    + "[_.][a-zA-Z]{2,}");
     private static final Pattern DOT_VARIANTS =
             Pattern.compile(
                     "[\uff0e\u3002\u2025\u2026\u00b7]");
