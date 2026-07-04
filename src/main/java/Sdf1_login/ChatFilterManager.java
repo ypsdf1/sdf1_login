@@ -1,7 +1,11 @@
 package Sdf1_login;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.*;
@@ -47,21 +51,37 @@ public class ChatFilterManager {
     private int muteDuration = 300;
     private boolean enabled = true;
     
-    // ★ 验证码数据存储
+    // ============================================================
+    // ★ 新玩家验证码系统
+    // ============================================================
+    
+    /** 已验证过的玩家名单（永久，跨session持久化到内存） */
+    private final Set<String> verifiedPlayers = ConcurrentHashMap.newKeySet();
+    
+    /** 验证码数据存储 */
     private final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
     
     // ============================================================
     // ★ 新玩家验证码系统
     // ============================================================
     
+    /** 验证码类型 */
+    enum VerificationType {
+        MATH, // 数学题
+        GUI   // GUI物品选择
+    }
+    
     static class VerificationData {
         long createTime;
         int a, b, op; // 0=加法, 1=减法, 2=乘法
+        String guiTargets; // GUI模式下需要选择的物品名列表（"|"分隔）
+        VerificationType type; // 验证码类型
         boolean completed;
         
-        VerificationData(int a, int b, int op) {
+        VerificationData(int a, int b, int op, VerificationType type) {
             this.createTime = System.currentTimeMillis();
             this.a = a; this.b = b; this.op = op;
+            this.type = type;
         }
         
         boolean isExpired() {
@@ -91,68 +111,74 @@ public class ChatFilterManager {
      */
     public VerificationResult checkNewPlayerVerification(Player p) {
         String name = p.getName();
+        
+        // ★ 永久已验证的玩家 → 直接放行
+        if (verifiedPlayers.contains(name)) {
+            return VerificationResult.VERIFIED;
+        }
 
-        // 已验证过的玩家不需要
+        // 正在验证中（等待答案）
         if (verificationData.containsKey(name)) {
             VerificationData vd = verificationData.get(name);
             if (vd.completed) {
+                verifiedPlayers.add(name);
+                verificationData.remove(name);
                 return VerificationResult.VERIFIED;
             }
-            // 正在进行验证（等待答案）
+            // 验证码是否过期
             if (vd.isExpired()) {
                 verificationData.remove(name);
-                return VerificationResult.NEED_VERIFICATION;
+                // 过期后不再要求验证（避免玩家反复被卡）
+                verifiedPlayers.add(name);
+                return VerificationResult.VERIFIED;
             }
             return VerificationResult.PENDING;
         }
 
         // 检查玩家加入时间是否≤1小时
-        if (!isNewPlayerUnder1Hour(p)) {
-            // 老玩家：快速验证并标记为已完成
-            generateMathVerification(name);
-            verificationData.get(name).completed = true;
-            verificationData.remove(name);
-            return VerificationResult.VERIFIED;
+        if (isNewPlayerUnder1Hour(p)) {
+            return VerificationResult.NEED_VERIFICATION;
         }
-
-        // 新玩家 → 需要验证
-        return VerificationResult.NEED_VERIFICATION;
+        
+        // 老玩家：直接永久验证通过
+        verifiedPlayers.add(name);
+        return VerificationResult.VERIFIED;
     }
 
     /**
-     * 生成数学题验证码
+     * 生成随机验证码：数学题或GUI随机50%概率
      */
     public void generateMathVerification(String playerName) {
         Random rand = new Random();
+        VerificationType vType = rand.nextBoolean() ? VerificationType.MATH : VerificationType.GUI;
+        
+        if (vType == VerificationType.MATH) {
+            generateMathChallenge(playerName, rand);
+        } else {
+            generateGUIChallenge(playerName, rand);
+        }
+    }
+    
+    /** 生成数学题验证码 */
+    private void generateMathChallenge(String playerName, Random rand) {
         int op = rand.nextInt(3); // 0=加, 1=减, 2=乘
-        int a, b, answer;
+        int a, b;
 
         switch (op) {
-            case 0: // 加法
-                a = rand.nextInt(10) + 1;
-                b = rand.nextInt(10) + 1;
-                answer = a + b;
-                break;
-            case 1: // 减法
-                a = rand.nextInt(10) + 2;
-                b = rand.nextInt(a) + 1;
-                answer = a - b;
-                break;
-            default: // 乘法
-                a = rand.nextInt(10) + 1;
-                b = rand.nextInt(10) + 1;
-                answer = a * b;
-                break;
+            case 0: a = rand.nextInt(10) + 1; b = rand.nextInt(10) + 1; break;
+            case 1: a = rand.nextInt(10) + 2; b = rand.nextInt(a) + 1; break;
+            default: a = rand.nextInt(10) + 1; b = rand.nextInt(10) + 1; break;
         }
+        
+        VerificationData vd = new VerificationData(a, b, op, VerificationType.MATH);
+        verificationData.put(playerName, vd);
 
         String opSymbol = switch (op) {
             case 0 -> "+";
             case 1 -> "-";
             default -> "×";
         };
-
-        verificationData.put(playerName, new VerificationData(a, b, op));
-
+        
         org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
             Player p = org.bukkit.Bukkit.getPlayer(playerName);
             if (p != null && p.isOnline()) {
@@ -161,40 +187,173 @@ public class ChatFilterManager {
             }
         });
     }
+    
+    /** 生成GUI验证码：在背包放3个物品，让玩家按顺序点击指定位置 */
+    private void generateGUIChallenge(String playerName, Random rand) {
+        // 选3个不同材料
+        Material[] materials = {Material.STONE, Material.COBBLESTONE, Material.GRAVEL, 
+                               Material.SAND, Material.CLAY_BALL, Material.REDSTONE, 
+                               Material.LAPIS_LAZULI, Material.QUARTZ};
+        List<Material> pool = Arrays.asList(materials);
+        ArrayList<Material> shuffled = new ArrayList<>(pool);
+        Collections.shuffle(shuffled, rand);
+        
+        Material item1 = shuffled.get(0);
+        Material item2 = shuffled.get(1);
+        Material item3 = shuffled.get(2);
+        
+        // 记录物品名（字符串形式），用 | 分隔
+        String targets = item1.name() + "|" + item2.name() + "|" + item3.name();
+        int[] slots = {10, 13, 16}; // 中间行的左中右
+        
+        VerificationData vd = new VerificationData(0, 0, 0, VerificationType.GUI);
+        vd.guiTargets = targets;
+        vd.type = VerificationType.GUI;
+        verificationData.put(playerName, vd);
+        
+        org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+            Player p = org.bukkit.Bukkit.getPlayer(playerName);
+            if (p != null && p.isOnline()) {
+                try {
+                    Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击验证码");
+                    
+                    // 填充玻璃
+                    ItemStack glass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
+                    ItemMeta gm = glass.getItemMeta();
+                    if (gm != null) { gm.setDisplayName(" "); glass.setItemMeta(gm); }
+                    for (int i = 0; i < 27; i++) inv.setItem(i, glass);
+                    
+                    // 放3个目标物品
+                    inv.setItem(slots[0], mkItem(item1, "§e" + item1.name().replace("_", " "), "§7点击此项"));
+                    inv.setItem(slots[1], mkItem(item2, "§e" + item2.name().replace("_", " "), "§7点击此项"));
+                    inv.setItem(slots[2], mkItem(item3, "§e" + item3.name().replace("_", " "), "§7点击此项"));
+                    
+                    p.openInventory(inv);
+                    p.sendMessage("§e§l[验证码] §f请按 §e顺序 §f点击标注的物品");
+                    p.sendMessage("§7(30秒内完成)");
+                } catch (Exception ex) {
+                    plugin.getLogger().warning("[验证码] GUI挑战生成失败: " + ex.getMessage());
+                    // 降级为数学题
+                    generateMathChallenge(playerName, rand);
+                }
+            }
+        });
+    }
+    
+    // 辅助方法：创建带显示名的物品
+    private ItemStack mkItem(Material mat, String displayName, String lore) {
+        ItemStack stack = new ItemStack(mat);
+        ItemMeta meta = stack.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(displayName);
+            List<String> lores = new ArrayList<>();
+            lores.add(lore);
+            meta.setLore(lores);
+            stack.setItemMeta(meta);
+        }
+        return stack;
+    }
+
+    /**
+     * 检查玩家回答是否正确（数学题或GUI验证码）
+     */
+    public VerificationResult checkAnswer(String playerName, String answerStr) {
+        VerificationData vd = verificationData.get(playerName);
+        if (vd == null) return VerificationResult.VERIFIED;
+        
+        if (vd.isExpired()) {
+            verificationData.remove(playerName);
+            verifiedPlayers.add(playerName);
+            return VerificationResult.VERIFIED;
+        }
+        
+        if (vd.type == VerificationType.MATH) {
+            return checkMathAnswer(playerName, answerStr);
+        }
+        
+        // GUI验证码 — 聊天输入不作为答案，返回PENDING等待GUI点击
+        return VerificationResult.PENDING;
+    }
 
     /**
      * 检查玩家回答是否正确
-     * @return VERIFIED=正确放行, FAILED=错误吞噬
+     * @deprecated 使用 checkAnswer 代替
      */
+    @Deprecated
     public VerificationResult checkMathAnswer(String playerName, String answerStr) {
         VerificationData vd = verificationData.get(playerName);
         if (vd == null) return VerificationResult.VERIFIED; // 无验证码 → 放行
 
         if (vd.isExpired()) {
             verificationData.remove(playerName);
-            return VerificationResult.FAILED; // 过期 → 吞
+            verifiedPlayers.add(playerName); // 过期后不再要求
+            return VerificationResult.VERIFIED;
         }
 
-        try {
-            int ans = Integer.parseInt(answerStr.trim());
-            int expected;
-            switch (vd.op) {
-                case 0 -> expected = vd.a + vd.b;
-                case 1 -> expected = vd.a - vd.b;
-                default -> expected = vd.a * vd.b;
-            }
-
-            if (ans == expected) {
-                vd.completed = true;
-                verificationData.remove(playerName);
-                return VerificationResult.VERIFIED;
-            } else {
-                verificationData.remove(playerName);
+        if (vd.type == VerificationType.MATH) {
+            try {
+                int ans = Integer.parseInt(answerStr.trim());
+                int expected;
+                switch (vd.op) {
+                    case 0 -> expected = vd.a + vd.b;
+                    case 1 -> expected = vd.a - vd.b;
+                    default -> expected = vd.a * vd.b;
+                }
+                
+                if (ans == expected) {
+                    vd.completed = true;
+                    verificationData.remove(playerName);
+                    verifiedPlayers.add(playerName); // 永久记录
+                    return VerificationResult.VERIFIED;
+                } else {
+                    verificationData.remove(playerName);
+                    return VerificationResult.FAILED;
+                }
+            } catch (NumberFormatException e) {
                 return VerificationResult.FAILED;
             }
-        } catch (NumberFormatException e) {
-            return VerificationResult.FAILED; // 非数字 → 吞
         }
+        
+        // GUI验证码 — answerStr 为空时表示未回答
+        if (answerStr == null || answerStr.isEmpty()) {
+            return VerificationResult.PENDING;
+        }
+        
+        return VerificationResult.FAILED;
+    }
+    
+    /**
+     * 处理GUI物品点击验证码
+     * @param playerName 玩家名
+     * @param clickedItemName 点击的物品Material名（如"STONE"）
+     * @return 验证结果
+     */
+    public VerificationResult checkGUIClick(String playerName, String clickedItemName) {
+        String name = playerName;
+        VerificationData vd = verificationData.get(name);
+        if (vd == null) return VerificationResult.VERIFIED;
+        if (!VerificationType.GUI.equals(vd.type)) return VerificationResult.PENDING;
+        
+        if (vd.isExpired()) {
+            verificationData.remove(name);
+            verifiedPlayers.add(name);
+            return VerificationResult.VERIFIED;
+        }
+        
+        // 检查点击的物品名是否在目标列表中
+        if (vd.guiTargets != null && clickedItemName != null) {
+            String[] targets = vd.guiTargets.split("\\|");
+            for (String t : targets) {
+                if (t.equals(clickedItemName)) {
+                    vd.completed = true;
+                    verificationData.remove(name);
+                    verifiedPlayers.add(name);
+                    return VerificationResult.VERIFIED;
+                }
+            }
+        }
+        
+        return VerificationResult.FAILED; // 没匹配的 → 吞
     }
 
     // ★ 临时缓存玩家未验证的消息，等验证通过后由插件代为广播
@@ -225,22 +384,34 @@ public class ChatFilterManager {
     }
 
     /**
-     * 检查玩家是否为新玩家（加入≤1小时）
+     * 检查玩家是否为新玩家（register_time 在1小时内）
      */
     public boolean isNewPlayerUnder1Hour(Player p) {
         if (p == null || !p.isOnline()) return false;
         try {
             Main mainPlugin = (Main) plugin;
             DatabaseManager db = mainPlugin.getDb();
-            if (db == null) return true; // 默认放行
+            if (db == null) return false; // 查不到就不拦截，直接放行
+            
+            // register_time 在数据库存的是秒级时间戳
             Object regTimeObj = db.getField(p.getName(), "register_time");
-            if (regTimeObj == null || ((Number) regTimeObj).longValue() == 0) {
-                return true; // 没有注册时间 → 新玩家
+            if (regTimeObj == null) return false; // 没注册记录 → 放行
+            
+            long regTimeSeconds = ((Number) regTimeObj).longValue();
+            if (regTimeSeconds == 0) return false; // 注册时间为0 → 放行
+            
+            long regTimeMs = regTimeSeconds * 1000;
+            long elapsed = System.currentTimeMillis() - regTimeMs;
+            boolean isNew = elapsed < 3600000;
+            
+            // 日志调试：打印注册时间差值
+            if (isNew) {
+                plugin.getLogger().info("[验证码] 新玩家: " + p.getName() + " 注册" + (elapsed/1000) + "秒前");
             }
-            long regTime = ((Number) regTimeObj).longValue() * 1000;
-            return (System.currentTimeMillis() - regTime) < 3600000;
+            
+            return isNew;
         } catch (Exception e) {
-            return true; // 出错时默认放行
+            return false; // 出错时默认放行，不卡玩家
         }
     }
 

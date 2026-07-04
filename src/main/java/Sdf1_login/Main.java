@@ -2598,37 +2598,37 @@ public class Main extends JavaPlugin
             ChatFilterManager.VerificationResult vr = chatFilter.checkNewPlayerVerification(p);
             
             if (vr == ChatFilterManager.VerificationResult.NEED_VERIFICATION) {
-                // 第一次发送消息 → 触发验证码
-                // 缓存玩家原始消息，等验证通过后由插件代为广播
+                // 首次触发验证码 → 缓存消息, 拦截
                 chatFilter.cachePendingMessage(p.getName(), msg);
                 chatFilter.generateMathVerification(p.getName());
                 e.setCancelled(true);
-                return; // 消息拦截，验证码通过后再广播
+                return;
             }
             
             if (vr == ChatFilterManager.VerificationResult.PENDING) {
-                // 验证码进行中，判断输入是否为答案
-                ChatFilterManager.VerificationResult checkResult = chatFilter.checkMathAnswer(p.getName(), msg);
+                // 验证进行中：当前聊天框输入就是答案
+                ChatFilterManager.VerificationResult checkResult = chatFilter.checkAnswer(p.getName(), msg);
                 if (checkResult == ChatFilterManager.VerificationResult.VERIFIED) {
-                    // 验证通过 → 广播缓存的消息
-                    // 消息格式：去掉插件前缀，像普通聊天消息一样
                     String cachedMsg = chatFilter.pendingMessages.get(p.getName());
                     if (cachedMsg != null) {
                         Bukkit.broadcastMessage(p.getDisplayName() + ": " + cachedMsg);
                         chatFilter.pendingMessages.remove(p.getName());
                     }
-                    e.setCancelled(true); // 阻止原事件重复广播
-                    return;
-                } else {
-                    // 验证失败 → 吞噬缓存的消息
-                    chatFilter.pendingMessages.remove(p.getName());
+                    p.sendMessage("§a§l[验证码] §a验证通过！");
                     e.setCancelled(true);
                     return;
+                } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
+                    chatFilter.pendingMessages.remove(p.getName());
+                    e.setCancelled(true);
+                    p.sendMessage("§c§l[验证码] §c回答错误，消息已被拦截");
+                    return;
                 }
+                // PENDING → GUI验证码，忽略聊天输入，让消息被缓存等待GUI点击
+                e.setCancelled(true);
+                return;
             }
+            // VERIFIED → 正常放行聊天
         }
-        
-        // ===== 以下是正常放行后的逻辑（老玩家/已验证玩家） =====
         
         // ★ 广告机检测（独立于URL过滤，覆盖私信/全场景）
         if (chatFilter != null && chatFilter.checkAdBotBehavior(p.getName(), msg)) {
@@ -3178,7 +3178,30 @@ public class Main extends JavaPlugin
             return;
         Player p = (Player) e.getWhoClicked();
 
+        // ===== 验证码GUI点击处理 =====
         String title = e.getView().getTitle();
+        if ("§e§l点击验证码".equals(title)) {
+            e.setCancelled(true);
+            if (e.getCurrentItem() == null || e.getCurrentItem().getType() == Material.AIR) return;
+            String clickedMat = e.getCurrentItem().getType().name();
+            if (chatFilter != null && chatFilter.isEnabled()) {
+                ChatFilterManager.VerificationResult vr = chatFilter.checkGUIClick(p.getName(), clickedMat);
+                String cachedMsg = chatFilter.pendingMessages.get(p.getName());
+                if (vr == ChatFilterManager.VerificationResult.VERIFIED) {
+                    p.closeInventory();
+                    p.sendMessage("§a§l[验证码] §a验证通过！");
+                    if (cachedMsg != null) {
+                        Bukkit.broadcastMessage(p.getDisplayName() + ": " + cachedMsg);
+                        chatFilter.pendingMessages.remove(p.getName());
+                    }
+                } else {
+                    p.closeInventory();
+                    chatFilter.pendingMessages.remove(p.getName());
+                    p.sendMessage("§c§l[验证码] §c点击错误，消息已被拦截");
+                }
+            }
+            return;
+        }
 
         // 传送面板不受登录冻结限制（基岩版玩家免登录也要能用）
         if (!title.equals("§6§l传送系统")) {

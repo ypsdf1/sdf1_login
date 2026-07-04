@@ -49,6 +49,9 @@ public class TeleportManager implements Listener {
     // 请求过期时间 (请求ID/发送者→ 创建时间戳)，配置化
     private final Map<String, Long> teleportRequestTimes = new ConcurrentHashMap<>();
     private volatile long teleportCooldownMs = 30_000L; // 可配置的冷却时间
+    
+    // ★ 已处理/已拒绝的请求（不能再使用）
+    private final Set<String> processedRequests = ConcurrentHashMap.newKeySet();
 
     // ★ 管理员配置状态 (玩家名 → 配置状态)
     // 状态值: "valid" = 等待输入有效时间, "interval" = 等待输入间隔时间
@@ -228,13 +231,26 @@ public class TeleportManager implements Listener {
      * 检查传送请求是否有效（未被处理过且未过期）
      */
     private boolean isValidRequest(String receiver, String sender) {
+        String key = sender + ":" + receiver;
+        
+        // ★ 检查是否已处理过
+        if (processedRequests.contains(key)) {
+            return false;
+        }
+        
         Set<String> senders = incomingRequests.get(receiver);
         if (senders == null || !senders.contains(sender)) {
             return false;
         }
-        // ★ 修复：teleportRequestTimes 存的是 sender:receiver（发送者在前），不是 receiver:sender
-        String key = sender + ":" + receiver;
         return !isTeleportRequestExpired(key);
+    }
+    
+    /**
+     * 标记请求为已处理（防止二次接受/拒绝）
+     */
+    private void markRequestProcessed(String sender, String receiver) {
+        String key = sender + ":" + receiver;
+        processedRequests.add(key);
     }
     
     // ==================== 判断玩家类型 ====================
@@ -672,6 +688,8 @@ public class TeleportManager implements Listener {
         // 清理请求
         removeIncomingRequest(targetName, senderName);
         removeOutgoingRequest(senderName, targetName);
+        // ★ 标记自动接受的请求为已处理
+        markRequestProcessed(senderName, targetName);
         return true;
     }
     
@@ -807,6 +825,9 @@ public class TeleportManager implements Listener {
         removeIncomingRequest(player.getName(), targetName);
         removeOutgoingRequest(targetName, player.getName());
         
+        // ★ 标记请求已处理（防止二次使用）
+        markRequestProcessed(targetName, player.getName());
+        
         player.sendMessage("§a[传送] 已传送到 §f" + targetName + " §a身边");
         actualSender.sendMessage("§a[传送] §f" + player.getName() + " §a已接受请求");
         teleportCooldown.remove(actualSender.getName());
@@ -911,6 +932,9 @@ public class TeleportManager implements Listener {
         
         removeIncomingRequest(player.getName(), targetName);
         removeOutgoingRequest(targetName, player.getName());
+        
+        // ★ 标记请求已拒绝（防止二次使用）
+        markRequestProcessed(targetName, player.getName());
         
         player.sendMessage("§6[传送] 已拒绝来自 §f" + targetName + " §c的传送请求");
         
