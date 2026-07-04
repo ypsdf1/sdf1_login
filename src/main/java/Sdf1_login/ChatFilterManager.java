@@ -61,15 +61,11 @@ public class ChatFilterManager {
     /** 已验证过的玩家名单（永久，跨session持久化到内存） */
     private final Set<String> verifiedPlayers = ConcurrentHashMap.newKeySet();
     
-    /** 验证码数据存储 */
-    private final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
+    /** 验证码数据存储（public供Main.java访问清理） */
+    public final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
     
-    // ============================================================
-    // ★ 新玩家验证码系统
-    // ============================================================
-    
-    /** 验证码类型 */
-    enum VerificationType {
+    // ★ 验证码类型对外公开
+    public enum VerificationType {
         MATH, // 数学题
         GUI   // GUI物品选择
     }
@@ -1216,31 +1212,25 @@ public class ChatFilterManager {
         if (name == null || name.isEmpty()) return false;
         String lowerName = name.toLowerCase();
         
-        // 查找第一个点后缀是否存在
-        int lastDot = lowerName.lastIndexOf('.');
-        if (lastDot < 0) return false;
-        
-        String domainPart = lowerName.substring(lastDot + 1);
-        
-        // 去掉可能的前缀（如 [xxx.abc_cn]）
-        int bracketStart = domainPart.lastIndexOf('[');
-        if (bracketStart >= 0) {
-            domainPart = domainPart.substring(bracketStart + 1);
-        }
-        
-        // 去掉可能的前缀（如 -prefix.）
-        if (domainPart.contains(".")) {
-            domainPart = domainPart.substring(domainPart.lastIndexOf('.') + 1);
-        }
-        
-        // 检查后缀是否在非法列表中
-        for (String suffix : illegalDomainSuffixes) {
-            if (domainPart.equals(suffix)) {
-                // 还要检查整体域名结构，至少包含主域名部分
-                // 排除纯后缀如 ".com" 本身（前面没有主域名）
-                String beforeDot = lowerName.substring(0, lastDot);
-                if (!beforeDot.isEmpty()) {
-                    return true;
+        // 支持两种格式：1) dot分隔 xxx.com  2) underscore分隔 xxx_com
+        for (String separator : new String[]{".", "_"}) {
+            int idx = lowerName.lastIndexOf(separator);
+            if (idx < 0) continue;
+            
+            String suffix = lowerName.substring(idx + 1);
+            
+            // 去掉可能的前缀嵌套
+            if (suffix.contains(separator)) {
+                suffix = suffix.substring(suffix.lastIndexOf(separator) + 1);
+            }
+            
+            for (String domainSuffix : illegalDomainSuffixes) {
+                if (suffix.equals(domainSuffix) && !suffix.isEmpty()) {
+                    // 前面必须有主体部分（排除纯后缀如 .com 本身）
+                    String before = lowerName.substring(0, idx);
+                    if (!before.isEmpty() && before.length() >= 2) {
+                        return true;
+                    }
                 }
             }
         }

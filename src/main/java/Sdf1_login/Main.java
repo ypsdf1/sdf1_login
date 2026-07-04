@@ -20,6 +20,7 @@ import org.bukkit.event.entity.ProjectileLaunchEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.*;
 import org.bukkit.inventory.Inventory;
@@ -3200,7 +3201,6 @@ public class Main extends JavaPlugin
                     p.closeInventory();
                     chatFilter.pendingMessages.remove(p.getName());
                     p.sendMessage("§c§l[验证码] §c点击错误，消息已被拦截");
-                    // ★ 失败后重新抽题
                     chatFilter.generateMathVerification(p.getName());
                 }
             }
