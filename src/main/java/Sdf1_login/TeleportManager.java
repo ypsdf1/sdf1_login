@@ -764,6 +764,21 @@ public class TeleportManager implements Listener {
                 return true;
             }
             
+            // ★ 关键修复：在DB路径也检查processedRequests，防止重复接受/拒绝
+            String key = targetName + ":" + player.getName();
+            if (processedRequests.contains(key)) {
+                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已被处理");
+                try {
+                    PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
+                        "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
+                    psClean.setString(1, targetName);
+                    psClean.setString(2, player.getName());
+                    psClean.executeUpdate();
+                    psClean.close();
+                } catch (SQLException ex) { /* ignore */ }
+                return true;
+            }
+            
             // 检查数据库中请求是否过期
             int validSec = getTpRequestValidSeconds();
             long age = (System.currentTimeMillis() - dbTimestamp) / 1000;

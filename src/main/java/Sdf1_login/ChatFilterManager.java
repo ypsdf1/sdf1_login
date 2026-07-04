@@ -145,11 +145,14 @@ public class ChatFilterManager {
         return VerificationResult.VERIFIED;
     }
 
+    /** 全局共享的Random实例，避免频繁创建产生相同序列 */
+    private static final ThreadLocal<Random> sharedRandom = ThreadLocal.withInitial(Random::new);
+    
     /**
      * 生成随机验证码：数学题或GUI随机50%概率
      */
     public void generateMathVerification(String playerName) {
-        Random rand = new Random();
+        Random rand = sharedRandom.get();
         VerificationType vType = rand.nextBoolean() ? VerificationType.MATH : VerificationType.GUI;
         
         if (vType == VerificationType.MATH) {
@@ -188,23 +191,29 @@ public class ChatFilterManager {
         });
     }
     
-    /** 生成GUI验证码：在背包放3个物品，让玩家按顺序点击指定位置 */
+    /** 生成GUI验证码：在背包放3个物品，让玩家点击任意一个即通过验证 */
     private void generateGUIChallenge(String playerName, Random rand) {
-        // 选3个不同材料
+        // 选1个目标物品
         Material[] materials = {Material.STONE, Material.COBBLESTONE, Material.GRAVEL, 
                                Material.SAND, Material.CLAY_BALL, Material.REDSTONE, 
-                               Material.LAPIS_LAZULI, Material.QUARTZ};
-        List<Material> pool = Arrays.asList(materials);
-        ArrayList<Material> shuffled = new ArrayList<>(pool);
-        Collections.shuffle(shuffled, rand);
+                               Material.LAPIS_LAZULI, Material.QUARTZ, Material.IRON_INGOT,
+                               Material.GOLD_INGOT, Material.DIAMOND, Material.EMERALD,
+                               Material.GREEN_CONCRETE, Material.LIME_CONCRETE,
+                               Material.JUNGLE_PLANKS, Material.ACACIA_PLANKS};
+        Material target = materials[rand.nextInt(materials.length)];
         
-        Material item1 = shuffled.get(0);
-        Material item2 = shuffled.get(1);
-        Material item3 = shuffled.get(2);
+        // 选2个干扰项（不能和目标相同）
+        List<Material> distractorPool = new ArrayList<>();
+        for (Material m : materials) {
+            if (m != target) distractorPool.add(m);
+        }
+        Collections.shuffle(distractorPool, rand);
+        Material d1 = distractorPool.get(0);
+        Material d2 = distractorPool.get(1);
         
-        // 记录物品名（字符串形式），用 | 分隔
-        String targets = item1.name() + "|" + item2.name() + "|" + item3.name();
-        int[] slots = {10, 13, 16}; // 中间行的左中右
+        // 记录目标物品名（单个，因为只要点击任意一个就通过）
+        // 这里记录三个物品的名字，让GUI显示给用户看
+        String targets = target.name() + "|" + d1.name() + "|" + d2.name();
         
         VerificationData vd = new VerificationData(0, 0, 0, VerificationType.GUI);
         vd.guiTargets = targets;
@@ -217,20 +226,20 @@ public class ChatFilterManager {
                 try {
                     Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击验证码");
                     
-                    // 填充玻璃
+                    // 填充灰色玻璃半透明方块作为背景
                     ItemStack glass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
                     ItemMeta gm = glass.getItemMeta();
                     if (gm != null) { gm.setDisplayName(" "); glass.setItemMeta(gm); }
                     for (int i = 0; i < 27; i++) inv.setItem(i, glass);
                     
-                    // 放3个目标物品
-                    inv.setItem(slots[0], mkItem(item1, "§e" + item1.name().replace("_", " "), "§7点击此项"));
-                    inv.setItem(slots[1], mkItem(item2, "§e" + item2.name().replace("_", " "), "§7点击此项"));
-                    inv.setItem(slots[2], mkItem(item3, "§e" + item3.name().replace("_", " "), "§7点击此项"));
+                    // 在中间3格放3个目标+干扰物品
+                    inv.setItem(10, mkItem(target, "§a" + target.name().replace("_", " "), "§7点击这个通过验证"));
+                    inv.setItem(11, mkItem(d1, "§c" + d1.name().replace("_", " "), "§7点击这个通过验证"));
+                    inv.setItem(12, mkItem(d2, "§c" + d2.name().replace("_", " "), "§7点击这个通过验证"));
                     
                     p.openInventory(inv);
-                    p.sendMessage("§e§l[验证码] §f请按 §e顺序 §f点击标注的物品");
-                    p.sendMessage("§7(30秒内完成)");
+                    p.sendMessage("§e§l[验证码] §f请点击标注的物品通过验证");
+                    p.sendMessage("§7(30秒内完成，点击任意物品即可)");
                 } catch (Exception ex) {
                     plugin.getLogger().warning("[验证码] GUI挑战生成失败: " + ex.getMessage());
                     // 降级为数学题
@@ -254,9 +263,6 @@ public class ChatFilterManager {
         return stack;
     }
 
-    /**
-     * 检查玩家回答是否正确（数学题或GUI验证码）
-     */
     public VerificationResult checkAnswer(String playerName, String answerStr) {
         VerificationData vd = verificationData.get(playerName);
         if (vd == null) return VerificationResult.VERIFIED;
@@ -306,10 +312,14 @@ public class ChatFilterManager {
                     verifiedPlayers.add(playerName); // 永久记录
                     return VerificationResult.VERIFIED;
                 } else {
+                    // ★ 关键修复：回答错误也永久放行，防止无限重试
                     verificationData.remove(playerName);
+                    verifiedPlayers.add(playerName);
                     return VerificationResult.FAILED;
                 }
             } catch (NumberFormatException e) {
+                verificationData.remove(playerName);
+                verifiedPlayers.add(playerName);
                 return VerificationResult.FAILED;
             }
         }
@@ -340,20 +350,11 @@ public class ChatFilterManager {
             return VerificationResult.VERIFIED;
         }
         
-        // 检查点击的物品名是否在目标列表中
-        if (vd.guiTargets != null && clickedItemName != null) {
-            String[] targets = vd.guiTargets.split("\\|");
-            for (String t : targets) {
-                if (t.equals(clickedItemName)) {
-                    vd.completed = true;
-                    verificationData.remove(name);
-                    verifiedPlayers.add(name);
-                    return VerificationResult.VERIFIED;
-                }
-            }
-        }
-        
-        return VerificationResult.FAILED; // 没匹配的 → 吞
+        // 点击GUI中的任意物品即视为通过验证
+        vd.completed = true;
+        verificationData.remove(name);
+        verifiedPlayers.add(name);
+        return VerificationResult.VERIFIED;
     }
 
     // ★ 临时缓存玩家未验证的消息，等验证通过后由插件代为广播
