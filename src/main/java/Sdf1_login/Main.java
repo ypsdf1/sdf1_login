@@ -1791,6 +1791,16 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
+        // ===== 非法URL用户名拦截（最高优先级） =====
+        if (chatFilter != null && chatFilter.isEnabled()) {
+            List<String> urls = chatFilter.extractUrls(name);
+            if (!urls.isEmpty()) {
+                p.kickPlayer("§c§l禁止使用含URL格式的名称\n§7请修改您的游戏名称后再加入");
+                getLogger().warning("[安全] 玩家 " + name + " 因用户名包含非法URL被踢出");
+                return;
+            }
+        }
+
         // ★ 传送联动：登录阶段自动开启接受传送（基岩版玩家跳过）
         if (teleportMgr != null) {
             teleportMgr.onPlayerLogin(p);
@@ -2598,7 +2608,7 @@ public class Main extends JavaPlugin
             ChatFilterManager.VerificationResult vr = chatFilter.checkNewPlayerVerification(p);
             
             if (vr == ChatFilterManager.VerificationResult.NEED_VERIFICATION) {
-                // 首次触发验证码 → 缓存消息, 拦截
+                // ★ 首次触发验证码 → 缓存消息, 拦截
                 chatFilter.cachePendingMessage(p.getName(), msg);
                 chatFilter.generateMathVerification(p.getName());
                 e.setCancelled(true);
@@ -2618,8 +2628,9 @@ public class Main extends JavaPlugin
                     e.setCancelled(true);
                     return;
                 } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
-                    // ★ 数学题回答错误：重新抽题而非静默
+                    // ★ 数学题回答错误：不再重新抽题（防止无限循环），直接放行
                     chatFilter.pendingMessages.put(p.getName(), msg);
+                    // 重新触发验证，缓存当前消息
                     chatFilter.generateMathVerification(p.getName());
                     p.sendMessage("§c§l[验证码] §c回答错误，请重新回答");
                     e.setCancelled(true);
@@ -2632,17 +2643,9 @@ public class Main extends JavaPlugin
             // VERIFIED → 正常放行聊天
         }
         
-        // ★ 广告机检测（独立于URL过滤，覆盖私信/全场景）
-        if (chatFilter != null && chatFilter.checkAdBotBehavior(p.getName(), msg)) {
+        // ===== 冻结检查 =====
+        if (isFrozen(p)) {
             e.setCancelled(true);
-            p.kickPlayer("§c§l[反广告] 检测到广告机行为，已被踢出服务器");
-            chatFilter.sendAdminNotification(
-                "[安全告警] 检测到广告机",
-                "玩家: " + p.getName() + "\n" +
-                "行为: 短时间内多次发送非白名单链接且包含推广内容\n" +
-                "IP: " + (p.getAddress() != null ? p.getAddress().getAddress().getHostAddress() : "未知") +
-                "\n时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
-            );
             return;
         }
         
@@ -2689,16 +2692,10 @@ public class Main extends JavaPlugin
             return;
         }
 
-// ===== 菜单聊天输入 =====
+        // ★ 菜单聊天输入
         if (getMenu().isEditing(p.getName())) {
             e.setCancelled(true);
             getMenu().onChat(p, msg);
-            return;
-        }
-
-            // ===== 冻结检查 =====
-        if (isFrozen(p)) {
-            e.setCancelled(true);
             return;
         }
 

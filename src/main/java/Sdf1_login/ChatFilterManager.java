@@ -152,14 +152,9 @@ public class ChatFilterManager {
      * 生成随机验证码：数学题或GUI随机50%概率
      */
     public void generateMathVerification(String playerName) {
+        // 数学题验证码只抽一次，失败后不会再触发新的（用verifiedPlayers标记放行）
         Random rand = sharedRandom.get();
-        VerificationType vType = rand.nextBoolean() ? VerificationType.MATH : VerificationType.GUI;
-        
-        if (vType == VerificationType.MATH) {
-            generateMathChallenge(playerName, rand);
-        } else {
-            generateGUIChallenge(playerName, rand);
-        }
+        generateMathChallenge(playerName, rand);
     }
     
     /** 生成数学题验证码 */
