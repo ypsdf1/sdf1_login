@@ -252,7 +252,9 @@ public class ChatFilterManager {
             Player p = org.bukkit.Bukkit.getPlayer(playerName);
             if (p != null && p.isOnline()) {
                 try {
-                    Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击验证码");
+                    // 在GUI标题中明确显示目标物品名
+                    String targetName = correctItem.name().replace("_", " ");
+                    Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击" + targetName + "完成验证");
                     
                     // 填充灰色玻璃半透明方块作为背景
                     ItemStack glass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
@@ -268,13 +270,11 @@ public class ChatFilterManager {
                     for (int slot : availableSlots) {
                         if (itemIdx >= itemsToPlace.size()) break;
                         Material mat = itemsToPlace.get(itemIdx);
-                        inv.setItem(slot, mkItem(mat, "§f" + mat.name().replace("_", " "), "§7(第" + (itemIdx+1) + "/" + itemsToPlace.size() + "个)"));
+                        inv.setItem(slot, mkItem(mat, "§f" + mat.name().replace("_", " "), ""));
                         itemIdx++;
                     }
                     
                     p.openInventory(inv);
-                    p.sendMessage("§e§l[验证码] §f请点击§e" + correctItem.name().replace("_", " ") + "§f通过验证");
-                    p.sendMessage("§7(共 " + itemsToPlace.size() + " 个物品，找到目标，30秒内点击)");
                 } catch (Exception ex) {
                     plugin.getLogger().warning("[验证码] GUI挑战生成失败: " + ex.getMessage());
                     // 降级为数学题
