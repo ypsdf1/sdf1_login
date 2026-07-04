@@ -2618,9 +2618,11 @@ public class Main extends JavaPlugin
                     e.setCancelled(true);
                     return;
                 } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
-                    chatFilter.pendingMessages.remove(p.getName());
+                    // ★ 数学题回答错误：重新抽题而非静默
+                    chatFilter.pendingMessages.put(p.getName(), msg);
+                    chatFilter.generateMathVerification(p.getName());
+                    p.sendMessage("§c§l[验证码] §c回答错误，请重新回答");
                     e.setCancelled(true);
-                    p.sendMessage("§c§l[验证码] §c回答错误，消息已被拦截");
                     return;
                 }
                 // PENDING → GUI验证码，忽略聊天输入，让消息被缓存等待GUI点击
@@ -3179,8 +3181,9 @@ public class Main extends JavaPlugin
         Player p = (Player) e.getWhoClicked();
 
         // ===== 验证码GUI点击处理 =====
+        // 标题格式: "§e§l点击XX完成验证" （XX为中文物品名）
         String title = e.getView().getTitle();
-        if ("§e§l点击验证码".equals(title)) {
+        if (title != null && title.contains("点击") && title.contains("完成验证")) {
             e.setCancelled(true);
             if (e.getCurrentItem() == null || e.getCurrentItem().getType() == Material.AIR) return;
             String clickedMat = e.getCurrentItem().getType().name();
@@ -3198,6 +3201,8 @@ public class Main extends JavaPlugin
                     p.closeInventory();
                     chatFilter.pendingMessages.remove(p.getName());
                     p.sendMessage("§c§l[验证码] §c点击错误，消息已被拦截");
+                    // ★ 失败后重新抽题
+                    chatFilter.generateMathVerification(p.getName());
                 }
             }
             return;

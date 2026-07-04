@@ -191,6 +191,69 @@ public class ChatFilterManager {
         });
     }
     
+    /** 中文物品名映射表 */
+    private static final Map<String, String> MATERIAL_CN = new HashMap<>();
+    static {
+        MATERIAL_CN.put("EMERALD", "绿宝石");
+        MATERIAL_CN.put("DIAMOND", "钻石");
+        MATERIAL_CN.put("IRON_INGOT", "铁锭");
+        MATERIAL_CN.put("GOLD_INGOT", "金锭");
+        MATERIAL_CN.put("STONE", "石头");
+        MATERIAL_CN.put("COBBLESTONE", "圆石");
+        MATERIAL_CN.put("SAND", "沙子");
+        MATERIAL_CN.put("GRAVEL", "砂砾");
+        MATERIAL_CN.put("REDSTONE", "红石粉");
+        MATERIAL_CN.put("LAPIS_LAZULI", "青金石");
+        MATERIAL_CN.put("QUARTZ", "石英");
+        MATERIAL_CN.put("APPLE", "苹果");
+        MATERIAL_CN.put("BOWL", "碗");
+        MATERIAL_CN.put("CAKE", "蛋糕");
+        MATERIAL_CN.put("BOOK", "书");
+        MATERIAL_CN.put("FLINT", "燧石");
+        MATERIAL_CN.put("FLINT_AND_STEEL", "打火石");
+        MATERIAL_CN.put("LEATHER_HELMET", "皮革头盔");
+        MATERIAL_CN.put("LEATHER_CHESTPLATE", "皮革上衣");
+        MATERIAL_CN.put("LEATHER_LEGGINGS", "皮革护腿");
+        MATERIAL_CN.put("LEATHER_BOOTS", "皮革靴子");
+        MATERIAL_CN.put("GOLDEN_APPLE", "附魔金苹果");
+        MATERIAL_CN.put("OBSIDIAN", "黑曜石");
+        MATERIAL_CN.put("DIAMOND_HELMET", "钻石头盔");
+        MATERIAL_CN.put("DIAMOND_CHESTPLATE", "钻石护甲");
+        MATERIAL_CN.put("DIAMOND_LEGGINGS", "钻石护腿");
+        MATERIAL_CN.put("DIAMOND_BOOTS", "钻石靴子");
+        MATERIAL_CN.put("IRON_HELMET", "铁头盔");
+        MATERIAL_CN.put("IRON_CHESTPLATE", "铁护甲");
+        MATERIAL_CN.put("IRON_LEGGINGS", "铁护腿");
+        MATERIAL_CN.put("IRON_BOOTS", "铁靴子");
+        MATERIAL_CN.put("WOODEN_SWORD", "木剑");
+        MATERIAL_CN.put("STONE_SWORD", "石剑");
+        MATERIAL_CN.put("IRON_SWORD", "铁剑");
+        MATERIAL_CN.put("GOLDEN_SWORD", "金剑");
+        MATERIAL_CN.put("DIAMOND_SWORD", "钻石剑");
+        MATERIAL_CN.put("GREEN_CONCRETE", "绿色混凝土");
+        MATERIAL_CN.put("LIME_CONCRETE", "淡绿色混凝土");
+        MATERIAL_CN.put("JUNGLE_PLANKS", "丛林木板");
+        MATERIAL_CN.put("ACACIA_PLANKS", "金合欢木板");
+        MATERIAL_CN.put("BLAZE_ROD", "烈焰棒");
+        MATERIAL_CN.put("MAGMA_CREAM", "熔浆膏");
+        MATERIAL_CN.put("CLAY_BALL", "黏土球");
+        MATERIAL_CN.put("MUSIC_DISC_13", "音乐唱片C13");
+        MATERIAL_CN.put("MUSIC_DISC_PIGSTEP", "音乐唱片PigStep");
+        MATERIAL_CN.put("END_CRYSTAL", "末影水晶");
+        MATERIAL_CN.put("GLOWSTONE", "萤石粉");
+        MATERIAL_CN.put("DRAGON_EGG", "龙蛋");
+        MATERIAL_CN.put("NETHERITE_SCRAP", "下界合金碎片");
+        MATERIAL_CN.put("CREEPER_HEAD", "爬行者头颅");
+        MATERIAL_CN.put("GOLDEN_APPLE", "金苹果");
+        MATERIAL_CN.put("ENCHANTED_GOLDEN_APPLE", "附魔金苹果");
+    }
+    
+    /** 生成中文物品名 */
+    private String toChineseName(String materialName) {
+        String upper = materialName.toUpperCase();
+        return MATERIAL_CN.getOrDefault(upper, materialName.replace("_", " "));
+    }
+
     /** 生成GUI验证码：N个物品+1个正确答案，30秒超时 */
     private void generateGUIChallenge(String playerName, Random rand) {
         // 丰富物品池，保证足够多样性
@@ -215,6 +278,7 @@ public class ChatFilterManager {
         
         // 随机选1个正确答案
         Material correctItem = materials[rand.nextInt(materials.length)];
+        String chineseName = toChineseName(correctItem.name());
         
         // 选N-1个干扰项（5~10个物品，其中1个正确，其余干扰）
         int totalItems = 5 + rand.nextInt(6); // 5~10
@@ -233,18 +297,9 @@ public class ChatFilterManager {
         // 随机打乱物品位置
         Collections.shuffle(itemsToPlace, rand);
         
-        // 计算正确答案在数组中的索引
-        int correctIndex = 0;
-        for (int i = 0; i < itemsToPlace.size(); i++) {
-            if (itemsToPlace.get(i) == correctItem) {
-                correctIndex = i;
-                break;
-            }
-        }
-        
-        // 存储：正确答案的Material名 + 总物品数
+        // 存储：正确答案的Material名（用英文做校验），显示用中文名
         VerificationData vd = new VerificationData(0, 0, 0, VerificationType.GUI);
-        vd.guiTargets = correctItem.name();
+        vd.guiTargets = correctItem.name(); // 校验用英文
         vd.type = VerificationType.GUI;
         verificationData.put(playerName, vd);
         
@@ -252,9 +307,8 @@ public class ChatFilterManager {
             Player p = org.bukkit.Bukkit.getPlayer(playerName);
             if (p != null && p.isOnline()) {
                 try {
-                    // 在GUI标题中明确显示目标物品名
-                    String targetName = correctItem.name().replace("_", " ");
-                    Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击" + targetName + "完成验证");
+                    // 在GUI标题中明确显示中文目标物品名
+                    Inventory inv = Bukkit.createInventory(null, 27, "§e§l点击" + chineseName + "完成验证");
                     
                     // 填充灰色玻璃半透明方块作为背景
                     ItemStack glass = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
@@ -270,7 +324,8 @@ public class ChatFilterManager {
                     for (int slot : availableSlots) {
                         if (itemIdx >= itemsToPlace.size()) break;
                         Material mat = itemsToPlace.get(itemIdx);
-                        inv.setItem(slot, mkItem(mat, "§f" + mat.name().replace("_", " "), ""));
+                        String cnName = toChineseName(mat.name());
+                        inv.setItem(slot, mkItem(mat, "§f" + cnName, ""));
                         itemIdx++;
                     }
                     
