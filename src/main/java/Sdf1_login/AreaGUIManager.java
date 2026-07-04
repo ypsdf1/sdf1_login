@@ -668,7 +668,7 @@ public class AreaGUIManager implements Listener {
     /**
      * 权限条目内部类
      */
-    private static class PermEntry {
+    static class PermEntry {
         String name;
         boolean enabled;
 

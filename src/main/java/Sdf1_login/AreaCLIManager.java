@@ -608,7 +608,7 @@ public class AreaCLIManager {
         }
     }
 
-    private static class PermItem {
+    static class PermItem {
         String key;
         String name;
         boolean enabled;

@@ -64,7 +64,7 @@ public class ChatFilterManager {
     /** 验证码数据存储（public供Main.java访问清理） */
     public final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
     
-    // ★ 验证码类型对外公开
+    /** 验证码类型对外公开 */
     public enum VerificationType {
         MATH, // 数学题
         GUI   // GUI物品选择

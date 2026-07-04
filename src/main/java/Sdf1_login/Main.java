@@ -3172,6 +3172,29 @@ public class Main extends JavaPlugin
     }
 
 
+    // ===== Inventory Close - 验证码GUI关闭处理 =====
+    @EventHandler
+    public void onInvClose(InventoryCloseEvent e) {
+        if (!(e.getPlayer() instanceof Player))
+            return;
+        Player p = (Player) e.getPlayer();
+        String title = e.getView().getTitle();
+        
+        // ★ 验证码GUI关闭 → 清除验证码状态，下次消息重新触发验证码
+        if (title != null && title.contains("点击") && title.contains("完成验证")) {
+            if (chatFilter != null && chatFilter.isEnabled()) {
+                // 移除验证码数据
+                chatFilter.verificationData.remove(p.getName());
+                // 清除缓存的消息（关闭GUI时丢弃）
+                String cached = chatFilter.pendingMessages.remove(p.getName());
+                if (cached != null) {
+                    // 消息已丢弃，下次发消息会重新触发验证码
+                }
+                // 不加入verifiedPlayers，玩家需要重新通过验证
+            }
+        }
+    }
+
     // ===== Inventory Click（旧逻辑 + 新主菜单布局 + 新功能） =====
     @EventHandler
     public void onInvClick(InventoryClickEvent e) {
@@ -3200,7 +3223,7 @@ public class Main extends JavaPlugin
                 } else {
                     p.closeInventory();
                     chatFilter.pendingMessages.remove(p.getName());
-                    p.sendMessage("§c§l[验证码] §c点击错误，消息已被拦截");
+                    p.sendMessage("§c§l[验证码] §c点击错误，请重新选择");
                     chatFilter.generateMathVerification(p.getName());
                 }
             }
