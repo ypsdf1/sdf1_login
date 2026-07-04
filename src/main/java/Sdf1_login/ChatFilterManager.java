@@ -51,6 +51,9 @@ public class ChatFilterManager {
     private int muteDuration = 300;
     private boolean enabled = true;
     
+    // ★ 非法域名后缀列表（热更新）
+    private final Set<String> illegalDomainSuffixes = new HashSet<>();
+    
     // ============================================================
     // ★ 新玩家验证码系统
     // ============================================================
@@ -152,9 +155,13 @@ public class ChatFilterManager {
      * 生成随机验证码：数学题或GUI随机50%概率
      */
     public void generateMathVerification(String playerName) {
-        // 数学题验证码只抽一次，失败后不会再触发新的（用verifiedPlayers标记放行）
         Random rand = sharedRandom.get();
-        generateMathChallenge(playerName, rand);
+        // 50% 概率数学题，50% 概率GUI
+        if (rand.nextBoolean()) {
+            generateMathChallenge(playerName, rand);
+        } else {
+            generateGUIChallenge(playerName, rand);
+        }
     }
     
     /** 生成数学题验证码 */
@@ -1167,6 +1174,78 @@ public class ChatFilterManager {
                 plugin.getLogger().warning("[广告机检测] 发送管理员通知失败: " + e.getMessage());
             }
         });
+    }
+
+    // ==================== 非法域名后缀管理 ====================
+
+    /**
+     * 加载非法域名后缀配置文件（支持热更新）
+     */
+    public void loadIllegalDomains() {
+        illegalDomainSuffixes.clear();
+        File f = new File(plugin.getDataFolder(), "illegal_domains.txt");
+        if (!f.exists()) {
+            plugin.getLogger().info("[非法域名] 配置文件不存在，已加载默认内置后缀");
+            // 内置默认后缀
+            for (String s : new String[]{"com", "cn", "net", "org", "io", "xyz", "top", "club", "site", "online", "store", "tech", "info", "biz"}) {
+                illegalDomainSuffixes.add(s.toLowerCase());
+            }
+            return;
+        }
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                // 去掉可能的 * 前缀
+                String suffix = line.replaceFirst("^\\*", "").toLowerCase();
+                if (!suffix.isEmpty()) {
+                    illegalDomainSuffixes.add(suffix);
+                }
+            }
+            plugin.getLogger().info("[非法域名] 已加载 " + illegalDomainSuffixes.size() + " 个非法后缀");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[非法域名] 加载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 检查名称是否包含非法域名格式（如 baidu_com, mysite.cn 等）
+     */
+    public boolean containsIllegalDomain(String name) {
+        if (name == null || name.isEmpty()) return false;
+        String lowerName = name.toLowerCase();
+        
+        // 查找第一个点后缀是否存在
+        int lastDot = lowerName.lastIndexOf('.');
+        if (lastDot < 0) return false;
+        
+        String domainPart = lowerName.substring(lastDot + 1);
+        
+        // 去掉可能的前缀（如 [xxx.abc_cn]）
+        int bracketStart = domainPart.lastIndexOf('[');
+        if (bracketStart >= 0) {
+            domainPart = domainPart.substring(bracketStart + 1);
+        }
+        
+        // 去掉可能的前缀（如 -prefix.）
+        if (domainPart.contains(".")) {
+            domainPart = domainPart.substring(domainPart.lastIndexOf('.') + 1);
+        }
+        
+        // 检查后缀是否在非法列表中
+        for (String suffix : illegalDomainSuffixes) {
+            if (domainPart.equals(suffix)) {
+                // 还要检查整体域名结构，至少包含主域名部分
+                // 排除纯后缀如 ".com" 本身（前面没有主域名）
+                String beforeDot = lowerName.substring(0, lastDot);
+                if (!beforeDot.isEmpty()) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
 
     /**

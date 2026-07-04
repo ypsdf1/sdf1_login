@@ -366,6 +366,7 @@ public class Main extends JavaPlugin
         treasureBridge.hook();
         chatFilter = new ChatFilterManager(this);
         chatFilter.loadConfig();
+        chatFilter.loadIllegalDomains(); // 加载非法域名后缀
         welcome = new WelcomeManager(this);
 
         // ===== 5.5 Web通信管理器 =====
@@ -1791,12 +1792,14 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
-        // ===== 非法URL用户名拦截（最高优先级） =====
+        // ===== 非法URL/非法域名用户名拦截（最高优先级） =====
         if (chatFilter != null && chatFilter.isEnabled()) {
             List<String> urls = chatFilter.extractUrls(name);
-            if (!urls.isEmpty()) {
-                p.kickPlayer("§c§l禁止使用含URL格式的名称\n§7请修改您的游戏名称后再加入");
-                getLogger().warning("[安全] 玩家 " + name + " 因用户名包含非法URL被踢出");
+            boolean isIllegalUrl = !urls.isEmpty();
+            boolean isIllegalDomain = chatFilter.containsIllegalDomain(name);
+            if (isIllegalUrl || isIllegalDomain) {
+                p.kickPlayer("§c§l禁止使用含URL或非法域名的名称\n§7请修改您的游戏名称后再加入");
+                getLogger().warning("[安全] 玩家 " + name + " 因名称含非法URL/域名被踢出 (urls=" + isIllegalUrl + ", domain=" + isIllegalDomain + ")");
                 return;
             }
         }
@@ -2628,15 +2631,14 @@ public class Main extends JavaPlugin
                     e.setCancelled(true);
                     return;
                 } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
-                    // ★ 数学题回答错误：不再重新抽题（防止无限循环），直接放行
-                    chatFilter.pendingMessages.put(p.getName(), msg);
-                    // 重新触发验证，缓存当前消息
+                    // ★ 回答错误：丢弃当前消息（不缓存不发出），重新抽题
+                    chatFilter.pendingMessages.remove(p.getName()); // 清除之前的缓存
                     chatFilter.generateMathVerification(p.getName());
                     p.sendMessage("§c§l[验证码] §c回答错误，请重新回答");
                     e.setCancelled(true);
                     return;
                 }
-                // PENDING → GUI验证码，忽略聊天输入，让消息被缓存等待GUI点击
+                // PENDING → GUI验证码，忽略聊天输入，消息保持缓存
                 e.setCancelled(true);
                 return;
             }

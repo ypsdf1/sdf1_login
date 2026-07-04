@@ -1,0 +1,35 @@
+# 非法域名后缀列表
+# 每行一个后缀，支持以 * 开头表示匹配所有子域名
+# 修改此文件后无需重启，插件会在每次检测时重新加载
+# 默认包含常见非法注册域名后缀
+
+com
+cn
+net
+org
+io
+xyz
+top
+club
+site
+online
+store
+tech
+info
+biz
+ru
+tk
+ml
+ga
+cf
+cc
+ws
+tv
+link
+click
+date
+vip
+party
+fun
+zone
+space
