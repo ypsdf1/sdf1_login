@@ -124,10 +124,9 @@ public class ChatFilterManager {
                 verificationData.remove(name);
                 return VerificationResult.VERIFIED;
             }
-            // 验证码是否过期
+            // 验证码是否过期 — 过期后自动放行，不无限卡玩家
             if (vd.isExpired()) {
                 verificationData.remove(name);
-                // 过期后不再要求验证（避免玩家反复被卡）
                 verifiedPlayers.add(name);
                 return VerificationResult.VERIFIED;
             }
@@ -397,17 +396,14 @@ public class ChatFilterManager {
                 if (ans == expected) {
                     vd.completed = true;
                     verificationData.remove(playerName);
-                    verifiedPlayers.add(playerName); // 永久记录
+                    verifiedPlayers.add(playerName); // 永久记录 - 验证通过
                     return VerificationResult.VERIFIED;
                 } else {
-                    // ★ 关键修复：回答错误也永久放行，防止无限重试
-                    verificationData.remove(playerName);
-                    verifiedPlayers.add(playerName);
+                    // ★ 回答错误 → 不清除验证码也不加入verifiedPlayers，让玩家重新答题
                     return VerificationResult.FAILED;
                 }
             } catch (NumberFormatException e) {
-                verificationData.remove(playerName);
-                verifiedPlayers.add(playerName);
+                // 非数字答案 → 同样不放行，重新答题
                 return VerificationResult.FAILED;
             }
         }
@@ -537,7 +533,10 @@ public class ChatFilterManager {
                             + "(?:[a-zA-Z0-9\\-]*"
                             + "[a-zA-Z0-9])?\\.)+"
                             + "[a-zA-Z]{2,})"
-                            + "(?:/\\S*)?");
+                            + "(?:/\\S*)?"
+                            + "|(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)[_.]"
+                            + "[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?)*[_.]"
+                            + "[a-zA-Z]{2,}");
     private static final Pattern DOT_VARIANTS =
             Pattern.compile(
                     "[\uff0e\u3002\u2025\u2026\u00b7]");

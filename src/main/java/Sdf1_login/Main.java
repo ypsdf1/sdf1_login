@@ -2634,33 +2634,42 @@ public class Main extends JavaPlugin
                 // ★ 首次触发验证码 → 缓存消息, 拦截
                 chatFilter.cachePendingMessage(p.getName(), msg);
                 chatFilter.generateMathVerification(p.getName());
+                p.sendMessage("§e[验证码] 请先回答验证码才能发言");
                 e.setCancelled(true);
                 return;
             }
             
             if (vr == ChatFilterManager.VerificationResult.PENDING) {
                 // 验证进行中：当前聊天框输入就是答案
+                // ★ 如果是GUI验证码，跳过聊天答案
+                ChatFilterManager.VerificationData vd = chatFilter.verificationData.get(p.getName());
+                if (vd != null && vd.type == ChatFilterManager.VerificationType.GUI) {
+                    // GUI验证码，聊天输入不算答案，拦截
+                    e.setCancelled(true);
+                    return;
+                }
+                
                 ChatFilterManager.VerificationResult checkResult = chatFilter.checkAnswer(p.getName(), msg);
                 if (checkResult == ChatFilterManager.VerificationResult.VERIFIED) {
-                    // ★ 答对了 → 释放所有缓存消息(N-1条) + 当前消息(第N条)
+                    // ★ 答对了 → 释放所有缓存消息 + 当前消息
                     chatFilter.broadcastCachedMessages(p.getName());
                     Bukkit.broadcastMessage(p.getDisplayName() + ": " + msg);
                     p.sendMessage("§a§l[验证码] §a验证通过！");
                     e.setCancelled(true);
                     return;
                 } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
-                    // ★ 答错了 → 清除缓存(不泄露) + 重新出题
+                    // ★ 答错了 → 清除缓存 + 重新出题（不加入verifiedPlayers）
                     chatFilter.clearPendingMessages(p.getName());
                     chatFilter.generateMathVerification(p.getName());
                     p.sendMessage("§c§l[验证码] §c回答错误，请重新回答");
                     e.setCancelled(true);
                     return;
                 }
-                // PENDING → GUI验证码，忽略聊天输入，消息保持缓存
+                // PENDING → 未识别的答案类型，拦截
                 e.setCancelled(true);
                 return;
             }
-            // VERIFIED → 正常放行聊天
+            // VERIFIED → 正常放行聊天（但先检查URL）
         }
         
         // ===== 冻结检查 =====
