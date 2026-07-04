@@ -450,18 +450,27 @@ public class ChatFilterManager {
         return VerificationResult.FAILED;
     }
 
-    // ★ 临时缓存玩家未验证的消息，等验证通过后由插件代为广播
-    public final Map<String, String> pendingMessages = new ConcurrentHashMap<>();
+    // ★ 临时缓存玩家未验证的消息（N+1 机制：缓存列表，答对第N题后释放N条）
+    public final Map<String, List<String>> pendingMessages = new ConcurrentHashMap<>();
 
     /** 缓存玩家消息，等验证通过时代为广播 */
     public void cachePendingMessage(String playerName, String message) {
-        pendingMessages.put(playerName, message);
+        pendingMessages.computeIfAbsent(playerName, k -> new ArrayList<>()).add(message);
     }
 
-    /** 广播缓存的消息给全服 */
-    public void broadcastCachedMessage(String playerName, String message) {
-        pendingMessages.remove(playerName); // 广播后清除缓存
-        Bukkit.broadcastMessage(message);   // 普通广播，无前缀
+    /** 广播所有缓存的消息（N+1机制：广播缓存的N-1条 + 当前第N条） */
+    public void broadcastCachedMessages(String playerName) {
+        List<String> messages = pendingMessages.remove(playerName);
+        if (messages != null) {
+            for (String msg : messages) {
+                Bukkit.broadcastMessage(msg);
+            }
+        }
+    }
+
+    /** 清除玩家缓存的消息（验证失败时调用） */
+    public void clearPendingMessages(String playerName) {
+        pendingMessages.remove(playerName);
     }
 
     /**
@@ -1176,13 +1185,15 @@ public class ChatFilterManager {
 
     /**
      * 加载非法域名后缀配置文件（支持热更新）
+     * 配置文件: plugins/Sdf1_login/illegal_domains.txt
+     * 每行一个后缀，如: com, cn, test 等
      */
     public void loadIllegalDomains() {
         illegalDomainSuffixes.clear();
         File f = new File(plugin.getDataFolder(), "illegal_domains.txt");
         if (!f.exists()) {
             plugin.getLogger().info("[非法域名] 配置文件不存在，已加载默认内置后缀");
-            // 内置默认后缀
+            // 内置默认后缀作为兜底
             for (String s : new String[]{"com", "cn", "net", "org", "io", "xyz", "top", "club", "site", "online", "store", "tech", "info", "biz"}) {
                 illegalDomainSuffixes.add(s.toLowerCase());
             }
@@ -1199,9 +1210,13 @@ public class ChatFilterManager {
                     illegalDomainSuffixes.add(suffix);
                 }
             }
-            plugin.getLogger().info("[非法域名] 已加载 " + illegalDomainSuffixes.size() + " 个非法后缀");
+            plugin.getLogger().info("[非法域名] 已加载 " + illegalDomainSuffixes.size() + " 个非法后缀（来自配置文件）");
         } catch (Exception e) {
-            plugin.getLogger().warning("[非法域名] 加载失败: " + e.getMessage());
+            plugin.getLogger().warning("[非法域名] 加载失败，使用内置默认后缀: " + e.getMessage());
+            // 加载失败时用内置兜底
+            for (String s : new String[]{"com", "cn", "net", "org", "io", "xyz", "top", "club", "site", "online", "store", "tech", "info", "biz"}) {
+                illegalDomainSuffixes.add(s.toLowerCase());
+            }
         }
     }
 

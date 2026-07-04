@@ -294,6 +294,13 @@ public class Main extends JavaPlugin
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent e) {
+        // ★ 抑制非法域名/Kick玩家的退出消息
+        if (illegalNameKickedPlayers.contains(e.getPlayer().getName())) {
+            e.setQuitMessage(null);
+            illegalNameKickedPlayers.remove(e.getPlayer().getName());
+            return;
+        }
+
         if (areaProtection != null) {
             Player p = e.getPlayer();
             areaProtection.onPlayerOffline(
@@ -301,7 +308,6 @@ public class Main extends JavaPlugin
             if (areaProtection != null) {
                 areaProtection.onPlayerQuit(p.getName());
             }
-
         }
     }
 
@@ -310,6 +316,12 @@ public class Main extends JavaPlugin
     @Override
     public void onEnable() {
         getDataFolder().mkdirs();
+        // ★ 自动释放 illegal_domains.txt 配置文件（jar打包的复制到插件数据目录，仅文件不存在时）
+        File illegalDomainsFile = new File(getDataFolder(), "illegal_domains.txt");
+        if (!illegalDomainsFile.exists()) {
+            saveResource("illegal_domains.txt", false);
+            getLogger().info("[配置] 已自动释放 illegal_domains.txt 到插件目录");
+        }
         // 启动时清理.sdf1临时文件
         cleanupSdf1Files();
         salesStats = new SalesStatsManager(this);
@@ -1785,7 +1797,9 @@ public class Main extends JavaPlugin
         }
     }
 
-    // ===== Events =====
+    // ===== 非法URL/非法域名用户名拦截（最高优先级） =====
+    private final Set<String> illegalNameKickedPlayers = ConcurrentHashMap.newKeySet();
+
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
 
@@ -1795,11 +1809,16 @@ public class Main extends JavaPlugin
 
         // ===== 非法URL/非法域名用户名拦截（最高优先级） =====
         if (chatFilter != null && chatFilter.isEnabled()) {
+            // 每次玩家加入时热重载非法域名后缀（支持热更新）
+            chatFilter.loadIllegalDomains();
+            
             List<String> urls = chatFilter.extractUrls(name);
             boolean isIllegalUrl = !urls.isEmpty();
             boolean isIllegalDomain = chatFilter.containsIllegalDomain(name);
             if (isIllegalUrl || isIllegalDomain) {
+                e.setJoinMessage(null); // 抑制加入消息
                 p.kickPlayer("§c§l禁止使用含URL或非法域名的名称\n§7请修改您的游戏名称后再加入");
+                illegalNameKickedPlayers.add(name); // 记录以便抑制退出消息
                 getLogger().warning("[安全] 玩家 " + name + " 因名称含非法URL/域名被踢出 (urls=" + isIllegalUrl + ", domain=" + isIllegalDomain + ")");
                 return;
             }
@@ -2607,7 +2626,7 @@ public class Main extends JavaPlugin
             chatFilter.markPlayerActive(p.getName());
         }
         
-        // ===== 新玩家验证码检查 =====
+        // ===== 新玩家验证码检查（N+1机制） =====
         if (chatFilter != null && chatFilter.isEnabled()) {
             ChatFilterManager.VerificationResult vr = chatFilter.checkNewPlayerVerification(p);
             
@@ -2623,17 +2642,15 @@ public class Main extends JavaPlugin
                 // 验证进行中：当前聊天框输入就是答案
                 ChatFilterManager.VerificationResult checkResult = chatFilter.checkAnswer(p.getName(), msg);
                 if (checkResult == ChatFilterManager.VerificationResult.VERIFIED) {
-                    String cachedMsg = chatFilter.pendingMessages.get(p.getName());
-                    if (cachedMsg != null) {
-                        Bukkit.broadcastMessage(p.getDisplayName() + ": " + cachedMsg);
-                        chatFilter.pendingMessages.remove(p.getName());
-                    }
+                    // ★ 答对了 → 释放所有缓存消息(N-1条) + 当前消息(第N条)
+                    chatFilter.broadcastCachedMessages(p.getName());
+                    Bukkit.broadcastMessage(p.getDisplayName() + ": " + msg);
                     p.sendMessage("§a§l[验证码] §a验证通过！");
                     e.setCancelled(true);
                     return;
                 } else if (checkResult == ChatFilterManager.VerificationResult.FAILED) {
-                    // ★ 回答错误：丢弃当前消息（不缓存不发出），重新抽题
-                    chatFilter.pendingMessages.remove(p.getName()); // 清除之前的缓存
+                    // ★ 答错了 → 清除缓存(不泄露) + 重新出题
+                    chatFilter.clearPendingMessages(p.getName());
                     chatFilter.generateMathVerification(p.getName());
                     p.sendMessage("§c§l[验证码] §c回答错误，请重新回答");
                     e.setCancelled(true);
@@ -3186,8 +3203,8 @@ public class Main extends JavaPlugin
                 // 移除验证码数据
                 chatFilter.verificationData.remove(p.getName());
                 // 清除缓存的消息（关闭GUI时丢弃）
-                String cached = chatFilter.pendingMessages.remove(p.getName());
-                if (cached != null) {
+                List<String> cachedList = chatFilter.pendingMessages.remove(p.getName());
+                if (cachedList != null) {
                     // 消息已丢弃，下次发消息会重新触发验证码
                 }
                 // 不加入verifiedPlayers，玩家需要重新通过验证
@@ -3212,12 +3229,15 @@ public class Main extends JavaPlugin
             String clickedMat = e.getCurrentItem().getType().name();
             if (chatFilter != null && chatFilter.isEnabled()) {
                 ChatFilterManager.VerificationResult vr = chatFilter.checkGUIClick(p.getName(), clickedMat);
-                String cachedMsg = chatFilter.pendingMessages.get(p.getName());
+                List<String> cachedList = chatFilter.pendingMessages.get(p.getName());
                 if (vr == ChatFilterManager.VerificationResult.VERIFIED) {
                     p.closeInventory();
                     p.sendMessage("§a§l[验证码] §a验证通过！");
-                    if (cachedMsg != null) {
-                        Bukkit.broadcastMessage(p.getDisplayName() + ": " + cachedMsg);
+                    if (cachedList != null) {
+                        // N+1: 广播缓存消息
+                        for (String cm : cachedList) {
+                            Bukkit.broadcastMessage(p.getDisplayName() + ": " + cm);
+                        }
                         chatFilter.pendingMessages.remove(p.getName());
                     }
                 } else {
