@@ -394,6 +394,19 @@ public class Main extends JavaPlugin
         // 所有经济相关功能使用 BondManager（债券系统）替代
 
         // ===== 9. 注册命令 =====
+        
+        // 启动广告机/挂机检测定时器 + 验证码过期清理
+        if (chatFilter != null) {
+            // 每60秒检查一次广告机和挂机
+            Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+                chatFilter.checkIdlePlayers();
+            }, 6000L, 6000L);
+            // 每5秒清理一次过期的验证码
+            Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+                chatFilter.cleanupExpiredVerifications();
+            }, 5000L, 5000L);
+        }
+        
         if (getCommand("sdf1_login") != null) {
             getCommand("sdf1_login")
                     .setExecutor(this);
@@ -2338,28 +2351,63 @@ public class Main extends JavaPlugin
                     e.getPlayer().getName());
     }
 
-
+    // ===== 告示牌/编辑书/私信链接过滤 =====
+    // 告示牌通过 onSignChange 拦截，编辑书通过 onPlayerEditBook 拦截
+    // 私信通过 PlayerCommandPreprocessEvent 拦截（/tell, /msg, /w, /r）
+    
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPrivateMessage(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
+        Player p = e.getPlayer();
+        String cmd = e.getMessage().toLowerCase();
+        boolean isTellCmd = cmd.startsWith("/tell ") || cmd.startsWith("/msg ") || cmd.startsWith("/w ") || cmd.startsWith("/r ");
+        if (!isTellCmd) return;
+        if (isFrozen(p)) return;
+        if (chatFilter == null || !chatFilter.isEnabled()) return;
+        if (chatFilter.isPlayerWhitelisted(p.getName())) return;
+        if (filterLinkInContent(p, e.getMessage())) e.setCancelled(true);
+    }
+    
+    @EventHandler
+    public void onSignChange(org.bukkit.event.block.SignChangeEvent e) {
+        Player p = e.getPlayer();
+        if (isFrozen(p)) return;
+        if (chatFilter == null || !chatFilter.isEnabled()) return;
+        if (chatFilter.isPlayerWhitelisted(p.getName())) return;
+        String content = e.getLine(0) + e.getLine(1) + e.getLine(2) + e.getLine(3);
+        if (filterLinkInContent(p, content)) e.setCancelled(true);
+    }
+    
+    @EventHandler
+    public void onPlayerEditBook(org.bukkit.event.player.PlayerEditBookEvent e) {
+        Player p = e.getPlayer();
+        if (isFrozen(p)) return;
+        if (chatFilter == null || !chatFilter.isEnabled()) return;
+        if (chatFilter.isPlayerWhitelisted(p.getName())) return;
+        StringBuilder content = new StringBuilder();
+        // Paper 1.21.4: PlayerEditBookEvent 用 getNewBook() 取 ItemStack
+        // 通过反射调用 getNewBook() 因为 Paper API 未公开此方法
+        try {
+            java.lang.reflect.Method m = e.getClass().getMethod("getNewBook");
+            org.bukkit.inventory.ItemStack newBook = (org.bukkit.inventory.ItemStack) m.invoke(e);
+            if (newBook != null && newBook.hasItemMeta() && newBook.getItemMeta() instanceof org.bukkit.inventory.meta.BookMeta) {
+                for (String page : ((org.bukkit.inventory.meta.BookMeta)newBook.getItemMeta()).getPages()) {
+                    content.append(page).append("\n");
+                }
+            }
+        } catch (Exception ex) {
+            // 反射失败，不做拦截
+        }
+        if (content.length() > 0 && filterLinkInContent(p, content.toString())) e.setCancelled(true);
+    }
+    
     @EventHandler
     public void onBlockPlace(BlockPlaceEvent e) {
-        if (isFrozen(e.getPlayer()))
-            e.setCancelled(true);
-    }
-
-    @EventHandler
-    public void onDrop(PlayerDropItemEvent e) {
         if (isFrozen(e.getPlayer())) {
             e.setCancelled(true);
             return;
         }
-        ItemStack drop =
-                e.getItemDrop().getItemStack();
-        if (isMenuSnowball(drop)) {
-            e.setCancelled(true);
-        }
-        // ★ Sdf1_game宝箱物品不干预，由Sdf1_game自行处理
     }
 
-    // ★ 防止雪球菜单被投掷出去（弱网兜底 + 防止快乐恶魂投喂）
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onProjectileLaunch(
             org.bukkit.event.entity.ProjectileLaunchEvent e) {
@@ -2539,6 +2587,63 @@ public class Main extends JavaPlugin
     public void onChat(AsyncPlayerChatEvent e) {
         Player p = e.getPlayer();
         String msg = e.getMessage();
+        
+        // ★ 标记玩家活跃（用于挂机检测）
+        if (chatFilter != null) {
+            chatFilter.markPlayerActive(p.getName());
+        }
+        
+        // ===== 新玩家验证码检查 =====
+        if (chatFilter != null && chatFilter.isEnabled()) {
+            ChatFilterManager.VerificationResult vr = chatFilter.checkNewPlayerVerification(p);
+            
+            if (vr == ChatFilterManager.VerificationResult.NEED_VERIFICATION) {
+                // 第一次发送消息 → 触发验证码
+                // 缓存玩家原始消息，等验证通过后由插件代为广播
+                chatFilter.cachePendingMessage(p.getName(), msg);
+                chatFilter.generateMathVerification(p.getName());
+                e.setCancelled(true);
+                return; // 消息拦截，验证码通过后再广播
+            }
+            
+            if (vr == ChatFilterManager.VerificationResult.PENDING) {
+                // 验证码进行中，判断输入是否为答案
+                ChatFilterManager.VerificationResult checkResult = chatFilter.checkMathAnswer(p.getName(), msg);
+                if (checkResult == ChatFilterManager.VerificationResult.VERIFIED) {
+                    // 验证通过 → 广播缓存的消息
+                    // 消息格式：去掉插件前缀，像普通聊天消息一样
+                    String cachedMsg = chatFilter.pendingMessages.get(p.getName());
+                    if (cachedMsg != null) {
+                        Bukkit.broadcastMessage(p.getDisplayName() + ": " + cachedMsg);
+                        chatFilter.pendingMessages.remove(p.getName());
+                    }
+                    e.setCancelled(true); // 阻止原事件重复广播
+                    return;
+                } else {
+                    // 验证失败 → 吞噬缓存的消息
+                    chatFilter.pendingMessages.remove(p.getName());
+                    e.setCancelled(true);
+                    return;
+                }
+            }
+        }
+        
+        // ===== 以下是正常放行后的逻辑（老玩家/已验证玩家） =====
+        
+        // ★ 广告机检测（独立于URL过滤，覆盖私信/全场景）
+        if (chatFilter != null && chatFilter.checkAdBotBehavior(p.getName(), msg)) {
+            e.setCancelled(true);
+            p.kickPlayer("§c§l[反广告] 检测到广告机行为，已被踢出服务器");
+            chatFilter.sendAdminNotification(
+                "[安全告警] 检测到广告机",
+                "玩家: " + p.getName() + "\n" +
+                "行为: 短时间内多次发送非白名单链接且包含推广内容\n" +
+                "IP: " + (p.getAddress() != null ? p.getAddress().getAddress().getHostAddress() : "未知") +
+                "\n时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
+            );
+            return;
+        }
+        
         // ★ CDK/经济/债券输入拦截 — 必须在所有聊天处理之前
         if (this.getCDK() != null && this.getCDK().isListening(p.getName())) {
             e.setCancelled(true);
@@ -2639,6 +2744,21 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ===== 广告机检测 =====
+        if (chatFilter.checkAdBotBehavior(p.getName(), msg)) {
+            e.setCancelled(true);
+            p.kickPlayer("§c§l[反广告] 检测到广告机行为，已被踢出服务器");
+            // 发送管理员通知邮件
+            chatFilter.sendAdminNotification(
+                "[安全告警] 检测到广告机",
+                "玩家: " + p.getName() + "\n" +
+                "行为: 短时间内多次发送非白名单链接且包含推广内容\n" +
+                "IP: " + (p.getAddress() != null ? p.getAddress().getAddress().getHostAddress() : "未知") +
+                "\n时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
+            );
+            return;
+        }
+        
         // ===== URL检测 =====
         List<String> urls =
                 chatFilter.extractUrls(msg);
@@ -2698,6 +2818,21 @@ public class Main extends JavaPlugin
 
         // 处罚
         chatFilter.applyPunishment(p, count);
+        
+        // ===== 广告机检测（独立于URL过滤） =====
+        if (chatFilter.checkAdBotBehavior(p.getName(), msg)) {
+            e.setCancelled(true);
+            p.kickPlayer("§c§l[反广告] 检测到广告机行为，已被踢出服务器");
+            chatFilter.sendAdminNotification(
+                "[安全告警] 检测到广告机",
+                "玩家: " + p.getName() + "\n" +
+                "行为: 短时间内多次发送非白名单链接且包含推广内容\n" +
+                "IP: " + (p.getAddress() != null ? p.getAddress().getAddress().getHostAddress() : "未知") +
+                "\n时间: " + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
+            );
+            return;
+        }
+        
         // ===== 补签确认 =====
         if (pendingBackCheck.containsKey(
                 p.getName())) {
@@ -2737,6 +2872,36 @@ public class Main extends JavaPlugin
             return;
         }
 
+    }
+
+// ==================== 聊天过滤辅助方法 ====================
+
+    /**
+     * 过滤内容中的链接（用于告示牌、编辑书等非聊天场景）
+     * @return 是否有违规链接
+     */
+    private boolean filterLinkInContent(Player p, String content) {
+        if (content == null || content.isEmpty()) return false;
+        if (chatFilter == null || !chatFilter.isEnabled()) return false;
+        if (chatFilter.isPlayerWhitelisted(p.getName())) return false;
+        
+        List<String> urls = chatFilter.extractUrls(content);
+        if (urls.isEmpty()) return false;
+        
+        List<String> blocked = new ArrayList<>();
+        for (String url : urls) {
+            if (!chatFilter.isWhitelisted(url)) {
+                blocked.add(url);
+            }
+        }
+        if (blocked.isEmpty()) return false;
+        
+        p.sendMessage(chatFilter.msg("chat_url_blocked", "url", blocked.get(0)));
+        chatFilter.incrementViolation(p.getName());
+        int count = chatFilter.getViolationCount(p.getName());
+        p.sendMessage(chatFilter.msg("chat_url_violation", "count", String.valueOf(count)));
+        chatFilter.applyPunishment(p, count);
+        return true;
     }
 
     // 在 getter 区域添加

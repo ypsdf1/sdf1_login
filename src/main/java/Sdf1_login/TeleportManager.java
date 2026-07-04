@@ -232,7 +232,8 @@ public class TeleportManager implements Listener {
         if (senders == null || !senders.contains(sender)) {
             return false;
         }
-        String key = receiver + ":" + sender;
+        // ★ 修复：teleportRequestTimes 存的是 sender:receiver（发送者在前），不是 receiver:sender
+        String key = sender + ":" + receiver;
         return !isTeleportRequestExpired(key);
     }
     

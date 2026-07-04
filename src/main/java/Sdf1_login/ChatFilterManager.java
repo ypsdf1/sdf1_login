@@ -34,10 +34,218 @@ public class ChatFilterManager {
             new ConcurrentHashMap<>();
     private final Map<String, String> messages =
             new LinkedHashMap<>();
+    // ★ 广告机检测：记录每个玩家发送链接的频率
+    private final Map<String, List<Long>> linkSendHistory =
+            new ConcurrentHashMap<>();
+    // ★ 挂机检测
+    private final Map<String, Long> playerLastActiveTime =
+            new ConcurrentHashMap<>();
+    // ★ 管理员邮件地址
+    private String adminEmail = "admin@example.com";
     private boolean notifyAdmin = true;
     private boolean notifyAll = false;
     private int muteDuration = 300;
     private boolean enabled = true;
+    
+    // ★ 验证码数据存储
+    private final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
+    
+    // ============================================================
+    // ★ 新玩家验证码系统
+    // ============================================================
+    
+    static class VerificationData {
+        long createTime;
+        int a, b, op; // 0=加法, 1=减法, 2=乘法
+        boolean completed;
+        
+        VerificationData(int a, int b, int op) {
+            this.createTime = System.currentTimeMillis();
+            this.a = a; this.b = b; this.op = op;
+        }
+        
+        boolean isExpired() {
+            return System.currentTimeMillis() - createTime > 30000;
+        }
+    }
+
+    /** 验证码结果：通过/失败 */
+    public enum VerificationResult {
+        NEED_VERIFICATION, // 需要验证码
+        PENDING,           // 验证码进行中
+        VERIFIED,          // 已验证
+        FAILED             // 验证失败（消息吞噬）
+    }
+
+    /** 验证码答案缓存，供外部判断是否为答案 */
+    public boolean isPendingVerificationAnswer(String playerName, String msg) {
+        VerificationData vd = verificationData.get(playerName);
+        if (vd == null || vd.completed) return false;
+        // 尝试作为答案检查
+        VerificationResult result = checkMathAnswer(playerName, msg);
+        return result != VerificationResult.FAILED; // 通过或进行中都是有效的答案输入
+    }
+
+    /**
+     * 检查玩家是否需要验证码
+     */
+    public VerificationResult checkNewPlayerVerification(Player p) {
+        String name = p.getName();
+
+        // 已验证过的玩家不需要
+        if (verificationData.containsKey(name)) {
+            VerificationData vd = verificationData.get(name);
+            if (vd.completed) {
+                return VerificationResult.VERIFIED;
+            }
+            // 正在进行验证（等待答案）
+            if (vd.isExpired()) {
+                verificationData.remove(name);
+                return VerificationResult.NEED_VERIFICATION;
+            }
+            return VerificationResult.PENDING;
+        }
+
+        // 检查玩家加入时间是否≤1小时
+        if (!isNewPlayerUnder1Hour(p)) {
+            // 老玩家：快速验证并标记为已完成
+            generateMathVerification(name);
+            verificationData.get(name).completed = true;
+            verificationData.remove(name);
+            return VerificationResult.VERIFIED;
+        }
+
+        // 新玩家 → 需要验证
+        return VerificationResult.NEED_VERIFICATION;
+    }
+
+    /**
+     * 生成数学题验证码
+     */
+    public void generateMathVerification(String playerName) {
+        Random rand = new Random();
+        int op = rand.nextInt(3); // 0=加, 1=减, 2=乘
+        int a, b, answer;
+
+        switch (op) {
+            case 0: // 加法
+                a = rand.nextInt(10) + 1;
+                b = rand.nextInt(10) + 1;
+                answer = a + b;
+                break;
+            case 1: // 减法
+                a = rand.nextInt(10) + 2;
+                b = rand.nextInt(a) + 1;
+                answer = a - b;
+                break;
+            default: // 乘法
+                a = rand.nextInt(10) + 1;
+                b = rand.nextInt(10) + 1;
+                answer = a * b;
+                break;
+        }
+
+        String opSymbol = switch (op) {
+            case 0 -> "+";
+            case 1 -> "-";
+            default -> "×";
+        };
+
+        verificationData.put(playerName, new VerificationData(a, b, op));
+
+        org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
+            Player p = org.bukkit.Bukkit.getPlayer(playerName);
+            if (p != null && p.isOnline()) {
+                p.sendMessage("§e§l[验证码] §f请回答: §e" + a + " " + opSymbol + " " + b + " = ?");
+                p.sendMessage("§7(30秒内输入答案)");
+            }
+        });
+    }
+
+    /**
+     * 检查玩家回答是否正确
+     * @return VERIFIED=正确放行, FAILED=错误吞噬
+     */
+    public VerificationResult checkMathAnswer(String playerName, String answerStr) {
+        VerificationData vd = verificationData.get(playerName);
+        if (vd == null) return VerificationResult.VERIFIED; // 无验证码 → 放行
+
+        if (vd.isExpired()) {
+            verificationData.remove(playerName);
+            return VerificationResult.FAILED; // 过期 → 吞
+        }
+
+        try {
+            int ans = Integer.parseInt(answerStr.trim());
+            int expected;
+            switch (vd.op) {
+                case 0 -> expected = vd.a + vd.b;
+                case 1 -> expected = vd.a - vd.b;
+                default -> expected = vd.a * vd.b;
+            }
+
+            if (ans == expected) {
+                vd.completed = true;
+                verificationData.remove(playerName);
+                return VerificationResult.VERIFIED;
+            } else {
+                verificationData.remove(playerName);
+                return VerificationResult.FAILED;
+            }
+        } catch (NumberFormatException e) {
+            return VerificationResult.FAILED; // 非数字 → 吞
+        }
+    }
+
+    // ★ 临时缓存玩家未验证的消息，等验证通过后由插件代为广播
+    public final Map<String, String> pendingMessages = new ConcurrentHashMap<>();
+
+    /** 缓存玩家消息，等验证通过时代为广播 */
+    public void cachePendingMessage(String playerName, String message) {
+        pendingMessages.put(playerName, message);
+    }
+
+    /** 广播缓存的消息给全服 */
+    public void broadcastCachedMessage(String playerName, String message) {
+        pendingMessages.remove(playerName); // 广播后清除缓存
+        Bukkit.broadcastMessage(message);   // 普通广播，无前缀
+    }
+
+    /**
+     * 清理过期的验证码
+     */
+    public void cleanupExpiredVerifications() {
+        long now = System.currentTimeMillis();
+        verificationData.entrySet().removeIf(e -> {
+            if (e.getValue().isExpired() && !e.getValue().completed) {
+                return true;
+            }
+            return false;
+        });
+    }
+
+    /**
+     * 检查玩家是否为新玩家（加入≤1小时）
+     */
+    public boolean isNewPlayerUnder1Hour(Player p) {
+        if (p == null || !p.isOnline()) return false;
+        try {
+            Main mainPlugin = (Main) plugin;
+            DatabaseManager db = mainPlugin.getDb();
+            if (db == null) return true; // 默认放行
+            Object regTimeObj = db.getField(p.getName(), "register_time");
+            if (regTimeObj == null || ((Number) regTimeObj).longValue() == 0) {
+                return true; // 没有注册时间 → 新玩家
+            }
+            long regTime = ((Number) regTimeObj).longValue() * 1000;
+            return (System.currentTimeMillis() - regTime) < 3600000;
+        } catch (Exception e) {
+            return true; // 出错时默认放行
+        }
+    }
+
+
+    // ==================== 广告机检测 ====================
 
     public boolean isEnabled() {
         return enabled;
@@ -608,5 +816,107 @@ public class ChatFilterManager {
                 || s.contains("开启")
                 || s.contains("启用")
                 || s.contains("是");
+    }
+
+    // ==================== 广告机检测 ====================
+
+    /**
+     * 检查消息是否包含第三方推广内容（邮件、游戏内推广等）
+     */
+    public boolean isAdvertisingContent(String msg) {
+        String lower = msg.toLowerCase();
+        // 检测关键词
+        String[] keywords = {"群", "群号", "QQ", "qq群", "加群", "交流群", "服务器", "开服", "联机", "白嫖", "免费送", "折扣", "打折", "代充", "充值优惠", "外挂", "脚本", "辅助", "破解"};
+        for (String kw : keywords) {
+            if (lower.contains(kw)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 记录玩家发送链接的行为，检测广告机
+     * @return 如果检测到广告机返回true
+     */
+    public boolean checkAdBotBehavior(String playerName, String msg) {
+        long now = System.currentTimeMillis();
+        
+        // 提取URL
+        List<String> urls = extractUrls(msg);
+        if (urls.isEmpty()) return false;
+        
+        // 检查是否全部非白名单
+        boolean hasNonWhitelisted = false;
+        for (String url : urls) {
+            if (!isWhitelisted(url)) {
+                hasNonWhitelisted = true;
+                break;
+            }
+        }
+        if (!hasNonWhitelisted) return false;
+        
+        // 检查是否包含推广关键词
+        if (!isAdvertisingContent(msg)) return false;
+        
+        // 记录链接发送时间
+        linkSendHistory.computeIfAbsent(playerName, k -> new ArrayList<>()).add(now);
+        
+        // 清理超过10分钟前的记录
+        List<Long> history = linkSendHistory.get(playerName);
+        history.removeIf(t -> (now - t) > 600000);
+        
+        // 10分钟内发送超过3次非白名单链接 → 广告机
+        if (history.size() >= 3) {
+            linkSendHistory.remove(playerName);
+            return true; // 检测到广告机
+        }
+        
+        return false;
+    }
+
+    /**
+     * 标记玩家活跃（用于挂机检测）
+     */
+    public void markPlayerActive(String playerName) {
+        playerLastActiveTime.put(playerName, System.currentTimeMillis());
+    }
+
+    /**
+     * 检查玩家是否长时间挂机（超过5分钟）
+     */
+    public boolean isPlayerIdle(String playerName, long idleThresholdMs) {
+        Long lastActive = playerLastActiveTime.get(playerName);
+        if (lastActive == null) return true;
+        return (System.currentTimeMillis() - lastActive) > idleThresholdMs;
+    }
+
+    /**
+     * 发送管理员通知邮件
+     */
+    public void sendAdminNotification(String subject, String body) {
+        // 异步发送，不阻塞主线程
+        org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                EmailManager emailMgr = ((Main) plugin).getEmail();
+                if (emailMgr != null) {
+                    emailMgr.sendBody(adminEmail, subject, body);
+                    plugin.getLogger().info("[广告机检测] 已发送管理员通知: " + subject);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[广告机检测] 发送管理员通知失败: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * 定时检查空闲玩家
+     */
+    public void checkIdlePlayers() {
+        long idleThreshold = 5 * 60 * 1000L; // 5分钟
+        org.bukkit.Bukkit.getOnlinePlayers().forEach(p -> {
+            if (isPlayerIdle(p.getName(), idleThreshold)) {
+                p.sendMessage("§c[系统] 您已连续空闲超过5分钟，即将被踢出");
+                playerLastActiveTime.put(p.getName(), System.currentTimeMillis()); // 刷新计时
+            }
+        });
     }
 }
