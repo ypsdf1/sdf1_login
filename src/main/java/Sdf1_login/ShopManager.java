@@ -1605,7 +1605,8 @@ public class ShopManager implements Listener {
 
         // 3. 处理 <p style="color:#xxx"> 或 <p style="color:xxx">
         java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
-            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{6}|[a-zA-Z_]+)[\"']>(.*?)</p>");
+            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))[\"']>(.*?)</p>",
+            java.util.regex.Pattern.CASE_INSENSITIVE);
         java.util.regex.Matcher pMatcher = pPattern.matcher(result);
         StringBuilder sb = new StringBuilder();
         while (pMatcher.find()) {
@@ -1633,6 +1634,36 @@ public class ShopManager implements Listener {
      */
     private String convertToMcColor(String color) {
         if (color == null || color.isEmpty()) return "";
+        // 处理 rgb/rgba 颜色函数
+        String lowerColor = color.toLowerCase();
+        if (lowerColor.startsWith("rgb(") || lowerColor.startsWith("rgba(")) {
+            try {
+                // 提取括号内的内容
+                int start = color.indexOf('(') + 1;
+                int end = color.lastIndexOf(')');
+                if (start > 0 && end > start) {
+                    String content = color.substring(start, end);
+                    String[] parts = content.split(",");
+                    if (parts.length >= 3) {
+                        int r = Integer.parseInt(parts[0].trim());
+                        int g = Integer.parseInt(parts[1].trim());
+                        int b = Integer.parseInt(parts[2].trim());
+                        // 转换为十六进制
+                        String hex = String.format("#%02x%02x%02x", r, g, b);
+                        // 递归调用，使用十六进制逻辑
+                        return convertToMcColor(hex);
+                    }
+                }
+            } catch (Exception e) {
+                // 解析失败，返回默认白色
+                return "§f";
+            }
+        }
+        // 处理 hsl/hsla 颜色函数（简单映射到最接近的Minecraft颜色）
+        if (lowerColor.startsWith("hsl(") || lowerColor.startsWith("hsla(")) {
+            // 由于HSL解析复杂，暂时返回默认白色
+            return "§f";
+        }
         // 十六进制颜色
         if (color.startsWith("#")) {
             String hex = color.substring(1).toLowerCase();
