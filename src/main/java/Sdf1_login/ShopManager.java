@@ -1605,7 +1605,7 @@ public class ShopManager implements Listener {
 
         // 3. 处理 <p style="color:#xxx"> 或 <p style="color:xxx">
         java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
-            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))\\s*;?[\"']>(.*?)</p>",
+            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))\\s*;?[\"']\\s*>(.*?)</p>",
             java.util.regex.Pattern.CASE_INSENSITIVE);
         java.util.regex.Matcher pMatcher = pPattern.matcher(result);
         StringBuilder sb = new StringBuilder();
