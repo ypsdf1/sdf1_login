@@ -1259,7 +1259,7 @@ public class ChatFilterManager {
         long idleThreshold = 5 * 60 * 1000L; // 5分钟
         org.bukkit.Bukkit.getOnlinePlayers().forEach(p -> {
             if (isPlayerIdle(p.getName(), idleThreshold)) {
-                p.sendMessage("§c[系统] 您已连续空闲超过5分钟，即将被踢出");
+                // 不再发送空闲消息，仅刷新计时
                 playerLastActiveTime.put(p.getName(), System.currentTimeMillis()); // 刷新计时
             }
         });

@@ -39,7 +39,7 @@ public class QuickBack implements Listener, CommandExecutor, TabCompleter {
     // ★ 定时器引用（用于 shutdown 时取消）
     private BukkitTask scheduleTask = null;
     
-    private static final long COOLDOWN_MS = 5 * 60 * 1000; // 5分钟冷却
+    private static final long COOLDOWN_MS = 10 * 1000; // 10秒冷却
 
     public QuickBack(Main plugin) {
         this.plugin = plugin;
