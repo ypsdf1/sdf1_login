@@ -1596,10 +1596,10 @@ public class ShopManager implements Listener {
         result = result.replace("&o", "§o");
         result = result.replace("&r", "§r");
 
-        // 2. 处理HTML标签
-        result = result.replaceAll("<b>(.*?)</b>", "§l$1§r");
-        result = result.replaceAll("<u>(.*?)</u>", "§n$1§r");
-        result = result.replaceAll("<i>(.*?)</i>", "§o$1§r");
+        // 2. 处理HTML标签（先处理<b><u><i>，不插入§r结尾，color由<p>统一控制）
+        result = result.replaceAll("<b>(.*?)</b>", "§l$1");
+        result = result.replaceAll("<u>(.*?)</u>", "§n$1");
+        result = result.replaceAll("<i>(.*?)</i>", "§o$1");
         result = result.replaceAll("<br>", "\n");
         result = result.replaceAll("<br/>", "\n");
 
