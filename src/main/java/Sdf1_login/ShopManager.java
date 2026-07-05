@@ -1605,7 +1605,7 @@ public class ShopManager implements Listener {
 
         // 3. 处理 <p style="color:#xxx"> 或 <p style="color:xxx">
         java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
-            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))[\"']>(.*?)</p>",
+            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))\\s*;?[\"']>(.*?)</p>",
             java.util.regex.Pattern.CASE_INSENSITIVE);
         java.util.regex.Matcher pMatcher = pPattern.matcher(result);
         StringBuilder sb = new StringBuilder();
@@ -1687,16 +1687,15 @@ public class ShopManager implements Listener {
         }
         // 颜色名称
         String name = color.toLowerCase().replace("_", "");
-        if (name.equals("red") || name.equals("darkred") || name.equals("dark_red")) return "§c";
-        if (name.equals("green") || name.equals("darkgreen") || name.equals("dark_green") || name.equals("lime")) return "§a";
-        if (name.equals("blue") || name.equals("darkblue") || name.equals("dark_blue") || name.equals("darkaqua")) return "§9";
-        if (name.equals("yellow")) return "§e";
-        if (name.equals("white")) return "§f";
-        if (name.equals("black")) return "§0";
-        if (name.equals("gray") || name.equals("grey") || name.equals("darkgray")) return "§7";
-        if (name.equals("gold") || name.equals("yellow")) return "§6";
-        if (name.equals("aqua") || name.equals("lightblue")) return "§b";
-        if (name.equals("lightpurple") || name.equals("purple") || name.equals("magenta")) return "§d";
+        if (name.equals("red") || name.equals("darkred") || name.equals("dark_red") || name.equals("crimson") || name.equals("salmon") || name.equals("tomato") || name.equals("coral")) return "§c";
+        if (name.equals("green") || name.equals("darkgreen") || name.equals("dark_green") || name.equals("lime") || name.equals("chartreuse") || name.equals("olive") || name.equals("olivegreen")) return "§a";
+        if (name.equals("blue") || name.equals("darkblue") || name.equals("dark_blue") || name.equals("darkaqua") || name.equals("navy") || name.equals("indigo")) return "§9";
+        if (name.equals("yellow") || name.equals("gold") || name.equals("goldenrod")) return "§e";
+        if (name.equals("white") || name.equals("silver") || name.equals("snow") || name.equals("ivory")) return "§f";
+        if (name.equals("black") || name.equals("onyx") || name.equals("jetblack")) return "§0";
+        if (name.equals("gray") || name.equals("grey") || name.equals("darkgray") || name.equals("darkgrey") || name.equals("dimgray") || name.equals("dimgrey")) return "§7";
+        if (name.equals("aqua") || name.equals("lightblue") || name.equals("turquoise") || name.equals("teal")) return "§b";
+        if (name.equals("lightpurple") || name.equals("purple") || name.equals("magenta") || name.equals("plum") || name.equals("orchid") || name.equals("violet")) return "§d";
         if (name.equals("darkred")) return "§4";
         if (name.equals("darkblue")) return "§1";
         if (name.equals("darkgreen")) return "§2";
@@ -1704,6 +1703,9 @@ public class ShopManager implements Listener {
         if (name.equals("darkpurple")) return "§5";
         if (name.equals("darkgray") || name.equals("darkgrey")) return "§8";
         if (name.equals("lightgray") || name.equals("lightgrey")) return "§7";
+        if (name.equals("orange") || name.equals("orangered")) return "§6";
+        if (name.equals("pink") || name.equals("hotpink") || name.equals("lightpink")) return "§d";
+        if (name.equals("brown") || name.equals("saddlebrown") || name.equals("sienna") || name.equals("chocolate")) return "§4";
         return "§f"; // 默认白色
     }
 
