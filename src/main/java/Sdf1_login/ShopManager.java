@@ -16,7 +16,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.Base64;
-import java.util.concurrent.ConcurrentHashMap;
+import java.text.SimpleDateFormat;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 import org.bukkit.potion.PotionEffect;
@@ -31,6 +31,10 @@ public class ShopManager implements Listener {
     private final Main plugin;
     private final List<ShopCategory> categories =
             new ArrayList<>();
+    // ===== 出售限额配置 =====
+    private int maxSellLimit = 15000; // 默认1.5万
+    private String maxSellMessage = "";
+    private boolean maxSellMessageEnabled = false;
     private final List<RefundRecord> refundRecords =
             new ArrayList<>();
     private final Map<UUID, Integer> activeDiscount =
@@ -58,16 +62,6 @@ public class ShopManager implements Listener {
             new HashMap<>();
     // 替换字段
     private final Map<UUID, Long> couponApplyTime = new HashMap<>();
-
-    // ===== 商店出售全局IP段限速 =====
-    // IP段 → 累计卖出债券金额
-    private final Map<String, Long> ipSegmentSales = new ConcurrentHashMap<>();
-    // IP段 → 重置时间戳（毫秒），到达后清零
-    private final Map<String, Long> ipSegmentResetTime = new ConcurrentHashMap<>();
-    // IP段前缀（前三段，如 192.168.1）
-    private static final int IP_SEGMENT_LEN = 3;
-    private static final long HOURLY_LIMIT_MS = 60L * 60L * 1000L; // 1小时
-    private static final long HOURLY_LIMIT_BONDS = 15000L; // 每小时最多1.5万
 
 
 
@@ -1566,24 +1560,176 @@ public class ShopManager implements Listener {
 
     // ===== 出售 =====
 
+    /**
+     * HTML解码器，支持:
+     * - &颜色代码 (如 &c红色, &a绿色)
+     * - <b>加粗</b>, <u>下划线</u>, <i>斜体</i>
+     * - <br>换行
+     * - <p style="...">段落</p> (支持color属性)
+     */
+    private String decodeHtml(String input) {
+        if (input == null || input.isEmpty()) return input;
+        String result = input;
+
+        // 1. 先处理 &颜色代码 → §颜色代码
+        result = result.replace("&0", "§0");
+        result = result.replace("&1", "§1");
+        result = result.replace("&2", "§2");
+        result = result.replace("&3", "§3");
+        result = result.replace("&4", "§4");
+        result = result.replace("&5", "§5");
+        result = result.replace("&6", "§6");
+        result = result.replace("&7", "§7");
+        result = result.replace("&8", "§8");
+        result = result.replace("&9", "§9");
+        result = result.replace("&a", "§a");
+        result = result.replace("&b", "§b");
+        result = result.replace("&c", "§c");
+        result = result.replace("&d", "§d");
+        result = result.replace("&e", "§e");
+        result = result.replace("&f", "§f");
+        // 样式代码
+        result = result.replace("&k", "§k");
+        result = result.replace("&l", "§l");
+        result = result.replace("&m", "§m");
+        result = result.replace("&n", "§n");
+        result = result.replace("&o", "§o");
+        result = result.replace("&r", "§r");
+
+        // 2. 处理HTML标签
+        result = result.replaceAll("<b>(.*?)</b>", "§l$1§r");
+        result = result.replaceAll("<u>(.*?)</u>", "§n$1§r");
+        result = result.replaceAll("<i>(.*?)</i>", "§o$1§r");
+        result = result.replaceAll("<br>", "\n");
+        result = result.replaceAll("<br/>", "\n");
+
+        // 3. 处理 <p style="color:#xxx"> 或 <p style="color:xxx">
+        java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
+            "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{6}|[a-zA-Z_]+)[\"']>(.*?)</p>");
+        java.util.regex.Matcher pMatcher = pPattern.matcher(result);
+        StringBuilder sb = new StringBuilder();
+        while (pMatcher.find()) {
+            String color = pMatcher.group(1);
+            String text = pMatcher.group(2);
+            String mcColor = convertToMcColor(color);
+            pMatcher.appendReplacement(sb, mcColor + text + "§r");
+        }
+        pMatcher.appendTail(sb);
+        result = sb.toString();
+
+        // 4. 处理 <p>段落</p> (无style) → 换行分隔
+        result = result.replaceAll("<p>(.*?)</p>", "$1\n");
+
+        // 5. 移除残留的style标签属性
+        result = result.replaceAll("<p[^>]*>", "");
+        result = result.replaceAll("</p>", "");
+
+        return result;
+    }
+
+    /**
+     * 将颜色值转换为Minecraft颜色代码
+     * 支持: #RRGGBB 十六进制, 或颜色名称
+     */
+    private String convertToMcColor(String color) {
+        if (color == null || color.isEmpty()) return "";
+        // 十六进制颜色
+        if (color.startsWith("#")) {
+            String hex = color.substring(1).toLowerCase();
+            if (hex.equals("ff5555") || hex.equals("ff0000")) return "§c";
+            if (hex.equals("55ff55") || hex.equals("00ff00")) return "§a";
+            if (hex.equals("5555ff") || hex.equals("0000ff")) return "§9";
+            if (hex.equals("ffff55") || hex.equals("ffff00")) return "§e";
+            if (hex.equals("ffffff")) return "§f";
+            if (hex.equals("000000")) return "§0";
+            if (hex.equals("a0a0a0") || hex.equals("808080")) return "§7";
+            if (hex.equals("ffaa00")) return "§6";
+            if (hex.equals("55ffff")) return "§b";
+            if (hex.equals("ff55ff")) return "§d";
+            if (hex.equals("aa0000")) return "§4";
+            if (hex.equals("0000aa")) return "§1";
+            if (hex.equals("00aa00")) return "§2";
+            if (hex.equals("00aaaa")) return "§3";
+            if (hex.equals("aa00aa")) return "§5";
+            if (hex.equals("555555")) return "§8";
+            return "§f"; // 默认白色
+        }
+        // 颜色名称
+        String name = color.toLowerCase().replace("_", "");
+        if (name.equals("red") || name.equals("darkred") || name.equals("dark_red")) return "§c";
+        if (name.equals("green") || name.equals("darkgreen") || name.equals("dark_green") || name.equals("lime")) return "§a";
+        if (name.equals("blue") || name.equals("darkblue") || name.equals("dark_blue") || name.equals("darkaqua")) return "§9";
+        if (name.equals("yellow")) return "§e";
+        if (name.equals("white")) return "§f";
+        if (name.equals("black")) return "§0";
+        if (name.equals("gray") || name.equals("grey") || name.equals("darkgray")) return "§7";
+        if (name.equals("gold") || name.equals("yellow")) return "§6";
+        if (name.equals("aqua") || name.equals("lightblue")) return "§b";
+        if (name.equals("lightpurple") || name.equals("purple") || name.equals("magenta")) return "§d";
+        if (name.equals("darkred")) return "§4";
+        if (name.equals("darkblue")) return "§1";
+        if (name.equals("darkgreen")) return "§2";
+        if (name.equals("darkaqua") || name.equals("cyan")) return "§3";
+        if (name.equals("darkpurple")) return "§5";
+        if (name.equals("darkgray") || name.equals("darkgrey")) return "§8";
+        if (name.equals("lightgray") || name.equals("lightgrey")) return "§7";
+        return "§f"; // 默认白色
+    }
+
+    // ===== 占位符替换 =====
+    private String replacePlaceholders(String msg, String player, int used, int limit, String time) {
+        if (msg == null || msg.isEmpty()) return msg;
+        // 支持中英文占位符，任意括号
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]玩家[(\\(\\)\\[\\]\\{\\}【】)]", player);
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]player[(\\(\\)\\[\\]\\{\\}【】)]", player);
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]已出售金额[(\\(\\)\\[\\]\\{\\}【】)]", String.valueOf(used));
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]used[(\\(\\)\\[\\]\\{\\}【】)]", String.valueOf(used));
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]已使用额度[(\\(\\)\\[\\]\\{\\}【】)]", String.valueOf(used));
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]剩余额度[(\\(\\)\\[\\]\\{\\}【】)]", String.valueOf(limit));
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]limit[(\\(\\)\\[\\]\\{\\}【】)]", String.valueOf(limit));
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]下次重置时间[(\\(\\)\\[\\]\\{\\}【】)]", time);
+        msg = msg.replaceAll("[(\\(\\)\\[\\]\\{\\}【】)]time[(\\(\\)\\[\\]\\{\\}【】)]", time);
+        //同时支持%player%等格式
+        msg = msg.replace("%player%", player);
+        msg = msg.replace("%used%", String.valueOf(used));
+        msg = msg.replace("%limit%", String.valueOf(limit));
+        msg = msg.replace("%time%", time);
+        return msg;
+    }
+
     public boolean sellItem(Player p, ShopItem item,
                             int amount) {
         if (item == null) return false;
-
-        // ===== 全局出售IP限速检查 =====
-        String playerIp = getPlayerIp(p);
-        if (playerIp != null) {
-            String ipSeg = getIpSegment(playerIp);
-            if (ipSeg != null && isSellRateLimited(ipSeg)) {
-                // 静默拦截：不发钱不扣货
-                return false;
-            }
-        }
 
         // ★ 先判断售价，禁止出售的不收物品
         if (item.getEffectiveSellPrice() <= 0) {
             p.sendMessage("§c该商品不可出售");
             return false;
+        }
+
+        // ★ 出售限额检查
+        if (maxSellLimit != -1) {
+            int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
+            int remaining = maxSellLimit - todaySold;
+            int saleAmount = item.getEffectiveSellPrice() * amount;
+            if (saleAmount > remaining) {
+                if (maxSellMessageEnabled && maxSellMessage != null && !maxSellMessage.isEmpty()) {
+                    String msg = decodeHtml(maxSellMessage);
+                    // 计算下次重置时间（最早交易 + 1小时）
+                    long earliestTime = plugin.getBonds().getEarliestSellTimeInWindow(p.getName());
+                    String resetTime;
+                    if (earliestTime > 0) {
+                        resetTime = new java.text.SimpleDateFormat("HH:mm")
+                                .format(new java.util.Date(earliestTime + 3600000L));
+                    } else {
+                        resetTime = "现在";
+                    }
+                    msg = replacePlaceholders(msg, p.getName(), todaySold, remaining, resetTime);
+                    p.sendMessage(msg);
+                }
+                // 提示消息关闭时不打印任何消息
+                return false;
+            }
         }
 
         if (!p.getInventory().containsAtLeast(
@@ -1594,14 +1740,6 @@ public class ShopManager implements Listener {
         }
 
         int total = item.getEffectiveSellPrice() * amount;
-
-        // ===== 记录IP段销售额（必须在扣货发钱之前）=====
-        if (playerIp != null) {
-            String ipSeg = getIpSegment(playerIp);
-            if (ipSeg != null) {
-                addToIpSegmentSales(ipSeg, total);
-            }
-        }
 
         p.getInventory().removeItem(
                 getShopStack(item, amount));
@@ -1814,6 +1952,49 @@ public class ShopManager implements Listener {
             s.sendMessage("§a商店已重载，共 "
                     + categories.size()
                     + " 个分类");
+            return true;
+        }
+
+        if (sub.equals("setmax")) {
+            if (a.length < 3) {
+                s.sendMessage(
+                        "§e用法: shop setmax <金额(-1无限)>");
+                return true;
+            }
+            try {
+                int limit = Integer.parseInt(a[2]);
+                maxSellLimit = limit;
+                if (limit == -1) {
+                    s.sendMessage("§a出售限额已设为无限");
+                } else {
+                    s.sendMessage("§a出售限额已设为 §e" + limit + " §a枚债券/日");
+                }
+            } catch (NumberFormatException e) {
+                s.sendMessage("§c无效数字: " + a[2]);
+            }
+            return true;
+        }
+
+        if (sub.equals("maxmsg")) {
+            if (a.length < 3) {
+                s.sendMessage(
+                        "§e用法: shop maxmsg <内容/关闭/默认>");
+                return true;
+            }
+            // 拼接剩余参数作为消息内容
+            String msg = String.join(" ", Arrays.copyOfRange(a, 2, a.length));
+            if (msg.equalsIgnoreCase("关闭") || msg.equalsIgnoreCase("off")) {
+                maxSellMessageEnabled = false;
+                s.sendMessage("§a出售限额提示已关闭");
+            } else if (msg.equalsIgnoreCase("默认") || msg.equalsIgnoreCase("default")) {
+                maxSellMessage = "§c[商店] §e玩家 §f%player% §c在本时段内已出售 §e%used% §c枚债券，剩余可出售 §e%limit% §c枚。\n§c下次重置时间: §e%time%";
+                maxSellMessageEnabled = true;
+                s.sendMessage("§a出售限额提示已设为默认内容");
+            } else {
+                maxSellMessage = msg.replace("&", "§");
+                maxSellMessageEnabled = true;
+                s.sendMessage("§a出售限额提示已设置");
+            }
             return true;
         }
 
@@ -2539,14 +2720,6 @@ public class ShopManager implements Listener {
     // ===== 批量出售某商品全部数量 =====
     private void sellAllOf(Player p, ShopItem item) {
         if (item == null) return;
-        // ★ 先做IP限速检查（在扫描背包之前，避免不必要的消耗）
-        String sellIp = getPlayerIp(p);
-        if (sellIp != null) {
-            String ipSeg = getIpSegment(sellIp);
-            if (ipSeg != null && isSellRateLimited(ipSeg)) {
-                return; // 静默拦截
-            }
-        }
         // ★ 补上禁止出售检查
         if (item.getEffectiveSellPrice() <= 0) {
             p.sendMessage("§c该商品不可出售");
@@ -2564,6 +2737,30 @@ public class ShopManager implements Listener {
                 count++;
             }
         }
+        // ★ 出售限额检查
+        if (maxSellLimit != -1 && total > 0) {
+            int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
+            int remaining = maxSellLimit - todaySold;
+            int saleAmount = item.getEffectiveSellPrice() * total;
+            if (saleAmount > remaining) {
+                if (maxSellMessageEnabled && maxSellMessage != null && !maxSellMessage.isEmpty()) {
+                    String msg = decodeHtml(maxSellMessage);
+                    long earliestTime = plugin.getBonds().getEarliestSellTimeInWindow(p.getName());
+                    String resetTime;
+                    if (earliestTime > 0) {
+                        resetTime = new java.text.SimpleDateFormat("HH:mm")
+                                .format(new java.util.Date(earliestTime + 3600000L));
+                    } else {
+                        resetTime = "现在";
+                    }
+                    msg = replacePlaceholders(msg, p.getName(), todaySold, remaining, resetTime);
+                    p.sendMessage(msg);
+                }
+                // 提示消息关闭时不打印任何消息
+                return;
+            }
+        }
+
         if (total <= 0) {
             p.sendMessage("§c你没有可出售的 §e"
                     + item.getDisplayName());
@@ -2577,15 +2774,6 @@ public class ShopManager implements Listener {
             }
         }
         int money = item.getEffectiveSellPrice() * total;
-
-        // ===== 记录IP段销售额 =====
-        if (sellIp != null) {
-            String ipSeg = getIpSegment(sellIp);
-            if (ipSeg != null) {
-                addToIpSegmentSales(ipSeg, money);
-            }
-        }
-
         plugin.getBonds().addBonds(
                 p.getName(), money, "shop_sell",
                 item.getId(), "商店系统",
@@ -2653,64 +2841,4 @@ public class ShopManager implements Listener {
         }
         return it;
     }
-
-    // ===== 商店出售IP段限速 =====
-
-    /** 获取玩家IP */
-    private String getPlayerIp(Player p) {
-        if (p == null || p.getAddress() == null) return null;
-        return p.getAddress().getAddress().getHostAddress();
-    }
-
-    /** 截取IP前三段，如 192.168.1 */
-    private String getIpSegment(String ip) {
-        if (ip == null) return null;
-        String[] parts = ip.split("\\.");
-        if (parts.length < IP_SEGMENT_LEN) return ip;
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < IP_SEGMENT_LEN; i++) {
-            if (i > 0) sb.append('.');
-            sb.append(parts[i]);
-        }
-        return sb.toString();
-    }
-
-    /** 检查IP段是否受限，受限返回true */
-    private boolean isSellRateLimited(String ipSeg) {
-        long now = System.currentTimeMillis();
-
-        // 检查是否需要重置（1小时内累计已达上限 → 冷却）
-        Long resetTs = ipSegmentResetTime.get(ipSeg);
-        if (resetTs != null) {
-            if (now >= resetTs) {
-                // 冷却期结束，重置
-                ipSegmentSales.remove(ipSeg);
-                ipSegmentResetTime.remove(ipSeg);
-                return false;
-            }
-            return true;
-        }
-
-        // 未设置重置时间 → 检查累计额
-        long segmentTotal = ipSegmentSales.getOrDefault(ipSeg, 0L);
-        return segmentTotal >= HOURLY_LIMIT_BONDS;
-    }
-
-    /** 累加IP段销售额 */
-    private void addToIpSegmentSales(String ipSeg, long amount) {
-        long now = System.currentTimeMillis();
-
-        // 如果已超限且在冷却期内，直接跳过
-        if (isSellRateLimited(ipSeg)) return;
-
-        long current = ipSegmentSales.getOrDefault(ipSeg, 0L);
-        long newTotal = current + amount;
-        ipSegmentSales.put(ipSeg, newTotal);
-
-        // 刚触发限制，设置1小时后的冷却重置时间
-        if (current < HOURLY_LIMIT_BONDS && newTotal >= HOURLY_LIMIT_BONDS) {
-            ipSegmentResetTime.put(ipSeg, now + HOURLY_LIMIT_MS);
-        }
-    }
 }
-

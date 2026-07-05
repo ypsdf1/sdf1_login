@@ -5,7 +5,6 @@ import org.bukkit.entity.Player;
 import java.io.File;
 import java.sql.*;
 import java.util.*;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 public class BondManager {
 
@@ -14,20 +13,20 @@ public class BondManager {
 
     // ===== 交易监听器 =====
     public interface TransactionListener {
-        void onTransactionLogged(String playerName, String type, int amount);
+        void onTransaction(String playerName, String type, int amount);
     }
-    private final List<TransactionListener> transactionListeners = new CopyOnWriteArrayList<>();
+    private final List<TransactionListener> transactionListeners = new ArrayList<>();
 
     public void addTransactionListener(TransactionListener listener) {
         transactionListeners.add(listener);
     }
 
-    private void notifyTransactionListeners(String playerName, String type, int amount) {
+    private void fireTransactionEvent(String playerName, String type, int amount) {
         for (TransactionListener listener : transactionListeners) {
             try {
-                listener.onTransactionLogged(playerName, type, amount);
+                listener.onTransaction(playerName, type, amount);
             } catch (Exception e) {
-                plugin.getLogger().warning("[BondManager] 交易监听器异常: " + e.getMessage());
+                e.printStackTrace();
             }
         }
     }
@@ -382,11 +381,11 @@ public class BondManager {
             ps.setLong(9, System.currentTimeMillis());
             ps.executeUpdate();
             ps.close();
+            // 触发交易监听器
+            fireTransactionEvent(player, type, amount);
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        // ★ 通知监听器：交易已记录
-        notifyTransactionListeners(player, type, amount);
     }
 
 
@@ -721,40 +720,87 @@ public class BondManager {
         }
     }
 
-    // ======================== 同步用：获取指定时间之后的交易 ========================
+    // ===== 获取玩家最近1小时出售总额 =====
+    public int getTodaySellTotal(String player) {
+        return getSellTotalInWindow(player, System.currentTimeMillis() - 3600000L);
+    }
 
-    /**
-     * 获取指定时间之后的所有交易记录（用于推送到Web端）
-     * 使用时间而非ID追踪，确保shop_buy合并后的UPDATE记录也能被同步
-     * @param afterTime 上次同步的最晚时间（毫秒），0表示从头开始
-     * @return 交易记录列表
-     */
-    public List<Map<String, Object>> getTransactionsAfterTime(long afterTime) {
-        List<Map<String, Object>> list = new ArrayList<>();
+    private int getSellTotalInWindow(String player, long since) {
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT * FROM bond_transaction "
-                            + "WHERE time > ? "
-                            + "ORDER BY time ASC "
-                            + "LIMIT 200");
+                    "SELECT COALESCE(SUM(amount), 0) FROM bond_transaction "
+                            + "WHERE player_name=? AND type='shop_sell' AND time >= ?");
+            ps.setString(1, player);
+            ps.setLong(2, since);
+            ResultSet rs = ps.executeQuery();
+            int total = 0;
+            if (rs.next()) {
+                total = rs.getInt(1);
+            }
+            rs.close();
+            ps.close();
+            return total;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return 0;
+        }
+    }
+
+    /**
+     * 获取玩家最近1小时出售窗口中最早交易的时间戳。
+     * 返回0表示窗口内无交易。
+     */
+    public long getEarliestSellTimeInWindow(String player) {
+        long since = System.currentTimeMillis() - 3600000L;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT MIN(time) FROM bond_transaction "
+                            + "WHERE player_name=? AND type='shop_sell' AND time >= ?");
+            ps.setString(1, player);
+            ps.setLong(2, since);
+            ResultSet rs = ps.executeQuery();
+            long earliest = 0;
+            if (rs.next()) {
+                earliest = rs.getLong(1);
+            }
+            rs.close();
+            ps.close();
+            return earliest;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return 0;
+        }
+    }
+
+    /**
+     * 获取指定时间之后的所有交易记录（用于Web同步）
+     */
+    public List<Map<String, Object>> getTransactionsAfterTime(long afterTime) {
+        List<Map<String, Object>> transactions = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name, type, amount, target_player, operator, reason, balance_before, balance_after, time "
+                            + "FROM bond_transaction WHERE time > ? ORDER BY time ASC");
             ps.setLong(1, afterTime);
             ResultSet rs = ps.executeQuery();
             while (rs.next()) {
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("id", rs.getInt("id"));
-                row.put("player_name", rs.getString("player_name"));
-                row.put("type", rs.getString("type"));
-                row.put("amount", rs.getInt("amount"));
-                row.put("target_player", rs.getString("target_player"));
-                row.put("operator", rs.getString("operator"));
-                row.put("reason", rs.getString("reason"));
-                row.put("balance_before", rs.getInt("balance_before"));
-                row.put("balance_after", rs.getInt("balance_after"));
-                row.put("time", rs.getLong("time"));
-                list.add(row);
+                Map<String, Object> tx = new LinkedHashMap<>();
+                tx.put("player_name", rs.getString("player_name"));
+                tx.put("type", rs.getString("type"));
+                tx.put("amount", rs.getInt("amount"));
+                tx.put("target_player", rs.getString("target_player"));
+                tx.put("operator", rs.getString("operator"));
+                tx.put("reason", rs.getString("reason"));
+                tx.put("balance_before", rs.getInt("balance_before"));
+                tx.put("balance_after", rs.getInt("balance_after"));
+                tx.put("time", rs.getLong("time"));
+                transactions.add(tx);
             }
-            rs.close(); ps.close();
-        } catch (SQLException e) { e.printStackTrace(); }
-        return list;
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return transactions;
     }
 }
