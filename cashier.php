@@ -88,6 +88,19 @@ $initialState = json_encode([
     .online-dot.on { background:var(--green); box-shadow:0 0 8px var(--green); }
     .online-dot.off { background:var(--dim); }
 
+    /* 统一主界面输入框/下拉框样式：修复深色主题下浏览器默认浅色控件"样式不搭"与布局错位问题 */
+    .app input, .app select, .app textarea {
+        padding:9px 11px; background:var(--bg); border:1px solid var(--border);
+        border-radius:7px; color:var(--text); font-size:13px; outline:none;
+        font-family:inherit; transition:border .2s, box-shadow .2s;
+    }
+    .app select { width:100%; }
+    .app input:focus, .app select:focus, .app textarea:focus {
+        border-color:var(--accent); box-shadow:0 0 0 3px rgba(88,166,255,.12);
+    }
+    .player-bar input { flex:1; }
+    .catalog-head input { flex:1; }
+
     .cart-item { display:flex; align-items:center; gap:10px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:9px; margin-bottom:8px; transition:all .2s; }
     .cart-item:hover { border-color:var(--accent); }
     .cart-item .ci-name { flex:1; font-size:13px; }
@@ -147,6 +160,13 @@ $initialState = json_encode([
     @keyframes glassFadeIn{from{opacity:0}to{opacity:1}}
     @keyframes glassSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
     .hidden { display:none !important; }
+
+    /* 自定义滚动条：统一深色质感，避免浏览器默认浅色滚动条破坏整体观感 */
+    *::-webkit-scrollbar { width:10px; height:10px; }
+    *::-webkit-scrollbar-track { background:transparent; }
+    *::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px; }
+    *::-webkit-scrollbar-thumb:hover { background:var(--dim); }
+    * { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
 </style>
 </head>
 <body>
