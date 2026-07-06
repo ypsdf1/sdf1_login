@@ -6,14 +6,22 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.util.io.BukkitObjectInputStream;
+import org.bukkit.util.io.BukkitObjectOutputStream;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -44,6 +52,10 @@ public class PVPArenaManager implements Listener {
 
     // PVP世界名称
     private static final String PVP_WORLD_NAME = "pvp_arena";
+
+    // PVP世界数据版本：每当世界生成逻辑有重大变更时 +1，触发自动重建（解决旧版"小平台"残留问题）
+    private static final int PVP_WORLD_VERSION = 2;
+    private static final String PVP_VERSION_FILE = "pvp_world_version.txt";
 
     // 玩家在PVP世界中的状态
     private final Set<String> inPVPArena = ConcurrentHashMap.newKeySet();
@@ -145,45 +157,136 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 检查并创建PVP世界（使用正常主世界地形生成器）
+     * 检查并创建/重建PVP世界（使用正常主世界地形生成器）
+     *
+     * 关键修复：旧版代码生成的"小平台"世界文件夹仍残留在服务器磁盘，
+     * 原逻辑检测到世界已存在就直接 return、永不重建。现在通过版本文件判断，
+     * 若磁盘上的世界版本过旧（或无版本文件=旧版小平台），则卸载并删除后重新生成完整地形。
      */
     public void ensurePVPWorldExists() {
         World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
-        if (pvpWorld == null) {
-            // 创建PVP世界 — 使用默认地形生成器（完整的树木、山丘、洞穴等）
-            // 不设置自定义generator，让Bukkit使用服务器默认的世界生成器
-            WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
-            creator.environment(World.Environment.NORMAL);
-            creator.type(WorldType.NORMAL);
-            // 不设置 generator → 使用服务器的默认 ChunkGenerator（通常是带生物群系的地形）
 
-            pvpWorld = creator.createWorld();
-
-            if (pvpWorld != null) {
-                // 设置PVP世界规则
-                pvpWorld.setPVP(true);
-                pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-                pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
-                pvpWorld.setTime(6000); // 中午
-
-                // ★ 关键修复：先强制同步生成出生点周边区块，否则新世界区块尚未加载，
-                //   getBlockAt 全为空气 → findSafeSpawn 返回 null → 误铺漂浮小平台
-                preGenerateSpawnChunks(pvpWorld);
-
-                // 设置出生点（在正常地形中找安全位置）
-                Location spawnLoc = findSafeSpawn(pvpWorld);
-                if (spawnLoc != null) {
-                    pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
-                } else {
-                    pvpWorld.setSpawnLocation(0, 100, 0);
-                    // 极端兜底：仍未找到地面才铺平台（正常情况不会触发）
-                    buildFallbackPlatform(pvpWorld);
-                }
-
-                plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(完整主世界地形): " + PVP_WORLD_NAME);
-            } else {
-                plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!");
+        if (pvpWorld != null) {
+            // 世界已加载：检查版本，旧版本则重建
+            if (readWorldVersion(pvpWorld) != PVP_WORLD_VERSION) {
+                plugin.getLogger().info("[PVP] 检测到已加载的PVP世界版本过旧，开始重建完整地形...");
+                rebuildPVPWorld();
             }
+            return;
+        }
+
+        // 世界未加载：检查磁盘上是否残留旧世界目录
+        File worldDir = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+        if (worldDir.exists() && worldDir.isDirectory()
+                && readWorldVersionFromFile(worldDir) != PVP_WORLD_VERSION) {
+            plugin.getLogger().info("[PVP] 检测到磁盘上残留旧版PVP世界(小平台)，删除并重建...");
+            deleteWorldFolder(worldDir);
+        }
+
+        // 创建全新PVP世界
+        createPVPWorld();
+    }
+
+    /**
+     * 创建全新PVP世界（完整主世界地形）
+     */
+    private void createPVPWorld() {
+        // 使用默认地形生成器（完整的树木、山丘、洞穴等），不设置自定义 generator
+        WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
+        creator.environment(World.Environment.NORMAL);
+        creator.type(WorldType.NORMAL);
+
+        World pvpWorld = creator.createWorld();
+        if (pvpWorld == null) {
+            plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!");
+            return;
+        }
+
+        // 设置PVP世界规则
+        pvpWorld.setPVP(true);
+        pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
+        pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
+        pvpWorld.setTime(6000); // 中午
+
+        // ★ 关键：先强制同步生成出生点周边区块，否则新世界区块尚未加载，
+        //   getBlockAt 全为空气 → findSafeSpawn 返回 null → 误铺漂浮小平台
+        preGenerateSpawnChunks(pvpWorld);
+
+        // 设置出生点（在正常地形中找安全位置）
+        Location spawnLoc = findSafeSpawn(pvpWorld);
+        if (spawnLoc != null) {
+            pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
+        } else {
+            pvpWorld.setSpawnLocation(0, 100, 0);
+            // 极端兜底：仍未找到地面才铺平台（正常情况不会触发）
+            buildFallbackPlatform(pvpWorld);
+        }
+
+        // 写入版本标记，便于下次启动识别
+        writeWorldVersion(pvpWorld);
+
+        plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(完整主世界地形): " + PVP_WORLD_NAME);
+    }
+
+    /**
+     * 重建PVP世界：先把世界里的玩家传走并卸载，再删除磁盘目录后重新生成
+     */
+    private void rebuildPVPWorld() {
+        World old = Bukkit.getWorld(PVP_WORLD_NAME);
+        if (old != null) {
+            for (Player p : new ArrayList<>(old.getPlayers())) {
+                World main = Bukkit.getWorlds().get(0);
+                p.teleport(main.getSpawnLocation());
+                p.sendMessage("§e[PVP] 竞技场正在重建，你已被传回主世界");
+            }
+            Bukkit.unloadWorld(old, false); // false=不保存（即将删除）
+        }
+        deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        createPVPWorld();
+    }
+
+    /**
+     * 递归删除世界目录
+     */
+    private void deleteWorldFolder(File folder) {
+        if (folder == null || !folder.exists()) return;
+        File[] children = folder.listFiles();
+        if (children != null) {
+            for (File c : children) deleteWorldFolder(c);
+        }
+        folder.delete();
+    }
+
+    /**
+     * 将当前世界版本写入世界目录下的版本文件
+     */
+    private void writeWorldVersion(World world) {
+        try {
+            File f = new File(Bukkit.getWorldContainer(), world.getName() + "/" + PVP_VERSION_FILE);
+            Files.write(f.toPath(), String.valueOf(PVP_WORLD_VERSION).getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            plugin.getLogger().warning("[PVP] 写入世界版本文件失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 读取已加载世界的版本（无版本文件返回 -1 = 旧版）
+     */
+    private int readWorldVersion(World world) {
+        return readWorldVersionFromFile(new File(Bukkit.getWorldContainer(), world.getName()));
+    }
+
+    /**
+     * 从世界目录读取版本文件
+     */
+    private int readWorldVersionFromFile(File worldDir) {
+        File f = new File(worldDir, PVP_VERSION_FILE);
+        if (!f.exists()) return -1;
+        try {
+            String s = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+            return Integer.parseInt(s);
+        } catch (Exception e) {
+            return -1;
         }
     }
 
@@ -209,15 +312,25 @@ public class PVPArenaManager implements Listener {
      * 在世界中寻找安全的出生点（优先找最高的非空气且非流体方块作为地面）
      */
     private Location findSafeSpawn(World world) {
-        int spawnX = world.getSpawnLocation().getBlockX();
-        int spawnZ = world.getSpawnLocation().getBlockZ();
-        // 从顶部向下扫描整列，找到最高的固体地面（跳过空气与流体）
-        for (int y = 255; y >= 1; y--) {
-            Block block = world.getBlockAt(spawnX, y, spawnZ);
-            Material type = block.getType();
-            if (!type.isAir() && !isFluid(type)) {
-                return new Location(world, spawnX + 0.5, y + 1, spawnZ + 0.5);
+        int baseX = world.getSpawnLocation().getBlockX();
+        int baseZ = world.getSpawnLocation().getBlockZ();
+        // 在出生点周边 17x17 范围内寻找最高的固体非流体地面（优先高地，避开海洋）
+        int bestX = baseX, bestZ = baseZ, bestY = -1;
+        for (int dx = -8; dx <= 8; dx++) {
+            for (int dz = -8; dz <= 8; dz++) {
+                int x = baseX + dx, z = baseZ + dz;
+                for (int y = 255; y >= 1; y--) {
+                    Block block = world.getBlockAt(x, y, z);
+                    Material type = block.getType();
+                    if (!type.isAir() && !isFluid(type)) {
+                        if (y > bestY) { bestY = y; bestX = x; bestZ = z; }
+                        break;
+                    }
+                }
             }
+        }
+        if (bestY >= 0) {
+            return new Location(world, bestX + 0.5, bestY + 1, bestZ + 0.5);
         }
         return null; // 未找到安全地面
     }
@@ -350,6 +463,24 @@ public class PVPArenaManager implements Listener {
      */
     public void onPlayerExitPVPWorld(Player player) {
         forceLeaveArena(player, false);
+    }
+
+    /**
+     * 玩家切换世界事件 — 进入/离开PVP世界时触发装备选择GUI与背包还原
+     */
+    @EventHandler
+    public void onPlayerChangedWorld(PlayerChangedWorldEvent event) {
+        Player player = event.getPlayer();
+        String from = event.getFrom().getName();
+        String to = player.getWorld().getName();
+
+        if (to.equals(PVP_WORLD_NAME) && !from.equals(PVP_WORLD_NAME)) {
+            // 进入PVP世界 → 打开装备选择GUI（此时玩家仍持有原背包）
+            onPlayerEnterPVPWorld(player);
+        } else if (from.equals(PVP_WORLD_NAME) && !to.equals(PVP_WORLD_NAME)) {
+            // 离开PVP世界 → 回收装备并还原背包
+            onPlayerExitPVPWorld(player);
+        }
     }
 
     // ==================== 事件处理器 ====================
@@ -499,6 +630,9 @@ public class PVPArenaManager implements Listener {
             player.getInventory().setItemInOffHand(backup.offHand);
             player.setLevel(backup.expLevel);
             player.setExp(backup.exp);
+            // ★ 无论备份来自缓存还是数据库，还原后必须清理数据库备份，
+            //   否则断线重连时 onPlayerJoin 会再次覆盖玩家当前背包（序列化生效后的隐藏坑）
+            db.deleteInventoryBackup(playerName);
             plugin.getLogger().info("[PVP] 已还原玩家 " + playerName + " 的背包");
         } else {
             plugin.getLogger().warning("[PVP] 未找到玩家 " + playerName + " 的背包备份");
@@ -668,6 +802,9 @@ public class PVPArenaManager implements Listener {
         // 传送至出生点
         Location spawn = pvpWorld.getSpawnLocation();
         player.teleport(spawn);
+        // ★ 关键修复：直接触发进入流程，确保装备选择GUI必然弹出，
+        //   不再单纯依赖 PlayerChangedWorldEvent 的异步时机（避免"直接进去跳过选装备"）
+        onPlayerEnterPVPWorld(player);
         player.sendMessage("§a§l正在前往PVP竞技场...");
     }
 
@@ -710,25 +847,81 @@ public class PVPArenaManager implements Listener {
         inventoryBackups.clear();
     }
 
-    // ==================== 序列化（TODO: 完善实现）====================
+    // ==================== 序列化（基于 BukkitObjectStream + Base64）====================
 
+    /**
+     * 序列化整个物品数组（背包/盔甲）为 Base64 字符串
+     */
     private String serializeItems(ItemStack[] items) {
-        // TODO: 实现物品序列化（可用Base64+Minecraft NBT）
-        return "";
+        if (items == null) return "";
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            BukkitObjectOutputStream oos = new BukkitObjectOutputStream(baos);
+            oos.writeInt(items.length);
+            for (ItemStack item : items) {
+                oos.writeObject(item); // null 元素安全
+            }
+            oos.close();
+            return Base64.getEncoder().encodeToString(baos.toByteArray());
+        } catch (IOException e) {
+            plugin.getLogger().warning("[PVP] 背包序列化失败: " + e.getMessage());
+            return "";
+        }
     }
 
+    /**
+     * 反序列化物品数组
+     */
     private ItemStack[] deserializeItems(String data) {
-        // TODO: 实现物品反序列化
-        return new ItemStack[0];
+        if (data == null || data.isEmpty()) return new ItemStack[0];
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(Base64.getDecoder().decode(data));
+            BukkitObjectInputStream ois = new BukkitObjectInputStream(bais);
+            int len = ois.readInt();
+            ItemStack[] items = new ItemStack[len];
+            for (int i = 0; i < len; i++) {
+                Object obj = ois.readObject();
+                items[i] = (obj instanceof ItemStack) ? (ItemStack) obj : null;
+            }
+            ois.close();
+            return items;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[PVP] 背包反序列化失败: " + e.getMessage());
+            return new ItemStack[0];
+        }
     }
 
+    /**
+     * 序列化单个物品（副手）
+     */
     private String serializeItem(ItemStack item) {
-        // TODO: 实现物品序列化
-        return "";
+        if (item == null) return "";
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            BukkitObjectOutputStream oos = new BukkitObjectOutputStream(baos);
+            oos.writeObject(item);
+            oos.close();
+            return Base64.getEncoder().encodeToString(baos.toByteArray());
+        } catch (IOException e) {
+            plugin.getLogger().warning("[PVP] 物品序列化失败: " + e.getMessage());
+            return "";
+        }
     }
 
+    /**
+     * 反序列化单个物品（副手）
+     */
     private ItemStack deserializeItem(String data) {
-        // TODO: 实现物品反序列化
-        return null;
+        if (data == null || data.isEmpty()) return null;
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(Base64.getDecoder().decode(data));
+            BukkitObjectInputStream ois = new BukkitObjectInputStream(bais);
+            Object obj = ois.readObject();
+            ois.close();
+            return (obj instanceof ItemStack) ? (ItemStack) obj : null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[PVP] 物品反序列化失败: " + e.getMessage());
+            return null;
+        }
     }
 }
