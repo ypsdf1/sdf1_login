@@ -4599,8 +4599,26 @@ public class AreaProtection implements Listener {
         InventoryHolder holder = e.getInventory().getHolder();
         Location loc = null;
 
+        // ★ 双箱特殊处理：DoubleChest的holder不是BlockState，需要从left/right获取
+        if (holder != null && holder.getClass().getSimpleName().contains("DoubleChest")) {
+            try {
+                // DoubleChest通过反射获取left/right
+                Object dc = holder;
+                java.lang.reflect.Method getLeft = dc.getClass().getMethod("getLeft");
+                Object left = getLeft.invoke(dc);
+                if (left instanceof org.bukkit.block.BlockState) {
+                    loc = ((org.bukkit.block.BlockState) left).getLocation();
+                } else if (left != null) {
+                    java.lang.reflect.Method getBlock = left.getClass().getMethod("getBlock");
+                    Object block = getBlock.invoke(left);
+                    if (block instanceof org.bukkit.block.Block) {
+                        loc = ((org.bukkit.block.Block) block).getLocation();
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
         // ★ 检测所有容器类型：箱子、熔炉、高炉、潜影盒、末影箱、讲台、铁砧、信标、漏斗、发射器、投掷器、酿造台、工作台等
-        if (holder instanceof BlockState) {
+        else if (holder instanceof BlockState) {
             BlockState bs = (BlockState) holder;
             loc = bs.getLocation();
         } else if (holder instanceof Container) {
@@ -4645,11 +4663,8 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        PermissionLevel level = getPermissionLevel(p, ac);
-        if (level == null) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f你不具备访问此容器的权限");
-        }
+        // ★ 容器交互已启用时，无权限级别的玩家也允许访问（访客权限）
+        // 只有denyContainer=true时才检查权限级别
     }
 
     public void loadWhitelists() {
