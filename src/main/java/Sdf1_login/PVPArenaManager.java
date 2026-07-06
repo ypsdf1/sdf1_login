@@ -151,14 +151,19 @@ public class PVPArenaManager implements Listener {
             });
             
             pvpWorld = creator.createWorld();
-            
+
             if (pvpWorld != null) {
                 // 设置PVP世界规则
                 pvpWorld.setPVP(true);
                 pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
                 pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
                 pvpWorld.setTime(6000); // 中午
-                
+
+                // 铺设出生平台（避免玩家掉入虚空）
+                buildSpawnPlatform(pvpWorld);
+                // 设置世界出生点
+                pvpWorld.setSpawnLocation(0, 100, 0);
+
                 plugin.getLogger().info("[PVP] 已创建PVP竞技场世界: " + PVP_WORLD_NAME);
             } else {
                 plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!");
@@ -541,7 +546,61 @@ public class PVPArenaManager implements Listener {
     public World getPVPWorld() {
         return Bukkit.getWorld(PVP_WORLD_NAME);
     }
-    
+
+    /**
+     * 在出生点下方铺设石头平台（11x11，y=99）
+     */
+    private void buildSpawnPlatform(World world) {
+        int centerY = 99;
+        for (int dx = -5; dx <= 5; dx++) {
+            for (int dz = -5; dz <= 5; dz++) {
+                world.getBlockAt(dx, centerY, dz).setType(Material.STONE);
+                // 平台下方填充两格，防止悬空
+                world.getBlockAt(dx, centerY - 1, dz).setType(Material.STONE);
+                world.getBlockAt(dx, centerY - 2, dz).setType(Material.STONE);
+            }
+        }
+        // 边界用发光石标记四角，方便辨识场地
+        world.getBlockAt(-5, centerY + 1, -5).setType(Material.GLOWSTONE);
+        world.getBlockAt(5, centerY + 1, -5).setType(Material.GLOWSTONE);
+        world.getBlockAt(-5, centerY + 1, 5).setType(Material.GLOWSTONE);
+        world.getBlockAt(5, centerY + 1, 5).setType(Material.GLOWSTONE);
+    }
+
+    /**
+     * 玩家进入PVP竞技场（传送）
+     */
+    public void joinArena(Player player) {
+        ensurePVPWorldExists();
+        World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+        if (pvpWorld == null) {
+            player.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
+            return;
+        }
+        // 已在竞技场则提示
+        if (inPVPArena.contains(player.getName())) {
+            player.sendMessage("§e你已在PVP竞技场中");
+            return;
+        }
+        // 传送至出生点（触发 PlayerChangedWorldEvent → onPlayerEnterPVPWorld）
+        player.teleport(new Location(pvpWorld, 0.5, 100, 0.5, 0, 0));
+        player.sendMessage("§a§l正在前往PVP竞技场...");
+    }
+
+    /**
+     * 玩家离开PVP竞技场（传送回主世界）
+     */
+    public void leaveArena(Player player) {
+        if (!inPVPArena.contains(player.getName())) {
+            player.sendMessage("§e你不在PVP竞技场中");
+            return;
+        }
+        // 传送回主世界出生点（触发 PlayerChangedWorldEvent → onPlayerExitPVPWorld）
+        World main = Bukkit.getWorlds().get(0);
+        player.teleport(main.getSpawnLocation());
+        player.sendMessage("§a§l正在离开PVP竞技场...");
+    }
+
     /**
      * 获取PVP装备列表
      */
