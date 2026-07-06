@@ -1812,14 +1812,14 @@ public class Main extends JavaPlugin
             // 每次玩家加入时热重载非法域名后缀（支持热更新）
             chatFilter.loadIllegalDomains();
             
-            List<String> urls = chatFilter.extractUrls(name);
-            boolean isIllegalUrl = !urls.isEmpty();
+            // 注意：不使用extractUrls检测用户名！URL_PATTERN的下划线分隔模式会误匹配
+            // 合法MC用户名(如Wings_of_Ashes)，仅用containsIllegalDomain检测非法域名后缀
             boolean isIllegalDomain = chatFilter.containsIllegalDomain(name);
-            if (isIllegalUrl || isIllegalDomain) {
+            if (isIllegalDomain) {
                 e.setJoinMessage(null); // 抑制加入消息
-                p.kickPlayer("§c§l禁止使用含URL或非法域名的名称\n§7请修改您的游戏名称后再加入");
+                p.kickPlayer("§c§l禁止使用含非法域名的名称\n§7请修改您的游戏名称后再加入");
                 illegalNameKickedPlayers.add(name); // 记录以便抑制退出消息
-                getLogger().warning("[安全] 玩家 " + name + " 因名称含非法URL/域名被踢出 (urls=" + isIllegalUrl + ", domain=" + isIllegalDomain + ")");
+                getLogger().warning("[安全] 玩家 " + name + " 因名称含非法域名被踢出 (domain=true)");
                 return;
             }
         }
