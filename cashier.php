@@ -13,14 +13,27 @@ function cashierGetPackMoney() {
         $db = getDB();
         $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
         $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = 'packmoney'");
-        $stmt->execute();
-        $row = $stmt->fetch(SQLITE3_ASSOC);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
         return $row ? (int)$row['cfg_value'] : 5;
     } catch (Exception $e) {
         return 5;
     }
 }
+function cashierGetGreenDiscount() {
+    try {
+        $db = getDB();
+        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
+        $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = 'green_discount'");
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        return $row ? (float)$row['cfg_value'] : 2;
+    } catch (Exception $e) {
+        return 2;
+    }
+}
 $packMoney = cashierGetPackMoney();
+$greenDiscount = cashierGetGreenDiscount();
 
 $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $initialRole = 'guest';
@@ -44,7 +57,8 @@ $initialState = json_encode([
     'username' => $initialName,
     'discount_limit' => $initialLimit,
     'cashier_can_cash' => $initialCanCash,
-    'packmoney' => $packMoney
+    'packmoney' => $packMoney,
+    'green_discount' => $greenDiscount
 ], JSON_UNESCAPED_UNICODE);
 ?>
 <!DOCTYPE html>
@@ -526,11 +540,19 @@ async function recalc() {
         if (p) subtotal += (parseInt(p.buy_price)||0) * cart[id];
     });
     const rate = RATES[settlement];
-    let total = Math.round(subtotal * rate);
+    let afterRate = Math.round(subtotal * rate);
+    // 环保单减免：不打包/塞背包时按配置比例减免（与游戏内"不打包"一致）
+    let ecoPct = 0;
+    let ecoAmt = 0;
+    if (settlement === 'backpack') ecoPct = STATE.green_discount || 0;
+    if (ecoPct > 0) {
+        ecoAmt = afterRate - Math.round(afterRate * (100 - ecoPct) / 100);
+        afterRate -= ecoAmt;
+    }
     let colorFee = 0;
     const sc = document.getElementById('shulkerColor').value;
     if (settlement === 'shulker' && sc !== 'default' && sc !== 'purple') colorFee = STATE.packmoney || 2;
-    total += colorFee;
+    let total = afterRate + colorFee;
 
     let discount = parseFloat(document.getElementById('discount').value) || 0;
     const limit = STATE.discount_limit;
@@ -542,6 +564,7 @@ async function recalc() {
     document.getElementById('summary').innerHTML = `
         <div class="summary-line"><span>商品小计</span><span>${subtotal} 债券</span></div>
         <div class="summary-line"><span>${settlement==='shulker'?'潜影盒费率':'背包费率'} (${rate*100}%)</span><span>${colorFee?('+'+colorFee):''}</span></div>
+        ${ecoPct>0?`<div class="summary-line"><span class="disc">环保单减免 ${ecoPct}%</span><span class="disc">-${ecoAmt} 债券</span></div>`:''}
         <div class="summary-line"><span>应收原价</span><span>${total} 债券</span></div>
         <div class="summary-line"><span class="disc">手动折扣 ${discount}%</span><span class="disc">-${discAmt} 债券</span></div>
         ${payMode === 'cash' ? '<div class="summary-line" style="border-color:var(--orange);color:var(--orange)"><span>💵 现金收款模式</span><span>仅记账，不扣债券</span></div>' : ''}

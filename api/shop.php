@@ -355,12 +355,15 @@ function shopBuyCart($token) {
         // 颜色名称映射
         $colorNames = ['default'=>'原色','purple'=>'原色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];
         $colorName = $colorNames[$shulkerColor] ?? $shulkerColor;
+        $ecoPct = 0;
     } else {
         $settlement = 'backpack';
         $rate = (float)getShopConfig('cart_backpack_rate', '0.98');
-        $modeName = '塞背包';
+        $modeName = '塞背包（环保单）';
         $colorFee = 0;
         $colorName = '';
+        // 环保单减免：不打包/塞背包时按配置比例减免（与游戏内"不打包"一致）
+        $ecoPct = (float)getShopConfig('green_discount', '2');
     }
 
     $db = getDB();
@@ -387,7 +390,10 @@ function shopBuyCart($token) {
     }
     unset($p);
 
-    $totalPrice = (int)round($subtotal * $rate) + $colorFee;
+    // 先按费率计算，再叠加环保单减免（不打包/塞背包），最后加颜色打包费
+    $baseAfterRate = (int)round($subtotal * $rate);
+    if ($ecoPct > 0) $baseAfterRate = (int)round($baseAfterRate * (100 - $ecoPct) / 100);
+    $totalPrice = $baseAfterRate + $colorFee;
     $saved = $subtotal - $totalPrice; // 折扣省下的（潜影盒加价+颜色费时为负）
 
     // ===== 收银员/管理员手动折扣（服务端强制上限，前端声称不可信）=====
