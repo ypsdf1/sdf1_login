@@ -53,6 +53,7 @@ switch ($action) {
     case 'shop_update':  adminShopUpdate(); break;
     case 'shop_add':     adminShopAdd(); break;
     case 'shop_remove':  adminShopRemove(); break;
+    case 'save_shop_config': adminSaveShopConfig(); break;
     case 'stats':        adminStats(); break;
     case 'all_tx':       adminAllTx(); break;
     case 'player_tx':    adminPlayerTx(); break;
@@ -201,14 +202,40 @@ function adminShopUpdate() {
         $itemId = getParam('id');
         if (!$itemId) error('缺少商品ID');
         $stock = getParam('stock');
+        $buyPrice = getParam('buy_price');
+        $sellPrice = getParam('sell_price');
         // ★ 库存改动写入admin_stock（防止Java全量同步覆盖）
         // admin_stock非NULL时pullShopStock优先返回此值给Java
-        // 前端只发送id和stock，所以只更新stock和admin_stock
-        $stmt = $db->prepare("UPDATE shop_items SET stock=:st, admin_stock=:ast, last_modified=:lm WHERE id=:id");
-        $stmt->bindValue(':st', getParam('stock'));
-        $stmt->bindValue(':ast', $stock, $stock !== null ? SQLITE3_INTEGER : SQLITE3_NULL);
-        $stmt->bindValue(':lm', time(), SQLITE3_INTEGER);
-        $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
+        // ★ 价格改动写入admin_buy_price/admin_sell_price（同理）
+        $sql = "UPDATE shop_items SET last_modified=:lm";
+        $params = [':lm' => time(), ':id' => $itemId];
+        $types = [':lm' => SQLITE3_INTEGER, ':id' => SQLITE3_TEXT];
+        if ($stock !== null) {
+            $sql .= ", stock=:st, admin_stock=:ast";
+            $params[':st'] = $stock;
+            $params[':ast'] = $stock;
+            $types[':st'] = SQLITE3_INTEGER;
+            $types[':ast'] = SQLITE3_INTEGER;
+        }
+        if ($buyPrice !== null) {
+            $sql .= ", buy_price=:bp, admin_buy_price=:abp";
+            $params[':bp'] = $buyPrice;
+            $params[':abp'] = $buyPrice;
+            $types[':bp'] = SQLITE3_INTEGER;
+            $types[':abp'] = SQLITE3_INTEGER;
+        }
+        if ($sellPrice !== null) {
+            $sql .= ", sell_price=:sp, admin_sell_price=:asp";
+            $params[':sp'] = $sellPrice;
+            $params[':asp'] = $sellPrice;
+            $types[':sp'] = SQLITE3_INTEGER;
+            $types[':asp'] = SQLITE3_INTEGER;
+        }
+        $sql .= " WHERE id=:id";
+        $stmt = $db->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, $types[$key] ?? SQLITE3_TEXT);
+        }
         $stmt->execute();
         $rowsChanged = $db->changes();
         // ★ 同步通知Java插件立即拉取库存改动
@@ -259,6 +286,43 @@ function adminShopRemove() {
     } catch (\Throwable $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+    }
+}
+
+// ===== 购物车结算折扣/加价配置 =====
+function adminSaveShopConfig() {
+    requireAdminSession();
+    $db = getDB();
+    try {
+        $bp = getParam('cart_backpack_rate');
+        $sh = getParam('cart_shulker_rate');
+        if ($bp === null || $sh === null) error('缺少配置参数');
+        $bp = (float)$bp;
+        $sh = (float)$sh;
+        // 校验范围：塞背包折扣系数 0.01~1.00；潜影盒加价系数 1.00~3.00
+        if ($bp <= 0 || $bp > 1.0) error('塞背包折扣系数必须介于 0.01 ~ 1.00 之间');
+        if ($sh < 1.0 || $sh > 3.0) error('潜影盒加价系数必须介于 1.00 ~ 3.00 之间');
+
+        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
+        $upsert = $db->prepare("INSERT OR REPLACE INTO shop_config (cfg_key, cfg_value) VALUES (:k, :v)");
+        $upsert->bindValue(':k', 'cart_backpack_rate', SQLITE3_TEXT);
+        $upsert->bindValue(':v', number_format($bp, 2, '.', ''), SQLITE3_TEXT);
+        $upsert->execute();
+        $upsert->bindValue(':k', 'cart_shulker_rate', SQLITE3_TEXT);
+        $upsert->bindValue(':v', number_format($sh, 2, '.', ''), SQLITE3_TEXT);
+        $upsert->execute();
+
+        exit(json_encode([
+            'success' => true,
+            'message' => '购物车结算配置已保存',
+            'data' => [
+                'backpack_rate' => $bp,
+                'shulker_rate' => $sh
+            ]
+        ], JSON_UNESCAPED_UNICODE));
+    } catch (\Throwable $e) {
+        @error_log('[save_shop_config] Error: ' . $e->getMessage());
+        exit(json_encode(['success' => false, 'message' => '保存失败: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
     }
 }
 

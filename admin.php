@@ -397,8 +397,61 @@ async function loadShop(el) {
             <div class="form-row"><label>价格</label><input id="asPrice" type="number" value="100"></div>
             <div class="form-row"><label>库存</label><input id="asStock" type="number" value="-1" placeholder="-1无限"></div>
             <button class="btn btn-green" onclick="doAddShop()">确认添加</button>
+        </div>
+        <div class="card" style="margin-top:16px">
+            <h2>🛒 购物车结算配置</h2>
+            <p style="color:var(--dim);font-size:13px;margin-bottom:14px">配置购物车结算时「塞背包」折扣与「潜影盒打包」加价系数，系数作用于商品原价合计。</p>
+            <div class="form-row"><label>塞背包折扣系数</label><input id="cfgBackpack" type="number" step="0.01" min="0.01" max="1" oninput="updateCartCfgHint()"></div>
+            <div class="form-row"><label>潜影盒加价系数</label><input id="cfgShulker" type="number" step="0.01" min="1" max="3" oninput="updateCartCfgHint()"></div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <button class="btn btn-green" onclick="saveCartConfig()">保存配置</button>
+                <span id="cartCfgHint" style="font-size:12px;color:var(--accent)"></span>
+            </div>
         </div>`;
     renderShopAdminContent();
+    loadCartConfig();
+}
+
+// 加载购物车结算配置（读公开 cart_config 接口）
+async function loadCartConfig() {
+    try {
+        const r = await jsonApi('shop.php?action=cart_config');
+        if (r && r.success && r.data) {
+            const bp = document.getElementById('cfgBackpack');
+            const sh = document.getElementById('cfgShulker');
+            if (bp && r.data.backpack_rate != null) bp.value = r.data.backpack_rate;
+            if (sh && r.data.shulker_rate != null) sh.value = r.data.shulker_rate;
+            updateCartCfgHint();
+        }
+    } catch (e) {}
+}
+
+// 实时计算并显示折扣/加价说明
+function updateCartCfgHint() {
+    const bpEl = document.getElementById('cfgBackpack');
+    const shEl = document.getElementById('cfgShulker');
+    const hint = document.getElementById('cartCfgHint');
+    if (!bpEl || !shEl || !hint) return;
+    const bp = parseFloat(bpEl.value);
+    const sh = parseFloat(shEl.value);
+    if (isNaN(bp) || isNaN(sh)) { hint.textContent = ''; return; }
+    const bpDisc = (100 - bp * 100).toFixed(0);
+    const shAdd = ((sh - 1) * 100).toFixed(0);
+    hint.textContent = `塞背包：打 ${(bp * 10).toFixed(1)} 折（-${bpDisc}%）　|　潜影盒：加价 ${shAdd}%`;
+}
+
+// 保存购物车结算配置
+async function saveCartConfig() {
+    const bpEl = document.getElementById('cfgBackpack');
+    const shEl = document.getElementById('cfgShulker');
+    const bp = parseFloat(bpEl.value);
+    const sh = parseFloat(shEl.value);
+    if (isNaN(bp) || isNaN(sh)) { toast('请输入有效数字', 'err'); return; }
+    if (bp <= 0 || bp > 1) { toast('塞背包折扣系数应在 0.01 ~ 1.00 之间', 'err'); return; }
+    if (sh < 1 || sh > 3) { toast('潜影盒加价系数应在 1.00 ~ 3.00 之间', 'err'); return; }
+    const r = await postApi('save_shop_config', { cart_backpack_rate: bp, cart_shulker_rate: sh });
+    toast(r.message || (r.success ? '已保存' : '保存失败'), r.success ? 'ok' : 'err');
+    if (r.success) updateCartCfgHint();
 }
 
 function switchShopCat(cat) {

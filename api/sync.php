@@ -269,6 +269,15 @@ switch ($action) {
     case 'check_shop_stock_changed':
         checkShopStockChanged();
         break;
+    case 'pull_shop_prices':
+        pullShopPrices();
+        break;
+    case 'clear_admin_prices':
+        clearAdminPrices();
+        break;
+    case 'check_shop_prices_changed':
+        checkShopPricesChanged();
+        break;
     case 'notify_sync':
         notifySync();
         break;
@@ -2748,6 +2757,67 @@ function clearAdminStock() {
     $db = getDB();
     $db->exec("UPDATE shop_items SET admin_stock = NULL WHERE admin_stock IS NOT NULL");
     success([], '已清除管理员库存标记');
+}
+
+// ===== 拉取价格改动：admin_buy_price/admin_sell_price非NULL时返回给Java =====
+function pullShopPrices() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    // ★ 只返回有价格改动的商品（admin_buy_price或admin_sell_price非NULL）
+    $stmt = $db->prepare("SELECT id, buy_price, sell_price, admin_buy_price, admin_sell_price FROM shop_items WHERE admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL");
+    $result = $stmt->execute();
+    $items = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        // ★ 如果admin字段有值，用admin值替代原始价格返回给Java
+        if ($row['admin_buy_price'] !== null && $row['admin_buy_price'] !== '') {
+            $row['buy_price'] = (int)$row['admin_buy_price'];
+            $row['admin_buy_price_override'] = true;
+        }
+        if ($row['admin_sell_price'] !== null && $row['admin_sell_price'] !== '') {
+            $row['sell_price'] = (int)$row['admin_sell_price'];
+            $row['admin_sell_price_override'] = true;
+        }
+        unset($row['admin_buy_price'], $row['admin_sell_price']); // 不暴露内部字段
+        $items[] = $row;
+    }
+
+    // ★ 成功获取数据后立即清除admin价格标记（同一次请求完成，消除竞态）
+    $db->exec("UPDATE shop_items SET admin_buy_price = NULL, admin_sell_price = NULL WHERE admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL");
+
+    success(['items' => $items, 'count' => count($items)]);
+}
+
+// ===== 插件确认已应用管理员价格改动 =====
+function clearAdminPrices() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $db->exec("UPDATE shop_items SET admin_buy_price = NULL, admin_sell_price = NULL WHERE admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL");
+    success([], '已清除管理员价格标记');
+}
+
+// ===== 高频轮询：检测价格是否有改动（轻量级接口） =====
+function checkShopPricesChanged() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    try {
+        $stmt = $db->prepare("SELECT SUM(CASE WHEN admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL THEN 1 ELSE 0 END) as admin_price_count FROM shop_items");
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        $adminPriceCount = $row['admin_price_count'] ? (int)$row['admin_price_count'] : 0;
+    } catch (\Throwable $e) {
+        @error_log("[checkShopPricesChanged] error: " . $e->getMessage());
+        $adminPriceCount = 0;
+    }
+
+    // ★ 如果admin价格非NULL（管理员改了价格但Java还没拉取），返回changed=true
+    $changed = ($adminPriceCount > 0);
+    success(['changed' => $changed, 'admin_price_count' => $adminPriceCount]);
 }
 
 // ===== 高频轮询：检测库存是否有改动（轻量级接口） =====

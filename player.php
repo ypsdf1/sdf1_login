@@ -1154,9 +1154,11 @@ if ($currentVersion !== $BUILD_VERSION) {
     let shopItems = [];
     let shopCategories = [];
     let currentShopCat = '';
+    let currentBuyItem = null; // 当前购买弹窗对应的商品，供"加入购物车"使用
 
     async function renderShop(el) {
         el.innerHTML = '<div class="empty">加载中...</div>';
+        loadCart();
         try {
             const res = await api('shop.php', {action: 'list'});
             if (!res.success) { el.innerHTML = '<div class="empty" style="color:var(--red)">' + (res.message || '加载失败') + '</div>'; return; }
@@ -1189,6 +1191,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
             // 渲染当前分类的商品
             renderShopContent();
+            ensureCartButton();
         } catch (e) {
             el.innerHTML = '<div class="empty" style="color:var(--red)">商城加载失败: ' + e.message + '</div>';
         }
@@ -1221,7 +1224,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             const matIcon = getMaterialIcon(item.material);
             const stockText = item.stock == -1 ? '∞ 无限' : (item.stock == 0 ? '售罄' : item.stock + ' 个');
             const stockClass = item.stock == 0 ? 'out' : '';
-            html += `<div class="item-card" onclick="showBuyModal('${item.id}','${item.display_name.replace(/'/g,"\\'")}',${item.buy_price},${item.stock})"><div class="icon">${matIcon}</div><div class="name">${item.display_name}</div><div class="price">${item.buy_price} 债券</div><div class="stock ${stockClass}">库存: ${stockText}</div></div>`;
+            html += `<div class="item-card" onclick="showBuyModal('${item.id}','${item.display_name.replace(/'/g,"\\'")}',${item.buy_price},${item.stock},'${item.material || ''}')"><div class="icon">${matIcon}</div><div class="name">${item.display_name}</div><div class="price">${item.buy_price} 债券</div><div class="stock ${stockClass}">库存: ${stockText}</div></div>`;
         });
         html += '</div>';
         contentEl.innerHTML = html;
@@ -1232,9 +1235,10 @@ if ($currentVersion !== $BUILD_VERSION) {
         return icons[mat] || '🧱';
     }
 
-    function showBuyModal(id, name, price, stock) {
+    function showBuyModal(id, name, price, stock, material) {
         if (IS_PREVIEW) { toast('预览模式下无法购买', 'error'); return; }
         if (stock == 0) { toast('商品已售罄', 'error'); return; }
+        currentBuyItem = {id, name, price, stock, material: material || ''};
         document.getElementById('modalTitle').textContent = '购买: ' + name;
         const needPwd = price > 1000;
         const maxQty = stock > 0 ? stock : 999;
@@ -1243,6 +1247,11 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="row"><label>数量</label><input type="number" id="buyAmount" value="1" min="1" max="${maxQty}"></div>
             <div class="row"><label>小计: <span id="buyTotal">${price}</span> 债券</label></div>
             ${needPwd ? '<div class="row"><label>密码确认</label><input type="password" id="buyPassword" placeholder="输入游戏登录密码"></div>' : '<div style="color:var(--dim);font-size:12px;text-align:center;margin-top:4px">小额交易（≤1000债券），免密码确认</div>'}`;
+        // 加入购物车按钮
+        const cartBtn = document.createElement('div');
+        cartBtn.style.cssText = 'margin-top:12px';
+        cartBtn.innerHTML = '<button class="btn btn-green" style="width:100%" onclick="addToCartFromModal()">🛒 加入购物车</button>';
+        document.getElementById('modalBody').appendChild(cartBtn);
         document.getElementById('modalConfirm').onclick = () => doBuy(id);
         document.getElementById('buyAmount').oninput = function() {
             const total = this.value * price;
@@ -1289,6 +1298,230 @@ if ($currentVersion !== $BUILD_VERSION) {
                 document.getElementById('balanceResult')?.parentElement && switchPage('balance');
                 setTimeout(() => switchPage('shop'), 500);
             }, 500);
+        }
+    }
+
+    // ===== 购物车系统 =====
+    let cart = [];
+    let cartCfg = {backpack_rate: 0.98, shulker_rate: 1.0};
+    let cartSettlement = 'backpack';
+    let cartSubtotalVal = 0;
+
+    function loadCart() {
+        try { cart = JSON.parse(localStorage.getItem('sdf1_cart') || '[]'); } catch (e) { cart = []; }
+        if (!Array.isArray(cart)) cart = [];
+        updateCartButton();
+    }
+    function saveCart() { try { localStorage.setItem('sdf1_cart', JSON.stringify(cart)); } catch (e) {} updateCartButton(); }
+
+    function updateCartButton() {
+        const btn = document.getElementById('cartFab');
+        if (!btn) return;
+        const count = cart.reduce((s, i) => s + (i.amount || 1), 0);
+        const total = cart.reduce((s, i) => s + i.price * i.amount, 0);
+        btn.querySelector('.cart-fab-count').textContent = count;
+        btn.querySelector('.cart-fab-total').textContent = total;
+        btn.style.display = count > 0 ? 'flex' : 'none';
+    }
+
+    function ensureCartButton() {
+        if (document.getElementById('cartFab')) { updateCartButton(); return; }
+        const btn = document.createElement('div');
+        btn.id = 'cartFab';
+        btn.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:9000;display:none;align-items:center;gap:8px;padding:12px 18px;background:var(--accent);color:#fff;border-radius:30px;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,0.35);font-size:14px;transition:transform .2s cubic-bezier(0.16,1,0.3,1)';
+        btn.innerHTML = '<span style="font-size:18px">🛒</span><span class="cart-fab-count">0</span><span style="opacity:.85;font-size:12px">件</span><span class="cart-fab-total" style="font-weight:700">0</span><span style="opacity:.85;font-size:12px">债券</span>';
+        btn.onclick = openCartDrawer;
+        btn.onmouseenter = () => btn.style.transform = 'scale(1.06)';
+        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+        document.body.appendChild(btn);
+        updateCartButton();
+    }
+
+    function addToCartFromModal() {
+        if (!currentBuyItem) return;
+        const amount = parseInt(document.getElementById('buyAmount')?.value || '1') || 1;
+        addToCart(currentBuyItem.id, currentBuyItem.name, currentBuyItem.price, currentBuyItem.material || '', currentBuyItem.stock, amount);
+        closeModal();
+    }
+
+    function addToCart(id, name, price, material, stock, amount) {
+        if (IS_PREVIEW) { toast('预览模式下无法加入购物车', 'error'); return; }
+        amount = Math.max(1, parseInt(amount) || 1);
+        if (stock > 0 && amount > stock) amount = stock;
+        const exist = cart.find(i => i.item_id == id);
+        if (exist) {
+            const max = stock > 0 ? stock : 9999;
+            exist.amount = Math.min((exist.amount || 1) + amount, max);
+        } else {
+            cart.push({item_id: id, name: name, price: parseInt(price), material: material, stock: parseInt(stock), amount: amount});
+        }
+        saveCart();
+        toast('已加入购物车', 'success');
+    }
+
+    function changeCartQty(id, delta) {
+        const i = cart.find(x => x.item_id == id);
+        if (!i) return;
+        const max = i.stock > 0 ? i.stock : 9999;
+        i.amount = Math.min(Math.max((i.amount || 1) + delta, 1), max);
+        saveCart();
+        renderCartList();
+    }
+    function removeFromCart(id) {
+        cart = cart.filter(x => x.item_id != id);
+        saveCart();
+        renderCartList();
+    }
+    function clearCart() {
+        cart = [];
+        saveCart();
+        renderCartList();
+    }
+
+    function openCartDrawer() {
+        if (cart.length === 0) { toast('购物车是空的', 'info'); return; }
+        document.getElementById('cartDrawer')?.remove();
+        const overlay = document.createElement('div');
+        overlay.id = 'cartDrawer';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:9500;display:flex;justify-content:flex-end;animation:glassFadeIn .2s ease';
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+        let html = '<div style="width:380px;max-width:92%;height:100%;background:var(--card);border-left:1px solid var(--border);display:flex;flex-direction:column;box-shadow:-16px 0 48px rgba(0,0,0,.4)">';
+        html += '<div style="padding:18px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0;color:var(--fg)">🛒 购物车</h3><button onclick="document.getElementById(\'cartDrawer\').remove()" style="background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer">✕</button></div>';
+        html += '<div id="cartList" style="flex:1;overflow-y:auto;padding:12px 16px"></div>';
+        html += '<div style="padding:16px 20px;border-top:1px solid var(--border)">';
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:13px"><span style="color:var(--dim)">商品原价合计</span><span id="cartSubtotal">0 债券</span></div>';
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:12px;font-size:18px;font-weight:700"><span>预估总价</span><span id="cartGrand" style="color:var(--accent)">0 债券</span></div>';
+        html += '<div style="display:flex;gap:10px"><button class="btn btn-dim" style="flex:1" onclick="clearCart()">清空</button><button class="btn btn-primary" style="flex:2" onclick="openSettlement()">去结算</button></div>';
+        html += '</div></div>';
+        overlay.innerHTML = html;
+        document.body.appendChild(overlay);
+        renderCartList();
+    }
+
+    function renderCartList() {
+        const list = document.getElementById('cartList');
+        if (!list) return;
+        if (cart.length === 0) {
+            list.innerHTML = '<div class="empty" style="padding:30px">购物车空空如也</div>';
+        } else {
+            let h = '';
+            cart.forEach(i => {
+                const matIcon = getMaterialIcon(i.material);
+                h += '<div style="display:flex;gap:10px;align-items:center;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:12px;margin-bottom:8px">';
+                h += '<div style="font-size:24px">' + matIcon + '</div>';
+                h += '<div style="flex:1;min-width:0"><div style="font-size:14px;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(i.name) + '</div>';
+                h += '<div style="font-size:12px;color:var(--dim)">' + i.price + ' 债券/个</div></div>';
+                h += '<div style="display:flex;align-items:center;gap:6px"><button onclick="changeCartQty(' + i.item_id + ',-1)" style="width:26px;height:26px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer;font-size:16px;line-height:1">−</button>';
+                h += '<span style="min-width:28px;text-align:center;font-size:14px">' + i.amount + '</span>';
+                h += '<button onclick="changeCartQty(' + i.item_id + ',1)" style="width:26px;height:26px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);cursor:pointer;font-size:16px;line-height:1">+</button></div>';
+                h += '<div style="text-align:right;min-width:64px"><div style="font-size:14px;color:var(--fg);font-weight:600">' + (i.price * i.amount) + '</div><button onclick="removeFromCart(' + i.item_id + ')" style="background:none;border:none;color:var(--red);font-size:11px;cursor:pointer;margin-top:2px">移除</button></div>';
+                h += '</div>';
+            });
+            list.innerHTML = h;
+        }
+        const subtotal = cart.reduce((s, i) => s + i.price * i.amount, 0);
+        cartSubtotalVal = subtotal;
+        const grand = document.getElementById('cartGrand');
+        if (grand) grand.textContent = subtotal + ' 债券';
+        const sub = document.getElementById('cartSubtotal');
+        if (sub) sub.textContent = subtotal + ' 债券';
+        updateCartButton();
+    }
+
+    async function openSettlement() {
+        if (cart.length === 0) { toast('购物车是空的', 'info'); return; }
+        if (IS_PREVIEW) { toast('预览模式无法结算', 'error'); return; }
+        try { const r = await api('shop.php', {action: 'cart_config'}); if (r.success && r.data) cartCfg = r.data; } catch (e) {}
+        const subtotal = cart.reduce((s, i) => s + i.price * i.amount, 0);
+        cartSubtotalVal = subtotal;
+        const bpTotal = Math.round(subtotal * cartCfg.backpack_rate);
+        const shTotal = Math.round(subtotal * cartCfg.shulker_rate);
+        const overlay = document.createElement('div');
+        overlay.id = 'cartSettle';
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:9800;display:flex;justify-content:center;align-items:center;animation:glassFadeIn .2s ease';
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+        let html = '<div style="width:440px;max-width:92%;max-height:88vh;overflow-y:auto;background:var(--card);border:1px solid var(--border);border-radius:18px;padding:24px;box-shadow:0 20px 64px rgba(0,0,0,.5)">';
+        html += '<h3 style="margin:0 0 4px;color:var(--fg)">🧾 选择结算方式</h3>';
+        html += '<p style="color:var(--dim);font-size:12px;margin:0 0 16px">共 ' + cart.reduce((s, i) => s + i.amount, 0) + ' 件 · 原价 ' + subtotal + ' 债券</p>';
+        html += '<div id="settleModes" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">';
+        html += settleModeHtml('backpack', '🎒 塞背包', cartCfg.backpack_rate, bpTotal, subtotal, '直接发放到背包，享 ' + (cartCfg.backpack_rate * 10).toFixed(1) + ' 折');
+        html += settleModeHtml('shulker', '📦 潜影盒打包', cartCfg.shulker_rate, shTotal, subtotal, shulkerDesc(cartCfg.shulker_rate, subtotal, shTotal));
+        html += '</div>';
+        html += '<div id="settlePwdWrap"></div>';
+        html += '<div style="display:flex;gap:10px;margin-top:6px"><button class="btn btn-dim" style="flex:1" onclick="document.getElementById(\'cartSettle\').remove()">取消</button><button class="btn btn-primary" style="flex:2" id="settleConfirmBtn" onclick="doSettle()">确认结算</button></div>';
+        html += '</div>';
+        overlay.innerHTML = html;
+        document.body.appendChild(overlay);
+        selectSettleMode('backpack');
+    }
+
+    function shulkerDesc(rate, subtotal, total) {
+        const diff = total - subtotal;
+        if (diff > 0) return '打包进潜影盒，加价 ' + diff + ' 债券';
+        if (diff < 0) return '打包进潜影盒，优惠 ' + (-diff) + ' 债券';
+        return '打包进潜影盒，原价结算';
+    }
+
+    function settleModeHtml(mode, title, rate, total, subtotal, desc) {
+        const saved = subtotal - total;
+        let badge;
+        if (saved > 0) badge = '<span style="color:var(--green);font-size:12px">省 ' + saved + ' 债券</span>';
+        else if (saved < 0) badge = '<span style="color:var(--orange);font-size:12px">加价 ' + (-saved) + ' 债券</span>';
+        else badge = '<span style="color:var(--dim);font-size:12px">原价</span>';
+        return '<div class="settle-mode" data-mode="' + mode + '" onclick="selectSettleMode(\'' + mode + '\')" style="padding:12px 14px;border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:all .15s"><div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:14px;color:var(--fg);font-weight:600">' + title + '</div><div style="text-align:right"><div style="font-size:15px;font-weight:700;color:var(--accent)">' + total + ' 债券</div>' + badge + '</div></div><div style="font-size:12px;color:var(--dim);margin-top:4px">' + desc + '</div></div>';
+    }
+
+    function selectSettleMode(mode) {
+        cartSettlement = mode;
+        document.querySelectorAll('.settle-mode').forEach(c => {
+            const active = c.dataset.mode === mode;
+            c.style.borderColor = active ? 'var(--accent)' : '';
+            c.style.background = active ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : '';
+        });
+        updateSettlePwd();
+    }
+
+    function updateSettlePwd() {
+        const wrap = document.getElementById('settlePwdWrap');
+        if (!wrap) return;
+        const total = Math.round(cartSubtotalVal * (cartSettlement === 'shulker' ? cartCfg.shulker_rate : cartCfg.backpack_rate));
+        if (total > 1000) {
+            wrap.innerHTML = '<div class="row" style="margin-top:8px"><label>密码确认</label><input type="password" id="settlePassword" placeholder="输入游戏登录密码" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>';
+        } else {
+            wrap.innerHTML = '<div style="color:var(--dim);font-size:12px;text-align:center;margin-top:8px">小额结算（≤1000债券），免密码确认</div>';
+        }
+    }
+
+    async function doSettle() {
+        const subtotal = cart.reduce((s, i) => s + i.price * i.amount, 0);
+        const total = Math.round(subtotal * (cartSettlement === 'shulker' ? cartCfg.shulker_rate : cartCfg.backpack_rate));
+        const password = document.getElementById('settlePassword')?.value || '';
+        if (total > 1000 && !password) { toast('请输入密码确认', 'error'); return; }
+        const itemsPayload = cart.map(i => ({item_id: i.item_id, amount: i.amount}));
+        const btn = document.getElementById('settleConfirmBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '结算中...'; }
+        try {
+            const res = await fetch(API + 'shop.php?action=buy_cart', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({token: TOKEN, items: JSON.stringify(itemsPayload), settlement: cartSettlement, player: currentPlayer, password: password || undefined})
+            });
+            const data = await res.json();
+            if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }
+            document.getElementById('cartSettle')?.remove();
+            if (data.success) {
+                const paid = data.data.total_price;
+                const modeName = data.data.mode_name;
+                cart = [];
+                saveCart();
+                toast('结算成功（' + modeName + '）：' + paid + ' 债券', 'success');
+                setTimeout(() => { notifyJavaSync(); switchPage('shop'); }, 500);
+            } else {
+                toast(data.message || '结算失败', 'error');
+            }
+        } catch (e) {
+            toast('结算请求失败: ' + e.message, 'error');
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '确认结算'; }
         }
     }
 

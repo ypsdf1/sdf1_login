@@ -222,7 +222,9 @@ function initTables(SQLite3 $db) {
             hourly_sales INTEGER DEFAULT 0,
             total_sales INTEGER DEFAULT 0,
             last_sync INTEGER DEFAULT 0,
-            admin_stock INTEGER DEFAULT NULL
+            admin_stock INTEGER DEFAULT NULL,
+            admin_buy_price INTEGER DEFAULT NULL,
+            admin_sell_price INTEGER DEFAULT NULL
         )");
 
         // ★ 兼容升级：给shop_items加admin_stock字段（已存在则跳过）
@@ -232,6 +234,13 @@ function initTables(SQLite3 $db) {
         // ★ 兼容升级：给shop_items加last_modified字段（高频轮询检测改动用）
         try {
             $db->exec("ALTER TABLE shop_items ADD COLUMN last_modified INTEGER DEFAULT 0");
+        } catch (\Throwable $e) { /* 字段已存在，忽略 */ }
+        // ★ 兼容升级：给shop_items加admin价格覆盖字段（PHP后台修改价格时写入，Java拉取后清除）
+        try {
+            $db->exec("ALTER TABLE shop_items ADD COLUMN admin_buy_price INTEGER DEFAULT NULL");
+        } catch (\Throwable $e) { /* 字段已存在，忽略 */ }
+        try {
+            $db->exec("ALTER TABLE shop_items ADD COLUMN admin_sell_price INTEGER DEFAULT NULL");
         } catch (\Throwable $e) { /* 字段已存在，忽略 */ }
 
         // CDK表
