@@ -161,6 +161,19 @@ public class DatabaseManager {
                         + ")");
             }
 
+            // PVP 背包备份表（独立表：避免与登录背包系统的 inventory_backups 互相覆盖导致原始背包丢失）
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "pvp_inventory_backup ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "player_name TEXT NOT NULL,"
+                    + "contents_b64 TEXT DEFAULT '',"
+                    + "armor_b64 TEXT DEFAULT '',"
+                    + "extra_b64 TEXT DEFAULT '',"
+                    + "level INTEGER DEFAULT 0,"
+                    + "experience REAL DEFAULT 0,"
+                    + "save_time INTEGER DEFAULT 0"
+                    + ")");
+
             // 安全报警表
             st.execute("CREATE TABLE IF NOT EXISTS "
                     + "security_alerts ("
@@ -957,6 +970,116 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+    }
+
+    // ==================== PVP 背包备份（独立表，避免与登录背包系统互相覆盖）====================
+    // 登录背包系统使用 inventory_backups 表；PVP 备份若共用同一表/同一玩家名键，
+    // 会在换装、断线重连等时机互相覆盖，导致玩家"原始背包丢失"。故 PVP 必须独立存储。
+
+    /**
+     * 保存 PVP 背包备份（非覆盖）。
+     * ★ 关键保护：只要该玩家已存在 PVP 背包备份（即尚未真正退场），绝不再次写入，
+     *   确保入场前的原始背包永远不被后续状态（换装/断线重连）覆盖。
+     */
+    public void savePvpInventoryBackup(String name,
+                                        String contents, String armor,
+                                        String extra, int level,
+                                        double experience) {
+        try {
+            if (hasPvpInventoryBackup(name)) {
+                return; // 已有备份，严禁覆盖
+            }
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "INSERT INTO "
+                                    + "pvp_inventory_backup"
+                                    + " (player_name, "
+                                    + "contents_b64, "
+                                    + "armor_b64, "
+                                    + "extra_b64, "
+                                    + "level, "
+                                    + "experience, "
+                                    + "save_time) "
+                                    + "VALUES "
+                                    + "(?,?,?,?,?,?,?)");
+            ps.setString(1, name);
+            ps.setString(2, contents);
+            ps.setString(3, armor);
+            ps.setString(4, extra);
+            ps.setInt(5, level);
+            ps.setDouble(6, experience);
+            ps.setLong(7,
+                    System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String[] getPvpInventoryBackup(String playerName) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT contents_b64, "
+                                    + "armor_b64, "
+                                    + "extra_b64, "
+                                    + "level, "
+                                    + "experience "
+                                    + "FROM "
+                                    + "pvp_inventory_backup "
+                                    + "WHERE player_name=? "
+                                    + "ORDER BY save_time DESC "
+                                    + "LIMIT 1");
+            ps.setString(1, playerName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String[] result = new String[5];
+                result[0] = rs.getString("contents_b64");
+                result[1] = rs.getString("armor_b64");
+                result[2] = rs.getString("extra_b64");
+                result[3] = String.valueOf(rs.getInt("level"));
+                result[4] = String.valueOf(rs.getDouble("experience"));
+                rs.close();
+                ps.close();
+                return result;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public void deletePvpInventoryBackup(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "DELETE FROM pvp_inventory_backup "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public boolean hasPvpInventoryBackup(String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM pvp_inventory_backup "
+                            + "WHERE player_name=? LIMIT 1");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            boolean has = rs.next();
+            rs.close();
+            ps.close();
+            return has;
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return false;
     }
 
     public boolean hasInventoryBackup(

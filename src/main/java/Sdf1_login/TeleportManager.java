@@ -994,7 +994,11 @@ public class TeleportManager implements Listener {
         String key = args[0].toLowerCase();
         String val = args[1];
         int seconds = plugin.getConfigMgr().parseIntFromString(val);
-        
+        if (seconds < 30) {
+            player.sendMessage("§c[传送管理] 有效时间过小，已强制为 30 秒下限（防止请求秒过期）");
+            seconds = 30;
+        }
+
         if ("valid".equals(key)) {
             plugin.getConfigMgr().tpRequestValidSeconds = seconds;
             plugin.getConfigMgr().saveSettings();

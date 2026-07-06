@@ -13,6 +13,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 
@@ -20,8 +21,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -53,9 +52,10 @@ public class PVPArenaManager implements Listener {
     // PVP世界名称
     private static final String PVP_WORLD_NAME = "pvp_arena";
 
-    // PVP世界数据版本：每当世界生成逻辑有重大变更时 +1，触发自动重建（解决旧版"小平台"残留问题）
-    private static final int PVP_WORLD_VERSION = 2;
-    private static final String PVP_VERSION_FILE = "pvp_world_version.txt";
+    // PVP世界空场冷却时间（毫秒）：所有玩家退场后世界继续保留此时长，
+    // 冷却内若有玩家重新进入则取消删除；冷却结束且仍无人则删除世界，下次进入随机重新生成地形。
+    // 目的：①战斗破坏的地形/被砍的树随世界删除而完全复原；②每次地形随机刷新，防止背图玩家单方面碾压。
+    private static final long PVP_WORLD_IDLE_DELETE_MS = 5 * 60 * 1000L; // 5分钟（可按需调整）
 
     // 玩家在PVP世界中的状态
     private final Set<String> inPVPArena = ConcurrentHashMap.newKeySet();
@@ -65,6 +65,12 @@ public class PVPArenaManager implements Listener {
 
     // 玩家背包备份缓存 (玩家名 -> 备份数据)
     private final Map<String, InventoryBackup> inventoryBackups = new ConcurrentHashMap<>();
+
+    // 待执行的"空场冷却删除世界"定时任务（有人重新进入时取消）
+    private BukkitTask pendingDeleteTask = null;
+
+    // 随机地形种子生成器（每次创建世界用新种子 → 地形不同）
+    private final Random worldSeedRandom = new Random();
 
     // PVP装备列表 (管理员可配置)
     private final List<ItemStack> pvpEquipment = new ArrayList<>();
@@ -157,44 +163,54 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 检查并创建/重建PVP世界（使用正常主世界地形生成器）
+     * 检查并确保PVP世界可用（按需创建，随机地形）。
      *
-     * 关键修复：旧版代码生成的"小平台"世界文件夹仍残留在服务器磁盘，
-     * 原逻辑检测到世界已存在就直接 return、永不重建。现在通过版本文件判断，
-     * 若磁盘上的世界版本过旧（或无版本文件=旧版小平台），则卸载并删除后重新生成完整地形。
+     * 生命周期模型：PVP世界是"一次性随机竞技场"——
+     *   • 有人要进入且世界不存在时，删除磁盘残留（含旧版小平台）后随机重新生成；
+     *   • 玩家全部退场并经过5分钟空场冷却后，世界被删除；
+     *   • 下次进入再次随机生成 → 地形每次不同，破坏/砍树随删除完全复原，杜绝背图。
      */
     public void ensurePVPWorldExists() {
-        World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+        // 有人要进来了：取消任何待执行的删除任务（保留当前这一局地形）
+        cancelPendingDeletion();
 
-        if (pvpWorld != null) {
-            // 世界已加载：检查版本，旧版本则重建
-            if (readWorldVersion(pvpWorld) != PVP_WORLD_VERSION) {
-                plugin.getLogger().info("[PVP] 检测到已加载的PVP世界版本过旧，开始重建完整地形...");
-                rebuildPVPWorld();
-            }
+        World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+        if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
+            // 世界中仍有其他玩家在战斗 → 复用同一局地形，一起竞技（不重建）
+            plugin.getLogger().info("[PVP] PVP世界已有玩家在场，复用当前地形（不重建）");
             return;
         }
 
-        // 世界未加载：检查磁盘上是否残留旧世界目录
+        // 世界不存在，或世界存在但已无人活动 → 重新随机生成全新地形。
+        // 这样满足"每次空场进入都随机生成地形"；同时，服务器若自动从磁盘加载了
+        // 旧版小平台（残留世界），这里会先卸载并删除磁盘目录，用随机地形替换它。
+        if (pvpWorld != null) {
+            plugin.getLogger().info("[PVP] 检测到PVP世界当前无人，卸载旧世界以重新随机生成...");
+            Bukkit.unloadWorld(pvpWorld, false); // false=不保存，直接丢弃旧地形（含旧版小平台）
+            deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        }
+
+        // 兜底：确保磁盘残留目录被清理（含旧版小平台），再随机重新生成
         File worldDir = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-        if (worldDir.exists() && worldDir.isDirectory()
-                && readWorldVersionFromFile(worldDir) != PVP_WORLD_VERSION) {
-            plugin.getLogger().info("[PVP] 检测到磁盘上残留旧版PVP世界(小平台)，删除并重建...");
+        if (worldDir.exists() && worldDir.isDirectory()) {
+            plugin.getLogger().info("[PVP] 清理磁盘残留的PVP世界目录，准备随机重新生成...");
             deleteWorldFolder(worldDir);
         }
 
-        // 创建全新PVP世界
+        // 创建全新随机地形世界
         createPVPWorld();
     }
 
     /**
-     * 创建全新PVP世界（完整主世界地形）
+     * 创建全新PVP世界（每次随机地形）
      */
     private void createPVPWorld() {
-        // 使用默认地形生成器（完整的树木、山丘、洞穴等），不设置自定义 generator
+        // ★ 每次使用随机种子 → 每次地形都不同，杜绝背图碾压
+        long seed = worldSeedRandom.nextLong();
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
+        creator.seed(seed); // 随机种子：不同seed = 不同生物群系与地形
 
         World pvpWorld = creator.createWorld();
         if (pvpWorld == null) {
@@ -208,41 +224,30 @@ public class PVPArenaManager implements Listener {
         pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         pvpWorld.setTime(6000); // 中午
 
-        // ★ 关键：先强制同步生成出生点周边区块，否则新世界区块尚未加载，
-        //   getBlockAt 全为空气 → findSafeSpawn 返回 null → 误铺漂浮小平台
-        preGenerateSpawnChunks(pvpWorld);
+        // ★ 关键：先强制同步生成出生点周边区块（半径3），确保地形已存在后再找安全出生点
+        preGenerateSpawnChunks(pvpWorld, 3);
 
         // 设置出生点（在正常地形中找安全位置）
         Location spawnLoc = findSafeSpawn(pvpWorld);
+        if (spawnLoc == null) {
+            // 半径3内仍是虚空（极端情况），扩大到半径6再找一次
+            preGenerateSpawnChunks(pvpWorld, 6);
+            spawnLoc = findSafeSpawn(pvpWorld);
+        }
+
         if (spawnLoc != null) {
             pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
+            plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(随机地形 seed=" + seed + "): " + PVP_WORLD_NAME
+                    + " 出生点=(" + spawnLoc.getBlockX() + "," + spawnLoc.getBlockY() + "," + spawnLoc.getBlockZ() + ")");
         } else {
+            // 真正的虚空世界（很可能是服务端为 pvp_arena 强制了 void/flat 生成器）：
+            // 退而求其次铺保底平台，但必须告警，因为这种世界不是"完整地形"。
             pvpWorld.setSpawnLocation(0, 100, 0);
-            // 极端兜底：仍未找到地面才铺平台（正常情况不会触发）
             buildFallbackPlatform(pvpWorld);
+            plugin.getLogger().severe("[PVP] 警告：随机世界内找不到任何陆地（疑似服务端为 "
+                    + PVP_WORLD_NAME + " 强制了 void/flat 生成器），已退化为小平台。"
+                    + " 若是此原因，需在服务端 bukkit.yml / 世界管理插件中为该世界设置正常生成器。");
         }
-
-        // 写入版本标记，便于下次启动识别
-        writeWorldVersion(pvpWorld);
-
-        plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(完整主世界地形): " + PVP_WORLD_NAME);
-    }
-
-    /**
-     * 重建PVP世界：先把世界里的玩家传走并卸载，再删除磁盘目录后重新生成
-     */
-    private void rebuildPVPWorld() {
-        World old = Bukkit.getWorld(PVP_WORLD_NAME);
-        if (old != null) {
-            for (Player p : new ArrayList<>(old.getPlayers())) {
-                World main = Bukkit.getWorlds().get(0);
-                p.teleport(main.getSpawnLocation());
-                p.sendMessage("§e[PVP] 竞技场正在重建，你已被传回主世界");
-            }
-            Bukkit.unloadWorld(old, false); // false=不保存（即将删除）
-        }
-        deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
-        createPVPWorld();
     }
 
     /**
@@ -258,49 +263,69 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 将当前世界版本写入世界目录下的版本文件
+     * 取消待执行的"空场冷却删除世界"任务（有人重新进入时调用）
      */
-    private void writeWorldVersion(World world) {
-        try {
-            File f = new File(Bukkit.getWorldContainer(), world.getName() + "/" + PVP_VERSION_FILE);
-            Files.write(f.toPath(), String.valueOf(PVP_WORLD_VERSION).getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
-            plugin.getLogger().warning("[PVP] 写入世界版本文件失败: " + e.getMessage());
+    private void cancelPendingDeletion() {
+        if (pendingDeleteTask != null) {
+            pendingDeleteTask.cancel();
+            pendingDeleteTask = null;
         }
     }
 
     /**
-     * 读取已加载世界的版本（无版本文件返回 -1 = 旧版）
+     * 若PVP世界已无人活动，启动5分钟空场冷却计时；冷却结束且仍无人则删除世界。
+     * 冷却期内若有玩家重新进入（ensurePVPWorldExists 会 cancelPendingDeletion），则取消删除。
      */
-    private int readWorldVersion(World world) {
-        return readWorldVersionFromFile(new File(Bukkit.getWorldContainer(), world.getName()));
+    private void scheduleWorldDeletionIfEmpty() {
+        // 仍有活跃PVP玩家则不触发删除
+        if (!inPVPArena.isEmpty()) return;
+
+        cancelPendingDeletion();
+        pendingDeleteTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                World w = Bukkit.getWorld(PVP_WORLD_NAME);
+                // 冷却结束时再次确认：仍有活跃玩家或仍有玩家滞留世界中则取消删除
+                if (w == null || !inPVPArena.isEmpty() || !w.getPlayers().isEmpty()) {
+                    pendingDeleteTask = null;
+                    return;
+                }
+                plugin.getLogger().info("[PVP] PVP世界空场冷却结束，删除世界以释放资源...");
+                deletePVPWorld(w);
+                pendingDeleteTask = null;
+            }
+        }.runTaskLater(plugin, PVP_WORLD_IDLE_DELETE_MS / 50L); // ticks = ms / 50
     }
 
     /**
-     * 从世界目录读取版本文件
+     * 卸载并删除PVP世界（含磁盘目录），下次进入将随机重新生成地形
      */
-    private int readWorldVersionFromFile(File worldDir) {
-        File f = new File(worldDir, PVP_VERSION_FILE);
-        if (!f.exists()) return -1;
-        try {
-            String s = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
-            return Integer.parseInt(s);
-        } catch (Exception e) {
-            return -1;
+    private void deletePVPWorld(World world) {
+        if (world == null) return;
+        // 兜底：确保世界内无玩家（理论上冷却结束时已无人）
+        for (Player p : new ArrayList<>(world.getPlayers())) {
+            World main = Bukkit.getWorlds().get(0);
+            p.teleport(main.getSpawnLocation());
+            p.sendMessage("§e[PVP] 竞技场已关闭，你被传回主世界");
         }
+        Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
+        deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
     }
 
     /**
-     * 强制同步生成出生点周边区块（3x3），确保地形已存在后再寻找安全出生点
+     * 强制同步生成出生点周边区块（半径 radius 个区块），确保地形已存在后再寻找安全出生点
      * 必须在主线程调用（命令处理阶段）
      */
-    private void preGenerateSpawnChunks(World world) {
+    private void preGenerateSpawnChunks(World world, int radius) {
         int cx = world.getSpawnLocation().getBlockX() >> 4;
         int cz = world.getSpawnLocation().getBlockZ() >> 4;
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
                 try {
+                    // true=强制生成；再读取一个方块以触发区块填充，避免异步未就绪导致 findSafeSpawn 误判虚空
                     world.loadChunk(cx + dx, cz + dz, true);
+                    world.getChunkAt(cx + dx, cz + dz).getBlock(8, 64, 8).getType();
                 } catch (Exception e) {
                     plugin.getLogger().warning("[PVP] 生成区块失败: " + (cx + dx) + "," + (cz + dz));
                 }
@@ -309,30 +334,37 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 在世界中寻找安全的出生点（优先找最高的非空气且非流体方块作为地面）
+     * 在世界中寻找安全的出生点（螺旋向外搜索最高的非空气且非流体方块作为地面）
+     * 搜索半径较大（SEARCH_RADIUS 格），即使出生点恰好落在海洋/洞穴也能找到附近陆地，
+     * 杜绝"整片虚空→误铺小平台"。
      */
     private Location findSafeSpawn(World world) {
         int baseX = world.getSpawnLocation().getBlockX();
         int baseZ = world.getSpawnLocation().getBlockZ();
-        // 在出生点周边 17x17 范围内寻找最高的固体非流体地面（优先高地，避开海洋）
+        final int SEARCH_RADIUS = 32; // 覆盖出生点周边 64x64 格范围
         int bestX = baseX, bestZ = baseZ, bestY = -1;
-        for (int dx = -8; dx <= 8; dx++) {
-            for (int dz = -8; dz <= 8; dz++) {
-                int x = baseX + dx, z = baseZ + dz;
-                for (int y = 255; y >= 1; y--) {
-                    Block block = world.getBlockAt(x, y, z);
-                    Material type = block.getType();
-                    if (!type.isAir() && !isFluid(type)) {
-                        if (y > bestY) { bestY = y; bestX = x; bestZ = z; }
-                        break;
+        for (int r = 0; r <= SEARCH_RADIUS; r++) {
+            // 仅遍历半径为 r 的方形环
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
+                    int x = baseX + dx, z = baseZ + dz;
+                    for (int y = 255; y >= 1; y--) {
+                        Block block = world.getBlockAt(x, y, z);
+                        Material type = block.getType();
+                        if (!type.isAir() && !isFluid(type)) {
+                            if (y > bestY) { bestY = y; bestX = x; bestZ = z; }
+                            break;
+                        }
                     }
                 }
             }
+            if (bestY >= 0) break; // 找到陆地立即停止
         }
         if (bestY >= 0) {
             return new Location(world, bestX + 0.5, bestY + 1, bestZ + 0.5);
         }
-        return null; // 未找到安全地面
+        return null; // 未找到安全地面（疑似虚空世界）
     }
 
     /**
@@ -456,12 +488,16 @@ public class PVPArenaManager implements Listener {
 
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 离开PVP竞技场"
                 + (isDisconnect ? "（断线）" : ""));
+
+        // 退场后若已无人，启动空场冷却；冷却结束且仍无人则删除世界（下次随机重生）
+        scheduleWorldDeletionIfEmpty();
     }
 
     /**
      * 玩家退出PVP世界（由 PlayerChangedWorldEvent 触发）
      */
     public void onPlayerExitPVPWorld(Player player) {
+        // 强制离开（内部已统一触发空场冷却删除逻辑）
         forceLeaveArena(player, false);
     }
 
@@ -520,7 +556,7 @@ public class PVPArenaManager implements Listener {
         Player player = event.getPlayer();
 
         // 检查是否有待还原的PVP背包备份
-        String[] data = db.getInventoryBackup(player.getName());
+        String[] data = db.getPvpInventoryBackup(player.getName());
         if (data != null && !data[0].isEmpty()) {
             plugin.getLogger().info("[PVP] 玩家 " + player.getName()
                     + " 上次在PVP中断线，正在还原背包...");
@@ -535,7 +571,7 @@ public class PVPArenaManager implements Listener {
                 );
                 inventoryBackups.put(player.getName(), backup);
                 restoreInventory(player);
-                db.deleteInventoryBackup(player.getName());
+                db.deletePvpInventoryBackup(player.getName());
                 player.sendMessage("§a§l检测到你上次在PVP中断线，背包已自动恢复");
             }, 2L);
         }
@@ -564,6 +600,8 @@ public class PVPArenaManager implements Listener {
                 // 还没确认装备 → 身上还是原背包，不需要特殊处理
                 inPVPArena.remove(player.getName());
                 equipmentConfirmed.remove(player.getName());
+                // 若因此成为最后一名退场者，启动空场冷却删除
+                scheduleWorldDeletionIfEmpty();
             }
         }
     }
@@ -587,7 +625,7 @@ public class PVPArenaManager implements Listener {
         inventoryBackups.put(playerName, backup);
 
         // 同时保存到数据库（用于断线还原）
-        db.saveInventoryBackup(
+        db.savePvpInventoryBackup(
                 playerName,
                 serializeItems(backup.contents),
                 serializeItems(backup.armor),
@@ -610,7 +648,7 @@ public class PVPArenaManager implements Listener {
 
         // 缓存没有则从数据库获取
         if (backup == null) {
-            String[] data = db.getInventoryBackup(playerName);
+            String[] data = db.getPvpInventoryBackup(playerName);
             if (data != null) {
                 backup = new InventoryBackup(
                         deserializeItems(data[0]),
@@ -620,7 +658,7 @@ public class PVPArenaManager implements Listener {
                         Float.parseFloat(data[4])
                 );
                 // 删除数据库备份
-                db.deleteInventoryBackup(playerName);
+                db.deletePvpInventoryBackup(playerName);
             }
         }
 
@@ -632,7 +670,7 @@ public class PVPArenaManager implements Listener {
             player.setExp(backup.exp);
             // ★ 无论备份来自缓存还是数据库，还原后必须清理数据库备份，
             //   否则断线重连时 onPlayerJoin 会再次覆盖玩家当前背包（序列化生效后的隐藏坑）
-            db.deleteInventoryBackup(playerName);
+            db.deletePvpInventoryBackup(playerName);
             plugin.getLogger().info("[PVP] 已还原玩家 " + playerName + " 的背包");
         } else {
             plugin.getLogger().warning("[PVP] 未找到玩家 " + playerName + " 的背包备份");

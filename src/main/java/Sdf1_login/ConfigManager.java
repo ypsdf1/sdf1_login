@@ -235,7 +235,16 @@ public class ConfigManager {
         areaProtectMaxLands = parseInt(m.getOrDefault("区域防护_最大领地数", "3"), 3);
 
         tpRequestValidSeconds = parseIntFromString(m.getOrDefault("传送_请求有效秒", "90"));
+        // 安全下限：防止配置被误设为极小值（如把"3"当"3分钟"）导致传送请求秒过期。
+        // 若发现配置过小，强制下限并告警，便于定位插件设置.txt 中的异常值。
+        if (tpRequestValidSeconds < 30) {
+            System.out.println("[Sdf1配置] 警告: 传送_请求有效秒=" + tpRequestValidSeconds
+                    + " 过小，已强制下限为 30 秒（请检查插件设置.txt 是否误设为极小值）");
+            tpRequestValidSeconds = 30;
+        }
         tpSendIntervalSeconds = parseIntFromString(m.getOrDefault("传送_发送间隔秒", "10"));
+        System.out.println("[Sdf1配置] 传送请求有效时间 = " + tpRequestValidSeconds + " 秒；发送间隔 = "
+                + tpSendIntervalSeconds + " 秒");
 
         // rewardChannel 已标准化为 bonds/economy，默认bonds
     }
