@@ -59,6 +59,10 @@ public class ConfigManager {
     public int tpRequestValidSeconds = 90; // 请求有效时间（秒）
     public int tpSendIntervalSeconds = 10; // 发送间隔（秒）
 
+    // ===== 商店打包配置（来自 PHP shop_config，定时拉取）=====
+    public int packingFee = 5;        // 彩色潜影盒打包加收债券数（原色免费）
+    public int greenDiscount = 2;     // 环保单减免百分比（不打包/塞背包时减免，0=不减免）
+
     // ★ 构造函数接收 File，和 Main.java 调用一致 ★
     public ConfigManager(File dataFolder) {
         this.dataFolder = dataFolder;

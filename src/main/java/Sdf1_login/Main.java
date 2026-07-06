@@ -4648,6 +4648,26 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§c权限不足");
                 return true;
             }
+            // 打包费配置：/sdf1_login set packmoney <金额>
+            if (args.length >= 2 && args[1].equalsIgnoreCase("packmoney")) {
+                if (args.length < 3) {
+                    sender.sendMessage("§e用法: /sdf1_login set packmoney <金额>");
+                    return true;
+                }
+                try {
+                    int amt = Integer.parseInt(args[2]);
+                    if (amt < 0 || amt > 999) {
+                        sender.sendMessage("§c打包费需在 0~999 之间");
+                        return true;
+                    }
+                    getConfigMgr().packingFee = amt;
+                    webManager.pushShopConfig("packmoney", String.valueOf(amt));
+                    sender.sendMessage("§a打包费已设置为 " + amt + " 债券（已同步至Web配置）");
+                } catch (NumberFormatException e) {
+                    sender.sendMessage("§c金额必须为数字");
+                }
+                return true;
+            }
             if (args.length < 3) {
                 sender.sendMessage("§e用法: /sdf1_login set <玩家> <临时密码>");
                 return true;

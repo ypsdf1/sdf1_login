@@ -775,9 +775,11 @@ public class ShopManager implements Listener {
         int couponPct = activeDiscount
                 .getOrDefault(p.getUniqueId(), 0);
         int ecoPct = 0;
+        int packFeeCfg = plugin.getConfigMgr().packingFee;   // 彩色潜影盒打包费（配置）
+        int greenPct = plugin.getConfigMgr().greenDiscount;  // 环保单减免（不打包时减免）
 
         if (raw == 10) {
-            ecoPct = 2;
+            ecoPct = greenPct; // 不打包（环保单）→ 减免
         }
 
         double factor = 1.0;
@@ -795,6 +797,7 @@ public class ShopManager implements Listener {
                 && originalTotal >= 100);
 
         if (raw == 10) {
+            p.closeInventory();
             deductAndGive(p, cart, discounted,
                     false, null, "", 0,
                     ecoPct, couponPct);
@@ -803,12 +806,14 @@ public class ShopManager implements Listener {
         if (raw == 13) {
             Material c = Material.SHULKER_BOX;
             if (multiAndBig) {
+                p.closeInventory();
                 deductAndGive(p, cart, discounted,
                         true, c, "", 0,
                         ecoPct, couponPct);
             } else {
+                p.closeInventory();
                 deductAndGive(p, cart, discounted,
-                        true, c, "默认打包", 5,
+                        true, c, "默认打包", packFeeCfg,
                         ecoPct, couponPct);
             }
             return true;
@@ -826,20 +831,26 @@ public class ShopManager implements Listener {
     public void openColorSelect(Player p, int baseTotal) {
         Inventory g = Bukkit.createInventory(
                 null, 54, "§b§l选择潜影盒颜色");
+        // ★ 顺序必须与 SHULKER_COLORS 严格一致：索引0 = 原色(SHULKER_BOX)，1=白色 … 16=黑色
         String[] colorNames = {
-                "白色","橙色","品红","淡蓝",
-                "黄色","淡绿","粉色","灰色",
-                "淡灰","青色","紫色","蓝色",
-                "棕色","绿色","红色","黑色","原色"
+                "原色","白色","橙色","品红",
+                "淡蓝","黄色","淡绿","粉色",
+                "灰色","淡灰","青色","紫色",
+                "蓝色","棕色","绿色","红色","黑色"
         };
+        int packFee = plugin.getConfigMgr().packingFee; // 打包费（彩色潜影盒加收，来自配置）
         for (int i = 0; i < SHULKER_COLORS.length; i++) {
             ItemStack is = new ItemStack(SHULKER_COLORS[i]);
             ItemMeta im = is.getItemMeta();
             if (im != null) {
                 im.setDisplayName("§e" + colorNames[i]
                         + "§6潜影盒");
+                // 原色（SHULKER_BOX）免费；其它颜色按配置加收打包费
+                String feeLine = (SHULKER_COLORS[i] == Material.SHULKER_BOX)
+                        ? "§a免费（原版默认颜色）"
+                        : ("§7加收 §e" + packFee + " §6枚债券");
                 im.setLore(java.util.Arrays.asList(
-                        "§7加收 §e5 §6枚债券",
+                        feeLine,
                         "",
                         "§a点击选择"));
                 is.setItemMeta(im);
@@ -849,7 +860,7 @@ public class ShopManager implements Listener {
         g.setItem(49, mkItem(Material.ARROW, "§7返回"));
         g.setItem(45, mkItem(Material.PAPER,
                 "§7消费: §e" + baseTotal
-                        + "枚 + §e5§6打包费"));
+                        + "枚 + §e" + packFee + "§6打包费"));
      
         p.openInventory(g);
     }
@@ -889,13 +900,15 @@ public class ShopManager implements Listener {
 
         Material selectedColor = SHULKER_COLORS[raw];
         if (selectedColor == Material.SHULKER_BOX) {
+            p.closeInventory();
             deductAndGive(p, cart, discounted, true,
                     Material.SHULKER_BOX,
                     "原色打包", 0,
                     ecoPct, couponPct);
         } else {
+            p.closeInventory();
             deductAndGive(p, cart, discounted, true,
-                    selectedColor, "自选颜色", 5,
+                    selectedColor, "自选颜色", plugin.getConfigMgr().packingFee,
                     ecoPct, couponPct);
         }
         return true;
@@ -2223,6 +2236,29 @@ public class ShopManager implements Listener {
             } else {
                 s.sendMessage(
                         "§c未找到: " + a[2]);
+            }
+            return true;
+        }
+
+        // 环保单减免：shop setgreen <1-10> （10=不减免，1-9.99=按比例减免%）
+        if (sub.equals("setgreen")) {
+            if (a.length < 3) {
+                s.sendMessage(
+                        "§e用法: shop setgreen <1-10>"
+                                + " （10=不减免，1-9.99=按比例减免%）");
+                return true;
+            }
+            try {
+                double v = Double.parseDouble(a[2]);
+                int gv = (int) Math.floor(v);
+                if (gv < 0) gv = 0;
+                if (gv >= 10) gv = 0; // 10 视为不减免
+                plugin.getConfigMgr().greenDiscount = gv;
+                plugin.webManager.pushShopConfig("green_discount", String.valueOf(gv));
+                s.sendMessage("§a环保单减免已设置为 " + gv
+                        + "%（10=不减免，已同步至Web配置）");
+            } catch (NumberFormatException e) {
+                s.sendMessage("§c参数必须为数字");
             }
             return true;
         }

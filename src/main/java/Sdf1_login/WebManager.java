@@ -1330,6 +1330,7 @@ public class WebManager {
                         submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("即时-pullShopPrices", () -> pullShopPrices());
+                        submitNormalDbTask("即时-pullShopConfig", () -> pullShopConfig());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -1367,6 +1368,7 @@ public class WebManager {
                     submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                     submitNormalDbTask("末轮-pullShopPrices", () -> pullShopPrices());
+                    submitNormalDbTask("末轮-pullShopConfig", () -> pullShopConfig());
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                     submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
                     plugin.getLogger().info("[合并C] 全员下线超60秒，末轮同步已执行");
@@ -1405,6 +1407,7 @@ public class WebManager {
             submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullShopPrices", () -> pullShopPrices());
+            submitNormalDbTask("周期-pullShopConfig", () -> pullShopConfig());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -5854,24 +5857,20 @@ public class WebManager {
                 }
                 confirmTransaction(txId);
             } else if (type.equals("shop_cart")) {
-                // 购物车批量结算：detail 含 settlement + items[]
+                // 购物车批量结算：detail 含 settlement + items[] + pay_mode
                 if (plugin.getBondManager().isFrozen(playerName)) {
                     plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 账户已冻结");
                     confirmTransaction(txId);
                     return;
                 }
-                int balance = plugin.getBondManager().getBonds(playerName);
-                if (balance < amount) {
-                    plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 余额不足 (有" + balance + ", 需" + amount + ")");
-                    confirmTransaction(txId);
-                    return;
-                }
 
-                // 解析 detail 中的结算方式与商品列表
+                // 解析 detail 中的结算方式、颜色、收款模式与商品列表
                 String settlement = "backpack";
-                String shulkerColorName = "purple"; // 默认紫色
-                Material shulkerMat = Material.PURPLE_SHULKER_BOX; // 默认紫色潜影盒
+                String shulkerColorName = "default"; // 默认原色（免费潜影盒 = SHULKER_BOX）
+                Material shulkerMat = Material.SHULKER_BOX; // 免费潜影盒使用原版默认颜色
+                String payMode = "bond"; // bond=债券扣款; cash=现金仅记账不扣债券
                 java.util.List<CartEntry> entries = new java.util.ArrayList<>();
+                java.util.List<OrderManager.OrderItem> receiptItems = new java.util.ArrayList<>();
                 try {
                     if (detail != null && !detail.isEmpty()) {
                         Gson gson = new Gson();
@@ -5879,17 +5878,22 @@ public class WebManager {
                         if (root != null) {
                             if (root.has("settlement")) settlement = root.get("settlement").getAsString();
                             if (root.has("shulker_color")) shulkerColorName = root.get("shulker_color").getAsString();
+                            if (root.has("pay_mode")) payMode = root.get("pay_mode").getAsString();
                             if (root.has("items")) {
                                 JsonArray arr = root.getAsJsonArray("items");
                                 for (int i = 0; i < arr.size(); i++) {
                                     JsonObject it = arr.get(i).getAsJsonObject();
                                     String iid = it.has("item_id") ? it.get("item_id").getAsString() : "";
                                     int amt = it.has("amount") ? it.get("amount").getAsInt() : 0;
-                                    if (!iid.isEmpty() && amt > 0) entries.add(new CartEntry(iid, amt));
+                                    if (!iid.isEmpty() && amt > 0) {
+                                        entries.add(new CartEntry(iid, amt));
+                                        String iname = it.has("name") ? it.get("name").getAsString() : iid;
+                                        int iprice = it.has("unit_price") ? it.get("unit_price").getAsInt() : 0;
+                                        receiptItems.add(new OrderManager.OrderItem(iname, iid, iprice, iprice, amt));
+                                    }
                                 }
                             }
                         }
-
                         // 潜影盒颜色映射
                         shulkerMat = mapShulkerColor(shulkerColorName);
                     }
@@ -5897,13 +5901,35 @@ public class WebManager {
                     plugin.getLogger().warning("[Web交易] 购物车detail解析失败: " + detail);
                 }
 
-                boolean ok = plugin.getBondManager().deductBonds(playerName, amount,
-                        "web_shop", "cart", "Web商城", "Web购物车结算(共" + entries.size() + "项)");
-                if (ok) {
+                // 余额校验（现金模式跳过：仅记账不扣债券）
+                if (!"cash".equals(payMode)) {
+                    int balance = plugin.getBondManager().getBonds(playerName);
+                    if (balance < amount) {
+                        plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 余额不足 (有" + balance + ", 需" + amount + ")");
+                        confirmTransaction(txId);
+                        return;
+                    }
+                }
+
+                // 扣款 / 发货（现金模式跳过扣款）
+                boolean deliver;
+                if ("cash".equals(payMode)) {
+                    deliver = true; // 现金收款：仅记账，不扣玩家债券
+                } else {
+                    deliver = plugin.getBondManager().deductBonds(playerName, amount,
+                            "web_shop", "cart", "Web商城", "Web购物车结算(共" + entries.size() + "项)");
+                    if (!deliver) plugin.getLogger().warning("[Web交易] 购物车扣款失败: 玩家 " + playerName + " 余额不足");
+                }
+
+                if (deliver) {
                     int newBal = plugin.getBondManager().getBonds(playerName);
                     Player player = plugin.getServer().getPlayer(playerName);
                     if (player != null && player.isOnline()) {
-                        player.sendMessage("§6[商城] §f购物车结算成功！§c-" + amount + "§f 债券，共 " + entries.size() + " 项");
+                        if ("cash".equals(payMode)) {
+                            player.sendMessage("§6[商城] §f购物车结算成功！§e现金记账 §f（未扣债券），共 " + entries.size() + " 项");
+                        } else {
+                            player.sendMessage("§6[商城] §f购物车结算成功！§c-" + amount + "§f 债券，共 " + entries.size() + " 项");
+                        }
                         if ("shulker".equals(settlement)) {
                             java.util.List<ItemStack> stacks = new java.util.ArrayList<>();
                             for (CartEntry ce : entries) {
@@ -5915,22 +5941,47 @@ public class WebManager {
                                 java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
                                 for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
                             }
-                            String colorCn = shulkerColorName.equals("purple") ? "紫色" : shulkerColorName;
-                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒");
+                            // ★ 购物小票：封装成书塞入首个潜影盒
+                            if (!boxes.isEmpty() && plugin.getOrderManager() != null) {
+                                try {
+                                    OrderManager.OrderRecord rec = new OrderManager.OrderRecord();
+                                    rec.orderId = System.currentTimeMillis();
+                                    rec.player = playerName;
+                                    rec.items = receiptItems;
+                                    rec.totalOriginal = amount;
+                                    rec.totalPaid = amount;
+                                    rec.discount = 0;
+                                    rec.discountType = "cash".equals(payMode) ? "cash" : "none";
+                                    rec.packFee = 0;
+                                    rec.packType = (shulkerMat == Material.SHULKER_BOX) ? "default" : "custom";
+                                    rec.packColor = shulkerColorName;
+                                    rec.timestamp = System.currentTimeMillis();
+                                    rec.status = 1;
+                                    ItemStack book = plugin.getOrderManager().createReceiptBook(rec);
+                                    plugin.getOrderManager().addBookToShulker(boxes.get(0), book);
+                                } catch (Exception ex) {
+                                    plugin.getLogger().warning("[Web交易] 小票书生成失败: " + ex.getMessage());
+                                }
+                            }
+                            String colorCn = (shulkerColorName.equals("default") || shulkerColorName.equals("purple"))
+                                    ? "原色" : shulkerColorName;
+                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒（含小票书）");
                         } else {
                             for (CartEntry ce : entries) {
                                 dispatchItemByMaterialOrId(player, ce.itemId, ce.amount);
                             }
                         }
-                        player.sendMessage("§6[债券] §f余额: §e" + (newBal + amount) + " §7→ §a" + newBal);
+                        if ("cash".equals(payMode)) {
+                            player.sendMessage("§6[债券] §f余额不变: §e" + newBal);
+                        } else {
+                            player.sendMessage("§6[债券] §f余额: §e" + (newBal + amount) + " §7→ §a" + newBal);
+                        }
                     } else {
                         for (CartEntry ce : entries) {
                             saveOfflineItem(playerName, ce.itemId, ce.amount);
                         }
                         plugin.getLogger().info("[Web交易] 玩家离线，购物车商品已保存为离线待发放");
                     }
-                } else {
-                    plugin.getLogger().warning("[Web交易] 购物车扣款失败: 玩家 " + playerName + " 余额不足");
                 }
                 confirmTransaction(txId);
             } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("recharge") || type.equals("admin_give")) {
@@ -6213,7 +6264,7 @@ public class WebManager {
      * 潜影盒颜色名称 → Material 映射
      */
     private Material mapShulkerColor(String colorName) {
-        switch (colorName != null ? colorName.toLowerCase() : "purple") {
+        switch (colorName != null ? colorName.toLowerCase() : "default") {
             case "white":  return Material.WHITE_SHULKER_BOX;
             case "black":  return Material.BLACK_SHULKER_BOX;
             case "red":    return Material.RED_SHULKER_BOX;
@@ -6222,7 +6273,7 @@ public class WebManager {
             case "yellow": return Material.YELLOW_SHULKER_BOX;
             case "orange": return Material.ORANGE_SHULKER_BOX;
             case "purple":
-            default:      return Material.PURPLE_SHULKER_BOX; // 默认紫色（免费）
+            default:      return Material.SHULKER_BOX; // 默认原色（免费潜影盒）
         }
     }
 
@@ -6377,6 +6428,56 @@ public class WebManager {
                 }
             }
         }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 拉取商店打包配置（打包费 / 环保单减免）并写入 ConfigManager
+     * 配置以 PHP shop_config 表为准，Java 命令 set packmoney / shop setgreen 也会回写该表
+     */
+    private void pullShopConfig() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=get_shop_config&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    String json = doGet(urlStr);
+                    if (json == null || !json.contains("\"success\":true")) return;
+                    int dataIdx = json.indexOf("\"data\":");
+                    if (dataIdx < 0) return;
+                    String sub = json.substring(dataIdx + 7);
+                    int objStart = sub.indexOf("{");
+                    if (objStart < 0) return;
+                    int objEnd = findMatchingBracket(sub, objStart);
+                    if (objEnd < 0) return;
+                    Map<String, Object> m = parseJsonObject(sub.substring(objStart, objEnd + 1));
+                    if (m.containsKey("packmoney")) {
+                        plugin.getConfigMgr().packingFee = ((Number) m.get("packmoney")).intValue();
+                    }
+                    if (m.containsKey("green_discount")) {
+                        plugin.getConfigMgr().greenDiscount = ((Number) m.get("green_discount")).intValue();
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[配置同步] 拉取商店打包配置异常: " + e.getMessage());
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 推送商店配置到 PHP（Java命令 set packmoney / shop setgreen 调用）
+     * 直接写入 PHP shop_config 表（secret 认证），随后由 pullShopConfig 定时器刷新本地缓存
+     */
+    public void pushShopConfig(String key, String value) {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_config&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                    + "&key=" + java.net.URLEncoder.encode(key, "UTF-8")
+                    + "&value=" + java.net.URLEncoder.encode(value, "UTF-8");
+            doGet(urlStr);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[配置推送] 保存商店配置失败: " + e.getMessage());
+        }
     }
 
     /**
@@ -6653,6 +6754,7 @@ public class WebManager {
                         submitNormalDbTask("通知-pullPendingTransactions", () -> pullPendingTransactions());
                         submitNormalDbTask("通知-pullShopStock", () -> pullShopStock());
                         submitNormalDbTask("通知-pullShopPrices", () -> pullShopPrices());
+                        submitNormalDbTask("通知-pullShopConfig", () -> pullShopConfig());
                         submitNormalDbTask("通知-pullBondChanges", () -> pullBondChanges());
                         // 删除通知文件
                         notifyFile.delete();

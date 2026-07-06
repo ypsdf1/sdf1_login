@@ -2,10 +2,12 @@ package Sdf1_login;
 
 import org.bukkit.*;
 import org.bukkit.block.Block;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -72,11 +74,33 @@ public class PVPArenaManager implements Listener {
     // 随机地形种子生成器（每次创建世界用新种子 → 地形不同）
     private final Random worldSeedRandom = new Random();
 
-    // PVP装备列表 (管理员可配置)
+    // PVP装备列表 (管理员可配置) — 当前默认用于向后兼容，实际由档位系统驱动
     private final List<ItemStack> pvpEquipment = new ArrayList<>();
 
     // 装备选择GUI标题
     private static final String EQUIPMENT_GUI_TITLE = "§6§l选择PVP装备";
+
+    // ★ 装备档位定义
+    public enum EquipmentTier {
+        LEATHER("§e皮革套装", "轻便敏捷，适合新手", Material.LEATHER_HELMET, 1),
+        CHAINMAIL("§7锁链套装", "攻守平衡，进阶选择", Material.CHAINMAIL_HELMET, 2),
+        IRON("§f铁甲套装", "经典配置，可靠之选", Material.IRON_HELMET, 3),
+        DIAMOND("§b钻石套装", "高端防护，强力输出", Material.DIAMOND_HELMET, 4),
+        NETHERITE("§6下合金套装", "顶级装备，所向披靡", Material.NETHERITE_HELMET, 5);
+
+        public final String displayName;
+        public final String description;
+        public final Material helmetMaterial;
+        public final int tierId;
+
+        EquipmentTier(String displayName, String desc, Material helmet, int id) {
+            this.displayName = displayName; this.description = desc;
+            this.helmetMaterial = helmet; this.tierId = id;
+        }
+    }
+
+    // 玩家当前选中的装备档位
+    private final Map<String, EquipmentTier> selectedTier = new ConcurrentHashMap<>();
 
     /**
      * 背包备份数据类
@@ -202,15 +226,22 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 创建全新PVP世界（每次随机地形）
+     * 创建全新PVP世界 — 手动地形生成（不依赖服务端NORMAL生成器）
+     *
+     * ★ 为什么用手动生成：
+     *   日志证实4个不同seed的NORMAL世界全部findSafeSpawn→null（fallback小平台），
+     *   说明服务端(bukkit.yml或某插件)很可能给pvp_arena绑定了void/flat生成器。
+     *   代码层无法覆盖服务端生成器，所以改为FLAT空世界+代码内噪声地形生成。
      */
     private void createPVPWorld() {
-        // ★ 每次使用随机种子 → 每次地形都不同，杜绝背图碾压
         long seed = worldSeedRandom.nextLong();
+
+        // 用FLAT空世界作为画布（3层石头基底+上方空气），然后在其上手动雕刻随机地形
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
-        creator.type(WorldType.NORMAL);
-        creator.seed(seed); // 随机种子：不同seed = 不同生物群系与地形
+        creator.type(WorldType.FLAT);
+        creator.generatorSettings("3;2*minecraft:stone,64*minecraft:air,1*minecraft:bedrock;"); // 石头基底+空气
+        creator.seed(seed);
 
         World pvpWorld = creator.createWorld();
         if (pvpWorld == null) {
@@ -218,36 +249,166 @@ public class PVPArenaManager implements Listener {
             return;
         }
 
-        // 设置PVP世界规则
+        // 设置基本规则
         pvpWorld.setPVP(true);
         pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
         pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
-        pvpWorld.setTime(6000); // 中午
+        pvpWorld.setTime(6000);
 
-        // ★ 关键：先强制同步生成出生点周边区块（半径3），确保地形已存在后再找安全出生点
-        preGenerateSpawnChunks(pvpWorld, 3);
+        // ★ 手动生成随机竞技场地形（基于双线性插值的伪随机高度图）
+        generatePVPTerrain(pvpWorld, seed);
 
-        // 设置出生点（在正常地形中找安全位置）
+        // 找到安全出生点
         Location spawnLoc = findSafeSpawn(pvpWorld);
-        if (spawnLoc == null) {
-            // 半径3内仍是虚空（极端情况），扩大到半径6再找一次
-            preGenerateSpawnChunks(pvpWorld, 6);
-            spawnLoc = findSafeSpawn(pvpWorld);
-        }
-
         if (spawnLoc != null) {
             pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
-            plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(随机地形 seed=" + seed + "): " + PVP_WORLD_NAME
+            plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(手动地形 seed=" + seed + "): " + PVP_WORLD_NAME
                     + " 出生点=(" + spawnLoc.getBlockX() + "," + spawnLoc.getBlockY() + "," + spawnLoc.getBlockZ() + ")");
         } else {
-            // 真正的虚空世界（很可能是服务端为 pvp_arena 强制了 void/flat 生成器）：
-            // 退而求其次铺保底平台，但必须告警，因为这种世界不是"完整地形"。
-            pvpWorld.setSpawnLocation(0, 100, 0);
+            // 极端情况：即使手动生成也找不到（理论上不可能），fallback
+            pvpWorld.setSpawnLocation(0, 80, 0);
             buildFallbackPlatform(pvpWorld);
-            plugin.getLogger().severe("[PVP] 警告：随机世界内找不到任何陆地（疑似服务端为 "
-                    + PVP_WORLD_NAME + " 强制了 void/flat 生成器），已退化为小平台。"
-                    + " 若是此原因，需在服务端 bukkit.yml / 世界管理插件中为该世界设置正常生成器。");
+            plugin.getLogger().severe("[PVP] 手动地形生成异常，使用保底平台");
         }
+    }
+
+    /**
+     * 在FLAT空世界上手动生成随机PVP竞技场地形
+     *
+     * 使用多层叠加噪声模拟自然地形：
+     * - 基底: y=0~3 (石头+基岩)
+     * - 地形层: y=4~terrainHeight (草地方块/沙子/水)
+     * - 特征: 随机丘陵、偶尔湖泊、树木散布
+     *
+     * @param world FLAT空世界
+     * @param seed  地形种子
+     */
+    private void generatePVPTerrain(World world, long seed) {
+        Random rng = new Random(seed);
+        final int RADIUS = 48; // 生成半径（96x96格）
+        final int BASE_Y = 4;   // FLAT石基底顶层
+        final int CX = 0, CZ = 0; // 以世界原点为中心
+
+        // ★ 噪声网格：用低频+高频两层叠加产生自然感
+        int gridSize = 8;  // 控制点网格间距
+        int gridCount = (RADIUS * 2 / gridSize) + 2;
+        float[][] heightMap = new float[gridCount][gridCount];
+
+        // 生成控制点高度
+        for (int gx = 0; gx < gridCount; gx++) {
+            for (int gz = 0; gz < gridCount; gz++) {
+                // 双八度噪声: 大尺度起伏(10~28) + 小尺度细节(-3~3)
+                float large = 10 + rng.nextFloat() * 18;
+                float small = (rng.nextFloat() - 0.5f) * 6;
+                heightMap[gx][gz] = large + small;
+            }
+        }
+
+        // ★ 双线性插值填充每个方块的高度
+        for (int x = -RADIUS; x <= RADIUS; x++) {
+            for (int z = -RADIUS; z <= RADIUS; z++) {
+                // 距离衰减：边缘逐渐降低高度形成自然边界
+                double distFromCenter = Math.sqrt(x * x + z * z);
+                double edgeFalloff = Math.max(0, 1.0 - distFromCenter / (RADIUS + 5));
+
+                if (edgeFalloff <= 0) continue; // 超出范围不生成
+
+                // 双线性插值
+                float gx_f = (x + RADIUS) / (float) gridSize;
+                float gz_f = (z + RADIUS) / (float) gridSize;
+                int gx0 = Math.min((int) gx_f, gridCount - 2);
+                int gz0 = Math.min((int) gz_f, gridCount - 2);
+                float fx = gx_f - gx0, fz = gz_f - gz0;
+
+                float h00 = heightMap[gx0][gz0], h01 = heightMap[gx0][gz0 + 1];
+                float h10 = heightMap[gx0 + 1][gz0], h11 = heightMap[gx0 + 1][gz0 + 1];
+                float height = h00 * (1 - fx) * (1 - fz) + h01 * (1 - fx) * fz
+                        + h10 * fx * (1 - fz) + h11 * fx * fz;
+
+                // 边缘衰减应用
+                height *= edgeFalloff;
+
+                int terrainHeight = BASE_Y + Math.max(2, (int) height); // 至少2格高
+
+                // 决定表面方块类型
+                Material surface = Material.GRASS_BLOCK;
+                Material below = Material.DIRT;
+                boolean isWater = false;
+
+                // ~8% 概率生成水域（低洼处更容易是水）
+                float waterChance = 0.08f + (1.0f - height / 28f) * 0.12f;
+                if (rng.nextFloat() < waterChance && height < 14) {
+                    isWater = true;
+                }
+
+                // ★ 填充柱子：从BASE_Y往上堆叠到地形高度
+                for (int y = BASE_Y; y < terrainHeight; y++) {
+                    Block b = world.getBlockAt(x, y, z);
+                    if (y == terrainHeight - 1) {
+                        b.setType(isWater ? Material.WATER : surface);
+                    } else if (y >= terrainHeight - 4) {
+                        b.setType(isWater ? Material.WATER : below);
+                    } else {
+                        b.setType(Material.STONE);
+                    }
+                }
+
+                // 水域填充到基准面
+                if (isWater) {
+                    for (int y = terrainHeight; y < BASE_Y + 14; y++) {
+                        world.getBlockAt(x, y, z).setType(Material.WATER);
+                    }
+                }
+            }
+        }
+
+        // ★ 散布一些树（5%概率在每个高地点）
+        for (int tx = -RADIUS + 3; tx < RADIUS - 3; tx += rng.nextInt(4) + 3) {
+            for (int tz = -RADIUS + 3; tz < RADIUS - 3; tz += rng.nextInt(4) + 3) {
+                double d = Math.sqrt(tx * tx + tz * tz);
+                if (d > RADIUS - 8 || rng.nextFloat() > 0.055) continue;
+
+                // 找地面高度
+                int groundY = -1;
+                for (int y = BASE_Y + 30; y >= BASE_Y; y--) {
+                    Material m = world.getBlockAt(tx, y, tz).getType();
+                    if (!m.isAir() && m != Material.WATER) { groundY = y; break; }
+                }
+                if (groundY < 0 || groundY < BASE_Y + 5) continue;
+
+                // 生成简易树干+树叶
+                Material log = rng.nextBoolean() ? Material.OAK_LOG : Material.BIRCH_LOG;
+                Material leaf = rng.nextBoolean() ? Material.OAK_LEAVES : Material.BIRCH_LEAVES;
+                int treeH = 4 + rng.nextInt(4);
+
+                for (int ty = 1; ty <= treeH; ty++) {
+                    Block b = world.getBlockAt(tx, groundY + ty, tz);
+                    if (b.getType().isAir()) b.setType(log);
+                }
+                // 树冠（球形近似）
+                int topY = groundY + treeH;
+                for (int lx = -2; lx <= 2; lx++) {
+                    for (int lz = -2; lz <= 2; lz++) {
+                        for (int ly = -1; ly <= 2; ly++) {
+                            if (Math.abs(lx) + Math.abs(lz) + Math.abs(ly) > 4) continue;
+                            Block lb = world.getBlockAt(tx + lx, topY + ly, tz + lz);
+                            if (lb.getType().isAir()) lb.setType(leaf);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 强制加载并保存中心区块（确保地形持久化）
+        for (int cx = -3; cx <= 3; cx++) {
+            for (int cz = -3; cz <= 3; cz++) {
+                try {
+                    world.loadChunk(cx, cz, true);
+                } catch (Exception ignored) {}
+            }
+        }
+
+        plugin.getLogger().info("[PVP] 手动地形生成完成: 半径=" + RADIUS + " 格, 种子=" + seed);
     }
 
     /**
@@ -389,6 +550,49 @@ public class PVPArenaManager implements Listener {
         world.getBlockAt(5, centerY + 1, -5).setType(Material.GLOWSTONE);
         world.getBlockAt(-5, centerY + 1, 5).setType(Material.GLOWSTONE);
         world.getBlockAt(5, centerY + 1, 5).setType(Material.GLOWSTONE);
+    }
+
+    // ==================== GUI关闭事件（防止ESC跳过装备选择）====================
+
+    /**
+     * ★ 关键安全补丁：装备选择GUI关闭事件
+     *
+     * 漏洞：玩家打开装备GUI后按ESC关闭 → 跳过confirmEquipment() →
+     *       原背包未被备份/清空 → 玩家带着自己的神装进PVP战斗
+     *
+     * 修复：检测到装备GUI被关闭时，
+     *   - 若玩家已确认过装备 → 正常（可能是其他背包操作）
+     *   - 若未确认 → 立即遣返回主世界 + 清理状态（不给作弊机会）
+     */
+    @EventHandler
+    public void onInventoryClose(InventoryCloseEvent event) {
+        if (!(event.getPlayer() instanceof Player)) return;
+        Player player = (Player) event.getPlayer();
+        String title = event.getView().getTitle();
+
+        if (!EQUIPMENT_GUI_TITLE.equals(title)) return;
+        if (!inPVPArena.contains(player.getName())) return;
+
+        // 已确认过装备的玩家允许自由开关背包
+        if (equipmentConfirmed.contains(player.getName())) return;
+
+        // ★ 未确认就关了GUI → 遣返！
+        plugin.getLogger().info("[PVP] 玩家 " + player.getName()
+                + " 未确认装备就关闭了PVP装备GUI，执行遣返");
+
+        // 清理状态
+        inPVPArena.remove(player.getName());
+
+        // 延迟一帧传回主世界（避免与关闭事件冲突）
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (player.isOnline()) {
+                World main = Bukkit.getWorlds().get(0);
+                player.teleport(main.getSpawnLocation());
+                player.sendMessage("§c§l[PVP] §c你未确认装备选择，已被遣返回主世界");
+                player.sendMessage("§7提示：进入PVP后必须选择并确认装备才能开始战斗");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+            }
+        });
     }
 
     // ==================== 进入流程 ====================
@@ -715,20 +919,24 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 检查物品是否是PVP装备
+     * 检查物品是否是PVP装备（覆盖所有档位）
      */
     private boolean isPVPEquipment(ItemStack item) {
         if (item == null) return false;
         Material type = item.getType();
-        return type == Material.IRON_HELMET ||
-               type == Material.IRON_CHESTPLATE ||
-               type == Material.IRON_LEGGINGS ||
-               type == Material.IRON_BOOTS ||
-               type == Material.DIAMOND_SWORD ||
-               type == Material.BOW ||
-               type == Material.ARROW ||
-               type == Material.GOLDEN_APPLE ||
-               type == Material.POTION;
+        String name = type.name();
+
+        // 所有档位可能用到的盔甲材料
+        boolean isArmor = name.endsWith("_HELMET") || name.endsWith("_CHESTPLATE")
+                || name.endsWith("_LEGGINGS") || name.endsWith("_BOOTS");
+
+        // PVP 武器和消耗品
+        boolean isWeapon = (name.contains("SWORD") || name.contains("BOW") || name.equals("CROSSBOW"));
+        boolean isAmmo = (type == Material.ARROW || type == Material.SPECTRAL_ARROW);
+        boolean isConsumable = (type == Material.GOLDEN_APPLE || type == Material.POTION
+                || type == Material.ENDER_PEARL);
+
+        return isArmor || isWeapon || isAmmo || isConsumable;
     }
 
     /**
@@ -737,15 +945,83 @@ public class PVPArenaManager implements Listener {
     public void openEquipmentSelection(Player player) {
         Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
 
-        for (int i = 0; i < pvpEquipment.size() && i < 45; i++) {
-            gui.setItem(i, pvpEquipment.get(i).clone());
+        // ★ 顶部：当前选中档位的装备预览（第0-8格显示当前档位的装备）
+        EquipmentTier tier = selectedTier.getOrDefault(player.getName(), EquipmentTier.IRON);
+        List<ItemStack> tierItems = buildTierEquipment(tier);
+        for (int i = 0; i < tierItems.size() && i < 9; i++) {
+            gui.setItem(i, tierItems.get(i));
         }
+        // 填充空位
+        for (int i = tierItems.size(); i < 9; i++) {
+            gui.setItem(i, new ItemStack(Material.GRAY_STAINED_GLASS_PANE));
+        }
+
+        // ★ 中间行：5个装备档位按钮（第18-26格，每行3个）
+        int[] tierSlots = {19, 21, 23, 25, 27};
+        Material[] tierIcons = {Material.LEATHER, Material.CHAINMAIL_CHESTPLATE,
+                Material.IRON_CHESTPLATE, Material.DIAMOND_CHESTPLATE, Material.NETHERITE_CHESTPLATE};
+        String[] tierLore = {"§7速度+ | 防御低", "§7平衡型", "§7经典配置",
+                "§7高防高伤", "§7最强装备"};
+
+        for (int t = 0; t < EquipmentTier.values().length; t++) {
+            EquipmentTier et = EquipmentTier.values()[t];
+            ItemStack tierBtn = new ItemStack(tierIcons[t]);
+            ItemMeta tm = tierBtn.getItemMeta();
+            if (tm != null) {
+                tm.setDisplayName(et.displayName);
+                boolean isSelected = (tier == et);
+                List<String> lore = new ArrayList<>();
+                lore.add("§7" + et.description);
+                lore.add("");
+                lore.add(tierLore[t]);
+                lore.add("");
+                if (isSelected) {
+                    lore.add("§a✓ 当前选中");
+                    // 给选中的加个绿色玻璃框效果
+                    tierBtn = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
+                    tm = tierBtn.getItemMeta();
+                    if (tm != null) {
+                        tm.setDisplayName(et.displayName);
+                        tm.setLore(lore);
+                        tierBtn.setItemMeta(tm);
+                    }
+                } else {
+                    lore.add("§e点击选择此档位");
+                    tm.setLore(lore);
+                    tierBtn.setItemMeta(tm);
+                }
+            }
+            gui.setItem(tierSlots[t], tierBtn);
+        }
+
+        // 分隔线
+        for (int i = 36; i < 45; i++) {
+            if (i == 40) continue;
+            gui.setItem(i, new ItemStack(Material.GRAY_STAINED_GLASS_PANE));
+        }
+
+        // 当前档位信息
+        ItemStack info = new ItemStack(Material.PAPER);
+        ItemMeta infoM = info.getItemMeta();
+        if (infoM != null) {
+            infoM.setDisplayName("§6§l当前: " + tier.displayName);
+            infoM.setLore(Arrays.asList(
+                    "§7" + tier.description,
+                    "",
+                    "§e点击上方档位切换",
+                    "§a点击下方确认开始战斗"));
+            info.setItemMeta(infoM);
+        }
+        gui.setItem(40, info);
 
         // 确认选择按钮
         ItemStack confirm = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
         ItemMeta confirmMeta = confirm.getItemMeta();
         if (confirmMeta != null) {
             confirmMeta.setDisplayName("§a§l确认选择（将备份你的原背包）");
+            confirmMeta.setLore(Arrays.asList(
+                    "§7确认后将发放 " + tier.displayName,
+                    "§7并备份你当前的背包"));
             confirm.setItemMeta(confirmMeta);
         }
         gui.setItem(49, confirm);
@@ -755,11 +1031,109 @@ public class PVPArenaManager implements Listener {
         ItemMeta selectAllMeta = selectAll.getItemMeta();
         if (selectAllMeta != null) {
             selectAllMeta.setDisplayName("§b§l一键装备全套");
+            selectAllMeta.setLore(Arrays.asList("§7使用 " + tier.displayName + " §7快速开始"));
             selectAll.setItemMeta(selectAllMeta);
         }
         gui.setItem(53, selectAll);
 
         player.openInventory(gui);
+    }
+
+    /**
+     * 根据档位构建装备列表
+     */
+    private List<ItemStack> buildTierEquipment(EquipmentTier tier) {
+        List<ItemStack> items = new ArrayList<>();
+
+        switch (tier) {
+            case LEATHER:
+                items.add(new ItemStack(Material.LEATHER_HELMET));
+                items.add(new ItemStack(Material.LEATHER_CHESTPLATE));
+                items.add(new ItemStack(Material.LEATHER_LEGGINGS));
+                items.add(new ItemStack(Material.LEATHER_BOOTS));
+                items.add(makeWeapon(Material.STONE_SWORD, "§7PVP石剑", false));
+                items.add(new ItemStack(Material.BOW));
+                items.add(new ItemStack(Material.ARROW, 32));
+                items.add(new ItemStack(Material.GOLDEN_APPLE, 4));
+                break;
+
+            case CHAINMAIL:
+                items.add(new ItemStack(Material.CHAINMAIL_HELMET));
+                items.add(new ItemStack(Material.CHAINMAIL_CHESTPLATE));
+                items.add(new ItemStack(Material.CHAINMAIL_LEGGINGS));
+                items.add(new ItemStack(Material.CHAINMAIL_BOOTS));
+                items.add(makeWeapon(Material.IRON_SWORD, "§7PVP铁剑", false));
+                items.add(new ItemStack(Material.BOW));
+                items.add(new ItemStack(Material.ARROW, 48));
+                items.add(new ItemStack(Material.GOLDEN_APPLE, 6));
+                break;
+
+            case IRON:
+                items.add(new ItemStack(Material.IRON_HELMET));
+                items.add(new ItemStack(Material.IRON_CHESTPLATE));
+                items.add(new ItemStack(Material.IRON_LEGGINGS));
+                items.add(new ItemStack(Material.IRON_BOOTS));
+                items.add(makeWeapon(Material.DIAMOND_SWORD, "§b§lPVP钻石剑", false));
+                items.add(new ItemStack(Material.BOW));
+                items.add(new ItemStack(Material.ARROW, 64));
+                items.add(new ItemStack(Material.GOLDEN_APPLE, 8));
+                items.add(makePotion(3));
+                break;
+
+            case DIAMOND:
+                items.add(new ItemStack(Material.DIAMOND_HELMET));
+                items.add(new ItemStack(Material.DIAMOND_CHESTPLATE));
+                items.add(new ItemStack(Material.DIAMOND_LEGGINGS));
+                items.add(new ItemStack(Material.DIAMOND_BOOTS));
+                items.add(makeWeapon(Material.DIAMOND_SWORD, "§b§lPVP钻石剑", true));
+                items.add(new ItemStack(Material.CROSSBOW));
+                items.add(new ItemStack(Material.ARROW, 64));
+                items.add(new ItemStack(Material.SPECTRAL_ARROW, 8));
+                items.add(new ItemStack(Material.GOLDEN_APPLE, 10));
+                items.add(makePotion(5));
+                break;
+
+            case NETHERITE:
+                items.add(new ItemStack(Material.NETHERITE_HELMET));
+                items.add(new ItemStack(Material.NETHERITE_CHESTPLATE));
+                items.add(new ItemStack(Material.NETHERITE_LEGGINGS));
+                items.add(new ItemStack(Material.NETHERITE_BOOTS));
+                items.add(makeWeapon(Material.NETHERITE_SWORD, "§6§lPVP下合金剑", true));
+                items.add(new ItemStack(Material.CROSSBOW));
+                items.add(new ItemStack(Material.ARROW, 64));
+                items.add(new ItemStack(Material.SPECTRAL_ARROW, 16));
+                items.add(new ItemStack(Material.GOLDEN_APPLE, 12));
+                items.add(makePotion(8));
+                items.add(new ItemStack(Material.ENDER_PEARL, 4));
+                break;
+        }
+
+        return items;
+    }
+
+    private ItemStack makeWeapon(Material mat, String name, boolean enchant) {
+        ItemStack sword = new ItemStack(mat);
+        ItemMeta meta = sword.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(name);
+            if (enchant) {
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS, 4, true);
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.UNBREAKING, 3, true);
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.MENDING, 1, true);
+            }
+            sword.setItemMeta(meta);
+        }
+        return sword;
+    }
+
+    private ItemStack makePotion(int count) {
+        ItemStack potion = new ItemStack(Material.POTION, count);
+        ItemMeta meta = potion.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName("§a§l瞬间治疗药水");
+            potion.setItemMeta(meta);
+        }
+        return potion;
     }
 
     /**
@@ -774,7 +1148,21 @@ public class PVPArenaManager implements Listener {
             return false;
         }
 
-        // 确认选择按钮 → 备份+清空+发装备（三合一）
+        // ★ 档位选择按钮（19,21,23,25,27）
+        int[] tierSlots = {19, 21, 23, 25, 27};
+        for (int t = 0; t < tierSlots.length; t++) {
+            if (slot == tierSlots[t]) {
+                EquipmentTier chosen = EquipmentTier.values()[t];
+                selectedTier.put(player.getName(), chosen);
+                // 刷新 GUI 显示新档位的装备预览
+                openEquipmentSelection(player);
+                player.sendMessage("§a已选择: " + chosen.displayName);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+                return true;
+            }
+        }
+
+        // 确认选择按钮 → 备份+清空+发装备（使用当前选中的档位）
         if (slot == 49) {
             player.closeInventory();
             confirmEquipment(player);
@@ -788,11 +1176,8 @@ public class PVPArenaManager implements Listener {
             return true;
         }
 
-        // 单独查看物品（预览用途，实际装备需按确认按钮）
-        if (slot >= 0 && slot < pvpEquipment.size()) {
-            ItemStack item = pvpEquipment.get(slot).clone();
-            player.sendMessage("§7预览: §f" + (item.hasItemMeta() && item.getItemMeta().hasDisplayName()
-                    ? item.getItemMeta().getDisplayName() : item.getType().name()));
+        // 预览区物品（只看不动）
+        if (slot >= 0 && slot < 9) {
             player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
             return true;
         }
@@ -801,24 +1186,41 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 装备全套PVP装备到玩家背包
+     * 装备全套PVP装备到玩家背包（根据玩家选择的档位）
      */
     private void equipFullSet(Player player) {
-        for (ItemStack item : pvpEquipment) {
+        EquipmentTier tier = selectedTier.getOrDefault(player.getName(), EquipmentTier.IRON);
+        List<ItemStack> equipment = buildTierEquipment(tier);
+
+        for (ItemStack item : equipment) {
             ItemStack clone = item.clone();
             Material type = clone.getType();
-            if (type == Material.IRON_HELMET) {
+            String typeName = type.name();
+
+            // 头盔
+            if (typeName.endsWith("_HELMET")) {
                 player.getInventory().setHelmet(clone);
-            } else if (type == Material.IRON_CHESTPLATE) {
+            }
+            // 胸甲
+            else if (typeName.endsWith("_CHESTPLATE")) {
                 player.getInventory().setChestplate(clone);
-            } else if (type == Material.IRON_LEGGINGS) {
+            }
+            // 护腿
+            else if (typeName.endsWith("_LEGGINGS")) {
                 player.getInventory().setLeggings(clone);
-            } else if (type == Material.IRON_BOOTS) {
+            }
+            // 靴子
+            else if (typeName.endsWith("_BOOTS")) {
                 player.getInventory().setBoots(clone);
-            } else {
+            }
+            // 其他物品（武器、弓箭、药水等）放入背包
+            else {
                 player.getInventory().addItem(clone);
             }
         }
+
+        // 清除档位选择记录（已使用）
+        selectedTier.remove(player.getName());
     }
 
     // ==================== 命令入口 ====================
