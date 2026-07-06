@@ -166,13 +166,17 @@ public class PVPArenaManager implements Listener {
                 pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
                 pvpWorld.setTime(6000); // 中午
 
-                // 设置出生点（在正常地形中找安全位置或用默认）
+                // ★ 关键修复：先强制同步生成出生点周边区块，否则新世界区块尚未加载，
+                //   getBlockAt 全为空气 → findSafeSpawn 返回 null → 误铺漂浮小平台
+                preGenerateSpawnChunks(pvpWorld);
+
+                // 设置出生点（在正常地形中找安全位置）
                 Location spawnLoc = findSafeSpawn(pvpWorld);
                 if (spawnLoc != null) {
                     pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
                 } else {
                     pvpWorld.setSpawnLocation(0, 100, 0);
-                    // 如果默认高度没有地面，铺设平台保底
+                    // 极端兜底：仍未找到地面才铺平台（正常情况不会触发）
                     buildFallbackPlatform(pvpWorld);
                 }
 
@@ -184,19 +188,45 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 在世界中寻找安全的出生点（优先找地面位置）
+     * 强制同步生成出生点周边区块（3x3），确保地形已存在后再寻找安全出生点
+     * 必须在主线程调用（命令处理阶段）
+     */
+    private void preGenerateSpawnChunks(World world) {
+        int cx = world.getSpawnLocation().getBlockX() >> 4;
+        int cz = world.getSpawnLocation().getBlockZ() >> 4;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                try {
+                    world.loadChunk(cx + dx, cz + dz, true);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[PVP] 生成区块失败: " + (cx + dx) + "," + (cz + dz));
+                }
+            }
+        }
+    }
+
+    /**
+     * 在世界中寻找安全的出生点（优先找最高的非空气且非流体方块作为地面）
      */
     private Location findSafeSpawn(World world) {
         int spawnX = world.getSpawnLocation().getBlockX();
         int spawnZ = world.getSpawnLocation().getBlockZ();
-        // 在出生点附近搜索最高的固体方块
-        for (int y = 255; y >= 60; y--) {
+        // 从顶部向下扫描整列，找到最高的固体地面（跳过空气与流体）
+        for (int y = 255; y >= 1; y--) {
             Block block = world.getBlockAt(spawnX, y, spawnZ);
-            if (!block.getType().isAir()) {
+            Material type = block.getType();
+            if (!type.isAir() && !isFluid(type)) {
                 return new Location(world, spawnX + 0.5, y + 1, spawnZ + 0.5);
             }
         }
         return null; // 未找到安全地面
+    }
+
+    /**
+     * 判断方块是否为流体（水/熔岩），流体上不适合作为安全出生地面
+     */
+    private boolean isFluid(Material type) {
+        return type == Material.WATER || type == Material.LAVA;
     }
 
     /**
