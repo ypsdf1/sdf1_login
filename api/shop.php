@@ -298,13 +298,19 @@ function shopBuyCart($token) {
 
     // ★ 双保险验证（与单件购买一致）
     $isPreview = true;
+    $isAdminToken = false;
     $isOnline = false;
     $isRegistered = false;
+    $isCashier = false;
+    $isAdminSession = false;
+    $operatorDiscountLimit = 0;
+    $cashierRow = null;
 
     if ($token) {
         $tokenInfo = validateToken($token);
         if ($tokenInfo && ($tokenInfo['purpose'] === 'admin' || $tokenInfo['purpose'] === 'all')) {
             $isPreview = false;
+            $isAdminToken = true; // ★ 记录代购令牌身份，避免下方大额复检重复校验已消费的token导致误判
             if (validateToken($token)) validateAndUseToken($token);
         } else {
             $accessResult = validateWebAccess($token, 'buy', $password, $ipAddress);
@@ -322,6 +328,17 @@ function shopBuyCart($token) {
             } else {
                 error($accessResult['message'], 401);
             }
+        }
+    } else {
+        // 收银员/管理员会话代购通路（独立收银台，无需token）
+        if (isCashierLoggedIn()) {
+            $isPreview = false;
+            $isCashier = true;
+            $cashierRow = getCurrentCashier();
+            $operatorDiscountLimit = (int)($cashierRow['discount_limit_percent'] ?? 0);
+        } elseif (isAdminLoggedIn()) {
+            $isPreview = false;
+            $isAdminSession = true;
         }
     }
 
@@ -369,32 +386,56 @@ function shopBuyCart($token) {
     $totalPrice = (int)round($subtotal * $rate) + $colorFee;
     $saved = $subtotal - $totalPrice; // 折扣省下的（潜影盒加价+颜色费时为负）
 
-    // ★ 安全检查：服务端计算的总额≥1000时，必须已通过密码验证（防止前端绕过）
-    // 管理员token(admin/all)在上方已跳过密码验证，此处补检
-    if ($totalPrice >= 1000 && !$isPreview) {
-        $tokenInfo = validateToken($token);
-        $isAdminToken = $tokenInfo && ($tokenInfo['purpose'] === 'admin' || $tokenInfo['purpose'] === 'all');
-        if ($isAdminToken && (!$password || trim($password) === '')) {
-            // 管理员代购大额也需密码确认
-            jsonResponse(['success' => false, 'need_password' => true,
-                'player' => $player, 'message' => '金额≥1000债券需确认密码'], 401);
+    // ===== 收银员/管理员手动折扣（服务端强制上限，前端声称不可信）=====
+    $discountPercent = 0;
+    $discountAmount = 0;
+    $finalPrice = $totalPrice;
+    $canDiscount = ($isCashier || $isAdminToken || $isAdminSession);
+    if ($canDiscount) {
+        $reqDiscount = (float)getParam('discount_percent', 0);
+        if ($reqDiscount < 0) $reqDiscount = 0;
+        if ($reqDiscount > 100) $reqDiscount = 100;
+        // 收银员受自身折扣上限限制；管理员无限制（最大100）
+        $limit = $isCashier ? $operatorDiscountLimit : 100;
+        if ($reqDiscount > $limit) {
+            error('折扣超过权限上限（收银员最大可打' . $limit . '% off）', 403);
         }
-        if (!$isAdminToken && !isset($accessResult['ok'])) {
+        $discountPercent = $reqDiscount;
+        if ($discountPercent > 0) {
+            $discountAmount = (int)round($totalPrice * $discountPercent / 100);
+            $finalPrice = $totalPrice - $discountAmount;
+        }
+    }
+
+    // ★ 安全检查：服务端计算的实际扣款额≥1000时，必须已通过密码验证（防止前端绕过）
+    // 管理员代购令牌(admin/all)已在上方标记$isAdminToken并消费，此处不再重新校验token，
+    // 而是校验代购操作者（管理员）登录密码；普通玩家通路走validateWebAccess已在上方完成验证；
+    // 收银员通路已通过收银员会话登录，视为已授权，无需额外密码
+    if ($finalPrice >= 1000 && !$isPreview) {
+        if ($isCashier) {
+            // 收银员已登录即授权，无需额外密码
+        } elseif ($isAdminToken || $isAdminSession) {
+            // 代购通路：校验管理员登录密码（代购操作者的密码），而非目标玩家游戏密码
+            if (!$password || trim($password) === '' || $password !== ADMIN_PASS) {
+                jsonResponse(['success' => false, 'need_password' => true,
+                    'player' => $player, 'message' => '金额≥1000债券需确认管理员密码'], 401);
+            }
+        } elseif (!isset($accessResult['ok'])) {
             // 非管理员且未通过密码验证 → 拒绝
             error('大额交易需验证游戏登录密码', 401);
         }
     }
 
     // 检查余额
-    if (!$isPreview && $totalPrice > 0) {
+    if (!$isPreview && $finalPrice > 0) {
         $balanceStmt = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :player");
         $balanceStmt->bindValue(':player', $player, SQLITE3_TEXT);
         $balanceResult = $balanceStmt->execute();
         $balanceRow = $balanceResult->fetchArray(SQLITE3_ASSOC);
         if (!$balanceRow) error('玩家余额查询失败');
         $balance = (int)$balanceRow['amount'];
-        if ($balance < $totalPrice) {
-            error('余额不足，当前余额: ' . $balance . ' 债券，需要: ' . $totalPrice . ' 债券');
+        if ($balance < $finalPrice) {
+            error('余额不足，当前余额: ' . $balance . ' 债券，需要: ' . $finalPrice . ' 债券');
         }
     }
 
@@ -435,13 +476,15 @@ function shopBuyCart($token) {
         $reasonItems = array_map(function ($l) { return $l['name'] . ' x' . $l['amount']; }, $lines);
         $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_cart', :amount, :reason, :detail, 'pending', :time)");
         $stmt->bindValue(':player', $player, SQLITE3_TEXT);
-        $stmt->bindValue(':amount', $totalPrice, SQLITE3_INTEGER);
+        $stmt->bindValue(':amount', $finalPrice, SQLITE3_INTEGER);
         $stmt->bindValue(':reason', "购物车结算({$modeName}" . ($colorName ? "-{$colorName}潜影盒" : '') . "): " . implode('、', $reasonItems), SQLITE3_TEXT);
         $detailData = [
             'settlement' => $settlement,
             'rate' => $rate,
             'subtotal' => $subtotal,
-            'total_price' => $totalPrice,
+            'total_price' => $finalPrice,
+            'discount_percent' => (int)$discountPercent,
+            'discount_amount' => (int)$discountAmount,
             'items' => $lines
         ];
         if ($settlement === 'shulker') {
@@ -452,6 +495,23 @@ function shopBuyCart($token) {
         $stmt->bindValue(':detail', json_encode($detailData, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
+
+        // 记录收银台订单（代购/收银员操作，写入同一事务，复用已开启的$db连接避免触发getDB安全网ROLLBACK）
+        if ($isCashier || $isAdminToken || $isAdminSession) {
+            $operatorType = $isCashier ? 'cashier' : 'admin';
+            $operatorName = $isCashier ? ($cashierRow['username'] ?? '') : 'admin';
+            recordCashierOrder([
+                'operator_type' => $operatorType,
+                'operator_name' => $operatorName,
+                'player_name' => $player,
+                'items_detail' => $lines,
+                'subtotal' => $subtotal,
+                'total_price' => $finalPrice,
+                'discount_percent' => (int)$discountPercent,
+                'discount_amount' => (int)$discountAmount,
+                'settlement' => $settlement
+            ], $db);
+        }
 
         // 写入sync_requests
         $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
@@ -472,7 +532,10 @@ function shopBuyCart($token) {
         'rate' => $rate,
         'items' => $lines,
         'subtotal' => $subtotal,
-        'total_price' => $totalPrice,
+        'total_price' => $finalPrice,
+        'original_price' => $totalPrice,
+        'discount_percent' => (int)$discountPercent,
+        'discount_amount' => (int)$discountAmount,
         'saved' => $saved,
         'player' => $player
     ], '购物车结算成功');

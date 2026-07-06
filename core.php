@@ -599,6 +599,34 @@ function initTables(SQLite3 $db) {
             synced_at INTEGER DEFAULT 0
         )");
 
+        // ===== 收银员账号表 =====
+        $db->exec("CREATE TABLE IF NOT EXISTS cashiers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            salt TEXT DEFAULT '',
+            discount_limit_percent INTEGER DEFAULT 0,
+            created_at INTEGER DEFAULT 0,
+            created_by TEXT DEFAULT ''
+        )");
+
+        // ===== 收银台订单表（代购/收银员操作记录）=====
+        $db->exec("CREATE TABLE IF NOT EXISTS cashier_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_no TEXT NOT NULL UNIQUE,
+            operator_type TEXT DEFAULT 'cashier',
+            operator_name TEXT DEFAULT '',
+            player_name TEXT NOT NULL,
+            items_detail TEXT DEFAULT '',
+            subtotal INTEGER DEFAULT 0,
+            total_price INTEGER DEFAULT 0,
+            discount_percent INTEGER DEFAULT 0,
+            discount_amount INTEGER DEFAULT 0,
+            settlement TEXT DEFAULT '',
+            status TEXT DEFAULT 'completed',
+            created_at INTEGER DEFAULT 0
+        )");
+
         $db->exec('COMMIT');
     } catch (Exception $e) {
         $db->exec('ROLLBACK');
@@ -890,6 +918,88 @@ function isAdminLoggedIn() {
         session_start();
     }
     return isset($_SESSION['admin_auth']) && $_SESSION['admin_auth'];
+}
+
+// ===== 收银员认证 =====
+
+/**
+ * 收银员登录：校验用户名+密码，成功写入会话
+ */
+function cashierLogin($username, $password) {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+    $db = getDB();
+    $stmt = $db->prepare("SELECT * FROM cashiers WHERE username = :u");
+    $stmt->bindValue(':u', $username, SQLITE3_TEXT);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row) return false;
+    if (!password_verify($password, $row['password_hash'])) return false;
+    $_SESSION['cashier_auth'] = true;
+    $_SESSION['cashier_id'] = (int)$row['id'];
+    $_SESSION['cashier_name'] = $row['username'];
+    $_SESSION['cashier_discount_limit'] = (int)$row['discount_limit_percent'];
+    $_SESSION['cashier_login_time'] = time();
+    return true;
+}
+
+function isCashierLoggedIn() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+    return isset($_SESSION['cashier_auth']) && $_SESSION['cashier_auth'];
+}
+
+function getCurrentCashier() {
+    if (!isCashierLoggedIn()) return null;
+    return [
+        'id' => $_SESSION['cashier_id'] ?? 0,
+        'username' => $_SESSION['cashier_name'] ?? '',
+        'discount_limit_percent' => (int)($_SESSION['cashier_discount_limit'] ?? 0)
+    ];
+}
+
+/**
+ * 收银台操作鉴权：管理员或收银员会话均可，返回操作者类型('admin'/'cashier')
+ */
+function requireCashierOrAdminSession() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+    if (isAdminLoggedIn()) return 'admin';
+    if (isCashierLoggedIn()) return 'cashier';
+    error('未登录收银台', 401);
+}
+
+function cashierLogout() {
+    if (session_status() === PHP_SESSION_NONE) {
+        session_start();
+    }
+    unset($_SESSION['cashier_auth'], $_SESSION['cashier_id'], $_SESSION['cashier_name'], $_SESSION['cashier_discount_limit'], $_SESSION['cashier_login_time']);
+}
+
+/**
+ * 记录一笔收银台订单（必须在调用方已开启的事务内执行，使用同一数据库连接）
+ * @param SQLite3|null $db 调用方已开启事务的连接；传 null 时自动获取（非事务场景）
+ * @return string 订单号
+ */
+function recordCashierOrder($data, $db = null) {
+    if ($db === null) $db = getDB();
+    $orderNo = 'C' . date('YmdHis') . str_pad(mt_rand(0, 999), 3, '0', STR_PAD_LEFT);
+    $stmt = $db->prepare("INSERT INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,'completed',:time)");
+    $stmt->bindValue(':no', $orderNo, SQLITE3_TEXT);
+    $stmt->bindValue(':ot', $data['operator_type'] ?? 'cashier', SQLITE3_TEXT);
+    $stmt->bindValue(':on', $data['operator_name'] ?? '', SQLITE3_TEXT);
+    $stmt->bindValue(':pn', $data['player_name'] ?? '', SQLITE3_TEXT);
+    $stmt->bindValue(':det', json_encode($data['items_detail'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt->bindValue(':sub', (int)($data['subtotal'] ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':tp', (int)($data['total_price'] ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':dp', (int)($data['discount_percent'] ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':da', (int)($data['discount_amount'] ?? 0), SQLITE3_INTEGER);
+    $stmt->bindValue(':st', $data['settlement'] ?? '', SQLITE3_TEXT);
+    $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+    return $orderNo;
 }
 
 // ===== 定时清理（仅清理过期token，每次请求执行一次） =====

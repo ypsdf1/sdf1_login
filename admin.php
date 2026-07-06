@@ -110,7 +110,8 @@
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
-        <div class="si" data-p="cashier" onclick="go('cashier')">🧾 收银台</div>
+        <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
+        <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -176,6 +177,7 @@ function go(p) {
     else if (p==='lands') loadLands(c);
     else if (p==='usergroups') loadUserGroups(c);
     else if (p==='cashier') loadCashier(c);
+    else if (p==='cashier_manage') loadCashierManage(c);
 }
 
 // 检查登录状态
@@ -3164,6 +3166,109 @@ function glassPrompt(label, currentVal, hint = '') {
         document.getElementById('glassAlertOverlay').classList.add('show');
         setTimeout(() => input.focus(), 100);
     });
+}
+
+// ===== 收银员管理（独立收银台账号）=====
+function openCashierPage() {
+    window.open('cashier.php', '_blank');
+}
+
+async function loadCashierManage(el) {
+    el.innerHTML = `<div class="card">
+        <h2>🧾 收银员管理</h2>
+        <p style="color:var(--dim);font-size:12px;margin-bottom:12px">收银员可登录独立收银台（cashier.php）代玩家购买商品并手动打折，折扣上限在此设置。管理员亦可登录收银台。</p>
+        <div class="card" style="background:var(--bg)">
+            <h2 style="font-size:14px;color:var(--green)">+ 新增收银员</h2>
+            <div class="form-row"><label>账号</label><input id="cmUser" placeholder="3-20位字母/数字/下划线"></div>
+            <div class="form-row"><label>密码</label><input id="cmPass" type="password" placeholder="登录密码"></div>
+            <div class="form-row"><label>折扣上限%</label><input id="cmLimit" type="number" min="0" max="100" value="10"></div>
+            <button class="btn btn-green" onclick="cmAdd()">创建收银员</button>
+        </div>
+        <div id="cmList" style="margin-top:14px">加载中…</div>
+    </div>`;
+    await cmLoad();
+}
+
+async function cmAdd() {
+    const username = (document.getElementById('cmUser').value || '').trim();
+    const password = document.getElementById('cmPass').value || '';
+    const limit = parseInt(document.getElementById('cmLimit').value || '0', 10);
+    if (!username || !password) { toast('账号和密码不能为空', 'err'); return; }
+    if (limit < 0 || limit > 100) { toast('折扣上限需在0-100', 'err'); return; }
+    try {
+        const d = await fetch('api/cashier.php?action=add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password) + '&discount_limit_percent=' + limit
+        }).then(r => r.json());
+        if (d.success) { toast('收银员已创建', 'ok'); document.getElementById('cmUser').value = ''; document.getElementById('cmPass').value = ''; cmLoad(); }
+        else toast(d.message || '创建失败', 'err');
+    } catch (e) { toast(e.message, 'err'); }
+}
+
+async function cmLoad() {
+    const wrap = document.getElementById('cmList');
+    if (!wrap) return;
+    try {
+        const d = await fetch('api/cashier.php?action=cashier_list').then(r => r.json());
+        if (!d.success) { wrap.innerHTML = '<div style="color:var(--red);font-size:13px">' + escAdmHtml(d.message) + '</div>'; return; }
+        if (!d.data.length) { wrap.innerHTML = '<div style="color:var(--dim);font-size:13px">暂无收银员</div>'; return; }
+        wrap.innerHTML = '<table class="table"><tr><th>ID</th><th>账号</th><th>折扣上限</th><th>创建时间</th><th>操作</th></tr>' + d.data.map(c => `
+            <tr>
+                <td>${c.id}</td>
+                <td>${escAdmHtml(c.username)}</td>
+                <td>${c.discount_limit_percent}%</td>
+                <td style="color:var(--dim)">${c.created_at ? new Date(c.created_at * 1000).toLocaleString('zh-CN') : '-'}</td>
+                <td>
+                    <button class="btn btn-yellow" style="padding:4px 10px;font-size:11px" onclick="cmEdit(${c.id},'${escAdmHtml(c.username)}',${c.discount_limit_percent})">编辑</button>
+                    <button class="btn btn-red" style="padding:4px 10px;font-size:11px" onclick="cmDelete(${c.id})">删除</button>
+                </td>
+            </tr>`).join('') + '</table>';
+    } catch (e) { wrap.innerHTML = '<div style="color:var(--red);font-size:13px">' + escAdmHtml(e.message) + '</div>'; }
+}
+
+async function cmEdit(id, username, curLimit) {
+    const overlay = document.createElement('div');
+    overlay.className = 'glass-alert-overlay show';
+    overlay.innerHTML = `<div class="glass-alert-card">
+        <div class="alert-icon">✏️</div>
+        <div class="alert-msg">编辑收银员：<b>${escAdmHtml(username)}</b></div>
+        <div class="alert-label">新密码（留空则不修改）</div>
+        <input class="alert-input" type="password" id="cmNewPw" placeholder="留空=不修改">
+        <div class="alert-label">折扣上限（0-100，当前 ${curLimit}%）</div>
+        <input class="alert-input" type="number" id="cmNewLimit" min="0" max="100" value="${curLimit}">
+        <div class="alert-btns">
+            <button class="ag-cancel" onclick="this.closest('.glass-alert-overlay').remove()">取消</button>
+            <button class="ag-ok" onclick="cmEditSave(${id}, this)">保存</button>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => document.getElementById('cmNewPw').focus(), 50);
+}
+
+async function cmEditSave(id, btn) {
+    const pw = document.getElementById('cmNewPw').value;
+    const limit = parseInt(document.getElementById('cmNewLimit').value || '0', 10);
+    if (limit < 0 || limit > 100) { toast('折扣上限需在0-100', 'err'); return; }
+    const body = new URLSearchParams();
+    body.set('id', String(id));
+    if (pw) body.set('password', pw);
+    body.set('discount_limit_percent', String(limit));
+    btn.disabled = true;
+    try {
+        const d = await fetch('api/cashier.php?action=edit', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }).then(r => r.json());
+        if (d.success) { toast('已更新', 'ok'); document.querySelector('.glass-alert-overlay.show')?.remove(); cmLoad(); }
+        else { toast(d.message || '更新失败', 'err'); btn.disabled = false; }
+    } catch (e) { toast(e.message, 'err'); btn.disabled = false; }
+}
+
+async function cmDelete(id) {
+    if (!confirm('确认删除该收银员？此操作不可恢复。')) return;
+    try {
+        const d = await fetch('api/cashier.php?action=delete', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'id=' + id }).then(r => r.json());
+        if (d.success) { toast('已删除', 'ok'); cmLoad(); }
+        else toast(d.message || '删除失败', 'err');
+    } catch (e) { toast(e.message, 'err'); }
 }
 </script>
 <script src="cashier.js?<?php echo filemtime(__FILE__); ?>"></script>
