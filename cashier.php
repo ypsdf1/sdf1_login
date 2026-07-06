@@ -45,6 +45,9 @@ $initialState = json_encode([
     .header h1 { font-size:18px; color:var(--accent); letter-spacing:.5px; }
     .header .who { font-size:13px; color:var(--dim); }
     .header .who b { color:var(--text); }
+    .tag { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.5; vertical-align:middle; }
+    .tag-admin { background:rgba(188,140,255,.15); color:var(--purple); border:1px solid rgba(188,140,255,.35); }
+    .tag-cashier { background:rgba(88,166,255,.15); color:var(--accent); border:1px solid rgba(88,166,255,.35); }
     .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-size:13px; font-weight:600; transition:all .2s cubic-bezier(.16,1,.3,1); }
     .btn-blue { background:var(--accent); color:#fff; }
     .btn-green { background:var(--green); color:#fff; }
@@ -168,7 +171,7 @@ $initialState = json_encode([
 <div class="header">
     <div style="display:flex;align-items:center;gap:12px">
         <h1>🧾 SDF1 收银台</h1>
-        <span class="who">操作员：<b id="whoName"></b> <span id="whoRole" class="tag tag-unused"></span></span>
+        <span class="who">操作员：<b id="whoName"></b> <span id="whoRole" class="tag tag-admin"></span></span>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
         <button class="btn btn-yellow" onclick="showThemePicker()">🎨 主题</button>
@@ -337,7 +340,7 @@ async function initApp() {
     document.getElementById('whoName').textContent = STATE.username;
     const roleEl = document.getElementById('whoRole');
     roleEl.textContent = STATE.role === 'admin' ? '管理员' : '收银员';
-    roleEl.className = 'tag ' + (STATE.role === 'admin' ? 'tag-unused' : 'tag-used');
+    roleEl.className = 'tag ' + (STATE.role === 'admin' ? 'tag-admin' : 'tag-cashier');
     document.getElementById('discLimit').textContent = STATE.discount_limit;
     // 管理员需密码确认大额
     if (STATE.role === 'admin') document.getElementById('adminPwWrap').classList.remove('hidden');
