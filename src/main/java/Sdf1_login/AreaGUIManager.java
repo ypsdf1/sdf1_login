@@ -471,7 +471,7 @@ public class AreaGUIManager implements Listener {
                 {"允许拾取", "allowPickup"}, {"允许丢弃", "allowDrop"}, {"爆炸", "denyExplosion"},
                 {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
                 {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
-                {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
+                {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                 {"攻击生物", "denyMobAttack"},
                 {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
@@ -651,8 +651,8 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("所有伤害", !land.denyAllDamage));
         perms.add(new PermEntry("所有效果", !land.denyAllEffects));
         perms.add(new PermEntry("禁止展示框", !land.denyItemFrame));
-        perms.add(new PermEntry("红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
-        perms.add(new PermEntry("禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
+        perms.add(new PermEntry("红石电路(按钮/压力板/中继器/比较器)", !land.denyRedstoneInteraction));
+        perms.add(new PermEntry("门禁交互(门/栅栏门)", !land.denyDoorInteraction));
         perms.add(new PermEntry("音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermEntry("拴绳使用", !land.denyLead));
         perms.add(new PermEntry(land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
@@ -707,8 +707,8 @@ public class AreaGUIManager implements Listener {
             case "所有伤害": land.denyAllDamage = !land.denyAllDamage; break;
             case "所有效果": land.denyAllEffects = !land.denyAllEffects; break;
             case "禁止展示框": land.denyItemFrame = !land.denyItemFrame; break;
-            case "红石电路(中继器/比较器)": land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
-            case "禁止门禁(门/按钮/压力板)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
+            case "红石电路(按钮/压力板/中继器/比较器)": land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
+            case "门禁交互(门/栅栏门)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
             case "音频(音符盒/唱片机)": land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "拴绳使用": land.denyLead = !land.denyLead; break;
             case "农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
@@ -1084,7 +1084,7 @@ public class AreaGUIManager implements Listener {
                         {"允许拾取", "allowPickup"}, {"允许丢弃", "allowDrop"}, {"爆炸", "denyExplosion"},
                         {"摔落伤害", "denyFallDamage"}, {"饥饿", "denyHunger"}, {"所有伤害", "denyAllDamage"},
                         {"所有效果", "denyAllEffects"}, {"禁止展示框", "denyItemFrame"}, {"红石电路", "denyRedstoneInteraction"},
-                        {"禁止门禁", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
+                        {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                         {"攻击生物", "denyMobAttack"},
                         {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}

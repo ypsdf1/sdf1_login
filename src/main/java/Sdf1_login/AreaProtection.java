@@ -4772,34 +4772,9 @@ public class AreaProtection implements Listener {
         }
     }
 
-    // ★ 门禁交互检测（按钮、门、压力板）
-    @EventHandler
-    public void onDoorInteract(PlayerInteractEvent e) {
-        if (e.getClickedBlock() == null) return;
-        Player p = e.getPlayer();
-        Material mat = e.getClickedBlock().getType();
-        AreaConfig ac = getArea(
-                p.getWorld().getName(),
-                e.getClickedBlock().getX(),
-                e.getClickedBlock().getY(),
-                e.getClickedBlock().getZ());
-        if (ac == null) return;
-        if (!getEffectiveDeny(p, ac, "denyDoorInteraction")) return;
-        // 按钮
-        if (mat.name().contains("BUTTON")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止操作按钮");
-            return;
-        }
-        // 压力板
-        if (mat.name().contains("PRESSURE_PLATE")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止踩踏压力板");
-            return;
-        }
-    }
+    // ★ 门禁交互检测（已移除按钮/压力板，按钮/压力板由onRedstoneInteract处理）
 
-    // ★ 门禁交互检测（门类 - 独立事件，因为门是RIGHT_CLICK_BLOCK）
+    // ★ 门禁交互检测（门/栅栏门）
     @EventHandler
     public void onDoorOpen(PlayerInteractEvent e) {
         if (e.getClickedBlock() == null) return;
@@ -4820,7 +4795,7 @@ public class AreaProtection implements Listener {
         }
     }
 
-    // ★ 红石交互检测（中继器、比较器、拉杆、按钮、压力板、阳光传感器）
+    // ★ 红石交互检测（按钮、压力板、中继器、比较器、拉杆、阳光传感器）
     @EventHandler
     public void onRedstoneInteract(PlayerInteractEvent e) {
         if (e.getClickedBlock() == null) return;
@@ -9958,9 +9933,9 @@ public class AreaProtection implements Listener {
         public boolean denyThrownProjectiles = false;
         // ★ 玩家发光控制
         public boolean denyGlowing = false;
-        // ★ 红石电路交互（中继器、比较器）
+        // ★ 红石电路交互（按钮、压力板、中继器、比较器）
         public boolean denyRedstoneInteraction = false;
-        // ★ 门禁交互（按钮、普通门和铁门、压力板）
+        // ★ 门禁交互（门/栅栏门）
         public boolean denyDoorInteraction = false;
         // ★ 音频交互（音符盒、唱片机）
         public boolean denyNoteblockJukebox = false;
