@@ -2007,6 +2007,67 @@ public class ShopManager implements Listener {
         return false;
     }
 
+    // ===== PHP同步：更新商品价格 =====
+    public boolean updateItemPrice(String id, int buyPrice, int sellPrice) {
+        ShopItem item = findItemById(id);
+        if (item == null) return false;
+        item.setBuyPrice(buyPrice);
+        item.setSellPrice(sellPrice);
+        for (ShopCategory cat : categories) {
+            if (cat.getItem(id) != null) {
+                saveCategory(cat);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // ===== PHP同步：批量更新商品价格和库存 =====
+    public int updateItemPrices(List<Map<String, Object>> items) {
+        int updated = 0;
+        for (Map<String, Object> data : items) {
+            String id = (String) data.get("id");
+            if (id == null) continue;
+
+            ShopItem item = findItemById(id);
+            if (item == null) continue;
+
+            boolean changed = false;
+            if (data.containsKey("buy_price")) {
+                int newBuyPrice = ((Number) data.get("buy_price")).intValue();
+                if (item.getBuyPrice() != newBuyPrice) {
+                    item.setBuyPrice(newBuyPrice);
+                    changed = true;
+                }
+            }
+            if (data.containsKey("sell_price")) {
+                int newSellPrice = ((Number) data.get("sell_price")).intValue();
+                if (item.getSellPrice() != newSellPrice) {
+                    item.setSellPrice(newSellPrice);
+                    changed = true;
+                }
+            }
+            if (data.containsKey("stock")) {
+                int newStock = ((Number) data.get("stock")).intValue();
+                if (item.getStock() != newStock) {
+                    item.setStock(newStock);
+                    changed = true;
+                }
+            }
+            if (changed) {
+                // 找到并保存对应的分类
+                for (ShopCategory cat : categories) {
+                    if (cat.getItem(id) != null) {
+                        saveCategory(cat);
+                        updated++;
+                        break;
+                    }
+                }
+            }
+        }
+        return updated;
+    }
+
     public ShopCategory findCategory(String n) {
         for (ShopCategory c : categories)
             if (c.getName().equals(n)) return c;

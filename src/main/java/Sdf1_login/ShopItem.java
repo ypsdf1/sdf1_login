@@ -6,8 +6,8 @@ public class ShopItem {
     private final String id;
     private final String displayName;
     private final Material material;
-    private final int buyPrice;
-    private final int sellPrice;
+    private int buyPrice;
+    private int sellPrice;
     private int stock;
     private int hourlySales;
     private int totalSales;
@@ -42,6 +42,8 @@ public class ShopItem {
     public void setStock(int s)       { this.stock = s; }
     public void setHourlySales(int s) { this.hourlySales = s; }
     public void setTotalSales(int s)  { this.totalSales = s; }
+    public void setBuyPrice(int p)    { this.buyPrice = p; }
+    public void setSellPrice(int p)   { this.sellPrice = p; }
     public void addSales(int n) {
         this.hourlySales += n;
         this.totalSales += n;

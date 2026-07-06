@@ -1322,6 +1322,8 @@ public class WebManager {
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        submitNormalDbTask("即时-pullShopPrices", () -> pullShopPrices());
+                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
                         try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                         submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
@@ -1356,6 +1358,8 @@ public class WebManager {
                     submitNormalDbTask("末轮-pullPendingTransactions", () -> pullPendingTransactions());
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                     submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
+                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    submitNormalDbTask("末轮-pullShopPrices", () -> pullShopPrices());
                     try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                     submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
                     plugin.getLogger().info("[合并C] 全员下线超60秒，末轮同步已执行");
@@ -1392,6 +1396,8 @@ public class WebManager {
             submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
+            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            submitNormalDbTask("周期-pullShopPrices", () -> pullShopPrices());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -6146,6 +6152,171 @@ public class WebManager {
     }
 
     /**
+     * 拉取PHP端修改的商品价格
+     * 类似pullShopStock，但针对admin_buy_price/admin_sell_price
+     */
+    private void pullShopPrices() {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=pull_shop_prices&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    String json = doGet(urlStr);
+                    if (json == null || !json.contains("\"success\":true")) return;
+
+                    // 解析商品价格列表
+                    int dataStart = json.indexOf("\"items\":");
+                    if (dataStart < 0) return;
+                    String dataStr = json.substring(dataStart + 8);
+                    int arrEnd = findMatchingBracket(dataStr, 0);
+                    if (arrEnd < 0) return;
+                    String arrStr = dataStr.substring(0, arrEnd + 1);
+
+                    // ★ 解析JSON数组为Map列表
+                    List<Map<String, Object>> priceUpdates = new ArrayList<>();
+                    // 简单JSON解析：遍历每个对象
+                    int idx = 0;
+                    while (true) {
+                        int objStart = arrStr.indexOf("{", idx);
+                        if (objStart < 0) break;
+                        int objEnd = findMatchingBracket(arrStr, objStart);
+                        if (objEnd < 0) break;
+                        String objStr = arrStr.substring(objStart, objEnd + 1);
+                        Map<String, Object> itemData = parseJsonObject(objStr);
+                        if (itemData != null && itemData.containsKey("id")) {
+                            priceUpdates.add(itemData);
+                        }
+                        idx = objEnd + 1;
+                    }
+
+                    if (priceUpdates.isEmpty()) return;
+
+                    // ★ 调用ShopManager批量更新价格
+                    ShopManager shopManager = plugin.getShopManager();
+                    if (shopManager == null) {
+                        plugin.getLogger().warning("[价格同步] ShopManager未初始化");
+                        return;
+                    }
+                    int updated = shopManager.updateItemPrices(priceUpdates);
+                    if (updated > 0) {
+                        plugin.getLogger().info("[价格同步] 应用PHP价格改动: " + updated + "个商品");
+                    }
+
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[价格同步] 拉取价格异常: " + e.getMessage());
+                }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 清除PHP端的管理员价格标记
+     */
+    private void clearAdminPrices() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=clear_admin_prices&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            doGet(urlStr);
+        } catch (Exception e) {
+            // 静默处理
+        }
+    }
+
+    /**
+     * 简单的JSON对象解析（提取键值对）
+     * 支持字符串、数字、布尔值、null
+     */
+    private Map<String, Object> parseJsonObject(String json) {
+        Map<String, Object> map = new HashMap<>();
+        try {
+            // 去除首尾空白
+            json = json.trim();
+            if (!json.startsWith("{") || !json.endsWith("}")) return null;
+            json = json.substring(1, json.length() - 1).trim();
+            if (json.isEmpty()) return map;
+
+            int idx = 0;
+            while (idx < json.length()) {
+                // 跳过空白
+                while (idx < json.length() && Character.isWhitespace(json.charAt(idx))) idx++;
+                if (idx >= json.length()) break;
+
+                // 解析键
+                if (json.charAt(idx) != '"') break;
+                int keyStart = idx + 1;
+                int keyEnd = json.indexOf('"', keyStart);
+                if (keyEnd < 0) break;
+                String key = json.substring(keyStart, keyEnd);
+                idx = keyEnd + 1;
+
+                // 跳过冒号
+                while (idx < json.length() && (json.charAt(idx) == ':' || Character.isWhitespace(json.charAt(idx)))) idx++;
+                if (idx >= json.length()) break;
+
+                // 解析值
+                char firstChar = json.charAt(idx);
+                Object value = null;
+                if (firstChar == '"') {
+                    // 字符串值
+                    int valStart = idx + 1;
+                    int valEnd = valStart;
+                    while (valEnd < json.length()) {
+                        if (json.charAt(valEnd) == '\\') {
+                            valEnd += 2;
+                            continue;
+                        }
+                        if (json.charAt(valEnd) == '"') break;
+                        valEnd++;
+                    }
+                    value = json.substring(valStart, valEnd);
+                    idx = valEnd + 1;
+                } else if (firstChar == 't' || firstChar == 'f') {
+                    // 布尔值
+                    if (json.startsWith("true", idx)) {
+                        value = true;
+                        idx += 4;
+                    } else if (json.startsWith("false", idx)) {
+                        value = false;
+                        idx += 5;
+                    }
+                } else if (firstChar == 'n') {
+                    // null
+                    if (json.startsWith("null", idx)) {
+                        value = null;
+                        idx += 4;
+                    }
+                } else if (firstChar == '-' || Character.isDigit(firstChar)) {
+                    // 数字
+                    int numStart = idx;
+                    while (idx < json.length() && (json.charAt(idx) == '-' || json.charAt(idx) == '.' || Character.isDigit(json.charAt(idx))) ) idx++;
+                    String numStr = json.substring(numStart, idx);
+                    try {
+                        if (numStr.contains(".")) {
+                            value = Double.parseDouble(numStr);
+                        } else {
+                            value = Long.parseLong(numStr);
+                        }
+                    } catch (NumberFormatException e) {
+                        // 忽略
+                    }
+                } else {
+                    // 未知类型，跳过到下一个逗号或结束
+                    while (idx < json.length() && json.charAt(idx) != ',' && json.charAt(idx) != '}') idx++;
+                }
+
+                map.put(key, value);
+
+                // 跳过逗号
+                while (idx < json.length() && (json.charAt(idx) == ',' || Character.isWhitespace(json.charAt(idx)))) idx++;
+            }
+        } catch (Exception e) {
+            // 解析失败，返回部分结果
+        }
+        return map;
+    }
+
+    /**
      * 更新本地商品库存
      * @return 是否有任何库存被更新
      */
@@ -6312,6 +6483,7 @@ public class WebManager {
                         submitDbTask("通知-syncShopData", () -> syncShopData());
                         submitNormalDbTask("通知-pullPendingTransactions", () -> pullPendingTransactions());
                         submitNormalDbTask("通知-pullShopStock", () -> pullShopStock());
+                        submitNormalDbTask("通知-pullShopPrices", () -> pullShopPrices());
                         submitNormalDbTask("通知-pullBondChanges", () -> pullBondChanges());
                         // 删除通知文件
                         notifyFile.delete();

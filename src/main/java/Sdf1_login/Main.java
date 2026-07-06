@@ -171,6 +171,8 @@ public class Main extends JavaPlugin
 
     //pvp
     private PVPManager pvpManager;
+    //pvp竞技场（独立世界模式）
+    private PVPArenaManager pvPArenaManager;
 
 
 
@@ -507,6 +509,13 @@ public class Main extends JavaPlugin
                         () -> pvpManager.tickRegions(),
                         20L, 20L);
         setupPVPTab();
+        
+        // 12.1 ===PVP竞技场（独立世界模式）===
+        pvPArenaManager = new PVPArenaManager(this);
+        getServer().getPluginManager()
+                .registerEvents(pvPArenaManager, this);
+        // 确保PVP世界存在
+        pvPArenaManager.ensurePVPWorldExists();
 
         // 13 ====cypay债券====
         // 债券系统（独立DB）
@@ -668,7 +677,7 @@ public class Main extends JavaPlugin
                                             "create", "stats",
                                             "list", "delete",
                                             "tool", "on", "off",
-                                            "tempban"};
+                                            "tempban", "arena"};
                                     for (String s : sub) {
                                         if (s.startsWith(
                                                 args[0]
@@ -2298,6 +2307,21 @@ public class Main extends JavaPlugin
             e.setCancelled(true);
             p.setAllowFlight(true);
         }
+        
+        // PVP竞技场世界检测
+        if (pvPArenaManager != null) {
+            String fromWorld = from.getWorld().getName();
+            String toWorld = to.getWorld().getName();
+            
+            // 检测玩家是否进入PVP世界
+            if (!fromWorld.equals(toWorld) && toWorld.equals("pvp_arena")) {
+                pvPArenaManager.onPlayerEnterPVPWorld(p);
+            }
+            // 检测玩家是否离开PVP世界
+            else if (!fromWorld.equals(toWorld) && fromWorld.equals("pvp_arena")) {
+                pvPArenaManager.onPlayerExitPVPWorld(p);
+            }
+        }
     }
 
     private List<String> filterTab(List<String> opts, String prefix) {
@@ -2939,6 +2963,10 @@ public class Main extends JavaPlugin
     public PVPManager getPVPManager() {
         return pvpManager;
     }
+    
+    public PVPArenaManager getPVPArenaManager() {
+        return pvPArenaManager;
+    }
     // 在 Main.java 中（与其他 getter 放一起）
     public AreaProtection getAreaProtection() {
         return areaProtection;
@@ -3255,6 +3283,15 @@ public class Main extends JavaPlugin
                     p.sendMessage("§c§l[验证码] §c点击错误，请重新选择");
                     chatFilter.generateMathVerification(p.getName());
                 }
+            }
+            return;
+        }
+        
+        // ===== PVP装备选择GUI点击处理 =====
+        if (title.equals("§6§l选择PVP装备")) {
+            if (pvPArenaManager != null) {
+                e.setCancelled(true);
+                pvPArenaManager.handleEquipmentClick(p, e.getRawSlot());
             }
             return;
         }
@@ -4723,6 +4760,12 @@ public class Main extends JavaPlugin
                 return true;
             }
             Player p = (Player) sender;
+            
+            // PVP竞技场命令（由pvpManager统一处理）
+            if (args.length > 0 && args[0].equalsIgnoreCase("arena")) {
+                return pvpManager.onCommand(p, args);
+            }
+            
             return pvpManager.onCommand(p, args);
         }
 
