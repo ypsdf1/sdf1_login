@@ -2635,8 +2635,13 @@ async function apiCall(action, params = {}, method = 'GET') {
 async function loadUserGroups(el) {
     el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
     try {
-        const res = await apiCall('list_user_groups');
+        const [res, configRes] = await Promise.all([
+            apiCall('list_user_groups'),
+            fetch('api/land_api.php?action=get_config&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()).catch(() => ({config:{}}))
+        ]);
         const groups = res.groups || [];
+        const homeCfg = (configRes.config && configRes.config.max_home_per_player) || '5';
+        window._homeCfgData = homeCfg;
 
         let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
         html += '<h2 style="margin:0;color:var(--fg)">👥 用户组管理</h2>';
@@ -2650,6 +2655,12 @@ async function loadUserGroups(el) {
         html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
             <div style="font-size:24px;font-weight:bold;color:var(--accent)">${groups.length}</div>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">用户组总数</div>
+        </div>`;
+        // 全局传送点(home)上限卡片
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#7e57c2">${escAdmHtml(String(homeCfg))}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">全局传送点上限(home)</div>
+            <button onclick="showHomeConfig()" style="margin-top:8px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">⚙️ 修改</button>
         </div>`;
         html += '</div>';
 
@@ -2698,6 +2709,35 @@ async function loadUserGroups(el) {
     } catch(e) {
         console.error('[USERGROUPS] Error:', e);
         el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+    }
+}
+
+function showHomeConfig() {
+    const homeCfg = window._homeCfgData || '5';
+    const html = `<div style="padding:16px">
+        <h3 style="margin:0 0 12px;color:var(--fg)">⚙️ 全局传送点上限配置</h3>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每名玩家最大传送点(home)数量</label>
+            <input id="cfgMaxHome" type="number" value="${escAdmHtml(String(homeCfg))}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <p style="font-size:11px;color:var(--dim);margin:0 0 12px;line-height:1.6">说明：该值为全局默认上限。若用户组配置了独立的Home上限(&gt;0)，则用户组上限覆盖此值；若用户组Home上限=0，则跟随此全局值；若用户组Home上限=-1，则该组玩家无限制。</p>
+        <button onclick="saveHomeConfig()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button>
+    </div>`;
+    showModal('全局传送点上限', '', null, html);
+}
+
+async function saveHomeConfig() {
+    const maxHome = document.getElementById('cfgMaxHome')?.value || '5';
+    try {
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=max_home_per_player&value=' + encodeURIComponent(maxHome) + '&secret=sdf1_web_comm_2026_ypshidifu'
+        });
+        document.querySelector('.modal-close')?.click();
+        loadUserGroups(document.getElementById('C'));
+    } catch(e) {
+        glassAlert('保存失败: ' + e.message);
     }
 }
 
