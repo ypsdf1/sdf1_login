@@ -1654,11 +1654,13 @@ public class ShopManager implements Listener {
         result = result.replace("&o", "§o");
         result = result.replace("&r", "§r");
 
-        // 2. 处理HTML标签（先处理<b><u><i>，不插入§r结尾，color由<p>统一控制）
-        // <u>标签只保留效果不闭合，由</p>统一reset
-        result = result.replaceAll("<b>(.*?)</b>", "§l$1");
-        result = result.replaceAll("<u>(.*?)</u>", "$1");
-        result = result.replaceAll("<i>(.*?)</i>", "§o$1");
+        // 2. 处理HTML标签
+        // <u>标签：§n 开始下划线，§r 切断（只作用于标签内）
+        // <b>标签：§l 开始加粗，§r 切断
+        // <i>标签：§o 开始斜体，§r 切断
+        result = result.replaceAll("<u>(.*?)</u>", "§n$1§r");
+        result = result.replaceAll("<b>(.*?)</b>", "§l$1§r");
+        result = result.replaceAll("<i>(.*?)</i>", "§o$1§r");
         result = result.replaceAll("<br>", "\n");
         result = result.replaceAll("<br/>", "\n");
 
