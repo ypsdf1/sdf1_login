@@ -32,9 +32,10 @@ public class ShopManager implements Listener {
     private final List<ShopCategory> categories =
             new ArrayList<>();
     // ===== 出售限额配置 =====
-    private int maxSellLimit = 15000; // 默认1.5万
     private String maxSellMessage = "";
     private boolean maxSellMessageEnabled = false;
+    private int maxSellLimit = 15000; // 默认1.5万
+    private final Object maxSellLock = new Object();
     private final List<RefundRecord> refundRecords =
             new ArrayList<>();
     private final Map<UUID, Integer> activeDiscount =
@@ -145,6 +146,7 @@ public class ShopManager implements Listener {
     public ShopManager(Main plugin) {
         this.plugin = plugin;
         loadCategories();
+        loadMaxSellConfig();
         startHourlyTask();
         loadItemNbtData();
         startCleanupTask();
@@ -1374,9 +1376,65 @@ public class ShopManager implements Listener {
     }
 
         public void saveAll() {
-        for (ShopCategory cat : categories)
-            saveCategory(cat);
-    }
+            for (ShopCategory cat : categories)
+                saveCategory(cat);
+            saveMaxSellConfig();
+        }
+
+        // ===== maxSell 配置持久化 =====
+        /** 加载 maxSell 配置从插件数据文件夹下的 maxsell_config.txt */
+        private void loadMaxSellConfig() {
+            File cfgFile = new File(plugin.getDataFolder(), "maxsell_config.txt");
+            try {
+                if (cfgFile.exists()) {
+                    BufferedReader br = new BufferedReader(new FileReader(cfgFile));
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        if (line.startsWith("maxSellLimit=")) {
+                            try {
+                                maxSellLimit = Integer.parseInt(line.substring("maxSellLimit=".length()));
+                            } catch (NumberFormatException ignored) {}
+                        } else if (line.startsWith("maxSellMessageEnabled=")) {
+                            maxSellMessageEnabled = Boolean.parseBoolean(line.substring("maxSellMessageEnabled=".length()));
+                        } else if (line.startsWith("maxSellMessage=")) {
+                            maxSellMessage = line.substring("maxSellMessage=".length());
+                        }
+                    }
+                    br.close();
+                } else {
+                    // 配置文件不存在，使用默认值并保存
+                    maxSellLimit = 15000;
+                    maxSellMessage = "[玩家]本小时已出售(used),剩余<u>[limit]</u>。下次重置时间:{下次重置时间}";
+                    maxSellMessageEnabled = true;
+                    saveMaxSellConfig();
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Shop] 加载maxsell配置失败: " + e.getMessage());
+                maxSellLimit = 15000;
+                maxSellMessage = "[玩家]本小时已出售(used),剩余<u>[limit]</u>。下次重置时间:{下次重置时间}";
+                maxSellMessageEnabled = true;
+            }
+        }
+
+        /** 保存 maxSell 配置到插件数据文件夹下的 maxsell_config.txt */
+        private void saveMaxSellConfig() {
+            synchronized (maxSellLock) {
+                try {
+                    File dir = new File(plugin.getDataFolder(), "shop");
+                    if (!dir.exists()) dir.mkdirs();
+                    File cfgFile = new File(dir.getParentFile(), "maxsell_config.txt");
+                    BufferedWriter bw = new BufferedWriter(new FileWriter(cfgFile, StandardCharsets.UTF_8));
+                    bw.write("maxSellLimit=" + maxSellLimit);
+                    bw.newLine();
+                    bw.write("maxSellMessageEnabled=" + maxSellMessageEnabled);
+                    bw.newLine();
+                    bw.write("maxSellMessage=" + maxSellMessage);
+                    bw.close();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Shop] 保存maxsell配置失败: " + e.getMessage());
+                }
+            }
+        }
     public ItemStack getShopStack(
             ShopItem item, int amount) {
         // 优先级1: 手动捕获的NBT数据
@@ -1597,8 +1655,9 @@ public class ShopManager implements Listener {
         result = result.replace("&r", "§r");
 
         // 2. 处理HTML标签（先处理<b><u><i>，不插入§r结尾，color由<p>统一控制）
+        // <u>标签只保留效果不闭合，由</p>统一reset
         result = result.replaceAll("<b>(.*?)</b>", "§l$1");
-        result = result.replaceAll("<u>(.*?)</u>", "§n$1");
+        result = result.replaceAll("<u>(.*?)</u>", "$1");
         result = result.replaceAll("<i>(.*?)</i>", "§o$1");
         result = result.replaceAll("<br>", "\n");
         result = result.replaceAll("<br/>", "\n");
@@ -1982,6 +2041,7 @@ public class ShopManager implements Listener {
 
         if (sub.equals("reload")) {
             loadCategories();
+            loadMaxSellConfig();
             s.sendMessage("§a商店已重载，共 "
                     + categories.size()
                     + " 个分类");
@@ -1997,10 +2057,11 @@ public class ShopManager implements Listener {
             try {
                 int limit = Integer.parseInt(a[2]);
                 maxSellLimit = limit;
+                saveMaxSellConfig();
                 if (limit == -1) {
                     s.sendMessage("§a出售限额已设为无限");
                 } else {
-                    s.sendMessage("§a出售限额已设为 §e" + limit + " §a枚债券/日");
+                    s.sendMessage("§a出售限额已设为 §e" + limit + " §a枚债券/小时");
                 }
             } catch (NumberFormatException e) {
                 s.sendMessage("§c无效数字: " + a[2]);
@@ -2018,14 +2079,17 @@ public class ShopManager implements Listener {
             String msg = String.join(" ", Arrays.copyOfRange(a, 2, a.length));
             if (msg.equalsIgnoreCase("关闭") || msg.equalsIgnoreCase("off")) {
                 maxSellMessageEnabled = false;
+                saveMaxSellConfig();
                 s.sendMessage("§a出售限额提示已关闭");
             } else if (msg.equalsIgnoreCase("默认") || msg.equalsIgnoreCase("default")) {
-                maxSellMessage = "§c[商店] §e玩家 §f%player% §c在本时段内已出售 §e%used% §c枚债券，剩余可出售 §e%limit% §c枚。\n§c下次重置时间: §e%time%";
+                maxSellMessage = "[玩家]本小时已出售(used),剩余<u>[limit]</u>。下次重置时间:{下次重置时间}";
                 maxSellMessageEnabled = true;
+                saveMaxSellConfig();
                 s.sendMessage("§a出售限额提示已设为默认内容");
             } else {
-                maxSellMessage = msg.replace("&", "§");
+                maxSellMessage = msg;
                 maxSellMessageEnabled = true;
+                saveMaxSellConfig();
                 s.sendMessage("§a出售限额提示已设置");
             }
             return true;
