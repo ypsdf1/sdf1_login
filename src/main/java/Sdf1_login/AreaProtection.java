@@ -110,6 +110,7 @@ public class AreaProtection implements Listener {
     // ★ 全局配置默认值
     private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
     private int globalMaxLandsPerPlayer = 5;   // 每人最多领地数
+    private int globalMaxHomePerPlayer = 5;    // 每人最多传送点(home)数量
     private int globalDefaultHeight = 255;      // 默认高度
 
     // 选地
@@ -1211,6 +1212,7 @@ public class AreaProtection implements Listener {
                 if (configCount == 0) {
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('create_price_per_sqm', '10')");
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('max_lands_per_player', '5')");
+                    stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('max_home_per_player', '5')");
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('default_height', '255')");
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('peace_mode_max_duration', '3600')");
                 }
@@ -1223,6 +1225,7 @@ public class AreaProtection implements Listener {
                         switch (k) {
                             case "create_price_per_sqm": globalCreatePricePerSqm = Integer.parseInt(v); break;
                             case "max_lands_per_player": globalMaxLandsPerPlayer = Integer.parseInt(v); break;
+                            case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(v); break;
                             case "default_height": globalDefaultHeight = Integer.parseInt(v); break;
                         }
                     } catch (NumberFormatException ignored) {}
@@ -8200,9 +8203,25 @@ public class AreaProtection implements Listener {
             ps.setString(3, value);
             ps.executeUpdate();
             ps.close();
+            // ★ 同步更新内存字段，使Web配置变更立即生效（无需等待下次轮询reload）
+            try {
+                switch (key) {
+                    case "create_price_per_sqm": globalCreatePricePerSqm = Integer.parseInt(value); break;
+                    case "max_lands_per_player": globalMaxLandsPerPlayer = Integer.parseInt(value); break;
+                    case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(value); break;
+                    case "default_height": globalDefaultHeight = Integer.parseInt(value); break;
+                }
+            } catch (NumberFormatException ignored) {}
         } catch (Exception e) {
             plugin.getLogger().warning("[防护] 更新配置失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * ★ 获取全局家(home)数量上限
+     */
+    public int getGlobalMaxHomePerPlayer() {
+        return globalMaxHomePerPlayer;
     }
 
     /**

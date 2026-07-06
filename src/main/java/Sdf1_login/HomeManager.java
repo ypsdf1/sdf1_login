@@ -285,9 +285,19 @@ public class HomeManager implements Listener {
     
     /**
      * 获取全局家数量限制
+     * 读取area_config中的max_home_per_player配置（管理员可在Web后台调整）
+     * 解析失败或值<=0时回退到默认5
      */
     private int getGlobalHomeLimit() {
-        // 默认5个家，可从配置文件读取
+        try {
+            if (plugin.areaProtection != null) {
+                int limit = plugin.areaProtection.getGlobalMaxHomePerPlayer();
+                if (limit > 0) {
+                    return limit;
+                }
+            }
+        } catch (Exception ignored) {}
+        // 默认5个家
         return 5;
     }
     
