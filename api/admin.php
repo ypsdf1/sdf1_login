@@ -80,7 +80,7 @@ switch ($action) {
 } catch (\Throwable $e) {
     http_response_code(500);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(['error' => ['code' => 500, 'message' => 'Internal error: ' . $e->getMessage()]], JSON_UNESCAPED_UNICODE);
+    echo json_encode(['success' => false, 'message' => 'Internal error: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -1335,8 +1335,8 @@ function parseSearchDate($search) {
  */
 function adminListUsersPaginated() {
     requireAdminSession();
-    $db = getDB();
     try {
+    $db = getDB();
         $page = max(1, (int)getParam('page', 1));
         $limit = min(50, max(10, (int)getParam('limit', 20))); // 默认15-20个
         $offset = ($page - 1) * $limit;
@@ -1345,21 +1345,45 @@ function adminListUsersPaginated() {
         $isSearchMode = !empty($search); // 是否搜索模式（不限制并发）
         $regionDebugEnabled = false;
         $regionDebug = [];
+        $dateRange = null; // ★ 提前声明$dateRange变量，防止后续分支未定义报错
 
         // ★ 智能搜索：自动识别搜索类型
         $searchType = 'name'; // 默认：玩家名
         $searchBound = '';
         $whereClause = '';
         $uncachedIps = []; // ★ 确保始终定义
+        $matchedPlayers = []; // ★ 提前声明matchedPlayers
 
         if ($search) {
             $searchType = detectSearchType($search);
+
+            // ★ 特别处理：todayreg/yesterdayreg → 按register_time过滤（仅注册）
+            $searchLower = mb_strtolower($search);
+            if ($searchLower === 'todayreg') {
+                $searchType = 'date_reg';
+            } elseif ($searchLower === 'yesterdayreg') {
+                $searchType = 'date_reg';
+            } elseif ($searchType === 'date_keyword') {
+                // 日期关键词：转换为时间戳范围
+                $dateRange = parseSearchDate($search);
+            }
 
             if ($searchType === 'ip') {
                 // IP搜索：匹配玩家IP归属地或IP本身
                 $ipSearch = $search;
                 $whereClause = "WHERE player_name IN (SELECT player_name FROM player_ip_changes WHERE new_ip LIKE :ip) OR player_name IN (SELECT player_name FROM player_ip_locations WHERE ip_address LIKE :ip2)";
                 $searchBound = "%$ipSearch%";
+            } elseif ($searchType === 'date_reg') {
+                // 今日注册/昨日注册：仅按 register_time 过滤
+                if ($searchLower === 'todayreg') {
+                    $year = (int)date('Y'); $month = (int)date('m'); $day = (int)date('d');
+                } else {
+                    $year = (int)date('Y', strtotime('-1 day')); $month = (int)date('m', strtotime('-1 day')); $day = (int)date('d', strtotime('-1 day'));
+                }
+                $start = mktime(0, 0, 0, $month, $day, $year);
+                $end = mktime(0, 0, 0, $month, $day + 1, $year);
+                $dateRange = ['start' => $start, 'end' => $end];
+                $whereClause = "WHERE register_time >= :dateRegStart AND register_time < :dateRegEnd";
             } elseif ($searchType === 'date' || $searchType === 'date_keyword') {
                 // 日期搜索：转换为时间戳范围（支持"今天""昨天"关键词）
                 $dateRange = parseSearchDate($search);
@@ -1436,7 +1460,11 @@ function adminListUsersPaginated() {
         $sql = "SELECT player_name, register_time, last_login_time, points, total_online_time, email FROM users";
 
         if ($search) {
-            if (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
+            if ($searchType === 'date_reg' && $dateRange) {
+                $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY register_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                $stmt->bindValue(':dateRegStart', $dateRange['start'], SQLITE3_INTEGER);
+                $stmt->bindValue(':dateRegEnd', $dateRange['end'], SQLITE3_INTEGER);
+            } elseif (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
                 $stmt = $db->prepare($sql . " " . $whereClause . " ORDER BY last_login_time DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
                 $stmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
                 $stmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);
@@ -1477,7 +1505,11 @@ function adminListUsersPaginated() {
         // 获取总数
         $countSql = "SELECT COUNT(*) as cnt FROM users";
         if ($search) {
-            if (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
+            if ($searchType === 'date_reg' && $dateRange) {
+                $countStmt = $db->prepare($countSql . " " . $whereClause);
+                $countStmt->bindValue(':dateRegStart', $dateRange['start'], SQLITE3_INTEGER);
+                $countStmt->bindValue(':dateRegEnd', $dateRange['end'], SQLITE3_INTEGER);
+            } elseif (in_array($searchType, ['date', 'date_keyword']) && $dateRange) {
                 $countStmt = $db->prepare($countSql . " " . $whereClause);
                 $countStmt->bindValue(':dateStart', $dateRange['start'], SQLITE3_INTEGER);
                 $countStmt->bindValue(':dateEnd', $dateRange['end'], SQLITE3_INTEGER);
@@ -1494,11 +1526,12 @@ function adminListUsersPaginated() {
                             $countStmt->bindValue($idx++, $pn, SQLITE3_TEXT);
                         }
                     }
+                    $countResult = $countStmt->execute()->fetchArray(SQLITE3_ASSOC);
                 } catch (\Throwable $e) {
                     @error_log('[adminListUsersPaginated] Region count prepare failed: ' . $e->getMessage());
                     $regionDebug['count_prepare_error'] = $e->getMessage();
                     // ★ 不改变 searchType
-                    $countStmt = $db->query("SELECT 0 as cnt");
+                    $countResult = ['cnt' => 0];
                 }
             } else {
                 $countStmt = $db->prepare($countSql . " " . $whereClause);

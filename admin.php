@@ -754,10 +754,10 @@ function renderAllUsers(tab, users, onlineSet, onlineMap) {
     
     div.innerHTML = `
         <div class="form-row" style="margin-bottom:4px">
-            <input id="userSearch" placeholder="智能搜索：玩家名 / IP / 日期(2026-06-18) / 地区(广东)" oninput="handleUserSearch()" style="flex:1">
+            <input id="userSearch" placeholder="智能搜索：玩家名 / IP / 日期(2026-06-18) / 地区(广东) / todayreg / yesterdayreg" oninput="handleUserSearch()" style="flex:1">
             <button class="btn btn-blue" onclick="doLazyLoadSearch()">搜索</button>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">支持：纯文本→玩家名 | IP格式→IP搜索 | 日期格式→日期搜索 | 省/市名→地区搜索</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">支持：纯文本→玩家名 | IP格式→IP搜索 | 日期格式→日期搜索 | 省/市名→地区搜索 | todayreg→今日注册 | yesterdayreg→昨日注册</div>
         <div id="userLazyContainer">
             <div class="empty">加载中...</div>
         </div>
@@ -910,7 +910,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
             
             // ★ 判断是否为日期搜索：日期搜索时折叠同IP段玩家
             const s = (search || '').toLowerCase();
-            const isDateSearch = /今天|昨日|today|yesterday|今天|当日|前一日/.test(s) || /^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$/.test(s);
+            const isDateSearch = /今天|昨日|today|yesterday|todayreg|yesterdayreg|今天|当日|前一日/.test(s) || /^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}$/.test(s);
 
             // 追加用户行（日期搜索时按/24子网折叠）
             let displayUsers = users;
