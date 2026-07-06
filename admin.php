@@ -110,6 +110,7 @@
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
+        <div class="si" data-p="cashier" onclick="go('cashier')">🧾 收银台</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -174,6 +175,7 @@ function go(p) {
     else if (p==='tickets') loadTickets(c);
     else if (p==='lands') loadLands(c);
     else if (p==='usergroups') loadUserGroups(c);
+    else if (p==='cashier') loadCashier(c);
 }
 
 // 检查登录状态
@@ -3124,5 +3126,6 @@ function glassPrompt(label, currentVal, hint = '') {
     });
 }
 </script>
+<script src="cashier.js?<?php echo filemtime(__FILE__); ?>"></script>
 </body>
 </html>

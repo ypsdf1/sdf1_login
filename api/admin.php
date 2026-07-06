@@ -58,6 +58,7 @@ switch ($action) {
     case 'all_tx':       adminAllTx(); break;
     case 'player_tx':    adminPlayerTx(); break;
     case 'gen_token':    adminGenToken(); break;
+    case 'cashier_player_check': adminCashierPlayerCheck(); break;
     case 'cdk_batch':    adminGenCDK(); break;
     case 'notify_sync':  adminNotifySync(); break;
     case 'sync_now':     adminSyncNow(); break;
@@ -480,6 +481,43 @@ function adminGenToken() {
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+    }
+}
+
+// ===== 收银台：查询目标玩家余额/在线状态 =====
+function adminCashierPlayerCheck() {
+    requireAdminSession();
+    $player = trim(getParam('player'));
+    if (!$player) exit(json_encode(['success' => false, 'message' => '请输入玩家名'], JSON_UNESCAPED_UNICODE));
+    if (!preg_match('/^[a-zA-Z0-9_]{3,16}$/', $player)) {
+        exit(json_encode(['success' => false, 'message' => '玩家名格式不正确（3-16位英文/数字/下划线）'], JSON_UNESCAPED_UNICODE));
+    }
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (player_name TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
+    try {
+        // 确保玩家有余额记录（不存在则建0余额行，便于后续代购扣减）
+        $db->exec("INSERT OR IGNORE INTO bond_cache (player_name, amount, updated_at) VALUES ('" . str_replace("'", "''", $player) . "', 0, " . time() . ")");
+        $stmt = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :name");
+        $stmt->bindValue(':name', $player, SQLITE3_TEXT);
+        $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        $balance = $row ? (int)$row['amount'] : 0;
+
+        // 在线状态（表不存在则忽略）
+        $online = false;
+        try {
+            $ostmt = $db->prepare("SELECT player_name FROM online_players WHERE player_name = :name");
+            $ostmt->bindValue(':name', $player, SQLITE3_TEXT);
+            $orow = $ostmt->execute()->fetchArray(SQLITE3_ASSOC);
+            $online = $orow ? true : false;
+        } catch (\Throwable $e) {}
+
+        exit(json_encode([
+            'success' => true,
+            'data' => ['player' => $player, 'exists' => true, 'balance' => $balance, 'online' => $online]
+        ], JSON_UNESCAPED_UNICODE));
+    } catch (Exception $e) {
+        @error_log('[Cashier] Player check error: ' . $e->getMessage());
+        exit(json_encode(['success' => false, 'message' => '查询失败: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
     }
 }
 
