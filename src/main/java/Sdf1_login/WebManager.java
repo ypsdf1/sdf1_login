@@ -3,9 +3,16 @@ package Sdf1_login;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.BlockStateMeta;
+import org.bukkit.block.BlockState;
+import org.bukkit.block.Container;
+import org.bukkit.Material;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 
 import javax.net.ssl.*;
 import java.io.*;
@@ -5846,6 +5853,79 @@ public class WebManager {
                     plugin.getLogger().warning("[Web交易] 扣除失败: 玩家 " + playerName + " 余额不足 (当前余额: " + plugin.getBondManager().getBonds(playerName) + ")");
                 }
                 confirmTransaction(txId);
+            } else if (type.equals("shop_cart")) {
+                // 购物车批量结算：detail 含 settlement + items[]
+                if (plugin.getBondManager().isFrozen(playerName)) {
+                    plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 账户已冻结");
+                    confirmTransaction(txId);
+                    return;
+                }
+                int balance = plugin.getBondManager().getBonds(playerName);
+                if (balance < amount) {
+                    plugin.getLogger().warning("[Web交易] 拒绝: 玩家 " + playerName + " 余额不足 (有" + balance + ", 需" + amount + ")");
+                    confirmTransaction(txId);
+                    return;
+                }
+
+                // 解析 detail 中的结算方式与商品列表
+                String settlement = "backpack";
+                java.util.List<CartEntry> entries = new java.util.ArrayList<>();
+                try {
+                    if (detail != null && !detail.isEmpty()) {
+                        Gson gson = new Gson();
+                        JsonObject root = gson.fromJson(detail, JsonObject.class);
+                        if (root != null) {
+                            if (root.has("settlement")) settlement = root.get("settlement").getAsString();
+                            if (root.has("items")) {
+                                JsonArray arr = root.getAsJsonArray("items");
+                                for (int i = 0; i < arr.size(); i++) {
+                                    JsonObject it = arr.get(i).getAsJsonObject();
+                                    String iid = it.has("item_id") ? it.get("item_id").getAsString() : "";
+                                    int amt = it.has("amount") ? it.get("amount").getAsInt() : 0;
+                                    if (!iid.isEmpty() && amt > 0) entries.add(new CartEntry(iid, amt));
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易] 购物车detail解析失败: " + detail);
+                }
+
+                boolean ok = plugin.getBondManager().deductBonds(playerName, amount,
+                        "web_shop", "cart", "Web商城", "Web购物车结算(共" + entries.size() + "项)");
+                if (ok) {
+                    int newBal = plugin.getBondManager().getBonds(playerName);
+                    Player player = plugin.getServer().getPlayer(playerName);
+                    if (player != null && player.isOnline()) {
+                        player.sendMessage("§6[商城] §f购物车结算成功！§c-" + amount + "§f 债券，共 " + entries.size() + " 项");
+                        if ("shulker".equals(settlement)) {
+                            java.util.List<ItemStack> stacks = new java.util.ArrayList<>();
+                            for (CartEntry ce : entries) {
+                                ItemStack st = buildShopStack(ce.itemId, ce.amount);
+                                if (st != null) stacks.add(st);
+                            }
+                            java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, Material.LIGHT_BLUE_SHULKER_BOX);
+                            for (ItemStack box : boxes) {
+                                java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
+                                for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                            }
+                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个潜影盒");
+                        } else {
+                            for (CartEntry ce : entries) {
+                                dispatchItemByMaterialOrId(player, ce.itemId, ce.amount);
+                            }
+                        }
+                        player.sendMessage("§6[债券] §f余额: §e" + (newBal + amount) + " §7→ §a" + newBal);
+                    } else {
+                        for (CartEntry ce : entries) {
+                            saveOfflineItem(playerName, ce.itemId, ce.amount);
+                        }
+                        plugin.getLogger().info("[Web交易] 玩家离线，购物车商品已保存为离线待发放");
+                    }
+                } else {
+                    plugin.getLogger().warning("[Web交易] 购物车扣款失败: 玩家 " + playerName + " 余额不足");
+                }
+                confirmTransaction(txId);
             } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("recharge") || type.equals("admin_give")) {
                 // 管理员充值：增加债券（充值不受冻结限制）
                 int balBefore = plugin.getBondManager().getBonds(playerName);
@@ -6081,6 +6161,71 @@ public class WebManager {
             plugin.getLogger().warning("[Web交易] 保存商品到数据库失败: " + e.getMessage());
             plugin.getLogger().warning("[Web交易] 商品发放失败，玩家: " + playerName + ", 商品: " + itemId + " x" + amount);
         }
+    }
+
+    /**
+     * 购物车条目（内部数据载体）
+     */
+    private static class CartEntry {
+        final String itemId;
+        final int amount;
+        CartEntry(String itemId, int amount) {
+            this.itemId = itemId;
+            this.amount = amount;
+        }
+    }
+
+    /**
+     * 通过商品ID或Material名称构建商品ItemStack（不立即发放）
+     */
+    private ItemStack buildShopStack(String itemId, int amount) {
+        if (plugin.getShopManager() == null) return null;
+        ItemStack itemStack = null;
+        try {
+            Material material = Material.getMaterial(itemId.toUpperCase());
+            if (material != null) {
+                for (Sdf1_login.ShopCategory cat : plugin.getShopManager().getCategories()) {
+                    for (Sdf1_login.ShopItem item : cat.getItems()) {
+                        if (item.getMaterial() == material) {
+                            itemStack = plugin.getShopManager().getShopStack(item, amount);
+                            break;
+                        }
+                    }
+                    if (itemStack != null) break;
+                }
+            }
+        } catch (Exception ignored) {}
+        if (itemStack == null) {
+            Sdf1_login.ShopItem shopItem = plugin.getShopManager().findItemById(itemId);
+            if (shopItem != null) itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
+        }
+        return itemStack;
+    }
+
+    /**
+     * 将多个商品堆叠分装进潜影盒（每个盒最多27格，溢出则追加新盒）
+     */
+    private java.util.List<ItemStack> packCartIntoShulkers(java.util.List<ItemStack> all, Material color) {
+        java.util.List<ItemStack> result = new java.util.ArrayList<>();
+        java.util.List<ItemStack> remaining = new java.util.ArrayList<>(all);
+        while (!remaining.isEmpty()) {
+            ItemStack shulker = new ItemStack(color);
+            BlockStateMeta meta = (BlockStateMeta) shulker.getItemMeta();
+            if (meta == null) { result.addAll(remaining); break; }
+            BlockState state = meta.getBlockState();
+            if (!(state instanceof Container)) { result.addAll(remaining); break; }
+            Container c = (Container) state;
+            java.util.List<ItemStack> next = new java.util.ArrayList<>();
+            for (ItemStack stack : remaining) {
+                java.util.HashMap<Integer, ItemStack> left = c.getInventory().addItem(stack);
+                for (ItemStack l : left.values()) next.add(l);
+            }
+            remaining = next;
+            meta.setBlockState(c);
+            shulker.setItemMeta(meta);
+            result.add(shulker);
+        }
+        return result;
     }
 
     /**
