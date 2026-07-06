@@ -5869,6 +5869,8 @@ public class WebManager {
 
                 // 解析 detail 中的结算方式与商品列表
                 String settlement = "backpack";
+                String shulkerColorName = "purple"; // 默认紫色
+                Material shulkerMat = Material.PURPLE_SHULKER_BOX; // 默认紫色潜影盒
                 java.util.List<CartEntry> entries = new java.util.ArrayList<>();
                 try {
                     if (detail != null && !detail.isEmpty()) {
@@ -5876,6 +5878,7 @@ public class WebManager {
                         JsonObject root = gson.fromJson(detail, JsonObject.class);
                         if (root != null) {
                             if (root.has("settlement")) settlement = root.get("settlement").getAsString();
+                            if (root.has("shulker_color")) shulkerColorName = root.get("shulker_color").getAsString();
                             if (root.has("items")) {
                                 JsonArray arr = root.getAsJsonArray("items");
                                 for (int i = 0; i < arr.size(); i++) {
@@ -5886,6 +5889,9 @@ public class WebManager {
                                 }
                             }
                         }
+
+                        // 潜影盒颜色映射
+                        shulkerMat = mapShulkerColor(shulkerColorName);
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[Web交易] 购物车detail解析失败: " + detail);
@@ -5904,12 +5910,13 @@ public class WebManager {
                                 ItemStack st = buildShopStack(ce.itemId, ce.amount);
                                 if (st != null) stacks.add(st);
                             }
-                            java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, Material.LIGHT_BLUE_SHULKER_BOX);
+                            java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, shulkerMat);
                             for (ItemStack box : boxes) {
                                 java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
                                 for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
                             }
-                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个潜影盒");
+                            String colorCn = shulkerColorName.equals("purple") ? "紫色" : shulkerColorName;
+                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒");
                         } else {
                             for (CartEntry ce : entries) {
                                 dispatchItemByMaterialOrId(player, ce.itemId, ce.amount);
@@ -6200,6 +6207,23 @@ public class WebManager {
             if (shopItem != null) itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
         }
         return itemStack;
+    }
+
+    /**
+     * 潜影盒颜色名称 → Material 映射
+     */
+    private Material mapShulkerColor(String colorName) {
+        switch (colorName != null ? colorName.toLowerCase() : "purple") {
+            case "white":  return Material.WHITE_SHULKER_BOX;
+            case "black":  return Material.BLACK_SHULKER_BOX;
+            case "red":    return Material.RED_SHULKER_BOX;
+            case "blue":   return Material.BLUE_SHULKER_BOX;
+            case "green":  return Material.GREEN_SHULKER_BOX;
+            case "yellow": return Material.YELLOW_SHULKER_BOX;
+            case "orange": return Material.ORANGE_SHULKER_BOX;
+            case "purple":
+            default:      return Material.PURPLE_SHULKER_BOX; // 默认紫色（免费）
+        }
     }
 
     /**
