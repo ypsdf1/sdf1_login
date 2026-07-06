@@ -779,12 +779,13 @@ public class BondManager {
         List<Map<String, Object>> transactions = new ArrayList<>();
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT player_name, type, amount, target_player, operator, reason, balance_before, balance_after, time "
+                    "SELECT id, player_name, type, amount, target_player, operator, reason, balance_before, balance_after, time "
                             + "FROM bond_transaction WHERE time > ? ORDER BY time ASC");
             ps.setLong(1, afterTime);
             ResultSet rs = ps.executeQuery();
             while (rs.next()) {
                 Map<String, Object> tx = new LinkedHashMap<>();
+                tx.put("id", rs.getInt("id"));
                 tx.put("player_name", rs.getString("player_name"));
                 tx.put("type", rs.getString("type"));
                 tx.put("amount", rs.getInt("amount"));

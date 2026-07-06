@@ -1661,13 +1661,10 @@ public class ShopManager implements Listener {
         result = result.replaceAll("<u>(.*?)</u>", "§n$1§r");
         result = result.replaceAll("<b>(.*?)</b>", "§l$1§r");
         result = result.replaceAll("<i>(.*?)</i>", "§o$1§r");
-        result = result.replaceAll("<br>", "\n");
-        result = result.replaceAll("<br/>", "\n");
-
         // 3. 处理 <p style="color:#xxx"> 或 <p style="color:xxx">
         java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
             "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\)|rgba\\([^)]+\\)|hsl\\([^)]+\\)|hsla\\([^)]+\\))\\s*;?[\"']\\s*>(.*?)</p>",
-            java.util.regex.Pattern.CASE_INSENSITIVE);
+            java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL);
         java.util.regex.Matcher pMatcher = pPattern.matcher(result);
         StringBuilder sb = new StringBuilder();
         while (pMatcher.find()) {
@@ -1678,6 +1675,8 @@ public class ShopManager implements Listener {
         }
         pMatcher.appendTail(sb);
         result = sb.toString();
+        result = result.replaceAll("<br>", "\n");
+        result = result.replaceAll("<br/>", "\n");
 
         // 4. 处理 <p>段落</p> (无style) → 换行分隔
         result = result.replaceAll("<p>(.*?)</p>", "$1\n");
