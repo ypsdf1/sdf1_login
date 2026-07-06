@@ -65,6 +65,9 @@ public class PVPArenaManager implements Listener {
     // 已完成装备选择的玩家（备份+清空+发装备已执行完毕）
     private final Set<String> equipmentConfirmed = ConcurrentHashMap.newKeySet();
 
+    // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
+    private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
+
     // 玩家背包备份缓存 (玩家名 -> 备份数据)
     private final Map<String, InventoryBackup> inventoryBackups = new ConcurrentHashMap<>();
 
@@ -226,21 +229,19 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 创建全新PVP世界 — 手动地形生成（不依赖服务端NORMAL生成器）
+     * 创建全新PVP世界 — 自然主世界地形（完整主世界：山丘/水域/洞穴/生物群系）
      *
-     * ★ 为什么用手动生成：
-     *   日志证实4个不同seed的NORMAL世界全部findSafeSpawn→null（fallback小平台），
-     *   说明服务端(bukkit.yml或某插件)很可能给pvp_arena绑定了void/flat生成器。
-     *   代码层无法覆盖服务端生成器，所以改为FLAT空世界+代码内噪声地形生成。
+     * ★ 优先使用服务端NORMAL自然生成器产出完整主世界地形。
+     *   若服务端给 pvp_arena 绑定了 void/flat 生成器导致自然地形缺失(findSafeSpawn=null)，
+     *   则退回手工合成地形(generatePVPTerrain)，避免出现更糟的11x11保底小平台。
      */
     private void createPVPWorld() {
         long seed = worldSeedRandom.nextLong();
 
-        // 用FLAT空世界作为画布（3层石头基底+上方空气），然后在其上手动雕刻随机地形
+        // 自然主世界地形（完整主世界），不再用手工FLAT+噪声小平台
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
-        creator.type(WorldType.FLAT);
-        creator.generatorSettings("3;2*minecraft:stone,64*minecraft:air,1*minecraft:bedrock;"); // 石头基底+空气
+        creator.type(WorldType.NORMAL);
         creator.seed(seed);
 
         World pvpWorld = creator.createWorld();
@@ -255,20 +256,27 @@ public class PVPArenaManager implements Listener {
         pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         pvpWorld.setTime(6000);
 
-        // ★ 手动生成随机竞技场地形（基于双线性插值的伪随机高度图）
-        generatePVPTerrain(pvpWorld, seed);
-
-        // 找到安全出生点
+        // ★ 优先尝试自然主世界地形：强制生成出生点周边区块，确保地形已就绪
+        preGenerateSpawnChunks(pvpWorld, 4);
         Location spawnLoc = findSafeSpawn(pvpWorld);
         if (spawnLoc != null) {
             pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
-            plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(手动地形 seed=" + seed + "): " + PVP_WORLD_NAME
+            plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(自然主世界地形 seed=" + seed + "): " + PVP_WORLD_NAME
                     + " 出生点=(" + spawnLoc.getBlockX() + "," + spawnLoc.getBlockY() + "," + spawnLoc.getBlockZ() + ")");
         } else {
-            // 极端情况：即使手动生成也找不到（理论上不可能），fallback
-            pvpWorld.setSpawnLocation(0, 80, 0);
-            buildFallbackPlatform(pvpWorld);
-            plugin.getLogger().severe("[PVP] 手动地形生成异常，使用保底平台");
+            // 自然地形缺失（服务端可能将 pvp_arena 绑定为 void/flat 生成器）→ 退回手工合成地形
+            plugin.getLogger().warning("[PVP] 自然主世界地形生成失败(findSafeSpawn=null)，退回手工合成地形。"
+                    + " 若需完整主世界地形，请检查服务端 bukkit.yml 的 worlds.pvp_arena.generator 或 Multiverse 世界类型是否被设为 void/flat");
+            generatePVPTerrain(pvpWorld, seed);
+            spawnLoc = findSafeSpawn(pvpWorld);
+            if (spawnLoc != null) {
+                pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
+                plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(手工合成地形 seed=" + seed + "): " + PVP_WORLD_NAME);
+            } else {
+                pvpWorld.setSpawnLocation(0, 80, 0);
+                buildFallbackPlatform(pvpWorld);
+                plugin.getLogger().severe("[PVP] 手工合成地形仍异常，使用保底平台");
+            }
         }
     }
 
@@ -572,6 +580,9 @@ public class PVPArenaManager implements Listener {
 
         if (!EQUIPMENT_GUI_TITLE.equals(title)) return;
         if (!inPVPArena.contains(player.getName())) return;
+
+        // 程序内重开装备GUI（切换档位）导致的旧GUI关闭，忽略，不遣返
+        if (guiReopening.remove(player.getName())) return;
 
         // 已确认过装备的玩家允许自由开关背包
         if (equipmentConfirmed.contains(player.getName())) return;
@@ -1154,6 +1165,8 @@ public class PVPArenaManager implements Listener {
             if (slot == tierSlots[t]) {
                 EquipmentTier chosen = EquipmentTier.values()[t];
                 selectedTier.put(player.getName(), chosen);
+                // 标记：接下来重开GUI导致的旧GUI关闭事件需忽略（避免误触发遣返）
+                guiReopening.add(player.getName());
                 // 刷新 GUI 显示新档位的装备预览
                 openEquipmentSelection(player);
                 player.sendMessage("§a已选择: " + chosen.displayName);
