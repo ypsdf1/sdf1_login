@@ -77,6 +77,11 @@ function getDB() {
             debugLog("getDB: migrateDatabase失败: " . $e->getMessage());
         }
     }
+
+    // ★ 安全网：每次获取连接时强制清理上一次请求可能残留的未提交事务
+    // （PHP-FPM/opcache复用进程时，前一个请求异常退出可能遗留BEGIN但无COMMIT/ROLLBACK）
+    try { $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
+
     return $db;
 }
 

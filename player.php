@@ -1306,6 +1306,17 @@ if ($currentVersion !== $BUILD_VERSION) {
     let cartCfg = {backpack_rate: 0.98, shulker_rate: 1.0};
     let cartSettlement = 'backpack';
     let cartSubtotalVal = 0;
+    let cartShulkerColor = 'purple'; // 潜影盒颜色（purple免费，其它+2元）
+    const SHULKER_COLORS = [
+        {id:'purple', name:'§5紫色', price:0, css:'#AA00FF'},
+        {id:'white',  name:'§f白色', price:2, css:'#FFFFFF'},
+        {id:'black',  name:'§8黑色', price:2, css:'#1A1A1A'},
+        {id:'red',    name:'§c红色', price:2, css:'#FF3333'},
+        {id:'blue',   name:'§9蓝色', price:2, css:'#3366FF'},
+        {id:'green',  name:'§a绿色', price:2, css:'#33FF66'},
+        {id:'yellow', name:'§e黄色', price:2, css:'#FFFF33'},
+        {id:'orange', name:'§6橙色', price:2, css:'#FF9933'}
+    ];
 
     function loadCart() {
         try { cart = JSON.parse(localStorage.getItem('sdf1_cart') || '[]'); } catch (e) { cart = []; }
@@ -1447,6 +1458,16 @@ if ($currentVersion !== $BUILD_VERSION) {
         html += settleModeHtml('backpack', '🎒 塞背包', cartCfg.backpack_rate, bpTotal, subtotal, '直接发放到背包，享 ' + (cartCfg.backpack_rate * 10).toFixed(1) + ' 折');
         html += settleModeHtml('shulker', '📦 潜影盒打包', cartCfg.shulker_rate, shTotal, subtotal, shulkerDesc(cartCfg.shulker_rate, subtotal, shTotal));
         html += '</div>';
+        // 潜影盒颜色选择（仅shulker模式显示）
+        html += '<div id="shulkerColorWrap" style="display:none;margin-bottom:14px;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--bg)">';
+        html += '<div style="font-size:13px;color:var(--fg);font-weight:600;margin-bottom:8px">🎨 选择潜影盒颜色 <span id="colorFeeHint" style="font-weight:400;color:var(--dim);font-size:12px"></span></div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+        for (const c of SHULKER_COLORS) {
+            const checked = c.id === 'purple' ? 'checked' : '';
+            const extra = c.price > 0 ? ' (+' + c.price + '元)' : ' (免费)';
+            html += '<label class="shulker-color-opt" data-color="' + c.id + '" onclick="selectShulkerColor(\'' + c.id + '\', ' + c.price + ')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:12px;color:var(--fg);transition:all .15s"><input type="radio" name="shcolor" value="' + c.id + '" ' + checked + ' style="margin:0"><span style="width:16px;height:16px;border-radius:3px;display:inline-block;background:' + c.css + ';border:1px solid rgba(255,255,255,.2)"></span>' + c.name.replace(/§./g, '') + '<span style="color:var(--dim)">' + extra + '</span></label>';
+        }
+        html += '</div></div>';
         html += '<div id="settlePwdWrap"></div>';
         html += '<div style="display:flex;gap:10px;margin-top:6px"><button class="btn btn-dim" style="flex:1" onclick="document.getElementById(\'cartSettle\').remove()">取消</button><button class="btn btn-primary" style="flex:2" id="settleConfirmBtn" onclick="doSettle()">确认结算</button></div>';
         html += '</div>';
@@ -1468,7 +1489,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (saved > 0) badge = '<span style="color:var(--green);font-size:12px">省 ' + saved + ' 债券</span>';
         else if (saved < 0) badge = '<span style="color:var(--orange);font-size:12px">加价 ' + (-saved) + ' 债券</span>';
         else badge = '<span style="color:var(--dim);font-size:12px">原价</span>';
-        return '<div class="settle-mode" data-mode="' + mode + '" onclick="selectSettleMode(\'' + mode + '\')" style="padding:12px 14px;border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:all .15s"><div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:14px;color:var(--fg);font-weight:600">' + title + '</div><div style="text-align:right"><div style="font-size:15px;font-weight:700;color:var(--accent)">' + total + ' 债券</div>' + badge + '</div></div><div style="font-size:12px;color:var(--dim);margin-top:4px">' + desc + '</div></div>';
+        const priceId = mode === 'shulker' ? 'id="shulkerPriceDisplay"' : '';
+        return '<div class="settle-mode" data-mode="' + mode + '" onclick="selectSettleMode(\'' + mode + '\')" style="padding:12px 14px;border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:all .15s"><div style="display:flex;justify-content:space-between;align-items:center"><div style="font-size:14px;color:var(--fg);font-weight:600">' + title + '</div><div style="text-align:right"><div style="font-size:15px;font-weight:700;color:var(--accent)" ' + priceId + '>' + total + ' 债券</div>' + badge + '</div></div><div style="font-size:12px;color:var(--dim);margin-top:4px">' + desc + '</div></div>';
     }
 
     function selectSettleMode(mode) {
@@ -1478,7 +1500,34 @@ if ($currentVersion !== $BUILD_VERSION) {
             c.style.borderColor = active ? 'var(--accent)' : '';
             c.style.background = active ? 'color-mix(in srgb, var(--accent) 10%, transparent)' : '';
         });
+        // 显示/隐藏潜影盒颜色选择器
+        const colorWrap = document.getElementById('shulkerColorWrap');
+        if (colorWrap) colorWrap.style.display = mode === 'shulker' ? '' : 'none';
         updateSettlePwd();
+    }
+
+    function selectShulkerColor(colorId, price) {
+        cartShulkerColor = colorId;
+        document.querySelectorAll('.shulker-color-opt').forEach(c => {
+            const sel = c.dataset.color === colorId;
+            c.style.borderColor = sel ? 'var(--accent)' : 'var(--border)';
+            c.style.background = sel ? 'color-mix(in srgb, var(--accent) 8%, transparent)' : '';
+            const radio = c.querySelector('input[type="radio"]');
+            if (radio) radio.checked = sel;
+        });
+        const hint = document.getElementById('colorFeeHint');
+        if (hint) hint.textContent = price > 0 ? '(额外收费 +' + price + ' 债券)' : '(免费)';
+        // 更新价格显示
+        updateSettleTotal();
+    }
+
+    function updateSettleTotal() {
+        const priceEl = document.getElementById('shulkerPriceDisplay');
+        if (priceEl && cartSettlement === 'shulker') {
+            const base = cartSubtotalVal * cartCfg.shulker_rate;
+            const colorExtra = SHULKER_COLORS.find(c => c.id === cartShulkerColor)?.price || 0;
+            priceEl.textContent = Math.round(base + colorExtra) + ' 债券';
+        }
     }
 
     function updateSettlePwd() {
@@ -1494,16 +1543,23 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     async function doSettle() {
         const subtotal = cart.reduce((s, i) => s + i.price * i.amount, 0);
-        const total = Math.round(subtotal * (cartSettlement === 'shulker' ? cartCfg.shulker_rate : cartCfg.backpack_rate));
+        let total = Math.round(subtotal * (cartSettlement === 'shulker' ? cartCfg.shulker_rate : cartCfg.backpack_rate));
+        // 潜影盒颜色额外收费
+        if (cartSettlement === 'shulker') {
+            const colorExtra = SHULKER_COLORS.find(c => c.id === cartShulkerColor)?.price || 0;
+            total += colorExtra;
+        }
         const password = document.getElementById('settlePassword')?.value || '';
         if (total > 1000 && !password) { toast('请输入密码确认', 'error'); return; }
         const itemsPayload = cart.map(i => ({item_id: i.item_id, amount: i.amount}));
         const btn = document.getElementById('settleConfirmBtn');
         if (btn) { btn.disabled = true; btn.textContent = '结算中...'; }
         try {
+            const bodyData = {token: TOKEN, items: JSON.stringify(itemsPayload), settlement: cartSettlement, player: currentPlayer, password: password || undefined};
+            if (cartSettlement === 'shulker') bodyData.shulker_color = cartShulkerColor;
             const res = await fetch(API + 'shop.php?action=buy_cart', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({token: TOKEN, items: JSON.stringify(itemsPayload), settlement: cartSettlement, player: currentPlayer, password: password || undefined})
+                body: JSON.stringify(bodyData)
             });
             const data = await res.json();
             if (data.need_password) { showPasswordModal(data.message || '请输入游戏登录密码'); return; }

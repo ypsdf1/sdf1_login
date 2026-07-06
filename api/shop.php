@@ -39,6 +39,8 @@ switch ($action) {
 try { walCheckpoint(); } catch (\Throwable $ignored) {}
 
 } catch (\Throwable $e) {
+    // ★ 强制回滚可能残留的事务（防止database is locked连锁故障）
+    try { $db = getDB(); $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
     while (ob_get_level() > 0) ob_end_clean();
     error('服务器内部错误: ' . $e->getMessage(), 500);
 }
@@ -274,6 +276,7 @@ function cartConfig() {
 function shopBuyCart($token) {
     $rawItems = getParam('items');
     $settlement = getParam('settlement', 'backpack'); // backpack=塞背包, shulker=潜影盒打包
+    $shulkerColor = getParam('shulker_color', 'purple'); // 潜影盒颜色（purple免费,其它+2元）
     $player = getParam('player');
     $password = getParam('password');
     $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
@@ -326,10 +329,17 @@ function shopBuyCart($token) {
     if ($settlement === 'shulker') {
         $rate = (float)getShopConfig('cart_shulker_rate', '1.00');
         $modeName = '潜影盒打包';
+        // 潜影盒颜色额外收费（紫色免费，其它+2元）
+        $colorFee = ($shulkerColor !== 'purple') ? 2 : 0;
+        // 颜色名称映射
+        $colorNames = ['purple'=>'紫色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];
+        $colorName = $colorNames[$shulkerColor] ?? $shulkerColor;
     } else {
         $settlement = 'backpack';
         $rate = (float)getShopConfig('cart_backpack_rate', '0.98');
         $modeName = '塞背包';
+        $colorFee = 0;
+        $colorName = '';
     }
 
     $db = getDB();
@@ -356,8 +366,24 @@ function shopBuyCart($token) {
     }
     unset($p);
 
-    $totalPrice = (int)round($subtotal * $rate);
-    $saved = $subtotal - $totalPrice; // 折扣省下的（潜影盒加价时为负）
+    $totalPrice = (int)round($subtotal * $rate) + $colorFee;
+    $saved = $subtotal - $totalPrice; // 折扣省下的（潜影盒加价+颜色费时为负）
+
+    // ★ 安全检查：服务端计算的总额≥1000时，必须已通过密码验证（防止前端绕过）
+    // 管理员token(admin/all)在上方已跳过密码验证，此处补检
+    if ($totalPrice >= 1000 && !$isPreview) {
+        $tokenInfo = validateToken($token);
+        $isAdminToken = $tokenInfo && ($tokenInfo['purpose'] === 'admin' || $tokenInfo['purpose'] === 'all');
+        if ($isAdminToken && (!$password || trim($password) === '')) {
+            // 管理员代购大额也需密码确认
+            jsonResponse(['success' => false, 'need_password' => true,
+                'player' => $player, 'message' => '金额≥1000债券需确认密码'], 401);
+        }
+        if (!$isAdminToken && !isset($accessResult['ok'])) {
+            // 非管理员且未通过密码验证 → 拒绝
+            error('大额交易需验证游戏登录密码', 401);
+        }
+    }
 
     // 检查余额
     if (!$isPreview && $totalPrice > 0) {
@@ -410,14 +436,20 @@ function shopBuyCart($token) {
         $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_cart', :amount, :reason, :detail, 'pending', :time)");
         $stmt->bindValue(':player', $player, SQLITE3_TEXT);
         $stmt->bindValue(':amount', $totalPrice, SQLITE3_INTEGER);
-        $stmt->bindValue(':reason', "购物车结算({$modeName}): " . implode('、', $reasonItems), SQLITE3_TEXT);
-        $stmt->bindValue(':detail', json_encode([
+        $stmt->bindValue(':reason', "购物车结算({$modeName}" . ($colorName ? "-{$colorName}潜影盒" : '') . "): " . implode('、', $reasonItems), SQLITE3_TEXT);
+        $detailData = [
             'settlement' => $settlement,
             'rate' => $rate,
             'subtotal' => $subtotal,
             'total_price' => $totalPrice,
             'items' => $lines
-        ], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        ];
+        if ($settlement === 'shulker') {
+            $detailData['shulker_color'] = $shulkerColor;
+            $detailData['color_name'] = $colorName;
+            $detailData['color_fee'] = $colorFee;
+        }
+        $stmt->bindValue(':detail', json_encode($detailData, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
 
