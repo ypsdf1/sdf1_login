@@ -7,6 +7,21 @@ require_once __DIR__ . '/core.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
+// 读取打包费配置（彩色潜影盒加收，须与后端 shopBuyCart 保持一致）
+function cashierGetPackMoney() {
+    try {
+        $db = getDB();
+        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
+        $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = 'packmoney'");
+        $stmt->execute();
+        $row = $stmt->fetch(SQLITE3_ASSOC);
+        return $row ? (int)$row['cfg_value'] : 5;
+    } catch (Exception $e) {
+        return 5;
+    }
+}
+$packMoney = cashierGetPackMoney();
+
 $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $initialRole = 'guest';
 $initialName = '';
@@ -15,17 +30,21 @@ if (isAdminLoggedIn()) {
     $initialRole = 'admin';
     $initialName = 'admin';
     $initialLimit = 100;
+    $initialCanCash = 1; // 管理员始终可进行现金收款
 } elseif (isCashierLoggedIn()) {
     $c = getCurrentCashier();
     $initialRole = 'cashier';
     $initialName = $c['username'];
     $initialLimit = $c['discount_limit_percent'];
+    $initialCanCash = (int)($c['can_cash'] ?? 0);
 }
 $initialState = json_encode([
     'logged_in' => $loggedIn,
     'role' => $initialRole,
     'username' => $initialName,
-    'discount_limit' => $initialLimit
+    'discount_limit' => $initialLimit,
+    'cashier_can_cash' => $initialCanCash,
+    'packmoney' => $packMoney
 ], JSON_UNESCAPED_UNICODE);
 ?>
 <!DOCTYPE html>
@@ -222,12 +241,21 @@ $initialState = json_encode([
                 <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">结算方式</label>
                 <div class="settlement-row">
                     <div class="seg active" data-set="backpack" onclick="setSettlement('backpack')">🎒 塞背包 (98折)</div>
-                    <div class="seg" data-set="shulker" onclick="setSettlement('shulker')">📦 潜影盒 (+2元)</div>
+                    <div class="seg" data-set="shulker" onclick="setSettlement('shulker')">📦 潜影盒（原色免费）</div>
+                </div>
+
+                <!-- ★ 收款模式切换（管理员可用 / 收银员看权限） -->
+                <div id="payModeWrap" style="margin-top:10px">
+                    <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">收款模式</label>
+                    <div class="settlement-row" id="payModeRow">
+                        <div class="seg active" data-pm="bond" onclick="setPayMode('bond')">💰 债券收款（扣余额）</div>
+                        <div class="seg" data-pm="cash" onclick="setPayMode('cash')" id="cashModeBtn">💵 现金收款（仅记账）</div>
+                    </div>
                 </div>
                 <div id="shulkerColors" class="hidden" style="margin-bottom:10px">
-                    <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">潜影盒颜色（紫色免费，其它+2元）</label>
+                    <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">潜影盒颜色（原色免费，其它颜色+2元）</label>
                     <select id="shulkerColor" onchange="recalc()">
-                        <option value="purple">紫色（免费）</option>
+                        <option value="default">原色（免费）</option>
                         <option value="white">白色</option>
                         <option value="black">黑色</option>
                         <option value="red">红色</option>
@@ -276,10 +304,16 @@ $initialState = json_encode([
 
 <script>
 const STATE = <?php echo $initialState; ?>;
+// 动态更新打包费提示（与后端 packmoney 配置一致，避免硬编码 +2 元）
+(function() {
+    const lbl = document.querySelector('#shulkerColors label');
+    if (lbl) lbl.textContent = '潜影盒颜色（原色免费，其它颜色+ ' + (STATE.packmoney || 2) + ' 元打包费）';
+})();
 let products = [];
 let categories = [];
 let cart = {}; // id -> qty
 let settlement = 'backpack';
+let payMode = 'bond'; // bond=债券收款(扣余额), cash=现金收款(仅记账)
 let currentPlayer = null;
 let playerBalance = 0;
 
@@ -365,6 +399,22 @@ async function initApp() {
     // 管理员需密码确认大额
     if (STATE.role === 'admin') document.getElementById('adminPwWrap').classList.remove('hidden');
 
+    // ★ 收款模式权限控制
+    const cashModeBtn = document.getElementById('cashModeBtn');
+    if (STATE.role === 'admin') {
+        // 管理员始终可用现金模式
+        cashModeBtn.style.display = '';
+        document.getElementById('payModeWrap').style.display = '';
+    } else if (STATE.cashier_can_cash) {
+        // 收银员：管理员授权了现金收款权限
+        cashModeBtn.style.display = '';
+        document.getElementById('payModeWrap').style.display = '';
+    } else {
+        // 收银员无现金权限 → 隐藏现金按钮，锁定债券模式
+        cashModeBtn.style.display = 'none';
+        // 不隐藏整个 payModeWrap，但只显示债券模式
+    }
+
     await Promise.all([loadProducts(), loadOrders()]);
 }
 
@@ -448,6 +498,18 @@ function setSettlement(s) {
     recalc();
 }
 
+// ★ 收款模式切换
+function setPayMode(pm) {
+    payMode = pm;
+    document.querySelectorAll('#payModeRow .seg').forEach(x => x.classList.toggle('active', x.dataset.pm === pm));
+
+    // 现金模式下提示"仅记账不扣债券"
+    if (pm === 'cash') {
+        toast('现金收款模式：仅记账，不扣除玩家债券', 'ok');
+    }
+    recalc();
+}
+
 // ===== 计算 + 预览 =====
 const RATES = { backpack: 0.98, shulker: 1.00 };
 async function recalc() {
@@ -466,7 +528,8 @@ async function recalc() {
     const rate = RATES[settlement];
     let total = Math.round(subtotal * rate);
     let colorFee = 0;
-    if (settlement === 'shulker' && document.getElementById('shulkerColor').value !== 'purple') colorFee = 2;
+    const sc = document.getElementById('shulkerColor').value;
+    if (settlement === 'shulker' && sc !== 'default' && sc !== 'purple') colorFee = STATE.packmoney || 2;
     total += colorFee;
 
     let discount = parseFloat(document.getElementById('discount').value) || 0;
@@ -481,7 +544,8 @@ async function recalc() {
         <div class="summary-line"><span>${settlement==='shulker'?'潜影盒费率':'背包费率'} (${rate*100}%)</span><span>${colorFee?('+'+colorFee):''}</span></div>
         <div class="summary-line"><span>应收原价</span><span>${total} 债券</span></div>
         <div class="summary-line"><span class="disc">手动折扣 ${discount}%</span><span class="disc">-${discAmt} 债券</span></div>
-        <div class="summary-line total"><span>实收</span><span class="v">${final} 债券</span></div>`;
+        ${payMode === 'cash' ? '<div class="summary-line" style="border-color:var(--orange);color:var(--orange)"><span>💵 现金收款模式</span><span>仅记账，不扣债券</span></div>' : ''}
+        <div class="summary-line total"><span>实收${payMode==='cash'?'(记账)':''}</span><span class="v">${final} ${payMode==='cash'?'债券':''}</span></div>`;
     payBtn.disabled = false;
 }
 
@@ -515,6 +579,7 @@ async function confirmPay() {
     const body = new URLSearchParams();
     body.set('items', JSON.stringify(items));
     body.set('settlement', settlement);
+    body.set('pay_mode', payMode); // ★ 新增：收款模式（bond/cash）
     body.set('shulker_color', document.getElementById('shulkerColor').value);
     body.set('player', currentPlayer);
     body.set('discount_percent', String(discount));
@@ -540,7 +605,11 @@ async function confirmPay() {
 function finishPay(d) {
     const btn = document.getElementById('payBtn');
     if (d.success) {
-        toast('收款成功，实收 ' + (d.data.total_price) + ' 债券', 'ok');
+        if (payMode === 'cash') {
+            toast('✅ 现金收款记账成功（订单 #' + (d.data.order_id || '') + '，未扣玩家债券）', 'ok');
+        } else {
+            toast('收款成功，实收 ' + (d.data.total_price) + ' 债券', 'ok');
+        }
         cart = {}; renderCart();
         document.getElementById('summary').innerHTML = '';
         document.getElementById('discount').value = 0;

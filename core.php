@@ -609,6 +609,8 @@ function initTables(SQLite3 $db) {
             created_at INTEGER DEFAULT 0,
             created_by TEXT DEFAULT ''
         )");
+        // 收银员现金收款权限字段迁移（已存在则静默失败）
+        @$db->exec("ALTER TABLE cashiers ADD COLUMN can_cash INTEGER DEFAULT 0");
 
         // ===== 收银台订单表（代购/收银员操作记录）=====
         $db->exec("CREATE TABLE IF NOT EXISTS cashier_orders (
@@ -623,9 +625,12 @@ function initTables(SQLite3 $db) {
             discount_percent INTEGER DEFAULT 0,
             discount_amount INTEGER DEFAULT 0,
             settlement TEXT DEFAULT '',
+            payment_method TEXT DEFAULT 'bond',
             status TEXT DEFAULT 'completed',
             created_at INTEGER DEFAULT 0
         )");
+        // 收款模式字段迁移（现金/债券）
+        @$db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
 
         $db->exec('COMMIT');
     } catch (Exception $e) {
@@ -939,6 +944,7 @@ function cashierLogin($username, $password) {
     $_SESSION['cashier_id'] = (int)$row['id'];
     $_SESSION['cashier_name'] = $row['username'];
     $_SESSION['cashier_discount_limit'] = (int)$row['discount_limit_percent'];
+    $_SESSION['cashier_can_cash'] = (int)($row['can_cash'] ?? 0);
     $_SESSION['cashier_login_time'] = time();
     return true;
 }
@@ -955,7 +961,8 @@ function getCurrentCashier() {
     return [
         'id' => $_SESSION['cashier_id'] ?? 0,
         'username' => $_SESSION['cashier_name'] ?? '',
-        'discount_limit_percent' => (int)($_SESSION['cashier_discount_limit'] ?? 0)
+        'discount_limit_percent' => (int)($_SESSION['cashier_discount_limit'] ?? 0),
+        'can_cash' => (int)($_SESSION['cashier_can_cash'] ?? 0)
     ];
 }
 
@@ -975,7 +982,7 @@ function cashierLogout() {
     if (session_status() === PHP_SESSION_NONE) {
         session_start();
     }
-    unset($_SESSION['cashier_auth'], $_SESSION['cashier_id'], $_SESSION['cashier_name'], $_SESSION['cashier_discount_limit'], $_SESSION['cashier_login_time']);
+    unset($_SESSION['cashier_auth'], $_SESSION['cashier_id'], $_SESSION['cashier_name'], $_SESSION['cashier_discount_limit'], $_SESSION['cashier_can_cash'], $_SESSION['cashier_login_time']);
 }
 
 /**
@@ -986,7 +993,7 @@ function cashierLogout() {
 function recordCashierOrder($data, $db = null) {
     if ($db === null) $db = getDB();
     $orderNo = 'C' . date('YmdHis') . str_pad(mt_rand(0, 999), 3, '0', STR_PAD_LEFT);
-    $stmt = $db->prepare("INSERT INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,'completed',:time)");
+    $stmt = $db->prepare("INSERT INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, payment_method, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,:pm,'completed',:time)");
     $stmt->bindValue(':no', $orderNo, SQLITE3_TEXT);
     $stmt->bindValue(':ot', $data['operator_type'] ?? 'cashier', SQLITE3_TEXT);
     $stmt->bindValue(':on', $data['operator_name'] ?? '', SQLITE3_TEXT);
@@ -997,6 +1004,7 @@ function recordCashierOrder($data, $db = null) {
     $stmt->bindValue(':dp', (int)($data['discount_percent'] ?? 0), SQLITE3_INTEGER);
     $stmt->bindValue(':da', (int)($data['discount_amount'] ?? 0), SQLITE3_INTEGER);
     $stmt->bindValue(':st', $data['settlement'] ?? '', SQLITE3_TEXT);
+    $stmt->bindValue(':pm', $data['payment_method'] ?? 'bond', SQLITE3_TEXT);
     $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
     $stmt->execute();
     return $orderNo;

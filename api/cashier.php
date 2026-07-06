@@ -73,7 +73,8 @@ function cashierDoLogin() {
             'success' => true,
             'data' => [
                 'username' => $c['username'],
-                'discount_limit_percent' => $c['discount_limit_percent']
+                'discount_limit_percent' => $c['discount_limit_percent'],
+                'can_cash' => (int)($c['can_cash'] ?? 0)
             ]
         ], JSON_UNESCAPED_UNICODE));
     }
@@ -105,7 +106,8 @@ function cashierSession() {
             'data' => [
                 'role' => 'cashier',
                 'username' => $c['username'],
-                'discount_limit_percent' => $c['discount_limit_percent']
+                'discount_limit_percent' => $c['discount_limit_percent'],
+                'can_cash' => (int)($c['can_cash'] ?? 0)
             ]
         ], JSON_UNESCAPED_UNICODE));
     }
@@ -181,7 +183,7 @@ function cashierOrderList() {
 function cashierList() {
     requireAdminSession();
     $db = getDB();
-    $result = $db->prepare("SELECT id, username, discount_limit_percent, created_at, created_by FROM cashiers ORDER BY id ASC")->execute();
+    $result = $db->prepare("SELECT id, username, discount_limit_percent, can_cash, created_at, created_by FROM cashiers ORDER BY id ASC")->execute();
     $rows = [];
     while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
         $rows[] = $r;
@@ -195,6 +197,7 @@ function cashierAdd() {
     $username = trim(getParam('username', ''));
     $password = getParam('password', '');
     $discountLimit = (int)getParam('discount_limit_percent', 0);
+    $canCash = (int)getParam('can_cash', 0);
     if ($username === '' || $password === '') {
         exit(json_encode(['success' => false, 'message' => '账号和密码不能为空'], JSON_UNESCAPED_UNICODE));
     }
@@ -203,6 +206,9 @@ function cashierAdd() {
     }
     if ($discountLimit < 0 || $discountLimit > 100) {
         exit(json_encode(['success' => false, 'message' => '折扣上限需在0-100之间'], JSON_UNESCAPED_UNICODE));
+    }
+    if ($canCash < 0 || $canCash > 1) {
+        exit(json_encode(['success' => false, 'message' => '现金收款权限需为0或1'], JSON_UNESCAPED_UNICODE));
     }
     $db = getDB();
     // 查重
@@ -213,11 +219,12 @@ function cashierAdd() {
     }
     $hash = password_hash($password, PASSWORD_DEFAULT);
     $salt = bin2hex(random_bytes(8));
-    $stmt = $db->prepare("INSERT INTO cashiers (username, password_hash, salt, discount_limit_percent, created_at, created_by) VALUES (:u,:h,:s,:d,:t,'admin')");
+    $stmt = $db->prepare("INSERT INTO cashiers (username, password_hash, salt, discount_limit_percent, can_cash, created_at, created_by) VALUES (:u,:h,:s,:d,:c,:t,'admin')");
     $stmt->bindValue(':u', $username, SQLITE3_TEXT);
     $stmt->bindValue(':h', $hash, SQLITE3_TEXT);
     $stmt->bindValue(':s', $salt, SQLITE3_TEXT);
     $stmt->bindValue(':d', $discountLimit, SQLITE3_INTEGER);
+    $stmt->bindValue(':c', $canCash, SQLITE3_INTEGER);
     $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
     $stmt->execute();
     exit(json_encode(['success' => true, 'message' => '收银员创建成功'], JSON_UNESCAPED_UNICODE));
@@ -250,6 +257,14 @@ function cashierEdit() {
         }
         $sets[] = "discount_limit_percent = :d";
         $params[':d'] = $dl;
+    }
+    if (getParam('can_cash') !== null && getParam('can_cash') !== '') {
+        $cc = (int)getParam('can_cash', 0);
+        if ($cc < 0 || $cc > 1) {
+            exit(json_encode(['success' => false, 'message' => '现金收款权限需为0或1'], JSON_UNESCAPED_UNICODE));
+        }
+        $sets[] = "can_cash = :c";
+        $params[':c'] = $cc;
     }
     if (empty($sets)) {
         exit(json_encode(['success' => false, 'message' => '没有可更新的字段'], JSON_UNESCAPED_UNICODE));

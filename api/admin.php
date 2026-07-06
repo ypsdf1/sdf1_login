@@ -290,36 +290,62 @@ function adminShopRemove() {
     }
 }
 
-// ===== 购物车结算折扣/加价配置 =====
+// ===== 商店配置（折扣/加价系数 + 打包费 + 环保减免）=====
 function adminSaveShopConfig() {
     requireAdminSession();
     $db = getDB();
     try {
-        $bp = getParam('cart_backpack_rate');
-        $sh = getParam('cart_shulker_rate');
-        if ($bp === null || $sh === null) error('缺少配置参数');
-        $bp = (float)$bp;
-        $sh = (float)$sh;
-        // 校验范围：塞背包折扣系数 0.01~1.00；潜影盒加价系数 1.00~3.00
-        if ($bp <= 0 || $bp > 1.0) error('塞背包折扣系数必须介于 0.01 ~ 1.00 之间');
-        if ($sh < 1.0 || $sh > 3.0) error('潜影盒加价系数必须介于 1.00 ~ 3.00 之间');
-
         $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
         $upsert = $db->prepare("INSERT OR REPLACE INTO shop_config (cfg_key, cfg_value) VALUES (:k, :v)");
-        $upsert->bindValue(':k', 'cart_backpack_rate', SQLITE3_TEXT);
-        $upsert->bindValue(':v', number_format($bp, 2, '.', ''), SQLITE3_TEXT);
-        $upsert->execute();
-        $upsert->bindValue(':k', 'cart_shulker_rate', SQLITE3_TEXT);
-        $upsert->bindValue(':v', number_format($sh, 2, '.', ''), SQLITE3_TEXT);
-        $upsert->execute();
+        $saved = [];
+
+        // 购物车折扣/加价系数（需成对提交）
+        $bp = getParam('cart_backpack_rate');
+        $sh = getParam('cart_shulker_rate');
+        if ($bp !== null || $sh !== null) {
+            if ($bp === null || $sh === null) error('塞背包与潜影盒系数需同时提交');
+            $bp = (float)$bp;
+            $sh = (float)$sh;
+            if ($bp <= 0 || $bp > 1.0) error('塞背包折扣系数必须介于 0.01 ~ 1.00 之间');
+            if ($sh < 1.0 || $sh > 3.0) error('潜影盒加价系数必须介于 1.00 ~ 3.00 之间');
+            $upsert->bindValue(':k', 'cart_backpack_rate', SQLITE3_TEXT);
+            $upsert->bindValue(':v', number_format($bp, 2, '.', ''), SQLITE3_TEXT);
+            $upsert->execute();
+            $upsert->bindValue(':k', 'cart_shulker_rate', SQLITE3_TEXT);
+            $upsert->bindValue(':v', number_format($sh, 2, '.', ''), SQLITE3_TEXT);
+            $upsert->execute();
+            $saved['backpack_rate'] = $bp;
+            $saved['shulker_rate'] = $sh;
+        }
+
+        // 彩色潜影盒打包费
+        $pm = getParam('packmoney');
+        if ($pm !== null) {
+            $pm = (int)$pm;
+            if ($pm < 0 || $pm > 999) error('打包费需介于 0 ~ 999 之间');
+            $upsert->bindValue(':k', 'packmoney', SQLITE3_TEXT);
+            $upsert->bindValue(':v', (string)$pm, SQLITE3_TEXT);
+            $upsert->execute();
+            $saved['packmoney'] = $pm;
+        }
+
+        // 环保单减免百分比（0=不减免；命令 setgreen 10 亦为不减免）
+        $gd = getParam('green_discount');
+        if ($gd !== null) {
+            $gd = (float)$gd;
+            if ($gd < 0 || $gd > 9.99) error('环保单减免需介于 0 ~ 9.99 之间');
+            $upsert->bindValue(':k', 'green_discount', SQLITE3_TEXT);
+            $upsert->bindValue(':v', number_format($gd, 2, '.', ''), SQLITE3_TEXT);
+            $upsert->execute();
+            $saved['green_discount'] = $gd;
+        }
+
+        if (empty($saved)) error('没有可保存的配置项');
 
         exit(json_encode([
             'success' => true,
-            'message' => '购物车结算配置已保存',
-            'data' => [
-                'backpack_rate' => $bp,
-                'shulker_rate' => $sh
-            ]
+            'message' => '商店配置已保存',
+            'data' => $saved
         ], JSON_UNESCAPED_UNICODE));
     } catch (\Throwable $e) {
         @error_log('[save_shop_config] Error: ' . $e->getMessage());

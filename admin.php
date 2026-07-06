@@ -407,6 +407,8 @@ async function loadShop(el) {
             <p style="color:var(--dim);font-size:13px;margin-bottom:14px">配置购物车结算时「塞背包」折扣与「潜影盒打包」加价系数，系数作用于商品原价合计。</p>
             <div class="form-row"><label>塞背包折扣系数</label><input id="cfgBackpack" type="number" step="0.01" min="0.01" max="1" oninput="updateCartCfgHint()"></div>
             <div class="form-row"><label>潜影盒加价系数</label><input id="cfgShulker" type="number" step="0.01" min="1" max="3" oninput="updateCartCfgHint()"></div>
+            <div class="form-row"><label>彩色潜影盒打包费</label><input id="cfgPackMoney" type="number" min="0" max="999" value="5"><span style="font-size:12px;color:var(--dim)">彩色潜影盒加收债券数（原色免费）</span></div>
+            <div class="form-row"><label>环保单减免(%)</label><input id="cfgGreen" type="number" min="0" max="9.99" step="0.01" value="2"><span style="font-size:12px;color:var(--dim)">0 = 不减免；玩家选「不打包」时按比例减免（命令 /sdf1_login shop setgreen 10 亦为不减免）</span></div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
                 <button class="btn btn-green" onclick="saveCartConfig()">保存配置</button>
                 <span id="cartCfgHint" style="font-size:12px;color:var(--accent)"></span>
@@ -423,8 +425,12 @@ async function loadCartConfig() {
         if (r && r.success && r.data) {
             const bp = document.getElementById('cfgBackpack');
             const sh = document.getElementById('cfgShulker');
+            const pm = document.getElementById('cfgPackMoney');
+            const gd = document.getElementById('cfgGreen');
             if (bp && r.data.backpack_rate != null) bp.value = r.data.backpack_rate;
             if (sh && r.data.shulker_rate != null) sh.value = r.data.shulker_rate;
+            if (pm && r.data.packmoney != null) pm.value = r.data.packmoney;
+            if (gd && r.data.green_discount != null) gd.value = r.data.green_discount;
             updateCartCfgHint();
         }
     } catch (e) {}
@@ -448,12 +454,19 @@ function updateCartCfgHint() {
 async function saveCartConfig() {
     const bpEl = document.getElementById('cfgBackpack');
     const shEl = document.getElementById('cfgShulker');
+    const pmEl = document.getElementById('cfgPackMoney');
+    const gdEl = document.getElementById('cfgGreen');
     const bp = parseFloat(bpEl.value);
     const sh = parseFloat(shEl.value);
+    const pm = parseInt(pmEl.value || '5', 10);
+    let gd = parseFloat(gdEl.value || '0');
+    if (gd >= 10) gd = 0; // 10 视为不减免
     if (isNaN(bp) || isNaN(sh)) { toast('请输入有效数字', 'err'); return; }
     if (bp <= 0 || bp > 1) { toast('塞背包折扣系数应在 0.01 ~ 1.00 之间', 'err'); return; }
     if (sh < 1 || sh > 3) { toast('潜影盒加价系数应在 1.00 ~ 3.00 之间', 'err'); return; }
-    const r = await postApi('save_shop_config', { cart_backpack_rate: bp, cart_shulker_rate: sh });
+    if (isNaN(pm) || pm < 0 || pm > 999) { toast('打包费应在 0 ~ 999 之间', 'err'); return; }
+    if (gd < 0 || gd > 9.99) { toast('环保单减免应在 0 ~ 9.99 之间', 'err'); return; }
+    const r = await postApi('save_shop_config', { cart_backpack_rate: bp, cart_shulker_rate: sh, packmoney: pm, green_discount: gd });
     toast(r.message || (r.success ? '已保存' : '保存失败'), r.success ? 'ok' : 'err');
     if (r.success) updateCartCfgHint();
 }
@@ -3177,11 +3190,12 @@ async function loadCashierManage(el) {
     el.innerHTML = `<div class="card">
         <h2>🧾 收银员管理</h2>
         <p style="color:var(--dim);font-size:12px;margin-bottom:12px">收银员可登录独立收银台（cashier.php）代玩家购买商品并手动打折，折扣上限在此设置。管理员亦可登录收银台。</p>
-        <div class="card" style="background:var(--bg)">
+            <div class="card" style="background:var(--bg)">
             <h2 style="font-size:14px;color:var(--green)">+ 新增收银员</h2>
             <div class="form-row"><label>账号</label><input id="cmUser" placeholder="3-20位字母/数字/下划线"></div>
             <div class="form-row"><label>密码</label><input id="cmPass" type="password" placeholder="登录密码"></div>
             <div class="form-row"><label>折扣上限%</label><input id="cmLimit" type="number" min="0" max="100" value="10"></div>
+            <div class="form-row"><label>现金收款权限</label><select id="cmCash"><option value="0">否（仅债券收款）</option><option value="1">是（可现金收款）</option></select></div>
             <button class="btn btn-green" onclick="cmAdd()">创建收银员</button>
         </div>
         <div id="cmList" style="margin-top:14px">加载中…</div>
@@ -3195,11 +3209,12 @@ async function cmAdd() {
     const limit = parseInt(document.getElementById('cmLimit').value || '0', 10);
     if (!username || !password) { toast('账号和密码不能为空', 'err'); return; }
     if (limit < 0 || limit > 100) { toast('折扣上限需在0-100', 'err'); return; }
+    const canCash = parseInt(document.getElementById('cmCash').value || '0', 10);
     try {
         const d = await fetch('api/cashier.php?action=add', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password) + '&discount_limit_percent=' + limit
+            body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password) + '&discount_limit_percent=' + limit + '&can_cash=' + canCash
         }).then(r => r.json());
         if (d.success) { toast('收银员已创建', 'ok'); document.getElementById('cmUser').value = ''; document.getElementById('cmPass').value = ''; cmLoad(); }
         else toast(d.message || '创建失败', 'err');
@@ -3213,21 +3228,22 @@ async function cmLoad() {
         const d = await fetch('api/cashier.php?action=cashier_list').then(r => r.json());
         if (!d.success) { wrap.innerHTML = '<div style="color:var(--red);font-size:13px">' + escAdmHtml(d.message) + '</div>'; return; }
         if (!d.data.length) { wrap.innerHTML = '<div style="color:var(--dim);font-size:13px">暂无收银员</div>'; return; }
-        wrap.innerHTML = '<table class="table"><tr><th>ID</th><th>账号</th><th>折扣上限</th><th>创建时间</th><th>操作</th></tr>' + d.data.map(c => `
+        wrap.innerHTML = '<table class="table"><tr><th>ID</th><th>账号</th><th>折扣上限</th><th>现金收款</th><th>创建时间</th><th>操作</th></tr>' + d.data.map(c => `
             <tr>
                 <td>${c.id}</td>
                 <td>${escAdmHtml(c.username)}</td>
                 <td>${c.discount_limit_percent}%</td>
+                <td>${c.can_cash ? '✅ 可现金' : '— 仅债券'}</td>
                 <td style="color:var(--dim)">${c.created_at ? new Date(c.created_at * 1000).toLocaleString('zh-CN') : '-'}</td>
                 <td>
-                    <button class="btn btn-yellow" style="padding:4px 10px;font-size:11px" onclick="cmEdit(${c.id},'${escAdmHtml(c.username)}',${c.discount_limit_percent})">编辑</button>
+                    <button class="btn btn-yellow" style="padding:4px 10px;font-size:11px" onclick="cmEdit(${c.id},'${escAdmHtml(c.username)}',${c.discount_limit_percent},${c.can_cash ? 1 : 0})">编辑</button>
                     <button class="btn btn-red" style="padding:4px 10px;font-size:11px" onclick="cmDelete(${c.id})">删除</button>
                 </td>
             </tr>`).join('') + '</table>';
     } catch (e) { wrap.innerHTML = '<div style="color:var(--red);font-size:13px">' + escAdmHtml(e.message) + '</div>'; }
 }
 
-async function cmEdit(id, username, curLimit) {
+async function cmEdit(id, username, curLimit, curCash) {
     const overlay = document.createElement('div');
     overlay.className = 'glass-alert-overlay show';
     overlay.innerHTML = `<div class="glass-alert-card">
@@ -3237,6 +3253,11 @@ async function cmEdit(id, username, curLimit) {
         <input class="alert-input" type="password" id="cmNewPw" placeholder="留空=不修改">
         <div class="alert-label">折扣上限（0-100，当前 ${curLimit}%）</div>
         <input class="alert-input" type="number" id="cmNewLimit" min="0" max="100" value="${curLimit}">
+        <div class="alert-label">现金收款权限（当前 ${curCash ? '可现金' : '仅债券'}）</div>
+        <select class="alert-input" id="cmNewCash">
+            <option value="0"${curCash ? '' : ' selected'}>否（仅债券收款）</option>
+            <option value="1"${curCash ? ' selected' : ''}>是（可现金收款）</option>
+        </select>
         <div class="alert-btns">
             <button class="ag-cancel" onclick="this.closest('.glass-alert-overlay').remove()">取消</button>
             <button class="ag-ok" onclick="cmEditSave(${id}, this)">保存</button>
@@ -3250,10 +3271,12 @@ async function cmEditSave(id, btn) {
     const pw = document.getElementById('cmNewPw').value;
     const limit = parseInt(document.getElementById('cmNewLimit').value || '0', 10);
     if (limit < 0 || limit > 100) { toast('折扣上限需在0-100', 'err'); return; }
+    const cash = parseInt(document.getElementById('cmNewCash').value || '0', 10);
     const body = new URLSearchParams();
     body.set('id', String(id));
     if (pw) body.set('password', pw);
     body.set('discount_limit_percent', String(limit));
+    body.set('can_cash', String(cash));
     btn.disabled = true;
     try {
         const d = await fetch('api/cashier.php?action=edit', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: body.toString() }).then(r => r.json());

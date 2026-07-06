@@ -272,6 +272,12 @@ switch ($action) {
     case 'pull_shop_prices':
         pullShopPrices();
         break;
+    case 'get_shop_config':
+        getShopConfigSync();
+        break;
+    case 'set_shop_config':
+        setShopConfigSync();
+        break;
     case 'clear_admin_prices':
         clearAdminPrices();
         break;
@@ -2787,6 +2793,45 @@ function pullShopPrices() {
     $db->exec("UPDATE shop_items SET admin_buy_price = NULL, admin_sell_price = NULL WHERE admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL");
 
     success(['items' => $items, 'count' => count($items)]);
+}
+
+// ===== 插件拉取商店打包配置（打包费 / 环保单减免）=====
+function getShopConfigSync() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    success([
+        'packmoney' => (int)getShopConfig('packmoney', '5'),
+        'green_discount' => (float)getShopConfig('green_discount', '2')
+    ]);
+}
+
+// ===== 插件推送商店配置（Java命令 /sdf1_login set packmoney、shop setgreen 写入）=====
+function setShopConfigSync() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $key = getParam('key');
+    $value = getParam('value');
+    $allowed = ['packmoney', 'green_discount'];
+    if (!in_array($key, $allowed, true)) error('不支持的配置项');
+    if ($value === null) error('缺少value');
+
+    if ($key === 'packmoney') {
+        $v = (int)$value;
+        if ($v < 0 || $v > 999) error('打包费需介于 0 ~ 999');
+    } else {
+        $v = (float)$value;
+        if ($v < 0 || $v > 9.99) error('环保单减免需介于 0 ~ 9.99');
+    }
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO shop_config (cfg_key, cfg_value) VALUES (:k, :v)");
+    $stmt->bindValue(':k', $key, SQLITE3_TEXT);
+    $stmt->bindValue(':v', (string)$v, SQLITE3_TEXT);
+    $stmt->execute();
+    success([], '配置已保存: ' . $key . '=' . $v);
 }
 
 // ===== 插件确认已应用管理员价格改动 =====

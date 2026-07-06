@@ -268,7 +268,9 @@ function getShopConfig($key, $default = null) {
 function cartConfig() {
     success([
         'backpack_rate' => (float)getShopConfig('cart_backpack_rate', '0.98'),
-        'shulker_rate' => (float)getShopConfig('cart_shulker_rate', '1.00')
+        'shulker_rate' => (float)getShopConfig('cart_shulker_rate', '1.00'),
+        'packmoney' => (int)getShopConfig('packmoney', '5'),
+        'green_discount' => (float)getShopConfig('green_discount', '2')
     ]);
 }
 
@@ -276,7 +278,8 @@ function cartConfig() {
 function shopBuyCart($token) {
     $rawItems = getParam('items');
     $settlement = getParam('settlement', 'backpack'); // backpack=塞背包, shulker=潜影盒打包
-    $shulkerColor = getParam('shulker_color', 'purple'); // 潜影盒颜色（purple免费,其它+2元）
+    $shulkerColor = getParam('shulker_color', 'default'); // 潜影盒颜色（default原色免费,其它+2元）
+    $payMode = getParam('pay_mode', 'bond'); // bond=债券扣款, cash=现金仅记账
     $player = getParam('player');
     $password = getParam('password');
     $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
@@ -346,10 +349,11 @@ function shopBuyCart($token) {
     if ($settlement === 'shulker') {
         $rate = (float)getShopConfig('cart_shulker_rate', '1.00');
         $modeName = '潜影盒打包';
-        // 潜影盒颜色额外收费（紫色免费，其它+2元）
-        $colorFee = ($shulkerColor !== 'purple') ? 2 : 0;
+        // 潜影盒颜色额外收费（原色/紫色免费，其它加收打包费，打包费来自配置 packmoney）
+        $packMoney = (int)getShopConfig('packmoney', '5');
+        $colorFee = ($shulkerColor !== 'default' && $shulkerColor !== 'purple') ? $packMoney : 0;
         // 颜色名称映射
-        $colorNames = ['purple'=>'紫色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];
+        $colorNames = ['default'=>'原色','purple'=>'原色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];
         $colorName = $colorNames[$shulkerColor] ?? $shulkerColor;
     } else {
         $settlement = 'backpack';
@@ -426,8 +430,16 @@ function shopBuyCart($token) {
         }
     }
 
-    // 检查余额
-    if (!$isPreview && $finalPrice > 0) {
+    // ★ 现金收款权限校验：收银员需管理员授予 can_cash 权限
+    if ($payMode === 'cash') {
+        if ($isCashier && empty($cashierRow['can_cash'])) {
+            error('该收银员无现金收款权限（需管理员在收银员管理中开启）', 403);
+        }
+        // 现金模式：仅记账，不扣玩家债券（跳过余额校验与扣款）
+    }
+
+    // 检查余额（现金模式跳过：仅记账）
+    if (!$isPreview && $finalPrice > 0 && $payMode !== 'cash') {
         $balanceStmt = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :player");
         $balanceStmt->bindValue(':player', $player, SQLITE3_TEXT);
         $balanceResult = $balanceStmt->execute();
@@ -485,6 +497,7 @@ function shopBuyCart($token) {
             'total_price' => $finalPrice,
             'discount_percent' => (int)$discountPercent,
             'discount_amount' => (int)$discountAmount,
+            'pay_mode' => $payMode,
             'items' => $lines
         ];
         if ($settlement === 'shulker') {
@@ -509,7 +522,8 @@ function shopBuyCart($token) {
                 'total_price' => $finalPrice,
                 'discount_percent' => (int)$discountPercent,
                 'discount_amount' => (int)$discountAmount,
-                'settlement' => $settlement
+                'settlement' => $settlement,
+                'payment_method' => $payMode
             ], $db);
         }
 
