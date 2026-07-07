@@ -136,7 +136,14 @@ function getOrdersDB() {
             status TEXT DEFAULT 'completed',
             created_at INTEGER DEFAULT 0
         )");
-        @$db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
+        // ★ 幂等加列：payment_method 已在上方 CREATE TABLE 中声明，此处仅作极旧库兜底补加。
+        //   用 try/catch 包裹，避免 "duplicate column name" 异常经 enableExceptions(true) 上抛、
+        //   导致 getOrdersDB() 首次调用即失败、订单写不进、订单页查询报错。
+        try {
+            $db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
+        } catch (\Throwable $e) {
+            // 列已存在 → 忽略
+        }
 
         // 首次建库时把 web.db 历史订单一次性迁过来（幂等）
         migrateCashierOrdersIfNeeded($db);
@@ -743,8 +750,13 @@ function initTables(SQLite3 $db) {
             status TEXT DEFAULT 'completed',
             created_at INTEGER DEFAULT 0
         )");
-        // 收款模式字段迁移（现金/债券）
-        @$db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
+        // 收款模式字段迁移（现金/债券）：payment_method 已在 CREATE TABLE 声明，此处仅极旧库兜底，
+        // 用 try/catch 包裹避免 "duplicate column name" 异常中断事务提交。
+        try {
+            $db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
+        } catch (\Throwable $e) {
+            // 列已存在 → 忽略
+        }
 
         $db->exec('COMMIT');
     } catch (Exception $e) {
