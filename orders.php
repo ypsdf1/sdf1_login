@@ -177,7 +177,7 @@ async function loadOrders() {
             const items = (o.items_detail && Array.isArray(o.items_detail)) ? o.items_detail.map(i=>esc(i.name)+'x'+i.amount).join('、') : '';
             const disc = (parseInt(o.discount_percent)>0) ? ` <span class="disc">(${o.discount_percent}% off -${o.discount_amount})</span>` : '';
             const pmBadge = o.payment_method === 'cash' ? '<span style="color:var(--yellow)">[现金]</span>' : '';
-            return `<div class="order-row" onclick="showDetail(${escapeHtmlAttr(JSON.stringify(o))})">
+            return `<div class="order-row" data-order='${escapeHtmlAttr(JSON.stringify(o))}'>
                 <div class="ot">
                     <span class="ono">${esc(o.order_no)} ${pmBadge}</span>
                     <span>${o.operator_type==='admin'?'管理员':'收银员'}:${esc(o.operator_name)}</span>
@@ -193,8 +193,12 @@ async function loadOrders() {
 }
 
 function escapeHtmlAttr(str) {
-    // 安全转义JSON用于HTML属性中的onclick
-    return String(str).replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+    // 安全转义JSON用于HTML属性（data-order）：先转 & 再转引号，
+    // 避免数据中的 & 被浏览器当成实体解码而破坏 JSON，且对单/双引号均做转义
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/'/g, "&#39;")
+        .replace(/"/g, "&quot;");
 }
 
 function showDetail(orderData) {
@@ -231,6 +235,13 @@ function showDetail(orderData) {
 
 function closeDetail() { document.getElementById('detailOverlay').classList.remove('show'); }
 document.getElementById('detailOverlay').addEventListener('click', e => { if(e.target.id === 'detailOverlay') closeDetail(); });
+
+// ★ 订单行点击事件委托（替代 onclick 内联 JSON，避免引号冲突导致 SyntaxError）
+document.getElementById('orderList').addEventListener('click', e => {
+    const row = e.target.closest('.order-row');
+    if (!row) return;
+    try { showDetail(JSON.parse(row.dataset.order)); } catch(err) { console.error('订单数据解析失败:', err); }
+});
 
 // 启动
 if (STATE.logged_in) loadOrders();
