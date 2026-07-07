@@ -11,6 +11,9 @@ define('TOKEN_EXPIRE_SECONDS', 600);  // 10分钟
 
 // ===== 数据库路径 =====
 define('DB_PATH', __DIR__ . '/db/web.db');
+// ★ 收银台订单独立库：与 web.db（Java 高频写入）彻底解耦，消除 SQLite 文件锁竞争
+//   订单记录纯属 PHP 收银台自己的数据，Java 永不读写此库
+define('ORDERS_DB_PATH', __DIR__ . '/db/orders.db');
 
 // ===== 管理员认证 =====
 define('ADMIN_USER', 'admin');

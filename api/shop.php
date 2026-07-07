@@ -541,24 +541,6 @@ function shopBuyCart($token) {
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
 
-        // 记录收银台订单（代购/收银员操作，写入同一事务，复用已开启的$db连接避免触发getDB安全网ROLLBACK）
-        if ($isCashier || $isAdminToken || $isAdminSession) {
-            $operatorType = $isCashier ? 'cashier' : 'admin';
-            $operatorName = $isCashier ? ($cashierRow['username'] ?? '') : 'admin';
-            $orderNo = recordCashierOrder([
-                'operator_type' => $operatorType,
-                'operator_name' => $operatorName,
-                'player_name' => $player,
-                'items_detail' => $lines,
-                'subtotal' => $subtotal,
-                'total_price' => $finalPrice,
-                'discount_percent' => (int)$discountPercent,
-                'discount_amount' => (int)$discountAmount,
-                'settlement' => $settlement,
-                'payment_method' => $payMode
-            ], $db);
-        }
-
         // 写入sync_requests
         $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
         $stmt2 = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
@@ -570,6 +552,31 @@ function shopBuyCart($token) {
     } catch (Exception $e) {
         try { $db->exec('ROLLBACK'); } catch (Exception $e2) {}
         error('购物车结算失败: ' . $e->getMessage(), 500);
+    }
+
+    // ★ 购买主流程提交成功后，再记录收银台订单到独立 orders.db。
+    //   与 web.db 事务解耦：订单写失败仅影响日志/小票，绝不回滚已成功的库存与发药。
+    $orderNo = '';
+    if ($isCashier || $isAdminToken || $isAdminSession) {
+        $operatorType = $isCashier ? 'cashier' : 'admin';
+        $operatorName = $isCashier ? ($cashierRow['username'] ?? '') : 'admin';
+        try {
+            $orderNo = recordCashierOrder([
+                'operator_type' => $operatorType,
+                'operator_name' => $operatorName,
+                'player_name' => $player,
+                'items_detail' => $lines,
+                'subtotal' => $subtotal,
+                'total_price' => $finalPrice,
+                'discount_percent' => (int)$discountPercent,
+                'discount_amount' => (int)$discountAmount,
+                'settlement' => $settlement,
+                'payment_method' => $payMode
+            ]);
+        } catch (\Throwable $e) {
+            $orderNo = '';
+            debugLog('buy_cart: 订单记录失败（不影响购买）: ' . $e->getMessage());
+        }
     }
 
     // ★ 推送小票书给在线玩家（写入 web_admin_changes → Java pollAdminChanges 拾取并发放 Written Book）

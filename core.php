@@ -85,6 +85,120 @@ function getDB() {
     return $db;
 }
 
+// ===== 收银台订单独立库 =====
+// 订单是 PHP 收银台自己的数据，与 web.db（Java 通过 sync.php 高频写入）完全无关。
+// 拆到独立 SQLite 文件后，Java 永不触碰本库，根除因 web.db 文件级锁竞争导致的订单读超时。
+function getOrdersDB() {
+    static $db = null;
+    if ($db === null) {
+        $ordersDbPath = defined('ORDERS_DB_PATH') ? ORDERS_DB_PATH : (__DIR__ . '/db/orders.db');
+        $dbDir = dirname($ordersDbPath);
+        if (!is_dir($dbDir)) {
+            @mkdir($dbDir, 0755, true);
+        }
+
+        // 权限修复（与 getDB 一致，防止 "attempt to write a readonly database"）
+        if (file_exists($ordersDbPath) && !is_writable($ordersDbPath)) {
+            @chmod($ordersDbPath, 0666);
+        }
+        if (is_dir($dbDir) && !is_writable($dbDir)) {
+            @chmod($dbDir, 0777);
+        }
+        foreach (['-wal', '-shm'] as $suffix) {
+            $sideFile = $ordersDbPath . $suffix;
+            if (file_exists($sideFile) && !is_writable($sideFile)) {
+                @chmod($sideFile, 0666);
+            }
+        }
+
+        $db = new SQLite3($ordersDbPath);
+        $db->enableExceptions(true);
+        $db->exec('PRAGMA journal_mode=WAL');
+        $db->exec('PRAGMA busy_timeout=5000');   // ★ 独立库，Java 不碰，5秒足矣
+        $db->exec('PRAGMA synchronous=NORMAL');
+        $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
+        $db->exec('PRAGMA wal_autocheckpoint=100');
+
+        // 建表（仅 PHP 维护）
+        $db->exec("CREATE TABLE IF NOT EXISTS cashier_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_no TEXT NOT NULL UNIQUE,
+            operator_type TEXT DEFAULT 'cashier',
+            operator_name TEXT DEFAULT '',
+            player_name TEXT NOT NULL,
+            items_detail TEXT DEFAULT '',
+            subtotal INTEGER DEFAULT 0,
+            total_price INTEGER DEFAULT 0,
+            discount_percent INTEGER DEFAULT 0,
+            discount_amount INTEGER DEFAULT 0,
+            settlement TEXT DEFAULT '',
+            payment_method TEXT DEFAULT 'bond',
+            status TEXT DEFAULT 'completed',
+            created_at INTEGER DEFAULT 0
+        )");
+        @$db->exec("ALTER TABLE cashier_orders ADD COLUMN payment_method TEXT DEFAULT 'bond'");
+
+        // 首次建库时把 web.db 历史订单一次性迁过来（幂等）
+        migrateCashierOrdersIfNeeded($db);
+    }
+
+    // 安全网：清理可能残留的悬挂事务（与 getDB 一致）
+    try { $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
+
+    return $db;
+}
+
+/**
+ * ★ 历史订单迁移：仅在 orders.db 为空、且 web.db 存在 cashier_orders 历史数据时执行一次。
+ *   幂等：orders.db 已有数据则跳过；使用 INSERT OR IGNORE 防止重复导入。
+ */
+function migrateCashierOrdersIfNeeded($ordersDb) {
+    static $done = false;
+    if ($done) return;
+
+    // orders.db 已有数据 → 永久跳过迁移
+    $existing = 0;
+    try {
+        $existing = (int)$ordersDb->querySingle("SELECT COUNT(*) FROM cashier_orders");
+    } catch (\Throwable $e) {
+        return; // 表还没建好，下次请求再试
+    }
+    if ($existing > 0) { $done = true; return; }
+
+    try {
+        $src = getDB();
+        // 仅迁移已存在的记录
+        $res = $src->query("SELECT order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, payment_method, status, created_at FROM cashier_orders ORDER BY created_at ASC");
+        if (!$res) return;
+        $count = 0;
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $stmt = $ordersDb->prepare("INSERT OR IGNORE INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, payment_method, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,:pm,:st2,:time)");
+            $stmt->bindValue(':no', $row['order_no'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':ot', $row['operator_type'] ?? 'cashier', SQLITE3_TEXT);
+            $stmt->bindValue(':on', $row['operator_name'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':pn', $row['player_name'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':det', $row['items_detail'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':sub', (int)($row['subtotal'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':tp', (int)($row['total_price'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':dp', (int)($row['discount_percent'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':da', (int)($row['discount_amount'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':st', $row['settlement'] ?? '', SQLITE3_TEXT);
+            $stmt->bindValue(':pm', $row['payment_method'] ?? 'bond', SQLITE3_TEXT);
+            $stmt->bindValue(':st2', $row['status'] ?? 'completed', SQLITE3_TEXT);
+            $stmt->bindValue(':time', (int)($row['created_at'] ?? 0), SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
+        }
+        if ($count > 0) {
+            debugLog("migrateCashierOrdersIfNeeded: 从 web.db 迁移 $count 条历史订单到 orders.db");
+        }
+        $done = true; // 已尝试迁移（成功或无需迁移均标记，避免每次请求重复SELECT）
+    } catch (\Throwable $e) {
+        debugLog("migrateCashierOrdersIfNeeded 失败（不影响新订单写入，下次请求重试）: " . $e->getMessage());
+        // 不设置 $done，下次请求再试（如 web.db 临时锁住）
+    }
+}
+
 /**
  * ★ 远程修复数据库权限（Java调用）
  */
@@ -994,27 +1108,40 @@ function cashierLogout() {
 }
 
 /**
- * 记录一笔收银台订单（必须在调用方已开启的事务内执行，使用同一数据库连接）
- * @param SQLite3|null $db 调用方已开启事务的连接；传 null 时自动获取（非事务场景）
- * @return string 订单号
+ * 记录一笔收银台订单（写入独立的 orders.db，与 web.db 事务完全解耦）
+ * ★ 设计要点：
+ *   - 订单是 PHP 收银台自己的数据，Java 永不读写本库，彻底消除 web.db 文件锁竞争
+ *   - 写入失败仅记录日志、返回空单号，绝不阻断购买主流程（库存/发药依赖 web.db）
+ *   - $db 参数为历史兼容保留，但实际一律路由到 orders.db，避免误写 web.db 死表
+ * @return string 订单号（失败返回空串）
  */
 function recordCashierOrder($data, $db = null) {
-    if ($db === null) $db = getDB();
+    try {
+        $odb = getOrdersDB();
+    } catch (\Throwable $e) {
+        debugLog("recordCashierOrder: 无法获取 orders.db 连接（订单未记录）: " . $e->getMessage());
+        return '';
+    }
     $orderNo = 'C' . date('YmdHis') . str_pad(mt_rand(0, 999), 3, '0', STR_PAD_LEFT);
-    $stmt = $db->prepare("INSERT INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, payment_method, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,:pm,'completed',:time)");
-    $stmt->bindValue(':no', $orderNo, SQLITE3_TEXT);
-    $stmt->bindValue(':ot', $data['operator_type'] ?? 'cashier', SQLITE3_TEXT);
-    $stmt->bindValue(':on', $data['operator_name'] ?? '', SQLITE3_TEXT);
-    $stmt->bindValue(':pn', $data['player_name'] ?? '', SQLITE3_TEXT);
-    $stmt->bindValue(':det', json_encode($data['items_detail'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-    $stmt->bindValue(':sub', (int)($data['subtotal'] ?? 0), SQLITE3_INTEGER);
-    $stmt->bindValue(':tp', (int)($data['total_price'] ?? 0), SQLITE3_INTEGER);
-    $stmt->bindValue(':dp', (int)($data['discount_percent'] ?? 0), SQLITE3_INTEGER);
-    $stmt->bindValue(':da', (int)($data['discount_amount'] ?? 0), SQLITE3_INTEGER);
-    $stmt->bindValue(':st', $data['settlement'] ?? '', SQLITE3_TEXT);
-    $stmt->bindValue(':pm', $data['payment_method'] ?? 'bond', SQLITE3_TEXT);
-    $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
-    $stmt->execute();
+    try {
+        $stmt = $odb->prepare("INSERT INTO cashier_orders (order_no, operator_type, operator_name, player_name, items_detail, subtotal, total_price, discount_percent, discount_amount, settlement, payment_method, status, created_at) VALUES (:no,:ot,:on,:pn,:det,:sub,:tp,:dp,:da,:st,:pm,'completed',:time)");
+        $stmt->bindValue(':no', $orderNo, SQLITE3_TEXT);
+        $stmt->bindValue(':ot', $data['operator_type'] ?? 'cashier', SQLITE3_TEXT);
+        $stmt->bindValue(':on', $data['operator_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':pn', $data['player_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':det', json_encode($data['items_detail'] ?? [], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':sub', (int)($data['subtotal'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':tp', (int)($data['total_price'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':dp', (int)($data['discount_percent'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':da', (int)($data['discount_amount'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':st', $data['settlement'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':pm', $data['payment_method'] ?? 'bond', SQLITE3_TEXT);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt->execute();
+    } catch (\Throwable $e) {
+        debugLog("recordCashierOrder: 订单写入失败（不影响购买主流程）: " . $e->getMessage());
+        return '';
+    }
     return $orderNo;
 }
 

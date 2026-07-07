@@ -159,10 +159,14 @@ function cashierOrderList() {
     // ★ 尽早释放会话锁：查询期间不再占用 session 文件，避免阻塞同会话并发请求
     if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
 
-    $db = getDB();
-    // ★ 订单是纯读查询：显式放宽 busy_timeout 让 SQLite 自身等待锁释放（WAL 下读不阻塞写），
-    //   大幅降低因 Java 高频写入导致的 "database is locked" 返回概率
-    $db->exec('PRAGMA busy_timeout=15000');
+    // ★ 直接从独立 orders.db 读取：该库 Java 永不读写，彻底脱离 web.db 文件锁竞争，
+    //   因此不再需要 busy_timeout=15000 与 5 次重试兜底 hack —— 干净稳定的单次查询。
+    try {
+        $db = getOrdersDB();
+    } catch (\Throwable $e) {
+        exit(json_encode(['success' => false, 'message' => '订单库不可用: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
+    }
+
     $limit = (int)getParam('limit', 100);
     if ($limit <= 0 || $limit > 500) $limit = 100;
     $sql = "SELECT * FROM cashier_orders";
@@ -173,29 +177,20 @@ function cashierOrderList() {
     }
     $sql .= " ORDER BY created_at DESC LIMIT " . (int)$limit;
 
-    // ★ 重试规避 database is locked（Java 高频写入时 SQLite 偶发锁，最多重试5次，指数退避）
     $rows = [];
-    $attempts = 0;
-    while ($attempts < 5) {
-        $attempts++;
-        $stmt = $db->prepare($sql);
-        if (!$stmt) break;
-        foreach ($params as $k => $v) {
-            $stmt->bindValue($k, $v, SQLITE3_TEXT);
+    $stmt = $db->prepare($sql);
+    if (!$stmt) {
+        exit(json_encode(['success' => false, 'message' => '查询失败: ' . $db->lastErrorMsg()], JSON_UNESCAPED_UNICODE));
+    }
+    foreach ($params as $k => $v) {
+        $stmt->bindValue($k, $v, SQLITE3_TEXT);
+    }
+    $result = $stmt->execute();
+    while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
+        if (!empty($r['items_detail'])) {
+            $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
         }
-        $result = @$stmt->execute();
-        if ($result === false) {
-            $err = $db->lastErrorMsg();
-            if (stripos($err, 'locked') !== false && $attempts < 5) { usleep(200000 * $attempts); continue; }
-            exit(json_encode(['success' => false, 'message' => '查询失败: ' . $err], JSON_UNESCAPED_UNICODE));
-        }
-        while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
-            if (!empty($r['items_detail'])) {
-                $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
-            }
-            $rows[] = $r;
-        }
-        break;
+        $rows[] = $r;
     }
     exit(json_encode(['success' => true, 'data' => $rows], JSON_UNESCAPED_UNICODE));
 }
