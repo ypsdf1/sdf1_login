@@ -221,17 +221,24 @@ public class PVPArenaManager implements Listener {
         // 世界不存在，或世界存在但已无人活动 → 重新随机生成全新地形。
         // 这样满足"每次空场进入都随机生成地形"；同时，服务器若自动从磁盘加载了
         // 旧版小平台（残留世界），这里会先卸载并删除磁盘目录，用随机地形替换它。
+        // ★ 关键修复：先清理历史回收站目录，避免磁盘无限增长
+        cleanupOldTrashWorlds();
+
         if (pvpWorld != null) {
             plugin.getLogger().info("[PVP] 检测到PVP世界当前无人，卸载旧世界以重新随机生成...");
             Bukkit.unloadWorld(pvpWorld, false); // false=不保存，直接丢弃旧地形（含旧版小平台）
-            deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+            // ★ 关键修复：Windows 上 unloadWorld 后 region 文件可能仍被 OS 锁定，
+            //   File.delete() 会静默失败导致旧虚空世界残留，并被 createWorld() 原样重新加载
+            //   （findSafeSpawn=null → 退化为手工小岛地形）。改用"重命名到回收站"移走，
+            //   rename 在文件锁定时仍可靠成功，从而让 createWorld() 生成全新 NORMAL 主世界。
+            moveWorldToTrash(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
         }
 
         // 兜底：确保磁盘残留目录被清理（含旧版小平台），再随机重新生成
         File worldDir = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
         if (worldDir.exists() && worldDir.isDirectory()) {
             plugin.getLogger().info("[PVP] 清理磁盘残留的PVP世界目录，准备随机重新生成...");
-            deleteWorldFolder(worldDir);
+            moveWorldToTrash(worldDir);
         }
 
         // 创建全新随机地形世界
@@ -443,6 +450,48 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
+     * 将旧世界目录"重命名"移入回收站（而非直接删除）。
+     * ★ 原因：Windows 上 unloadWorld 后 region 文件可能仍被 OS 锁定，
+     *   File.delete() 会静默失败导致旧虚空世界残留；而 File.renameTo() 移动目录在
+     *   文件锁定时仍可靠成功。移走后 createWorld() 因目录不存在而生成全新 NORMAL 主世界地形。
+     */
+    private void moveWorldToTrash(File folder) {
+        if (folder == null || !folder.exists()) return;
+        File parent = folder.getParentFile();
+        String base = folder.getName();
+        long ts = System.currentTimeMillis();
+        File trash = new File(parent, base + "_trash_" + ts);
+        int i = 0;
+        while (trash.exists()) {
+            i++;
+            trash = new File(parent, base + "_trash_" + ts + "_" + i);
+        }
+        if (folder.renameTo(trash)) {
+            plugin.getLogger().info("[PVP] 旧世界已移入回收站(避免Windows删除锁): " + trash.getName());
+        } else {
+            // 极少数情况下重命名也失败，退回递归删除
+            plugin.getLogger().warning("[PVP] 旧世界重命名失败，退回递归删除: " + base);
+            deleteWorldFolder(folder);
+        }
+    }
+
+    /**
+     * 清理历史回收站目录（pvp_arena_trash_*），避免磁盘无限增长。
+     * best-effort，失败不阻断主流程。
+     */
+    private void cleanupOldTrashWorlds() {
+        File container = Bukkit.getWorldContainer();
+        if (container == null || !container.isDirectory()) return;
+        File[] list = container.listFiles();
+        if (list == null) return;
+        for (File f : list) {
+            if (f.isDirectory() && f.getName().startsWith(PVP_WORLD_NAME + "_trash_")) {
+                deleteWorldFolder(f);
+            }
+        }
+    }
+
+    /**
      * 取消待执行的"空场冷却删除世界"任务（有人重新进入时调用）
      */
     private void cancelPendingDeletion() {
@@ -489,7 +538,8 @@ public class PVPArenaManager implements Listener {
             p.sendMessage("§e[PVP] 竞技场已关闭，你被传回主世界");
         }
         Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
-        deleteWorldFolder(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        // ★ 同样用重命名移走，避免 Windows 删除锁导致旧世界残留
+        moveWorldToTrash(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
         plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
     }
 

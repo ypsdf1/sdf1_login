@@ -4999,45 +4999,59 @@ public class WebManager {
 
         // ★ 使用push_player_login_status端点，带上online=0（玩家当前不在游戏里执行/weblogin，只是要token）
         // 实际上玩家就在游戏里，所以online=1
+        // ★ 使用push_player_login_status端点，带上online=1（玩家就在游戏里，已认证）
         boolean isRegistered = plugin.getDb().userExists(playerName);
-        boolean syncSuccess = false;
-        try {
-            // ★ 获取玩家真实IP地址
-            String playerIp = "";
-            java.net.InetSocketAddress addr = sender.getAddress();
-            if (addr != null && addr.getAddress() != null) {
-                playerIp = addr.getAddress().getHostAddress();
-            }
-            String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
-                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
-                    + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
-                    + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
-                    + "&expire_seconds=" + tokenExpireSeconds
-                    + "&online=1"
-                    + "&registered=" + (isRegistered ? "1" : "0")
-                    + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                    + "&login_verified=1"; // ★ 玩家在游戏里已认证，直接告诉PHP放行
+        final String tokenFinal = token;
 
-            String response = doGet(urlStr);
-            if (response != null) {
-                plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
-                if (response.contains("\"success\":true")) {
-                    syncSuccess = true;
+        // ★★★ 致命修复：原实现在主线程(命令处理)同步调用 doGet() → HttpClient.send()，
+        // 当 Web 后端不可达时会阻塞服务端主线程 10 秒以上，触发 "server has not responded
+        // for 10 seconds" 线程转储并冻结整个服务器。现改为完全异步执行 HTTP，
+        // 结果通过 runTask 回到主线程再向玩家反馈。 ★★★
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            boolean syncSuccess = false;
+            try {
+                // ★ 获取玩家真实IP地址
+                String playerIp = "";
+                java.net.InetSocketAddress addr = sender.getAddress();
+                if (addr != null && addr.getAddress() != null) {
+                    playerIp = addr.getAddress().getHostAddress();
                 }
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 同步Web登录Token失败: " + e.getMessage());
-        }
+                String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
+                        + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                        + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                        + "&web_token=" + java.net.URLEncoder.encode(tokenFinal, "UTF-8")
+                        + "&expire_seconds=" + tokenExpireSeconds
+                        + "&online=1"
+                        + "&registered=" + (isRegistered ? "1" : "0")
+                        + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
+                        + "&login_verified=1"; // ★ 玩家在游戏里已认证，直接告诉PHP放行
 
-        if (syncSuccess) {
-            sender.sendMessage("§a§l===== Web登录 =====");
-            sender.sendMessage("§e请点击链接登录Web端:");
-            sender.sendMessage("§b" + webBaseUrl + "/login.php?token=" + token);
-            sender.sendMessage("§7有效期: " + tokenExpireSeconds + "秒 | 一次性使用");
-        } else {
-            sender.sendMessage("§c[Web] Token同步失败，请检查Web后端是否可访问");
-            sender.sendMessage("§7当前后端地址: " + webBaseUrl);
-        }
+                String response = doGet(urlStr);
+                if (response != null) {
+                    plugin.getLogger().info("[Web通信] push_player_login_status结果: " + response);
+                    if (response.contains("\"success\":true")) {
+                        syncSuccess = true;
+                    }
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web通信] 同步Web登录Token失败: " + e.getMessage());
+            }
+
+            // ★ 回到主线程向玩家反馈结果（sendMessage 必须在主线程调用）
+            final boolean ok = syncSuccess;
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (sender instanceof Player && !((Player) sender).isOnline()) return;
+                if (ok) {
+                    sender.sendMessage("§a§l===== Web登录 =====");
+                    sender.sendMessage("§e请点击链接登录Web端:");
+                    sender.sendMessage("§b" + webBaseUrl + "/login.php?token=" + tokenFinal);
+                    sender.sendMessage("§7有效期: " + tokenExpireSeconds + "秒 | 一次性使用");
+                } else {
+                    sender.sendMessage("§c[Web] Token同步失败，请检查Web后端是否可访问");
+                    sender.sendMessage("§7当前后端地址: " + webBaseUrl);
+                }
+            });
+        });
     }
 
     /**
