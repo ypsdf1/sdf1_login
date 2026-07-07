@@ -200,91 +200,43 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 检查并确保PVP世界可用（按需创建，随机地形）。
+     * 检查并确保PVP世界可用。
      *
-     * 生命周期模型：PVP世界是"一次性随机竞技场"——
-     *   • 有人要进入且世界不存在时，删除磁盘残留（含旧版小平台）后随机重新生成；
-     *   • 玩家全部退场并经过5分钟空场冷却后，世界被删除；
-     *   • 下次进入再次随机生成 → 地形每次不同，破坏/砍树随删除完全复原，杜绝背图。
+     * ★ 2026-07-08 改为"懒创建"模型（按用户要求）：
+     *   - 插件不干预玩家出生点（不再 setSpawnLocation 锁定 0,0）；
+     *   - 世界仅在玩家 /pvp join 时按需创建；
+     *   - 启动阶段无玩家，不预创建世界（符合"没人了就删除"的语义）。
+     *   真正的创建/复用/删除逻辑在 joinArena() 中按"有无玩家在场"判断。
      */
     public void ensurePVPWorldExists() {
-        // 有人要进来了：取消任何待执行的删除任务（保留当前这一局世界）
         cancelPendingDeletion();
-
-        World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
-
-        // ★ 多人保护：世界中仍有“其他玩家”在战斗 → 复用同一局，一起竞技（不重建、不干预地形）
-        if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
-            plugin.getLogger().info("[PVP] PVP世界已有其他玩家在场，复用当前地形（不重建）");
-            return;
-        }
-
-        File worldFolder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-        boolean folderExists = worldFolder.exists();
-
-        plugin.getLogger().info("[PVP] ensurePVPWorldExists: getWorld="
-                + (pvpWorld != null ? "已加载" : "null")
-                + ", 磁盘目录存在=" + folderExists);
-
-        // ★ 用户明确要求（2026-07-07）：每次进入都强制删除现有世界、重新生成全新主世界，
-        //   彻底杜绝复用坏地形（小平台/环形岛）。仅当世界中有其他玩家在场时才复用（保护正在进行的对战）。
-        if (pvpWorld != null) {
-            plugin.getLogger().info("[PVP] 检测到已加载PVP世界，按规则强制删除后重新生成全新主世界");
-            deletePVPWorld(pvpWorld);
-        } else if (folderExists) {
-            plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录，移入回收站后重新生成");
-            moveWorldToTrash(worldFolder);
-        }
-        pvpWorld = createPVPWorld();
-
-        // 全新 NORMAL 主世界出生点必为实体陆地；保留兜底判定（极端情况才重建）
-        if (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld)) {
-            plugin.getLogger().warning("[PVP] 全新主世界出生点仍非实体方块(极小概率)，删除并重生");
-            deletePVPWorld(pvpWorld);
-            pvpWorld = createPVPWorld();
-            int tries = 0;
-            while (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld) && tries < 3) {
-                plugin.getLogger().warning("[PVP] 重生后出生点仍非实体方块，再次删除重生 (" + (tries + 1) + ")");
-                deletePVPWorld(pvpWorld);
-                pvpWorld = createPVPWorld();
-                tries++;
-            }
+        World w = Bukkit.getWorld(PVP_WORLD_NAME);
+        if (w != null && !w.getPlayers().isEmpty()) {
+            plugin.getLogger().info("[PVP] 检查：PVP世界已有玩家在场，保持现状");
+        } else {
+            plugin.getLogger().info("[PVP] 检查：暂不创建PVP世界（懒创建，首次 /pvp join 时生成）");
         }
     }
 
     /**
-     * 创建全新PVP世界 — 纯 NORMAL 主世界地形，插件全程不插手地形生成。
+     * 创建全新PVP世界 — 纯 NORMAL 主世界地形，插件全程不插手地形生成、不干预出生点。
      *
-     * ★ 2026-07-07 终版（按用户明确要求）：
-     *   用户要求"完整主世界，插件全程不插手，由MC自己决定自己生成"。
-     *   因此抛弃之前所有自定义地形方案：
-     *     - 不用 FLAT 世界；
-     *     - 不调用 generatePVPTerrain 噪声造岛；
-     *     - 不调用 forceTerraformSpawnArea 强制造陆；
-     *     - 不设置种子（让 MC 每次随机决定全新主世界）。
-     *   插件只做三件"非地形"的事：
-     *     1) 设游戏规则（常昼/无天气/PVP 开启）；
-     *     2) 预生成出生点周边区块（确保地形已就绪）；
-     *     3) 只读方式调用 findSafeSpawn 选附近优质固体地面做出生点
-     *        （不改任何方块；仅当极端异常（理论上 NORMAL 必有陆地）才造保底平台）。
+     * ★ 2026-07-08（按用户明确要求）：
+     *   1) 不设种子 —— 由 MC 自行随机决定地形种子（插件对地形零干预，仅用于日志打印 seed 便于排查）；
+     *   2) 不调用 setSpawnLocation —— 完全保留 MC 自然出生点（不再锁定 0,0，也不做任何"就近迁移"）；
+     *   3) 仅设游戏规则（常昼/无天气/PVP 开启）并预生成出生点周边区块（确保地形已就绪）；
+     *   4) 出生点是否合格由 joinArena() 做"唯一一次"脚下方块检查（水→上移该玩家，非水→直接放行）。
      */
     private World createPVPWorld() {
-        plugin.getLogger().info("[PVP] 准备创建PVP世界 (纯NORMAL主世界，地形由MC自行生成，插件不干预)");
+        plugin.getLogger().info("[PVP] 准备创建PVP世界 (纯NORMAL主世界，地形/出生点完全由MC自行决定)");
 
-        // 清理上次残留世界，确保是全新世界
-        File existing = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-        if (existing.exists()) {
-            plugin.getLogger().info("[PVP] 创建前发现残留目录: " + existing.getAbsolutePath() + "，移入回收站");
-            moveWorldToTrash(existing);
-        }
-
-        // ★ 纯 NORMAL 主世界：完全交给 Minecraft 自己生成（山丘/水域/洞穴/生物群系）。
-        //   不调用 creator.seed(...) —— 由 MC 自行随机决定地形种子，插件对地形零干预。
+        long t0 = System.currentTimeMillis();
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
+        // ★ 不设 seed：让 MC 自行随机决定地形种子（插件对地形零干预）。
+        //   创建后通过 getSeed() 读取 MC 选定的种子并记录日志，便于排查"出生点脚下是水"的失败种子。
 
-        long t0 = System.currentTimeMillis();
         World pvpWorld = creator.createWorld();
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
@@ -293,19 +245,21 @@ public class PVPArenaManager implements Listener {
         }
         plugin.getLogger().info("[PVP] createWorld 完成, 耗时=" + dt + "ms, 世界环境="
                 + pvpWorld.getEnvironment()
-                + ", 生成器=" + (pvpWorld.getGenerator() == null ? "默认(无插件生成器)" : pvpWorld.getGenerator().getClass().getSimpleName()));
+                + ", 生成器=" + (pvpWorld.getGenerator() == null ? "默认(无插件生成器)" : pvpWorld.getGenerator().getClass().getSimpleName())
+                + ", MC种子=" + pvpWorld.getSeed()
+                + ", 自然出生点=(" + pvpWorld.getSpawnLocation().getBlockX() + ","
+                + pvpWorld.getSpawnLocation().getBlockY() + "," + pvpWorld.getSpawnLocation().getBlockZ() + ")");
 
         reapplyWorldRules(pvpWorld);
 
-        // 预生成出生点周边区块（半径 4 个区块），确保地形已就绪、出生点判定准确
+        // 预生成出生点周边区块（半径 4 个区块），确保地形已就绪、后续出生点检查准确
         preGenerateSpawnChunks(pvpWorld, 4);
 
-        // ★ 只读：把出生“坐标”锚定到 (0,0) 列顶部实体方块之上（绝不改动任何地形方块）
-        int topY = getTopSolidY(pvpWorld, 0, 0);
-        pvpWorld.setSpawnLocation(0, topY + 1, 0);
-
-        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 出生点=("
-                + 0 + "," + (topY + 1) + "," + 0 + "), topY=" + topY);
+        // ★ 插件不干预出生点：完全保留 MC 自然出生点，不做任何 setSpawnLocation。
+        Location natural = pvpWorld.getSpawnLocation();
+        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 自然出生点=("
+                + natural.getBlockX() + "," + natural.getBlockY() + "," + natural.getBlockZ()
+                + ")，插件不改动出生点（出生点检查交由 joinArena 处理）");
 
         return pvpWorld;
     }
@@ -542,28 +496,21 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 若PVP世界已无人活动，启动5分钟空场冷却计时；冷却结束且仍无人则删除世界。
-     * 冷却期内若有玩家重新进入（ensurePVPWorldExists 会 cancelPendingDeletion），则取消删除。
+     * 当竞技场世界内已无任何玩家时立即删除世界（"没人了就删除"）。
+     * 下次 /pvp join 会随机重新生成地形，破坏/砍树的痕迹随删除完全复原，杜绝背图玩家单方面碾压。
+     * ★ 2026-07-08：改为"无人即删"，取消原先的 5 分钟空场冷却（冷却期仍可被复用，与用户要求的
+     *   "有玩家就复用、没人就删除"语义不一致）。
      */
     private void scheduleWorldDeletionIfEmpty() {
-        // 仍有活跃PVP玩家则不触发删除
-        if (!inPVPArena.isEmpty()) return;
-
-        cancelPendingDeletion();
-        pendingDeleteTask = new BukkitRunnable() {
-            @Override
-            public void run() {
-                World w = Bukkit.getWorld(PVP_WORLD_NAME);
-                // 冷却结束时再次确认：仍有活跃玩家或仍有玩家滞留世界中则取消删除
-                if (w == null || !inPVPArena.isEmpty() || !w.getPlayers().isEmpty()) {
-                    pendingDeleteTask = null;
-                    return;
-                }
-                plugin.getLogger().info("[PVP] PVP世界空场冷却结束，删除世界以释放资源...");
-                deletePVPWorld(w);
-                pendingDeleteTask = null;
-            }
-        }.runTaskLater(plugin, PVP_WORLD_IDLE_DELETE_MS / 50L); // ticks = ms / 50
+        World w = Bukkit.getWorld(PVP_WORLD_NAME);
+        if (w == null) return;
+        // 仍有玩家滞留于 PVP 世界内 → 保留世界（多人保护，后续进入直接加入战斗）
+        if (!w.getPlayers().isEmpty()) {
+            plugin.getLogger().info("[PVP] PVP世界仍有玩家在场，保留世界（后续进入直接加入战斗）");
+            return;
+        }
+        plugin.getLogger().info("[PVP] PVP世界已无玩家，立即删除世界以释放资源（下次进入随机重生）");
+        deletePVPWorld(w);
     }
 
     /**
@@ -1026,8 +973,9 @@ public class PVPArenaManager implements Listener {
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 离开PVP竞技场"
                 + (isDisconnect ? "（断线）" : ""));
 
-        // 退场后若已无人，启动空场冷却；冷却结束且仍无人则删除世界（下次随机重生）
-        scheduleWorldDeletionIfEmpty();
+        // 注：世界"无人即删"的判定已统一移至 onPlayerChangedWorld / onPlayerQuit 中、
+        //     在玩家【实际离开世界后】再调用 scheduleWorldDeletionIfEmpty()，
+        //     避免死亡/传送尚未完成时就误判"仍在场"而漏删。
     }
 
     /**
@@ -1053,6 +1001,8 @@ public class PVPArenaManager implements Listener {
         } else if (from.equals(PVP_WORLD_NAME) && !to.equals(PVP_WORLD_NAME)) {
             // 离开PVP世界 → 回收装备并还原背包
             onPlayerExitPVPWorld(player);
+            // ★ 玩家已实际离开 PVP 世界，检查世界是否空了 → 空了立即删除（"没人了就删除"）
+            scheduleWorldDeletionIfEmpty();
         }
     }
 
@@ -1141,9 +1091,9 @@ public class PVPArenaManager implements Listener {
                 guiOpenedMillis.remove(player.getName());
                 selectedTier.remove(player.getName());
                 cancelKickTimeout(player.getName());
-                // 若因此成为最后一名退场者，启动空场冷却删除
-                scheduleWorldDeletionIfEmpty();
             }
+            // 断线后若世界已无玩家（含本玩家），立即删除世界（"没人了就删除"）
+            scheduleWorldDeletionIfEmpty();
         }
     }
 
@@ -1569,10 +1519,35 @@ public class PVPArenaManager implements Listener {
 
     /**
      * 玩家进入PVP竞技场（/pvp join）
+     *
+     * ★ 2026-07-08 生命周期（按用户要求）：
+     *   - 世界存在且仍有其他玩家在场 → 直接加入当前对局（不删除、不重建、不干预出生点）；
+     *   - 世界不存在 或 已无人 → 删除旧世界（内存中或磁盘残留）后重新生成全新主世界；
+     *   - 传送至 MC 自然出生点；只做一次"脚下方块是否水"的检查：
+     *       非水 → 直接放行（不管出生点在天上还是地下）；
+     *       是水 → 仅上移【该玩家】至地表空气处（不删除世界、不改世界出生点），并打日志打印 seed 便于排查。
      */
     public void joinArena(Player player) {
-        ensurePVPWorldExists();
         World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+
+        // ★ 多人保护：世界中仍有其他玩家在战斗 → 复用同一局，直接加入（不删除、不重建、不干预出生点）
+        if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
+            plugin.getLogger().info("[PVP] PVP世界已有其他玩家在场，玩家 " + player.getName() + " 直接加入当前对局（不删除/不重建）");
+        } else {
+            // 无人或不存在 → 删除旧世界（内存中或磁盘残留）后重新生成全新主世界
+            if (pvpWorld != null) {
+                plugin.getLogger().info("[PVP] PVP世界当前无人，删除旧世界并重新生成全新主世界");
+                deletePVPWorld(pvpWorld);
+            } else {
+                File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+                if (folder.exists()) {
+                    plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录（无人在场），移入回收站后重新生成");
+                    moveWorldToTrash(folder);
+                }
+            }
+            pvpWorld = createPVPWorld();
+        }
+
         if (pvpWorld == null) {
             player.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
             return;
@@ -1581,18 +1556,28 @@ public class PVPArenaManager implements Listener {
             player.sendMessage("§e你已在PVP竞技场中，请选择装备或输入 /pvp leave 离开");
             return;
         }
-        // 传送至出生点（异步完成，传送完毕时会触发 PlayerChangedWorldEvent）
+
+        // 传送至世界自然出生点（插件不干预出生点，由 MC 自行决定）
         Location spawn = pvpWorld.getSpawnLocation();
+
+        // ★ 只做一次检查：脚下方块是水 → 需要上移到地表；不是水 → 直接放行（不管天上地下）
+        Block feet = pvpWorld.getBlockAt(spawn.getBlockX(), spawn.getBlockY() - 1, spawn.getBlockZ());
+        if (isFluid(feet.getType())) {
+            // 失败种子日志：出生点脚下是水，记录 MC 种子便于排查
+            plugin.getLogger().warning("[PVP] ⚠ 失败种子 seed=" + pvpWorld.getSeed()
+                    + " 自然出生点脚下为水 loc=(" + spawn.getBlockX() + "," + spawn.getBlockY() + "," + spawn.getBlockZ()
+                    + ")，仅上移该玩家至地表（不删除世界、不改世界出生点）");
+            int topY = getTopSolidY(pvpWorld, spawn.getBlockX(), spawn.getBlockZ());
+            spawn = new Location(pvpWorld, spawn.getBlockX(), topY + 1, spawn.getBlockZ());
+        } else {
+            plugin.getLogger().info("[PVP] 出生点脚下非水（" + feet.getType().name() + "），直接放行（不干预出生点）");
+        }
+
         player.teleport(spawn);
 
-        // ★ 修复 PVP 加入即被遣返的根因：
-        //   原先在传送【完成前】于主世界直接打开装备选择 GUI；传送完成时跨世界事件会
-        //   强制关闭所有打开的背包，从而触发 onInventoryClose —— 此时玩家尚未选择档位，
-        //   被误判为"未确认装备"而遭遣返，表现为"/pvp join 一直报错"。
-        //   现改为：装备 GUI 由 PlayerChangedWorldEvent 在玩家【抵达 pvp_arena 世界后】打开，
-        //   此时不会再发生跨世界关闭，GUI 得以正常停留。
-        //   兜底：若玩家本就已在 pvp_arena 世界内（如重连后的边界场景，不会触发跨世界事件），
-        //   则用延迟任务在其所在世界内打开 GUI。
+        // ★ 装备 GUI 由 PlayerChangedWorldEvent 在玩家【抵达 pvp_arena 世界后】打开，
+        //   避免传送完成前于主世界打开 GUI 被跨世界事件强制关闭而误遣返。
+        //   兜底：若玩家本就已在 pvp_arena 世界内（如重连边界场景，不触发跨世界事件），延迟任务在其所在世界内打开。
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!inPVPArena.contains(player.getName())
                     && player.isOnline()
