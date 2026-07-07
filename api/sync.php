@@ -278,6 +278,9 @@ switch ($action) {
     case 'set_shop_config':
         setShopConfigSync();
         break;
+    case 'set_shop_catalog':
+        setShopCatalogSync();
+        break;
     case 'clear_admin_prices':
         clearAdminPrices();
         break;
@@ -2800,9 +2803,23 @@ function getShopConfigSync() {
     $secret = getParam('secret');
     if (!$secret || $secret !== SECRET_KEY) error('认证失败');
 
+    // ★ 直接读取 shop_config 表（getShopConfig 定义在 shop.php，sync.php 未加载，故内联避免 500）
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
+    $read = function($k, $def) use ($db) {
+        try {
+            $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = :k");
+            $stmt->bindValue(':k', $k, SQLITE3_TEXT);
+            $result = $stmt->execute();
+            $row = $result->fetchArray(SQLITE3_ASSOC);
+            return $row ? $row['cfg_value'] : $def;
+        } catch (\Throwable $e) {
+            return $def;
+        }
+    };
     success([
-        'packmoney' => (int)getShopConfig('packmoney', '5'),
-        'green_discount' => (float)getShopConfig('green_discount', '2')
+        'packmoney' => (int)$read('packmoney', '5'),
+        'green_discount' => (float)$read('green_discount', '2')
     ]);
 }
 
@@ -2832,6 +2849,86 @@ function setShopConfigSync() {
     $stmt->bindValue(':v', (string)$v, SQLITE3_TEXT);
     $stmt->execute();
     success([], '配置已保存: ' . $key . '=' . $v);
+}
+
+// ===== 插件推送完整商品目录（Java 商城定时同步：游戏内增删分类/商品 → Web 端镜像）=====
+function setShopCatalogSync() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw, true);
+    if (!is_array($data) || !isset($data['categories']) || !is_array($data['categories'])) {
+        error('缺少分类数据');
+    }
+    $categories = $data['categories'];
+
+    $db = getDB();
+    // 确保表结构存在（兼容旧库）
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_items (
+        id TEXT PRIMARY KEY, category TEXT NOT NULL, display_name TEXT NOT NULL,
+        material TEXT NOT NULL, buy_price INTEGER DEFAULT 0, sell_price INTEGER DEFAULT -1,
+        stock INTEGER DEFAULT -1, hourly_sales INTEGER DEFAULT 0, total_sales INTEGER DEFAULT 0,
+        last_sync INTEGER DEFAULT 0, admin_stock INTEGER DEFAULT NULL,
+        admin_buy_price INTEGER DEFAULT NULL, admin_sell_price INTEGER DEFAULT NULL
+    )");
+
+    $time = time();
+    $validIds = [];
+    $countItems = 0;
+
+    // ★ 仅更新目录字段（分类/名称/材质/价格/同步时间），保留 PHP 端管理的库存与管理员覆盖列
+    $upsert = $db->prepare("INSERT INTO shop_items (id, category, display_name, material, buy_price, sell_price, stock, hourly_sales, total_sales, last_sync)
+        VALUES (:id, :cat, :name, :mat, :bp, :sp, -1, 0, 0, :time)
+        ON CONFLICT(id) DO UPDATE SET
+            category=:cat, display_name=:name, material=:mat, buy_price=:bp, sell_price=:sp, last_sync=:time");
+
+    foreach ($categories as $cat) {
+        if (!is_array($cat)) continue;
+        $catName = isset($cat['name']) ? (string)$cat['name'] : '';
+        if ($catName === '') continue;
+        if (!isset($cat['items']) || !is_array($cat['items'])) continue;
+        foreach ($cat['items'] as $it) {
+            if (!is_array($it)) continue;
+            $id = isset($it['id']) ? (string)$it['id'] : '';
+            if ($id === '') continue;
+            $name = isset($it['display_name']) ? (string)$it['display_name'] : $id;
+            $mat  = isset($it['material']) ? (string)$it['material'] : 'STONE';
+            $bp   = isset($it['buy_price']) ? (int)$it['buy_price'] : 0;
+            $sp   = isset($it['sell_price']) ? (int)$it['sell_price'] : -1;
+
+            $upsert->bindValue(':id', $id, SQLITE3_TEXT);
+            $upsert->bindValue(':cat', $catName, SQLITE3_TEXT);
+            $upsert->bindValue(':name', $name, SQLITE3_TEXT);
+            $upsert->bindValue(':mat', $mat, SQLITE3_TEXT);
+            $upsert->bindValue(':bp', $bp, SQLITE3_INTEGER);
+            $upsert->bindValue(':sp', $sp, SQLITE3_INTEGER);
+            $upsert->bindValue(':time', $time, SQLITE3_INTEGER);
+            $upsert->execute();
+            $validIds[] = $id;
+            $countItems++;
+        }
+    }
+
+    // ★ 安全删除：仅当本次同步确实带来了商品时，才删除不在游戏目录中的旧项，避免空负载误清空
+    $deleted = 0;
+    if ($countItems > 0 && count($validIds) > 0) {
+        $ph = str_repeat('?,', count($validIds) - 1) . '?';
+        $del = $db->prepare("DELETE FROM shop_items WHERE id NOT IN ($ph)");
+        $i = 1;
+        foreach ($validIds as $vid) {
+            $del->bindValue($i, $vid, SQLITE3_TEXT);
+            $i++;
+        }
+        $del->execute();
+        $deleted = $db->changes();
+    }
+
+    success([
+        'categories'  => count($categories),
+        'items'       => $countItems,
+        'deleted_old' => $deleted,
+    ], '商品目录已同步（新增/更新 ' . $countItems . ' 项，移除不在游戏目录中的旧项 ' . $deleted . ' 个）');
 }
 
 // ===== 插件确认已应用管理员价格改动 =====
