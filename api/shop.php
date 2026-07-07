@@ -293,7 +293,7 @@ function cartConfig() {
     success([
         'backpack_rate' => (float)($cfg['cart_backpack_rate'] ?? '0.98'),
         'shulker_rate' => (float)($cfg['cart_shulker_rate'] ?? '1.00'),
-        'packmoney' => (int)($cfg['packmoney'] ?? '5'),
+        'packmoney' => (float)($cfg['packmoney'] ?? '5'),
         'green_discount' => (float)($cfg['green_discount'] ?? '2')
     ]);
 }
@@ -378,7 +378,7 @@ function shopBuyCart($token) {
         $rate = (float)($cfg['cart_shulker_rate'] ?? '1.00');
         $modeName = '潜影盒打包';
         // 潜影盒颜色额外收费（原色/紫色免费，其它加收打包费，打包费来自配置 packmoney）
-        $packMoney = (int)($cfg['packmoney'] ?? '5');
+        $packMoney = (float)($cfg['packmoney'] ?? '5');
         $colorFee = ($shulkerColor !== 'default' && $shulkerColor !== 'purple') ? $packMoney : 0;
         // 颜色名称映射
         $colorNames = ['default'=>'原色','purple'=>'原色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];

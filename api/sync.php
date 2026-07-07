@@ -2818,7 +2818,7 @@ function getShopConfigSync() {
         }
     };
     success([
-        'packmoney' => (int)$read('packmoney', '5'),
+        'packmoney' => (float)$read('packmoney', '5'),
         'green_discount' => (float)$read('green_discount', '2')
     ]);
 }

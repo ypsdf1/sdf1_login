@@ -23,7 +23,7 @@ function cashierGetConfig() {
     }
 }
 $cfg = cashierGetConfig();
-$packMoney = (int)$cfg['packmoney'];
+$packMoney = (float)$cfg['packmoney'];
 $greenDiscount = (float)$cfg['green_discount'];
 $backpackRate = (float)($cfg['cart_backpack_rate'] ?? 0.98);
 $shulkerRate = (float)($cfg['cart_shulker_rate'] ?? 1.00);
