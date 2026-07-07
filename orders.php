@@ -127,12 +127,24 @@ $initialState = json_encode([
 <script>
 const STATE = <?php echo $initialState; ?>;
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;}[c])); }
-async function api(url, opts) {
-    const r = await fetch(url, Object.assign({headers:{'X-Requested-With':'orders'}}, opts));
-    return await r.json();
+async function api(url, opts, timeoutMs = 20000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const r = await fetch(url, Object.assign(
+            {headers: {'X-Requested-With': 'orders'}, credentials: 'same-origin'},
+            opts || {},
+            {signal: ctrl.signal}
+        ));
+        return await r.json();
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 async function loadOrders() {
+    const el = document.getElementById('orderList');
+    el.innerHTML = '<div class="empty-state">加载中…</div>';
     try {
         const params = new URLSearchParams();
         params.set('action', 'order_list');
@@ -145,10 +157,13 @@ async function loadOrders() {
         if (pm) params.set('pay_mode', pm);
 
         const d = await api('api/cashier.php?' + params.toString());
-        const el = document.getElementById('orderList');
         document.getElementById('orderCount').textContent = '';
 
-        if (!d.success || !d.data || !d.data.length) {
+        if (!d.success) {
+            el.innerHTML = '<div class="empty-state">加载失败：' + esc(d.message || '未知错误') + '，<a href="javascript:loadOrders()" style="color:var(--accent)">点击重试</a></div>';
+            return;
+        }
+        if (!d.data || !d.data.length) {
             el.innerHTML = '<div class="empty-state">暂无符合条件的订单</div>';
             return;
         }
@@ -167,7 +182,10 @@ async function loadOrders() {
                 <div class="od">实收 <b style="color:var(--green)">${o.total_price}</b> 债券 · ${new Date((o.created_at||0)*1000).toLocaleString('zh-CN')}</div>
             </div>`;
         }).join('');
-    } catch(e) { document.getElementById('orderList').innerHTML = '<div class="empty-state">加载失败</div>'; }
+    } catch(e) {
+        const msg = (e && e.name === 'AbortError') ? '加载超时（服务器繁忙），' : '加载失败，';
+        el.innerHTML = '<div class="empty-state">' + msg + '<a href="javascript:loadOrders()" style="color:var(--accent)">点击重试</a></div>';
+    }
 }
 
 function escapeHtmlAttr(str) {

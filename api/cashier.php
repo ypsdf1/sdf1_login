@@ -151,29 +151,48 @@ function cashierPlayerCheck() {
 // ===== 订单列表 =====
 function cashierOrderList() {
     $role = requireCashierOrAdminSession();
+    // 收银员只能看自己的订单
+    $c = null;
+    if ($role === 'cashier') {
+        $c = getCurrentCashier();
+    }
+    // ★ 尽早释放会话锁：查询期间不再占用 session 文件，避免阻塞同会话并发请求
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+
     $db = getDB();
     $limit = (int)getParam('limit', 100);
     if ($limit <= 0 || $limit > 500) $limit = 100;
     $sql = "SELECT * FROM cashier_orders";
     $params = [];
-    // 收银员只能看自己的订单
-    if ($role === 'cashier') {
-        $c = getCurrentCashier();
+    if ($role === 'cashier' && $c) {
         $sql .= " WHERE operator_name = :op";
         $params[':op'] = $c['username'];
     }
     $sql .= " ORDER BY created_at DESC LIMIT " . (int)$limit;
-    $stmt = $db->prepare($sql);
-    foreach ($params as $k => $v) {
-        $stmt->bindValue($k, $v, SQLITE3_TEXT);
-    }
-    $result = $stmt->execute();
+
+    // ★ 重试规避 database is locked（Java 高频写入时 SQLite 偶发锁，最多重试4次）
     $rows = [];
-    while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
-        if (!empty($r['items_detail'])) {
-            $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
+    $attempts = 0;
+    while ($attempts < 4) {
+        $attempts++;
+        $stmt = $db->prepare($sql);
+        if (!$stmt) break;
+        foreach ($params as $k => $v) {
+            $stmt->bindValue($k, $v, SQLITE3_TEXT);
         }
-        $rows[] = $r;
+        $result = @$stmt->execute();
+        if ($result === false) {
+            $err = $db->lastErrorMsg();
+            if (stripos($err, 'locked') !== false && $attempts < 4) { usleep(200000); continue; }
+            exit(json_encode(['success' => false, 'message' => '查询失败: ' . $err], JSON_UNESCAPED_UNICODE));
+        }
+        while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
+            if (!empty($r['items_detail'])) {
+                $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
+            }
+            $rows[] = $r;
+        }
+        break;
     }
     exit(json_encode(['success' => true, 'data' => $rows], JSON_UNESCAPED_UNICODE));
 }
