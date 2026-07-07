@@ -246,36 +246,33 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 创建全新PVP世界 — 自然主世界地形（完整主世界：山丘/水域/洞穴/生物群系）
+     * 创建全新PVP世界 — 纯 NORMAL 主世界地形，插件全程不插手地形生成。
      *
-     * ★ 2026-07-07 第四次改进：种子重试机制
-     *   NORMAL 地形生成器是随机的，(0,0) 可能落在海洋中（findSafeSpawn score=1），
-     *   导致玩家出生在孤岛/小平台上。现改为：
-     *   - 最多用 3 个不同种子尝试，只要找到一个出生点周围有正常陆地(score≥2)就接受
-     *   - 全部 3 次都是海洋 → 在最后一个世界上强制改造出生点区域为陆地平台
-     */
-    /**
-     * 创建全新PVP世界 — FLAT 世界 + 手写噪声地形（圆形自然竞技岛，无四方形切割）
-     *
-     * ★ 2026-07-07 重构：抛弃 NORMAL 随机地形（易出海洋/虚空导致小平台）
-     *   与 forceTerraformSpawnArea 的 81x81 四方形草地岛（明显的方形切割边界）。
-     *   改用 FLAT 世界（基础为实心连续地形，杜绝虚空与区块丢失），
-     *   再用手写噪声生成器 generatePVPTerrain 生成半径 48 的圆形起伏竞技岛，
-     *   边缘自然衰减入周围平地，观感自然、加载迅速、永远有合格陆地。
+     * ★ 2026-07-07 终版（按用户明确要求）：
+     *   用户要求"完整主世界，插件全程不插手，由MC自己决定自己生成"。
+     *   因此抛弃之前所有自定义地形方案：
+     *     - 不用 FLAT 世界；
+     *     - 不调用 generatePVPTerrain 噪声造岛；
+     *     - 不调用 forceTerraformSpawnArea 强制造陆；
+     *     - 不设置种子（让 MC 每次随机决定全新主世界）。
+     *   插件只做三件"非地形"的事：
+     *     1) 设游戏规则（常昼/无天气/PVP 开启）；
+     *     2) 预生成出生点周边区块（确保地形已就绪）；
+     *     3) 只读方式调用 findSafeSpawn 选附近优质固体地面做出生点
+     *        （不改任何方块；仅当极端异常（理论上 NORMAL 必有陆地）才造保底平台）。
      */
     private void createPVPWorld() {
-        long seed = worldSeedRandom.nextLong();
-        plugin.getLogger().info("[PVP] 创建PVP世界 (FLAT+噪声地形 seed=" + seed + ")");
+        plugin.getLogger().info("[PVP] 创建PVP世界 (纯NORMAL主世界，地形由MC自行生成)");
 
         // 清理上次残留世界，确保是全新世界
         File existing = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
         if (existing.exists()) moveWorldToTrash(existing);
 
-        // FLAT 世界：基础为实心连续地形，彻底消除虚空/区块丢失
+        // ★ 纯 NORMAL 主世界：完全交给 Minecraft 自己生成（山丘/水域/洞穴/生物群系）。
+        //   不调用 creator.seed(...) —— 由 MC 自行随机决定地形种子，插件对地形零干预。
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
-        creator.type(WorldType.FLAT);
-        creator.seed(seed);
+        creator.type(WorldType.NORMAL);
 
         World pvpWorld = creator.createWorld();
         if (pvpWorld == null) {
@@ -289,16 +286,29 @@ public class PVPArenaManager implements Listener {
         pvpWorld.setTime(6000);
         pvpWorld.setKeepSpawnInMemory(true);
 
-        // ★ 手写噪声地形：在原点周边生成圆形竞技岛（半径 48 格）
-        generatePVPTerrain(pvpWorld, seed);
-        // 立即落盘，确保手写地形持久化、不被后续自动保存覆盖
-        try { pvpWorld.save(); } catch (Exception ignored) {}
+        // 先把出生点锚定在原点，使后续预生成与出生点搜索都以原点为中心
+        pvpWorld.setSpawnLocation(0, 64, 0);
 
-        // 出生点固定在世界原点上方地形顶部
-        int groundY = getTopSolidY(pvpWorld, 0, 0);
-        pvpWorld.setSpawnLocation(0, groundY + 1, 0);
-        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(噪声地形 seed=" + seed
-                + ") 出生点=(0," + (groundY + 1) + ",0)");
+        // 预生成出生点周边区块（半径 8 个区块），确保地形已就绪、findSafeSpawn 不误判虚空
+        preGenerateSpawnChunks(pvpWorld, 8);
+
+        // ★ 只读定位安全出生点（绝不改造地形）
+        Location safe = findSafeSpawn(pvpWorld);
+        if (safe != null) {
+            pvpWorld.setSpawnLocation(
+                    safe.getBlockX(), safe.getBlockY(), safe.getBlockZ());
+            plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 出生点=("
+                    + safe.getBlockX() + "," + safe.getBlockY() + "," + safe.getBlockZ()
+                    + ") 陆地质量分=" + lastSpawnLandScore);
+        } else {
+            // ★ 极端兜底：理论上 NORMAL 主世界必有陆地，仅当异常时才造保底平台
+            plugin.getLogger().warning("[PVP] 未找到安全陆地，启用保底出生平台");
+            buildFallbackPlatform(pvpWorld);
+            pvpWorld.setSpawnLocation(0, 121, 0);
+        }
+
+        // 落盘已生成的区块
+        try { pvpWorld.save(); } catch (Exception ignored) {}
     }
 
     /**

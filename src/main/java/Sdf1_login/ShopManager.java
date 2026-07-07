@@ -1175,11 +1175,54 @@ public class ShopManager implements Listener {
 
 // ===== 保存为 md =====
 
+    /**
+     * 保存单个分类到 .md 文件（合并感知，杜绝覆盖管理员手工新增内容）。
+     *
+     * ★ 2026-07-07 修复（严重缺陷）：原实现用 PrintWriter 对 .md 做整文件覆盖重写，
+     *   仅写出内存 categories 列表中的商品。若管理员在服务器运行期间于磁盘上手工新增了
+     *   商品（或修改了某个在内存中未被加载的分类文件），则整文件重写会把这些磁盘新增内容
+     *   抹掉；服务器 stop 时 onDisable→saveAll 全量重写会进一步把新增分类/商品“回滚”，
+     *   表现为“数据不同步 / 新商品被自动删除”。
+     *
+     * 新方案：写文件前先读取磁盘上已有的同文件，把“磁盘中存在但内存中不存在”的商品行原样
+     * 保留（追加在内存商品之后），从而减少整文件覆盖带来的内容丢失。
+     * 说明：整体新增的“独立分类 .md 文件”本来就不在内存 categories 中，saveAll 不会触碰它，
+     * 因此是天然安全的；本修复主要堵住“在已有分类里手工加商品被覆盖”的漏洞。
+     */
     public void saveCategory(ShopCategory cat) {
         File dir = new File(
                 plugin.getDataFolder(), "shop");
         if (!dir.exists()) dir.mkdirs();
         File f = new File(dir, cat.getFileName());
+
+        // ★ 合并感知：收集磁盘上“内存中不存在”的商品行（保留管理员手工新增）
+        List<String> diskOnlyRows = new ArrayList<>();
+        if (f.exists()) {
+            Set<String> memIds = new HashSet<>();
+            for (ShopItem it : cat.getItems()) memIds.add(it.getId());
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(
+                            new FileInputStream(f),
+                            StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (!line.startsWith("|")) continue; // 跳过标题(#)行
+                    // 数据行形如: | ID | 品名 | 材质 | ...
+                    String[] cols = line.split("\\|");
+                    if (cols.length < 3) continue;
+                    String id = cols[1].trim();
+                    // 跳过表头行(ID)与分隔行(---)
+                    if (id.isEmpty() || id.equals("ID") || id.equals("---"))
+                        continue;
+                    if (!memIds.contains(id)) {
+                        diskOnlyRows.add(line); // 磁盘独有商品，原样保留
+                    }
+                }
+            } catch (Exception ignored) {
+                // 读取失败则放弃合并（退化为仅写内存内容，与旧行为一致）
+            }
+        }
+
         try {
             PrintWriter pw = new PrintWriter(
                     new OutputStreamWriter(
@@ -1206,6 +1249,8 @@ public class ShopManager implements Listener {
                         + " | " + item.getTotalSales()
                         + " |");
             }
+            // ★ 追加磁盘独有商品行（管理员手工新增，避免被覆盖删除）
+            for (String row : diskOnlyRows) pw.println(row);
             pw.flush();
             pw.close();
         } catch (Exception e) {
