@@ -861,6 +861,14 @@ function preview($data, $message = 'preview mode') {
     jsonResponse(['success' => true, 'preview' => true, 'message' => $message, 'data' => $data]);
 }
 
+/**
+ * HTML 转义（PHP 模板输出用，防止 XSS）
+ * 注意：与前端 JS 里的 esc() 是不同作用域，互不冲突。
+ */
+function esc($s) {
+    return htmlspecialchars($s ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
 // ===== 请求辅助 =====
 
 function getParam($key, $default = null) {

@@ -333,7 +333,7 @@ $initialState = json_encode([
                 <span>📜 订单记录</span>
                 <a href="orders.php" id="orderLinkBtn" class="btn btn-ghost" style="padding:4px 14px;font-size:11px;text-decoration:none">查看全部 →</a>
             </h3>
-            <div id="orderList"><div style="color:var(--dim);font-size:12px;padding:10px">点击右侧查看完整订单记录</div></div>
+            <div id="orderList"><div style="color:var(--dim);font-size:12px;padding:10px">加载中…</div></div>
         </div>
     </div>
 </div>
@@ -459,7 +459,7 @@ async function initApp() {
         // 不隐藏整个 payModeWrap，但只显示债券模式
     }
 
-    await Promise.all([loadProducts()]); // 订单记录已独立到 orders.php，不再在此加载
+    await Promise.all([loadProducts(), loadOrders()]); // 底部保留 5 条最新订单概览；完整记录见 orders.php
 }
 
 async function loadProducts() {
@@ -755,7 +755,7 @@ function promptAdminPassword() {
 // ===== 订单记录 =====
 async function loadOrders() {
     try {
-        const d = await api('api/cashier.php?action=order_list&limit=50');
+        const d = await api('api/cashier.php?action=order_list&limit=5');
         const el = document.getElementById('orderList');
         if (!d.success || !d.data || !d.data.length) { el.innerHTML = '<div style="color:var(--dim);font-size:12px;padding:10px">暂无订单</div>'; return; }
         el.innerHTML = d.data.map(o => {
