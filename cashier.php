@@ -32,6 +32,7 @@ $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $initialRole = 'guest';
 $initialName = '';
 $initialLimit = 0;
+$initialCanCash = 0; // ★ 默认：游客(未登录)无现金收款权限，避免下方 json_encode 报未定义变量
 if (isAdminLoggedIn()) {
     $initialRole = 'admin';
     $initialName = 'admin';
