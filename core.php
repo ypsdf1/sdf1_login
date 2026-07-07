@@ -730,8 +730,12 @@ function initTables(SQLite3 $db) {
             created_at INTEGER DEFAULT 0,
             created_by TEXT DEFAULT ''
         )");
-        // 收银员现金收款权限字段迁移（已存在则静默失败）
-        @$db->exec("ALTER TABLE cashiers ADD COLUMN can_cash INTEGER DEFAULT 0");
+        // 收银员现金收款权限字段迁移（已存在则静默忽略；注意：enableExceptions(true) 下
+        // 必须用 try/catch 兜住，@ 抑制符挡不住 SQLite3Exception，否则会触发 ROLLBACK 并导致
+        // 后续建表语句（如 cashier_orders）全部跳过，且每条请求都写一条 duplicate column 日志刷爆磁盘）
+        try {
+            $db->exec("ALTER TABLE cashiers ADD COLUMN can_cash INTEGER DEFAULT 0");
+        } catch (\Throwable $e) { /* 列已存在，忽略 */ }
 
         // ===== 收银台订单表（代购/收银员操作记录）=====
         $db->exec("CREATE TABLE IF NOT EXISTS cashier_orders (
