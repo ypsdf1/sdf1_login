@@ -254,78 +254,51 @@ public class PVPArenaManager implements Listener {
      *   - 最多用 3 个不同种子尝试，只要找到一个出生点周围有正常陆地(score≥2)就接受
      *   - 全部 3 次都是海洋 → 在最后一个世界上强制改造出生点区域为陆地平台
      */
+    /**
+     * 创建全新PVP世界 — FLAT 世界 + 手写噪声地形（圆形自然竞技岛，无四方形切割）
+     *
+     * ★ 2026-07-07 重构：抛弃 NORMAL 随机地形（易出海洋/虚空导致小平台）
+     *   与 forceTerraformSpawnArea 的 81x81 四方形草地岛（明显的方形切割边界）。
+     *   改用 FLAT 世界（基础为实心连续地形，杜绝虚空与区块丢失），
+     *   再用手写噪声生成器 generatePVPTerrain 生成半径 48 的圆形起伏竞技岛，
+     *   边缘自然衰减入周围平地，观感自然、加载迅速、永远有合格陆地。
+     */
     private void createPVPWorld() {
-        final int MAX_RETRIES = 3; // 最多尝试 3 个不同种子
-        World pvpWorld = null;
-        Location spawnLoc = null;
-        long seed = 0;
+        long seed = worldSeedRandom.nextLong();
+        plugin.getLogger().info("[PVP] 创建PVP世界 (FLAT+噪声地形 seed=" + seed + ")");
 
-        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            seed = worldSeedRandom.nextLong();
-            plugin.getLogger().info("[PVP] 创建PVP世界 (第" + attempt + "/" + MAX_RETRIES + "次尝试, seed=" + seed + ")");
+        // 清理上次残留世界，确保是全新世界
+        File existing = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+        if (existing.exists()) moveWorldToTrash(existing);
 
-            // 清理上次尝试的世界（如果有）
-            if (pvpWorld != null) {
-                try { Bukkit.unloadWorld(pvpWorld, false); } catch (Exception ignored) {}
-                File worldDir = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-                moveWorldToTrash(worldDir);
-            }
+        // FLAT 世界：基础为实心连续地形，彻底消除虚空/区块丢失
+        WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
+        creator.environment(World.Environment.NORMAL);
+        creator.type(WorldType.FLAT);
+        creator.seed(seed);
 
-            // 自然主世界地形
-            WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
-            creator.environment(World.Environment.NORMAL);
-            creator.type(WorldType.NORMAL);
-            creator.seed(seed);
-
-            pvpWorld = creator.createWorld();
-            if (pvpWorld == null) {
-                plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!(第" + attempt + "次)");
-                continue; // 试下一个种子
-            }
-
-            // 设置基本规则
-            pvpWorld.setPVP(true);
-            pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-            pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
-            pvpWorld.setTime(6000);
-
-            // ★ 扩大预生成半径到12个区块（384格），覆盖更大范围确保地形完整
-            preGenerateSpawnChunks(pvpWorld, 12);
-            spawnLoc = findSafeSpawn(pvpWorld);
-
-            if (spawnLoc != null && lastSpawnLandScore >= 2) {
-                // ✅ 找到合格陆地，接受这个世界
-                pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
-                plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(自然主世界陆地地形 seed=" + seed + "): "
-                        + PVP_WORLD_NAME + " 出生点=(" + spawnLoc.getBlockX() + "," + spawnLoc.getBlockY() + "," + spawnLoc.getBlockZ()
-                        + ") 质量=" + lastSpawnLandScore);
-                return; // 成功，直接返回
-            }
-
-            // ❌ 质量不够（海洋/虚空）→ 记录日志后重试
-            String reason = (spawnLoc == null) ? "findSafeSpawn=null(疑似虚空)" : ("质量分=" + lastSpawnLandScore + "(海洋/孤岛)");
-            plugin.getLogger().warning("[PVP] ⚠️ 第" + attempt + "次种子出生点不合格(" + reason + ")，将重试新种子...");
-        }
-
-        // ===== 全部重试都失败 → 在最后一个世界上强制造陆 =====
+        World pvpWorld = creator.createWorld();
         if (pvpWorld == null) {
-            plugin.getLogger().severe("[PVP] " + MAX_RETRIES + "次创建全部失败！");
+            plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!");
             return;
         }
 
-        plugin.getLogger().warning("[PVP] " + MAX_RETRIES + "次尝试均未找到合格陆地，在当前世界强制改造出生点区域...");
+        pvpWorld.setPVP(true);
+        pvpWorld.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
+        pvpWorld.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
+        pvpWorld.setTime(6000);
+        pvpWorld.setKeepSpawnInMemory(true);
 
-        if (spawnLoc != null) {
-            pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
-        } else {
-            pvpWorld.setSpawnLocation(0, 64, 0);
-        }
+        // ★ 手写噪声地形：在原点周边生成圆形竞技岛（半径 48 格）
+        generatePVPTerrain(pvpWorld, seed);
+        // 立即落盘，确保手写地形持久化、不被后续自动保存覆盖
+        try { pvpWorld.save(); } catch (Exception ignored) {}
 
-        // ★ 强制造陆：在出生点周围 81x81 范围内铺成草地平原（比 20x20 保底平台大得多，且避免与保底平台并存）
-        forceTerraformSpawnArea(pvpWorld);
-
-        plugin.getLogger().info("[PVP] 已创建PVP竞技场世界(强制改造地形 seed=" + seed + "): " + PVP_WORLD_NAME
-                + " 出生点已强制造陆");
+        // 出生点固定在世界原点上方地形顶部
+        int groundY = getTopSolidY(pvpWorld, 0, 0);
+        pvpWorld.setSpawnLocation(0, groundY + 1, 0);
+        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(噪声地形 seed=" + seed
+                + ") 出生点=(0," + (groundY + 1) + ",0)");
     }
 
     /**
@@ -718,6 +691,17 @@ public class PVPArenaManager implements Listener {
         // 中央标记
         world.getBlockAt(0, centerY + 1, 0).setType(Material.GLOWSTONE);
         plugin.getLogger().warning("[PVP] 已生成保底出生平台: 中心(0," + (centerY+1) + ",0), 范围20x20");
+    }
+
+    /**
+     * 获取指定列从顶部向下的第一个非空气、非流体方块 Y 坐标（用于确定出生点地形高度）
+     */
+    private int getTopSolidY(World world, int x, int z) {
+        for (int y = 255; y >= 1; y--) {
+            Material t = world.getBlockAt(x, y, z).getType();
+            if (!t.isAir() && t != Material.WATER && t != Material.LAVA) return y;
+        }
+        return 64;
     }
 
     /**
@@ -1578,7 +1562,7 @@ public class PVPArenaManager implements Listener {
                     && player.getWorld().getName().equals(PVP_WORLD_NAME)) {
                 onPlayerEnterPVPWorld(player);
             }
-        }, 20L);
+        }, 5L);
 
         player.sendMessage("§a§l正在前往PVP竞技场...");
     }

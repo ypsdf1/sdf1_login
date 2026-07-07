@@ -900,6 +900,8 @@ public class WebManager {
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                submitNormalDbTask("首次-pushShopCatalog", () -> pushShopCatalog());
+                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
                 try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
@@ -1409,6 +1411,7 @@ public class WebManager {
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullShopPrices", () -> pullShopPrices());
             submitNormalDbTask("周期-pullShopConfig", () -> pullShopConfig());
+            submitNormalDbTask("周期-pushShopCatalog", () -> pushShopCatalog());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
             submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
             try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
@@ -6612,6 +6615,28 @@ public class WebManager {
             doGet(urlStr);
         } catch (Exception e) {
             plugin.getLogger().warning("[配置推送] 保存商店配置失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 推送游戏内完整商品目录到 PHP（商城定时同步：游戏内增删分类/商品 → Web 端镜像）
+     * 安全护栏：目录为空时不推送，避免误清空 PHP 端商品表。
+     */
+    public void pushShopCatalog() {
+        try {
+            ShopManager sm = plugin.getShopManager();
+            if (sm == null || sm.getCategories().isEmpty()) {
+                plugin.getLogger().info("[商品同步] 游戏内目录为空，跳过推送（防止误清空PHP）");
+                return;
+            }
+            String json = sm.buildCatalogJson();
+            String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_catalog&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String resp = doPost(urlStr, json);
+            plugin.getLogger().info("[商品同步] 已推送游戏内商品目录到PHP"
+                    + (resp != null ? " 响应:" + resp : "（无响应）"));
+        } catch (Exception e) {
+            plugin.getLogger().warning("[商品同步] 推送商品目录失败: " + e.getMessage());
         }
     }
 

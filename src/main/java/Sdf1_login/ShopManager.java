@@ -22,6 +22,8 @@ import org.bukkit.util.io.BukkitObjectOutputStream;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.inventory.meta.PotionMeta;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 
 
 
@@ -2099,6 +2101,44 @@ public class ShopManager implements Listener {
         return categories;
     }
 
+    /**
+     * 将游戏内完整商品目录序列化为 JSON（供定时同步到 PHP Web 端）
+     *
+     * 结构：
+     * {
+     *   "categories": [
+     *     { "name":"分类名", "file":"文件名.md",
+     *       "items":[ { "id":"...", "display_name":"...", "material":"DIAMOND",
+     *                   "buy_price":100, "sell_price":50 }, ... ] },
+     *     ...
+     *   ]
+     * }
+     * 注意：仅同步目录结构（分类/商品/价格），库存由 PHP 端动态管理，不在本 JSON 中覆盖。
+     */
+    public String buildCatalogJson() {
+        JsonArray cats = new JsonArray();
+        for (ShopCategory cat : categories) {
+            JsonObject catObj = new JsonObject();
+            catObj.addProperty("name", cat.getName());
+            catObj.addProperty("file", cat.getFileName());
+            JsonArray items = new JsonArray();
+            for (ShopItem it : cat.getItems()) {
+                JsonObject itObj = new JsonObject();
+                itObj.addProperty("id", it.getId());
+                itObj.addProperty("display_name", it.getDisplayName());
+                itObj.addProperty("material", it.getMaterial() == null ? "STONE" : it.getMaterial().name());
+                itObj.addProperty("buy_price", it.getBuyPrice());
+                itObj.addProperty("sell_price", it.getSellPrice());
+                items.add(itObj);
+            }
+            catObj.add("items", items);
+            cats.add(catObj);
+        }
+        JsonObject root = new JsonObject();
+        root.add("categories", cats);
+        return root.toString();
+    }
+
     // ===== 命令处理 =====
 
     public boolean handleCommand(
@@ -2120,6 +2160,12 @@ public class ShopManager implements Listener {
             s.sendMessage("§a商店已重载，共 "
                     + categories.size()
                     + " 个分类");
+            // ★ 重载后立即把最新目录异步同步到 PHP（游戏内增删分类/商品 → Web 端镜像）
+            if (plugin.webManager != null) {
+                new BukkitRunnable() {
+                    @Override public void run() { plugin.webManager.pushShopCatalog(); }
+                }.runTaskAsynchronously(plugin);
+            }
             return true;
         }
 
