@@ -68,16 +68,18 @@ public class PVPArenaManager implements Listener {
     // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
     private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
 
-    // ★ GUI打开时间戳（宽限期机制）：打开GUI后的一段时间内忽略关闭事件
-    //   原因：NORMAL地形PVP世界传送后区块加载期间，服务端可能触发额外的InventoryCloseEvent
-    //   此类事件非玩家行为导致（不是ESC、不是切档位），guiReopening未设置→误遣返
+    // ★ GUI打开时间戳（仅用于历史清理兼容，当前检测逻辑已改为基于 selectedTier 状态判断）
     private final Map<String, Long> guiOpenedMillis = new ConcurrentHashMap<>();
-
-    /** GUI宽限期：打开后此时间内关闭事件不触发遣返（毫秒） */
-    private static final long GUI_GRACE_PERIOD_MS = 5000L; // 5秒，覆盖传送+区块加载+GUI初始化
 
     // 玩家背包备份缓存 (玩家名 -> 备份数据)
     private final Map<String, InventoryBackup> inventoryBackups = new ConcurrentHashMap<>();
+
+    // ★ PVP装备选择超时定时器（玩家名 -> BukkitTask）：进入PVP后N秒未确认则自动遣返
+    //   防止玩家进入后一直开着GUI不操作也不退出（卡死/挂机/忘记关游戏）
+    private final Map<String, BukkitTask> kickTimeoutTasks = new ConcurrentHashMap<>();
+
+    /** 装备选择超时时间（秒）：进入PVP后此时间内必须确认，否则自动遣返 */
+    private static final long EQUIPMENT_SELECT_TIMEOUT_SECONDS = 60L;
 
     // 待执行的"空场冷却删除世界"定时任务（有人重新进入时取消）
     private BukkitTask pendingDeleteTask = null;
@@ -592,26 +594,38 @@ public class PVPArenaManager implements Listener {
         // 程序内重开装备GUI（切换档位）导致的旧GUI关闭，忽略，不遣返
         if (guiReopening.remove(player.getName())) return;
 
-        // ★ GUI宽限期：打开后5秒内的关闭事件忽略（传送/区块加载期间服务端可能额外触发关闭）
-        Long openedAt = guiOpenedMillis.get(player.getName());
-        if (openedAt != null) {
-            long elapsed = System.currentTimeMillis() - openedAt;
-            if (elapsed < GUI_GRACE_PERIOD_MS) {
-                plugin.getLogger().info("[PVP] 宽限期内关闭事件忽略: " + player.getName()
-                        + " (距GUI打开 " + elapsed + "ms < " + GUI_GRACE_PERIOD_MS + "ms)");
-                return;
-            }
+        // ★★★ 核心改进：基于确定性状态判断，而非猜测关闭原因 ★★★
+        //
+        // 方案：检查玩家是否已选择了装备档位（selectedTier 有值）
+        //   - 已选档位 → 玩家在浏览/切换，自动重开 GUI（不遣返）
+        //   - 从未选择 → 玩家直接跳过了（ESC/未交互），执行遣返
+        //
+        // 同时配合超时安全网（onPlayerEnterPVPWorld 中注册60秒定时器），
+        // 防止玩家一直开着 GUI 不操作也不退出
+
+        if (selectedTier.containsKey(player.getName())) {
+            // 玩家已选择了档位 → 自动重开 GUI 让其继续操作或点确认
+            plugin.getLogger().info("[PVP] 玩家 " + player.getName()
+                    + " 已选择档位但未确认就关了GUI，自动重开（selectedTier="
+                    + selectedTier.get(player.getName()) + "）");
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (inPVPArena.contains(player.getName())
+                        && !equipmentConfirmed.contains(player.getName())
+                        && player.isOnline()) {
+                    openEquipmentSelection(player);
+                    player.sendMessage("§e[PVP] §7请点击 §a确认按钮 §7完成装备选择");
+                }
+            }, 5L); // 5 tick (~250ms) 延迟确保关闭事件完成
+            return;
         }
 
-        // 已确认过装备的玩家允许自由开关背包
-        if (equipmentConfirmed.contains(player.getName())) return;
-
-        // ★ 未确认就关了GUI → 遣返！
+        // 从未选择任何档位 → 视为跳过/ESC，遣返
         plugin.getLogger().info("[PVP] 玩家 " + player.getName()
-                + " 未确认装备就关闭了PVP装备GUI，执行遣返");
+                + " 未选择任何装备就关闭了PVP装备GUI，执行遣返");
 
-        // 清理状态
+        // 清理状态并取消超时定时器
         inPVPArena.remove(player.getName());
+        cancelKickTimeout(player.getName());
 
         // 延迟一帧传回主世界（避免与关闭事件冲突）
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -649,6 +663,9 @@ public class PVPArenaManager implements Listener {
         // ★ 关键变更：先选装备，不急着备份清空
         openEquipmentSelection(player);
 
+        // ★ 注册超时安全网：60秒内必须确认，否则自动遣返
+        scheduleKickTimeout(playerName);
+
         player.sendMessage("§a§l欢迎来到PVP竞技场!");
         player.sendMessage("§7请先选择你的装备套装，确认后将备份你的原背包");
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
@@ -674,8 +691,9 @@ public class PVPArenaManager implements Listener {
         // ★ 第三步：发放PVP装备
         equipFullSet(player);
 
-        // 标记已完成装备确认
+        // 标记已完成装备确认 + 取消超时定时器
         equipmentConfirmed.add(playerName);
+        cancelKickTimeout(playerName);
 
         player.sendMessage("§a§l装备已就绪，开始战斗!");
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
@@ -691,6 +709,48 @@ public class PVPArenaManager implements Listener {
      * 1. 回收所有PVP专属装备
      * 2. 还原入场时的背包数据
      * 3. 清理状态标记
+
+    // ==================== 超时安全网 ====================
+
+    /**
+     * 注册装备选择超时定时器：玩家进入PVP后N秒未确认则自动遣返
+     */
+    private void scheduleKickTimeout(String playerName) {
+        cancelKickTimeout(playerName); // 先取消已有的（防止重复注册）
+        BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (inPVPArena.contains(playerName) && !equipmentConfirmed.contains(playerName)) {
+                Player p = Bukkit.getPlayerExact(playerName);
+                plugin.getLogger().info("[PVP] 超时遣返: " + playerName
+                        + " 进入PVP超过 " + EQUIPMENT_SELECT_TIMEOUT_SECONDS + "秒未确认装备");
+                kickTimeoutTasks.remove(playerName);
+                inPVPArena.remove(playerName);
+                guiReopening.remove(playerName);
+                guiOpenedMillis.remove(playerName);
+                selectedTier.remove(playerName);
+                if (p != null && p.isOnline()) {
+                    p.closeInventory();
+                    World main = Bukkit.getWorlds().get(0);
+                    p.teleport(main.getSpawnLocation());
+                    p.sendMessage("§c§l[PVP] §c装备选择超时（" + EQUIPMENT_SELECT_TIMEOUT_SECONDS + "秒），已被自动遣返");
+                    p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                }
+            }
+        }, EQUIPMENT_SELECT_TIMEOUT_SECONDS * 20L); // convert seconds to ticks
+        kickTimeoutTasks.put(playerName, task);
+    }
+
+    /**
+     * 取消玩家的装备选择超时定时器（确认/正常退出时调用）
+     */
+    private void cancelKickTimeout(String playerName) {
+        BukkitTask task = kickTimeoutTasks.remove(playerName);
+        if (task != null && !task.isCancelled()) {
+            task.cancel();
+        }
+    }
+
+    /**
+     * 强制离开竞技场 — 所有退场的唯一入口
      *
      * @param player       玩家对象（可能在线也可能离线——离线时只清理状态+存DB标记）
      * @param isDisconnect 是否为掉线场景（不掉线时直接还原；掉线时仅存DB等待下次登录还原）
@@ -715,12 +775,14 @@ public class PVPArenaManager implements Listener {
             plugin.getLogger().info("[PVP] 玩家 " + playerName + " 在PVP中断线，备份已存DB待还原");
         }
 
-        // 清理所有状态
+        // 清理所有状态（含取消超时定时器）
         inPVPArena.remove(playerName);
         equipmentConfirmed.remove(playerName);
         inventoryBackups.remove(playerName);
         guiReopening.remove(playerName);
         guiOpenedMillis.remove(playerName);
+        selectedTier.remove(playerName);
+        cancelKickTimeout(playerName);
 
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 离开PVP竞技场"
                 + (isDisconnect ? "（断线）" : ""));
@@ -838,6 +900,8 @@ public class PVPArenaManager implements Listener {
                 equipmentConfirmed.remove(player.getName());
                 guiReopening.remove(player.getName());
                 guiOpenedMillis.remove(player.getName());
+                selectedTier.remove(player.getName());
+                cancelKickTimeout(player.getName());
                 // 若因此成为最后一名退场者，启动空场冷却删除
                 scheduleWorldDeletionIfEmpty();
             }
@@ -1326,6 +1390,12 @@ public class PVPArenaManager implements Listener {
         inventoryBackups.clear();
         guiReopening.clear();
         guiOpenedMillis.clear();
+        selectedTier.clear();
+        // 取消所有超时定时器
+        for (BukkitTask t : kickTimeoutTasks.values()) {
+            if (t != null && !t.isCancelled()) t.cancel();
+        }
+        kickTimeoutTasks.clear();
     }
 
     // ==================== 序列化（基于 BukkitObjectStream + Base64）====================
