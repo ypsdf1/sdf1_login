@@ -369,11 +369,20 @@ function toast(msg, type) {
     document.getElementById('toastHost').appendChild(t);
     setTimeout(() => t.remove(), 2600);
 }
-async function api(url, opts) {
-    const r = await fetch(url, Object.assign({headers:{'X-Requested-With':'cashier'}}, opts));
-    let data;
-    try { data = await r.json(); } catch(e) { throw new Error('服务器响应异常'); }
-    return data;
+async function api(url, opts, timeoutMs = 25000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const r = await fetch(url, Object.assign({headers:{'X-Requested-With':'cashier'}}, opts, {signal: ctrl.signal}));
+        let data;
+        try { data = await r.json(); } catch(e) { throw new Error('服务器响应异常 (HTTP ' + r.status + ')'); }
+        return data;
+    } catch(e) {
+        if (e.name === 'AbortError') throw new Error('请求超时（服务器繁忙），请稍后重试');
+        throw e;
+    } finally {
+        clearTimeout(timer);
+    }
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 

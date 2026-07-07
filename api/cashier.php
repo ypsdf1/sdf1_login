@@ -199,6 +199,7 @@ function cashierOrderList() {
         // ★ 2026-07-07 加固：任何查询异常都返回合法 JSON，绝不把 PHP 报错文本注入响应
         //   （否则前端 r.json() 失败，订单页表现为“加载失败/报错”）。
         debugLog('[cashier.php] order_list 查询异常: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+        debugLog('[cashier.php] order_list 异常堆栈: ' . $e->getTraceAsString());
         exit(json_encode([
             'success' => false,
             'message' => '订单查询异常: ' . $e->getMessage()

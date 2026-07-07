@@ -300,6 +300,8 @@ function cartConfig() {
 
 // ===== 购物车结算（多商品一次性购买） =====
 function shopBuyCart($token) {
+    $__t0 = microtime(true);
+    debugLog('[buy_cart] 进入请求');
     $rawItems = getParam('items');
     $settlement = getParam('settlement', 'backpack'); // backpack=塞背包, shulker=潜影盒打包
     $shulkerColor = getParam('shulker_color', 'default'); // 潜影盒颜色（default原色免费,其它+2元）
@@ -580,19 +582,25 @@ function shopBuyCart($token) {
     }
 
     // ★ 推送小票书给在线玩家（写入 web_admin_changes → Java pollAdminChanges 拾取并发放 Written Book）
+    //   注意：小票推送失败绝不影响已成功的购买主流程与订单记录，单独容错。
     if (!empty($orderNo) && !empty($player)) {
-        pushReceiptBookToPlayer($player, [
-            'order_no' => $orderNo,
-            'order_time' => date('Y-m-d H:i:s'),
-            'order_player' => $player,
-            'operator' => ($isCashier ? ($cashierRow['username'] ?? '') : 'admin'),
-            'settlement' => $modeName,
-            'pay_method' => $payMode,
-            'total_price' => (int)$finalPrice,
-            'items_text' => array_map(function($l) { return $l['name'] . ' x' . $l['amount'] . ' ... ' . $l['line_total'] . '债'; }, $lines)
-        ]);
+        try {
+            pushReceiptBookToPlayer($player, [
+                'order_no' => $orderNo,
+                'order_time' => date('Y-m-d H:i:s'),
+                'order_player' => $player,
+                'operator' => ($isCashier ? ($cashierRow['username'] ?? '') : 'admin'),
+                'settlement' => $modeName,
+                'pay_method' => $payMode,
+                'total_price' => (int)$finalPrice,
+                'items_text' => array_map(function($l) { return $l['name'] . ' x' . $l['amount'] . ' ... ' . $l['line_total'] . '债'; }, $lines)
+            ]);
+        } catch (\Throwable $e) {
+            debugLog('buy_cart: 小票书推送失败(不影响购买): ' . $e->getMessage());
+        }
     }
 
+    debugLog('[buy_cart] 完成, 耗时=' . round((microtime(true) - $__t0) * 1000) . 'ms, orderNo=' . ($orderNo ?? ''));
     success([
         'settlement' => $settlement,
         'mode_name' => $modeName,

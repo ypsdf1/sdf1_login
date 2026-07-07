@@ -11,11 +11,16 @@ if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__); }
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-$loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
-$role = 'guest';
-$name = '';
-if (isAdminLoggedIn()) { $role = 'admin'; $name = 'admin'; }
-elseif (isCashierLoggedIn()) { $c = getCurrentCashier() ?: []; $role = 'cashier'; $name = $c['username'] ?? ''; }
+try {
+    $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
+    $role = 'guest';
+    $name = '';
+    if (isAdminLoggedIn()) { $role = 'admin'; $name = 'admin'; }
+    elseif (isCashierLoggedIn()) { $c = getCurrentCashier() ?: []; $role = 'cashier'; $name = $c['username'] ?? ''; }
+} catch (\Throwable $e) {
+    debugLog('[orders.php] 会话状态判定异常: ' . $e->getMessage());
+    $loggedIn = false; $role = 'guest'; $name = '';
+}
 
 $initialState = json_encode([
     'logged_in' => $loggedIn,
