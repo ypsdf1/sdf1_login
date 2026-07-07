@@ -6516,12 +6516,13 @@ public class WebManager {
             StringBuilder page1 = new StringBuilder();
             page1.append("§6§l===== SDF1 商城 =====\n\n");
             page1.append("§7打包小票 / PACKING RECEIPT\n\n");
-            page1.append("§f订单号: §e").append(orderNo.isEmpty() ? "—" : orderNo).append("\n");
-            page1.append("§f时间:   §7").append(orderTime.isEmpty() ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) : orderTime).append("\n");
-            page1.append("§f玩家:   §b").append(orderPlayer).append("\n");
-            page1.append("§f操作员: §d").append(operatorName.isEmpty() ? "系统" : operatorName).append("\n");
-            page1.append("§f结算:   §a").append(settlementMode.isEmpty() ? "塞背包" : settlementMode).append("\n");
-            page1.append("§f收款:   ").append("cash".equals(payMethod) ? "§6现金(记账)" : "§e债券扣款").append("\n");
+            // ★ 改用 §0（黑色）文字：书本背景为米色羊皮纸，白色(§f)文字几乎不可见
+            page1.append("§0订单号: §e").append(orderNo.isEmpty() ? "—" : orderNo).append("\n");
+            page1.append("§0时间:   §7").append(orderTime.isEmpty() ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) : orderTime).append("\n");
+            page1.append("§0玩家:   §b").append(orderPlayer).append("\n");
+            page1.append("§0操作员: §d").append(operatorName.isEmpty() ? "系统" : operatorName).append("\n");
+            page1.append("§0结算:   §a").append(settlementMode.isEmpty() ? "塞背包" : settlementMode).append("\n");
+            page1.append("§0收款:   ").append("cash".equals(payMethod) ? "§6现金(记账)" : "§e债券扣款").append("\n");
             pages.add(page1.toString());
 
             // 第2页：商品明细
@@ -6537,7 +6538,7 @@ public class WebManager {
                         currentPage = new StringBuilder();
                         lineOnPage = 0;
                     }
-                    currentPage.append("§f").append(line).append("\n");
+                    currentPage.append("§0").append(line).append("\n");
                     lineOnPage++;
                 }
                 if (currentPage.length() > 30) pages.add(currentPage.toString());
@@ -6549,7 +6550,7 @@ public class WebManager {
             // 最后一页：合计 + 底部
             StringBuilder lastPage = new StringBuilder();
             lastPage.append("§6§l--------------------\n\n");
-            lastPage.append("§f§l实收合计: §a§l").append(totalPrice).append(" §7债券\n\n");
+            lastPage.append("§0§l实收合计: §a§l").append(totalPrice).append(" §7债券\n\n");
             lastPage.append("§8感谢惠顾 · 请妥善保管小票\n");
             lastPage.append("§7SDF1 商城自动生成");
             pages.add(lastPage.toString());
@@ -6557,12 +6558,28 @@ public class WebManager {
             meta.setPages(pages);
             book.setItemMeta(meta);
 
-            // 给玩家书本（放到背包第一个空格，或掉落）
-            player.getInventory().addItem(book);
-            player.sendMessage("§a§l[商城] §f你收到了一本 §6§l打包小票§f，请查收！");
+            // ★ 将小票书放入潜影盒（避免直接进背包被误丢/难找），潜影盒命名便于识别
+            org.bukkit.inventory.ItemStack shulker = new org.bukkit.inventory.ItemStack(Material.SHULKER_BOX);
+            org.bukkit.inventory.meta.BlockStateMeta shulkerMeta =
+                    (org.bukkit.inventory.meta.BlockStateMeta) shulker.getItemMeta();
+            if (shulkerMeta != null) {
+                org.bukkit.block.ShulkerBox shulkerInv = (org.bukkit.block.ShulkerBox) shulkerMeta.getBlockState();
+                shulkerInv.getInventory().setItem(0, book);
+                shulkerMeta.setBlockState(shulkerInv);
+                shulkerMeta.setDisplayName("§6§lSDF1 打包小票盒");
+                shulkerMeta.setLore(java.util.Arrays.asList(
+                        "§7内含打包小票书 · 右键打开查看",
+                        "§7订单号: " + (orderNo.isEmpty() ? "—" : orderNo)
+                ));
+                shulker.setItemMeta(shulkerMeta);
+            }
+
+            // 给玩家潜影盒（放到背包第一个空格，或掉落）
+            player.getInventory().addItem(shulker);
+            player.sendMessage("§a§l[商城] §f你收到了一个 §6§l打包小票盒§f（内含小票书），请查收！");
             player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.2f);
 
-            plugin.getLogger().info("[小票书] 已给玩家 " + player.getName() + " 发送小票书(订单:" + orderNo + ")");
+            plugin.getLogger().info("[小票书] 已给玩家 " + player.getName() + " 发送小票盒(订单:" + orderNo + ")");
         } catch (Exception e) {
             plugin.getLogger().warning("[小票书] 发送小票书失败: " + e.getMessage());
         }

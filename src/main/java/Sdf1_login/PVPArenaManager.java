@@ -1408,12 +1408,26 @@ public class PVPArenaManager implements Listener {
             player.sendMessage("§e你已在PVP竞技场中，请选择装备或输入 /pvp leave 离开");
             return;
         }
-        // 传送至出生点
+        // 传送至出生点（异步完成，传送完毕时会触发 PlayerChangedWorldEvent）
         Location spawn = pvpWorld.getSpawnLocation();
         player.teleport(spawn);
-        // ★ 关键修复：直接触发进入流程，确保装备选择GUI必然弹出，
-        //   不再单纯依赖 PlayerChangedWorldEvent 的异步时机（避免"直接进去跳过选装备"）
-        onPlayerEnterPVPWorld(player);
+
+        // ★ 修复 PVP 加入即被遣返的根因：
+        //   原先在传送【完成前】于主世界直接打开装备选择 GUI；传送完成时跨世界事件会
+        //   强制关闭所有打开的背包，从而触发 onInventoryClose —— 此时玩家尚未选择档位，
+        //   被误判为"未确认装备"而遭遣返，表现为"/pvp join 一直报错"。
+        //   现改为：装备 GUI 由 PlayerChangedWorldEvent 在玩家【抵达 pvp_arena 世界后】打开，
+        //   此时不会再发生跨世界关闭，GUI 得以正常停留。
+        //   兜底：若玩家本就已在 pvp_arena 世界内（如重连后的边界场景，不会触发跨世界事件），
+        //   则用延迟任务在其所在世界内打开 GUI。
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!inPVPArena.contains(player.getName())
+                    && player.isOnline()
+                    && player.getWorld().getName().equals(PVP_WORLD_NAME)) {
+                onPlayerEnterPVPWorld(player);
+            }
+        }, 20L);
+
         player.sendMessage("§a§l正在前往PVP竞技场...");
     }
 
