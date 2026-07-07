@@ -191,6 +191,32 @@ $initialState = json_encode([
     *::-webkit-scrollbar-thumb { background:var(--border); border-radius:6px; }
     *::-webkit-scrollbar-thumb:hover { background:var(--dim); }
     * { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+
+    /* 小票（打包收据）样式：模拟热敏纸小票 */
+    #receiptOverlay { display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,.55); z-index:6000; justify-content:center; align-items:flex-start; padding:24px 12px; overflow-y:auto; }
+    #receiptOverlay.show { display:flex; }
+    .receipt { background:#fdfdf7; color:#1a1a1a; width:340px; max-width:100%; border-radius:8px; padding:22px 20px; box-shadow:0 16px 48px rgba(0,0,0,.5); font-family:'Courier New',monospace; font-size:13px; line-height:1.5; }
+    .receipt h2 { text-align:center; font-size:17px; margin-bottom:4px; letter-spacing:1px; }
+    .receipt .r-sub { text-align:center; font-size:11px; color:#555; margin-bottom:10px; }
+    .receipt .r-line { display:flex; justify-content:space-between; gap:8px; }
+    .receipt .r-sep { border-top:1px dashed #999; margin:8px 0; }
+    .receipt .r-item { font-size:12px; }
+    .receipt .r-item .ri-name { flex:1; }
+    .receipt .r-total { font-size:16px; font-weight:700; border-top:2px solid #1a1a1a; margin-top:8px; padding-top:6px; }
+    .receipt .r-foot { text-align:center; font-size:10px; color:#666; margin-top:12px; }
+    .receipt .r-actions { display:flex; gap:10px; margin-top:16px; }
+    .receipt .r-actions button { flex:1; padding:10px; border:none; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer; }
+    .receipt .r-print { background:#1a1a1a; color:#fff; }
+    .receipt .r-done { background:#d9d9cf; color:#1a1a1a; }
+
+    /* 打印时只显示小票本体 */
+    @media print {
+        body * { visibility:hidden !important; }
+        #receiptOverlay, #receiptOverlay * { visibility:visible !important; }
+        #receiptOverlay { position:absolute; background:#fff; padding:0; align-items:flex-start; }
+        .receipt { box-shadow:none; width:80mm; max-width:80mm; margin:0 auto; }
+        .receipt .r-actions { display:none !important; }
+    }
 </style>
 </head>
 <body>
@@ -304,6 +330,11 @@ $initialState = json_encode([
     </div>
 </div>
 <?php endif; ?>
+
+<!-- 小票（打包收据）弹窗 -->
+<div id="receiptOverlay">
+    <div class="receipt" id="receiptBody"><!-- 由 JS 填充 --></div>
+</div>
 
 <div id="toastHost"></div>
 
@@ -619,11 +650,8 @@ async function confirmPay() {
 function finishPay(d) {
     const btn = document.getElementById('payBtn');
     if (d.success) {
-        if (payMode === 'cash') {
-            toast('✅ 现金收款记账成功（订单 #' + (d.data.order_id || '') + '，未扣玩家债券）', 'ok');
-        } else {
-            toast('收款成功，实收 ' + (d.data.total_price) + ' 债券', 'ok');
-        }
+        // ★ 弹出打包小票（打印收据）
+        showReceipt(d.data);
         cart = {}; renderCart();
         document.getElementById('summary').innerHTML = '';
         document.getElementById('discount').value = 0;
@@ -634,6 +662,63 @@ function finishPay(d) {
         btn.disabled = false;
     }
 }
+
+// ===== 打包小票（收据）=====
+function showReceipt(data) {
+    if (!data) return;
+    const items = (data.items && Array.isArray(data.items)) ? data.items : [];
+    const now = new Date();
+    const pad = n => String(n).padStart(2,'0');
+    const ts = now.getFullYear()+'-'+pad(now.getMonth()+1)+'-'+pad(now.getDate())+' '+pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+    const modeName = data.mode_name || (data.settlement==='shulker'?'潜影盒打包':'塞背包');
+    const payName = (data.payment_method || payMode) === 'cash' ? '现金（记账）' : '债券扣款';
+    const operator = STATE.role === 'admin' ? '管理员' : (STATE.username || '收银员');
+
+    // 明细行
+    let itemHtml = items.map(it => `
+        <div class="r-line r-item"><span class="ri-name">${esc(it.name)} x${it.amount}</span><span>${it.line_total} 债券</span></div>`).join('');
+
+    // 折扣优惠（背包费率+环保单减免的合计，original_price 已含费率与环保减免）
+    let promoLine = '';
+    const promoSaved = (parseInt(data.subtotal) || 0) - (parseInt(data.original_price) || 0);
+    if (promoSaved > 0) {
+        promoLine = `<div class="r-line"><span>${data.settlement==='backpack'?'环保/费率优惠':'费率优惠'}</span><span>-${promoSaved} 债券</span></div>`;
+    }
+    // 手动折扣
+    let discLine = '';
+    if (parseInt(data.discount_percent)>0) {
+        discLine = `<div class="r-line"><span>手动折扣 ${data.discount_percent}%</span><span>-${data.discount_amount} 债券</span></div>`;
+    }
+
+    const body = document.getElementById('receiptBody');
+    body.innerHTML = `
+        <h2>🧾 SDF1 商城</h2>
+        <div class="r-sub">打包小票 / PACKING RECEIPT</div>
+        <div class="r-line"><span>订单号</span><span>${esc(data.order_no || '—')}</span></div>
+        <div class="r-line"><span>时间</span><span>${ts}</span></div>
+        <div class="r-line"><span>玩家</span><span>${esc(data.player)}</span></div>
+        <div class="r-line"><span>操作员</span><span>${esc(operator)}</span></div>
+        <div class="r-line"><span>结算方式</span><span>${esc(modeName)}</span></div>
+        <div class="r-sep"></div>
+        ${itemHtml}
+        <div class="r-sep"></div>
+        <div class="r-line"><span>商品小计</span><span>${data.subtotal} 债券</span></div>
+        ${promoLine}
+        ${discLine}
+        <div class="r-line"><span>收款方式</span><span>${payName}</span></div>
+        <div class="r-total r-line"><span>实收合计</span><span>${data.total_price} 债券</span></div>
+        <div class="r-foot">感谢惠顾 · 请妥善保管小票</div>
+        <div class="r-actions">
+            <button class="r-print" onclick="printReceipt()">🖨 打印小票</button>
+            <button class="r-done" onclick="closeReceipt()">完成</button>
+        </div>`;
+    document.getElementById('receiptOverlay').classList.add('show');
+}
+function printReceipt() { window.print(); }
+function closeReceipt() { document.getElementById('receiptOverlay').classList.remove('show'); }
+// 点击遮罩空白处关闭
+document.getElementById('receiptOverlay').addEventListener('click', e => { if (e.target.id === 'receiptOverlay') closeReceipt(); });
+
 function promptAdminPassword() {
     return new Promise(resolve => {
         const overlay = document.createElement('div');

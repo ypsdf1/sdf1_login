@@ -332,6 +332,7 @@ function shopBuyCart($token) {
     $isAdminSession = false;
     $operatorDiscountLimit = 0;
     $cashierRow = null;
+    $orderNo = '';
 
     if ($token) {
         $tokenInfo = validateToken($token);
@@ -544,7 +545,7 @@ function shopBuyCart($token) {
         if ($isCashier || $isAdminToken || $isAdminSession) {
             $operatorType = $isCashier ? 'cashier' : 'admin';
             $operatorName = $isCashier ? ($cashierRow['username'] ?? '') : 'admin';
-            recordCashierOrder([
+            $orderNo = recordCashierOrder([
                 'operator_type' => $operatorType,
                 'operator_name' => $operatorName,
                 'player_name' => $player,
@@ -582,7 +583,8 @@ function shopBuyCart($token) {
         'discount_percent' => (int)$discountPercent,
         'discount_amount' => (int)$discountAmount,
         'saved' => $saved,
-        'player' => $player
+        'player' => $player,
+        'order_no' => $orderNo ?? ''
     ], '购物车结算成功');
 }
 
