@@ -4656,9 +4656,9 @@ public class Main extends JavaPlugin
                     return true;
                 }
                 try {
-                    int amt = Integer.parseInt(args[2]);
-                    if (amt < 0 || amt > 999) {
-                        sender.sendMessage("§c打包费需在 0~999 之间");
+                    double amt = Double.parseDouble(args[2]);
+                    if (amt < 0 || amt > 9999) {
+                        sender.sendMessage("§c打包费需在 0~9999 之间");
                         return true;
                     }
                     getConfigMgr().packingFee = amt;

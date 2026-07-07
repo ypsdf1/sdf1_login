@@ -452,8 +452,8 @@ public class ShopManager implements Listener {
     private boolean deductAndGive(Player p,
                                   List<CartItem> cart, int baseTotal,
                                   boolean useShulker, Material color,
-                                  String packNote, int packFee,
-                                  int ecoPct, int couponPct) {
+                                  String packNote, double packFee,
+                                  double ecoPct, int couponPct) {
 
         UUID uuid = p.getUniqueId();
         int originalTotal = 0;
@@ -491,7 +491,7 @@ public class ShopManager implements Listener {
 
         if (packFee > 0) {
             plugin.getBonds().deductBonds(
-                    p.getName(), packFee,
+                    p.getName(), (int) Math.round(packFee),
                     "shop_packing", "",
                     "商店系统", "打包费");
         }
@@ -538,9 +538,9 @@ public class ShopManager implements Listener {
             }
             plugin.getOrderManager().recordOrder(
                     p, orderItems, originalTotal,
-                    baseTotal + packFee,
+                    (int) (baseTotal + Math.round(packFee)),
                     originalTotal - baseTotal,
-                    dType, cCode, packFee,
+                    dType, cCode, (int) Math.round(packFee),
                     useShulker ? (packFee > 0
                                   ? "custom" : "default")
                             : "none",
@@ -776,12 +776,12 @@ public class ShopManager implements Listener {
 
         int couponPct = activeDiscount
                 .getOrDefault(p.getUniqueId(), 0);
-        int ecoPct = 0;
-        int packFeeCfg = plugin.getConfigMgr().packingFee;   // 彩色潜影盒打包费（配置）
-        int greenPct = plugin.getConfigMgr().greenDiscount;  // 环保单减免（不打包时减免）
+        double ecoPct = 0;
+        double packFeeCfg = plugin.getConfigMgr().packingFee;   // 彩色潜影盒打包费（配置）
+        double greenPct = plugin.getConfigMgr().greenDiscount;  // 环保单减免（不打包时减免）
 
-        if (raw == 10) {
-            ecoPct = greenPct; // 不打包（环保单）→ 减免
+        if (raw == 10) { // 不打包（环保单）→ 减免
+            ecoPct = greenPct;
         }
 
         double factor = 1.0;
@@ -840,7 +840,7 @@ public class ShopManager implements Listener {
                 "灰色","淡灰","青色","紫色",
                 "蓝色","棕色","绿色","红色","黑色"
         };
-        int packFee = plugin.getConfigMgr().packingFee; // 打包费（彩色潜影盒加收，来自配置）
+        double packFee = plugin.getConfigMgr().packingFee; // 打包费（彩色潜影盒加收，来自配置）
         for (int i = 0; i < SHULKER_COLORS.length; i++) {
             ItemStack is = new ItemStack(SHULKER_COLORS[i]);
             ItemMeta im = is.getItemMeta();
@@ -2272,16 +2272,16 @@ public class ShopManager implements Listener {
             return true;
         }
 
-        // 打包费配置：shop packmoney <金额> （与 /sdf1_login set packmoney 等效）
+        // 打包费配置：shop packmoney <金额> （与 /sdf1_login set packmoney 等效，支持小数）
         if (sub.equals("packmoney")) {
             if (a.length < 3) {
-                s.sendMessage("§e用法: shop packmoney <金额(0~999)>");
+                s.sendMessage("§e用法: shop packmoney <金额(0~9999，支持小数)>");
                 return true;
             }
             try {
-                int amt = Integer.parseInt(a[2]);
-                if (amt < 0 || amt > 999) {
-                    s.sendMessage("§c打包费需在 0~999 之间");
+                double amt = Double.parseDouble(a[2]);
+                if (amt < 0 || amt > 9999) {
+                    s.sendMessage("§c打包费需在 0~9999 之间");
                     return true;
                 }
                 plugin.getConfigMgr().packingFee = amt;
@@ -2293,20 +2293,19 @@ public class ShopManager implements Listener {
             return true;
         }
 
-        // 环保单减免：shop green <1-10> （与 shop setgreen 等效，便于在 shop 子命令下管理）
+        // 环保单减免：shop green <1-10> （与 shop setgreen 等效，便于在 shop 子命令下管理，支持小数）
         if (sub.equals("green")) {
             if (a.length < 3) {
-                s.sendMessage("§e用法: shop green <1-10>（10=不减免，1-9.99=按比例减免%）");
+                s.sendMessage("§e用法: shop green <0~10>（10=不减免，支持小数如 9.6 / 3.33）");
                 return true;
             }
             try {
                 double v = Double.parseDouble(a[2]);
-                int gv = (int) Math.floor(v);
-                if (gv < 0) gv = 0;
-                if (gv >= 10) gv = 0; // 10 视为不减免
-                plugin.getConfigMgr().greenDiscount = gv;
-                plugin.webManager.pushShopConfig("green_discount", String.valueOf(gv));
-                s.sendMessage("§a环保单减免已设置为 " + gv + "%（10=不减免，已同步至Web配置）");
+                if (v < 0) v = 0;
+                if (v >= 10) v = 0; // 10 视为不减免
+                plugin.getConfigMgr().greenDiscount = v;
+                plugin.webManager.pushShopConfig("green_discount", String.valueOf(v));
+                s.sendMessage("§a环保单减免已设置为 " + v + "%（10=不减免，已同步至Web配置）");
             } catch (NumberFormatException e) {
                 s.sendMessage("§c参数必须为数字");
             }
@@ -2323,12 +2322,11 @@ public class ShopManager implements Listener {
             }
             try {
                 double v = Double.parseDouble(a[2]);
-                int gv = (int) Math.floor(v);
-                if (gv < 0) gv = 0;
-                if (gv >= 10) gv = 0; // 10 视为不减免
-                plugin.getConfigMgr().greenDiscount = gv;
-                plugin.webManager.pushShopConfig("green_discount", String.valueOf(gv));
-                s.sendMessage("§a环保单减免已设置为 " + gv
+                if (v < 0) v = 0;
+                if (v >= 10) v = 0; // 10 视为不减免
+                plugin.getConfigMgr().greenDiscount = v;
+                plugin.webManager.pushShopConfig("green_discount", String.valueOf(v));
+                s.sendMessage("§a环保单减免已设置为 " + v
                         + "%（10=不减免，已同步至Web配置）");
             } catch (NumberFormatException e) {
                 s.sendMessage("§c参数必须为数字");

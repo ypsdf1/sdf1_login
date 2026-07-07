@@ -6497,10 +6497,10 @@ public class WebManager {
                     if (objEnd < 0) return;
                     Map<String, Object> m = parseJsonObject(sub.substring(objStart, objEnd + 1));
                     if (m.containsKey("packmoney")) {
-                        plugin.getConfigMgr().packingFee = ((Number) m.get("packmoney")).intValue();
+                        plugin.getConfigMgr().packingFee = ((Number) m.get("packmoney")).doubleValue();
                     }
                     if (m.containsKey("green_discount")) {
-                        plugin.getConfigMgr().greenDiscount = ((Number) m.get("green_discount")).intValue();
+                        plugin.getConfigMgr().greenDiscount = ((Number) m.get("green_discount")).doubleValue();
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[配置同步] 拉取商店打包配置异常: " + e.getMessage());
