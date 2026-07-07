@@ -7,33 +7,24 @@ require_once __DIR__ . '/core.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-// 读取打包费配置（彩色潜影盒加收，须与后端 shopBuyCart 保持一致）
-function cashierGetPackMoney() {
+// 读取收银台配置（★ 单次查询同时获取packmoney和green_discount）
+function cashierGetConfig() {
     try {
         $db = getDB();
-        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
-        $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = 'packmoney'");
+        $stmt = $db->prepare("SELECT cfg_key, cfg_value FROM shop_config WHERE cfg_key IN ('packmoney','green_discount')");
         $result = $stmt->execute();
-        $row = $result->fetchArray(SQLITE3_ASSOC);
-        return $row ? (int)$row['cfg_value'] : 5;
+        $map = ['packmoney' => 5, 'green_discount' => 2]; // 默认值
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $map[$row['cfg_key']] = $row['cfg_value'];
+        }
+        return $map;
     } catch (Exception $e) {
-        return 5;
+        return ['packmoney' => 5, 'green_discount' => 2];
     }
 }
-function cashierGetGreenDiscount() {
-    try {
-        $db = getDB();
-        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
-        $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = 'green_discount'");
-        $result = $stmt->execute();
-        $row = $result->fetchArray(SQLITE3_ASSOC);
-        return $row ? (float)$row['cfg_value'] : 2;
-    } catch (Exception $e) {
-        return 2;
-    }
-}
-$packMoney = cashierGetPackMoney();
-$greenDiscount = cashierGetGreenDiscount();
+$cfg = cashierGetConfig();
+$packMoney = (int)$cfg['packmoney'];
+$greenDiscount = (float)$cfg['green_discount'];
 
 $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $initialRole = 'guest';

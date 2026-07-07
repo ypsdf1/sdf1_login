@@ -249,11 +249,10 @@ function shopBuy($token) {
     ], '购买成功');
 }
 
-// ===== 购物车配置读取 =====
+// ===== 购物车配置读取（批量优化：单次查询读取所有需要的配置） =====
 function getShopConfig($key, $default = null) {
     try {
         $db = getDB();
-        $db->exec("CREATE TABLE IF NOT EXISTS shop_config (cfg_key TEXT PRIMARY KEY, cfg_value TEXT NOT NULL)");
         $stmt = $db->prepare("SELECT cfg_value FROM shop_config WHERE cfg_key = :k");
         $stmt->bindValue(':k', $key, SQLITE3_TEXT);
         $result = $stmt->execute();
@@ -264,13 +263,38 @@ function getShopConfig($key, $default = null) {
     }
 }
 
-// 返回购物车折扣/加价配置（前端展示用）
+/**
+ * 批量读取多个shop_config键（一次查询替代N次getShopConfig调用）
+ * @return array  key => value (不存在的key不返回)
+ */
+function getShopConfigs(array $keys) {
+    if (empty($keys)) return [];
+    try {
+        $db = getDB();
+        $placeholders = implode(',', array_fill(0, count($keys), '?'));
+        $stmt = $db->prepare("SELECT cfg_key, cfg_value FROM shop_config WHERE cfg_key IN ($placeholders)");
+        foreach ($keys as $i => $k) {
+            $stmt->bindValue($i + 1, $k, SQLITE3_TEXT);
+        }
+        $result = $stmt->execute();
+        $map = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $map[$row['cfg_key']] = $row['cfg_value'];
+        }
+        return $map;
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+// 返回购物车折扣/加价配置（前端展示用，★ 批量读取）
 function cartConfig() {
+    $cfg = getShopConfigs(['cart_backpack_rate', 'cart_shulker_rate', 'packmoney', 'green_discount']);
     success([
-        'backpack_rate' => (float)getShopConfig('cart_backpack_rate', '0.98'),
-        'shulker_rate' => (float)getShopConfig('cart_shulker_rate', '1.00'),
-        'packmoney' => (int)getShopConfig('packmoney', '5'),
-        'green_discount' => (float)getShopConfig('green_discount', '2')
+        'backpack_rate' => (float)($cfg['cart_backpack_rate'] ?? '0.98'),
+        'shulker_rate' => (float)($cfg['cart_shulker_rate'] ?? '1.00'),
+        'packmoney' => (int)($cfg['packmoney'] ?? '5'),
+        'green_discount' => (float)($cfg['green_discount'] ?? '2')
     ]);
 }
 
@@ -345,12 +369,13 @@ function shopBuyCart($token) {
         }
     }
 
-    // 结算模式对应的折扣/加价系数
+    // 结算模式对应的折扣/加价系数（★ 批量读取所有配置键，1次查询替代4次）
+    $cfg = getShopConfigs(['cart_shulker_rate', 'packmoney', 'cart_backpack_rate', 'green_discount']);
     if ($settlement === 'shulker') {
-        $rate = (float)getShopConfig('cart_shulker_rate', '1.00');
+        $rate = (float)($cfg['cart_shulker_rate'] ?? '1.00');
         $modeName = '潜影盒打包';
         // 潜影盒颜色额外收费（原色/紫色免费，其它加收打包费，打包费来自配置 packmoney）
-        $packMoney = (int)getShopConfig('packmoney', '5');
+        $packMoney = (int)($cfg['packmoney'] ?? '5');
         $colorFee = ($shulkerColor !== 'default' && $shulkerColor !== 'purple') ? $packMoney : 0;
         // 颜色名称映射
         $colorNames = ['default'=>'原色','purple'=>'原色','white'=>'白色','black'=>'黑色','red'=>'红色','blue'=>'蓝色','green'=>'绿色','yellow'=>'黄色','orange'=>'橙色'];
@@ -358,12 +383,12 @@ function shopBuyCart($token) {
         $ecoPct = 0;
     } else {
         $settlement = 'backpack';
-        $rate = (float)getShopConfig('cart_backpack_rate', '0.98');
+        $rate = (float)($cfg['cart_backpack_rate'] ?? '0.98');
         $modeName = '塞背包（环保单）';
         $colorFee = 0;
         $colorName = '';
         // 环保单减免：不打包/塞背包时按配置比例减免（与游戏内"不打包"一致）
-        $ecoPct = (float)getShopConfig('green_discount', '2');
+        $ecoPct = (float)($cfg['green_discount'] ?? '2');
     }
 
     $db = getDB();

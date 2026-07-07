@@ -60,10 +60,10 @@ function getDB() {
         $db->enableExceptions(true);
         // WAL模式 + 长等待超时防止database is locked
         $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA busy_timeout=60000');  // ★ 60秒等待（原30秒不够）
+        $db->exec('PRAGMA busy_timeout=8000');   // ★ 8秒等待（原60秒太长，Java轮询锁时PHP会卡住近1分钟）
         $db->exec('PRAGMA synchronous=NORMAL');
         $db->exec('PRAGMA cache_size=-64000');     // 64MB 缓存
-        $db->exec('PRAGMA wal_autocheckpoint=1000');
+        $db->exec('PRAGMA wal_autocheckpoint=100');// ★ 更频繁checkpoint（原1000），更快释放WAL锁减少竞争
 
         // ★ initTables/migrateDatabase加try-catch，防止初始化写入失败导致整个请求500
         try {

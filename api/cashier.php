@@ -123,7 +123,6 @@ function cashierPlayerCheck() {
         exit(json_encode(['success' => false, 'message' => '玩家名格式不正确（3-16位英文/数字/下划线）'], JSON_UNESCAPED_UNICODE));
     }
     $db = getDB();
-    $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (player_name TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
     try {
         $db->exec("INSERT OR IGNORE INTO bond_cache (player_name, amount, updated_at) VALUES ('" . str_replace("'", "''", $player) . "', 0, " . time() . ")");
         $stmt = $db->prepare("SELECT amount FROM bond_cache WHERE player_name = :name");
