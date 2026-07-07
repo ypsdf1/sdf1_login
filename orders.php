@@ -5,6 +5,10 @@
  */
 require_once __DIR__ . '/core.php';
 
+// ★ 强制使 opcache 失效，确保部署后的新版（含请求超时/重试）立即生效，
+//   避免 Web 服务端 opcache 持续服务旧版 orders.php（无超时→永久"加载中"）
+if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__); }
+
 if (session_status() === PHP_SESSION_NONE) session_start();
 
 $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
