@@ -15,7 +15,7 @@ $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $role = 'guest';
 $name = '';
 if (isAdminLoggedIn()) { $role = 'admin'; $name = 'admin'; }
-elseif (isCashierLoggedIn()) { $c = getCurrentCashier(); $role = 'cashier'; $name = $c['username']; }
+elseif (isCashierLoggedIn()) { $c = getCurrentCashier() ?: []; $role = 'cashier'; $name = $c['username'] ?? ''; }
 
 $initialState = json_encode([
     'logged_in' => $loggedIn,

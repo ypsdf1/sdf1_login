@@ -178,19 +178,28 @@ function cashierOrderList() {
     $sql .= " ORDER BY created_at DESC LIMIT " . (int)$limit;
 
     $rows = [];
-    $stmt = $db->prepare($sql);
-    if (!$stmt) {
-        exit(json_encode(['success' => false, 'message' => '查询失败: ' . $db->lastErrorMsg()], JSON_UNESCAPED_UNICODE));
-    }
-    foreach ($params as $k => $v) {
-        $stmt->bindValue($k, $v, SQLITE3_TEXT);
-    }
-    $result = $stmt->execute();
-    while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
-        if (!empty($r['items_detail'])) {
-            $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
+    try {
+        $stmt = $db->prepare($sql);
+        if (!$stmt) {
+            exit(json_encode(['success' => false, 'message' => '查询失败: ' . $db->lastErrorMsg()], JSON_UNESCAPED_UNICODE));
         }
-        $rows[] = $r;
+        foreach ($params as $k => $v) {
+            $stmt->bindValue($k, $v, SQLITE3_TEXT);
+        }
+        $result = $stmt->execute();
+        while ($r = $result->fetchArray(SQLITE3_ASSOC)) {
+            if (!empty($r['items_detail'])) {
+                $r['items_detail'] = json_decode($r['items_detail'], true) ?: [];
+            }
+            $rows[] = $r;
+        }
+    } catch (\Throwable $e) {
+        // ★ 2026-07-07 加固：任何查询异常都返回合法 JSON，绝不把 PHP 报错文本注入响应
+        //   （否则前端 r.json() 失败，订单页表现为“加载失败/报错”）。
+        exit(json_encode([
+            'success' => false,
+            'message' => '订单查询异常: ' . $e->getMessage()
+        ], JSON_UNESCAPED_UNICODE));
     }
     exit(json_encode(['success' => true, 'data' => $rows], JSON_UNESCAPED_UNICODE));
 }
