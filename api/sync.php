@@ -2819,7 +2819,7 @@ function getShopConfigSync() {
     };
     success([
         'packmoney' => (float)$read('packmoney', '5'),
-        'green_discount' => (float)$read('green_discount', '2')
+        'green_discount' => (float)$read('green_discount', '10')
     ]);
 }
 
@@ -2839,7 +2839,7 @@ function setShopConfigSync() {
         if ($v < 0 || $v > 999) error('打包费需介于 0 ~ 999');
     } else {
         $v = (float)$value;
-        if ($v < 0 || $v > 9.99) error('环保单减免需介于 0 ~ 9.99');
+        if ($v < 0 || $v > 10) error('环保单折扣（折数）需介于 0 ~ 10');
     }
 
     $db = getDB();

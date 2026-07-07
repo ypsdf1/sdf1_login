@@ -13,13 +13,13 @@ function cashierGetConfig() {
         $db = getDB();
         $stmt = $db->prepare("SELECT cfg_key, cfg_value FROM shop_config WHERE cfg_key IN ('packmoney','green_discount','cart_backpack_rate','cart_shulker_rate')");
         $result = $stmt->execute();
-        $map = ['packmoney' => 5, 'green_discount' => 2, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00']; // 默认值
+        $map = ['packmoney' => 5, 'green_discount' => 10, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00']; // 默认值
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $map[$row['cfg_key']] = $row['cfg_value'];
         }
         return $map;
     } catch (Exception $e) {
-        return ['packmoney' => 5, 'green_discount' => 2, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00'];
+        return ['packmoney' => 5, 'green_discount' => 10, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00'];
     }
 }
 $cfg = cashierGetConfig();
@@ -581,14 +581,16 @@ async function recalc() {
     });
     const rate = RATES[settlement];
     let afterRate = Math.round(subtotal * rate);
-    // ★ 环保单减免：用 ?? 代替 ||，避免 green_discount=0 被当 falsy 回退
-    const ecoPctVal = STATE.green_discount ?? 0;
+    // ★ 环保单折扣（折数）：green_discount=10 不打折，9.9=9.9折(支付99%)；用 ?? 避免=0 被当 falsy
+    const ecoPctVal = STATE.green_discount ?? 0;   // 折数（如 9.9）
     let ecoPct = 0;
     let ecoAmt = 0;
     if (settlement === 'backpack') ecoPct = ecoPctVal;
     if (ecoPct > 0) {
-        ecoAmt = afterRate - Math.round(afterRate * (100 - ecoPct) / 100);
-        afterRate -= ecoAmt;
+        // 折扣率语义：折后 = 原价 × 折数/10（9.9折→×0.99）
+        const ecoDiscounted = Math.round(afterRate * ecoPct / 10);
+        ecoAmt = afterRate - ecoDiscounted;
+        afterRate = ecoDiscounted;
     }
     let colorFee = 0;
     const sc = document.getElementById('shulkerColor').value;
@@ -608,7 +610,7 @@ async function recalc() {
     document.getElementById('summary').innerHTML = `
         <div class="summary-line"><span>商品小计</span><span>${subtotal} 债券</span></div>
         <div class="summary-line"><span>${settlement==='shulker'?'潜影盒费率':'背包费率'} (${rate*100}%)</span><span>${colorFee?('+'+colorFee):''}</span></div>
-        ${ecoPct>0?`<div class="summary-line"><span class="disc">环保单减免 ${ecoPct}%</span><span class="disc">-${ecoAmt} 债券</span></div>`:''}
+        ${ecoPct>0?`<div class="summary-line"><span class="disc">环保单 ${ecoPct}折</span><span class="disc">-${ecoAmt} 债券</span></div>`:''}
         <div class="summary-line"><span>应收原价</span><span>${total} 债券</span></div>
         <div class="summary-line"><span class="disc">手动折扣 ${discount}%</span><span class="disc">-${discAmt} 债券</span></div>
         ${payMode === 'cash' ? '<div class="summary-line" style="border-color:var(--orange);color:var(--orange)"><span>💵 现金收款模式</span><span>仅记账，不扣债券</span></div>' : ''}

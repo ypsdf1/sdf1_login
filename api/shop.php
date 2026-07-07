@@ -294,7 +294,7 @@ function cartConfig() {
         'backpack_rate' => (float)($cfg['cart_backpack_rate'] ?? '0.98'),
         'shulker_rate' => (float)($cfg['cart_shulker_rate'] ?? '1.00'),
         'packmoney' => (float)($cfg['packmoney'] ?? '5'),
-        'green_discount' => (float)($cfg['green_discount'] ?? '2')
+        'green_discount' => (float)($cfg['green_discount'] ?? '10')
     ]);
 }
 
@@ -390,8 +390,8 @@ function shopBuyCart($token) {
         $modeName = '塞背包（环保单）';
         $colorFee = 0;
         $colorName = '';
-        // 环保单减免：不打包/塞背包时按配置比例减免（与游戏内"不打包"一致）
-        $ecoPct = (float)($cfg['green_discount'] ?? '2');
+        // 环保单折扣率（折数）：10=不打折，9.9=9.9折(支付99%)，与游戏内"不打包"一致
+        $ecoPct = (float)($cfg['green_discount'] ?? '10');
     }
 
     $db = getDB();
@@ -418,9 +418,10 @@ function shopBuyCart($token) {
     }
     unset($p);
 
-    // 先按费率计算，再叠加环保单减免（不打包/塞背包），最后加颜色打包费
+    // 先按费率计算，再叠加环保单折扣（不打包/塞背包，折扣率为折数），最后加颜色打包费
+    // green_discount 语义：10=不打折，9.9=9.9折(×0.99)，9.8=9.8折(×0.98)
     $baseAfterRate = (int)round($subtotal * $rate);
-    if ($ecoPct > 0) $baseAfterRate = (int)round($baseAfterRate * (100 - $ecoPct) / 100);
+    if ($ecoPct > 0) $baseAfterRate = (int)round($baseAfterRate * $ecoPct / 10);
     $totalPrice = $baseAfterRate + $colorFee;
     $saved = $subtotal - $totalPrice; // 折扣省下的（潜影盒加价+颜色费时为负）
 

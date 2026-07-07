@@ -408,7 +408,7 @@ async function loadShop(el) {
             <div class="form-row"><label>塞背包折扣系数</label><input id="cfgBackpack" type="number" step="0.01" min="0.01" max="1" oninput="updateCartCfgHint()"></div>
             <div class="form-row"><label>潜影盒加价系数</label><input id="cfgShulker" type="number" step="0.01" min="1" max="3" oninput="updateCartCfgHint()"></div>
             <div class="form-row"><label>彩色潜影盒打包费</label><input id="cfgPackMoney" type="number" min="0" max="999" value="5"><span style="font-size:12px;color:var(--dim)">彩色潜影盒加收债券数（原色免费）</span></div>
-            <div class="form-row"><label>环保单减免(%)</label><input id="cfgGreen" type="number" min="0" max="9.99" step="0.01" value="2"><span style="font-size:12px;color:var(--dim)">0 = 不减免；玩家选「不打包」时按比例减免（命令 /sdf1_login shop setgreen 10 亦为不减免）</span></div>
+            <div class="form-row"><label>环保单折扣(折数)</label><input id="cfgGreen" type="number" min="0" max="10" step="0.1" value="10"><span style="font-size:12px;color:var(--dim)">折扣率（折数）：10 = 不打折，9.9 = 9.9折(支付99%)，9.8 = 9.8折(支付98%)；玩家选「不打包」时按此折扣（命令 /sdf1_login shop setgreen 10 亦为不打折）</span></div>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
                 <button class="btn btn-green" onclick="saveCartConfig()">保存配置</button>
                 <span id="cartCfgHint" style="font-size:12px;color:var(--accent)"></span>
@@ -465,7 +465,7 @@ async function saveCartConfig() {
     if (bp <= 0 || bp > 1) { toast('塞背包折扣系数应在 0.01 ~ 1.00 之间', 'err'); return; }
     if (sh < 1 || sh > 3) { toast('潜影盒加价系数应在 1.00 ~ 3.00 之间', 'err'); return; }
     if (isNaN(pm) || pm < 0 || pm > 999) { toast('打包费应在 0 ~ 999 之间', 'err'); return; }
-    if (gd < 0 || gd > 9.99) { toast('环保单减免应在 0 ~ 9.99 之间', 'err'); return; }
+    if (gd < 0 || gd > 10) { toast('环保单折扣（折数）应在 0 ~ 10 之间', 'err'); return; }
     const r = await postApi('save_shop_config', { cart_backpack_rate: bp, cart_shulker_rate: sh, packmoney: pm, green_discount: gd });
     toast(r.message || (r.success ? '已保存' : '保存失败'), r.success ? 'ok' : 'err');
     if (r.success) updateCartCfgHint();

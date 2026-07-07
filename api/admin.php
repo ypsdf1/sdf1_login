@@ -329,11 +329,11 @@ function adminSaveShopConfig() {
             $saved['packmoney'] = $pm;
         }
 
-        // 环保单减免百分比（0=不减免；命令 setgreen 10 亦为不减免）
+        // 环保单折扣率（折数）：10=不打折，9.9=9.9折；命令 setgreen 10 亦为不打折
         $gd = getParam('green_discount');
         if ($gd !== null) {
             $gd = (float)$gd;
-            if ($gd < 0 || $gd > 9.99) error('环保单减免需介于 0 ~ 9.99 之间');
+            if ($gd < 0 || $gd > 10) error('环保单折扣（折数）需介于 0 ~ 10 之间');
             $upsert->bindValue(':k', 'green_discount', SQLITE3_TEXT);
             $upsert->bindValue(':v', number_format($gd, 2, '.', ''), SQLITE3_TEXT);
             $upsert->execute();
