@@ -7,24 +7,26 @@ require_once __DIR__ . '/core.php';
 
 if (session_status() === PHP_SESSION_NONE) session_start();
 
-// 读取收银台配置（★ 单次查询同时获取packmoney和green_discount）
+// 读取收银台配置（★ 单次查询同时获取packmoney、green_discount和费率）
 function cashierGetConfig() {
     try {
         $db = getDB();
-        $stmt = $db->prepare("SELECT cfg_key, cfg_value FROM shop_config WHERE cfg_key IN ('packmoney','green_discount')");
+        $stmt = $db->prepare("SELECT cfg_key, cfg_value FROM shop_config WHERE cfg_key IN ('packmoney','green_discount','cart_backpack_rate','cart_shulker_rate')");
         $result = $stmt->execute();
-        $map = ['packmoney' => 5, 'green_discount' => 2]; // 默认值
+        $map = ['packmoney' => 5, 'green_discount' => 2, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00']; // 默认值
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $map[$row['cfg_key']] = $row['cfg_value'];
         }
         return $map;
     } catch (Exception $e) {
-        return ['packmoney' => 5, 'green_discount' => 2];
+        return ['packmoney' => 5, 'green_discount' => 2, 'cart_backpack_rate' => '0.98', 'cart_shulker_rate' => '1.00'];
     }
 }
 $cfg = cashierGetConfig();
 $packMoney = (int)$cfg['packmoney'];
 $greenDiscount = (float)$cfg['green_discount'];
+$backpackRate = (float)($cfg['cart_backpack_rate'] ?? 0.98);
+$shulkerRate = (float)($cfg['cart_shulker_rate'] ?? 1.00);
 
 $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
 $initialRole = 'guest';
@@ -49,7 +51,9 @@ $initialState = json_encode([
     'discount_limit' => $initialLimit,
     'cashier_can_cash' => $initialCanCash,
     'packmoney' => $packMoney,
-    'green_discount' => $greenDiscount
+    'green_discount' => $greenDiscount,
+    'backpack_rate' => $backpackRate,
+    'shulker_rate' => $shulkerRate
 ], JSON_UNESCAPED_UNICODE);
 ?>
 <!DOCTYPE html>
@@ -323,9 +327,13 @@ $initialState = json_encode([
         <div class="cat-tabs" id="catTabs"></div>
         <div class="prod-grid" id="prodGrid"><div style="color:var(--dim);font-size:12px;padding:18px">加载中…</div></div>
 
-        <div class="orders">
-            <h3 style="margin-top:6px">📜 订单记录 <button class="btn btn-ghost" style="float:right;padding:4px 10px;font-size:11px" onclick="loadOrders()">刷新</button></h3>
-            <div id="orderList"><div style="color:var(--dim);font-size:12px;padding:10px">暂无订单</div></div>
+        <!-- 订单记录改为独立入口（点击跳转到 orders.php） -->
+        <div class="orders" style="margin-top:14px">
+            <h3 style="margin-top:6px;display:flex;align-items:center;justify-content:space-between">
+                <span>📜 订单记录</span>
+                <a href="orders.php" id="orderLinkBtn" class="btn btn-ghost" style="padding:4px 14px;font-size:11px;text-decoration:none">查看全部 →</a>
+            </h3>
+            <div id="orderList"><div style="color:var(--dim);font-size:12px;padding:10px">点击右侧查看完整订单记录</div></div>
         </div>
     </div>
 </div>
@@ -451,7 +459,7 @@ async function initApp() {
         // 不隐藏整个 payModeWrap，但只显示债券模式
     }
 
-    await Promise.all([loadProducts(), loadOrders()]);
+    await Promise.all([loadProducts()]); // 订单记录已独立到 orders.php，不再在此加载
 }
 
 async function loadProducts() {
@@ -547,7 +555,8 @@ function setPayMode(pm) {
 }
 
 // ===== 计算 + 预览 =====
-const RATES = { backpack: 0.98, shulker: 1.00 };
+// ★ 费率从后端配置读取，不再硬编码
+const RATES = { backpack: (STATE.backpack_rate || 0.98), shulker: (STATE.shulker_rate || 1.00) };
 async function recalc() {
     const ids = Object.keys(cart);
     const payBtn = document.getElementById('payBtn');
@@ -563,17 +572,21 @@ async function recalc() {
     });
     const rate = RATES[settlement];
     let afterRate = Math.round(subtotal * rate);
-    // 环保单减免：不打包/塞背包时按配置比例减免（与游戏内"不打包"一致）
+    // ★ 环保单减免：用 ?? 代替 ||，避免 green_discount=0 被当 falsy 回退
+    const ecoPctVal = STATE.green_discount ?? 0;
     let ecoPct = 0;
     let ecoAmt = 0;
-    if (settlement === 'backpack') ecoPct = STATE.green_discount || 0;
+    if (settlement === 'backpack') ecoPct = ecoPctVal;
     if (ecoPct > 0) {
         ecoAmt = afterRate - Math.round(afterRate * (100 - ecoPct) / 100);
         afterRate -= ecoAmt;
     }
     let colorFee = 0;
     const sc = document.getElementById('shulkerColor').value;
-    if (settlement === 'shulker' && sc !== 'default' && sc !== 'purple') colorFee = STATE.packmoney || 2;
+    if (settlement === 'shulker' && sc !== 'default' && sc !== 'purple') {
+        // ★ 修复：使用 ?? 而非 ||，避免 packmoney=0 时被误判为 falsy 而回退到默认值2
+        colorFee = STATE.packmoney ?? 2;
+    }
     let total = afterRate + colorFee;
 
     let discount = parseFloat(document.getElementById('discount').value) || 0;

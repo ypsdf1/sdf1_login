@@ -572,6 +572,20 @@ function shopBuyCart($token) {
         error('购物车结算失败: ' . $e->getMessage(), 500);
     }
 
+    // ★ 推送小票书给在线玩家（写入 web_admin_changes → Java pollAdminChanges 拾取并发放 Written Book）
+    if (!empty($orderNo) && !empty($player)) {
+        pushReceiptBookToPlayer($player, [
+            'order_no' => $orderNo,
+            'order_time' => date('Y-m-d H:i:s'),
+            'order_player' => $player,
+            'operator' => ($isCashier ? ($cashierRow['username'] ?? '') : 'admin'),
+            'settlement' => $modeName,
+            'pay_method' => $payMode,
+            'total_price' => (int)$finalPrice,
+            'items_text' => array_map(function($l) { return $l['name'] . ' x' . $l['amount'] . ' ... ' . $l['line_total'] . '债'; }, $lines)
+        ]);
+    }
+
     success([
         'settlement' => $settlement,
         'mode_name' => $modeName,
@@ -610,5 +624,32 @@ function validateWebloginTokenForShop($webToken) {
         ];
     } catch (Exception $e) {
         return false;
+    }
+}
+
+// ===== 推送打包小票书给在线玩家（写入 web_admin_changes → Java 拾取发放 Written Book）=====
+function pushReceiptBookToPlayer($playerName, $orderData) {
+    try {
+        $db = getDB();
+        // 确保表存在
+        $db->exec("CREATE TABLE IF NOT EXISTS web_admin_changes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            change_type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            target_name TEXT DEFAULT '',
+            change_data TEXT DEFAULT '{}',
+            created_at INTEGER DEFAULT 0,
+            acknowledged INTEGER DEFAULT 0,
+            acked_at INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'done'
+        )");
+        $stmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at, status)
+            VALUES ('give_receipt_book', '0', :player, :data, :time, 'pending')");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $stmt->bindValue(':data', json_encode($orderData, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt->execute();
+    } catch (Exception $e) {
+        error_log('[小票书] 推送小票书失败: ' . $e->getMessage());
     }
 }
