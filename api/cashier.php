@@ -55,8 +55,10 @@ switch ($action) {
     default:
         exit(json_encode(['success' => false, 'message' => '未知操作: ' . $action], JSON_UNESCAPED_UNICODE));
 }
-} catch (Exception $e) {
-    @error_log('[cashier.php] ' . $e->getMessage());
+} catch (\Throwable $e) {
+    // ★ 2026-07-07 补强：顶层统一捕获 Throwable（含 Error），避免致命错误逃逸导致前端收到
+    //   非 JSON 响应（表现为“加载失败”却无具体原因）。同时落盘 debug.log 便于事后定位。
+    debugLog('[cashier.php] 顶层未捕获异常: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
     exit(json_encode(['success' => false, 'message' => '服务器错误: ' . $e->getMessage()], JSON_UNESCAPED_UNICODE));
 }
 
@@ -196,6 +198,7 @@ function cashierOrderList() {
     } catch (\Throwable $e) {
         // ★ 2026-07-07 加固：任何查询异常都返回合法 JSON，绝不把 PHP 报错文本注入响应
         //   （否则前端 r.json() 失败，订单页表现为“加载失败/报错”）。
+        debugLog('[cashier.php] order_list 查询异常: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
         exit(json_encode([
             'success' => false,
             'message' => '订单查询异常: ' . $e->getMessage()
