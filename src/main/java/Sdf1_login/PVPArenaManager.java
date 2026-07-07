@@ -68,6 +68,14 @@ public class PVPArenaManager implements Listener {
     // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
     private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
 
+    // ★ GUI打开时间戳（宽限期机制）：打开GUI后的一段时间内忽略关闭事件
+    //   原因：NORMAL地形PVP世界传送后区块加载期间，服务端可能触发额外的InventoryCloseEvent
+    //   此类事件非玩家行为导致（不是ESC、不是切档位），guiReopening未设置→误遣返
+    private final Map<String, Long> guiOpenedMillis = new ConcurrentHashMap<>();
+
+    /** GUI宽限期：打开后此时间内关闭事件不触发遣返（毫秒） */
+    private static final long GUI_GRACE_PERIOD_MS = 5000L; // 5秒，覆盖传送+区块加载+GUI初始化
+
     // 玩家背包备份缓存 (玩家名 -> 备份数据)
     private final Map<String, InventoryBackup> inventoryBackups = new ConcurrentHashMap<>();
 
@@ -584,6 +592,17 @@ public class PVPArenaManager implements Listener {
         // 程序内重开装备GUI（切换档位）导致的旧GUI关闭，忽略，不遣返
         if (guiReopening.remove(player.getName())) return;
 
+        // ★ GUI宽限期：打开后5秒内的关闭事件忽略（传送/区块加载期间服务端可能额外触发关闭）
+        Long openedAt = guiOpenedMillis.get(player.getName());
+        if (openedAt != null) {
+            long elapsed = System.currentTimeMillis() - openedAt;
+            if (elapsed < GUI_GRACE_PERIOD_MS) {
+                plugin.getLogger().info("[PVP] 宽限期内关闭事件忽略: " + player.getName()
+                        + " (距GUI打开 " + elapsed + "ms < " + GUI_GRACE_PERIOD_MS + "ms)");
+                return;
+            }
+        }
+
         // 已确认过装备的玩家允许自由开关背包
         if (equipmentConfirmed.contains(player.getName())) return;
 
@@ -700,6 +719,8 @@ public class PVPArenaManager implements Listener {
         inPVPArena.remove(playerName);
         equipmentConfirmed.remove(playerName);
         inventoryBackups.remove(playerName);
+        guiReopening.remove(playerName);
+        guiOpenedMillis.remove(playerName);
 
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 离开PVP竞技场"
                 + (isDisconnect ? "（断线）" : ""));
@@ -815,6 +836,8 @@ public class PVPArenaManager implements Listener {
                 // 还没确认装备 → 身上还是原背包，不需要特殊处理
                 inPVPArena.remove(player.getName());
                 equipmentConfirmed.remove(player.getName());
+                guiReopening.remove(player.getName());
+                guiOpenedMillis.remove(player.getName());
                 // 若因此成为最后一名退场者，启动空场冷却删除
                 scheduleWorldDeletionIfEmpty();
             }
@@ -954,6 +977,9 @@ public class PVPArenaManager implements Listener {
      * 打开装备选择GUI
      */
     public void openEquipmentSelection(Player player) {
+        // ★ 记录GUI打开时间（宽限期机制：此后5秒内的关闭事件不触发遣返）
+        guiOpenedMillis.put(player.getName(), System.currentTimeMillis());
+
         Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
 
         // ★ 顶部：当前选中档位的装备预览（第0-8格显示当前档位的装备）
@@ -1298,6 +1324,8 @@ public class PVPArenaManager implements Listener {
         inPVPArena.clear();
         equipmentConfirmed.clear();
         inventoryBackups.clear();
+        guiReopening.clear();
+        guiOpenedMillis.clear();
     }
 
     // ==================== 序列化（基于 BukkitObjectStream + Base64）====================
