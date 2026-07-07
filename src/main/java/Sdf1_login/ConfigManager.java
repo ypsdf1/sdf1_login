@@ -61,7 +61,7 @@ public class ConfigManager {
 
     // ===== 商店打包配置（来自 PHP shop_config，定时拉取）=====
     public double packingFee = 5.0;     // 彩色潜影盒打包加收债券数（原色免费，支持小数）
-    public double greenDiscount = 2.0;   // 环保单减免百分比（不打包/塞背包时减免，0=不减免，支持小数）
+    public double greenDiscount = 10.0;  // 环保单折扣率（折数）：10=不打折，9.9=9.9折(支付99%)，9.8=9.8折(支付98%)，支持小数
 
     // ★ 构造函数接收 File，和 Main.java 调用一致 ★
     public ConfigManager(File dataFolder) {

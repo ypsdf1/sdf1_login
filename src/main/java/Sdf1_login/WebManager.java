@@ -6476,7 +6476,7 @@ public class WebManager {
     }
 
     /**
-     * 拉取商店打包配置（打包费 / 环保单减免）并写入 ConfigManager
+     * 拉取商店打包配置（打包费 / 环保单折扣率）并写入 ConfigManager
      * 配置以 PHP shop_config 表为准，Java 命令 set packmoney / shop setgreen 也会回写该表
      */
     private void pullShopConfig() {

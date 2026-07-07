@@ -778,15 +778,16 @@ public class ShopManager implements Listener {
                 .getOrDefault(p.getUniqueId(), 0);
         double ecoPct = 0;
         double packFeeCfg = plugin.getConfigMgr().packingFee;   // 彩色潜影盒打包费（配置）
-        double greenPct = plugin.getConfigMgr().greenDiscount;  // 环保单减免（不打包时减免）
+        double greenPct = plugin.getConfigMgr().greenDiscount;  // 环保单折扣率（折数）：10=不打折，9.9=9.9折
 
         if (raw == 10) { // 不打包（环保单）→ 减免
             ecoPct = greenPct;
         }
 
         double factor = 1.0;
+        // ★ green_discount 语义为“折扣率（折数）”：10=不打折，9.9=9.9折(支付99%)，9.8=9.8折(支付98%)
         if (ecoPct > 0)
-            factor *= (100 - ecoPct) / 100.0;
+            factor *= ecoPct / 10.0;
         if (couponPct > 0)
             factor *= (100 - couponPct) / 100.0;
         int discounted = (int) Math.round(
@@ -2293,41 +2294,42 @@ public class ShopManager implements Listener {
             return true;
         }
 
-        // 环保单减免：shop green <1-10> （与 shop setgreen 等效，便于在 shop 子命令下管理，支持小数）
+        // 环保单折扣：shop green <0~10> （与 shop setgreen 等效，便于在 shop 子命令下管理，支持小数）
+        // 语义：green=10 不打折；green=9.9 表示 9.9 折（支付 99%）；green=9.8 表示 9.8 折（支付 98%）
         if (sub.equals("green")) {
             if (a.length < 3) {
-                s.sendMessage("§e用法: shop green <0~10>（10=不减免，支持小数如 9.6 / 3.33）");
+                s.sendMessage("§e用法: shop green <0~10>（10=不打折，9.9=9.9折，支持小数如 9.6 / 3.33）");
                 return true;
             }
             try {
                 double v = Double.parseDouble(a[2]);
                 if (v < 0) v = 0;
-                if (v >= 10) v = 0; // 10 视为不减免
+                if (v >= 10) v = 10; // 10 视为不打折（满价）
                 plugin.getConfigMgr().greenDiscount = v;
                 plugin.webManager.pushShopConfig("green_discount", String.valueOf(v));
-                s.sendMessage("§a环保单减免已设置为 " + v + "%（10=不减免，已同步至Web配置）");
+                s.sendMessage("§a环保单折扣已设置为 " + v + " 折（10=不打折，9.9=9.9折/99%价，已同步至Web配置）");
             } catch (NumberFormatException e) {
                 s.sendMessage("§c参数必须为数字");
             }
             return true;
         }
 
-        // 环保单减免：shop setgreen <1-10> （10=不减免，1-9.99=按比例减免%）
+        // 环保单折扣：shop setgreen <0~10> （10=不打折，9.9=9.9折）
         if (sub.equals("setgreen")) {
             if (a.length < 3) {
                 s.sendMessage(
-                        "§e用法: shop setgreen <1-10>"
-                                + " （10=不减免，1-9.99=按比例减免%）");
+                        "§e用法: shop setgreen <0~10>"
+                                + " （10=不打折，9.9=9.9折，支持小数如 9.6）");
                 return true;
             }
             try {
                 double v = Double.parseDouble(a[2]);
                 if (v < 0) v = 0;
-                if (v >= 10) v = 0; // 10 视为不减免
+                if (v >= 10) v = 10; // 10 视为不打折
                 plugin.getConfigMgr().greenDiscount = v;
                 plugin.webManager.pushShopConfig("green_discount", String.valueOf(v));
-                s.sendMessage("§a环保单减免已设置为 " + v
-                        + "%（10=不减免，已同步至Web配置）");
+                s.sendMessage("§a环保单折扣已设置为 " + v
+                        + " 折（10=不打折，已同步至Web配置）");
             } catch (NumberFormatException e) {
                 s.sendMessage("§c参数必须为数字");
             }
