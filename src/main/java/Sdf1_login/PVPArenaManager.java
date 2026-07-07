@@ -14,6 +14,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.io.BukkitObjectInputStream;
@@ -175,12 +176,18 @@ public class PVPArenaManager implements Listener {
         // 金苹果 x 8
         pvpEquipment.add(new ItemStack(Material.GOLDEN_APPLE, 8));
 
-        // 药水
+        // 药水（带真实治疗效果 NBT）
         ItemStack potion = new ItemStack(Material.POTION, 3);
         ItemMeta potionMeta = potion.getItemMeta();
-        if (potionMeta != null) {
-            potionMeta.setDisplayName("§a§l瞬间治疗药水");
-            potion.setItemMeta(potionMeta);
+        if (potionMeta instanceof PotionMeta) {
+            PotionMeta pMeta = (PotionMeta) potionMeta;
+            pMeta.setDisplayName("§a§l瞬间治疗药水");
+            pMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
+                    org.bukkit.potion.PotionEffectType.INSTANT_HEALTH,
+                    1, 0, false, false), true);
+            pMeta.setBasePotionData(new org.bukkit.potion.PotionData(
+                    org.bukkit.potion.PotionType.HEALING, false, false));
+            potion.setItemMeta(pMeta);
         }
         pvpEquipment.add(potion);
     }
@@ -236,6 +243,11 @@ public class PVPArenaManager implements Listener {
         creator.type(WorldType.NORMAL);
         // ★ 不设 seed：让 MC 自行随机决定地形种子（插件对地形零干预）。
         //   创建后通过 getSeed() 读取 MC 选定的种子并记录日志，便于排查"出生点脚下是水"的失败种子。
+
+        // ★ 彻底清理磁盘上可能残留的旧世界目录：旧版本曾干预出生点(setSpawnLocation)并强制造陆，
+        //   若上次删除因 Windows 文件锁失败，createWorld 会误加载到旧世界(出生点被锁定/小岛地形)。
+        //   这里重试删除确保目录消失，保证每次进入都是 MC 自然生成的全新主世界与自然出生点。
+        deleteExistingPVPWorldFolder();
 
         World pvpWorld = creator.createWorld();
         long dt = System.currentTimeMillis() - t0;
@@ -531,6 +543,25 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
+     * 在创建全新 PVP 世界前，彻底删除磁盘上可能残留的旧世界目录。
+     * ★ 必要性：旧版本曾对出生点执行 setSpawnLocation 并对周边强制造陆（小岛），
+     *   若上次删除因 Windows 文件锁而失败，createWorld() 会误加载到该旧世界
+     *   （出生点被锁定为 0,0、地形被切成小岛）。这里用重命名+重试确保目录真正消失，
+     *   保证每次进入都是 MC 自然生成的全新主世界，自然出生点完全由 MC 决定。
+     */
+    private void deleteExistingPVPWorldFolder() {
+        File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+        if (!folder.exists()) return;
+        for (int i = 0; i < 5; i++) {
+            moveWorldToTrash(folder);
+            if (!folder.exists()) return;
+            try { Thread.sleep(300); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        }
+        // 极少数情况下重命名仍失败，退回递归删除
+        deleteWorldFolder(folder);
+    }
+
+    /**
      * 强制同步生成出生点周边区块（半径 radius 个区块），确保地形已存在后再寻找安全出生点
      * 必须在主线程调用（命令处理阶段）
      */
@@ -540,7 +571,7 @@ public class PVPArenaManager implements Listener {
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
                 try {
-                    // true=强制生成；再读取一个方块以触发区块填充，避免异步未就绪导致 findSafeSpawn 误判虚空
+                    // true=强制生成；再读取一个方块以触发区块填充，避免异步未就绪导致出生点下方误判为虚空
                     world.loadChunk(cx + dx, cz + dz, true);
                     world.getChunkAt(cx + dx, cz + dz).getBlock(8, 64, 8).getType();
                 } catch (Exception e) {
@@ -550,99 +581,7 @@ public class PVPArenaManager implements Listener {
         }
     }
 
-    private int lastSpawnLandScore = -1; // findSafeSpawn 最后一次搜索的陆地质量分（供 createPVPWorld 判断是否重试）
 
-    /**
-     * 在世界中寻找安全的出生点（螺旋向外搜索最高的非空气且非流体方块作为地面）
-     *
-     * ★ 2026-07-07 改进：
-     *   1. 搜索半径扩大到 64 格（原32），覆盖更广范围找陆地
-     *   2. 新增"陆地优先"评分：草地/泥土/石头 > 沙子 > 其它固体 > 流体
-     *   3. 如果出生点周边全是水（海洋 biome），沿对角线远距离搜寻陆地
-     *   4. 即使找到的地面在水面上方（如水面树冠），也继续搜更好的陆地位置
-     */
-    private Location findSafeSpawn(World world) {
-        int baseX = world.getSpawnLocation().getBlockX();
-        int baseZ = world.getSpawnLocation().getBlockZ();
-        final int SEARCH_RADIUS = 64; // 扩大搜索范围（原32格，海洋biome需要更大范围）
-        int bestX = baseX, bestZ = baseZ, bestY = -1;
-        int bestLandScore = -1; // 陆地质量分（越高越好）
-
-        // 第一轮：螺旋搜索，优先选高分陆地
-        for (int r = 0; r <= SEARCH_RADIUS; r++) {
-            for (int dx = -r; dx <= r; dx++) {
-                for (int dz = -r; dz <= r; dz++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
-                    int x = baseX + dx, z = baseZ + dz;
-                    for (int y = 255; y >= 1; y--) {
-                        Block block = world.getBlockAt(x, y, z);
-                        Material type = block.getType();
-                        if (!type.isAir() && !isFluid(type)) {
-                            int landScore = getLandScore(type);
-                            // 同等高度优先选陆地质量更高的；或更高位置的陆地
-                            if (y > bestY || (y == bestY && landScore > bestLandScore)) {
-                                bestY = y; bestX = x; bestZ = z;
-                                bestLandScore = landScore;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            // 找到高质量陆地（非沙地）就提前结束，不需要搜完全部范围
-            if (bestY >= 0 && bestLandScore >= 2) break;
-        }
-
-        // 第二轮：如果第一轮只找到低分地面（沙地/水下固体），尝试沿8个方向远距离扫掠找真正陆地
-        if (bestY >= 0 && bestLandScore < 2) {
-            plugin.getLogger().info("[PVP] 出生点周边质量较低(分数=" + bestLandScore + ")，启动远距离陆地搜索...");
-            int[][] directions = {{1,1},{1,-1},{-1,1},{-1,-1},{1,0},{-1,0},{0,1},{0,-1}};
-            for (int[] dir : directions) {
-                for (int dist = SEARCH_RADIUS + 16; dist <= SEARCH_RADIUS + 128; dist += 16) {
-                    int tx = baseX + dir[0] * dist;
-                    int tz = baseZ + dir[1] * dist;
-                    for (int y = 255; y >= 1; y--) {
-                        Block block = world.getBlockAt(tx, y, tz);
-                        Material type = block.getType();
-                        if (!type.isAir() && !isFluid(type)) {
-                            int landScore = getLandScore(type);
-                            if (landScore >= 2 && y > bestY) {
-                                bestY = y; bestX = tx; bestZ = tz;
-                                bestLandScore = landScore;
-                                plugin.getLogger().info("[PVP] 远距离搜索发现陆地: (" + tx + "," + bestY + "," + tz + ") 分数=" + landScore);
-                            }
-                            break;
-                        }
-                    }
-                }
-                if (bestLandScore >= 2) break; // 任一方向找到好陆地即可
-            }
-        }
-
-        if (bestY >= 0) {
-            lastSpawnLandScore = bestLandScore;
-            return new Location(world, bestX + 0.5, bestY + 1, bestZ + 0.5);
-        }
-        lastSpawnLandScore = -1; // 未找到安全地面（疑似虚空世界）
-        return null;
-    }
-
-    /**
-     * 陆地质量评分：用于选择最佳出生点
-     * 3=优质陆地(草/泥土/石头) | 2=可接受(沙子/沙砾) | 1=低分(其它固体) | -1=流体/空气
-     */
-    private int getLandScore(Material type) {
-        switch (type.name()) {
-            case "GRASS_BLOCK": case "DIRT": case "STONE": case "COBBLESTONE":
-            case "PODZOL": case "MYCELIUM": case "FARMLAND":
-                return 3; // ★ 优质陆地——最适合做出生点
-            case "SAND": case "GRAVEL": case "SANDSTONE":
-                return 2; // 可接受——沙滩/河岸
-            default:
-                if (!type.isAir() && !isFluid(type)) return 1; // 其它固体方块
-                return -1;
-        }
-    }
 
     /**
      * 判断方块是否为流体（水/熔岩），流体上不适合作为安全出生地面
@@ -651,31 +590,6 @@ public class PVPArenaManager implements Listener {
         return type == Material.WATER || type == Material.LAVA;
     }
 
-    /**
-     * 保底平台：如果出生点下方全是空气则铺一个平台
-     * ★ 改进：扩大到20x20 + 四角萤石标记 + 合理高度(y=120)
-     */
-    private void buildFallbackPlatform(World world) {
-        int centerY = 120;
-        for (int dx = -10; dx <= 10; dx++) {
-            for (int dz = -10; dz <= 10; dz++) {
-                world.getBlockAt(dx, centerY, dz).setType(Material.STONE);
-                world.getBlockAt(dx, centerY - 1, dz).setType(Material.STONE);
-                // 边缘一圈加围栏防止掉落
-                if (Math.abs(dx) == 10 || Math.abs(dz) == 10) {
-                    world.getBlockAt(dx, centerY + 1, dz).setType(Material.OAK_FENCE);
-                }
-            }
-        }
-        // 四角萤石标记（夜间可见）
-        world.getBlockAt(-10, centerY + 2, -10).setType(Material.GLOWSTONE);
-        world.getBlockAt(10, centerY + 2, -10).setType(Material.GLOWSTONE);
-        world.getBlockAt(-10, centerY + 2, 10).setType(Material.GLOWSTONE);
-        world.getBlockAt(10, centerY + 2, 10).setType(Material.GLOWSTONE);
-        // 中央标记
-        world.getBlockAt(0, centerY + 1, 0).setType(Material.GLOWSTONE);
-        plugin.getLogger().warning("[PVP] 已生成保底出生平台: 中心(0," + (centerY+1) + ",0), 范围20x20");
-    }
 
     /**
      * 获取指定列从顶部向下的第一个非空气、非流体方块 Y 坐标（用于确定出生点地形高度）
@@ -688,73 +602,6 @@ public class PVPArenaManager implements Listener {
         return 64;
     }
 
-    /**
-     * ★ 强制造陆（最后兜底）：当连续多个随机种子都生成海洋/虚空时，
-     *   在出生点周围强制改造出一块自然主世界风格的开阔陆地
-     *   （草地平原 + 缓丘 + 稀疏树木），彻底告别 20x20 保底小平台。
-     *
-     * 设计要点：
-     *   - 半径 40 格（81x81）大区域，足够玩家活动与战斗
-     *   - 用正弦叠加做缓丘，避免纯平面呆板
-     *   - 外圈 6 格缓坡沉入水面下，形成自然岛屿感
-     *   - 稀疏随机树木点缀
-     *
-     * @param world 已创建但地形不合格的PVP世界
-     */
-    private void forceTerraformSpawnArea(World world) {
-        Location spawn = world.getSpawnLocation();
-        int cx = spawn.getBlockX();
-        int cz = spawn.getBlockZ();
-        final int R = 40;          // 半径40格 → 81x81 开阔地形
-        final int GROUND_Y = 64;   // 主世界海平面附近
-        Random rng = new Random(System.nanoTime() ^ (cx * 31L + cz));
-
-        for (int dx = -R; dx <= R; dx++) {
-            for (int dz = -R; dz <= R; dz++) {
-                int x = cx + dx, z = cz + dz;
-                // 正弦叠加生成缓丘（自然起伏）
-                double hill = Math.sin(dx * 0.08) * 2.0 + Math.cos(dz * 0.07) * 2.0;
-                int topY = GROUND_Y + (int) Math.round(hill);
-                // 外圈 6 格缓坡下沉入水，形成岛屿感
-                int dist = Math.max(Math.abs(dx), Math.abs(dz));
-                if (dist > R - 6) topY -= (dist - (R - 6));
-                // 填充地层：表面草 / 上两层泥 / 更深处石
-                for (int y = topY; y >= topY - 5; y--) {
-                    if (y < 1) break;
-                    Material m;
-                    if (y == topY) m = Material.GRASS_BLOCK;
-                    else if (y >= topY - 2) m = Material.DIRT;
-                    else m = Material.STONE;
-                    world.getBlockAt(x, y, z).setType(m);
-                }
-                // 稀疏树木点缀（约 1/140 概率，且只在接近海平面的地块）
-                if (topY >= GROUND_Y - 1 && topY <= GROUND_Y + 3 && rng.nextInt(140) == 0) {
-                    plantOakTree(world, x, topY + 1, z);
-                }
-            }
-        }
-        // 重置出生点到正中央草地上方
-        world.setSpawnLocation(cx, GROUND_Y + 2, cz);
-        plugin.getLogger().info("[PVP] 强制造陆完成: 出生点周边 " + (R * 2 + 1) + "x" + (R * 2 + 1)
-                + " 草地平原已生成（最后兜底，正常情况不应触发）");
-    }
-
-    /** 在世界中种一棵简单橡树（树干4格 + 叶冠），仅用于强制造陆点缀 */
-    private void plantOakTree(World world, int x, int y, int z) {
-        for (int i = 0; i < 4; i++) {
-            world.getBlockAt(x, y + i, z).setType(Material.OAK_LOG);
-        }
-        for (int dy = 3; dy <= 5; dy++) {
-            for (int dx = -2; dx <= 2; dx++) {
-                for (int dz = -2; dz <= 2; dz++) {
-                    if (Math.abs(dx) == 2 && Math.abs(dz) == 2) continue; // 去四角更圆润
-                    if (dy == 5 && (Math.abs(dx) > 1 || Math.abs(dz) > 1)) continue; // 树冠顶部收窄
-                    Block b = world.getBlockAt(x + dx, y + dy, z + dz);
-                    if (b.getType().isAir()) b.setType(Material.OAK_LEAVES);
-                }
-            }
-        }
-    }
 
     // ==================== GUI关闭事件（防止ESC跳过装备选择）====================
 
@@ -1419,9 +1266,19 @@ public class PVPArenaManager implements Listener {
     private ItemStack makePotion(int count) {
         ItemStack potion = new ItemStack(Material.POTION, count);
         ItemMeta meta = potion.getItemMeta();
-        if (meta != null) {
-            meta.setDisplayName("§a§l瞬间治疗药水");
-            potion.setItemMeta(meta);
+        if (meta instanceof PotionMeta) {
+            PotionMeta pMeta = (PotionMeta) meta;
+            pMeta.setDisplayName("§a§l瞬间治疗药水");
+            // ★ 写入真实药水效果 NBT：瞬间治疗（数量越多档位越高效果越强），
+            //   否则客户端只显示"药水"却没有任何效果（玩家反馈"药水无效果"）。
+            pMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
+                    org.bukkit.potion.PotionEffectType.INSTANT_HEALTH,
+                    1,                       // 瞬间效果，duration 无意义
+                    count >= 8 ? 1 : 0,      // 下合金档(8瓶)→治疗II，其余治疗I
+                    false, false), true);
+            pMeta.setBasePotionData(new org.bukkit.potion.PotionData(
+                    org.bukkit.potion.PotionType.HEALING, false, false));
+            potion.setItemMeta(pMeta);
         }
         return potion;
     }

@@ -22,6 +22,9 @@ import org.bukkit.util.io.BukkitObjectOutputStream;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.inventory.meta.PotionMeta;
+import org.bukkit.enchantments.Enchantment;
+import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.bukkit.NamespacedKey;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 
@@ -126,6 +129,53 @@ public class ShopManager implements Listener {
         EFFECT_MAP.put("跳跃",     PotionEffectType.JUMP_BOOST);
         // ★ 神龟药水是双效果，特殊处理，这里只做名称匹配入口
         EFFECT_MAP.put("神龟",     PotionEffectType.RESISTANCE);
+    }
+
+    // ===== 附魔书：中文附魔名 → Bukkit Enchantment =====
+    private static final Map<String, Enchantment> ENCHANT_MAP = new HashMap<>();
+    static {
+        regEnchant("锋利", "sharpness");
+        regEnchant("亡灵杀手", "smite");
+        regEnchant("节肢杀手", "bane_of_arthropods");
+        regEnchant("击退", "knockback");
+        regEnchant("火焰附加", "fire_aspect");
+        regEnchant("掠夺", "looting");
+        regEnchant("横扫之刃", "sweeping_edge");
+        regEnchant("保护", "protection");
+        regEnchant("火焰保护", "fire_protection");
+        regEnchant("摔落保护", "feather_falling");
+        regEnchant("爆炸保护", "blast_protection");
+        regEnchant("弹射物保护", "projectile_protection");
+        regEnchant("水下呼吸", "respiration");
+        regEnchant("深海探索者", "depth_strider");
+        regEnchant("冰霜行者", "frost_walker");
+        regEnchant("荆棘", "thorns");
+        regEnchant("精准采集", "silk_touch");
+        regEnchant("效率", "efficiency");
+        regEnchant("耐久", "unbreaking");
+        regEnchant("时运", "fortune");
+        regEnchant("经验修补", "mending");
+        regEnchant("力量", "power");
+        regEnchant("冲击", "punch");
+        regEnchant("火焰", "flame");
+        regEnchant("无限", "infinity");
+        regEnchant("穿透", "piercing");
+        regEnchant("激流", "riptide");
+        regEnchant("忠诚", "loyalty");
+        regEnchant("引雷", "channeling");
+        regEnchant("多重射击", "multishot");
+        regEnchant("快速装填", "quick_charge");
+        regEnchant("海之眷顾", "luck_of_the_sea");
+        regEnchant("饵钓", "lure");
+        regEnchant("绑定诅咒", "binding_curse");
+        regEnchant("消失诅咒", "vanishing_curse");
+        regEnchant("穿刺", "impaling");
+    }
+    private static void regEnchant(String cn, String key) {
+        try {
+            Enchantment e = Enchantment.getByKey(NamespacedKey.minecraft(key));
+            if (e != null) ENCHANT_MAP.put(cn, e);
+        } catch (Exception ignored) {}
     }
 
     public static class CartItem {
@@ -1303,8 +1353,116 @@ public class ShopManager implements Listener {
      * "强效力量喷溅药水" + SPLASH_POTION
      *   → PotionEffect(STRENGTH, 600, 1)
      */
+    // ===== 附魔书：由显示名推断存储附魔 =====
+    private static final java.util.regex.Pattern ROMAN_PAT =
+            java.util.regex.Pattern.compile("(?i)\\b(X{0,3}(?:IX|IV|V?I{1,3}))\\b");
+    private static final java.util.regex.Pattern ARABIC_PAT =
+            java.util.regex.Pattern.compile("\\d+");
+    private static final java.util.regex.Pattern CN_PAT =
+            java.util.regex.Pattern.compile("[零一二三四五六七八九十百]+");
+
+    private ItemStack inferEnchantedBook(String name) {
+        try {
+            ItemStack book = new ItemStack(Material.ENCHANTED_BOOK);
+            EnchantmentStorageMeta meta = (EnchantmentStorageMeta) book.getItemMeta();
+            if (meta == null) return null;
+            boolean added = false;
+            for (Map.Entry<String, Enchantment> e : ENCHANT_MAP.entrySet()) {
+                if (!name.contains(e.getKey())) continue;
+                // 若已有更具体的附魔词包含本词（如"火焰保护"命中时跳过"保护"），避免重复计入
+                boolean shadowed = false;
+                for (Map.Entry<String, Enchantment> o : ENCHANT_MAP.entrySet()) {
+                    if (o != e && o.getKey().length() > e.getKey().length()
+                            && o.getKey().contains(e.getKey()) && name.contains(o.getKey())) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+                if (shadowed) continue;
+                int lvl = parseEnchantLevel(name, e.getKey());
+                meta.addStoredEnchant(e.getValue(), lvl, true);
+                added = true;
+            }
+            if (!added) return null;
+            book.setItemMeta(meta);
+            return book;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private int parseEnchantLevel(String name, String keyword) {
+        int idx = name.indexOf(keyword);
+        if (idx < 0) return 1;
+        String after = org.bukkit.ChatColor.stripColor(
+                name.substring(idx + keyword.length()));
+        java.util.regex.Matcher m = ROMAN_PAT.matcher(after);
+        if (m.find()) return romanToInt(m.group());
+        java.util.regex.Matcher m2 = ARABIC_PAT.matcher(after);
+        if (m2.find()) {
+            try { return Integer.parseInt(m2.group()); } catch (NumberFormatException ignored) {}
+        }
+        java.util.regex.Matcher m3 = CN_PAT.matcher(after);
+        if (m3.find()) return cnToInt(m3.group());
+        return 1;
+    }
+
+    private int romanToInt(String s) {
+        s = s.toUpperCase();
+        int total = 0, prev = 0;
+        for (int i = s.length() - 1; i >= 0; i--) {
+            int v;
+            switch (s.charAt(i)) {
+                case 'I': v = 1; break;
+                case 'V': v = 5; break;
+                case 'X': v = 10; break;
+                case 'L': v = 50; break;
+                case 'C': v = 100; break;
+                default: v = 0;
+            }
+            total += (v < prev) ? -v : v;
+            prev = v;
+        }
+        return Math.max(1, total);
+    }
+
+    private int cnToInt(String s) {
+        int total = 0, num = 0;
+        for (int i = 0; i < s.length(); i++) {
+            int d;
+            switch (s.charAt(i)) {
+                case '零': d = 0; break;
+                case '一': d = 1; break;
+                case '二': d = 2; break;
+                case '三': d = 3; break;
+                case '四': d = 4; break;
+                case '五': d = 5; break;
+                case '六': d = 6; break;
+                case '七': d = 7; break;
+                case '八': d = 8; break;
+                case '九': d = 9; break;
+                case '十': d = 10; break;
+                case '百': d = 100; break;
+                default: d = 0;
+            }
+            if (d == 10 || d == 100) {
+                num = (num == 0 ? 1 : num) * d;
+                total += num;
+                num = 0;
+            } else {
+                num = d;
+            }
+        }
+        total += num;
+        return Math.max(1, total);
+    }
+
     private ItemStack inferFromName(
             String name, Material mat) {
+        // 附魔书：解析名称中的附魔词与等级，写入 EnchantmentStorageMeta
+        if (mat == Material.ENCHANTED_BOOK) {
+            return inferEnchantedBook(name);
+        }
         // 只处理药水和箭
         if (mat != Material.POTION
                 && mat != Material.SPLASH_POTION
