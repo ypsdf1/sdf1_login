@@ -53,9 +53,6 @@ public class PVPArenaManager implements Listener {
 
     // PVP世界名称
     private static final String PVP_WORLD_NAME = "pvp_arena";
-    // ★ 正版主世界标记文件名：写在 pvp_arena 世界目录内，供 ensurePVPWorldExists 识别
-    //   "本世界是插件生成的纯NORMAL主世界"，避免把历史遗留(环形岛/小平台)世界当成正版反复复用。
-    private static final String VANILLA_MARKER = ".sdf1_vanilla_world";
 
     // PVP世界空场冷却时间（毫秒）：所有玩家退场后世界继续保留此时长，
     // 冷却内若有玩家重新进入则取消删除；冷却结束且仍无人则删除世界，下次进入随机重新生成地形。
@@ -215,62 +212,42 @@ public class PVPArenaManager implements Listener {
         cancelPendingDeletion();
 
         World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+
+        // ★ 多人保护：世界中仍有“其他玩家”在战斗 → 复用同一局，一起竞技（不重建、不干预地形）
         if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
-            // 世界中仍有其他玩家在战斗 → 复用同一局，一起竞技（不重建、不干预地形）
-            plugin.getLogger().info("[PVP] PVP世界已有玩家在场，复用当前地形（不重建）");
+            plugin.getLogger().info("[PVP] PVP世界已有其他玩家在场，复用当前地形（不重建）");
             return;
         }
 
-        // ★ 2026-07-07 诊断+修复：区分"插件自己生成的正版主世界"与"历史遗留(环形岛/小平台)世界"
-        //   - 正版世界：world 目录内带 .sdf1_vanilla_world 标记文件 → 直接加载复用，绝不干预
-        //   - 遗留世界（无标记，通常是旧版噪声环形岛/方岛）：强制移入回收站后重新生成，
-        //     否则会一直复用坏地形（表现为"每次进都是小平台/环形岛"）
         File worldFolder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
         boolean folderExists = worldFolder.exists();
-        boolean isVanilla = folderExists && hasVanillaMarker(worldFolder);
 
         plugin.getLogger().info("[PVP] ensurePVPWorldExists: getWorld="
                 + (pvpWorld != null ? "已加载" : "null")
-                + ", 磁盘目录存在=" + folderExists
-                + ", 是否正版标记=" + isVanilla);
+                + ", 磁盘目录存在=" + folderExists);
 
-        if (pvpWorld == null) {
-            if (folderExists && !isVanilla) {
-                // 历史遗留坏世界：先丢弃再全新生成
-                plugin.getLogger().info("[PVP] 检测到历史遗留(非正版)PVP世界，强制移除后重新生成主世界");
-                moveWorldToTrash(worldFolder);
-                pvpWorld = createPVPWorld();
-            } else if (folderExists && isVanilla) {
-                // 正版主世界：直接加载（不重建、不删标记、不干预地形）
-                plugin.getLogger().info("[PVP] 检测到已有正版PVP主世界，直接加载(不干预地形)");
-                WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
-                creator.environment(World.Environment.NORMAL);
-                creator.type(WorldType.NORMAL);
-                pvpWorld = creator.createWorld();
-                if (pvpWorld != null) reapplyWorldRules(pvpWorld);
-            } else {
-                // 目录不存在：全新生成
-                pvpWorld = createPVPWorld();
-            }
+        // ★ 用户明确要求（2026-07-07）：每次进入都强制删除现有世界、重新生成全新主世界，
+        //   彻底杜绝复用坏地形（小平台/环形岛）。仅当世界中有其他玩家在场时才复用（保护正在进行的对战）。
+        if (pvpWorld != null) {
+            plugin.getLogger().info("[PVP] 检测到已加载PVP世界，按规则强制删除后重新生成全新主世界");
+            deletePVPWorld(pvpWorld);
+        } else if (folderExists) {
+            plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录，移入回收站后重新生成");
+            moveWorldToTrash(worldFolder);
         }
+        pvpWorld = createPVPWorld();
 
-        // ★ 唯一干预：检测出生点是否为非实体方块（水/熔岩/空气/虚空）。
-        //   若是 → 删除世界并重生（换一个随机种子，希望出生点为实体地面）；
-        //   若否 → 完全放手，绝不改动地形、不移动出生点以外的任何方块。
+        // 全新 NORMAL 主世界出生点必为实体陆地；保留兜底判定（极端情况才重建）
         if (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld)) {
-            plugin.getLogger().info("[PVP] 出生点为非实体方块(水/虚空)，删除并重生世界");
+            plugin.getLogger().warning("[PVP] 全新主世界出生点仍非实体方块(极小概率)，删除并重生");
             deletePVPWorld(pvpWorld);
             pvpWorld = createPVPWorld();
-            // 重生后仍检查（最多重试若干次；极端情况下 MC 连续生成海洋/虚空才触发）
             int tries = 0;
             while (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld) && tries < 3) {
                 plugin.getLogger().warning("[PVP] 重生后出生点仍非实体方块，再次删除重生 (" + (tries + 1) + ")");
                 deletePVPWorld(pvpWorld);
                 pvpWorld = createPVPWorld();
                 tries++;
-            }
-            if (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld)) {
-                plugin.getLogger().warning("[PVP] 多次重出生点仍为非实体方块(极小概率)，保留当前世界，请管理员手动处理");
             }
         }
     }
@@ -327,9 +304,6 @@ public class PVPArenaManager implements Listener {
         int topY = getTopSolidY(pvpWorld, 0, 0);
         pvpWorld.setSpawnLocation(0, topY + 1, 0);
 
-        // ★ 写入"正版主世界"标记文件：供下次 ensure 识别，避免把本世界当遗留世界反复重置
-        writeVanillaMarker(pvpWorld.getWorldFolder());
-
         plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 出生点=("
                 + 0 + "," + (topY + 1) + "," + 0 + "), topY=" + topY);
 
@@ -355,21 +329,6 @@ public class PVPArenaManager implements Listener {
         return ok;
     }
 
-    // ===== 正版世界标记辅助 =====
-    private boolean hasVanillaMarker(File worldFolder) {
-        return worldFolder != null && new File(worldFolder, VANILLA_MARKER).exists();
-    }
-    private void writeVanillaMarker(File worldFolder) {
-        try {
-            if (worldFolder == null || !worldFolder.isDirectory()) return;
-            File marker = new File(worldFolder, VANILLA_MARKER);
-            if (marker.createNewFile() || marker.exists()) {
-                plugin.getLogger().info("[PVP] 已写入正版世界标记: " + marker.getAbsolutePath());
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning("[PVP] 写入正版世界标记失败(不影响功能): " + e.getMessage());
-        }
-    }
     private void reapplyWorldRules(World w) {
         w.setPVP(true);
         w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
@@ -537,8 +496,7 @@ public class PVPArenaManager implements Listener {
      */
     private void moveWorldToTrash(File folder) {
         if (folder == null || !folder.exists()) return;
-        plugin.getLogger().info("[PVP] moveWorldToTrash: 目标=" + folder.getAbsolutePath()
-                + ", 含正版标记=" + hasVanillaMarker(folder));
+        plugin.getLogger().info("[PVP] moveWorldToTrash: 目标=" + folder.getAbsolutePath());
         File parent = folder.getParentFile();
         String base = folder.getName();
         long ts = System.currentTimeMillis();
