@@ -7,6 +7,7 @@ import org.bukkit.inventory.meta.BlockStateMeta;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.Material;
+import org.bukkit.Sound;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -3949,6 +3950,33 @@ public class WebManager {
                             applied = true;
                             break;
                         }
+                        case "give_receipt_book": {
+                            // ★ 收银台打包小票：PHP写入 → Java生成Written Book给在线玩家
+                            String bookPlayer = targetName;
+                            String orderNo = String.valueOf(changeData.getOrDefault("order_no", ""));
+                            String orderTime = String.valueOf(changeData.getOrDefault("order_time", ""));
+                            String orderPlayer = String.valueOf(changeData.getOrDefault("order_player", ""));
+                            String operatorName = String.valueOf(changeData.getOrDefault("operator", ""));
+                            String settlementMode = String.valueOf(changeData.getOrDefault("settlement", ""));
+                            String payMethod = String.valueOf(changeData.getOrDefault("pay_method", ""));
+                            int totalPrice = ((Number) changeData.getOrDefault("total_price", 0)).intValue();
+                            String itemsText = String.valueOf(changeData.getOrDefault("items_text", ""));
+
+                            if (bookPlayer.isEmpty()) {
+                                plugin.getLogger().warning("[小票书] give_receipt_book: 缺少目标玩家");
+                                break;
+                            }
+
+                            org.bukkit.entity.Player target = Bukkit.getPlayerExact(bookPlayer);
+                            if (target == null || !target.isOnline()) {
+                                plugin.getLogger().info("[小票书] 玩家 " + bookPlayer + " 不在线，跳过发书");
+                            } else {
+                                giveReceiptBook(target, orderNo, orderTime, orderPlayer, operatorName,
+                                        settlementMode, payMethod, totalPrice, itemsText);
+                                applied = true;
+                            }
+                            break;
+                        }
                         default:
                             plugin.getLogger().fine("[Web通信] 未知变更类型: " + changeType);
                     }
@@ -6462,6 +6490,82 @@ public class WebManager {
                 }
             }
         }.runTaskAsynchronously(plugin);
+    }
+
+    /**
+     * 给在线玩家发送一本"打包小票"书本（Written Book）
+     *
+     * 书本内容包含完整的订单信息，玩家可在游戏中随时翻阅。
+     * 使用 § 颜色代码实现热敏小票风格。
+     */
+    private void giveReceiptBook(org.bukkit.entity.Player player,
+            String orderNo, String orderTime, String orderPlayer, String operatorName,
+            String settlementMode, String payMethod, int totalPrice, String itemsText) {
+        try {
+            org.bukkit.inventory.ItemStack book = new org.bukkit.inventory.ItemStack(Material.WRITTEN_BOOK);
+            org.bukkit.inventory.meta.BookMeta meta = (org.bukkit.inventory.meta.BookMeta) book.getItemMeta();
+            if (meta == null) return;
+
+            meta.setTitle("§6§lSDF1 打包小票");
+            meta.setAuthor("SDF1 商城");
+
+            // 构建小票内容（每行一个页面元素，BookMeta 支持多行）
+            java.util.List<String> pages = new java.util.ArrayList<>();
+
+            // 第1页：抬头 + 订单信息
+            StringBuilder page1 = new StringBuilder();
+            page1.append("§6§l===== SDF1 商城 =====\n\n");
+            page1.append("§7打包小票 / PACKING RECEIPT\n\n");
+            page1.append("§f订单号: §e").append(orderNo.isEmpty() ? "—" : orderNo).append("\n");
+            page1.append("§f时间:   §7").append(orderTime.isEmpty() ? new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()) : orderTime).append("\n");
+            page1.append("§f玩家:   §b").append(orderPlayer).append("\n");
+            page1.append("§f操作员: §d").append(operatorName.isEmpty() ? "系统" : operatorName).append("\n");
+            page1.append("§f结算:   §a").append(settlementMode.isEmpty() ? "塞背包" : settlementMode).append("\n");
+            page1.append("§f收款:   ").append("cash".equals(payMethod) ? "§6现金(记账)" : "§e债券扣款").append("\n");
+            pages.add(page1.toString());
+
+            // 第2页：商品明细
+            StringBuilder page2 = new StringBuilder();
+            page2.append("§6§l----- 商品明细 -----\n\n");
+            if (!itemsText.isEmpty()) {
+                String[] lines = itemsText.split("\n");
+                int lineOnPage = 0;
+                StringBuilder currentPage = page2;
+                for (String line : lines) {
+                    if (lineOnPage >= 12) { // 每页约12行
+                        pages.add(currentPage.toString());
+                        currentPage = new StringBuilder();
+                        lineOnPage = 0;
+                    }
+                    currentPage.append("§f").append(line).append("\n");
+                    lineOnPage++;
+                }
+                if (currentPage.length() > 30) pages.add(currentPage.toString());
+            } else {
+                page2.append("§7（无商品明细）\n");
+                pages.add(page2.toString());
+            }
+
+            // 最后一页：合计 + 底部
+            StringBuilder lastPage = new StringBuilder();
+            lastPage.append("§6§l--------------------\n\n");
+            lastPage.append("§f§l实收合计: §a§l").append(totalPrice).append(" §7债券\n\n");
+            lastPage.append("§8感谢惠顾 · 请妥善保管小票\n");
+            lastPage.append("§7SDF1 商城自动生成");
+            pages.add(lastPage.toString());
+
+            meta.setPages(pages);
+            book.setItemMeta(meta);
+
+            // 给玩家书本（放到背包第一个空格，或掉落）
+            player.getInventory().addItem(book);
+            player.sendMessage("§a§l[商城] §f你收到了一本 §6§l打包小票§f，请查收！");
+            player.playSound(player.getLocation(), Sound.ENTITY_ITEM_PICKUP, 1.0f, 1.2f);
+
+            plugin.getLogger().info("[小票书] 已给玩家 " + player.getName() + " 发送小票书(订单:" + orderNo + ")");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[小票书] 发送小票书失败: " + e.getMessage());
+        }
     }
 
     /**

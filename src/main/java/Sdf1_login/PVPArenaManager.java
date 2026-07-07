@@ -267,7 +267,8 @@ public class PVPArenaManager implements Listener {
         pvpWorld.setTime(6000);
 
         // ★ 优先尝试自然主世界地形：强制生成出生点周边区块，确保地形已就绪
-        preGenerateSpawnChunks(pvpWorld, 4);
+        // 扩大到8个区块半径（256格），减少玩家看到虚空/未生成地形的概率
+        preGenerateSpawnChunks(pvpWorld, 8);
         Location spawnLoc = findSafeSpawn(pvpWorld);
         if (spawnLoc != null) {
             pvpWorld.setSpawnLocation(spawnLoc.getBlockX(), spawnLoc.getBlockY(), spawnLoc.getBlockZ());
@@ -514,16 +515,22 @@ public class PVPArenaManager implements Listener {
 
     /**
      * 在世界中寻找安全的出生点（螺旋向外搜索最高的非空气且非流体方块作为地面）
-     * 搜索半径较大（SEARCH_RADIUS 格），即使出生点恰好落在海洋/洞穴也能找到附近陆地，
-     * 杜绝"整片虚空→误铺小平台"。
+     *
+     * ★ 2026-07-07 改进：
+     *   1. 搜索半径扩大到 64 格（原32），覆盖更广范围找陆地
+     *   2. 新增"陆地优先"评分：草地/泥土/石头 > 沙子 > 其它固体 > 流体
+     *   3. 如果出生点周边全是水（海洋 biome），沿对角线远距离搜寻陆地
+     *   4. 即使找到的地面在水面上方（如水面树冠），也继续搜更好的陆地位置
      */
     private Location findSafeSpawn(World world) {
         int baseX = world.getSpawnLocation().getBlockX();
         int baseZ = world.getSpawnLocation().getBlockZ();
-        final int SEARCH_RADIUS = 32; // 覆盖出生点周边 64x64 格范围
+        final int SEARCH_RADIUS = 64; // 扩大搜索范围（原32格，海洋biome需要更大范围）
         int bestX = baseX, bestZ = baseZ, bestY = -1;
+        int bestLandScore = -1; // 陆地质量分（越高越好）
+
+        // 第一轮：螺旋搜索，优先选高分陆地
         for (int r = 0; r <= SEARCH_RADIUS; r++) {
-            // 仅遍历半径为 r 的方形环
             for (int dx = -r; dx <= r; dx++) {
                 for (int dz = -r; dz <= r; dz++) {
                     if (Math.max(Math.abs(dx), Math.abs(dz)) != r) continue;
@@ -532,18 +539,68 @@ public class PVPArenaManager implements Listener {
                         Block block = world.getBlockAt(x, y, z);
                         Material type = block.getType();
                         if (!type.isAir() && !isFluid(type)) {
-                            if (y > bestY) { bestY = y; bestX = x; bestZ = z; }
+                            int landScore = getLandScore(type);
+                            // 同等高度优先选陆地质量更高的；或更高位置的陆地
+                            if (y > bestY || (y == bestY && landScore > bestLandScore)) {
+                                bestY = y; bestX = x; bestZ = z;
+                                bestLandScore = landScore;
+                            }
                             break;
                         }
                     }
                 }
             }
-            if (bestY >= 0) break; // 找到陆地立即停止
+            // 找到高质量陆地（非沙地）就提前结束，不需要搜完全部范围
+            if (bestY >= 0 && bestLandScore >= 2) break;
         }
+
+        // 第二轮：如果第一轮只找到低分地面（沙地/水下固体），尝试沿8个方向远距离扫掠找真正陆地
+        if (bestY >= 0 && bestLandScore < 2) {
+            plugin.getLogger().info("[PVP] 出生点周边质量较低(分数=" + bestLandScore + ")，启动远距离陆地搜索...");
+            int[][] directions = {{1,1},{1,-1},{-1,1},{-1,-1},{1,0},{-1,0},{0,1},{0,-1}};
+            for (int[] dir : directions) {
+                for (int dist = SEARCH_RADIUS + 16; dist <= SEARCH_RADIUS + 128; dist += 16) {
+                    int tx = baseX + dir[0] * dist;
+                    int tz = baseZ + dir[1] * dist;
+                    for (int y = 255; y >= 1; y--) {
+                        Block block = world.getBlockAt(tx, y, tz);
+                        Material type = block.getType();
+                        if (!type.isAir() && !isFluid(type)) {
+                            int landScore = getLandScore(type);
+                            if (landScore >= 2 && y > bestY) {
+                                bestY = y; bestX = tx; bestZ = tz;
+                                bestLandScore = landScore;
+                                plugin.getLogger().info("[PVP] 远距离搜索发现陆地: (" + tx + "," + bestY + "," + tz + ") 分数=" + landScore);
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (bestLandScore >= 2) break; // 任一方向找到好陆地即可
+            }
+        }
+
         if (bestY >= 0) {
             return new Location(world, bestX + 0.5, bestY + 1, bestZ + 0.5);
         }
         return null; // 未找到安全地面（疑似虚空世界）
+    }
+
+    /**
+     * 陆地质量评分：用于选择最佳出生点
+     * 3=优质陆地(草/泥土/石头) | 2=可接受(沙子/沙砾) | 1=低分(其它固体) | -1=流体/空气
+     */
+    private int getLandScore(Material type) {
+        switch (type.name()) {
+            case "GRASS_BLOCK": case "DIRT": case "STONE": case "COBBLESTONE":
+            case "PODZOL": case "MYCELIUM": case "FARMLAND":
+                return 3; // ★ 优质陆地——最适合做出生点
+            case "SAND": case "GRAVEL": case "SANDSTONE":
+                return 2; // 可接受——沙滩/河岸
+            default:
+                if (!type.isAir() && !isFluid(type)) return 1; // 其它固体方块
+                return -1;
+        }
     }
 
     /**
@@ -555,19 +612,28 @@ public class PVPArenaManager implements Listener {
 
     /**
      * 保底平台：如果出生点下方全是空气则铺一个平台
+     * ★ 改进：扩大到20x20 + 四角萤石标记 + 合理高度(y=120)
      */
     private void buildFallbackPlatform(World world) {
-        int centerY = 99;
-        for (int dx = -5; dx <= 5; dx++) {
-            for (int dz = -5; dz <= 5; dz++) {
+        int centerY = 120;
+        for (int dx = -10; dx <= 10; dx++) {
+            for (int dz = -10; dz <= 10; dz++) {
                 world.getBlockAt(dx, centerY, dz).setType(Material.STONE);
                 world.getBlockAt(dx, centerY - 1, dz).setType(Material.STONE);
+                // 边缘一圈加围栏防止掉落
+                if (Math.abs(dx) == 10 || Math.abs(dz) == 10) {
+                    world.getBlockAt(dx, centerY + 1, dz).setType(Material.OAK_FENCE);
+                }
             }
         }
-        world.getBlockAt(-5, centerY + 1, -5).setType(Material.GLOWSTONE);
-        world.getBlockAt(5, centerY + 1, -5).setType(Material.GLOWSTONE);
-        world.getBlockAt(-5, centerY + 1, 5).setType(Material.GLOWSTONE);
-        world.getBlockAt(5, centerY + 1, 5).setType(Material.GLOWSTONE);
+        // 四角萤石标记（夜间可见）
+        world.getBlockAt(-10, centerY + 2, -10).setType(Material.GLOWSTONE);
+        world.getBlockAt(10, centerY + 2, -10).setType(Material.GLOWSTONE);
+        world.getBlockAt(-10, centerY + 2, 10).setType(Material.GLOWSTONE);
+        world.getBlockAt(10, centerY + 2, 10).setType(Material.GLOWSTONE);
+        // 中央标记
+        world.getBlockAt(0, centerY + 1, 0).setType(Material.GLOWSTONE);
+        plugin.getLogger().warning("[PVP] 已生成保底出生平台: 中心(0," + (centerY+1) + ",0), 范围20x20");
     }
 
     // ==================== GUI关闭事件（防止ESC跳过装备选择）====================
