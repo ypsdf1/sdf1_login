@@ -1189,75 +1189,16 @@ public class ShopManager implements Listener {
      * 说明：整体新增的“独立分类 .md 文件”本来就不在内存 categories 中，saveAll 不会触碰它，
      * 因此是天然安全的；本修复主要堵住“在已有分类里手工加商品被覆盖”的漏洞。
      */
+    /**
+     * 保存单个分类到 .md 文件。
+     *
+     * ★ 2026-07-07 改为“不再写盘”（按用户明确要求“彻底删除复写”）：
+     *   商品目录由管理员手工维护磁盘 .md 文件，插件只在内存中管理并单向同步给 PHP
+     *   （buildCatalogJson → WebManager.pushShopCatalog）。任何运行时写盘都会抹掉
+     *   管理员手工新增/修改的内容，故此处改为空操作，杜绝复写。
+     */
     public void saveCategory(ShopCategory cat) {
-        File dir = new File(
-                plugin.getDataFolder(), "shop");
-        if (!dir.exists()) dir.mkdirs();
-        File f = new File(dir, cat.getFileName());
-
-        // ★ 合并感知：收集磁盘上“内存中不存在”的商品行（保留管理员手工新增）
-        List<String> diskOnlyRows = new ArrayList<>();
-        if (f.exists()) {
-            Set<String> memIds = new HashSet<>();
-            for (ShopItem it : cat.getItems()) memIds.add(it.getId());
-            try (BufferedReader br = new BufferedReader(
-                    new InputStreamReader(
-                            new FileInputStream(f),
-                            StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    if (!line.startsWith("|")) continue; // 跳过标题(#)行
-                    // 数据行形如: | ID | 品名 | 材质 | ...
-                    String[] cols = line.split("\\|");
-                    if (cols.length < 3) continue;
-                    String id = cols[1].trim();
-                    // 跳过表头行(ID)与分隔行(---)
-                    if (id.isEmpty() || id.equals("ID") || id.equals("---"))
-                        continue;
-                    if (!memIds.contains(id)) {
-                        diskOnlyRows.add(line); // 磁盘独有商品，原样保留
-                    }
-                }
-            } catch (Exception ignored) {
-                // 读取失败则放弃合并（退化为仅写内存内容，与旧行为一致）
-            }
-        }
-
-        try {
-            PrintWriter pw = new PrintWriter(
-                    new OutputStreamWriter(
-                            new FileOutputStream(f),
-                            StandardCharsets.UTF_8));
-            pw.println("# " + cat.getName());
-            pw.println("");
-            pw.println("| ID | 品名 | 材质"
-                    + " | 购入价 | 售出价"
-                    + " | 库存"
-                    + " | 本小时销量 | 总销量 |");
-            pw.println("| --- | --- | ---"
-                    + " | --- | --- | ---"
-                    + " | --- | --- |");
-            for (ShopItem item : cat.getItems()) {
-                pw.println("| "
-                        + item.getId()
-                        + " | " + item.getDisplayName()
-                        + " | " + item.getMaterial().name()
-                        + " | " + item.getBuyPrice()
-                        + " | " + item.getSellPrice()
-                        + " | " + item.getStock()
-                        + " | " + item.getHourlySales()
-                        + " | " + item.getTotalSales()
-                        + " |");
-            }
-            // ★ 追加磁盘独有商品行（管理员手工新增，避免被覆盖删除）
-            for (String row : diskOnlyRows) pw.println(row);
-            pw.flush();
-            pw.close();
-        } catch (Exception e) {
-            // plugin.getLogger().warning(
-            //         "[Shop] 保存失败: "
-            //                 + cat.getFileName());
-        }
+        // 不再写盘：保留方法签名仅为兼容既有调用方（add/remove/set/PHP同步回调）。
     }
 
 // ===== 创建示例分类 =====
@@ -2331,6 +2272,47 @@ public class ShopManager implements Listener {
             return true;
         }
 
+        // 打包费配置：shop packmoney <金额> （与 /sdf1_login set packmoney 等效）
+        if (sub.equals("packmoney")) {
+            if (a.length < 3) {
+                s.sendMessage("§e用法: shop packmoney <金额(0~999)>");
+                return true;
+            }
+            try {
+                int amt = Integer.parseInt(a[2]);
+                if (amt < 0 || amt > 999) {
+                    s.sendMessage("§c打包费需在 0~999 之间");
+                    return true;
+                }
+                plugin.getConfigMgr().packingFee = amt;
+                plugin.webManager.pushShopConfig("packmoney", String.valueOf(amt));
+                s.sendMessage("§a打包费已设置为 " + amt + " 债券（已同步至Web配置）");
+            } catch (NumberFormatException e) {
+                s.sendMessage("§c金额必须为数字");
+            }
+            return true;
+        }
+
+        // 环保单减免：shop green <1-10> （与 shop setgreen 等效，便于在 shop 子命令下管理）
+        if (sub.equals("green")) {
+            if (a.length < 3) {
+                s.sendMessage("§e用法: shop green <1-10>（10=不减免，1-9.99=按比例减免%）");
+                return true;
+            }
+            try {
+                double v = Double.parseDouble(a[2]);
+                int gv = (int) Math.floor(v);
+                if (gv < 0) gv = 0;
+                if (gv >= 10) gv = 0; // 10 视为不减免
+                plugin.getConfigMgr().greenDiscount = gv;
+                plugin.webManager.pushShopConfig("green_discount", String.valueOf(gv));
+                s.sendMessage("§a环保单减免已设置为 " + gv + "%（10=不减免，已同步至Web配置）");
+            } catch (NumberFormatException e) {
+                s.sendMessage("§c参数必须为数字");
+            }
+            return true;
+        }
+
         // 环保单减免：shop setgreen <1-10> （10=不减免，1-9.99=按比例减免%）
         if (sub.equals("setgreen")) {
             if (a.length < 3) {
@@ -2377,7 +2359,7 @@ public class ShopManager implements Listener {
 
         s.sendMessage("§e商店子命令:"
                 + " reload / add / remove"
-                + " / set / pro ");
+                + " / set / setgreen(green) / packmoney / pro ");
         return true;
     }
     @EventHandler(priority = EventPriority.LOW)
@@ -3084,11 +3066,11 @@ public class ShopManager implements Listener {
                 if (plugin.getSalesStats() != null) {
                     plugin.getSalesStats().report();
                 }
-                // 重置小时销量
+                // 重置小时销量（仅内存，无需写盘）
                 for (ShopCategory cat : categories)
                     for (ShopItem item : cat.getItems())
                         item.setHourlySales(0);
-                saveAll();
+                // ★ 2026-07-07 移除：不再调用 saveAll() 周期性复写 .md 商品文件
             }
         }.runTaskTimer(plugin, 72000L, 72000L);
     }

@@ -722,7 +722,8 @@ public class Main extends JavaPlugin
     public void onDisable() {
         // 卸载时清理.sdf1临时文件
         cleanupSdf1Files();
-        if (shopManager != null) shopManager.saveAll();
+        // ★ 2026-07-07 移除 onDisable 的 shopManager.saveAll()：不再复写 .md 商品文件
+        //   （商品目录由管理员手工维护，插件仅内存管理并单向同步给 PHP）
         // 取消未执行的删除任务
         if (pendingDeleteTask != null) {
             pendingDeleteTask.cancel();

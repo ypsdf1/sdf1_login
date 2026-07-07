@@ -208,41 +208,40 @@ public class PVPArenaManager implements Listener {
      *   • 下次进入再次随机生成 → 地形每次不同，破坏/砍树随删除完全复原，杜绝背图。
      */
     public void ensurePVPWorldExists() {
-        // 有人要进来了：取消任何待执行的删除任务（保留当前这一局地形）
+        // 有人要进来了：取消任何待执行的删除任务（保留当前这一局世界）
         cancelPendingDeletion();
 
         World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
         if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
-            // 世界中仍有其他玩家在战斗 → 复用同一局地形，一起竞技（不重建）
+            // 世界中仍有其他玩家在战斗 → 复用同一局，一起竞技（不重建、不干预地形）
             plugin.getLogger().info("[PVP] PVP世界已有玩家在场，复用当前地形（不重建）");
             return;
         }
 
-        // 世界不存在，或世界存在但已无人活动 → 重新随机生成全新地形。
-        // 这样满足"每次空场进入都随机生成地形"；同时，服务器若自动从磁盘加载了
-        // 旧版小平台（残留世界），这里会先卸载并删除磁盘目录，用随机地形替换它。
-        // ★ 关键修复：先清理历史回收站目录，避免磁盘无限增长
-        cleanupOldTrashWorlds();
-
-        if (pvpWorld != null) {
-            plugin.getLogger().info("[PVP] 检测到PVP世界当前无人，卸载旧世界以重新随机生成...");
-            Bukkit.unloadWorld(pvpWorld, false); // false=不保存，直接丢弃旧地形（含旧版小平台）
-            // ★ 关键修复：Windows 上 unloadWorld 后 region 文件可能仍被 OS 锁定，
-            //   File.delete() 会静默失败导致旧虚空世界残留，并被 createWorld() 原样重新加载
-            //   （findSafeSpawn=null → 退化为手工小岛地形）。改用"重命名到回收站"移走，
-            //   rename 在文件锁定时仍可靠成功，从而让 createWorld() 生成全新 NORMAL 主世界。
-            moveWorldToTrash(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        // 世界不存在 → 创建（地形由 MC 自行生成）
+        if (pvpWorld == null) {
+            pvpWorld = createPVPWorld();
         }
 
-        // 兜底：确保磁盘残留目录被清理（含旧版小平台），再随机重新生成
-        File worldDir = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-        if (worldDir.exists() && worldDir.isDirectory()) {
-            plugin.getLogger().info("[PVP] 清理磁盘残留的PVP世界目录，准备随机重新生成...");
-            moveWorldToTrash(worldDir);
+        // ★ 唯一干预：检测出生点是否为非实体方块（水/熔岩/空气/虚空）。
+        //   若是 → 删除世界并重生（换一个随机种子，希望出生点为实体地面）；
+        //   若否 → 完全放手，绝不改动地形、不移动出生点以外的任何方块。
+        if (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld)) {
+            plugin.getLogger().info("[PVP] 出生点为非实体方块(水/虚空)，删除并重生世界");
+            deletePVPWorld(pvpWorld);
+            pvpWorld = createPVPWorld();
+            // 重生后仍检查（最多重试若干次；极端情况下 MC 连续生成海洋/虚空才触发）
+            int tries = 0;
+            while (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld) && tries < 3) {
+                plugin.getLogger().warning("[PVP] 重生后出生点仍非实体方块，再次删除重生 (" + (tries + 1) + ")");
+                deletePVPWorld(pvpWorld);
+                pvpWorld = createPVPWorld();
+                tries++;
+            }
+            if (pvpWorld != null && !isSpawnOnSolidGround(pvpWorld)) {
+                plugin.getLogger().warning("[PVP] 多次重出生点仍为非实体方块(极小概率)，保留当前世界，请管理员手动处理");
+            }
         }
-
-        // 创建全新随机地形世界
-        createPVPWorld();
     }
 
     /**
@@ -261,8 +260,8 @@ public class PVPArenaManager implements Listener {
      *     3) 只读方式调用 findSafeSpawn 选附近优质固体地面做出生点
      *        （不改任何方块；仅当极端异常（理论上 NORMAL 必有陆地）才造保底平台）。
      */
-    private void createPVPWorld() {
-        plugin.getLogger().info("[PVP] 创建PVP世界 (纯NORMAL主世界，地形由MC自行生成)");
+    private World createPVPWorld() {
+        plugin.getLogger().info("[PVP] 创建PVP世界 (纯NORMAL主世界，地形由MC自行生成，插件不干预)");
 
         // 清理上次残留世界，确保是全新世界
         File existing = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
@@ -277,7 +276,7 @@ public class PVPArenaManager implements Listener {
         World pvpWorld = creator.createWorld();
         if (pvpWorld == null) {
             plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界!");
-            return;
+            return null;
         }
 
         pvpWorld.setPVP(true);
@@ -286,29 +285,31 @@ public class PVPArenaManager implements Listener {
         pvpWorld.setTime(6000);
         pvpWorld.setKeepSpawnInMemory(true);
 
-        // 先把出生点锚定在原点，使后续预生成与出生点搜索都以原点为中心
-        pvpWorld.setSpawnLocation(0, 64, 0);
+        // 预生成出生点周边区块（半径 4 个区块），确保地形已就绪、出生点判定准确
+        preGenerateSpawnChunks(pvpWorld, 4);
 
-        // 预生成出生点周边区块（半径 8 个区块），确保地形已就绪、findSafeSpawn 不误判虚空
-        preGenerateSpawnChunks(pvpWorld, 8);
+        // ★ 只读：把出生“坐标”锚定到 (0,0) 列顶部实体方块之上（绝不改动任何地形方块）
+        int topY = getTopSolidY(pvpWorld, 0, 0);
+        pvpWorld.setSpawnLocation(0, topY + 1, 0);
+        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 出生点=("
+                + 0 + "," + (topY + 1) + "," + 0 + ")");
 
-        // ★ 只读定位安全出生点（绝不改造地形）
-        Location safe = findSafeSpawn(pvpWorld);
-        if (safe != null) {
-            pvpWorld.setSpawnLocation(
-                    safe.getBlockX(), safe.getBlockY(), safe.getBlockZ());
-            plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 出生点=("
-                    + safe.getBlockX() + "," + safe.getBlockY() + "," + safe.getBlockZ()
-                    + ") 陆地质量分=" + lastSpawnLandScore);
-        } else {
-            // ★ 极端兜底：理论上 NORMAL 主世界必有陆地，仅当异常时才造保底平台
-            plugin.getLogger().warning("[PVP] 未找到安全陆地，启用保底出生平台");
-            buildFallbackPlatform(pvpWorld);
-            pvpWorld.setSpawnLocation(0, 121, 0);
-        }
+        return pvpWorld;
+    }
 
-        // 落盘已生成的区块
-        try { pvpWorld.save(); } catch (Exception ignored) {}
+    /**
+     * 判断出生点是否落在“实体方块”之上（玩家可站立、非水非空气）。
+     * ★ 这是插件对 PVP 世界唯一的“干预判定”：只有返回 false 时才由 ensurePVPWorldExists 删除重生。
+     */
+    private boolean isSpawnOnSolidGround(World world) {
+        Location s = world.getSpawnLocation();
+        Block under = world.getBlockAt(s.getBlockX(), s.getBlockY() - 1, s.getBlockZ());
+        Block feet  = world.getBlockAt(s.getBlockX(), s.getBlockY(),     s.getBlockZ());
+        Material u = under.getType();
+        Material f = feet.getType();
+        boolean solidUnder = !u.isAir() && u != Material.WATER && u != Material.LAVA;
+        boolean notInFluid = f != Material.WATER && f != Material.LAVA;
+        return solidUnder && notInFluid;
     }
 
     /**
