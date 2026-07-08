@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * PVP竞技场管理器 - 独立世界模式（完整主世界地形）
@@ -268,7 +269,7 @@ public class PVPArenaManager implements Listener {
      *   ★ 重要：Bukkit.createWorld 内部会【同步】触发 WorldInitEvent/WorldLoadEvent，Paper 只允许主线程触发，
      *     故 createWorld 必须在主线程执行（异步会抛 IllegalStateException 崩溃，第22轮已踩坑）。
      *   ★ 为消除原 13s 卡服：① 移除"水→删除重建换种子"循环（改为 forceSafeSpawn 兜底平台，createWorld 只跑一次）；
-     *     ② 周边区块由 preGenerateSpawnChunksAsync 异步预生成（不阻塞主线程）。主线程仅承担单次 createWorld(NORMAL)。
+     *     ② 周边区块由 preGenerateSpawnChunksAsync 同步分批预生成（每 tick 一行，不冻服）。主线程仅承担单次 createWorld(NORMAL)。
      */
     private World createPVPWorld() {
         long t0 = System.currentTimeMillis();
@@ -295,7 +296,7 @@ public class PVPArenaManager implements Listener {
 
         // ★ 固化安全出生点：中心半径找实体非流体方块；找不到兜底在 (0,24,0) 搭平台（不再"水→删除重建"导致多次 createWorld）
         forceSafeSpawn(pvpWorld);
-        // 异步预生成周边区块（不阻塞主线程）
+        // 同步分批预生成周边区块（每 tick 一行，不冻服）
         preGenerateSpawnChunksAsync(pvpWorld, 4);
         reapplyWorldRules(pvpWorld);
 
@@ -341,26 +342,38 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 异步预生成出生点周边区块（radius 个区块），避免主线程同步生成地形卡服。
-     * 生成完成后自动保存。失败仅告警，不影响主流程（玩家传送时会按需加载单个区块）。
+     * 同步分批预生成出生点周边区块（radius 个区块半径）。
+     *
+     * ★ 2026-07-08 修复：原实现用 runTaskAsynchronously + world.loadChunk() 被 Paper AsyncCatcher
+     *   全部拦截（chunk 操作必须在主线程），导致 81 个区块全部预生成失败，
+     *   玩家进入时实时生成造成 ~16 秒卡顿。
+     *   现改为 runTaskTimer 同步分批：每 tick 生成一行（2*radius+1 个 chunk），
+     *   共 (2*radius+1) tick 完成，均摊到各 tick 不冻结主线程。
      */
-    private void preGenerateSpawnChunksAsync(World world, int radius) {
+    private void preGenerateSpawnChunksAsync(final World world, final int radius) {
         final int cx = world.getSpawnLocation().getBlockX() >> 4;
         final int cz = world.getSpawnLocation().getBlockZ() >> 4;
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            int n = 0;
-            for (int dx = -radius; dx <= radius; dx++) {
+        final AtomicInteger row = new AtomicInteger(-radius);
+
+        // 用数组持有任务引用，供 lambda 内部自取消（Bukkit 无 getCurrentTask）
+        final BukkitTask[] taskHolder = new BukkitTask[1];
+        taskHolder[0] = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+            @Override
+            public void run() {
+                int r = row.getAndIncrement();
+                if (r > radius) {
+                    taskHolder[0].cancel();
+                    return;
+                }
                 for (int dz = -radius; dz <= radius; dz++) {
                     try {
-                        world.loadChunk(cx + dx, cz + dz, true);
-                        n++;
+                        world.loadChunk(cx + r, cz + dz, true);
                     } catch (Exception e) {
-                        plugin.getLogger().warning("[PVP] 异步生成区块失败: " + (cx + dx) + "," + (cz + dz));
+                        // 单个 chunk 失败不阻断整体
                     }
                 }
             }
-            plugin.getLogger().info("[PVP] 已异步预生成出生点周边 " + n + " 个区块");
-        });
+        }, 1L, 1L); // 延迟 1tick 启动（给世界加载留缓冲），每 1tick 一行
     }
 
     // ==================== PVP 战绩榜（记分板侧边栏）====================
