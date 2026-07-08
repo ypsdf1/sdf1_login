@@ -265,11 +265,10 @@ public class PVPArenaManager implements Listener {
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
         creator.seed(seed);
-        // ★ 关键：不把出生点区块常驻内存。否则 Bukkit.createWorld 会同步加载出生点周边
-        //   区块（~10 区块半径），主线程被占用数秒 → Watchdog 卡死。设为 false 后 createWorld
-        //   仅初始化世界、不加载出生点区块（毫秒级）；区块由 preGenerateSpawnChunks 异步预生成，
-        //   玩家传送时按需加载单个区块（极快），主线程全程不阻塞。
-        creator.keepSpawnInMemory(false);
+        // ★ 注意：运行时 Paper API 已移除 WorldCreator.keepSpawnInMemory(boolean)
+        //   （NoSuchMethodError），故【不在 Creator 上设置】出生点常驻。
+        //   出生点区块是否常驻内存由 reapplyWorldRules 的 World.setKeepSpawnInMemory(false)
+        //   控制——设为 false 可避免 Bukkit.createWorld 强制同步加载出生点区块导致主线程卡死。
         plugin.getLogger().info("[PVP] 新建随机世界名=" + pvpWorldName + ", 种子=" + seed + " (确保每次地形不同)");
 
         // ★ 使用 Bukkit.createWorld() 而非 creator.createWorld()：
