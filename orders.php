@@ -9,7 +9,7 @@
 error_reporting(E_ALL);
 ini_set('display_errors', '0');
 set_error_handler(function($errno, $errstr, $errfile, $errline) {
-    $types = [E_WARNING=>'Warning',E_NOTICE=>'Notice',E_USER_ERROR=>'UserError',E_USER_WARNING=>'UserWarning',E_USER_NOTICE=>'UserNotice',E_STRICT=>'Strict',E_DEPRECATED=>'Deprecated',E_RECOVERABLE_ERROR:'Recoverable'];
+    $types = [E_WARNING=>'Warning',E_NOTICE=>'Notice',E_USER_ERROR=>'UserError',E_USER_WARNING=>'UserWarning',E_USER_NOTICE=>'UserNotice',E_STRICT=>'Strict',E_DEPRECATED=>'Deprecated',E_RECOVERABLE_ERROR=>'Recoverable'];
     $type = isset($types[$errno]) ? $types[$errno] : "Error[$errno]";
     if (file_exists(__DIR__ . '/core.php')) {
         // core.php may not be loaded yet, define minimal debugLog
