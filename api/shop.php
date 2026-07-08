@@ -596,7 +596,7 @@ function shopBuyCart($token) {
                 'order_time' => date('Y-m-d H:i:s'),
                 'order_player' => $player,
                 'operator' => ($isCashier ? ($cashierRow['username'] ?? '') : 'admin'),
-                'settlement' => $modeName,
+                'settlement' => $settlement,
                 'pay_method' => $payMode,
                 'total_price' => (int)$finalPrice,
                 'items_text' => array_map(function($l) { return $l['name'] . ' x' . $l['amount'] . ' ... ' . $l['line_total'] . '债'; }, $lines)
