@@ -390,8 +390,10 @@ function shopBuyCart($token) {
         $modeName = '塞背包（环保单）';
         $colorFee = 0;
         $colorName = '';
-        // 环保单折扣率（折数）：10=不打折，9.9=9.9折(支付99%)，与游戏内"不打包"一致
-        $ecoPct = (float)($cfg['green_discount'] ?? '10');
+        // ★ 塞背包模式的折扣已由 cart_backpack_rate(如0.98=98折) 完整表达，
+        //   不再额外叠加 green_discount，避免"双重打折"导致实付低于界面标注的折数。
+        //   （green_discount 仅用于游戏内"不打包"语义，不在 Web 收银台背包模式重复生效）
+        $ecoPct = 0;
     }
 
     $db = getDB();

@@ -276,7 +276,7 @@ $initialState = json_encode([
             <div style="margin-top:12px">
                 <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">结算方式</label>
                 <div class="settlement-row">
-                    <div class="seg active" data-set="backpack" onclick="setSettlement('backpack')">🎒 塞背包 (98折)</div>
+                    <div class="seg active" data-set="backpack" onclick="setSettlement('backpack')">🎒 塞背包 (<?= round($backpackRate * 100) ?>折)</div>
                     <div class="seg" data-set="shulker" onclick="setSettlement('shulker')">📦 潜影盒（原色免费）</div>
                 </div>
 
@@ -586,7 +586,8 @@ async function recalc() {
     const ecoPctVal = STATE.green_discount ?? 0;   // 折数（如 9.9）
     let ecoPct = 0;
     let ecoAmt = 0;
-    if (settlement === 'backpack') ecoPct = ecoPctVal;
+    // ★ 背包模式折扣已由费率(cart_backpack_rate)完整表达，不再额外叠加 green_discount，
+    //   保持与后端 buy_cart 计算一致，避免"显示98折、实付被打成更低折"。
     if (ecoPct > 0) {
         // 折扣率语义：折后 = 原价 × 折数/10（9.9折→×0.99）
         const ecoDiscounted = Math.round(afterRate * ecoPct / 10);
