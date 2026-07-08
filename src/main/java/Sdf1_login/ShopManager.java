@@ -2264,6 +2264,8 @@ public class ShopManager implements Listener {
      */
     public String buildCatalogJson() {
         JsonArray cats = new JsonArray();
+
+        // 第一遍：内存中的普通分类（不含 .web.md）
         for (ShopCategory cat : categories) {
             JsonObject catObj = new JsonObject();
             catObj.addProperty("name", cat.getName());
@@ -2281,6 +2283,35 @@ public class ShopManager implements Listener {
             catObj.add("items", items);
             cats.add(catObj);
         }
+
+        // ★ 第二遍：扫描 .web.md 文件（PHP专属商品，游戏内不加载但需同步给 PHP）
+        File shopDir = new File(plugin.getDataFolder(), "shop");
+        if (shopDir.exists()) {
+            File[] webMdFiles = shopDir.listFiles((d, n) -> n.endsWith(".web.md"));
+            if (webMdFiles != null) {
+                for (File webMd : webMdFiles) {
+                    ShopCategory webCat = parseFile(webMd);
+                    if (webCat != null && !webCat.getItems().isEmpty()) {
+                        JsonObject catObj = new JsonObject();
+                        catObj.addProperty("name", webCat.getName());
+                        catObj.addProperty("file", webMd.getName()); // 含 .web.md 后缀，PHP 可据此区分来源
+                        JsonArray items = new JsonArray();
+                        for (ShopItem it : webCat.getItems()) {
+                            JsonObject itObj = new JsonObject();
+                            itObj.addProperty("id", it.getId());
+                            itObj.addProperty("display_name", it.getDisplayName());
+                            itObj.addProperty("material", it.getMaterial() == null ? "STONE" : it.getMaterial().name());
+                            itObj.addProperty("buy_price", it.getBuyPrice());
+                            itObj.addProperty("sell_price", it.getSellPrice());
+                            items.add(itObj);
+                        }
+                        catObj.add("items", items);
+                        cats.add(catObj);
+                    }
+                }
+            }
+        }
+
         JsonObject root = new JsonObject();
         root.add("categories", cats);
         return root.toString();

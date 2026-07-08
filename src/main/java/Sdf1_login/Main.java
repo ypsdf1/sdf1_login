@@ -3589,13 +3589,19 @@ public class Main extends JavaPlugin
                             if (cmd.endsWith(".txt")) {
                                 gui.openSubMenu(p, cmd);
                             } else {
-                                // ★ 替换玩家名变量：{player} %player% <player> [player] (player) 等
+                                // ★ 替换玩家名变量（支持中英文括号形式，不限制具体写法）
                                 String playerName = p.getName();
                                 cmd = cmd.replaceAll("\\{player\\}", playerName)
                                         .replaceAll("%player%", playerName)
                                         .replaceAll("<player>", playerName)
                                         .replaceAll("\\[player\\]", playerName)
-                                        .replaceAll("\\(player\\)", playerName);
+                                        .replaceAll("\\(player\\)", playerName)
+                                        // ★ 中文占位符（用户实际在菜单中使用的格式）
+                                        .replaceAll("\\{玩家名\\}", playerName)
+                                        .replaceAll("%玩家名%", playerName)
+                                        .replaceAll("<玩家名>", playerName)
+                                        .replaceAll("\\[玩家名\\]", playerName)
+                                        .replaceAll("\\(玩家名\\)", playerName);
                                 // ★ 根据权限类型选择执行身份
                                 if ("控制台".equals(permType) || "console".equalsIgnoreCase(permType)) {
                                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
@@ -3876,13 +3882,19 @@ public class Main extends JavaPlugin
                             if (cmd.endsWith(".txt")) {
                                 gui.openSubMenu(p, cmd);
                             } else {
-                                // ★ 替换玩家名变量
+                                // ★ 替换玩家名变量（支持中英文括号形式）
                                 String playerName = p.getName();
                                 cmd = cmd.replaceAll("\\{player\\}", playerName)
                                         .replaceAll("%player%", playerName)
                                         .replaceAll("<player>", playerName)
                                         .replaceAll("\\[player\\]", playerName)
-                                        .replaceAll("\\(player\\)", playerName);
+                                        .replaceAll("\\(player\\)", playerName)
+                                        // ★ 中文占位符
+                                        .replaceAll("\\{玩家名\\}", playerName)
+                                        .replaceAll("%玩家名%", playerName)
+                                        .replaceAll("<玩家名>", playerName)
+                                        .replaceAll("\\[玩家名\\}", playerName)
+                                        .replaceAll("\\(玩家名\\)", playerName);
                                 // ★ 根据权限类型选择执行身份
                                 if ("控制台".equals(permType) || "console".equalsIgnoreCase(permType)) {
                                     Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);

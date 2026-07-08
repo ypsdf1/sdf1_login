@@ -265,18 +265,30 @@ public class PVPArenaManager implements Listener {
             plugin.getLogger().info("[PVP] ✅ 确认旧 pvp_arena 目录已清除，将生成全新世界");
         }
 
-        World pvpWorld = creator.createWorld();
+        // ★ 使用 Bukkit.createWorld() 而非 creator.createWorld()：
+        //   Bukkit 管线会完整处理 WorldCreator 的所有配置（包括 seed），在某些 Paper 版本中更可靠。
+        //   creator.createWorld() 是捷径方法，可能跳过某些初始化步骤导致 seed 被内部值覆盖。
+        World pvpWorld = Bukkit.createWorld(creator);
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
-            plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界! (createWorld返回null, 耗时" + dt + "ms)");
+            plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界! (Bukkit.createWorld返回null, 耗时" + dt + "ms)");
             return null;
         }
-        plugin.getLogger().info("[PVP] createWorld 完成, 耗时=" + dt + "ms, 世界环境="
+
+        // ★ 关键验证：检查 MC 是否真的使用了我们指定的种子（Paper 26.x 已知会忽略 creator.seed）
+        long actualSeed = pvpWorld.getSeed();
+        boolean seedMatches = (actualSeed == seed);
+        plugin.getLogger().info("[PVP] Bukkit.createWorld 完成, 耗时=" + dt + "ms, 世界环境="
                 + pvpWorld.getEnvironment()
                 + ", 生成器=" + (pvpWorld.getGenerator() == null ? "默认(无插件生成器)" : pvpWorld.getGenerator().getClass().getSimpleName())
-                + ", MC种子=" + pvpWorld.getSeed()
-                + ", 自然出生点=(" + pvpWorld.getSpawnLocation().getBlockX() + ","
-                + pvpWorld.getSpawnLocation().getBlockY() + "," + pvpWorld.getSpawnLocation().getBlockZ() + ")");
+                + ", 期望种子=" + seed
+                + ", MC实际种子=" + actualSeed
+                + (seedMatches ? " ✅ 种子匹配" : " ❌ 种子不匹配！MC忽略了我们的seed设定"));
+
+        if (!seedMatches) {
+            plugin.getLogger().warning("[PVP] ⚠ Paper/MC 忽略了 WorldCreator.seed() 设定！"
+                    + " 这可能是 Paper 26.x 的已知行为。地形可能仍为固定小岛。");
+        }
 
         reapplyWorldRules(pvpWorld);
 
