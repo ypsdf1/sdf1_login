@@ -570,13 +570,17 @@ public class ShopManager implements Listener {
             List<OrderManager.OrderItem> orderItems =
                     new ArrayList<>();
             for (CartItem ci : cart) {
+                ShopItem si = findItemById(ci.itemId);
+                ItemStack giveStack = (si != null) ? getShopStack(si, ci.quantity) : null;
+                // ★ 记录真实物品(含NBT，如附魔书)的快照，供退款时精确匹配收回实物
+                String nbtB64 = (giveStack != null) ? java.util.Base64.getEncoder().encodeToString(giveStack.serializeAsBytes()) : "";
                 orderItems.add(
                         new OrderManager.OrderItem(
                                 ci.displayName,
                                 ci.material.name(),
                                 ci.unitPrice,
                                 ci.unitPrice,
-                                ci.quantity));
+                                ci.quantity, nbtB64));
             }
             String dType = "none";
             String cCode = "";
@@ -1745,11 +1749,13 @@ public class ShopManager implements Listener {
                     pendingCouponCode.get(p.getUniqueId());
             List<OrderManager.OrderItem> orderItems =
                     new ArrayList<>();
+            // ★ 记录真实物品(含NBT)快照，供退款时精确匹配收回实物（避免"仅退款"）
+            String nbtB64 = (give != null) ? java.util.Base64.getEncoder().encodeToString(give.serializeAsBytes()) : "";
             orderItems.add(new OrderManager.OrderItem(
                     item.getDisplayName(),
                     item.getMaterial().name(),
                     item.getBuyPrice(),
-                    item.getBuyPrice(), amount));
+                    item.getBuyPrice(), amount, nbtB64));
             plugin.getOrderManager().recordOrder(
                     p, orderItems,
                     item.getBuyPrice() * amount, total,

@@ -77,10 +77,21 @@ public class OrderManager implements Listener {
     public static class OrderItem {
         public String name; public String mat;
         public int originalPrice; public int finalPrice; public int qty;
+        public String nbt; // 物品NBT快照(Base64 of ItemStack.serializeAsBytes)，退款时用于精确匹配含NBT商品；null/空=无NBT或旧数据
         public OrderItem(String n,String m,int op,int fp,int q){
-            name=n;mat=m;originalPrice=op;finalPrice=fp;qty=q;}
+            name=n;mat=m;originalPrice=op;finalPrice=fp;qty=q;nbt=null;}
+        public OrderItem(String n,String m,int op,int fp,int q,String nbtB64){
+            name=n;mat=m;originalPrice=op;finalPrice=fp;qty=q;nbt=nbtB64;}
         public int subtotal(){return finalPrice*qty;}
         public int originalSubtotal(){return originalPrice*qty;}
+        /** 还原下单时的真实物品（含NBT），用于退款时精确匹配；无快照或还原失败返回null */
+        public org.bukkit.inventory.ItemStack toTemplateStack() {
+            if (nbt == null || nbt.isEmpty()) return null;
+            try {
+                byte[] b = java.util.Base64.getDecoder().decode(nbt);
+                return org.bukkit.inventory.ItemStack.deserializeBytes(b);
+            } catch (Exception e) { return null; }
+        }
     }
     public static class OrderRecord {
         public long orderId; public UUID uuid; public String player;
@@ -384,13 +395,31 @@ public class OrderManager implements Listener {
         int c = 0; for (ItemStack is : p.getInventory().getContents()) if (is != null && is.getType() == m) c += is.getAmount();
         return c;
     }
+    /** 精确按材质+ItemMeta(NBT)计数，用于含NBT商品（如附魔书）退款校验 */
+    private int countSimilarItems(Player p, org.bukkit.inventory.ItemStack tmpl) {
+        if (tmpl == null) return 0;
+        int c = 0; for (ItemStack is : p.getInventory().getContents()) if (is != null && is.isSimilar(tmpl)) c += is.getAmount();
+        return c;
+    }
     private int countShulkers(Player p, String matName) {
         Material m = Material.matchMaterial(matName); if (m == null) return 0;
         int c = 0; for (ItemStack is : p.getInventory().getContents()) if (is != null && is.getType() == m) c += is.getAmount();
         return c;
     }
-    private void removeItems(Player p, String matName, int amt) {
-        Material m = Material.matchMaterial(matName); if (m != null) p.getInventory().removeItem(new ItemStack(m, amt));
+    /**
+     * 收走订单物品：优先按记录中的NBT快照精确匹配（材质+ItemMeta一致），
+     * 确保含NBT商品（附魔书等）既退钱又收回正确的实物，而非"仅退款"。
+     * 无快照（旧订单/普通物品）则按材质兜底。
+     */
+    private void removeItems(Player p, OrderItem it) {
+        org.bukkit.inventory.ItemStack tmpl = it.toTemplateStack();
+        if (tmpl != null) {
+            tmpl.setAmount(it.qty);
+            p.getInventory().removeItem(tmpl); // removeItem 按 isSimilar 匹配，精确收走含NBT实物
+        } else {
+            Material m = Material.matchMaterial(it.mat);
+            if (m != null) p.getInventory().removeItem(new ItemStack(m, it.qty));
+        }
     }
     private boolean removeOneShulker(Player p,
                                      String materialName) {
@@ -448,9 +477,10 @@ public class OrderManager implements Listener {
             }
             return "§c对应的潜影盒已不在背包中";
         } else {
-            // ★ 散装：检测物品数量
+            // ★ 散装：检测物品数量（含NBT商品按材质+ItemMeta精确校验，必须"有货且有正确NBT"）
             for (OrderItem it : r.items) {
-                int have = countDirectItems(p, it.mat);
+                org.bukkit.inventory.ItemStack tmpl = it.toTemplateStack();
+                int have = (tmpl != null) ? countSimilarItems(p, tmpl) : countDirectItems(p, it.mat);
                 if (have < it.qty)
                     return "§c" + it.name + "不足(有"
                             + have + "/" + it.qty + ")";
@@ -1062,7 +1092,7 @@ public class OrderManager implements Listener {
             }
         } else {
             for (OrderItem it : r.items)
-                removeItems(p, it.mat, it.qty);
+                removeItems(p, it);
         }
 
         plugin.getBonds().addBonds(r.player, r.totalPaid);
@@ -1305,7 +1335,7 @@ public class OrderManager implements Listener {
                         case "packFee": cur.packFee = Integer.parseInt(v); break; case "packType": cur.packType = v; break; case "packColor": cur.packColor = v; break;
                         case "status": cur.status = Integer.parseInt(v); break; case "refundedAmount": cur.refundedAmount = Integer.parseInt(v); break;
                         case "printTime": cur.printTime = Long.parseLong(v); break; case "refundType": cur.refundType = v; break;
-                        case "item": String[] pp = v.split("\\|"); if (pp.length >= 5) cur.items.add(new OrderItem(pp[0], pp[1], Integer.parseInt(pp[2]), Integer.parseInt(pp[3]), Integer.parseInt(pp[4]))); break; }
+                        case "item": String[] pp = v.split("\\|"); if (pp.length >= 5) { OrderItem oi = new OrderItem(pp[0], pp[1], Integer.parseInt(pp[2]), Integer.parseInt(pp[3]), Integer.parseInt(pp[4])); if (pp.length >= 6) oi.nbt = pp[5]; cur.items.add(oi); } break; }
                 } else if (line.isEmpty() && cur != null && cur.uuid != null) { orders.add(cur); cur = null; }
             } if (cur != null && cur.uuid != null) orders.add(cur); br.close();
         } catch (Exception e) { plugin.getLogger().warning("[Order]加载失败: " + e.getMessage()); }
@@ -1321,7 +1351,7 @@ public class OrderManager implements Listener {
                 pw.println("packType=" + nn(r.packType)); pw.println("packColor=" + nn(r.packColor));
                 pw.println("status=" + r.status); pw.println("refundedAmount=" + r.refundedAmount);
                 pw.println("printTime=" + r.printTime); pw.println("refundType=" + nn(r.refundType));
-                for (OrderItem it : r.items) pw.println("item=" + it.name + "|" + it.mat + "|" + it.originalPrice + "|" + it.finalPrice + "|" + it.qty);
+                for (OrderItem it : r.items) pw.println("item=" + it.name + "|" + it.mat + "|" + it.originalPrice + "|" + it.finalPrice + "|" + it.qty + "|" + (it.nbt == null ? "" : it.nbt));
             } } pw.flush(); pw.close();
         } catch (Exception e) { plugin.getLogger().warning("[Order]保存失败: " + e.getMessage()); }
     }

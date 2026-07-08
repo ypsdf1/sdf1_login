@@ -592,23 +592,31 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 强制同步生成出生点周边区块（半径 radius 个区块），确保地形已存在后再寻找安全出生点
-     * 必须在主线程调用（命令处理阶段）
+     * 异步非阻塞预生成出生点周边区块（半径 radius 个区块）。
+     * ★ 关键修复（2026-07-08）：原实现在主线程同步 loadChunk 81 个区块，
+     *   导致单次创建世界总阻塞主线程 >10s，触发 Paper Watchdog 超时（"The server has not responded for 10 seconds"）。
+     *   改为通过 Paper 的 getChunkAtAsync 全部异步派发，主线程瞬间返回，区块在后台线程生成，
+     *   既不卡死服务器也保留了"出生点周边地形就绪"的意图。
+     *   出生点所在区块已由 Bukkit.createWorld 加载（即 createWorld 耗时约 8s 的由来），
+     *   因此 joinArena 的出生点脚下检查不会触发额外同步加载。
      */
     private void preGenerateSpawnChunks(World world, int radius) {
         int cx = world.getSpawnLocation().getBlockX() >> 4;
         int cz = world.getSpawnLocation().getBlockZ() >> 4;
+        int n = 0;
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
+                final int x = cx + dx, z = cz + dz;
                 try {
-                    // true=强制生成；再读取一个方块以触发区块填充，避免异步未就绪导致出生点下方误判为虚空
-                    world.loadChunk(cx + dx, cz + dz, true);
-                    world.getChunkAt(cx + dx, cz + dz).getBlock(8, 64, 8).getType();
+                    // 异步非阻塞生成：true=强制生成；回调仅用于异常兜底，绝不阻塞主线程
+                    world.getChunkAtAsync(x, z, true, chunk -> {});
+                    n++;
                 } catch (Exception e) {
-                    plugin.getLogger().warning("[PVP] 生成区块失败: " + (cx + dx) + "," + (cz + dz));
+                    plugin.getLogger().warning("[PVP] 触发异步生成区块失败: " + x + "," + z);
                 }
             }
         }
+        plugin.getLogger().info("[PVP] 已派发 " + n + " 个区块异步预生成（后台进行，不阻塞主线程，避免 Watchdog 超时）");
     }
 
 
