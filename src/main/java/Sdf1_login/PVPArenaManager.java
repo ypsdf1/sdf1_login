@@ -842,7 +842,17 @@ public class PVPArenaManager implements Listener {
         // 同时配合超时安全网（onPlayerEnterPVPWorld 中注册60秒定时器），
         // 防止玩家一直开着 GUI 不操作也不退出
 
-        if (selectedTier.containsKey(player.getName())) {
+        // ★ 关键修复：确认过装备（equipmentConfirmed 有值）也绝不能遣返。
+        //   确认流程 confirmEquipment() 内 equipFullSet() 会 selectedTier.remove()，
+        //   若此时 guiReopening 已被前置宽限期自动重开消费，则关闭事件落入遣返分支。
+        //   故同时判断 equipmentConfirmed，二者任一成立即不遣返。
+        if (selectedTier.containsKey(player.getName())
+                || equipmentConfirmed.contains(player.getName())) {
+            if (equipmentConfirmed.contains(player.getName())) {
+                plugin.getLogger().info("[PVP] 玩家 " + player.getName()
+                        + " 已确认装备但GUI关闭，忽略（不遣返）");
+                return;
+            }
             // 玩家已选择了档位 → 自动重开 GUI 让其继续操作或点确认
             plugin.getLogger().info("[PVP] 玩家 " + player.getName()
                     + " 已选择档位但未确认就关了GUI，自动重开（selectedTier="
@@ -865,6 +875,11 @@ public class PVPArenaManager implements Listener {
         // 清理状态并取消超时定时器
         inPVPArena.remove(player.getName());
         cancelKickTimeout(player.getName());
+
+        // ★ 关键修复：遣返前必须清除PVP战绩榜，否则玩家回到主世界
+        //   仍携带榜单（onPlayerChangedWorld 触发 forceLeaveArena 时会因
+        //   inPVPArena 已移除而提前 return，导致 cleanupPlayerStats 不被调用）。
+        cleanupPlayerStats(player);
 
         // 延迟一帧传回主世界（避免与关闭事件冲突）
         Bukkit.getScheduler().runTask(plugin, () -> {
@@ -1639,14 +1654,20 @@ public class PVPArenaManager implements Listener {
         }
 
         player.sendMessage("§a§l正在生成PVP竞技场世界，请稍候...");
-        // ★ 主线程同步创建真实NORMAL自然地形世界（createWorld 必须主线程，异步会抛 IllegalStateException 崩溃）。
-        //   单次 createWorld(NORMAL) 的真实地形生成在主线程完成；无"水→重建"循环故只生成一次。
-        pvpWorld = createPVPWorld();
-        if (pvpWorld == null) {
-            player.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
-            return;
-        }
-        finalizeJoin(player, pvpWorld);
+        // ★ 主线程异步任务（下一tick执行）：createWorld(NORMAL) 真实地形生成需 ~12s，
+        //   放入独立 runTask 让 /pvp join 命令所在 tick 立即返回（"正在生成"提示先送达），
+        //   不再冻结命令执行线程。注意 createWorld 仍必须在主线程（触发 WorldInitEvent），
+        //   故用 runTask 而非 runTaskAsynchronously；自然地形生成的 Watchdog 提示为 Paper 已知良性提示。
+        final Player fp = player;
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!fp.isOnline()) return;
+            World w = createPVPWorld();
+            if (w == null) {
+                fp.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
+                return;
+            }
+            finalizeJoin(fp, w);
+        });
     }
 
     /**
