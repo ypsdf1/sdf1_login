@@ -660,6 +660,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry(land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry(land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
+        perms.add(new PermEntry("传送", land.allowVisitorTeleport));
         perms.add(new PermEntry("和平模式", land.peaceMode));
         perms.add(new PermEntry("公共建筑设施", land.isPublicBuilding));
         return perms;
@@ -718,6 +719,7 @@ public class AreaGUIManager implements Listener {
             case "禁止投喂": case "允许投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "禁止攻击生物": case "允许攻击生物": land.denyMobAttack = !land.denyMobAttack; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
+            case "传送": land.allowVisitorTeleport = !land.allowVisitorTeleport; break;
             case "和平模式": land.peaceMode = !land.peaceMode; break;
             case "公共建筑设施": land.isPublicBuilding = !land.isPublicBuilding; break;
         }

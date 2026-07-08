@@ -547,6 +547,7 @@ public class AreaCLIManager {
             case "animal_feed": oldState = land.denyAnimalFeeding; land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "mob_attack": oldState = land.denyMobAttack; land.denyMobAttack = !land.denyMobAttack; break;
             case "glowing": oldState = land.denyGlowing; land.denyGlowing = !land.denyGlowing; break;
+            case "visitor_teleport": oldState = land.allowVisitorTeleport; land.allowVisitorTeleport = !land.allowVisitorTeleport; break;
             case "peace_mode": oldState = land.peaceMode; land.peaceMode = !land.peaceMode; break;
             case "public_building": oldState = land.isPublicBuilding; land.isPublicBuilding = !land.isPublicBuilding; break;
         }
@@ -604,6 +605,7 @@ public class AreaCLIManager {
             case "glowing": return "denyGlowing";
             case "peace_mode": return "peaceMode";
             case "public_building": return "isPublicBuilding";
+            case "visitor_teleport": return "allowVisitorTeleport";
             case "tp": return "allowTeleport";
             default: return shortKey;
         }
@@ -659,6 +661,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("animal_feed", land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
+        perms.add(new PermItem("visitor_teleport", "传送", land.allowVisitorTeleport));
         perms.add(new PermItem("peace_mode", "和平模式", land.peaceMode));
         perms.add(new PermItem("public_building", "公共建筑设施", land.isPublicBuilding));
         return perms;
@@ -698,6 +701,7 @@ public class AreaCLIManager {
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
             case "public_building": return "公共建筑设施";
+            case "visitor_teleport": return "传送";
             case "tp": return "传送";
             default: return key;
         }
@@ -1185,6 +1189,9 @@ public class AreaCLIManager {
             case "denyAnimalFeeding": return land.denyAnimalFeeding;
             case "denyGlowing": return land.denyGlowing;
             case "peaceMode": return land.peaceMode;
+            case "isPublicBuilding": return land.isPublicBuilding;
+            case "allowVisitorTeleport": return land.allowVisitorTeleport;
+            case "allowTeleport": return false; // per-player 默认关闭
             default: return false;
         }
     }

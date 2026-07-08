@@ -882,6 +882,12 @@ public class AreaProtection implements Listener {
         // ★ 优先从数据库加载
         loadAreasFromDb();
 
+        // ★ 自动迁移：确保 allow_visitor_teleport 列存在（2026-07-08 新增）
+        try {
+            dbConnection.createStatement().execute("ALTER TABLE area_lands ADD COLUMN allow_visitor_teleport INTEGER DEFAULT 0");
+            plugin.getLogger().info("[防护] 已添加 allow_visitor_teleport 列");
+        } catch (Exception ignored) { /* 列已存在则忽略 */ }
+
         // ★ 自动迁移：如果DB有数据但txt文件仍存在，迁移txt中的白名单数据到DB后删除txt
         if (!areas.isEmpty()) {
             migrateTxtFilesToDb();
@@ -1009,6 +1015,7 @@ public class AreaProtection implements Listener {
                 try { ac.warpPitch = rs.getFloat("warp_pitch"); } catch (Exception ignored) {}
                 try { ac.warpWorld = rs.getString("warp_world"); } catch (Exception ignored) {}
                 try { ac.isPublicBuilding = rs.getInt("is_public_building") == 1; } catch (Exception ignored) {}
+                try { ac.allowVisitorTeleport = rs.getInt("allow_visitor_teleport") == 1; } catch (Exception ignored) {}
                 ac.peaceMode = rs.getInt("peace_mode") == 1;
                 ac.peaceModeDuration = rs.getInt("peace_mode_duration") * 1000; // 转毫秒
                 ac.peaceWhitelist = new HashSet<>(splitToList(rs.getString("peace_whitelist")));
@@ -2261,6 +2268,8 @@ public class AreaProtection implements Listener {
         if (isAreaAdmin(p)) return true;
         if (p.getName().equalsIgnoreCase(ac.owner)) return true;
         if (isLandAdmin(ac.name, p.getName())) return true;
+        // ★ 访客传送权限：领地级别允许则放行（优先于per-player检查）
+        if (ac.allowVisitorTeleport) return true;
         int landId = getLandIdFromDb(ac.name);
         if (landId <= 0) return false; // 无法验证则拒绝
         Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
@@ -7833,8 +7842,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -7902,6 +7911,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(62, ac.denyContainer ? 1 : 0);
             stmt.setInt(63, ac.denyMobAttack ? 1 : 0);
             stmt.setInt(64, ac.isPublicBuilding ? 1 : 0);
+            stmt.setInt(65, ac.allowVisitorTeleport ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -10010,6 +10020,8 @@ public class AreaProtection implements Listener {
         public String warpWorld = "";
         // ★ 公共建筑标记
         public boolean isPublicBuilding = false;
+        // ★ 访客传送权限（默认关闭：未授权访客不能传送进入领地）
+        public boolean allowVisitorTeleport = false;
 
 
 

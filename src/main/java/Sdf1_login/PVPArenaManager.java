@@ -265,7 +265,7 @@ public class PVPArenaManager implements Listener {
      * 出生点合法性：脚下方块必须是【实体方块】（固体）才使用；若随机到水/空气等非实体方块，
      * 则删除该世界、换一个新种子重新生成（极少数情况连续多次都抽到水出生点，会重试但概率极低）。
      *
-     * 卡服修复：Bukkit.createWorld 仅做世界初始化（keepSpawnInMemory=false 不强制加载出生点区块），
+     * 卡服修复：Bukkit.createWorld 仅做世界初始化（不强制加载出生点区块），
      * 主线程毫秒级返回；出生点周边区块由 preGenerateSpawnChunksAsync 异步预生成，不阻塞主线程。
      */
     private World createPVPWorld() {
@@ -280,7 +280,8 @@ public class PVPArenaManager implements Listener {
         c.environment(World.Environment.NORMAL);
         c.type(WorldType.NORMAL);
         c.seed(seed);
-        c.keepSpawnInMemory(false); // ★ 不强制加载出生点区块，避免同步卡服
+        // 注意：Paper 26.x 已移除 WorldCreator.keepSpawnInMemory(boolean)，不再调用
+        // 区块加载控制改为 createWorld 后通过 world.setKeepLoaded(false) 实现
 
         plugin.getLogger().info("[PVP] 生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed);
         World pvpWorld = Bukkit.createWorld(c);
