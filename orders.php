@@ -3,6 +3,26 @@
  * 独立订单记录页面
  * 从收银台拆分出来，支持搜索、筛选、完整订单详情查看。
  */
+
+// ★ 错误报告增强：捕获所有PHP错误写入debug.log（包括warning/notice）
+//   用户反馈"全新无扩展浏览器仍报错"，需排查任何可能破坏前端输出的PHP问题
+error_reporting(E_ALL);
+ini_set('display_errors', '0');
+set_error_handler(function($errno, $errstr, $errfile, $errline) {
+    $types = [E_WARNING=>'Warning',E_NOTICE=>'Notice',E_USER_ERROR=>'UserError',E_USER_WARNING=>'UserWarning',E_USER_NOTICE=>'UserNotice',E_STRICT=>'Strict',E_DEPRECATED=>'Deprecated',E_RECOVERABLE_ERROR:'Recoverable'];
+    $type = isset($types[$errno]) ? $types[$errno] : "Error[$errno]";
+    if (file_exists(__DIR__ . '/core.php')) {
+        // core.php may not be loaded yet, define minimal debugLog
+        if (!function_exists('debugLog')) {
+            function debugLog($msg) {
+                @file_put_contents(__DIR__ . '/db/debug.log', "[" . date('Y-m-d H:i:s') . "] [orders.php] $msg\n", FILE_APPEND | LOCK_EX);
+            }
+        }
+        debugLog("[orders.php] PHP {$type}: {$errstr} in {$errfile}:{$errline}");
+    }
+    return true; // 不阻止默认错误处理
+});
+
 require_once __DIR__ . '/core.php';
 
 // ★ 强制使 opcache 失效，确保部署后的新版（含请求超时/重试）立即生效，
@@ -10,6 +30,16 @@ require_once __DIR__ . '/core.php';
 if (function_exists('opcache_invalidate')) { @opcache_invalidate(__FILE__); }
 
 if (session_status() === PHP_SESSION_NONE) session_start();
+
+// ★ 输出缓冲：捕获任何前置输出（PHP warning/notice/BOM等），防止破坏前端JSON解析
+$preOutput = '';
+if (ob_get_level() > 0) {
+    $preOutput = ob_get_clean();
+}
+if (!empty($preOutput)) {
+    // 记录但不阻断：有前置输出说明某处产生了warning/notice/BOM
+    debugLog('[orders.php] 检测到前置输出(' . strlen($preOutput) . ' bytes): ' . substr(trim($preOutput), 0, 500));
+}
 
 try {
     $loggedIn = isAdminLoggedIn() || isCashierLoggedIn();
@@ -251,6 +281,25 @@ document.getElementById('orderList').addEventListener('click', e => {
 // 启动
 if (STATE.logged_in) loadOrders();
 else document.getElementById('orderList').innerHTML = '<div class="empty-state">请先<a href="cashier.php" style="color:var(--accent)">登录收银台</a>后查看订单</div>';
+
+// ★ 全局错误捕获：捕获任何未处理的JS错误并显示在页面上（便于排查"全新浏览器仍报错"）
+window.onerror = function(msg, url, line, col, err) {
+    var el = document.getElementById('orderList');
+    if (el) {
+        var info = 'JS Error: ' + String(msg);
+        if (url) info += '\n文件: ' + url + (line ? ':' + line : '') + (col ? ':' + col : '');
+        if (err && err.stack) info += '\n堆栈: ' + err.stack.substring(0, 500);
+        el.innerHTML = '<div class="empty-state" style="color:var(--red);word-break:break-all;text-align:left;padding:20px;border:1px solid var(--red);border-radius:8px;margin-top:10px">⚠️ 页面脚本错误:\n<pre style="white-space:pre-wrap;color:var(--red)">' + esc(info) + '</pre>\n<a href="javascript:location.reload()" style="color:var(--accent)">[刷新页面]</a></div>';
+    }
+    return false;
+};
+// ★ Promise未捕获 rejection 捕获
+window.onunhandledrejection = function(e) {
+    var el = document.getElementById('orderList');
+    if (el) {
+        el.innerHTML = '<div class="empty-state" style="color:var(--yellow)">⚠️ 异步请求失败: ' + esc(String(e.reason || 'unknown')) + ' <a href="javascript:loadOrders()" style="color:var(--accent)">[重试]</a></div>';
+    }
+};
 </script>
 </body>
 </html>
