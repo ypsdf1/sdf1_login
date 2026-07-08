@@ -112,10 +112,6 @@ public class PVPArenaManager implements Listener {
     // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
     private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
 
-    // ★ PVP模板世界池：首次启动时生成并存盘，后续每次开战仅复制+加载（避免实时生成地形卡服）
-    private static final int PVP_TEMPLATE_POOL = 3;
-    private final List<String> pvpTemplateNames = new ArrayList<>();
-
     // 装备选择GUI标题
     private static final String EQUIPMENT_GUI_TITLE = "§6§l选择PVP装备";
 
@@ -261,167 +257,84 @@ public class PVPArenaManager implements Listener {
      *   4) 出生点是否合格由 joinArena() 做"唯一一次"脚下方块检查（水→上移该玩家，非水→直接放行）。
      */
     /**
-     * 创建PVP竞技场世界。
+     * 创建PVP竞技场世界（随机种子，防背图）。
      *
-     * 2026-07-08 修复"创建世界卡服务器"：
-     *   原实现每次用全新随机种子调用 Bukkit.createWorld，在从未生成过的种子上同步生成地形，
-     *   主线程阻塞数秒导致全服卡顿。现改为：首次启动一次性生成 PVP_TEMPLATE_POOL 个模板世界并持久化；
-     *   每次开战仅复制模板目录为随机新世界名再加载（仅读盘、不生成地形），主线程耗时降到毫秒级。
+     * 设计：玩家全部离开后世界被删除，下次加入时重新随机种子生成【全新地形】，
+     * 避免熟悉地图的玩家背图追杀新手。
+     *
+     * 出生点合法性：脚下方块必须是【实体方块】（固体）才使用；若随机到水/空气等非实体方块，
+     * 则删除该世界、换一个新种子重新生成（极少数情况连续多次都抽到水出生点，会重试但概率极低）。
+     *
+     * 卡服修复：Bukkit.createWorld 仅做世界初始化（keepSpawnInMemory=false 不强制加载出生点区块），
+     * 主线程毫秒级返回；出生点周边区块由 preGenerateSpawnChunksAsync 异步预生成，不阻塞主线程。
      */
     private World createPVPWorld() {
         long t0 = System.currentTimeMillis();
 
-        // 确保模板世界已就绪（懒加载：首次 /pvp join 时按需生成，不拖慢启动）
-        ensurePVPTemplates();
-        if (pvpTemplateNames.isEmpty()) {
-            plugin.getLogger().severe("[PVP] 模板世界初始化失败，无法创建竞技场");
-            return null;
-        }
-
-        // 随机选一个模板（保留地形多样性）
-        String tpl = pvpTemplateNames.get(worldSeedRandom.nextInt(pvpTemplateNames.size()));
-        File tplFolder = new File(Bukkit.getWorldContainer(), tpl);
-
-        // ★ 安全检查：确认模板目录确实存在（防止外部删除或卸载后目录丢失）
-        if (!tplFolder.exists()) {
-            plugin.getLogger().warning("[PVP] 模板 " + tpl + " 目录不存在，从列表移除并重试");
-            pvpTemplateNames.remove(tpl);
-            if (pvpTemplateNames.isEmpty()) {
-                plugin.getLogger().severe("[PVP] 所有模板世界均不可用，无法创建竞技场");
-                return null;
-            }
-            // 递归重试（换一个模板）
-            return createPVPWorld();
-        }
-
         // 随机新世界名（彻底绕开旧目录残留冲突）
         deleteWorldFolderIfExists(pvpWorldName);
         this.pvpWorldName = PVP_WORLD_NAME + "_" + Long.toUnsignedString(worldSeedRandom.nextLong());
-        File arenaFolder = new File(Bukkit.getWorldContainer(), pvpWorldName);
 
-        try {
-            copyWorldFolder(tplFolder, arenaFolder);
-        } catch (IOException e) {
-            plugin.getLogger().severe("[PVP] 复制模板世界失败: " + e.getMessage());
-            return null;
-        }
+        long seed = worldSeedRandom.nextLong();
+        WorldCreator c = new WorldCreator(pvpWorldName);
+        c.environment(World.Environment.NORMAL);
+        c.type(WorldType.NORMAL);
+        c.seed(seed);
+        c.keepSpawnInMemory(false); // ★ 不强制加载出生点区块，避免同步卡服
 
-        plugin.getLogger().info("[PVP] 已从模板 " + tpl + " 复制为新世界 " + pvpWorldName + "（仅加载，不实时生成地形）");
-
-        WorldCreator creator = new WorldCreator(pvpWorldName);
-        creator.environment(World.Environment.NORMAL);
-        creator.type(WorldType.NORMAL);
-        World pvpWorld = Bukkit.createWorld(creator);
+        plugin.getLogger().info("[PVP] 生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed);
+        World pvpWorld = Bukkit.createWorld(c);
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
             plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界! (Bukkit.createWorld返回null, 耗时" + dt + "ms)");
             return null;
         }
 
+        // ★ 出生点脚下方块检查：实体（固体）方块→使用；水/空气等非实体→删除重来（换新种子）
+        Location spawn = pvpWorld.getSpawnLocation();
+        Block feet = pvpWorld.getBlockAt(spawn.getBlockX(), spawn.getBlockY() - 1, spawn.getBlockZ());
+        if (!isSolidBlock(feet.getType())) {
+            plugin.getLogger().warning("[PVP] 种子 " + seed + " 出生点为非实体方块(" + feet.getType().name()
+                    + ")，删除世界换种子重来");
+            deletePVPWorld(pvpWorld);
+            return createPVPWorld(); // 递归重试（新随机种子）
+        }
+
+        // 出生点合格：异步预生成周边区块（不卡主线程），同时应用世界规则
+        preGenerateSpawnChunksAsync(pvpWorld, 4);
         reapplyWorldRules(pvpWorld);
 
-        plugin.getLogger().info("[PVP] 已加载PVP竞技场世界(模板副本) 耗时=" + dt + "ms");
+        plugin.getLogger().info("[PVP] PVP竞技场世界就绪 种子=" + seed + " 耗时=" + dt + "ms（出生点为实体方块）");
         return pvpWorld;
     }
 
-    /**
-     * 确保 PVP 模板世界池已生成并持久化到磁盘。
-     * 首次启动（磁盘无模板目录）时同步生成 PVP_TEMPLATE_POOL 个地形各异的模板世界，
-     * 生成完毕后立即卸载（仅保留磁盘目录），后续开战直接复制，不卡服。
-     * 非首次（目录已存在）则仅校验，几乎零耗时。
-     */
-    public void ensurePVPTemplates() {
-        if (!pvpTemplateNames.isEmpty()) return;
-        for (int i = 0; i < PVP_TEMPLATE_POOL; i++) {
-            String tpl = "pvp_tpl_" + i;
-            File folder = new File(Bukkit.getWorldContainer(), tpl);
-            if (folder.exists()) {
-                pvpTemplateNames.add(tpl); // ★ 仅在目录确认存在时才加入可用列表
-                plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已存在，跳过生成");
-                continue;
-            }
-            long seed = worldSeedRandom.nextLong();
-            WorldCreator c = new WorldCreator(tpl);
-            c.environment(World.Environment.NORMAL);
-            c.type(WorldType.NORMAL);
-            c.seed(seed);
-            plugin.getLogger().info("[PVP] 首次生成模板世界 " + tpl + " 种子=" + seed + "（懒加载，/pvp join 时触发）");
-            World w = Bukkit.createWorld(c);
-            if (w == null) {
-                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 生成失败，该模板将不可用");
-                continue; // ★ 不加入 pvpTemplateNames，不会被选中复制
-            }
-            preGenerateSpawnChunksSync(w, 4);
-            reapplyWorldRules(w);
-            Bukkit.unloadWorld(w, true);
-            // ★ 卸载后再次确认目录仍存在（某些配置下 unloadWorld 可能删除目录）
-            if (folder.exists()) {
-                pvpTemplateNames.add(tpl);
-                plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已生成并存盘");
-            } else {
-                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 卸载后目录消失，该模板将不可用");
-            }
-        }
+    /** 是否为实体（固体）方块：玩家可站立的地面。水/空气/岩浆等非固体返回 false */
+    private boolean isSolidBlock(Material m) {
+        if (m == null || m.isAir() || m == Material.WATER || m == Material.LAVA) return false;
+        return m.isSolid() && !m.name().contains("WATER") && !m.name().contains("LAVA");
     }
 
     /**
-     * 同步预生成出生点周边区块（用于模板世界一次性生成，启动阶段调用，可接受短暂阻塞）。
+     * 异步预生成出生点周边区块（radius 个区块），避免主线程同步生成地形卡服。
+     * 生成完成后自动保存。失败仅告警，不影响主流程（玩家传送时会按需加载单个区块）。
      */
-    private void preGenerateSpawnChunksSync(World world, int radius) {
-        int cx = world.getSpawnLocation().getBlockX() >> 4;
-        int cz = world.getSpawnLocation().getBlockZ() >> 4;
-        int n = 0;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
-                try {
-                    world.loadChunk(cx + dx, cz + dz, true);
-                    n++;
-                } catch (Exception e) {
-                    plugin.getLogger().warning("[PVP] 同步生成模板区块失败: " + (cx + dx) + "," + (cz + dz));
+    private void preGenerateSpawnChunksAsync(World world, int radius) {
+        final int cx = world.getSpawnLocation().getBlockX() >> 4;
+        final int cz = world.getSpawnLocation().getBlockZ() >> 4;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            int n = 0;
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    try {
+                        world.loadChunk(cx + dx, cz + dz, true);
+                        n++;
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[PVP] 异步生成区块失败: " + (cx + dx) + "," + (cz + dz));
+                    }
                 }
             }
-        }
-        plugin.getLogger().info("[PVP] 模板世界已同步生成 " + n + " 个区块");
-    }
-
-    /**
-     * 递归复制世界目录（用于把模板世界复制为新的竞技场世界）。
-     * 跳过 session.lock（服务器运行锁）与 uid.dat（让新世界重新生成 uid），避免复制后加载冲突。
-     */
-    private void copyWorldFolder(File src, File dst) throws IOException {
-        if (dst.exists()) deleteWorldFolder(dst);
-        copyDirRecursively(src, dst);
-    }
-
-    /** 递归复制目录（不使用 nio Files.walkFileTree，避免触发 JDK26 javac 类型推断内部崩溃） */
-    private void copyDirRecursively(File src, File dst) throws IOException {
-        if (src.isDirectory()) {
-            if (!dst.exists() && !dst.mkdirs()) {
-                throw new IOException("无法创建目录: " + dst.getAbsolutePath());
-            }
-            File[] children = src.listFiles();
-            if (children == null) return;
-            for (File child : children) {
-                copyDirRecursively(child, new File(dst, child.getName()));
-            }
-        } else {
-            String name = src.getName();
-            if (name.equals("session.lock") || name.equals("uid.dat")) {
-                return; // 跳过服务器运行锁与 uid.dat，避免复制后加载冲突
-            }
-            File parent = dst.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                throw new IOException("无法创建目录: " + parent.getAbsolutePath());
-            }
-            try (java.io.InputStream in = new java.io.FileInputStream(src);
-                 java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = in.read(buf)) > 0) {
-                    out.write(buf, 0, len);
-                }
-            }
-        }
+            plugin.getLogger().info("[PVP] 已异步预生成出生点周边 " + n + " 个区块");
+        });
     }
 
     // ==================== PVP 战绩榜（记分板侧边栏）====================
@@ -1670,17 +1583,11 @@ public class PVPArenaManager implements Listener {
             return;
         }
 
-        // ★ 关键修复（2026-07-08 第二版）：/pvp join 卡死 + WorldInitEvent 异步崩溃
-        //
-        // 第一版曾把 createPVPWorld() 放进异步线程，但 Bukkit.createWorld() 内部会【同步】触发
-        // WorldInitEvent / WorldLoadEvent，这些事件只允许在主线程触发，异步调用直接抛
-        // java.lang.IllegalStateException: WorldInitEvent may only be triggered synchronously。
-        //
-        // 因此 createPVPWorld() 必须在【主线程】执行。卡死的根因并非 createWorld 本身，而是
-        // setKeepSpawnInMemory(true) 强制同步加载出生点区块（~8s）。现改为
-        // WorldCreator.keepSpawnInMemory(false)（见 createPVPWorld），createWorld 仅做世界初始化、
-        // 不加载出生点区块（毫秒级），主线程不会被长时间占用，Watchdog 卡死彻底消除。
-        // 出生点周边区块由 preGenerateSpawnChunks 异步预生成，玩家传送时按需加载单个区块（极快）。
+        // ★ 玩家全离开后世界已删除（见 scheduleWorldDeletionIfEmpty），此处重新生成全新随机地形：
+        //   createPVPWorld() 主线程执行（Bukkit.createWorld 触发 WorldInitEvent 必须同步），
+        //   但 keepSpawnInMemory(false) 不强制加载出生点区块，createWorld 毫秒级返回不卡服；
+        //   出生点周边区块由 preGenerateSpawnChunksAsync 异步预生成。
+        //   若随机到水/空气等非实体出生点，createPVPWorld 内部会删除重来（换种子）。
         if (pvpWorld != null) {
             plugin.getLogger().info("[PVP] PVP世界当前无人，主线程卸载旧世界并重新生成全新主世界");
             deletePVPWorld(pvpWorld);
