@@ -821,13 +821,38 @@ public class OrderManager implements Listener {
                 p.sendMessage("§e输入退款百分比(1-100): #" + r.orderId + " 实付" + r.totalPaid + "枚");
             }
         } else {
-            if (r.status == 0 || r.status == 1) {
+            if (r.status == 0) {
+                // ★ 管理员全额退款：同步收回物品（玩家在线时），避免"只退钱不退货"
+                Player target = Bukkit.getPlayer(r.uuid);
+                if (target != null && target.isOnline()) {
+                    String pt = r.packType != null ? r.packType : "none";
+                    boolean isShulker = pt.equals("custom")
+                            || pt.equals("default") || pt.equals("shulker");
+                    if (isShulker) {
+                        for (int i = 0; i < 36; i++) {
+                            ItemStack is = target.getInventory().getItem(i);
+                            if (is == null) continue;
+                            if (!is.getType().name().contains("SHULKER")) continue;
+                            ItemMeta im = is.getItemMeta();
+                            boolean tagged = false;
+                            if (im != null && im.getLore() != null) {
+                                for (String line : im.getLore()) {
+                                    if (line.equals("§8#" + r.orderId)) { tagged = true; break; }
+                                }
+                            }
+                            if (tagged) { target.getInventory().clear(i); break; }
+                        }
+                    } else {
+                        for (OrderItem it : r.items) removeItems(target, it.mat, it.qty);
+                    }
+                }
                 plugin.getBonds().addBonds(r.player, r.totalPaid);
                 r.status = 2;
                 r.refundedAmount = r.totalPaid;
+                r.refundType = "auto_return";
                 saveOrders();
-                p.sendMessage("§a全额退款 §e" + r.player + " §6" + r.totalPaid + "枚");
-                notifyPlayer(r.uuid, "§a退款 §6" + r.totalPaid + "枚");
+                p.sendMessage("§a全额退款(含退货) §e" + r.player + " §6" + r.totalPaid + "枚");
+                notifyPlayer(r.uuid, "§a[订单] 退款退货成功，§6" + r.totalPaid + "枚已退还");
                 openAdminOrders(p, tu, page);
             }
         }

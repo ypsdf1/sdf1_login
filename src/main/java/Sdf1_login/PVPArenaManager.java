@@ -54,6 +54,11 @@ public class PVPArenaManager implements Listener {
 
     // PVP世界名称
     private static final String PVP_WORLD_NAME = "pvp_arena";
+    /**
+     * 当前PVP世界的实际名字（每次创建时随机生成 pvp_arena_<随机数>，彻底绕开旧目录残留冲突）。
+     * 历史写死 PVP_WORLD_NAME 的创建/获取/卸载/玩家移动判定统一改用本字段，确保指向同一个随机世界。
+     */
+    private String pvpWorldName = PVP_WORLD_NAME;
 
     // PVP世界空场冷却时间（毫秒）：所有玩家退场后世界继续保留此时长，
     // 冷却内若有玩家重新进入则取消删除；冷却结束且仍无人则删除世界，下次进入随机重新生成地形。
@@ -224,7 +229,9 @@ public class PVPArenaManager implements Listener {
      */
     public void ensurePVPWorldExists() {
         cancelPendingDeletion();
-        World w = Bukkit.getWorld(PVP_WORLD_NAME);
+        // ★ 启动时顺手清理历史回收站目录，避免磁盘无限增长
+        cleanupOldTrashWorlds();
+        World w = Bukkit.getWorld(pvpWorldName);
         if (w != null && !w.getPlayers().isEmpty()) {
             plugin.getLogger().info("[PVP] 检查：PVP世界已有玩家在场，保持现状");
         } else {
@@ -235,8 +242,8 @@ public class PVPArenaManager implements Listener {
     /**
      * 创建全新PVP世界 — 纯 NORMAL 主世界地形，插件全程不插手地形生成、不干预出生点。
      *
-     * ★ 2026-07-08（按用户明确要求）：
-     *   1) 不设种子 —— 由 MC 自行随机决定地形种子（插件对地形零干预，仅用于日志打印 seed 便于排查）；
+     * ★ 2026-07-08（按用户明确要求，2026-07-08 晚修正）：
+     *   1) 每次随机种子 + 每次随机世界名 —— 即便 MC/Paper 忽略 seed，全新世界名也保证地形必为全新生成；
      *   2) 不调用 setSpawnLocation —— 完全保留 MC 自然出生点（不再锁定 0,0，也不做任何"就近迁移"）；
      *   3) 仅设游戏规则（常昼/无天气/PVP 开启）并预生成出生点周边区块（确保地形已就绪）；
      *   4) 出生点是否合格由 joinArena() 做"唯一一次"脚下方块检查（水→上移该玩家，非水→直接放行）。
@@ -245,32 +252,20 @@ public class PVPArenaManager implements Listener {
         plugin.getLogger().info("[PVP] 准备创建PVP世界 (纯NORMAL主世界，地形/出生点完全由MC自行决定)");
 
         long t0 = System.currentTimeMillis();
-        WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
+
+        // ★ 每次使用全新随机世界名 + 随机种子：
+        //   彻底绕开 Windows 文件锁导致旧世界目录删不掉、createWorld 复用旧世界（旧种子/小岛地形）的坑。
+        //   即便上一次目录被锁无法删除，本次也会用唯一新名字生成全新世界，地形必然不同。
+        //   上一次世界目录在 joinArena→deletePVPWorld 流程中已被移入回收站；这里再做 best-effort 兜底清理。
+        deleteWorldFolderIfExists(pvpWorldName);
+        this.pvpWorldName = PVP_WORLD_NAME + "_" + Long.toUnsignedString(worldSeedRandom.nextLong());
+
+        long seed = worldSeedRandom.nextLong();
+        WorldCreator creator = new WorldCreator(pvpWorldName);
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
-        // ★ 显式设置随机种子：避免 MC 内部 RNG 在特定条件下产生相同种子导致地形重复。
-        //   用户实测发现连续多次 createWorld 返回相同种子(-5092048402667366605)，
-        //   显式指定 worldSeedRandom.nextLong() 保证每次地形不同。
-        long seed = worldSeedRandom.nextLong();
         creator.seed(seed);
-        plugin.getLogger().info("[PVP] 显式设定种子=" + seed + " (确保每次地形不同)");
-
-        // ★ 彻底清理磁盘上可能残留的旧世界目录：旧版本曾干预出生点(setSpawnLocation)并强制造陆，
-        //   若上次删除因 Windows 文件锁失败，createWorld 会误加载到旧世界(出生点被锁定/小岛地形)。
-        //   这里重试删除确保目录消失，保证每次进入都是 MC 自然生成的全新主世界与自然出生点。
-        deleteExistingPVPWorldFolder();
-
-        // ★ 验证：确认旧目录确实已消失
-        File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
-        if (folder.exists()) {
-            plugin.getLogger().severe("[PVP] ⚠ 警告：deleteExistingPVPWorldFolder 执行后 pvp_arena 目录仍然存在！createWorld 可能复用旧世界");
-            moveWorldToTrash(folder);
-            if (folder.exists()) {
-                plugin.getLogger().severe("[PVP] ❌ 无法删除 pvp_arena 目录，本次可能仍会使用旧地形/旧种子");
-            }
-        } else {
-            plugin.getLogger().info("[PVP] ✅ 确认旧 pvp_arena 目录已清除，将生成全新世界");
-        }
+        plugin.getLogger().info("[PVP] 新建随机世界名=" + pvpWorldName + ", 种子=" + seed + " (确保每次地形不同)");
 
         // ★ 使用 Bukkit.createWorld() 而非 creator.createWorld()：
         //   Bukkit 管线会完整处理 WorldCreator 的所有配置（包括 seed），在某些 Paper 版本中更可靠。
@@ -294,7 +289,7 @@ public class PVPArenaManager implements Listener {
 
         if (!seedMatches) {
             plugin.getLogger().warning("[PVP] ⚠ Paper/MC 忽略了 WorldCreator.seed() 设定！"
-                    + " 这可能是 Paper 26.x 的已知行为。地形可能仍为固定小岛。");
+                    + " 但本次使用全新随机世界名(" + pvpWorldName + ")，地形必为全新生成，不受种子忽略影响。");
         }
 
         reapplyWorldRules(pvpWorld);
@@ -526,7 +521,7 @@ public class PVPArenaManager implements Listener {
         File[] list = container.listFiles();
         if (list == null) return;
         for (File f : list) {
-            if (f.isDirectory() && f.getName().startsWith(PVP_WORLD_NAME + "_trash_")) {
+            if (f.isDirectory() && f.getName().startsWith(PVP_WORLD_NAME + "_") && f.getName().contains("_trash_")) {
                 deleteWorldFolder(f);
             }
         }
@@ -549,7 +544,7 @@ public class PVPArenaManager implements Listener {
      *   "有玩家就复用、没人就删除"语义不一致）。
      */
     private void scheduleWorldDeletionIfEmpty() {
-        World w = Bukkit.getWorld(PVP_WORLD_NAME);
+        World w = Bukkit.getWorld(pvpWorldName);
         if (w == null) return;
         // 仍有玩家滞留于 PVP 世界内 → 保留世界（多人保护，后续进入直接加入战斗）
         if (!w.getPlayers().isEmpty()) {
@@ -573,7 +568,7 @@ public class PVPArenaManager implements Listener {
         }
         Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
         // ★ 同样用重命名移走，避免 Windows 删除锁导致旧世界残留
-        moveWorldToTrash(new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME));
+        moveWorldToTrash(new File(Bukkit.getWorldContainer(), pvpWorldName));
         plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
     }
 
@@ -584,16 +579,16 @@ public class PVPArenaManager implements Listener {
      *   （出生点被锁定为 0,0、地形被切成小岛）。这里用重命名+重试确保目录真正消失，
      *   保证每次进入都是 MC 自然生成的全新主世界，自然出生点完全由 MC 决定。
      */
-    private void deleteExistingPVPWorldFolder() {
-        File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+    /**
+     * best-effort 清理指定名字的世界目录：先移入回收站（绕开 Windows 删除锁），失败不抛异常。
+     * ★ 即便清理失败（如文件锁），调用方也已改用全新随机世界名，不影响本次生成。
+     */
+    private void deleteWorldFolderIfExists(String name) {
+        if (name == null) return;
+        File folder = new File(Bukkit.getWorldContainer(), name);
         if (!folder.exists()) return;
-        for (int i = 0; i < 5; i++) {
-            moveWorldToTrash(folder);
-            if (!folder.exists()) return;
-            try { Thread.sleep(300); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-        }
-        // 极少数情况下重命名仍失败，退回递归删除
-        deleteWorldFolder(folder);
+        plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: " + name);
+        moveWorldToTrash(folder);
     }
 
     /**
@@ -903,10 +898,10 @@ public class PVPArenaManager implements Listener {
         String from = event.getFrom().getName();
         String to = player.getWorld().getName();
 
-        if (to.equals(PVP_WORLD_NAME) && !from.equals(PVP_WORLD_NAME)) {
+        if (to.equals(pvpWorldName) && !from.equals(pvpWorldName)) {
             // 进入PVP世界 → 打开装备选择GUI（此时玩家仍持有原背包）
             onPlayerEnterPVPWorld(player);
-        } else if (from.equals(PVP_WORLD_NAME) && !to.equals(PVP_WORLD_NAME)) {
+        } else if (from.equals(pvpWorldName) && !to.equals(pvpWorldName)) {
             // 离开PVP世界 → 回收装备并还原背包
             onPlayerExitPVPWorld(player);
             // ★ 玩家已实际离开 PVP 世界，检查世界是否空了 → 空了立即删除（"没人了就删除"）
@@ -972,7 +967,7 @@ public class PVPArenaManager implements Listener {
         }
 
         // 防止玩家登录时就在PVP世界（异常情况兜底）
-        if (player.getWorld().getName().equals(PVP_WORLD_NAME)) {
+        if (player.getWorld().getName().equals(pvpWorldName)) {
             inPVPArena.add(player.getName());
             // 给个提示但不自动操作，让玩家自己决定
             player.sendMessage("§e[PVP] 你当前在PVP竞技场世界，输入 /pvp leave 离开");
@@ -1448,7 +1443,7 @@ public class PVPArenaManager implements Listener {
      *       是水 → 仅上移【该玩家】至地表空气处（不删除世界、不改世界出生点），并打日志打印 seed 便于排查。
      */
     public void joinArena(Player player) {
-        World pvpWorld = Bukkit.getWorld(PVP_WORLD_NAME);
+        World pvpWorld = Bukkit.getWorld(pvpWorldName);
 
         // ★ 多人保护：世界中仍有其他玩家在战斗 → 复用同一局，直接加入（不删除、不重建、不干预出生点）
         if (pvpWorld != null && !pvpWorld.getPlayers().isEmpty()) {
@@ -1459,7 +1454,7 @@ public class PVPArenaManager implements Listener {
                 plugin.getLogger().info("[PVP] PVP世界当前无人，删除旧世界并重新生成全新主世界");
                 deletePVPWorld(pvpWorld);
             } else {
-                File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+                File folder = new File(Bukkit.getWorldContainer(), pvpWorldName);
                 if (folder.exists()) {
                     plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录（无人在场），移入回收站后重新生成");
                     moveWorldToTrash(folder);
@@ -1501,7 +1496,7 @@ public class PVPArenaManager implements Listener {
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (!inPVPArena.contains(player.getName())
                     && player.isOnline()
-                    && player.getWorld().getName().equals(PVP_WORLD_NAME)) {
+                    && player.getWorld().getName().equals(pvpWorldName)) {
                 onPlayerEnterPVPWorld(player);
             }
         }, 5L);
@@ -1530,7 +1525,7 @@ public class PVPArenaManager implements Listener {
     }
 
     public World getPVPWorld() {
-        return Bukkit.getWorld(PVP_WORLD_NAME);
+        return Bukkit.getWorld(pvpWorldName);
     }
 
     public List<ItemStack> getPVPEquipment() {

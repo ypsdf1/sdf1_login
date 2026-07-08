@@ -5982,11 +5982,11 @@ public class WebManager {
                                 if (st != null) stacks.add(st);
                             }
                             java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, shulkerMat);
-                            for (ItemStack box : boxes) {
-                                java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
-                                for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
-                            }
-                            // ★ 购物小票：封装成书塞入首个潜影盒
+                            String colorCn = (shulkerColorName.equals("default") || shulkerColorName.equals("purple"))
+                                    ? "原色" : shulkerColorName;
+                            // ★ 购物小票：先把小票书塞入【即将交付的】首个潜影盒，
+                            //   再整体 addItem 进背包。避免 addItem 对 ItemStack 的 clone 行为
+                            //   导致小票落入被丢弃的盒子副本（表现为"货品在盒、小票丢失"或反之）。
                             if (!boxes.isEmpty() && plugin.getOrderManager() != null) {
                                 try {
                                     OrderManager.OrderRecord rec = new OrderManager.OrderRecord();
@@ -6008,8 +6008,11 @@ public class WebManager {
                                     plugin.getLogger().warning("[Web交易] 小票书生成失败: " + ex.getMessage());
                                 }
                             }
-                            String colorCn = (shulkerColorName.equals("default") || shulkerColorName.equals("purple"))
-                                    ? "原色" : shulkerColorName;
+                            // ★ 装好货品+小票的盒子统一加入背包（盒内此时已含小票）
+                            for (ItemStack box : boxes) {
+                                java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
+                                for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                            }
                             player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒（含小票书）");
                         } else {
                             for (CartEntry ce : entries) {
