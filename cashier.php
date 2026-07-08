@@ -276,7 +276,7 @@ $initialState = json_encode([
             <div style="margin-top:12px">
                 <label style="font-size:12px;color:var(--dim);display:block;margin-bottom:6px">结算方式</label>
                 <div class="settlement-row">
-                    <div class="seg active" data-set="backpack" onclick="setSettlement('backpack')">🎒 塞背包 (<?= round($backpackRate * 100) ?>折)</div>
+                    <div class="seg active" data-set="backpack" onclick="setSettlement('backpack')">🎒 塞背包 (<?= ($greenDiscount < 10) ? $greenDiscount : round($backpackRate * 100) ?>折)</div>
                     <div class="seg" data-set="shulker" onclick="setSettlement('shulker')">📦 潜影盒（原色免费）</div>
                 </div>
 
@@ -566,7 +566,14 @@ function setPayMode(pm) {
 
 // ===== 计算 + 预览 =====
 // ★ 费率从后端配置读取，不再硬编码
-const RATES = { backpack: (STATE.backpack_rate || 0.98), shulker: (STATE.shulker_rate || 1.00) };
+// 背包（环保单）费率：尊重游戏内 green_discount 设置。
+//   green_discount=10（未设置游戏折扣）→ 用 cart_backpack_rate(默认0.98=98折)；
+//   green_discount<10（如9=9折）→ 以游戏折扣为准（×0.9），覆盖默认98折。
+//   与后端 api/shop.php buy_cart 计算保持一致，避免"界面显示98折、实付却是更低折"。
+const backpackRate = (STATE.green_discount != null && STATE.green_discount < 10)
+    ? (STATE.green_discount / 10)
+    : (STATE.backpack_rate || 0.98);
+const RATES = { backpack: backpackRate, shulker: (STATE.shulker_rate || 1.00) };
 async function recalc() {
     const ids = Object.keys(cart);
     const payBtn = document.getElementById('payBtn');
@@ -581,18 +588,15 @@ async function recalc() {
         if (p) subtotal += (parseInt(p.buy_price)||0) * cart[id];
     });
     const rate = RATES[settlement];
+    // ★ rate 已包含背包/潜影盒费率；背包模式下若游戏设置了 green_discount(<10)，
+    //   该折扣已并入 rate（与后端 buy_cart 一致），避免重复打折。
     let afterRate = Math.round(subtotal * rate);
-    // ★ 环保单折扣（折数）：green_discount=10 不打折，9.9=9.9折(支付99%)；用 ?? 避免=0 被当 falsy
-    const ecoPctVal = STATE.green_discount ?? 0;   // 折数（如 9.9）
     let ecoPct = 0;
     let ecoAmt = 0;
-    // ★ 背包模式折扣已由费率(cart_backpack_rate)完整表达，不再额外叠加 green_discount，
-    //   保持与后端 buy_cart 计算一致，避免"显示98折、实付被打成更低折"。
-    if (ecoPct > 0) {
-        // 折扣率语义：折后 = 原价 × 折数/10（9.9折→×0.99）
-        const ecoDiscounted = Math.round(afterRate * ecoPct / 10);
-        ecoAmt = afterRate - ecoDiscounted;
-        afterRate = ecoDiscounted;
+    // 仅在背包模式且游戏设置了绿色折扣时，展示"环保单 X折"提示行（rate 已含折扣，此处仅展示节省额）
+    if (settlement === 'backpack' && STATE.green_discount != null && STATE.green_discount < 10) {
+        ecoPct = STATE.green_discount;                 // 折数（如 9）
+        ecoAmt = subtotal - afterRate;                 // 折扣节省额（仅展示用）
     }
     let colorFee = 0;
     const sc = document.getElementById('shulkerColor').value;

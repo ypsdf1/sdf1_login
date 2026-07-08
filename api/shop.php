@@ -386,13 +386,16 @@ function shopBuyCart($token) {
         $ecoPct = 0;
     } else {
         $settlement = 'backpack';
-        $rate = (float)($cfg['cart_backpack_rate'] ?? '0.98');
+        $rawBackpackRate = (float)($cfg['cart_backpack_rate'] ?? '0.98');
+        // ★ 修复（2026-07-08）：背包（环保单）模式必须尊重游戏内 green_discount 设置。
+        //   green_discount 语义：10=不打折，9=9折(×0.9)，8.5=8.5折(×0.85)。
+        //   游戏内设置了打折（green_discount < 10）时，以游戏折扣为准（如 setgreen 9 → ×0.9），
+        //   覆盖默认的 cart_backpack_rate(0.98=98折)；未设置（=10）时仍走 cart_backpack_rate 保持原有环保优惠。
+        $greenDiscount = (float)($cfg['green_discount'] ?? 10);
+        $rate = ($greenDiscount < 10) ? ($greenDiscount / 10) : $rawBackpackRate;
         $modeName = '塞背包（环保单）';
         $colorFee = 0;
         $colorName = '';
-        // ★ 塞背包模式的折扣已由 cart_backpack_rate(如0.98=98折) 完整表达，
-        //   不再额外叠加 green_discount，避免"双重打折"导致实付低于界面标注的折数。
-        //   （green_discount 仅用于游戏内"不打包"语义，不在 Web 收银台背包模式重复生效）
         $ecoPct = 0;
     }
 
