@@ -20,6 +20,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
+import java.lang.management.ManagementFactory;
+import java.lang.management.RuntimeMXBean;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -48,6 +50,8 @@ public class TeleportManager implements Listener {
 
     // 请求过期时间 (请求ID/发送者→ 创建时间戳)，配置化
     private final Map<String, Long> teleportRequestTimes = new ConcurrentHashMap<>();
+    // 请求类型（tpa/tpahere/tpaall）仅驻留内存，不落库；落库既画蛇添足又引入墙钟依赖
+    private final Map<String, String> teleportRequestTypes = new ConcurrentHashMap<>();
     private volatile long teleportCooldownMs = 30_000L; // 可配置的冷却时间
     
     // ★ 已处理/已拒绝的请求（不能再使用）
@@ -117,12 +121,22 @@ public class TeleportManager implements Listener {
     }
     
     /**
+     * 传送计时统一使用 JVM 运行时长（自启动以来的毫秒数），单调时钟，
+     * 不受系统墙钟（NTP 校准 / 手动改时间 / 时区切换）影响。
+     * tpa 只关心“请求发起后 N 秒过期”，不需要真实日期。
+     */
+    private static final RuntimeMXBean RUNTIME_BEAN = ManagementFactory.getRuntimeMXBean();
+    private long nowUptime() {
+        return RUNTIME_BEAN.getUptime();
+    }
+
+    /**
      * 检查传送请求是否过期（由配置决定）
      */
     private boolean isTeleportRequestExpired(String key) {
         Long createTime = teleportRequestTimes.get(key);
         if (createTime == null) return true;
-        long elapsed = (System.currentTimeMillis() - createTime) / 1000;
+        long elapsed = (nowUptime() - createTime) / 1000;
         return elapsed > getTpRequestValidSeconds();
     }
     
@@ -131,7 +145,7 @@ public class TeleportManager implements Listener {
      */
     private void cleanupExpiredRequests(String playerName) {
         int validSec = getTpRequestValidSeconds();
-        long now = System.currentTimeMillis();
+        long now = nowUptime();
         
         // 清理过期的incoming（key 与存储/校验统一为 sender:receiver）
         Set<String> incoming = incomingRequests.get(playerName);
@@ -160,7 +174,7 @@ public class TeleportManager implements Listener {
     private void expireOldRequests() {
         if (!running.get()) return;
         
-        long now = System.currentTimeMillis();
+        long now = nowUptime();
         int validSec = getTpRequestValidSeconds();
         boolean changed = false;
         
@@ -223,6 +237,7 @@ public class TeleportManager implements Listener {
             Map.Entry<String, Long> entry = timeIter.next();
             Long t = entry.getValue();
             if ((now - t) > (validSec * 1000L + 5000L)) { // 额外5秒宽容
+                teleportRequestTypes.remove(entry.getKey());
                 timeIter.remove();
             }
         }
@@ -622,7 +637,7 @@ public class TeleportManager implements Listener {
         
         // 检查冷却
         String sender = player.getName();
-        long now = System.currentTimeMillis();
+        long now = nowUptime();
         Long lastTime = teleportCooldown.get(sender);
         if (lastTime != null && now - lastTime < teleportCooldownMs) {
             long remaining = (teleportCooldownMs - (now - lastTime)) / 1000;
@@ -632,14 +647,12 @@ public class TeleportManager implements Listener {
         
         teleportCooldown.put(sender, now);
         
-        // 存储到数据库
-        saveTeleportRequest(sender, target.getName(), "tpa");
-        
-        // 添加到内存
+        // 添加到内存（请求仅驻留内存，配置项才落库）
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         // 记录请求创建时间
         teleportRequestTimes.put(sender + ":" + target.getName(), now);
+        teleportRequestTypes.put(sender + ":" + target.getName(), "tpa");
         
         // 通知发送者
         if (isBedrockPlayer(player)) {
@@ -741,67 +754,9 @@ public class TeleportManager implements Listener {
                 return true;
             }
         } else {
-            // 内存中没有 → DB fallback
-            boolean foundInDb = false;
-            Long dbTimestamp = null;
-            try {
-                PreparedStatement psFallback = plugin.getDb().getDb().prepareStatement(
-                    "SELECT timestamp FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
-                psFallback.setString(1, targetName);
-                psFallback.setString(2, player.getName());
-                ResultSet rsFallback = psFallback.executeQuery();
-                if (rsFallback.next()) {
-                    foundInDb = true;
-                    dbTimestamp = rsFallback.getLong("timestamp");
-                }
-                rsFallback.close();
-                psFallback.close();
-            } catch (SQLException e) {
-                plugin.getLogger().warning("[传送] DB回退查询失败: " + e.getMessage());
-            }
-            
-            if (!foundInDb) {
-                player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
-                return true;
-            }
-            
-            // ★ 关键修复：在DB路径也检查processedRequests，防止重复接受/拒绝
-            String key = targetName + ":" + player.getName();
-            if (processedRequests.contains(key)) {
-                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已被处理");
-                try {
-                    PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
-                        "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
-                    psClean.setString(1, targetName);
-                    psClean.setString(2, player.getName());
-                    psClean.executeUpdate();
-                    psClean.close();
-                } catch (SQLException ex) { /* ignore */ }
-                return true;
-            }
-            
-            // 检查数据库中请求是否过期
-            int validSec = getTpRequestValidSeconds();
-            long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
-            if (age > validSec) {
-                player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
-                try {
-                    PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
-                        "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
-                    psClean.setString(1, targetName);
-                    psClean.setString(2, player.getName());
-                    psClean.executeUpdate();
-                    psClean.close();
-                } catch (SQLException ex) { /* ignore */ }
-                return true;
-            }
-            
-            // 恢复内存状态
-            incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
-            outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
-            teleportRequestTimes.put(player.getName() + ":" + targetName, dbTimestamp);
-            teleportRequestTimes.put(targetName + ":" + player.getName(), dbTimestamp);
-            senders = incomingRequests.get(player.getName());
+            // 内存中没有请求：tpa 请求仅驻留内存，不存在即视为无请求（不查库）
+            player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+            return true;
         }
         
         // 3. 检查目标玩家是否在线
@@ -813,22 +768,8 @@ public class TeleportManager implements Listener {
             return true;
         }
         
-        // 4. 查询请求类型
-        String requestType = "tpa";
-        try {
-            PreparedStatement psCheck = plugin.getDb().getDb().prepareStatement(
-                "SELECT type FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
-            psCheck.setString(1, targetName);
-            psCheck.setString(2, player.getName());
-            ResultSet rsCheck = psCheck.executeQuery();
-            if (rsCheck.next()) {
-                requestType = rsCheck.getString("type");
-            }
-            rsCheck.close();
-            psCheck.close();
-        } catch (SQLException e) {
-            plugin.getLogger().warning("[传送] 查询请求类型失败: " + e.getMessage());
-        }
+        // 4. 查询请求类型（仅内存，配置项才落库）
+        String requestType = teleportRequestTypes.getOrDefault(targetName + ":" + player.getName(), "tpa");
         
         // 5. 执行传送
         if ("tpaall".equals(requestType) || "tpahere".equals(requestType)) {
@@ -896,49 +837,9 @@ public class TeleportManager implements Listener {
                 return true;
             }
         } else {
-            // DB fallback: 查数据库找请求
-            try {
-                PreparedStatement psFallback = plugin.getDb().getDb().prepareStatement(
-                    "SELECT timestamp FROM teleport_requests WHERE sender=? AND receiver=? ORDER BY timestamp DESC LIMIT 1");
-                psFallback.setString(1, targetName);
-                psFallback.setString(2, player.getName());
-                ResultSet rsFallback = psFallback.executeQuery();
-                if (rsFallback.next()) {
-                    long dbTimestamp = rsFallback.getLong("timestamp");
-                    long validSec = getTpRequestValidSeconds();
-                    long age = (System.currentTimeMillis() - dbTimestamp) / 1000;
-                    if (age > validSec) {
-                        rsFallback.close();
-                        psFallback.close();
-                        player.sendMessage("§c[传送] 请求 §f" + targetName + " §c的传送请求已过期（" + (int)age + " 秒前）");
-                        try {
-                            PreparedStatement psClean = plugin.getDb().getDb().prepareStatement(
-                                "DELETE FROM teleport_requests WHERE sender=? AND receiver=?");
-                            psClean.setString(1, targetName);
-                            psClean.setString(2, player.getName());
-                            psClean.executeUpdate();
-                            psClean.close();
-                        } catch (SQLException ex) { /* ignore */ }
-                        rsFallback.close();
-                        psFallback.close();
-                        return true;
-                    }
-                    rsFallback.close();
-                    psFallback.close();
-                    incomingRequests.computeIfAbsent(player.getName(), k -> ConcurrentHashMap.newKeySet()).add(targetName);
-                    outgoingRequests.computeIfAbsent(targetName, k -> ConcurrentHashMap.newKeySet()).add(player.getName());
-                } else {
-                    rsFallback.close();
-                    psFallback.close();
-                    player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
-                    return true;
-                }
-            } catch (SQLException e) {
-                plugin.getLogger().warning("[传送] DB回退查询失败: " + e.getMessage());
-                player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
-                return true;
-            }
-            senders = incomingRequests.get(player.getName());
+            // 内存中没有请求：tpa 请求仅驻留内存，不存在即视为无请求（不查库）
+            player.sendMessage("§c[传送] 没有找到来自 §f" + targetName + " §c的传送请求");
+            return true;
         }
         
         Player actualSender = Bukkit.getServer().getPlayer(targetName);
@@ -1161,7 +1062,7 @@ public class TeleportManager implements Listener {
         
         // 检查冷却
         String sender = player.getName();
-        long now = System.currentTimeMillis();
+        long now = nowUptime();
         Long lastTime = teleportCooldown.get(sender);
         if (lastTime != null && now - lastTime < teleportCooldownMs) {
             long remaining = (teleportCooldownMs - (now - lastTime)) / 1000;
@@ -1171,13 +1072,11 @@ public class TeleportManager implements Listener {
         
         teleportCooldown.put(sender, now);
         
-        // 存储到数据库
-        saveTeleportRequest(sender, target.getName(), "tpahere");
-        
-        // 添加到内存
+        // 添加到内存（请求仅驻留内存，配置项才落库）
         outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(target.getName());
         incomingRequests.computeIfAbsent(target.getName(), k -> ConcurrentHashMap.newKeySet()).add(sender);
         teleportRequestTimes.put(sender + ":" + target.getName(), now);
+        teleportRequestTypes.put(sender + ":" + target.getName(), "tpahere");
         
         // 通知发送者
         if (isBedrockPlayer(player)) {
@@ -1208,7 +1107,7 @@ public class TeleportManager implements Listener {
     private boolean handleTPAll(Player player) {
         int count = 0;
         String sender = player.getName();
-        long now = System.currentTimeMillis();
+        long now = nowUptime();
         
         // 检查冷却
         Long lastTime = teleportCooldown.get(sender);
@@ -1225,13 +1124,11 @@ public class TeleportManager implements Listener {
             String name = p.getName();
             if (name.equalsIgnoreCase(sender)) continue;
             
-            // 存储到数据库
-            saveTeleportRequest(sender, name, "tpaall");
-            
-            // 添加到内存
+            // 添加到内存（请求仅驻留内存，配置项才落库）
             outgoingRequests.computeIfAbsent(sender, k -> ConcurrentHashMap.newKeySet()).add(name);
             incomingRequests.computeIfAbsent(name, k -> ConcurrentHashMap.newKeySet()).add(sender);
             teleportRequestTimes.put(sender + ":" + name, now);
+            teleportRequestTypes.put(sender + ":" + name, "tpaall");
             
             // 可点击通知
             sendClickableRequestNotice(p, sender);
@@ -1851,23 +1748,6 @@ public class TeleportManager implements Listener {
     
     // ==================== 数据库操作 ====================
     
-    private void saveTeleportRequest(String sender, String receiver, String type) {
-        try {
-            PreparedStatement ps = plugin.getDb().getDb().prepareStatement(
-                "INSERT INTO teleport_requests " +
-                "(sender, receiver, type, timestamp) VALUES (?, ?, ?, ?)"
-            );
-            ps.setString(1, sender);
-            ps.setString(2, receiver);
-            ps.setString(3, type);
-            ps.setLong(4, System.currentTimeMillis());
-            ps.executeUpdate();
-            ps.close();
-        } catch (SQLException e) {
-            // 静默失败
-        }
-    }
-    
     // ==================== 内存管理 ====================
     
     private void removeIncomingRequest(String receiver, String sender) {
@@ -1878,6 +1758,7 @@ public class TeleportManager implements Listener {
                 incomingRequests.remove(receiver);
             }
         }
+        teleportRequestTypes.remove(sender + ":" + receiver);
     }
     
     private void removeOutgoingRequest(String sender, String receiver) {
@@ -1888,6 +1769,7 @@ public class TeleportManager implements Listener {
                 outgoingRequests.remove(sender);
             }
         }
+        teleportRequestTypes.remove(sender + ":" + receiver);
     }
     
     // ==================== 辅助方法 ====================

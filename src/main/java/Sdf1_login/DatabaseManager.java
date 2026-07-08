@@ -288,13 +288,7 @@ public class DatabaseManager {
             safeAdd(st, "menu_snowball",
                     "INTEGER DEFAULT 1");
 
-            // 传送请求表
-            st.execute("CREATE TABLE IF NOT EXISTS teleport_requests ("
-                    + "sender TEXT NOT NULL,"
-                    + "receiver TEXT NOT NULL,"
-                    + "type TEXT NOT NULL DEFAULT 'tpa',"
-                    + "timestamp INTEGER NOT NULL DEFAULT 0"
-                    + ")");
+            // 注：传送请求不再落库，仅驻留内存（配置项才落库），故不再建 teleport_requests 表
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
         } catch (Exception e) {
