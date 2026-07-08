@@ -1621,6 +1621,23 @@ public class ShopManager implements Listener {
                 item.getMaterial(), amount);
     }
 
+    /**
+     * 根据商品显示名智能推断并构建物品（用于收银台购物车按名称重建附魔书等带NBT物品）。
+     * 当 PHP 购物车携带真实显示名（含附魔关键词）时，可绕过"按材质匹配取目录首个附魔书导致NBT丢失"的问题。
+     */
+    public ItemStack getShopStackByName(String name, Material mat, int amount) {
+        if (name == null || name.isEmpty()) {
+            return new ItemStack(mat, amount);
+        }
+        ItemStack inferred = inferFromName(name, mat);
+        if (inferred != null) {
+            ItemStack copy = inferred.clone();
+            copy.setAmount(amount);
+            return copy;
+        }
+        return new ItemStack(mat, amount);
+    }
+
     // ===== 购买 =====
 
     public boolean buyItem(Player p, ShopItem item,
@@ -2090,9 +2107,12 @@ public class ShopManager implements Listener {
                 }
             }
         } else {
-            // 普通：扣商品
-            p.getInventory().removeItem(
-                    new ItemStack(rec.material, rec.amount));
+            // 普通：扣商品（用实际发放的物品做精确匹配，避免带NBT/改名物品删不掉导致"退货不扣货"）
+            ShopItem si = findItemById(rec.itemId);
+            ItemStack target = (si != null)
+                    ? getShopStack(si, rec.amount)
+                    : new ItemStack(rec.material, rec.amount);
+            p.getInventory().removeItem(target);
         }
 
         // 退款：加债券

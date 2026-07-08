@@ -3893,7 +3893,7 @@ public class Main extends JavaPlugin
                                         .replaceAll("\\{玩家名\\}", playerName)
                                         .replaceAll("%玩家名%", playerName)
                                         .replaceAll("<玩家名>", playerName)
-                                        .replaceAll("\\[玩家名\\}", playerName)
+                                        .replaceAll("\\[玩家名\\]", playerName)
                                         .replaceAll("\\(玩家名\\)", playerName);
                                 // ★ 根据权限类型选择执行身份
                                 if ("控制台".equals(permType) || "console".equalsIgnoreCase(permType)) {

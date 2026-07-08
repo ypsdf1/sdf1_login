@@ -82,6 +82,13 @@ public class PVPArenaManager implements Listener {
     /** 装备选择超时时间（秒）：进入PVP后此时间内必须确认，否则自动遣返 */
     private static final long EQUIPMENT_SELECT_TIMEOUT_SECONDS = 60L;
 
+    /** 装备GUI打开后的宽限期（毫秒）：此窗口内的关闭事件视为世界加载/过渡导致的瞬时误触，
+     *  忽略遣返并在玩家当前未打开任何GUI时自动重开，让其能正常选装备（避免地图加载即被踢）。 */
+    private static final long EQUIPMENT_SELECT_GRACE_MILLIS = 3000L;
+
+    /** 宽限期内自动重开次数上限（防极端情况下世界持续强制关闭GUI导致死循环） */
+    private final Map<String, Integer> graceReopenCount = new ConcurrentHashMap<>();
+
     // 待执行的"空场冷却删除世界"定时任务（有人重新进入时取消）
     private BukkitTask pendingDeleteTask = null;
 
@@ -655,6 +662,30 @@ public class PVPArenaManager implements Listener {
         // 程序内重开装备GUI（切换档位）导致的旧GUI关闭，忽略，不遣返
         if (guiReopening.remove(player.getName())) return;
 
+        // ★ 宽限期：GUI 刚打开后短时间内（世界加载/过渡导致的瞬时关闭）视为误触，
+        //   忽略遣返，并在玩家当前未打开任何 GUI 时延迟自动重开，让其能正常选装备。
+        Long openedAt = guiOpenedMillis.get(player.getName());
+        if (openedAt != null
+                && System.currentTimeMillis() - openedAt < EQUIPMENT_SELECT_GRACE_MILLIS) {
+            plugin.getLogger().info("[PVP] 玩家 " + player.getName()
+                    + " 装备GUI在宽限期内关闭，疑似过渡误触，延迟自动重开");
+            int cnt = graceReopenCount.getOrDefault(player.getName(), 0);
+            if (cnt < 4) {
+                graceReopenCount.put(player.getName(), cnt + 1);
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    if (inPVPArena.contains(player.getName())
+                            && !equipmentConfirmed.contains(player.getName())
+                            && player.isOnline()
+                            && (player.getOpenInventory() == null
+                                || player.getOpenInventory().getType()
+                                    == org.bukkit.event.inventory.InventoryType.CRAFTING)) {
+                        openEquipmentSelection(player);
+                    }
+                }, 5L);
+            }
+            return;
+        }
+
         // ★★★ 核心改进：基于确定性状态判断，而非猜测关闭原因 ★★★
         //
         // 方案：检查玩家是否已选择了装备档位（selectedTier 有值）
@@ -787,6 +818,7 @@ public class PVPArenaManager implements Listener {
                 inPVPArena.remove(playerName);
                 guiReopening.remove(playerName);
                 guiOpenedMillis.remove(playerName);
+                graceReopenCount.remove(playerName);
                 selectedTier.remove(playerName);
                 if (p != null && p.isOnline()) {
                     p.closeInventory();
@@ -842,6 +874,7 @@ public class PVPArenaManager implements Listener {
         inventoryBackups.remove(playerName);
         guiReopening.remove(playerName);
         guiOpenedMillis.remove(playerName);
+        graceReopenCount.remove(playerName);
         selectedTier.remove(playerName);
         cancelKickTimeout(playerName);
 
@@ -964,6 +997,7 @@ public class PVPArenaManager implements Listener {
                 equipmentConfirmed.remove(player.getName());
                 guiReopening.remove(player.getName());
                 guiOpenedMillis.remove(player.getName());
+                graceReopenCount.remove(player.getName());
                 selectedTier.remove(player.getName());
                 cancelKickTimeout(player.getName());
             }
@@ -1105,8 +1139,9 @@ public class PVPArenaManager implements Listener {
      * 打开装备选择GUI
      */
     public void openEquipmentSelection(Player player) {
-        // ★ 记录GUI打开时间（宽限期机制：此后5秒内的关闭事件不触发遣返）
+        // ★ 记录GUI打开时间（宽限期机制：此后短时间内内的关闭事件不触发遣返）
         guiOpenedMillis.put(player.getName(), System.currentTimeMillis());
+        graceReopenCount.put(player.getName(), 0);
 
         Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
 

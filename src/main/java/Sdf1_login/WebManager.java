@@ -5931,8 +5931,8 @@ public class WebManager {
                                     String iid = it.has("item_id") ? it.get("item_id").getAsString() : "";
                                     int amt = it.has("amount") ? it.get("amount").getAsInt() : 0;
                                     if (!iid.isEmpty() && amt > 0) {
-                                        entries.add(new CartEntry(iid, amt));
                                         String iname = it.has("name") ? it.get("name").getAsString() : iid;
+                                        entries.add(new CartEntry(iid, amt, iname));
                                         int iprice = it.has("unit_price") ? it.get("unit_price").getAsInt() : 0;
                                         receiptItems.add(new OrderManager.OrderItem(iname, iid, iprice, iprice, amt));
                                     }
@@ -5978,7 +5978,7 @@ public class WebManager {
                         if ("shulker".equals(settlement)) {
                             java.util.List<ItemStack> stacks = new java.util.ArrayList<>();
                             for (CartEntry ce : entries) {
-                                ItemStack st = buildShopStack(ce.itemId, ce.amount);
+                                ItemStack st = buildShopStack(ce.itemId, ce.amount, ce.name);
                                 if (st != null) stacks.add(st);
                             }
                             java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, shulkerMat);
@@ -6013,7 +6013,7 @@ public class WebManager {
                             player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒（含小票书）");
                         } else {
                             for (CartEntry ce : entries) {
-                                dispatchItemByMaterialOrId(player, ce.itemId, ce.amount);
+                                dispatchItemByMaterialOrId(player, ce.itemId, ce.amount, ce.name);
                             }
                         }
                         if ("cash".equals(payMode)) {
@@ -6163,6 +6163,14 @@ public class WebManager {
      * 通过Material名称或商品ID发放商品（兼容PHP传Material名称的情况）
      */
     private void dispatchItemByMaterialOrId(Player player, String itemId, int amount) {
+        dispatchItemByMaterialOrId(player, itemId, amount, null);
+    }
+
+    /**
+     * 发放单个商品（支持按购物车携带的真实显示名重建附魔书等带NBT物品）。
+     * name 为 PHP 购物车携带的真实显示名（含附魔关键词），用于修正材质匹配取到裸附魔书的问题。
+     */
+    private void dispatchItemByMaterialOrId(Player player, String itemId, int amount, String name) {
         try {
             plugin.getLogger().info("[Web交易] 发放商品(材料匹配): " + itemId + " x" + amount + " 给 " + player.getName());
 
@@ -6199,6 +6207,19 @@ public class WebManager {
                     Sdf1_login.ShopItem shopItem = plugin.getShopManager().findItemById(itemId);
                     if (shopItem != null) {
                         itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
+                    }
+                }
+
+                // ★ 附魔书NBT修复：购物车携带真实显示名时，优先按名称重建附魔书，
+                //   确保 enchantments NBT 正确。仅当按名称解析出带存储附魔的书时才覆盖。
+                if (itemStack != null
+                        && itemStack.getType() == org.bukkit.Material.ENCHANTED_BOOK
+                        && name != null && !name.isEmpty()) {
+                    org.bukkit.inventory.ItemStack fromName = plugin.getShopManager().getShopStackByName(name, org.bukkit.Material.ENCHANTED_BOOK, amount);
+                    if (fromName != null
+                            && fromName.getItemMeta() instanceof org.bukkit.inventory.meta.EnchantmentStorageMeta fesm
+                            && !fesm.getStoredEnchants().isEmpty()) {
+                        itemStack = fromName;
                     }
                 }
 
@@ -6272,16 +6293,22 @@ public class WebManager {
     private static class CartEntry {
         final String itemId;
         final int amount;
+        final String name;
         CartEntry(String itemId, int amount) {
+            this(itemId, amount, null);
+        }
+        CartEntry(String itemId, int amount, String name) {
             this.itemId = itemId;
             this.amount = amount;
+            this.name = name;
         }
     }
 
     /**
      * 通过商品ID或Material名称构建商品ItemStack（不立即发放）
+     * name 为 PHP 购物车携带的真实显示名（含附魔关键词），用于附魔书等带NBT物品按名称重建
      */
-    private ItemStack buildShopStack(String itemId, int amount) {
+    private ItemStack buildShopStack(String itemId, int amount, String name) {
         if (plugin.getShopManager() == null) return null;
         ItemStack itemStack = null;
         try {
@@ -6301,6 +6328,19 @@ public class WebManager {
         if (itemStack == null) {
             Sdf1_login.ShopItem shopItem = plugin.getShopManager().findItemById(itemId);
             if (shopItem != null) itemStack = plugin.getShopManager().getShopStack(shopItem, amount);
+        }
+        // ★ 附魔书NBT修复：购物车携带真实显示名时，优先按名称重建附魔书，
+        //   确保 enchantments NBT 正确（避免按材质/ID 解析取到错误或无附魔的附魔书）。
+        //   仅当按名称成功解析出带存储附魔的附魔书时才覆盖，否则保留原结果。
+        if (itemStack != null
+                && itemStack.getType() == Material.ENCHANTED_BOOK
+                && name != null && !name.isEmpty()) {
+            ItemStack fromName = plugin.getShopManager().getShopStackByName(name, Material.ENCHANTED_BOOK, amount);
+            if (fromName != null
+                    && fromName.getItemMeta() instanceof org.bukkit.inventory.meta.EnchantmentStorageMeta fesm
+                    && !fesm.getStoredEnchants().isEmpty()) {
+                itemStack = fromName;
+            }
         }
         return itemStack;
     }
