@@ -2268,6 +2268,8 @@ public class AreaProtection implements Listener {
         if (isAreaAdmin(p)) return true;
         if (p.getName().equalsIgnoreCase(ac.owner)) return true;
         if (isLandAdmin(ac.name, p.getName())) return true;
+        // ★ 公共设施连控：公共设施启用时，所有访客自动获得传送权限（优先于 per-player 检查）
+        if (ac.isPublicBuilding) return true;
         // ★ 访客传送权限：领地级别允许则放行（优先于per-player检查）
         if (ac.allowVisitorTeleport) return true;
         int landId = getLandIdFromDb(ac.name);
@@ -4538,6 +4540,8 @@ public class AreaProtection implements Listener {
             if (clicked != null) {
                 Material clickedMat = clicked.getType();
                 if (isUIBlock(clickedMat)) {
+                    // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（工作台/砂轮等UI方块同样放开）
+                    if (ac.isPublicBuilding) return;
                     if (getEffectiveDeny(p, ac, "denyContainer")) {
                         e.setCancelled(true);
                         p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
@@ -4683,6 +4687,9 @@ public class AreaProtection implements Listener {
         if (ac == null) return;
 
         if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+
+        // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（跳过禁止检查）
+        if (ac.isPublicBuilding) return;
 
         // ★ 容器管理权限：denyContainer=true时非领主/管理员不能访问容器
         if (getEffectiveDeny(p, ac, "denyContainer")) {

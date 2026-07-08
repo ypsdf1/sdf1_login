@@ -262,11 +262,11 @@ public class PVPArenaManager implements Listener {
      * 设计：玩家全部离开后世界被删除，下次加入时重新随机种子生成【全新地形】，
      * 避免熟悉地图的玩家背图追杀新手。
      *
-     * 出生点合法性：脚下方块必须是【实体方块】（固体）才使用；若随机到水/空气等非实体方块，
-     * 则删除该世界、换一个新种子重新生成（极少数情况连续多次都抽到水出生点，会重试但概率极低）。
-     *
-     * 卡服修复：Bukkit.createWorld 仅做世界初始化（不强制加载出生点区块），
-     * 主线程毫秒级返回；出生点周边区块由 preGenerateSpawnChunksAsync 异步预生成，不阻塞主线程。
+     * ★ 卡服根因修复（2026-07-08）：原实现用 WorldType.NORMAL + Bukkit.createWorld 在主线程
+     *   同步"搜索出生点 + 生成自然地形"，耗时 13s 触发 Paper 看门狗（Chunk wait）导致卡服/报错。
+     *   现改为 WorldType.FLAT 空世界：createWorld 毫秒级返回（无地形搜索），随后用
+     *   generatePVPTerrain 按【随机种子】手动生成自然地形（每次丘陵/水域/树木分布不同 → 仍防背图），
+     *   最后 forceSafeSpawn 固化一个绝对安全的出生点，彻底绕开"水→删除重建换种子"的卡服链路。
      */
     private World createPVPWorld() {
         long t0 = System.currentTimeMillis();
@@ -278,12 +278,12 @@ public class PVPArenaManager implements Listener {
         long seed = worldSeedRandom.nextLong();
         WorldCreator c = new WorldCreator(pvpWorldName);
         c.environment(World.Environment.NORMAL);
-        c.type(WorldType.NORMAL);
+        // ★ 关键：FLAT 空世界使 createWorld 在主线程毫秒级返回，杜绝 13s 卡服；地形后续手动生成
+        c.type(WorldType.FLAT);
         c.seed(seed);
         // 注意：Paper 26.x 已移除 WorldCreator.keepSpawnInMemory(boolean)，不再调用
-        // 区块加载控制改为 createWorld 后通过 world.setKeepLoaded(false) 实现
 
-        plugin.getLogger().info("[PVP] 生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed);
+        plugin.getLogger().info("[PVP] 生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed + " (FLAT空世界，随后手动生成地形)");
         World pvpWorld = Bukkit.createWorld(c);
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
@@ -291,22 +291,47 @@ public class PVPArenaManager implements Listener {
             return null;
         }
 
-        // ★ 出生点脚下方块检查：实体（固体）方块→使用；水/空气等非实体→删除重来（换新种子）
-        Location spawn = pvpWorld.getSpawnLocation();
-        Block feet = pvpWorld.getBlockAt(spawn.getBlockX(), spawn.getBlockY() - 1, spawn.getBlockZ());
-        if (!isSolidBlock(feet.getType())) {
-            plugin.getLogger().warning("[PVP] 种子 " + seed + " 出生点为非实体方块(" + feet.getType().name()
-                    + ")，删除世界换种子重来");
-            deletePVPWorld(pvpWorld);
-            return createPVPWorld(); // 递归重试（新随机种子）
-        }
-
-        // 出生点合格：异步预生成周边区块（不卡主线程），同时应用世界规则
+        // ★ 手动生成自然地形（随机种子→每次地形不同，防背图），同步完成（仅96x96，远低于13s）
+        generatePVPTerrain(pvpWorld, seed);
+        // ★ 固化安全出生点：中心附近找实体非流体方块，颠覆"水→重建"的卡服链路
+        forceSafeSpawn(pvpWorld);
+        // 异步预生成周边区块（兜底，不阻塞主线程）
         preGenerateSpawnChunksAsync(pvpWorld, 4);
         reapplyWorldRules(pvpWorld);
 
-        plugin.getLogger().info("[PVP] PVP竞技场世界就绪 种子=" + seed + " 耗时=" + dt + "ms（出生点为实体方块）");
+        plugin.getLogger().info("[PVP] PVP竞技场世界就绪 种子=" + seed + " 耗时=" + dt + "ms（FLAT+手动地形，出生点已固化）");
         return pvpWorld;
+    }
+
+    /**
+     * 固化PVP世界出生点：在中心半径内寻找第一个"实体且非流体"的方块作为出生点。
+     * 找不到则强制在中心 (0,24,0) 搭建安全平台。
+     * 目的：彻底规避原 NORMAL 世界"出生点为水→删除重建换种子"导致的 13s 主线程卡服。
+     */
+    private void forceSafeSpawn(World world) {
+        int maxR = 8;
+        for (int rad = 0; rad <= maxR; rad++) {
+            for (int dx = -rad; dx <= rad; dx++) {
+                for (int dz = -rad; dz <= rad; dz++) {
+                    if (rad > 0 && Math.abs(dx) != rad && Math.abs(dz) != rad) continue; // 仅遍历当前环
+                    int top = getTopSolidY(world, dx, dz);
+                    Material m = world.getBlockAt(dx, top, dz).getType();
+                    if (m.isSolid() && !isFluid(m)) {
+                        world.setSpawnLocation(dx, top + 1, dz);
+                        return;
+                    }
+                }
+            }
+        }
+        // 兜底：中心安全平台
+        int sy = 24;
+        for (int y = 0; y <= sy; y++) {
+            Block b = world.getBlockAt(0, y, 0);
+            b.setType(y == sy ? Material.GRASS_BLOCK : (y == 0 ? Material.BEDROCK : Material.STONE));
+        }
+        for (int y = sy + 1; y <= sy + 4; y++) world.getBlockAt(0, y, 0).setType(Material.AIR);
+        world.setSpawnLocation(0, sy + 1, 0);
+        plugin.getLogger().warning("[PVP] 未找到天然安全出生点，已生成中心兜底平台");
     }
 
     /** 是否为实体（固体）方块：玩家可站立的地面。水/空气/岩浆等非固体返回 false */
