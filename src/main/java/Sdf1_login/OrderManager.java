@@ -715,7 +715,7 @@ public class OrderManager implements Listener {
                             }
                         } else {
                             for (OrderItem it : r.items)
-                                removeItems(p, it.mat, it.qty);
+                                removeItems(p, it);
                         }
                         // 退钱
                         plugin.getBonds().addBonds(
@@ -873,7 +873,7 @@ public class OrderManager implements Listener {
                             if (tagged) { target.getInventory().clear(i); break; }
                         }
                     } else {
-                        for (OrderItem it : r.items) removeItems(target, it.mat, it.qty);
+                        for (OrderItem it : r.items) removeItems(target, it);
                     }
                 }
                 plugin.getBonds().addBonds(r.player, r.totalPaid);
@@ -987,7 +987,7 @@ public class OrderManager implements Listener {
                     Player target = Bukkit.getPlayer(r.uuid);
                     if (target != null && target.isOnline()) {
                         for (OrderItem it : r.items)
-                            removeItems(target, it.mat, it.qty);
+                            removeItems(target, it);
                     }
                     plugin.getBonds().addBonds(r.player, r.totalPaid);
                     r.status = 2;
