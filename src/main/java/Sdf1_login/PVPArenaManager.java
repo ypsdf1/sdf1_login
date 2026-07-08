@@ -26,7 +26,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * PVP竞技场管理器 - 独立世界模式（完整主世界地形）
@@ -74,10 +73,6 @@ public class PVPArenaManager implements Listener {
 
     // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
     private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
-
-    // ★ 世界创建互斥锁：异步创建世界期间置为 true，防止多名玩家并发 /pvp join 同时触发
-    //   createPVPWorld 导致 pvpWorldName 竞态与重复创建世界（上一创建尚未完成又开新世界）。
-    private final AtomicBoolean pvpWorldCreating = new AtomicBoolean(false);
 
     // ★ GUI打开时间戳（仅用于历史清理兼容，当前检测逻辑已改为基于 selectedTier 状态判断）
     private final Map<String, Long> guiOpenedMillis = new ConcurrentHashMap<>();
@@ -270,6 +265,11 @@ public class PVPArenaManager implements Listener {
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
         creator.seed(seed);
+        // ★ 关键：不把出生点区块常驻内存。否则 Bukkit.createWorld 会同步加载出生点周边
+        //   区块（~10 区块半径），主线程被占用数秒 → Watchdog 卡死。设为 false 后 createWorld
+        //   仅初始化世界、不加载出生点区块（毫秒级）；区块由 preGenerateSpawnChunks 异步预生成，
+        //   玩家传送时按需加载单个区块（极快），主线程全程不阻塞。
+        creator.keepSpawnInMemory(false);
         plugin.getLogger().info("[PVP] 新建随机世界名=" + pvpWorldName + ", 种子=" + seed + " (确保每次地形不同)");
 
         // ★ 使用 Bukkit.createWorld() 而非 creator.createWorld()：
@@ -335,7 +335,8 @@ public class PVPArenaManager implements Listener {
         w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
         w.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         w.setTime(6000);
-        w.setKeepSpawnInMemory(true);
+        // ★ 不常驻出生点区块（与 WorldCreator.keepSpawnInMemory(false) 一致），避免同步加载区块卡主线程
+        w.setKeepSpawnInMemory(false);
     }
 
     /**
@@ -1471,19 +1472,19 @@ public class PVPArenaManager implements Listener {
             return;
         }
 
-        // ★ 关键修复（2026-07-08）：修复 /pvp join 加入世界时主线程卡死无响应（Watchdog 超时）
+        // ★ 关键修复（2026-07-08 第二版）：/pvp join 卡死 + WorldInitEvent 异步崩溃
         //
-        // 根因：旧代码在主线程同步调用 createPVPWorld() → Bukkit.createWorld() 阻塞约 8 秒，
-        //       且 reapplyWorldRules 的 setKeepSpawnInMemory(true) 会强制同步加载出生点区块，
-        //       主线程被长时间占用触发 Watchdog 踢人/卡死。
+        // 第一版曾把 createPVPWorld() 放进异步线程，但 Bukkit.createWorld() 内部会【同步】触发
+        // WorldInitEvent / WorldLoadEvent，这些事件只允许在主线程触发，异步调用直接抛
+        // java.lang.IllegalStateException: WorldInitEvent may only be triggered synchronously。
         //
-        // 修复：
-        //   1) 旧世界卸载（Bukkit.unloadWorld 非线程安全）必须在主线程执行，这里先卸载；
-        //   2) 新世界创建（Bukkit.createWorld 阻塞 + 出生点区块生成）放进【异步线程】，
-        //      主线程得以释放，不再卡死；
-        //   3) 创建完成后再 runTask 回主线程执行传送 + 打开装备GUI（teleport/开GUI 必须在主线程）。
+        // 因此 createPVPWorld() 必须在【主线程】执行。卡死的根因并非 createWorld 本身，而是
+        // setKeepSpawnInMemory(true) 强制同步加载出生点区块（~8s）。现改为
+        // WorldCreator.keepSpawnInMemory(false)（见 createPVPWorld），createWorld 仅做世界初始化、
+        // 不加载出生点区块（毫秒级），主线程不会被长时间占用，Watchdog 卡死彻底消除。
+        // 出生点周边区块由 preGenerateSpawnChunks 异步预生成，玩家传送时按需加载单个区块（极快）。
         if (pvpWorld != null) {
-            plugin.getLogger().info("[PVP] PVP世界当前无人，主线程卸载旧世界后于异步线程重新生成全新主世界");
+            plugin.getLogger().info("[PVP] PVP世界当前无人，主线程卸载旧世界并重新生成全新主世界");
             deletePVPWorld(pvpWorld);
         } else {
             File folder = new File(Bukkit.getWorldContainer(), pvpWorldName);
@@ -1494,29 +1495,12 @@ public class PVPArenaManager implements Listener {
         }
 
         player.sendMessage("§a§l正在生成PVP竞技场世界，请稍候...");
-
-        // ★ 互斥保护：若已有其他玩家在异步创建世界，本次不重复创建（避免 pvpWorldName 竞态 /
-        //   重复 createWorld 导致地形错乱）。提示玩家稍后重试即可。
-        if (!pvpWorldCreating.compareAndSet(false, true)) {
-            plugin.getLogger().info("[PVP] 玩家 " + player.getName()
-                    + " 请求加入时世界正在异步生成中，提示稍后重试（不重复创建）");
-            Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                if (player.isOnline() && !inPVPArena.contains(player.getName())) {
-                    player.sendMessage("§ePVP竞技场世界正在生成中，请稍候再次输入 /pvp join");
-                }
-            }, 20L);
+        pvpWorld = createPVPWorld();
+        if (pvpWorld == null) {
+            player.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
             return;
         }
-
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                final World newWorld = createPVPWorld();
-                // 回到主线程：传送与打开装备GUI 必须在主线程执行
-                Bukkit.getScheduler().runTask(plugin, () -> finalizeJoin(player, newWorld));
-            } finally {
-                pvpWorldCreating.set(false);
-            }
-        });
+        finalizeJoin(player, pvpWorld);
     }
 
     /**

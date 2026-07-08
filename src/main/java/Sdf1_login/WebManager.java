@@ -3970,6 +3970,18 @@ public class WebManager {
                                 break;
                             }
 
+                            // ★ 2026-07-08 合并发货修复：
+                            //   打包(潜影盒)模式：小票已通过 handleBuyCart 的 addBookToShulker 塞入【商品潜影盒】内，
+                            //     此处若再单独发放"小票潜影盒"会导致玩家拿到两个潜影盒（商品+小票 / 仅小票）。
+                            //   不打包(塞背包)模式：按需求跳过发放小票书。
+                            //   因此两种结算模式下都【不再单独发放小票潜影盒】，直接标记已处理避免反复拉取。
+                            if ("shulker".equals(settlementMode) || "backpack".equals(settlementMode)) {
+                                plugin.getLogger().info("[小票书] 结算模式=" + settlementMode
+                                        + "，小票已并入商品潜影盒(打包)或在背包模式跳过，不再单独发放小票潜影盒 (玩家=" + bookPlayer + ")");
+                                applied = true;
+                                break;
+                            }
+
                             org.bukkit.entity.Player target = Bukkit.getPlayerExact(bookPlayer);
                             if (target == null || !target.isOnline()) {
                                 plugin.getLogger().info("[小票书] 玩家 " + bookPlayer + " 不在线，跳过发书");
