@@ -60,6 +60,8 @@ public class PVPArenaManager implements Listener {
      * 历史写死 PVP_WORLD_NAME 的创建/获取/卸载/玩家移动判定统一改用本字段，确保指向同一个随机世界。
      */
     private String pvpWorldName = PVP_WORLD_NAME;
+    /** 防止异步创建世界期间并发重复创建（joinArena 与回调均在主线程读写，无需 volatile） */
+    private boolean pvpWorldCreating = false;
 
     // PVP世界空场冷却时间（毫秒）：所有玩家退场后世界继续保留此时长，
     // 冷却内若有玩家重新进入则取消删除；冷却结束且仍无人则删除世界，下次进入随机重新生成地形。
@@ -264,9 +266,9 @@ public class PVPArenaManager implements Listener {
      *
      * ★ 卡服根因修复（2026-07-08）：原实现用 WorldType.NORMAL + Bukkit.createWorld 在主线程
      *   同步"搜索出生点 + 生成自然地形"，耗时 13s 触发 Paper 看门狗（Chunk wait）导致卡服/报错。
-     *   现改为 WorldType.FLAT 空世界：createWorld 毫秒级返回（无地形搜索），随后用
-     *   generatePVPTerrain 按【随机种子】手动生成自然地形（每次丘陵/水域/树木分布不同 → 仍防背图），
-     *   最后 forceSafeSpawn 固化一个绝对安全的出生点，彻底绕开"水→删除重建换种子"的卡服链路。
+     *   现改为 WorldType.NORMAL 真实自然地形 + 异步创建：createWorld 放到异步线程执行，
+     *   主线程始终响应不卡服；地形由 Minecraft 自然生成（丘陵/水域/洞穴/树木），不再人造。
+     *   forceSafeSpawn 在生成完成后回主线程固化安全出生点，仍绕开"水→删除重建"卡服链路。
      */
     private World createPVPWorld() {
         long t0 = System.currentTimeMillis();
@@ -278,28 +280,24 @@ public class PVPArenaManager implements Listener {
         long seed = worldSeedRandom.nextLong();
         WorldCreator c = new WorldCreator(pvpWorldName);
         c.environment(World.Environment.NORMAL);
-        // ★ 关键：FLAT 空世界使 createWorld 在主线程毫秒级返回，杜绝 13s 卡服；地形后续手动生成
-        c.type(WorldType.FLAT);
+        // ★ 真实自然地形：丘陵/水域/洞穴/树木由 Minecraft 生成（非人造）
+        c.type(WorldType.NORMAL);
         c.seed(seed);
         // 注意：Paper 26.x 已移除 WorldCreator.keepSpawnInMemory(boolean)，不再调用
 
-        plugin.getLogger().info("[PVP] 生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed + " (FLAT空世界，随后手动生成地形)");
-        World pvpWorld = Bukkit.createWorld(c);
+        plugin.getLogger().info("[PVP] 异步生成PVP竞技场世界 " + pvpWorldName + " 种子=" + seed + " (NORMAL真实自然地形)");
+        World pvpWorld = Bukkit.createWorld(c);   // 异步线程执行，不阻塞主线程
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
             plugin.getLogger().severe("[PVP] 无法创建PVP竞技场世界! (Bukkit.createWorld返回null, 耗时" + dt + "ms)");
             return null;
         }
 
-        // ★ 手动生成自然地形（随机种子→每次地形不同，防背图），同步完成（仅96x96，远低于13s）
-        generatePVPTerrain(pvpWorld, seed);
-        // ★ 固化安全出生点：中心附近找实体非流体方块，颠覆"水→重建"的卡服链路
-        forceSafeSpawn(pvpWorld);
-        // 异步预生成周边区块（兜底，不阻塞主线程）
-        preGenerateSpawnChunksAsync(pvpWorld, 4);
-        reapplyWorldRules(pvpWorld);
+        // 同步预生成出生点周边区块（异步线程内阻塞生成，确保 forceSafeSpawn/传送能读到真实地形）
+        preGenerateSpawnChunksSync(pvpWorld, 4);
+        // 注意：forceSafeSpawn / reapplyWorldRules / finalizeJoin 在生成完成后的主线程回调执行
 
-        plugin.getLogger().info("[PVP] PVP竞技场世界就绪 种子=" + seed + " 耗时=" + dt + "ms（FLAT+手动地形，出生点已固化）");
+        plugin.getLogger().info("[PVP] PVP竞技场世界(NORMAL)已创建 种子=" + seed + " 耗时=" + dt + "ms（异步线程，未卡主线程）");
         return pvpWorld;
     }
 
@@ -361,6 +359,24 @@ public class PVPArenaManager implements Listener {
             }
             plugin.getLogger().info("[PVP] 已异步预生成出生点周边 " + n + " 个区块");
         });
+    }
+
+    /** 同步预生成出生点周边区块（阻塞直到生成完成），供异步 createWorld 后使用，确保地形可读。 */
+    private void preGenerateSpawnChunksSync(World world, int radius) {
+        final int cx = world.getSpawnLocation().getBlockX() >> 4;
+        final int cz = world.getSpawnLocation().getBlockZ() >> 4;
+        int n = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                try {
+                    world.loadChunk(cx + dx, cz + dz, true);
+                    n++;
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[PVP] 预生成区块失败: " + (cx + dx) + "," + (cz + dz));
+                }
+            }
+        }
+        plugin.getLogger().info("[PVP] 已同步预生成出生点周边 " + n + " 个区块");
     }
 
     // ==================== PVP 战绩榜（记分板侧边栏）====================
@@ -1610,10 +1626,10 @@ public class PVPArenaManager implements Listener {
         }
 
         // ★ 玩家全离开后世界已删除（见 scheduleWorldDeletionIfEmpty），此处重新生成全新随机地形：
-        //   createPVPWorld() 主线程执行（Bukkit.createWorld 触发 WorldInitEvent 必须同步），
-        //   但 keepSpawnInMemory(false) 不强制加载出生点区块，createWorld 毫秒级返回不卡服；
-        //   出生点周边区块由 preGenerateSpawnChunksAsync 异步预生成。
-        //   若随机到水/空气等非实体出生点，createPVPWorld 内部会删除重来（换种子）。
+        //   createPVPWorld() 在异步线程执行（Bukkit.createWorld 触发 WorldInitEvent 仍在异步线程跑，
+        //   主线程不阻塞），真实 NORMAL 自然地形由 Minecraft 生成（非人造）；
+        //   出生点固化(forceSafeSpawn)/世界规则(reapplyWorldRules)/传送(finalizeJoin) 在生成完成后的主线程回调执行。
+        //   若出生点脚下是水，finalizeJoin 仅上移该玩家至地表（不删除世界），彻底绕开"水→重建"卡服链路。
         if (pvpWorld != null) {
             plugin.getLogger().info("[PVP] PVP世界当前无人，主线程卸载旧世界并重新生成全新主世界");
             deletePVPWorld(pvpWorld);
@@ -1626,12 +1642,28 @@ public class PVPArenaManager implements Listener {
         }
 
         player.sendMessage("§a§l正在生成PVP竞技场世界，请稍候...");
-        pvpWorld = createPVPWorld();
-        if (pvpWorld == null) {
-            player.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
+        // ★ 异步创建真实NORMAL自然地形世界：NORMAL 的地形同步生成曾卡主线程13s触发看门狗，
+        //   现把 createWorld 放到异步线程，主线程始终响应；生成完成后回主线程做出生点固化+规则+传送。
+        if (pvpWorldCreating) {
+            player.sendMessage("§e竞技场世界正在生成中，请稍候...");
             return;
         }
-        finalizeJoin(player, pvpWorld);
+        pvpWorldCreating = true;
+        final Player joinPlayer = player;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            World w = createPVPWorld();
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                pvpWorldCreating = false;
+                if (w == null) {
+                    joinPlayer.sendMessage("§c§l[PVP] 竞技场世界加载失败，请联系管理员");
+                    return;
+                }
+                forceSafeSpawn(w);
+                reapplyWorldRules(w);
+                finalizeJoin(joinPlayer, w);
+            });
+        });
+        return;
     }
 
     /**
