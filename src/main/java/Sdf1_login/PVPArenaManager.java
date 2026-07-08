@@ -17,6 +17,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.scoreboard.*;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 
@@ -102,6 +103,18 @@ public class PVPArenaManager implements Listener {
 
     // PVP装备列表 (管理员可配置) — 当前默认用于向后兼容，实际由档位系统驱动
     private final List<ItemStack> pvpEquipment = new ArrayList<>();
+
+    // ★ PVP战绩榜（记分板侧边栏）：记录本局竞技场玩家的击杀/死亡数
+    private Scoreboard pvpScoreboard = null;
+    private final Map<String, Integer> pvpKills = new ConcurrentHashMap<>();
+    private final Map<String, Integer> pvpDeaths = new ConcurrentHashMap<>();
+
+    // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
+    private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
+
+    // ★ PVP模板世界池：首次启动时生成并存盘，后续每次开战仅复制+加载（避免实时生成地形卡服）
+    private static final int PVP_TEMPLATE_POOL = 3;
+    private final List<String> pvpTemplateNames = new ArrayList<>();
 
     // 装备选择GUI标题
     private static final String EQUIPMENT_GUI_TITLE = "§6§l选择PVP装备";
@@ -197,8 +210,7 @@ public class PVPArenaManager implements Listener {
             pMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
                     org.bukkit.potion.PotionEffectType.INSTANT_HEALTH,
                     1, 0, false, false), true);
-            pMeta.setBasePotionData(new org.bukkit.potion.PotionData(
-                    org.bukkit.potion.PotionType.HEALING, false, false));
+            pMeta.setBasePotionType(org.bukkit.potion.PotionType.HEALING);
             potion.setItemMeta(pMeta);
         }
         pvpEquipment.add(potion);
@@ -248,32 +260,45 @@ public class PVPArenaManager implements Listener {
      *   3) 仅设游戏规则（常昼/无天气/PVP 开启）并预生成出生点周边区块（确保地形已就绪）；
      *   4) 出生点是否合格由 joinArena() 做"唯一一次"脚下方块检查（水→上移该玩家，非水→直接放行）。
      */
+    /**
+     * 创建PVP竞技场世界。
+     *
+     * 2026-07-08 修复"创建世界卡服务器"：
+     *   原实现每次用全新随机种子调用 Bukkit.createWorld，在从未生成过的种子上同步生成地形，
+     *   主线程阻塞数秒导致全服卡顿。现改为：首次启动一次性生成 PVP_TEMPLATE_POOL 个模板世界并持久化；
+     *   每次开战仅复制模板目录为随机新世界名再加载（仅读盘、不生成地形），主线程耗时降到毫秒级。
+     */
     private World createPVPWorld() {
-        plugin.getLogger().info("[PVP] 准备创建PVP世界 (纯NORMAL主世界，地形/出生点完全由MC自行决定)");
-
         long t0 = System.currentTimeMillis();
 
-        // ★ 每次使用全新随机世界名 + 随机种子：
-        //   彻底绕开 Windows 文件锁导致旧世界目录删不掉、createWorld 复用旧世界（旧种子/小岛地形）的坑。
-        //   即便上一次目录被锁无法删除，本次也会用唯一新名字生成全新世界，地形必然不同。
-        //   上一次世界目录在 joinArena→deletePVPWorld 流程中已被移入回收站；这里再做 best-effort 兜底清理。
+        // 确保模板世界已就绪（首次生成，之后仅校验；生成在启动阶段完成，不卡服）
+        ensurePVPTemplates();
+        if (pvpTemplateNames.isEmpty()) {
+            plugin.getLogger().severe("[PVP] 模板世界初始化失败，无法创建竞技场");
+            return null;
+        }
+
+        // 随机选一个模板（保留地形多样性）
+        String tpl = pvpTemplateNames.get(worldSeedRandom.nextInt(pvpTemplateNames.size()));
+        File tplFolder = new File(Bukkit.getWorldContainer(), tpl);
+
+        // 随机新世界名（彻底绕开旧目录残留冲突）
         deleteWorldFolderIfExists(pvpWorldName);
         this.pvpWorldName = PVP_WORLD_NAME + "_" + Long.toUnsignedString(worldSeedRandom.nextLong());
+        File arenaFolder = new File(Bukkit.getWorldContainer(), pvpWorldName);
 
-        long seed = worldSeedRandom.nextLong();
+        try {
+            copyWorldFolder(tplFolder, arenaFolder);
+        } catch (IOException e) {
+            plugin.getLogger().severe("[PVP] 复制模板世界失败: " + e.getMessage());
+            return null;
+        }
+
+        plugin.getLogger().info("[PVP] 已从模板 " + tpl + " 复制为新世界 " + pvpWorldName + "（仅加载，不实时生成地形）");
+
         WorldCreator creator = new WorldCreator(pvpWorldName);
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
-        creator.seed(seed);
-        // ★ 注意：运行时 Paper API 已移除 WorldCreator.keepSpawnInMemory(boolean)
-        //   （NoSuchMethodError），故【不在 Creator 上设置】出生点常驻。
-        //   出生点区块是否常驻内存由 reapplyWorldRules 的 World.setKeepSpawnInMemory(false)
-        //   控制——设为 false 可避免 Bukkit.createWorld 强制同步加载出生点区块导致主线程卡死。
-        plugin.getLogger().info("[PVP] 新建随机世界名=" + pvpWorldName + ", 种子=" + seed + " (确保每次地形不同)");
-
-        // ★ 使用 Bukkit.createWorld() 而非 creator.createWorld()：
-        //   Bukkit 管线会完整处理 WorldCreator 的所有配置（包括 seed），在某些 Paper 版本中更可靠。
-        //   creator.createWorld() 是捷径方法，可能跳过某些初始化步骤导致 seed 被内部值覆盖。
         World pvpWorld = Bukkit.createWorld(creator);
         long dt = System.currentTimeMillis() - t0;
         if (pvpWorld == null) {
@@ -281,34 +306,178 @@ public class PVPArenaManager implements Listener {
             return null;
         }
 
-        // ★ 关键验证：检查 MC 是否真的使用了我们指定的种子（Paper 26.x 已知会忽略 creator.seed）
-        long actualSeed = pvpWorld.getSeed();
-        boolean seedMatches = (actualSeed == seed);
-        plugin.getLogger().info("[PVP] Bukkit.createWorld 完成, 耗时=" + dt + "ms, 世界环境="
-                + pvpWorld.getEnvironment()
-                + ", 生成器=" + (pvpWorld.getGenerator() == null ? "默认(无插件生成器)" : pvpWorld.getGenerator().getClass().getSimpleName())
-                + ", 期望种子=" + seed
-                + ", MC实际种子=" + actualSeed
-                + (seedMatches ? " ✅ 种子匹配" : " ❌ 种子不匹配！MC忽略了我们的seed设定"));
-
-        if (!seedMatches) {
-            plugin.getLogger().warning("[PVP] ⚠ Paper/MC 忽略了 WorldCreator.seed() 设定！"
-                    + " 但本次使用全新随机世界名(" + pvpWorldName + ")，地形必为全新生成，不受种子忽略影响。");
-        }
-
         reapplyWorldRules(pvpWorld);
 
-        // 预生成出生点周边区块（半径 4 个区块），确保地形已就绪、后续出生点检查准确
-        preGenerateSpawnChunks(pvpWorld, 4);
-
-        // ★ 插件不干预出生点：完全保留 MC 自然出生点，不做任何 setSpawnLocation。
-        Location natural = pvpWorld.getSpawnLocation();
-        plugin.getLogger().info("[PVP] ✅ 已创建PVP竞技场世界(NORMAL主世界) 自然出生点=("
-                + natural.getBlockX() + "," + natural.getBlockY() + "," + natural.getBlockZ()
-                + ")，插件不改动出生点（出生点检查交由 joinArena 处理）");
-
+        plugin.getLogger().info("[PVP] 已加载PVP竞技场世界(模板副本) 耗时=" + dt + "ms");
         return pvpWorld;
     }
+
+    /**
+     * 确保 PVP 模板世界池已生成并持久化到磁盘。
+     * 首次启动（磁盘无模板目录）时同步生成 PVP_TEMPLATE_POOL 个地形各异的模板世界，
+     * 生成完毕后立即卸载（仅保留磁盘目录），后续开战直接复制，不卡服。
+     * 非首次（目录已存在）则仅校验，几乎零耗时。
+     */
+    public void ensurePVPTemplates() {
+        if (!pvpTemplateNames.isEmpty()) return;
+        for (int i = 0; i < PVP_TEMPLATE_POOL; i++) {
+            String tpl = "pvp_tpl_" + i;
+            pvpTemplateNames.add(tpl);
+            File folder = new File(Bukkit.getWorldContainer(), tpl);
+            if (folder.exists()) {
+                plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已存在，跳过生成");
+                continue;
+            }
+            long seed = worldSeedRandom.nextLong();
+            WorldCreator c = new WorldCreator(tpl);
+            c.environment(World.Environment.NORMAL);
+            c.type(WorldType.NORMAL);
+            c.seed(seed);
+            plugin.getLogger().info("[PVP] 首次生成模板世界 " + tpl + " 种子=" + seed + "（启动阶段，不卡服）");
+            World w = Bukkit.createWorld(c);
+            if (w == null) {
+                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 生成失败");
+                continue;
+            }
+            preGenerateSpawnChunksSync(w, 4);
+            reapplyWorldRules(w);
+            Bukkit.unloadWorld(w, true);
+            plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已生成并存盘");
+        }
+    }
+
+    /**
+     * 同步预生成出生点周边区块（用于模板世界一次性生成，启动阶段调用，可接受短暂阻塞）。
+     */
+    private void preGenerateSpawnChunksSync(World world, int radius) {
+        int cx = world.getSpawnLocation().getBlockX() >> 4;
+        int cz = world.getSpawnLocation().getBlockZ() >> 4;
+        int n = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                try {
+                    world.loadChunk(cx + dx, cz + dz, true);
+                    n++;
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[PVP] 同步生成模板区块失败: " + (cx + dx) + "," + (cz + dz));
+                }
+            }
+        }
+        plugin.getLogger().info("[PVP] 模板世界已同步生成 " + n + " 个区块");
+    }
+
+    /**
+     * 递归复制世界目录（用于把模板世界复制为新的竞技场世界）。
+     * 跳过 session.lock（服务器运行锁）与 uid.dat（让新世界重新生成 uid），避免复制后加载冲突。
+     */
+    private void copyWorldFolder(File src, File dst) throws IOException {
+        if (dst.exists()) deleteWorldFolder(dst);
+        copyDirRecursively(src, dst);
+    }
+
+    /** 递归复制目录（不使用 nio Files.walkFileTree，避免触发 JDK26 javac 类型推断内部崩溃） */
+    private void copyDirRecursively(File src, File dst) throws IOException {
+        if (src.isDirectory()) {
+            if (!dst.exists() && !dst.mkdirs()) {
+                throw new IOException("无法创建目录: " + dst.getAbsolutePath());
+            }
+            File[] children = src.listFiles();
+            if (children == null) return;
+            for (File child : children) {
+                copyDirRecursively(child, new File(dst, child.getName()));
+            }
+        } else {
+            String name = src.getName();
+            if (name.equals("session.lock") || name.equals("uid.dat")) {
+                return; // 跳过服务器运行锁与 uid.dat，避免复制后加载冲突
+            }
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                throw new IOException("无法创建目录: " + parent.getAbsolutePath());
+            }
+            try (java.io.InputStream in = new java.io.FileInputStream(src);
+                 java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                }
+            }
+        }
+    }
+
+    // ==================== PVP 战绩榜（记分板侧边栏）====================
+
+    private Scoreboard getOrCreatePVPScoreboard() {
+        if (pvpScoreboard == null) {
+            pvpScoreboard = Bukkit.getScoreboardManager().getNewScoreboard();
+            // paper-api 1.21.4: registerNewObjective 需要 (name, criteria, displayName) 三参数，setCriteria 已废弃
+            Objective obj = pvpScoreboard.registerNewObjective("pvp_stats", Criteria.DUMMY, "§e§lPVP 战绩榜");
+            obj.setDisplaySlot(DisplaySlot.SIDEBAR);
+        }
+        return pvpScoreboard;
+    }
+
+    /** 玩家进入PVP世界时登记战绩并显示侧边栏 */
+    private void registerPlayerStats(Player p) {
+        pvpKills.putIfAbsent(p.getName(), 0);
+        pvpDeaths.putIfAbsent(p.getName(), 0);
+        p.setScoreboard(getOrCreatePVPScoreboard());
+        refreshPVPScoreboard();
+    }
+
+    /** 刷新战绩榜：每个在场玩家一行（按击杀数降序，条目前缀显示死亡数） */
+    private void refreshPVPScoreboard() {
+        if (pvpScoreboard == null) return;
+        Objective obj = pvpScoreboard.getObjective("pvp_stats");
+        if (obj == null) return;
+        // 清除上一次所有条目（避免残留/重复）
+        for (String entry : scoreEntries.values()) {
+            pvpScoreboard.resetScores(entry);
+        }
+        scoreEntries.clear();
+        // 按击杀数降序排列（手动选择排序，不使用 Comparator/lambda，规避 JDK26 javac 类型推断内部崩溃）
+        List<String> sorted = new ArrayList<String>(inPVPArena.size());
+        sorted.addAll(inPVPArena);
+        for (int i = 0; i < sorted.size(); i++) {
+            for (int j = i + 1; j < sorted.size(); j++) {
+                if (pvpKills.getOrDefault(sorted.get(j), 0) > pvpKills.getOrDefault(sorted.get(i), 0)) {
+                    String tmp = sorted.get(i);
+                    sorted.set(i, sorted.get(j));
+                    sorted.set(j, tmp);
+                }
+            }
+        }
+        for (String name : sorted) {
+            int k = pvpKills.getOrDefault(name, 0);
+            int d = pvpDeaths.getOrDefault(name, 0);
+            String entry = "§c" + d + "死 §a" + name;
+            scoreEntries.put(name, entry);
+            obj.getScore(entry).setScore(k);
+        }
+    }
+
+    /** 玩家离开PVP世界时清除其战绩并恢复默认记分板 */
+    private void cleanupPlayerStats(Player p) {
+        if (p == null) return;
+        String name = p.getName();
+        pvpKills.remove(name);
+        pvpDeaths.remove(name);
+        String entry = scoreEntries.remove(name);
+        if (pvpScoreboard != null && entry != null) {
+            pvpScoreboard.resetScores(entry);
+        }
+        if (p.isOnline()) {
+            p.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());
+        }
+        // 无人则销毁本局记分板，下次重建
+        if (inPVPArena.isEmpty() && pvpScoreboard != null) {
+            pvpScoreboard = null;
+        } else {
+            refreshPVPScoreboard();
+        }
+    }
+
 
     /**
      * 判断出生点是否落在“实体方块”之上（玩家可站立、非水非空气）。
@@ -758,6 +927,7 @@ public class PVPArenaManager implements Listener {
 
         // 标记进入PVP世界
         inPVPArena.add(playerName);
+        registerPlayerStats(player);
         equipmentConfirmed.remove(playerName);
 
         // ★ 关键变更：先选装备，不急着备份清空
@@ -824,6 +994,7 @@ public class PVPArenaManager implements Listener {
                         + " 进入PVP超过 " + EQUIPMENT_SELECT_TIMEOUT_SECONDS + "秒未确认装备");
                 kickTimeoutTasks.remove(playerName);
                 inPVPArena.remove(playerName);
+                cleanupPlayerStats(p);
                 guiReopening.remove(playerName);
                 guiOpenedMillis.remove(playerName);
                 graceReopenCount.remove(playerName);
@@ -885,6 +1056,7 @@ public class PVPArenaManager implements Listener {
         graceReopenCount.remove(playerName);
         selectedTier.remove(playerName);
         cancelKickTimeout(playerName);
+        cleanupPlayerStats(player);
 
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 离开PVP竞技场"
                 + (isDisconnect ? "（断线）" : ""));
@@ -931,6 +1103,14 @@ public class PVPArenaManager implements Listener {
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
         if (!inPVPArena.contains(player.getName())) return;
+        // paper-api 1.21.4: getKiller() 已移除，改用 DamageSource.getCausingEntity()
+        org.bukkit.entity.Entity killer = event.getDamageSource().getCausingEntity();
+        if (killer instanceof Player && inPVPArena.contains(killer.getName())) {
+            pvpKills.put(killer.getName(), pvpKills.getOrDefault(killer.getName(), 0) + 1);
+            ((Player) killer).sendMessage("\u00a7a\u00a7l击杀 " + player.getName() + "\u00a7a 当前击杀: " + pvpKills.get(killer.getName()));
+        }
+        pvpDeaths.put(player.getName(), pvpDeaths.getOrDefault(player.getName(), 0) + 1);
+        refreshPVPScoreboard();
 
         // 死亡时保留经验（避免丢失）
         event.setKeepLevel(true);
@@ -982,6 +1162,7 @@ public class PVPArenaManager implements Listener {
         // 防止玩家登录时就在PVP世界（异常情况兜底）
         if (player.getWorld().getName().equals(pvpWorldName)) {
             inPVPArena.add(player.getName());
+            registerPlayerStats(player);
             // 给个提示但不自动操作，让玩家自己决定
             player.sendMessage("§e[PVP] 你当前在PVP竞技场世界，输入 /pvp leave 离开");
         }
@@ -1008,6 +1189,7 @@ public class PVPArenaManager implements Listener {
                 graceReopenCount.remove(player.getName());
                 selectedTier.remove(player.getName());
                 cancelKickTimeout(player.getName());
+                cleanupPlayerStats(player);
             }
             // 断线后若世界已无玩家（含本玩家），立即删除世界（"没人了就删除"）
             scheduleWorldDeletionIfEmpty();
@@ -1347,8 +1529,7 @@ public class PVPArenaManager implements Listener {
                     1,                       // 瞬间效果，duration 无意义
                     count >= 8 ? 1 : 0,      // 下合金档(8瓶)→治疗II，其余治疗I
                     false, false), true);
-            pMeta.setBasePotionData(new org.bukkit.potion.PotionData(
-                    org.bukkit.potion.PotionType.HEALING, false, false));
+            pMeta.setBasePotionType(org.bukkit.potion.PotionType.HEALING);
             potion.setItemMeta(pMeta);
         }
         return potion;

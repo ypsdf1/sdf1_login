@@ -516,6 +516,8 @@ public class Main extends JavaPlugin
                 .registerEvents(pvPArenaManager, this);
         // 确保PVP世界存在
         pvPArenaManager.ensurePVPWorldExists();
+        // 预生成PVP模板世界池（首次启动生成并存盘；之后仅校验，避免开战时实时生成地形卡服）
+        pvPArenaManager.ensurePVPTemplates();
 
         // 13 ====cypay债券====
         // 债券系统（独立DB）
@@ -2575,7 +2577,8 @@ public class Main extends JavaPlugin
     @EventHandler
     public void onEntityDeath(EntityDeathEvent e) {
         if (questTracker == null) return;
-        Player killer = e.getEntity().getKiller();
+        org.bukkit.entity.Entity k = e.getDamageSource().getCausingEntity();
+        Player killer = (k instanceof Player) ? (Player) k : null;
         if (killer == null || isFrozen(killer)) return;
         if (e.getEntity() instanceof Player)
             questTracker.onPlayerKill(killer.getName());

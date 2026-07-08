@@ -713,8 +713,10 @@ public class PVPManager implements Listener {
                 instanceof Player)) return;
         Player victim =
                 (Player) event.getEntity();
+        org.bukkit.entity.Entity kc =
+                event.getDamageSource().getCausingEntity();
         Player killer =
-                victim.getKiller();
+                (kc instanceof Player) ? (Player) kc : null;
         if (killer == null) return;
         if (killer.equals(victim)) return;
 

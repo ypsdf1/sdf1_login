@@ -2251,6 +2251,22 @@ public class AreaProtection implements Listener {
         return requiredLevel == PermissionLevel.VISITOR;
     }
 
+    /**
+     * 领地传送权限检查：
+     * - 领地主 / 插件全局管理员 / 领地管理员 → 无条件允许传送
+     * - 其他玩家 → 必须已获得该领地的"传送"授权（area_land_permissions.permissions 中 allowTeleport=true）
+     */
+    public boolean canTeleportToLand(Player p, AreaConfig ac) {
+        if (ac == null || p == null) return false;
+        if (isAreaAdmin(p)) return true;
+        if (p.getName().equalsIgnoreCase(ac.owner)) return true;
+        if (isLandAdmin(ac.name, p.getName())) return true;
+        int landId = getLandIdFromDb(ac.name);
+        if (landId <= 0) return false; // 无法验证则拒绝
+        Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
+        return perms.getOrDefault("allowTeleport", false);
+    }
+
     // ===== Per-Player 独立权限系统 =====
 
     /**
@@ -7647,6 +7663,11 @@ public class AreaProtection implements Listener {
             }
             if (ac == null) {
                 sender.sendMessage("§c领地不存在");
+                return true;
+            }
+            // ★ 传送权限检查：领地主/插件管理员/领地管理员 无条件允许；其余需授权
+            if (!canTeleportToLand(p, ac)) {
+                sender.sendMessage("§c你没有权限传送到该领地，需领地主或管理员授权（/protect cli memberperm " + ac.name + "）");
                 return true;
             }
             // 检查传送点是否已设置

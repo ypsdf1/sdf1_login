@@ -604,6 +604,7 @@ public class AreaCLIManager {
             case "glowing": return "denyGlowing";
             case "peace_mode": return "peaceMode";
             case "public_building": return "isPublicBuilding";
+            case "tp": return "allowTeleport";
             default: return shortKey;
         }
     }
@@ -697,6 +698,7 @@ public class AreaCLIManager {
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
             case "public_building": return "公共建筑设施";
+            case "tp": return "传送";
             default: return key;
         }
     }
@@ -1104,7 +1106,8 @@ public class AreaCLIManager {
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"mob_attack", "攻击生物", "denyMobAttack"},
                 {"glowing", "玩家发光", "denyGlowing"},
-                {"peace_mode", "和平模式", "peaceMode"}
+                {"peace_mode", "和平模式", "peaceMode"},
+                {"tp", "传送", "allowTeleport"}
         };
 
         for (String[] def : permDefs) {

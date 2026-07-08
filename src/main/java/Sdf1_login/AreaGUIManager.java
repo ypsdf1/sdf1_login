@@ -474,7 +474,7 @@ public class AreaGUIManager implements Listener {
                 {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                 {"攻击生物", "denyMobAttack"},
-                {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
+                {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"}
         };
 
         for (String[] def : permDefs) {
@@ -1087,7 +1087,7 @@ public class AreaGUIManager implements Listener {
                         {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                         {"攻击生物", "denyMobAttack"},
-                        {"玩家发光", "denyGlowing"}, {"和平模式", "peaceMode"}
+                        {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"}
                 };
 
                 if (raw < permDefs.length) {
