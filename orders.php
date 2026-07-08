@@ -167,7 +167,7 @@ $initialState = json_encode([
 
 <script>
 const STATE = <?php echo $initialState; ?>;
-function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;}[c])); }
+function esc(s){ s = String(s == null ? '' : s); var m = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}; return s.replace(/[&<>"]/g, function(c){ return m[c]; }); }
 async function api(url, opts, timeoutMs = 20000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
