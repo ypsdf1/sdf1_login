@@ -241,13 +241,29 @@ public class PVPArenaManager implements Listener {
         WorldCreator creator = new WorldCreator(PVP_WORLD_NAME);
         creator.environment(World.Environment.NORMAL);
         creator.type(WorldType.NORMAL);
-        // ★ 不设 seed：让 MC 自行随机决定地形种子（插件对地形零干预）。
-        //   创建后通过 getSeed() 读取 MC 选定的种子并记录日志，便于排查"出生点脚下是水"的失败种子。
+        // ★ 显式设置随机种子：避免 MC 内部 RNG 在特定条件下产生相同种子导致地形重复。
+        //   用户实测发现连续多次 createWorld 返回相同种子(-5092048402667366605)，
+        //   显式指定 worldSeedRandom.nextLong() 保证每次地形不同。
+        long seed = worldSeedRandom.nextLong();
+        creator.seed(seed);
+        plugin.getLogger().info("[PVP] 显式设定种子=" + seed + " (确保每次地形不同)");
 
         // ★ 彻底清理磁盘上可能残留的旧世界目录：旧版本曾干预出生点(setSpawnLocation)并强制造陆，
         //   若上次删除因 Windows 文件锁失败，createWorld 会误加载到旧世界(出生点被锁定/小岛地形)。
         //   这里重试删除确保目录消失，保证每次进入都是 MC 自然生成的全新主世界与自然出生点。
         deleteExistingPVPWorldFolder();
+
+        // ★ 验证：确认旧目录确实已消失
+        File folder = new File(Bukkit.getWorldContainer(), PVP_WORLD_NAME);
+        if (folder.exists()) {
+            plugin.getLogger().severe("[PVP] ⚠ 警告：deleteExistingPVPWorldFolder 执行后 pvp_arena 目录仍然存在！createWorld 可能复用旧世界");
+            moveWorldToTrash(folder);
+            if (folder.exists()) {
+                plugin.getLogger().severe("[PVP] ❌ 无法删除 pvp_arena 目录，本次可能仍会使用旧地形/旧种子");
+            }
+        } else {
+            plugin.getLogger().info("[PVP] ✅ 确认旧 pvp_arena 目录已清除，将生成全新世界");
+        }
 
         World pvpWorld = creator.createWorld();
         long dt = System.currentTimeMillis() - t0;

@@ -985,12 +985,14 @@ public class ShopManager implements Listener {
 
         File[] allMd = dir.listFiles(
                 (d, n) -> n.endsWith(".md")
-                        && !n.equals("coupons.md"));
+                        && !n.equals("coupons.md")
+                        && !n.contains(".web")); // ★ 跳过 .web.md 文件（PHP专属商品，游戏内不加载）
         if (allMd == null || allMd.length == 0) {
             createDefaultCategories(dir);
             allMd = dir.listFiles(
                     (d, n) -> n.endsWith(".md")
-                            && !n.equals("coupons.md"));
+                            && !n.equals("coupons.md")
+                            && !n.contains(".web")); // ★ 跳过 .web.md（PHP专属商品）
         }
         if (allMd == null) {
           plugin.getLogger().warning(

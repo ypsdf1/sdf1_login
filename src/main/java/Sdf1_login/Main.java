@@ -3573,6 +3573,14 @@ public class Main extends JavaPlugin
                                 p.sendMessage("§c指令为空");
                                 return;
                             }
+                            // ★ 提取权限类型（控制台/玩家/OP）
+                            String permType = "玩家";
+                            for (String pl : subLm.getLore()) {
+                                if (pl.contains("§7权限: §f")) {
+                                    permType = pl.replace("§7权限: §f", "").trim();
+                                    break;
+                                }
+                            }
                             p.closeInventory();
                             if (cmd.startsWith("/")) {
                                 cmd = cmd.substring(1);
@@ -3581,7 +3589,20 @@ public class Main extends JavaPlugin
                             if (cmd.endsWith(".txt")) {
                                 gui.openSubMenu(p, cmd);
                             } else {
-                                Bukkit.dispatchCommand(p, cmd);
+                                // ★ 替换玩家名变量：{player} %player% <player> [player] (player) 等
+                                String playerName = p.getName();
+                                cmd = cmd.replaceAll("\\{player\\}", playerName)
+                                        .replaceAll("%player%", playerName)
+                                        .replaceAll("<player>", playerName)
+                                        .replaceAll("\\[player\\]", playerName)
+                                        .replaceAll("\\(player\\)", playerName);
+                                // ★ 根据权限类型选择执行身份
+                                if ("控制台".equals(permType) || "console".equalsIgnoreCase(permType)) {
+                                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+                                    p.sendMessage("§a[菜单] 已以控制台身份执行: /" + cmd);
+                                } else {
+                                    Bukkit.dispatchCommand(p, cmd);
+                                }
                             }
                             return;
                         }
@@ -3840,6 +3861,14 @@ public class Main extends JavaPlugin
                                 p.sendMessage("§c指令为空");
                                 return;
                             }
+                            // ★ 提取权限类型（控制台/玩家/OP）
+                            String permType = "玩家";
+                            for (String pl : meta.getLore()) {
+                                if (pl.contains("§7权限: §f")) {
+                                    permType = pl.replace("§7权限: §f", "").trim();
+                                    break;
+                                }
+                            }
                             p.closeInventory();
                             if (cmd.startsWith("/")) {
                                 cmd = cmd.substring(1);
@@ -3847,7 +3876,20 @@ public class Main extends JavaPlugin
                             if (cmd.endsWith(".txt")) {
                                 gui.openSubMenu(p, cmd);
                             } else {
-                                Bukkit.dispatchCommand(p, cmd);
+                                // ★ 替换玩家名变量
+                                String playerName = p.getName();
+                                cmd = cmd.replaceAll("\\{player\\}", playerName)
+                                        .replaceAll("%player%", playerName)
+                                        .replaceAll("<player>", playerName)
+                                        .replaceAll("\\[player\\]", playerName)
+                                        .replaceAll("\\(player\\)", playerName);
+                                // ★ 根据权限类型选择执行身份
+                                if ("控制台".equals(permType) || "console".equalsIgnoreCase(permType)) {
+                                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), cmd);
+                                    p.sendMessage("§a[菜单] 已以控制台身份执行: /" + cmd);
+                                } else {
+                                    Bukkit.dispatchCommand(p, cmd);
+                                }
                             }
                             return;
                         }
