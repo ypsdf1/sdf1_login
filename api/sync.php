@@ -2668,9 +2668,9 @@ function pullPendingTransactions() {
     try {
         $db->exec('BEGIN IMMEDIATE');
         
-        // 恢复超时的processing交易（超过60秒未确认的恢复为pending）
+        // 恢复超时的processing交易（超过1小时未确认的恢复为pending；原60秒太短，服务器重启时异步confirm可能未完成）
         if ($hasProcessedAt) {
-            $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 60));
+            $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 3600));
         }
         
         $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
@@ -3040,10 +3040,10 @@ function resendPendingTransactions() {
     // ★ 事务包装防止 "database is locked"
     $db->exec("BEGIN IMMEDIATE");
     try {
-        // 恢复超时processing交易
-        $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 120));
+        // 恢复超时processing交易（1小时超时，防止重启后重复发货）
+        $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 3600));
 
-        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status IN ('pending', 'processing') ORDER BY created_at ASC");
+        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
         $result = $stmt->execute();
         $transactions = [];
         $ids = [];
