@@ -1204,6 +1204,9 @@ public class WebManager {
     private volatile long lastTransactionPullTime = 0;
     private static final long MIN_PULL_INTERVAL_MS = 5000; // 最小拉取间隔5秒，防止过于频繁
 
+    // ★ 本轮会话已确认的交易ID集合（防止重启后异步confirm未完成导致PHP回退processing→pending从而重复发货）
+    private final java.util.Set<String> confirmedTxIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private void requestImmediateTransactionPull() {
         long now = System.currentTimeMillis();
         if (now - lastTransactionPullTime < MIN_PULL_INTERVAL_MS) {
@@ -5844,6 +5847,13 @@ public class WebManager {
      * 处理Web交易
      */
     private void processWebTransaction(String txId, String playerName, String type, int amount, String detail) {
+        // ★ 去重检查：本会话已确认的交易不再重复处理（防止重启后PHP回退processing→pending导致重复发货）
+        if (confirmedTxIds.contains(txId)) {
+            plugin.getLogger().info("[Web交易] 跳过已确认交易: ID=" + txId + "（本会话已处理，可能PHP端confirm未持久化）");
+            confirmTransaction(txId); // 重新确认一次，确保PHP状态一致
+            return;
+        }
+
         plugin.getLogger().info("[Web交易] 处理交易: ID=" + txId + ", 玩家=" + playerName + ", 类型=" + type + ", 金额=" + amount + ", 详情=" + detail);
         boolean txSuccess = false;
         String errorMsg = "";
@@ -6408,22 +6418,18 @@ public class WebManager {
     }
 
     /**
-     * 确认交易已处理
+     * 确认交易已处理（同步调用，确保PHP收到确认后才返回，防止重启后重复发货）
      */
     private void confirmTransaction(String txId) {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                try {
-                    String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
-                    String postUrl = webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
-                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                    doPost(postUrl, bodyJson);
-                } catch (Exception e) {
-                    // 静默处理
-                }
-            }
-        }.runTaskAsynchronously(plugin);
+        try {
+            confirmedTxIds.add(txId); // ★ 先标记本地已确认（即使HTTP失败也不会重复处理）
+            String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
+            String postUrl = webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            doPost(postUrl, bodyJson);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 确认交易 " + txId + " 失败（已标记本地已确认，不会重复处理）: " + e.getMessage());
+        }
     }
 
     /**

@@ -516,8 +516,7 @@ public class Main extends JavaPlugin
                 .registerEvents(pvPArenaManager, this);
         // 确保PVP世界存在
         pvPArenaManager.ensurePVPWorldExists();
-        // 预生成PVP模板世界池（首次启动生成并存盘；之后仅校验，避免开战时实时生成地形卡服）
-        pvPArenaManager.ensurePVPTemplates();
+        // PVP模板世界改为懒加载：首次 /pvp join 时按需创建（不再启动时同步生成，避免拖慢启动50秒）
 
         // 13 ====cypay债券====
         // 债券系统（独立DB）

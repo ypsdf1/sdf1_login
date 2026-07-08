@@ -271,7 +271,7 @@ public class PVPArenaManager implements Listener {
     private World createPVPWorld() {
         long t0 = System.currentTimeMillis();
 
-        // 确保模板世界已就绪（首次生成，之后仅校验；生成在启动阶段完成，不卡服）
+        // 确保模板世界已就绪（懒加载：首次 /pvp join 时按需生成，不拖慢启动）
         ensurePVPTemplates();
         if (pvpTemplateNames.isEmpty()) {
             plugin.getLogger().severe("[PVP] 模板世界初始化失败，无法创建竞技场");
@@ -281,6 +281,18 @@ public class PVPArenaManager implements Listener {
         // 随机选一个模板（保留地形多样性）
         String tpl = pvpTemplateNames.get(worldSeedRandom.nextInt(pvpTemplateNames.size()));
         File tplFolder = new File(Bukkit.getWorldContainer(), tpl);
+
+        // ★ 安全检查：确认模板目录确实存在（防止外部删除或卸载后目录丢失）
+        if (!tplFolder.exists()) {
+            plugin.getLogger().warning("[PVP] 模板 " + tpl + " 目录不存在，从列表移除并重试");
+            pvpTemplateNames.remove(tpl);
+            if (pvpTemplateNames.isEmpty()) {
+                plugin.getLogger().severe("[PVP] 所有模板世界均不可用，无法创建竞技场");
+                return null;
+            }
+            // 递归重试（换一个模板）
+            return createPVPWorld();
+        }
 
         // 随机新世界名（彻底绕开旧目录残留冲突）
         deleteWorldFolderIfExists(pvpWorldName);
@@ -322,9 +334,9 @@ public class PVPArenaManager implements Listener {
         if (!pvpTemplateNames.isEmpty()) return;
         for (int i = 0; i < PVP_TEMPLATE_POOL; i++) {
             String tpl = "pvp_tpl_" + i;
-            pvpTemplateNames.add(tpl);
             File folder = new File(Bukkit.getWorldContainer(), tpl);
             if (folder.exists()) {
+                pvpTemplateNames.add(tpl); // ★ 仅在目录确认存在时才加入可用列表
                 plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已存在，跳过生成");
                 continue;
             }
@@ -333,16 +345,22 @@ public class PVPArenaManager implements Listener {
             c.environment(World.Environment.NORMAL);
             c.type(WorldType.NORMAL);
             c.seed(seed);
-            plugin.getLogger().info("[PVP] 首次生成模板世界 " + tpl + " 种子=" + seed + "（启动阶段，不卡服）");
+            plugin.getLogger().info("[PVP] 首次生成模板世界 " + tpl + " 种子=" + seed + "（懒加载，/pvp join 时触发）");
             World w = Bukkit.createWorld(c);
             if (w == null) {
-                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 生成失败");
-                continue;
+                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 生成失败，该模板将不可用");
+                continue; // ★ 不加入 pvpTemplateNames，不会被选中复制
             }
             preGenerateSpawnChunksSync(w, 4);
             reapplyWorldRules(w);
             Bukkit.unloadWorld(w, true);
-            plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已生成并存盘");
+            // ★ 卸载后再次确认目录仍存在（某些配置下 unloadWorld 可能删除目录）
+            if (folder.exists()) {
+                pvpTemplateNames.add(tpl);
+                plugin.getLogger().info("[PVP] 模板世界 " + tpl + " 已生成并存盘");
+            } else {
+                plugin.getLogger().severe("[PVP] 模板世界 " + tpl + " 卸载后目录消失，该模板将不可用");
+            }
         }
     }
 
