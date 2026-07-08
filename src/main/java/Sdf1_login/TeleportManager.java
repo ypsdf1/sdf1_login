@@ -133,11 +133,11 @@ public class TeleportManager implements Listener {
         int validSec = getTpRequestValidSeconds();
         long now = System.currentTimeMillis();
         
-        // 清理过期的incoming
+        // 清理过期的incoming（key 与存储/校验统一为 sender:receiver）
         Set<String> incoming = incomingRequests.get(playerName);
         if (incoming != null) {
             incoming.removeIf(sender -> {
-                String key = playerName + ":" + sender;
+                String key = sender + ":" + playerName;
                 Long t = teleportRequestTimes.get(key);
                 return t != null && (now - t) > (validSec * 1000L);
             });
@@ -199,7 +199,8 @@ public class TeleportManager implements Listener {
             Iterator<String> senderIter = senders.iterator();
             while (senderIter.hasNext()) {
                 String sender = senderIter.next();
-                String key = receiver + ":" + sender;
+                // ★ key 与存储/校验统一为 sender:receiver（原 receiver:sender 永远取不到时间→接收方请求永不清空）
+                String key = sender + ":" + receiver;
                 Long t = teleportRequestTimes.get(key);
                 if (t != null && (now - t) > (validSec * 1000L)) {
                     senderIter.remove();
