@@ -2217,8 +2217,9 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // 3. 领地管理员（DB role='admin'，通过/protect setadmin设置）
+        // 3. 领地管理员（DB role='admin'，仅限该领地；通过 /protect setadmin <领地名> <玩家> 或领地所有者GUI设置）
         // ★ 必须在VISITOR检查之前，否则白名单优先级会覆盖管理员身份
+        // ★ 注意：领地管理员严格按 ac.name 限定，绝不跨领地生效（封堵越权）
         if (ac != null && isLandAdmin(ac.name, player.getName())) {
             return PermissionLevel.ADMIN;
         }
@@ -2634,13 +2635,16 @@ public class AreaProtection implements Listener {
      * 与 Main.isAdmin() 使用相同的 ScoreboardTag 机制
      */
     public boolean isAreaAdmin(Player player) {
+        // ★ OP 即为全局领地管理员（封堵前仅认ScoreboardTag，导致非OP也能跨领地越权）
+        if (player.isOp()) return true;
+
         ConfigManager cfg = plugin.getConfigMgr();
         if (cfg == null) return false;
 
         String tag = cfg.areaProtectAdminTag;
         if (tag == null || tag.isEmpty()) return false;
 
-        // 使用ScoreboardTag验证（与Main.isAdmin()一致）
+        // 使用ScoreboardTag验证（与Main.isAdmin()一致，仅作为OP之外的补充）
         try {
             return player.getScoreboardTags().contains(tag);
         } catch (Exception e) {
@@ -7267,65 +7271,80 @@ public class AreaProtection implements Listener {
             return true;
         }
 
-        // ===== setadmin 设置管理员（通过ScoreboardTag）=====
+        // ===== setadmin 设置领地管理员（限指定领地，DB role='admin'，不再授予全局标签）=====
         if (sub.equals("setadmin")) {
             if (!isAreaAdmin(sender)) {
                 sender.sendMessage("§c需要管理员权限");
                 return true;
             }
-            if (args.length < 2) {
-                sender.sendMessage("§e用法: /protect setadmin <玩家>");
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect setadmin <领地名> <玩家>");
                 return true;
             }
-            Player target = Bukkit.getPlayerExact(args[1]);
+            String landName = args[1];
+            String targetName = args[2];
+            AreaConfig ac = getLand(landName);
+            if (ac == null) {
+                sender.sendMessage("§c领地不存在: " + landName);
+                return true;
+            }
+            Player target = Bukkit.getPlayerExact(targetName);
             if (target == null) {
-                sender.sendMessage("§c玩家不在线: " + args[1]);
+                sender.sendMessage("§c玩家不在线: " + targetName);
                 return true;
             }
-            ConfigManager cfg = plugin.getConfigMgr();
-            String tag = cfg != null ? cfg.areaProtectAdminTag : null;
-            if (tag == null || tag.isEmpty()) {
-                sender.sendMessage("§c管理员标签未配置");
+            if (isLandAdmin(landName, targetName)) {
+                sender.sendMessage("§e" + targetName + " §c已经是该领地管理员");
                 return true;
             }
-            if (target.getScoreboardTags().contains(tag)) {
-                sender.sendMessage("§e" + args[1] + " §c已经是管理员");
-                return true;
-            }
-            target.addScoreboardTag(tag);
-            sender.sendMessage("§a已将 §e" + args[1] + " §a设置为管理员");
-            target.sendMessage("§6[区域防护] §a你已被设置为管理员");
+            setLandAdmin(landName, targetName, true);
+            sender.sendMessage("§a已将 §e" + targetName + " §a设为领地 §b" + landName
+                    + " §a的管理员（仅在该领地生效，不跨领地）");
+            target.sendMessage("§6[区域防护] §a你已被设为领地 " + landName + " 的管理员");
             return true;
         }
 
-        // ===== unsetadmin 移除管理员 =====
+        // ===== unsetadmin 移除领地管理员（限指定领地）=====
         if (sub.equals("unsetadmin")) {
             if (!isAreaAdmin(sender)) {
                 sender.sendMessage("§c需要管理员权限");
                 return true;
             }
-            if (args.length < 2) {
-                sender.sendMessage("§e用法: /protect unsetadmin <玩家>");
+            if (args.length < 3) {
+                sender.sendMessage("§e用法: /protect unsetadmin <领地名> <玩家>");
                 return true;
             }
-            Player target = Bukkit.getPlayerExact(args[1]);
+            String landName = args[1];
+            String targetName = args[2];
+            AreaConfig ac = getLand(landName);
+            if (ac == null) {
+                sender.sendMessage("§c领地不存在: " + landName);
+                return true;
+            }
+            Player target = Bukkit.getPlayerExact(targetName);
             if (target == null) {
-                sender.sendMessage("§c玩家不在线: " + args[1]);
+                sender.sendMessage("§c玩家不在线: " + targetName);
                 return true;
             }
+            boolean hadRole = isLandAdmin(landName, targetName);
+            // 兼容旧版：旧 setadmin 会给玩家全局管理员ScoreboardTag，造成跨领地越权；
+            // 撤销时一并清除该遗留标签，确保彻底收回全局权限
+            boolean hadTag = false;
             ConfigManager cfg = plugin.getConfigMgr();
             String tag = cfg != null ? cfg.areaProtectAdminTag : null;
-            if (tag == null || tag.isEmpty()) {
-                sender.sendMessage("§c管理员标签未配置");
+            if (tag != null && !tag.isEmpty() && target.getScoreboardTags().contains(tag)) {
+                hadTag = true;
+                target.removeScoreboardTag(tag);
+            }
+            if (hadRole) setLandAdmin(landName, targetName, false);
+            if (!hadRole && !hadTag) {
+                sender.sendMessage("§e" + targetName + " §c不是该领地管理员，也未持有全局管理员标签");
                 return true;
             }
-            if (!target.getScoreboardTags().contains(tag)) {
-                sender.sendMessage("§e" + args[1] + " §c不是管理员");
-                return true;
-            }
-            target.removeScoreboardTag(tag);
-            sender.sendMessage("§a已移除 §e" + args[1] + " §a的管理员权限");
-            target.sendMessage("§6[区域防护] §c你的管理员权限已被移除");
+            sender.sendMessage("§a已移除 §e" + targetName + " §a在领地 §b" + landName + " §a的管理员权限"
+                    + (hadTag ? "（并清除其遗留的全局管理员标签）" : ""));
+            target.sendMessage("§6[区域防护] §c你在领地 " + landName + " 的管理员权限已被移除"
+                    + (hadTag ? "（全局管理员标签已清除）" : ""));
             return true;
         }
 
