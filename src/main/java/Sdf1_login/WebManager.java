@@ -3822,9 +3822,13 @@ public class WebManager {
                             String playerName = targetName;
                             String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
                             String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
+                            // ★ 仅 change_visitor_role 会在 change_data 中携带 role；调整权限(update_visitor_perm)不带 role，
+                            //   从而 Java 端不会把已授权的管理员误降级为访客
+                            String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
-                                areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson);
-                                plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson);
+                                areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);
+                                plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson
+                                        + (roleJson.isEmpty() ? "" : " role=" + roleJson));
                                 applied = true;
                             }
                             break;

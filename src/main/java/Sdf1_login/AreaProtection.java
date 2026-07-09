@@ -8196,17 +8196,32 @@ public class AreaProtection implements Listener {
      * PHP端更新访客/成员权限时调用
      * landName 可能是JSON数组格式 "[领地名]" 或纯领地名
      */
-    public void updateVisitorPermFromWeb(String landName, String playerName, String permsJson) {
+    /**
+     * 从Web端(PHP)同步访客权限到本地库。
+     * @param role 角色标识。为空表示仅调整权限(不改动角色，已授权的管理员不会被降级)；
+     *             "admin"/"visitor" 表示显式切换角色(来自 change_visitor_role)。
+     */
+    public void updateVisitorPermFromWeb(String landName, String playerName, String permsJson, String role) {
         if (dbConnection == null) return;
         try {
             // 解析可能的JSON数组格式
             String[] landNames = landName.startsWith("[") ? parseJsonArray(landName) : new String[]{landName};
-            
+
             for (String lname : landNames) {
                 int landId = getLandIdFromDb(lname);
                 if (landId < 0) continue;
 
-                // 更新数据库中的自定义权限
+                // ★ 角色同步：仅当 PHP 显式携带 role(change_visitor_role)时才切换，
+                //   避免"调整访客权限"时把已授权的管理员误降级为访客
+                if (role != null && !role.isEmpty()) {
+                    if ("admin".equalsIgnoreCase(role)) {
+                        setLandAdmin(lname, playerName, true);
+                    } else if ("visitor".equalsIgnoreCase(role) && isLandAdmin(lname, playerName)) {
+                        setLandAdmin(lname, playerName, false);
+                    }
+                }
+
+                // 更新数据库中的自定义权限（ON CONFLICT 只更新 permissions，不动 role，管理员身份安全）
                 PreparedStatement ps = dbConnection.prepareStatement(
                     "INSERT INTO area_land_permissions (land_id, land_name, player_name, role, permissions, granted_at, synced_at) " +
                     "VALUES (?, ?, ?, 'member', ?, 0, 0) " +
