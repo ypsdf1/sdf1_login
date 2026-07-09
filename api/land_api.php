@@ -1464,6 +1464,23 @@ function handleChangeVisitorRole($db, $playerName, $post) {
         return;
     }
 
+    // ★ 查出当前记录（role + permissions）：修复旧版 $permRow 未定义导致 oldPerms 恒为空，
+    //   并据此保护已授权玩家（admin/member）不被强制降级为访客
+    $stmtChk = $db->prepare("SELECT role, permissions FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmtChk->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmtChk->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $resChk = $stmtChk->execute();
+    $permRow = $resChk ? $resChk->fetchArray(SQLITE3_ASSOC) : null;
+    $currentRole = $permRow ? ($permRow['role'] ?? '') : '';
+    error_log("[领地权限][切换角色] land=$landName visitor=$visitor newRole=$newRole currentRole=$currentRole");
+
+    // 已授权玩家（管理员/成员）不能被强制降级为访客；仅允许把访客提升为 admin
+    if ($newRole === 'visitor' && ($currentRole === 'admin' || $currentRole === 'member')) {
+        error_log("[领地权限][切换角色] 拦截降级: $visitor 当前为 $currentRole，拒绝强制设为访客");
+        echo json_encode(['success' => false, 'error' => '已授权玩家(管理员/成员)不能通过切换访客角色降级，请通过成员管理手动处理']);
+        return;
+    }
+
     // 更新角色
     $stmt2 = $db->prepare("UPDATE web_area_permissions SET role = :role WHERE land_id = :land_id AND player_name = :player");
     $stmt2->bindValue(':role', $newRole, SQLITE3_TEXT);
@@ -1471,9 +1488,11 @@ function handleChangeVisitorRole($db, $playerName, $post) {
     $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
     $stmt2->execute();
 
-    // 写入变更队列通知Java同步（★ 携带 land_name 与 role，确保 Java 端 perm_change 能正确同步角色到游戏内）
+    // 写入变更队列通知Java同步（★ 携带 land_name、role 与现有权限，避免 Java 端把权限清空）
     $now = time();
-    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName]);
+    $oldPerms = $permRow ? ($permRow['permissions'] ?? '') : '';
+    error_log("[领地权限][切换角色] 已写入变更队列 role=$newRole oldPermsLen=" . strlen($oldPerms));
+    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName, 'permissions' => $oldPerms]);
     $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
@@ -1576,6 +1595,8 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
     $visitor = $post['visitor'] ?? '';
     $permissions = $post['permissions'] ?? '';
 
+    error_log("[领地权限][更新访客权限] 进入: land=$landName visitor=$visitor role=" . ($post['role'] ?? '') . " permsLen=" . strlen($permissions) . " operator=$playerName");
+
     if (empty($landName) || empty($visitor)) {
         echo json_encode(['success' => false, 'error' => '缺少领地名或玩家名']);
         return;
@@ -1598,19 +1619,25 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
         return;
     }
 
-    // ★ 查询已有记录：避免"调整访客权限"时把已授权的管理员(role=admin)误重置为访客，
-    //   同时保留付费访客的到期时间(expires_at)，不被清零
-    $stmtOld = $db->prepare("SELECT role, granted_at, expires_at FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    // ★ 查询已有记录：已授权玩家（admin/member）不受任何访客权限更新影响
+    $stmtOld = $db->prepare("SELECT role, granted_at, expires_at, permissions FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
     $stmtOld->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
     $stmtOld->bindValue(':player', $visitor, SQLITE3_TEXT);
     $resOld = $stmtOld->execute();
     $oldRow = $resOld ? $resOld->fetchArray(SQLITE3_ASSOC) : null;
+    $oldRole = $oldRow ? ($oldRow['role'] ?? '') : '';
 
-    // 角色：仅当本次显式传入合法 role 才切换；否则沿用已有角色（管理员不会被重置为访客）
+    // 已授权玩家（管理员/普通成员）只能通过“成员独立权限”手动更新，不受访客权限接口影响
+    if ($oldRole === 'admin' || $oldRole === 'member') {
+        error_log("[领地权限][更新访客权限] 拦截: land=$landName visitor=$visitor oldRole=$oldRole，拒绝访客权限覆盖");
+        echo json_encode(['success' => false, 'error' => '已授权玩家不受访客权限更新影响，请通过成员权限手动管理']);
+        return;
+    }
+
+    // 角色：本接口仅处理访客；显式传 role 时取合法值，否则沿用访客
+    $role = 'visitor';
     if (!empty($post['role']) && in_array($post['role'], ['admin', 'visitor'], true)) {
         $role = $post['role'];
-    } else {
-        $role = ($oldRow && ($oldRow['role'] ?? '') === 'admin') ? 'admin' : 'visitor';
     }
     $grantedAt = isset($oldRow['granted_at']) ? (int)$oldRow['granted_at'] : time();
     $expiresAt = isset($oldRow['expires_at']) ? (int)$oldRow['expires_at'] : 0;
@@ -1629,15 +1656,17 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
     $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt2->execute();
 
-    // ★ 写入web_admin_changes以便Java同步（仅同步权限，不携带role，避免Java端误降级管理员）
+    // ★ 写入web_admin_changes以便Java同步（带 role，确保Java端不会把访客误写为 member）
+    $changeData = json_encode(['land_name' => $landName, 'permissions' => $permissions, 'role' => $role]);
+    error_log("[领地权限][更新访客权限] 放行写入: land=$landName visitor=$visitor role=$role permsLen=" . strlen($permissions) . " changeData=$changeData");
     $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt4->bindValue(':name', $visitor, SQLITE3_TEXT);
-    $stmt4->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $permissions]), SQLITE3_TEXT);
+    $stmt4->bindValue(':data', $changeData, SQLITE3_TEXT);
     $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt4->execute();
 
-    echo json_encode(['success' => true, 'message' => "已更新 $visitor 的权限"]);
+    echo json_encode(['success' => true, 'message' => "已更新 $visitor 的访客权限"]);
 }
 
 // ==================== 成员独立权限操作 ====================
@@ -1752,8 +1781,9 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
         unset($permMap[$permKey]);
     }
 
-    // 写回数据库
+    // 写回数据库（不改变角色，只改权限）
     $newJson = json_encode($permMap, JSON_UNESCAPED_UNICODE);
+    $currentRole = $perm['role'] ?? 'member';
     $stmt3 = $db->prepare("UPDATE web_area_permissions SET permissions = :perms, synced_at = :now WHERE land_id = :land_id AND player_name = :player");
     $stmt3->bindValue(':perms', $newJson, SQLITE3_TEXT);
     $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
@@ -1761,12 +1791,13 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
     $stmt3->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
     $stmt3->execute();
 
-    // ★ 记录变更到变更队列（Java端轮询同步回本地）
+    // ★ 记录变更到变更队列（Java端轮询同步回本地，带角色避免Java误写为visitor/member）
+    error_log("[领地权限][更新成员权限] land=$landName target=$targetPlayer currentRole=$currentRole permKey=$permKey enabled=" . ($enabled ? '1' : '0') . " newJson=$newJson");
     try {
         $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :lid, :name, :data, :now)");
         $changeStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
         $changeStmt->bindValue(':name', $targetPlayer, SQLITE3_TEXT);
-        $changeStmt->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $newJson], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $changeStmt->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $newJson, 'role' => $currentRole], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
         $changeStmt->execute();
     } catch (\Throwable $e) {
