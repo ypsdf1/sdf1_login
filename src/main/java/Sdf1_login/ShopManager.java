@@ -1452,7 +1452,19 @@ public class ShopManager implements Listener {
      * ★ 若 ID 重建也失败（解析失败），返回 null —— 由上层整单取消并退款，绝不发放空壳。
      */
     public ItemStack ensureEnchantedBookNbt(ItemStack itemStack, String itemId, int amount) {
-        if (itemStack == null) return null;
+        // ★ 单件购买（PHP shop_buy，name=null）时 itemStack 为 null：
+        //   附魔书在 .web.md 中未被 findItemById 收录，前两路均取不到实物，
+        //   故直接按商品ID权威建书，不再整单退款。
+        if (itemStack == null) {
+            ItemStack b = buildEnchantedBookFromId(itemId);
+            if (b != null) {
+                b.setAmount(amount);
+                plugin.getLogger().info("[Shop] 单件附魔书由ID重建NBT(无实物兜底): " + itemId);
+                return b;
+            }
+            plugin.getLogger().warning("[Shop] 单件附魔书无法由ID重建(解析失败)，取消发放: " + itemId);
+            return null;
+        }
         if (itemStack.getType() != Material.ENCHANTED_BOOK) return itemStack;
         ItemMeta m = itemStack.getItemMeta();
         boolean empty = !(m instanceof EnchantmentStorageMeta)
@@ -2048,6 +2060,41 @@ public class ShopManager implements Listener {
         return msg;
     }
 
+    /**
+     * 计算玩家在当前出售限额下还能卖多少单位（按单价）。
+     * @return -1 表示不限额（任意数量都可卖）；0 表示已达上限无法再卖；
+     *         其余为正整数，即 remaining / unitPrice 的可卖单位数。
+     */
+    private int getMaxSellableUnits(Player p, int unitPrice) {
+        if (maxSellLimit == -1) return -1;       // 关闭限额
+        if (unitPrice <= 0) return -1;           // 单价为0视为不限制
+        int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
+        int remaining = maxSellLimit - todaySold;
+        if (remaining <= 0) return 0;            // 已达上限
+        return remaining / unitPrice;            // 限额内可卖单位数
+    }
+
+    /**
+     * 发送出售限额提示（含已售/剩余/下次重置时间占位符）。
+     * 提示未开启或内容为空时静默不打印。
+     */
+    private void sendSellLimitMessage(Player p) {
+        if (!(maxSellMessageEnabled && maxSellMessage != null && !maxSellMessage.isEmpty())) return;
+        int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
+        int remaining = maxSellLimit - todaySold;
+        String msg = decodeHtml(maxSellMessage);
+        long earliestTime = plugin.getBonds().getEarliestSellTimeInWindow(p.getName());
+        String resetTime;
+        if (earliestTime > 0) {
+            resetTime = new java.text.SimpleDateFormat("HH:mm")
+                    .format(new java.util.Date(earliestTime + 3600000L));
+        } else {
+            resetTime = "现在";
+        }
+        msg = replacePlaceholders(msg, p.getName(), todaySold, remaining, resetTime);
+        p.sendMessage(msg);
+    }
+
     public boolean sellItem(Player p, ShopItem item,
                             int amount) {
         if (item == null) return false;
@@ -2058,52 +2105,49 @@ public class ShopManager implements Listener {
             return false;
         }
 
-        // ★ 出售限额检查
-        if (maxSellLimit != -1) {
-            int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
-            int remaining = maxSellLimit - todaySold;
-            int saleAmount = item.getEffectiveSellPrice() * amount;
-            if (saleAmount > remaining) {
-                if (maxSellMessageEnabled && maxSellMessage != null && !maxSellMessage.isEmpty()) {
-                    String msg = decodeHtml(maxSellMessage);
-                    // 计算下次重置时间（最早交易 + 1小时）
-                    long earliestTime = plugin.getBonds().getEarliestSellTimeInWindow(p.getName());
-                    String resetTime;
-                    if (earliestTime > 0) {
-                        resetTime = new java.text.SimpleDateFormat("HH:mm")
-                                .format(new java.util.Date(earliestTime + 3600000L));
-                    } else {
-                        resetTime = "现在";
-                    }
-                    msg = replacePlaceholders(msg, p.getName(), todaySold, remaining, resetTime);
-                    p.sendMessage(msg);
-                }
-                // 提示消息关闭时不打印任何消息
-                return false;
-            }
+        // ★ 出售限额检查（部分出售：超过限额只卖限额内部分，剩余不动）
+        int unitPrice = item.getEffectiveSellPrice();
+        int maxUnits = getMaxSellableUnits(p, unitPrice);   // -1 不限
+        if (maxUnits == 0) {
+            // 已达上限，无法再卖
+            sendSellLimitMessage(p);
+            return false;
         }
+        int actual = (maxUnits < 0) ? amount : Math.min(amount, maxUnits);
+        if (actual <= 0) return false;
 
         if (!p.getInventory().containsAtLeast(
-                getShopStack(item, 1), amount)) {
+                getShopStack(item, 1), actual)) {
             p.sendMessage("§c你没有足够的 §e"
                     + item.getDisplayName());
             return false;
         }
 
-        int total = item.getEffectiveSellPrice() * amount;
+        int total = unitPrice * actual;
 
         p.getInventory().removeItem(
-                getShopStack(item, amount));
+                getShopStack(item, actual));
         plugin.getBonds().addBonds(
                 p.getName(), total, "shop_sell",
                 item.getId(), "商店系统",
                 "出售" + item.getDisplayName());
         if (item.getStock() >= 0)
-            item.setStock(item.getStock() + amount);
-        p.sendMessage("§a出售成功: §e"
-                + item.getDisplayName()
-                + " x" + amount
-                + " §a+" + total + "枚债券");
+            item.setStock(item.getStock() + actual);
+
+        if (maxUnits >= 0 && actual < amount) {
+            // 部分出售：提示剩余未出售
+            p.sendMessage("§a出售成功: §e"
+                    + item.getDisplayName()
+                    + " x" + actual
+                    + " §a+" + total + "枚债券");
+            p.sendMessage("§e剩余 " + (amount - actual) + " 个因出售限额未出售，已留在背包");
+            sendSellLimitMessage(p);
+        } else {
+            p.sendMessage("§a出售成功: §e"
+                    + item.getDisplayName()
+                    + " x" + actual
+                    + " §a+" + total + "枚债券");
+        }
         return true;
     }
 
@@ -3275,7 +3319,28 @@ public class ShopManager implements Listener {
         return true;
     }
 
-    // ===== 批量出售某商品全部数量 =====
+    // ===== 从背包按材质移除最多 want 个物品，返回实际移除数量（剩余不动）=====
+    private int removeItemsOfMaterial(Player p, Material mat, int want) {
+        if (want <= 0) return 0;
+        int removed = 0;
+        for (int i = 0; i < p.getInventory().getSize() && removed < want; i++) {
+            ItemStack is = p.getInventory().getItem(i);
+            if (is != null && is.getType() == mat) {
+                int have = is.getAmount();
+                int take = Math.min(have, want - removed);
+                if (take >= have) {
+                    p.getInventory().clear(i);
+                } else {
+                    is.setAmount(have - take);
+                    p.getInventory().setItem(i, is);
+                }
+                removed += take;
+            }
+        }
+        return removed;
+    }
+
+    // ===== 批量出售某商品全部数量（限额内部分出售，剩余不动）=====
     private void sellAllOf(Player p, ShopItem item) {
         if (item == null) return;
         // ★ 补上禁止出售检查
@@ -3283,39 +3348,13 @@ public class ShopManager implements Listener {
             p.sendMessage("§c该商品不可出售");
             return;
         }
-        if (item == null) return;
         Material mat = item.getMaterial();
         int total = 0;
-        int count = 0;
         // 遍历背包清点
         for (int i = 0; i < p.getInventory().getSize(); i++) {
             ItemStack is = p.getInventory().getItem(i);
             if (is != null && is.getType() == mat) {
                 total += is.getAmount();
-                count++;
-            }
-        }
-        // ★ 出售限额检查
-        if (maxSellLimit != -1 && total > 0) {
-            int todaySold = plugin.getBonds().getTodaySellTotal(p.getName());
-            int remaining = maxSellLimit - todaySold;
-            int saleAmount = item.getEffectiveSellPrice() * total;
-            if (saleAmount > remaining) {
-                if (maxSellMessageEnabled && maxSellMessage != null && !maxSellMessage.isEmpty()) {
-                    String msg = decodeHtml(maxSellMessage);
-                    long earliestTime = plugin.getBonds().getEarliestSellTimeInWindow(p.getName());
-                    String resetTime;
-                    if (earliestTime > 0) {
-                        resetTime = new java.text.SimpleDateFormat("HH:mm")
-                                .format(new java.util.Date(earliestTime + 3600000L));
-                    } else {
-                        resetTime = "现在";
-                    }
-                    msg = replacePlaceholders(msg, p.getName(), todaySold, remaining, resetTime);
-                    p.sendMessage(msg);
-                }
-                // 提示消息关闭时不打印任何消息
-                return;
             }
         }
 
@@ -3324,25 +3363,51 @@ public class ShopManager implements Listener {
                     + item.getDisplayName());
             return;
         }
-        // 清除背包中该物品
-        for (int i = 0; i < p.getInventory().getSize(); i++) {
-            ItemStack is = p.getInventory().getItem(i);
-            if (is != null && is.getType() == mat) {
-                p.getInventory().clear(i);
-            }
+
+        // ★ 出售限额检查（部分出售：只卖限额内部分，背包剩余不动）
+        int unitPrice = item.getEffectiveSellPrice();
+        int maxUnits = getMaxSellableUnits(p, unitPrice);   // -1 不限
+        int actual;
+        if (maxUnits < 0) {
+            actual = total;
+        } else if (maxUnits == 0) {
+            // 已达上限，无法再卖
+            sendSellLimitMessage(p);
+            return;
+        } else {
+            actual = Math.min(total, maxUnits);
         }
-        int money = item.getEffectiveSellPrice() * total;
+
+        // 只移除 actual 个，保留剩余在背包
+        int removed = removeItemsOfMaterial(p, mat, actual);
+        if (removed <= 0) {
+            p.sendMessage("§c你没有可出售的 §e"
+                    + item.getDisplayName());
+            return;
+        }
+        int money = unitPrice * removed;
         plugin.getBonds().addBonds(
                 p.getName(), money, "shop_sell",
                 item.getId(), "商店系统",
                 "批量出售" + item.getDisplayName()
-                        + " x" + total);
+                        + " x" + removed);
         if (item.getStock() >= 0)
-            item.setStock(item.getStock() + total);
-        p.sendMessage("§a批量出售: §e"
-                + item.getDisplayName()
-                + " x" + total
-                + " §a+" + money + "枚债券");
+            item.setStock(item.getStock() + removed);
+
+        if (maxUnits >= 0 && removed < total) {
+            // 部分出售：提示剩余未出售
+            p.sendMessage("§a批量出售: §e"
+                    + item.getDisplayName()
+                    + " x" + removed
+                    + " §a+" + money + "枚债券");
+            p.sendMessage("§e剩余 " + (total - removed) + " 个因出售限额未出售，已留在背包");
+            sendSellLimitMessage(p);
+        } else {
+            p.sendMessage("§a批量出售: §e"
+                    + item.getDisplayName()
+                    + " x" + removed
+                    + " §a+" + money + "枚债券");
+        }
     }
 
 
