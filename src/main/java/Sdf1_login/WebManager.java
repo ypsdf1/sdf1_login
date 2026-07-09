@@ -5996,6 +5996,10 @@ public class WebManager {
                     int newBal = plugin.getBondManager().getBonds(playerName);
                     Player player = plugin.getServer().getPlayer(playerName);
                     if (player != null && player.isOnline()) {
+                        // ★ 发货失败跟踪：任一商品发放失败则整单标记为需退款
+                        java.util.List<String> failedItems = new java.util.ArrayList<>();
+                        java.util.List<String> okItems = new java.util.ArrayList<>();
+
                         if ("cash".equals(payMode)) {
                             player.sendMessage("§6[商城] §f购物车结算成功！§e现金记账 §f（未扣债券），共 " + entries.size() + " 项");
                         } else {
@@ -6005,46 +6009,83 @@ public class WebManager {
                             java.util.List<ItemStack> stacks = new java.util.ArrayList<>();
                             for (CartEntry ce : entries) {
                                 ItemStack st = buildShopStack(ce.itemId, ce.amount, ce.name);
-                                if (st != null) stacks.add(st);
-                            }
-                            java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, shulkerMat);
-                            String colorCn = (shulkerColorName.equals("default") || shulkerColorName.equals("purple"))
-                                    ? "原色" : shulkerColorName;
-                            // ★ 购物小票：先把小票书塞入【即将交付的】首个潜影盒，
-                            //   再整体 addItem 进背包。避免 addItem 对 ItemStack 的 clone 行为
-                            //   导致小票落入被丢弃的盒子副本（表现为"货品在盒、小票丢失"或反之）。
-                            if (!boxes.isEmpty() && plugin.getOrderManager() != null) {
-                                try {
-                                    OrderManager.OrderRecord rec = new OrderManager.OrderRecord();
-                                    rec.orderId = System.currentTimeMillis();
-                                    rec.player = playerName;
-                                    rec.items = receiptItems;
-                                    rec.totalOriginal = amount;
-                                    rec.totalPaid = amount;
-                                    rec.discount = 0;
-                                    rec.discountType = "cash".equals(payMode) ? "cash" : "none";
-                                    rec.packFee = 0;
-                                    rec.packType = (shulkerMat == Material.SHULKER_BOX) ? "default" : "custom";
-                                    rec.packColor = shulkerColorName;
-                                    rec.timestamp = System.currentTimeMillis();
-                                    rec.status = 1;
-                                    ItemStack book = plugin.getOrderManager().createReceiptBook(rec);
-                                    plugin.getOrderManager().addBookToShulker(boxes.get(0), book);
-                                } catch (Exception ex) {
-                                    plugin.getLogger().warning("[Web交易] 小票书生成失败: " + ex.getMessage());
+                                if (st != null) {
+                                    stacks.add(st);
+                                    okItems.add(ce.name != null ? ce.name : ce.itemId);
+                                } else {
+                                    failedItems.add(ce.itemId);
                                 }
                             }
-                            // ★ 装好货品+小票的盒子统一加入背包（盒内此时已含小票）
-                            for (ItemStack box : boxes) {
-                                java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
-                                for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                            // 即使有失败商品，仍尝试打包成功的那部分
+                            if (!stacks.isEmpty()) {
+                                java.util.List<ItemStack> boxes = packCartIntoShulkers(stacks, shulkerMat);
+                                String colorCn = (shulkerColorName.equals("default") || shulkerColorName.equals("purple"))
+                                        ? "原色" : shulkerColorName;
+                                // 购物小票
+                                if (!boxes.isEmpty() && plugin.getOrderManager() != null) {
+                                    try {
+                                        OrderManager.OrderRecord rec = new OrderManager.OrderRecord();
+                                        rec.orderId = System.currentTimeMillis();
+                                        rec.player = playerName;
+                                        rec.items = receiptItems;
+                                        rec.totalOriginal = amount;
+                                        rec.totalPaid = amount;
+                                        rec.discount = 0;
+                                        rec.discountType = "cash".equals(payMode) ? "cash" : "none";
+                                        rec.packFee = 0;
+                                        rec.packType = (shulkerMat == Material.SHULKER_BOX) ? "default" : "custom";
+                                        rec.packColor = shulkerColorName;
+                                        rec.timestamp = System.currentTimeMillis();
+                                        rec.status = 1;
+                                        ItemStack book = plugin.getOrderManager().createReceiptBook(rec);
+                                        plugin.getOrderManager().addBookToShulker(boxes.get(0), book);
+                                    } catch (Exception ex) {
+                                        plugin.getLogger().warning("[Web交易] 小票书生成失败: " + ex.getMessage());
+                                    }
+                                }
+                                for (ItemStack box : boxes) {
+                                    java.util.HashMap<Integer, ItemStack> left = player.getInventory().addItem(box);
+                                    for (ItemStack drop : left.values()) player.getWorld().dropItemNaturally(player.getLocation(), drop);
+                                }
+                                player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒（含小票书）");
                             }
-                            player.sendMessage("§6[商城] §f已打包为 §e" + boxes.size() + " §f个" + colorCn + "潜影盒（含小票书）");
                         } else {
                             for (CartEntry ce : entries) {
-                                dispatchItemByMaterialOrId(player, ce.itemId, ce.amount, ce.name);
+                                try {
+                                    dispatchItemByMaterialOrId(player, ce.itemId, ce.amount, ce.name);
+                                    okItems.add(ce.name != null ? ce.name : ce.itemId);
+                                } catch (Exception ex) {
+                                    failedItems.add(ce.itemId);
+                                    plugin.getLogger().warning("[Web交易] 发放商品异常: " + ce.itemId + " → " + ex.getMessage());
+                                }
                             }
                         }
+
+                        // ★ 失败处理：有商品发放失败 → 不confirm交易（PHP会重试/退款），并通知玩家
+                        if (!failedItems.isEmpty()) {
+                            plugin.getLogger().warning("[Web交易] 购物车部分/全部发货失败 (" + failedItems.size() + "/" + entries.size() + "): " + String.join(", ", failedItems)
+                                    + " — 交易 #" + txId + " 不确认，PHP端应触发退款");
+                            player.sendMessage("§c[商城] §l以下商品发放失败，已自动发起退款：");
+                            for (String fi : failedItems) {
+                                player.sendMessage("§c  ✗ " + fi);
+                            }
+                            if (!okItems.isEmpty()) {
+                                player.sendMessage("§a[商城] 以下商品已成功发放：");
+                                for (String oi : okItems) {
+                                    player.sendMessage("§a  ✓ " + oi);
+                                }
+                            }
+                            // 不调用 confirmTransaction(txId)，让 PHP 端检测到未确认后退款
+                            // 同时写一条 refund 标记到 web_transactions
+                            try {
+                                String failReason = "发货失败商品: " + String.join(", ", failedItems);
+                                writeRefundTransaction(playerName, amount, txId, failReason, payMode);
+                            } catch (Exception ex) {
+                                plugin.getLogger().warning("[Web交易] 写入退款记录失败: " + ex.getMessage());
+                            }
+                            return; // ← 不 confirm，退出 try 块
+                        }
+
                         if ("cash".equals(payMode)) {
                             player.sendMessage("§6[债券] §f余额不变: §e" + newBal);
                         } else {
@@ -6239,6 +6280,24 @@ public class WebManager {
                     }
                 }
 
+                // ★ 方式3 附魔书兜底：前两路均失败但传入名称含附魔关键词时，
+                //   直接按名称推断构建 EnchantedBook（覆盖 .md material 写错导致商品未加载的场景）
+                if (itemStack == null && name != null && !name.isEmpty()
+                        && (name.contains("修补") || name.contains("锋利") || name.contains("保护")
+                            || name.contains("射击") || name.contains("火焰")
+                            || name.contains("击退") || name.contains("时运")
+                            || name.contains("耐久") || name.contains("深海")
+                            || name.contains("穿刺") || name.contains("弩道")
+                            || name.contains("快速") || name.contains("穿透")
+                            || name.contains("忠诚") || name.contains("引雷")
+                            || name.contains("激流") || name.contains("通道")
+                            || itemId.matches("(?i).*_(I{1,3}|II|III|IV|V|[1-5])$"))) {
+                    itemStack = plugin.getShopManager().getShopStackByName(name, org.bukkit.Material.ENCHANTED_BOOK, amount);
+                    if (itemStack != null) {
+                        plugin.getLogger().info("[Web交易] 通过附魔书名称兜底推断成功: " + name);
+                    }
+                }
+
                 // ★ 附魔书NBT修复：购物车携带真实显示名时，优先按名称重建附魔书，
                 //   确保 enchantments NBT 正确。仅当按名称解析出带存储附魔的书时才覆盖。
                 if (itemStack != null
@@ -6429,6 +6488,26 @@ public class WebManager {
             doPost(postUrl, bodyJson);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易] 确认交易 " + txId + " 失败（已标记本地已确认，不会重复处理）: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 写入退款记录到 PHP 端（通过 sync.php），让 PHP 自动退款+恢复库存。
+     * 用于购物车发货部分/全部失败时的整单退款。
+     */
+    private void writeRefundTransaction(String playerName, int amount, String origTxId, String reason, String payMode) {
+        try {
+            String bodyJson = "{\"player_name\":\"" + playerName
+                    + "\",\"amount\":" + amount
+                    + ",\"orig_tx_id\":\"" + origTxId
+                    + "\",\"reason\":\"" + reason.replace("\"", "'")
+                    + "\",\"pay_mode\":\"" + (payMode != null ? payMode : "bond") + "\"}";
+            String postUrl = webBaseUrl + "/api/sync.php?action=write_shop_refund&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String resp = doPost(postUrl, bodyJson);
+            plugin.getLogger().info("[Web交易] 已写入退款记录: 玩家=" + playerName + " 金额=" + amount + " 原交易#" + origTxId + " 响应=" + resp);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易] 写入退款记录失败: " + e.getMessage());
         }
     }
 

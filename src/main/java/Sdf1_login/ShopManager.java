@@ -1201,10 +1201,14 @@ public class ShopManager implements Listener {
         // 检查材质是否存在
         Material mat = Material.matchMaterial(rawMat);
         if (mat == null) {
-            // plugin.getLogger().warning(
-            //         "[Shop] ✗ 无效材质: " + rawMat
-            //                 + " (行: " + row + ")");
-            return null;
+            // ★ 容错：若 material 字段无效但 ID 符合附魔书命名模式（如 MENDING_I、SHARPNESS_III），
+            //   则默认为 ENCHANTED_BOOK 而非静默跳过（否则该商品在 Java 端不存在 → PHP 扣款后无法发货）
+            if (rawId.matches("(?i)^[A-Z][A-Z0-9]*_[IVX12]+$") || rawId.matches("(?i).*_(I{1,3}|II|III|IV|V|[1-5])$")) {
+                mat = Material.ENCHANTED_BOOK;
+                plugin.getLogger().warning("[Shop] 材质无效但ID符合附魔书格式，自动修正: id=" + rawId + " 原material=" + rawMat + " → ENCHANTED_BOOK");
+            } else {
+                return null;
+            }
         }
 
         try {
