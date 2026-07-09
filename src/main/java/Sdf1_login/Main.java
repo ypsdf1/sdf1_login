@@ -2049,6 +2049,34 @@ public class Main extends JavaPlugin
             }
         }
 
+        // ===== 竞技场/测试场断线重进防绕过：上线若仍在竞技场/测试场，强制离场遣返出生点 =====
+        // 防止玩家在竞技场退出重进，让系统回收公平装备、发放自己背包装备从而绕过公平限制
+        if (pvPArenaManager != null) {
+            World arenaW = pvPArenaManager.getPVPWorld();
+            boolean inArena = (arenaW != null && p.getWorld().equals(arenaW))
+                    || pvPArenaManager.isInPVPArena(name);
+            if (!inArena && db != null) {
+                // 兜底：断线时未还原的竞技场背包备份仍存在（说明上次在竞技场掉线）
+                try {
+                    if (db.getPvpInventoryBackup(name) != null) inArena = true;
+                } catch (Exception ignore) {}
+            }
+            if (inArena) {
+                pvPArenaManager.forceLeaveArena(p, false);
+                World main = Bukkit.getWorlds().get(0);
+                if (main != null) p.teleport(main.getSpawnLocation());
+                p.sendMessage("§e§l[PVP] 检测到你上次在竞技场掉线，已遣返主世界并恢复背包");
+            }
+        }
+        if (pvpTestManager != null
+                && p.getWorld().getName().equals(PVPTestManager.PVP_TEST_WORLD_NAME)
+                && !pvpTestManager.isInTest(p)) {
+            // 掉线重进落在测试场世界但状态已清：直接遣返主世界（背包已在断线时还原）
+            World main = Bukkit.getWorlds().get(0);
+            if (main != null) p.teleport(main.getSpawnLocation());
+            p.sendMessage("§e§l[PVP测试] 检测到你上次在测试场掉线，已遣返主世界");
+        }
+
         // ===== 异地登录检测：异步通知PHP比较IP归属并发提醒邮件 =====
         if (webManager != null && ip != null
                 && !ip.isEmpty()) {
@@ -3570,7 +3598,7 @@ public class Main extends JavaPlugin
         if (title.equals("§6§lPVP测试场")) {
             if (pvpTestManager != null) {
                 e.setCancelled(true);
-                pvpTestManager.handleClick(p, e.getRawSlot());
+                pvpTestManager.handleClick(p, e.getRawSlot(), e.isShiftClick());
             }
             return;
         }
@@ -6135,104 +6163,110 @@ public class Main extends JavaPlugin
 
 // ===== backup（玩家自助还原主背包，最近3份任选）=====
         if (sub.equals("backup")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage("§c仅玩家可用");
-                return true;
-            }
-            Player self = (Player) sender;
-            if (pvPArenaManager != null
-                    && pvPArenaManager.isInPVPArena(
-                            self.getName())) {
-                sender.sendMessage(
-                        "§c竞技场内无法还原主背包，请先 /pvp leave");
-                return true;
-            }
-            if (pvpTestManager != null
-                    && pvpTestManager.isInTest(self)) {
-                sender.sendMessage(
-                        "§c测试场内无法还原主背包，请先 /pvp leave");
-                return true;
-            }
-            // 带 #编号 → 还原指定备份到自己的背包
-            if (args.length >= 2
-                    && args[1].startsWith("#")) {
-                int bid;
-                try {
-                    bid = Integer.parseInt(
-                            args[1].replace("#", ""));
-                } catch (NumberFormatException ex) {
-                    sender.sendMessage("§c无效编号");
-                    return true;
-                }
-                String[] bk =
-                        db.getInventoryBackupById(bid);
-                if (bk == null) {
-                    sender.sendMessage("§c备份 #" + bid
-                            + " 不存在");
-                    return true;
-                }
-                try {
-                    self.getInventory().setContents(
-                            InventorySerializer.fromBase64(
-                                    bk[0]));
-                    if (bk[1] != null
-                            && !bk[1].isEmpty())
-                        self.getInventory()
-                                .setArmorContents(
-                                        InventorySerializer
-                                                .fromBase64(
-                                                        bk[1]));
-                    if (bk[2] != null
-                            && !bk[2].isEmpty())
-                        self.getInventory()
-                                .setExtraContents(
-                                        InventorySerializer
-                                                .fromBase64(
-                                                        bk[2]));
-                    int lv = Integer.parseInt(bk[3]);
-                    if (lv > 0) self.setLevel(lv);
-                    self.setExp((float) Double
-                            .parseDouble(bk[4]));
+            // 解析目标玩家：玩家自助用自己；控制台/命令方块必须指定玩家名
+            Player self = (sender instanceof Player) ? (Player) sender : null;
+            String targetName;
+            Player targetPlayer = self;
+            if (self == null) {
+                // 控制台：第一个参数必须是玩家名（不能以 # 开头）
+                if (args.length < 2 || args[1].startsWith("#")) {
                     sender.sendMessage(
-                            "§a已还原主背包备份 #" + bid);
+                            "§c用法: /sdf1_login backup <玩家名> [#编号]");
+                    return true;
+                }
+                targetName = args[1];
+                targetPlayer = Bukkit.getPlayerExact(targetName);
+            } else {
+                targetName = self.getName();
+            }
+
+            // 场内拦截（仅对在线目标生效）
+            if (targetPlayer != null) {
+                if (pvPArenaManager != null
+                        && pvPArenaManager.isInPVPArena(targetName)) {
+                    sender.sendMessage("§c" + targetName
+                            + " 在竞技场内，无法还原主背包，请先 /pvp leave");
+                    return true;
+                }
+                if (pvpTestManager != null
+                        && pvpTestManager.isInTest(targetPlayer)) {
+                    sender.sendMessage("§c" + targetName
+                            + " 在测试场内，无法还原主背包，请先 /pvp leave");
+                    return true;
+                }
+            }
+
+            // 解析 #编号（玩家自助时为 args[1]；控制台时为玩家名之后的参数）
+            Integer bid = null;
+            for (int i = 1; i < args.length; i++) {
+                if (args[i].startsWith("#")) {
+                    try {
+                        bid = Integer.parseInt(
+                                args[i].replace("#", ""));
+                    } catch (NumberFormatException ex) {
+                        sender.sendMessage("§c无效编号");
+                        return true;
+                    }
+                }
+            }
+
+            // 带编号 → 还原
+            if (bid != null) {
+                if (targetPlayer == null) {
+                    sender.sendMessage("§c玩家 " + targetName
+                            + " 当前不在线，无法还原实时背包");
+                    return true;
+                }
+                String[] bk = db.getInventoryBackupById(bid);
+                if (bk == null) {
+                    sender.sendMessage("§c备份 #" + bid + " 不存在");
+                    return true;
+                }
+                try {
+                    targetPlayer.getInventory().setContents(
+                            InventorySerializer.fromBase64(bk[0]));
+                    if (bk[1] != null && !bk[1].isEmpty())
+                        targetPlayer.getInventory().setArmorContents(
+                                InventorySerializer.fromBase64(bk[1]));
+                    if (bk[2] != null && !bk[2].isEmpty())
+                        targetPlayer.getInventory().setExtraContents(
+                                InventorySerializer.fromBase64(bk[2]));
+                    int lv = Integer.parseInt(bk[3]);
+                    if (lv > 0) targetPlayer.setLevel(lv);
+                    targetPlayer.setExp((float) Double.parseDouble(bk[4]));
+                    sender.sendMessage("§a已为 " + targetName
+                            + " 还原主背包备份 #" + bid);
                 } catch (Exception e) {
-                    sender.sendMessage("§c还原失败: "
-                            + e.getMessage());
+                    sender.sendMessage("§c还原失败: " + e.getMessage());
                 }
                 return true;
             }
-            // 不带编号 → 列出最近 3 份供选择
+
+            // 不带编号 → 列出最近 3 份
             List<Map<String, Object>> myList =
-                    db.getInventoryBackups(
-                            self.getName(), 3);
+                    db.getInventoryBackups(targetName, 3);
             if (myList.isEmpty()) {
-                sender.sendMessage(
-                        "§c你没有任何背包备份");
+                sender.sendMessage("§c" + targetName + " 没有任何背包备份");
                 return true;
             }
-            sender.sendMessage(
-                    "§e§l=== 你的背包备份（最近3份）===");
+            sender.sendMessage("§e§l=== " + targetName
+                    + " 的背包备份（最近3份）===");
             java.text.SimpleDateFormat sdf =
-                    new java.text.SimpleDateFormat(
-                            "MM-dd HH:mm:ss");
+                    new java.text.SimpleDateFormat("MM-dd HH:mm:ss");
             for (Map<String, Object> b : myList) {
-                int bid = ((Number) b.get("id"))
-                        .intValue();
+                int bidi = ((Number) b.get("id")).intValue();
                 Object stObj = b.get("save_time");
-                long st = stObj != null
-                        ? ((Number) stObj)
-                                .longValue()
-                        : 0;
-                String time = st > 0
-                        ? sdf.format(
-                                new java.util.Date(st))
+                long st = stObj != null ? ((Number) stObj).longValue() : 0;
+                String time = st > 0 ? sdf.format(new java.util.Date(st))
                         : "未知时间";
-                sender.sendMessage("§7#" + bid + " §f"
-                        + time + " §7: "
-                        + getBackupItemPreview(bid));
+                sender.sendMessage("§7#" + bidi + " §f" + time + " §7: "
+                        + getBackupItemPreview(bidi));
             }
-            sender.sendMessage(
-                    "§7使用 §e/sdf1_login backup #编号 §7还原对应备份");
+            if (self != null)
+                sender.sendMessage("§7使用 §e/sdf1_login backup #编号 §7还原对应备份");
+            else
+                sender.sendMessage("§7使用 §e/sdf1_login backup "
+                        + targetName + " #编号 §7还原对应备份");
             return true;
         }
 
