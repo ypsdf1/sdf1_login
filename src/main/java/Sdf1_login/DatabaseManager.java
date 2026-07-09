@@ -914,19 +914,17 @@ public class DatabaseManager {
 
     // ==================== 背包备份 ====================
 
+    /**
+     * 保存背包主备份 —— 追加写入，每位玩家仅保留最近 3 份（更早的自动清理）。
+     * ★ 2026-07-09 改版：原为「DELETE 全部再 INSERT 单份」，会导致 PVP 竞技场/测试场
+     *   掉线时用当前(竞技场装备)背包覆盖玩家真实背包。改为滚动保留 3 份后，
+     *   即便发生误覆盖，玩家仍可从「最近 3 份」里挑出真实背包还原。
+     */
     public void saveInventoryBackup(String name,
                                     String contents, String armor,
                                     String extra, int level,
                                     double experience) {
         try {
-            PreparedStatement del =
-                    db.prepareStatement(
-                            "DELETE FROM "
-                                    + "inventory_backups "
-                                    + "WHERE player_name=?");
-            del.setString(1, name);
-            del.executeUpdate();
-            del.close();
             PreparedStatement ps =
                     db.prepareStatement(
                             "INSERT INTO "
@@ -950,6 +948,19 @@ public class DatabaseManager {
                     System.currentTimeMillis());
             ps.executeUpdate();
             ps.close();
+
+            // 仅保留最近 3 份，删除该玩家更早的备份
+            PreparedStatement del =
+                    db.prepareStatement(
+                            "DELETE FROM inventory_backups "
+                                    + "WHERE player_name=? AND id NOT IN ("
+                                    + "SELECT id FROM inventory_backups "
+                                    + "WHERE player_name=? "
+                                    + "ORDER BY save_time DESC LIMIT 3)");
+            del.setString(1, name);
+            del.setString(2, name);
+            del.executeUpdate();
+            del.close();
         } catch (SQLException e) {
             e.printStackTrace();
         }

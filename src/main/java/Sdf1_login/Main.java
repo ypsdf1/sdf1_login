@@ -2241,7 +2241,19 @@ public class Main extends JavaPlugin
             }
         }
 
-        if (wasLoggedIn || hasRealItems) {
+        // ★ 2026-07-09：PVP 竞技场 / 测试场内的玩家，其真实背包已存于独立的
+        //   pvp_inventory_backup，当前身上的背包是竞技场装备，
+        //   绝不能写回主备份，否则真实装备会被覆盖丢失。
+        boolean inArenaBackup = pvPArenaManager != null
+                && pvPArenaManager.isInPVPArena(name);
+        boolean inTestBackup = pvpTestManager != null
+                && pvpTestManager.isInTest(p);
+
+        if (inArenaBackup || inTestBackup) {
+            getLogger().info("[Sdf1_login] " + name
+                    + " 在PVP竞技场/测试场内退出，跳过主备份保存"
+                    + "（真实背包已存于独立备份）");
+        } else if (wasLoggedIn || hasRealItems) {
             try {
                 String contents =
                         InventorySerializer
@@ -6097,12 +6109,12 @@ public class Main extends JavaPlugin
                 }
             } else {
                 List<Map<String, Object>> backups =
-                        db.getInventoryBackups(backTarget, 5);
+                        db.getInventoryBackups(backTarget, 3);
                 if (backups.isEmpty()) {
                     sender.sendMessage("§c" + backTarget + " 没有背包备份");
                     return true;
                 }
-                sender.sendMessage("§e§l=== " + backTarget + " 背包备份 ===");
+                sender.sendMessage("§e§l=== " + backTarget + " 背包备份（最近3份）===");
                 java.text.SimpleDateFormat sdf =
                         new java.text.SimpleDateFormat("MM-dd HH:mm:ss");
                 for (Map<String, Object> b : backups) {
@@ -6118,6 +6130,109 @@ public class Main extends JavaPlugin
                 }
                 sender.sendMessage("§7使用 §e/sdf1_login back " + backTarget + " #编号 §7恢复");
             }
+            return true;
+        }
+
+// ===== backup（玩家自助还原主背包，最近3份任选）=====
+        if (sub.equals("backup")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player self = (Player) sender;
+            if (pvPArenaManager != null
+                    && pvPArenaManager.isInPVPArena(
+                            self.getName())) {
+                sender.sendMessage(
+                        "§c竞技场内无法还原主背包，请先 /pvp leave");
+                return true;
+            }
+            if (pvpTestManager != null
+                    && pvpTestManager.isInTest(self)) {
+                sender.sendMessage(
+                        "§c测试场内无法还原主背包，请先 /pvp leave");
+                return true;
+            }
+            // 带 #编号 → 还原指定备份到自己的背包
+            if (args.length >= 2
+                    && args[1].startsWith("#")) {
+                int bid;
+                try {
+                    bid = Integer.parseInt(
+                            args[1].replace("#", ""));
+                } catch (NumberFormatException ex) {
+                    sender.sendMessage("§c无效编号");
+                    return true;
+                }
+                String[] bk =
+                        db.getInventoryBackupById(bid);
+                if (bk == null) {
+                    sender.sendMessage("§c备份 #" + bid
+                            + " 不存在");
+                    return true;
+                }
+                try {
+                    self.getInventory().setContents(
+                            InventorySerializer.fromBase64(
+                                    bk[0]));
+                    if (bk[1] != null
+                            && !bk[1].isEmpty())
+                        self.getInventory()
+                                .setArmorContents(
+                                        InventorySerializer
+                                                .fromBase64(
+                                                        bk[1]));
+                    if (bk[2] != null
+                            && !bk[2].isEmpty())
+                        self.getInventory()
+                                .setExtraContents(
+                                        InventorySerializer
+                                                .fromBase64(
+                                                        bk[2]));
+                    int lv = Integer.parseInt(bk[3]);
+                    if (lv > 0) self.setLevel(lv);
+                    self.setExp((float) Double
+                            .parseDouble(bk[4]));
+                    sender.sendMessage(
+                            "§a已还原主背包备份 #" + bid);
+                } catch (Exception e) {
+                    sender.sendMessage("§c还原失败: "
+                            + e.getMessage());
+                }
+                return true;
+            }
+            // 不带编号 → 列出最近 3 份供选择
+            List<Map<String, Object>> myList =
+                    db.getInventoryBackups(
+                            self.getName(), 3);
+            if (myList.isEmpty()) {
+                sender.sendMessage(
+                        "§c你没有任何背包备份");
+                return true;
+            }
+            sender.sendMessage(
+                    "§e§l=== 你的背包备份（最近3份）===");
+            java.text.SimpleDateFormat sdf =
+                    new java.text.SimpleDateFormat(
+                            "MM-dd HH:mm:ss");
+            for (Map<String, Object> b : myList) {
+                int bid = ((Number) b.get("id"))
+                        .intValue();
+                Object stObj = b.get("save_time");
+                long st = stObj != null
+                        ? ((Number) stObj)
+                                .longValue()
+                        : 0;
+                String time = st > 0
+                        ? sdf.format(
+                                new java.util.Date(st))
+                        : "未知时间";
+                sender.sendMessage("§7#" + bid + " §f"
+                        + time + " §7: "
+                        + getBackupItemPreview(bid));
+            }
+            sender.sendMessage(
+                    "§7使用 §e/sdf1_login backup #编号 §7还原对应备份");
             return true;
         }
 
