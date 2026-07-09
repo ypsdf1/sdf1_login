@@ -14,8 +14,9 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionEffectType;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeModifier;
+import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.util.Vector;
 
@@ -389,11 +390,24 @@ public class PVPTestManager implements Listener {
                     m.setTarget(p);
                 }
                 // 亡灵生物(僵尸/小白)在白天会被太阳灼烧(SUNBURN)。
-                // 加一个长时效防火效果，直接免疫太阳灼烧，保证练习生物不会自燃。
-                mob.addPotionEffect(new PotionEffect(
-                        PotionEffectType.FIRE_RESISTANCE,
-                        630720000, // ≈1年(游戏刻)，练习生物离开即清理，足够覆盖整次练习
-                        0, false, false, false));
+                // 原版机制：亡灵生物戴帽子时，太阳灼烧会先消耗帽子耐久；
+                // 给一顶【无限耐久】的皮革帽(附魔/属性使其不加护甲值)，帽子永不破损 → 永久免灼烧。
+                ItemStack hat = new ItemStack(Material.LEATHER_HELMET);
+                ItemMeta hm = hat.getItemMeta();
+                if (hm != null) {
+                    hm.setUnbreakable(true);
+                    // 抵消皮革帽自带的1点护甲，使其不增加玩家对练习生物的伤害减免(纯用于挡太阳)
+                    hm.addAttributeModifier(Attribute.ARMOR,
+                            new AttributeModifier(
+                                    UUID.randomUUID(), "pvp_test_no_armor", -1.0,
+                                    AttributeModifier.Operation.ADD_NUMBER));
+                    hat.setItemMeta(hm);
+                }
+                EntityEquipment eq = mob.getEquipment();
+                if (eq != null) {
+                    eq.setHelmet(hat);
+                    eq.setHelmetDropChance(0f); // 不会被打掉/掉落
+                }
                 mobDifficulty.put(mob.getUniqueId(), diff);
                 playerMobs.computeIfAbsent(p.getUniqueId(), k -> new ArrayList<>()).add(mob.getUniqueId());
             }
