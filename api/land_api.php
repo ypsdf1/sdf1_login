@@ -1471,9 +1471,9 @@ function handleChangeVisitorRole($db, $playerName, $post) {
     $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
     $stmt2->execute();
 
-    // 写入变更队列通知Java同步
+    // 写入变更队列通知Java同步（★ 携带 land_name 与 role，确保 Java 端 perm_change 能正确同步角色到游戏内）
     $now = time();
-    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land' => $landName]);
+    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName]);
     $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
@@ -1575,7 +1575,6 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
     $landName = $post['land'] ?? '';
     $visitor = $post['visitor'] ?? '';
     $permissions = $post['permissions'] ?? '';
-    $role = $post['role'] ?? 'visitor';
 
     if (empty($landName) || empty($visitor)) {
         echo json_encode(['success' => false, 'error' => '缺少领地名或玩家名']);
@@ -1599,23 +1598,42 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
         return;
     }
 
+    // ★ 查询已有记录：避免"调整访客权限"时把已授权的管理员(role=admin)误重置为访客，
+    //   同时保留付费访客的到期时间(expires_at)，不被清零
+    $stmtOld = $db->prepare("SELECT role, granted_at, expires_at FROM web_area_permissions WHERE land_id = :land_id AND player_name = :player");
+    $stmtOld->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmtOld->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $resOld = $stmtOld->execute();
+    $oldRow = $resOld ? $resOld->fetchArray(SQLITE3_ASSOC) : null;
+
+    // 角色：仅当本次显式传入合法 role 才切换；否则沿用已有角色（管理员不会被重置为访客）
+    if (!empty($post['role']) && in_array($post['role'], ['admin', 'visitor'], true)) {
+        $role = $post['role'];
+    } else {
+        $role = ($oldRow && ($oldRow['role'] ?? '') === 'admin') ? 'admin' : 'visitor';
+    }
+    $grantedAt = isset($oldRow['granted_at']) ? (int)$oldRow['granted_at'] : time();
+    $expiresAt = isset($oldRow['expires_at']) ? (int)$oldRow['expires_at'] : 0;
+
     // 更新权限
     $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
         (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
-        VALUES (:land_id, :land_name, :player, :role, :perms, :now, 0, :now)");
+        VALUES (:land_id, :land_name, :player, :role, :perms, :granted, :exp, :now)");
     $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt2->bindValue(':land_name', $landName, SQLITE3_TEXT);
     $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
     $stmt2->bindValue(':role', $role, SQLITE3_TEXT);
     $stmt2->bindValue(':perms', $permissions, SQLITE3_TEXT);
+    $stmt2->bindValue(':granted', $grantedAt, SQLITE3_INTEGER);
+    $stmt2->bindValue(':exp', $expiresAt, SQLITE3_INTEGER);
     $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt2->execute();
 
-    // ★ 写入web_admin_changes以便Java同步
+    // ★ 写入web_admin_changes以便Java同步（仅同步权限，不携带role，避免Java端误降级管理员）
     $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt4->bindValue(':name', $visitor, SQLITE3_TEXT);
-    $stmt4->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $permissions, 'role' => $role]), SQLITE3_TEXT);
+    $stmt4->bindValue(':data', json_encode(['land_name' => $landName, 'permissions' => $permissions]), SQLITE3_TEXT);
     $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt4->execute();
 
