@@ -56,8 +56,11 @@ public class PVPTestManager implements Listener {
     /** 测试场玩家装备选项（测试世界跳过公平锁定，全员自由选） */
     private final Map<UUID, Boolean> testEnchant = new HashMap<>(); // 主武器是否附魔(锋利V+击退II)
     private final Map<UUID, Boolean> testShield = new HashMap<>();  // 是否拿盾牌
+    private final Map<UUID, Integer> testFood = new HashMap<>();   // 熟牛肉数量(1~64，与主场一致)
     /** 每个练习生物对应的难度（用于固定伤害 + 噩梦走位判定） */
     private final Map<UUID, TestDifficulty> mobDifficulty = new HashMap<>();
+    /** 互殴拦截提示节流(玩家UUID→上次提示时间戳) */
+    private final Map<UUID, Long> lastPvpWarn = new HashMap<>();
     /** 每个玩家生成的练习生物 UUID 列表（离开时按玩家清理） */
     private final Map<UUID, List<UUID>> playerMobs = new HashMap<>();
     /** 玩家原背包备份（仅内存，练习场为临时场景） */
@@ -209,11 +212,13 @@ public class PVPTestManager implements Listener {
 
         TestDifficulty diff = chosenDiff.getOrDefault(p.getUniqueId(), TestDifficulty.EASY);
         TestEquip equip = chosenEquip.getOrDefault(p.getUniqueId(), TestEquip.MELEE);
-        // 测试世界跳过公平锁定，全员自由选装备（附魔/盾牌），默认附魔关、盾牌开
+        // 测试世界跳过公平锁定，全员自由选装备（附魔/盾牌/熟牛肉数量），默认附魔关、盾牌开、熟牛肉16
         testEnchant.putIfAbsent(p.getUniqueId(), false);
         testShield.putIfAbsent(p.getUniqueId(), true);
+        testFood.putIfAbsent(p.getUniqueId(), 16);
         boolean enchant = testEnchant.get(p.getUniqueId());
         boolean shield = testShield.get(p.getUniqueId());
+        int food = testFood.get(p.getUniqueId());
 
         // 顶部信息
         ItemStack info = new ItemStack(Material.PAPER);
@@ -259,6 +264,34 @@ public class PVPTestManager implements Listener {
             shBtn.setItemMeta(sm2);
         }
         gui.setItem(42, shBtn);
+
+        // ★ 熟牛肉数量选择（47/-1，48/显示，50/+1），与主场一致(1~64)
+        ItemStack foodMinus = new ItemStack(Material.COOKED_BEEF);
+        ItemMeta fm = foodMinus.getItemMeta();
+        if (fm != null) {
+            fm.setDisplayName("§c§l熟牛肉 -1");
+            fm.setLore(Arrays.asList("§7当前: " + food + " 个", "§7范围 1~64"));
+            foodMinus.setItemMeta(fm);
+        }
+        gui.setItem(47, foodMinus);
+
+        ItemStack foodInfo = new ItemStack(Material.PAPER);
+        ItemMeta fmi = foodInfo.getItemMeta();
+        if (fmi != null) {
+            fmi.setDisplayName("§6§l熟牛肉: " + food + " 个");
+            fmi.setLore(Arrays.asList("§7补血普通食物", "§7点击两侧 ±1"));
+            foodInfo.setItemMeta(fmi);
+        }
+        gui.setItem(48, foodInfo);
+
+        ItemStack foodPlus = new ItemStack(Material.COOKED_BEEF);
+        ItemMeta fp = foodPlus.getItemMeta();
+        if (fp != null) {
+            fp.setDisplayName("§a§l熟牛肉 +1");
+            fp.setLore(Arrays.asList("§7当前: " + food + " 个", "§7范围 1~64"));
+            foodPlus.setItemMeta(fp);
+        }
+        gui.setItem(50, foodPlus);
 
         // 确认开始按钮
         ItemStack start = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
@@ -340,6 +373,18 @@ public class PVPTestManager implements Listener {
             testShield.put(id, !testShield.getOrDefault(id, true));
             openGUI(p); return;
         }
+        // ★ 熟牛肉数量 ±1（47/-1，50/+1，48仅显示）
+        if (slot == 47) {
+            UUID id = p.getUniqueId();
+            testFood.put(id, Math.max(1, testFood.getOrDefault(id, 16) - 1));
+            openGUI(p); return;
+        }
+        if (slot == 48) { openGUI(p); return; }
+        if (slot == 50) {
+            UUID id = p.getUniqueId();
+            testFood.put(id, Math.min(64, testFood.getOrDefault(id, 16) + 1));
+            openGUI(p); return;
+        }
         if (slot == 49) {
             p.closeInventory();
             startTest(p,
@@ -384,11 +429,12 @@ public class PVPTestManager implements Listener {
         // 立即来一波（之后仅在玩家清空当前波次后，间隔10秒再补下一波）
         spawnWaveFor(p);
 
+        int beef = testFood.getOrDefault(p.getUniqueId(), 16);
         p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  场景: " + equip.display
-                + "  附魔:" + (enchant ? "§d开" : "§7关") + "  盾牌:" + (shield ? "§a有" : "§7无"));
+                + "  附魔:" + (enchant ? "§d开" : "§7关") + "  盾牌:" + (shield ? "§a有" : "§7无") + "  熟牛肉:" + beef);
         p.sendMessage("§7主武器: 铁剑 + 铁斧" + (enchant ? "（附魔）" : "（未附魔）") + (shield ? " +盾牌" : ""));
         p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。");
-        p.sendMessage("§7清空当前波次后，每10秒刷新下一波；背包已附金苹果等回血食物。输入 /pvp leave 离开。");
+        p.sendMessage("§7清空当前波次后，每10秒刷新下一波；背包已附熟牛肉回血。测试场内不可互殴，只能打练习生物。输入 /pvp leave 离开。");
         p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP测试] 玩家 " + p.getName()
                 + " 进入测试场 (难度=" + diff.name() + ", 装备=" + equip.name()
@@ -414,9 +460,9 @@ public class PVPTestManager implements Listener {
             p.getInventory().setItemInOffHand(sh);
         }
 
-        // 回血类食物：金苹果(回血+再生) + 熟牛肉(维持饱食度)
-        p.getInventory().addItem(new ItemStack(Material.GOLDEN_APPLE, 16));
-        p.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, 32));
+        // 回血类食物：熟牛肉(维持饱食度)，数量与主场一致可调(1~64)，无金苹果(与主场一致)
+        int beef = testFood.getOrDefault(p.getUniqueId(), 16);
+        p.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, beef));
     }
 
     private ItemStack makeTestWeapon(Material mat, String name, boolean enchant) {
@@ -694,6 +740,21 @@ public class PVPTestManager implements Listener {
         Entity victim = e.getEntity();
         Entity damager = e.getDamager();
 
+        // 0) 测试场内禁止玩家互殴：玩家→玩家(含玩家发射的抛射物) 伤害全部取消，只能攻击练习生物
+        if (victim instanceof Player) {
+            Player attacker = null;
+            if (damager instanceof Player) attacker = (Player) damager;
+            else if (damager instanceof Projectile) {
+                ProjectileSource src = ((Projectile) damager).getShooter();
+                if (src instanceof Player) attacker = (Player) src;
+            }
+            if (attacker != null) {
+                e.setCancelled(true);
+                warnNoPvp(attacker);
+                return;
+            }
+        }
+
         // 1) 友伤免疫：练习生物之间互不承担伤害（含小白的箭）
         boolean victimIsMob = isTestMob(victim);
         boolean damagerIsMob = isTestMob(damager) || isTestArrowFromMob(damager);
@@ -723,6 +784,16 @@ public class PVPTestManager implements Listener {
                 double sp = 0.45;
                 mob.setVelocity(new Vector(Math.cos(ang) * sp, 0.25, Math.sin(ang) * sp));
             }
+        }
+    }
+
+    /** 测试场内互殴被拦截时的节流提示 */
+    private void warnNoPvp(Player p) {
+        long now = System.currentTimeMillis();
+        Long last = lastPvpWarn.get(p.getUniqueId());
+        if (last == null || now - last > 2500) {
+            p.sendMessage("§c§l[PVP测试] 测试场内不能互相攻击，请攻击练习生物。");
+            lastPvpWarn.put(p.getUniqueId(), now);
         }
     }
 
