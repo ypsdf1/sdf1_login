@@ -971,6 +971,208 @@ public class Main extends JavaPlugin
         return true;
     }
 
+    /**
+     * 权限提升判定：OP、插件Tag管理员(读取 config.adminTag)、
+     * 大后台(控制台, isOp()=true) 均视为有权限。
+     */
+    private boolean isPrivileged(CommandSender sender) {
+        if (sender.isOp()) return true;
+        if (sender instanceof Player)
+            return ((Player) sender).getScoreboardTags()
+                    .contains(config.adminTag);
+        return false;
+    }
+
+    /** 判断目标是否为 IP 地址（IPv4 或 IPv6），用于区分名字封禁与 IP 封禁 */
+    private boolean isIpTarget(String t) {
+        if (t == null) return false;
+        if (t.matches("^\\d{1,3}(\\.\\d{1,3}){3}$")) return true;
+        return t.contains(":");
+    }
+
+    /** 统一封禁入口：根据目标自动选择 NAME / IP 封禁名单 */
+    private void applyBan(CommandSender sender, String target,
+                          String reason, Long expireMs) {
+        org.bukkit.BanList.Type type = isIpTarget(target)
+                ? org.bukkit.BanList.Type.IP
+                : org.bukkit.BanList.Type.NAME;
+        Bukkit.getBanList(type).addBan(target, reason,
+                expireMs == null ? null : new java.util.Date(expireMs),
+                sender.getName());
+    }
+
+    /** 临时封禁（名字或IP），由 /tempban 与 /tempbanip 共用 */
+    private void doTempBan(CommandSender sender, String label,
+                           String[] args) {
+        if (!isPrivileged(sender)) {
+            sender.sendMessage("§c权限不足");
+            return;
+        }
+        if (args.length < 2) {
+            sender.sendMessage("§e/" + label
+                    + " <玩家名/IP> <时长> [理由]");
+            sender.sendMessage("§7时长示例: 1秒 / 1s / 1年 / 2026年7月9日 / 253402271999");
+            return;
+        }
+        String target = args[0];
+        String durStr = args[1];
+        StringBuilder reason = new StringBuilder();
+        for (int i = 2; i < args.length; i++) {
+            if (reason.length() > 0) reason.append(" ");
+            reason.append(args[i]);
+        }
+        long expireMs;
+        try {
+            expireMs = DurationParser.parseToExpireMs(durStr);
+        } catch (IllegalArgumentException ex) {
+            sender.sendMessage("§c时长格式无法解析: " + ex.getMessage());
+            return;
+        }
+        long durMs = expireMs - System.currentTimeMillis();
+        long MIN = 1000L;
+        long MAX = 10L * 365 * 24 * 3600 * 1000; // 约10年
+        if (durMs < MIN) {
+            sender.sendMessage("§c封禁时长至少 1 秒");
+            return;
+        }
+        if (durMs > MAX) {
+            sender.sendMessage("§c封禁时长最长 10 年");
+            return;
+        }
+        String r = reason.length() > 0
+                ? reason.toString()
+                : "您已被服务器封禁，效期至: "
+                + DurationParser.formatExpire(expireMs);
+        applyBan(sender, target, r, expireMs);
+        sender.sendMessage("§a已封禁 " + target
+                + " 至 " + DurationParser.formatExpire(expireMs)
+                + (isIpTarget(target) ? " §7(IP)" : ""));
+        if (!isIpTarget(target)) {
+            org.bukkit.entity.Player tp =
+                    Bukkit.getPlayerExact(target);
+            if (tp != null) tp.kickPlayer("§c§l" + r);
+        }
+    }
+
+    /** 永久封禁（名字或IP），等效原生 ban ip/名字 */
+    private void doBanIp(CommandSender sender, String[] args) {
+        if (!isPrivileged(sender)) {
+            sender.sendMessage("§c权限不足");
+            return;
+        }
+        if (args.length < 1) {
+            sender.sendMessage("§e/ban-ip <玩家名/IP> [永久] [理由]");
+            return;
+        }
+        String target = args[0];
+        int reasonStart = 1;
+        if (args.length > 1
+                && (args[1].equals("永久")
+                    || args[1].equalsIgnoreCase("forever")
+                    || args[1].equalsIgnoreCase("perm"))) {
+            reasonStart = 2;
+        }
+        StringBuilder reason = new StringBuilder();
+        for (int i = reasonStart; i < args.length; i++) {
+            if (reason.length() > 0) reason.append(" ");
+            reason.append(args[i]);
+        }
+        String r = reason.length() > 0
+                ? reason.toString()
+                : "§c您已被服务器永久封禁";
+        applyBan(sender, target, r, null);
+        sender.sendMessage("§a已永久封禁 " + target
+                + (isIpTarget(target) ? " §7(IP)" : ""));
+        if (!isIpTarget(target)) {
+            org.bukkit.entity.Player tp =
+                    Bukkit.getPlayerExact(target);
+            if (tp != null) tp.kickPlayer("§c§l" + r);
+        }
+    }
+
+    /** whois 命令分发：处理权限与参数规则 */
+    private void doWhoIs(CommandSender sender, String[] args) {
+        // 唯独控制台禁止不带参数
+        if (sender instanceof org.bukkit.command.ConsoleCommandSender
+                && args.length == 0) {
+            sender.sendMessage("§c控制台必须指定玩家名: /whois <玩家名>");
+            return;
+        }
+        boolean admin = isPrivileged(sender);
+        String target;
+        if (args.length >= 1 && admin) {
+            target = args[0];
+        } else {
+            // 普通玩家（无论是否带参）只能看自己；其他无参发送者提示
+            if (sender instanceof Player) {
+                target = ((Player) sender).getName();
+            } else {
+                sender.sendMessage("§c请指定玩家名: /whois <玩家名>");
+                return;
+            }
+        }
+        showWhoIs(sender, target);
+    }
+
+    private void showWhoIs(CommandSender sender, String target) {
+        if (!db.userExists(target)) {
+            sender.sendMessage("§c未找到玩家: " + target);
+            return;
+        }
+        long reg = asLong(db.getField(target, "register_time"));
+        long lastLogin = asLong(db.getField(target, "last_login_time"));
+        Object ipObj = db.getField(target, "last_login_ip");
+        String lastIp = (ipObj == null
+                || String.valueOf(ipObj).isEmpty())
+                ? "未知" : String.valueOf(ipObj);
+        boolean muted = chatFilter != null
+                && chatFilter.isMuted(target);
+        String muteReason = (muted && chatFilter != null)
+                ? chatFilter.getMuteReason(target) : null;
+        long muteExpire = (muted && chatFilter != null)
+                ? chatFilter.getMuteExpire(target) : 0;
+
+        sender.sendMessage("§8========== §e玩家信息: " + target + " §8==========");
+        sender.sendMessage("§7注册时间: §f"
+                + (reg > 0 ? DurationParser.formatExpire(reg) : "未知"));
+        sender.sendMessage("§7最近登录: §f"
+                + (lastLogin > 0 ? DurationParser.formatExpire(lastLogin) : "未知"));
+        sender.sendMessage("§7登录IP: §f" + lastIp);
+        sender.sendMessage("§7禁言状态: "
+                + (muted ? "§c已禁言" : "§a正常"));
+        if (muted) {
+            sender.sendMessage("§7禁言理由: §f"
+                    + (muteReason == null || muteReason.isEmpty()
+                        ? "未填写" : muteReason));
+            sender.sendMessage("§7禁言到期: §f"
+                    + (muteExpire > 0 ? DurationParser.formatExpire(muteExpire) : "未知"));
+        }
+    }
+
+    /** 在线玩家列表，仅限大后台/OP/插件管理员 */
+    private void doWho(CommandSender sender) {
+        if (!isPrivileged(sender)) {
+            sender.sendMessage("§c权限不足");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        java.util.Collection<? extends org.bukkit.entity.Player> online =
+                Bukkit.getOnlinePlayers();
+        sb.append("§e在线玩家 (").append(online.size()).append("): §f");
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (org.bukkit.entity.Player p : online) names.add(p.getName());
+        if (names.isEmpty()) sb.append("§7无");
+        else sb.append(String.join(", ", names));
+        sender.sendMessage(sb.toString());
+    }
+
+    private long asLong(Object o) {
+        if (o == null) return 0;
+        if (o instanceof Number) return ((Number) o).longValue();
+        try { return Long.parseLong(String.valueOf(o)); }
+        catch (NumberFormatException e) { return 0; }
+    }
+
     // ★ 集群更新：同时唤醒所有sdf1系列插件检查更新
     private void checkAllPluginsUpdate(CommandSender sender) {
         // 1. Sdf1_login 自身
@@ -4671,64 +4873,33 @@ public class Main extends JavaPlugin
             return true;
         }
 
-        // ===== /tempban 临时封禁 =====
+        // ===== /tempban 临时封禁（名字或IP，DurationParser 解析时长） =====
         if (cmd.getName().equalsIgnoreCase("tempban")) {
-            if (sender instanceof Player
-                    && !isAdmin(sender)) {
-                sender.sendMessage("§c权限不足");
-                return true;
-            }
-            if (args.length < 2) {
-                sender.sendMessage(
-                        "§e/tempban <玩家名> <时长> [理由]");
-                sender.sendMessage(
-                        "§7时长示例: 1秒 / 1s / 1年 / 2026年7月9日 / 253402271999");
-                return true;
-            }
-            String target = args[0];
-            String durStr = args[1];
-            StringBuilder reason = new StringBuilder();
-            for (int i = 2; i < args.length; i++) {
-                if (reason.length() > 0)
-                    reason.append(" ");
-                reason.append(args[i]);
-            }
-            long expireMs;
-            try {
-                expireMs = DurationParser
-                        .parseToExpireMs(durStr);
-            } catch (IllegalArgumentException ex) {
-                sender.sendMessage("§c时长格式无法解析: "
-                        + ex.getMessage());
-                return true;
-            }
-            long durMs = expireMs
-                    - System.currentTimeMillis();
-            long MIN = 1000L;
-            long MAX = 10L * 365 * 24 * 3600 * 1000; // 约10年
-            if (durMs < MIN) {
-                sender.sendMessage("§c封禁时长至少 1 秒");
-                return true;
-            }
-            if (durMs > MAX) {
-                sender.sendMessage("§c封禁时长最长 10 年");
-                return true;
-            }
-            String r = reason.length() > 0
-                    ? reason.toString()
-                    : "您已被服务器封禁，效期至: "
-                    + DurationParser.formatExpire(expireMs);
-            Bukkit.getBanList(
-                    org.bukkit.BanList.Type.NAME).addBan(
-                    target, r,
-                    new java.util.Date(expireMs),
-                    sender.getName());
-            sender.sendMessage("§a已封禁 " + target
-                    + " 至 " + DurationParser.formatExpire(expireMs));
-            org.bukkit.entity.Player tp =
-                    Bukkit.getPlayerExact(target);
-            if (tp != null)
-                tp.kickPlayer("§c§l" + r);
+            doTempBan(sender, "tempban", args);
+            return true;
+        }
+
+        // ===== /tempbanip 临时IP/名字封禁（同 tempban，走 IP/NAME 自动识别） =====
+        if (cmd.getName().equalsIgnoreCase("tempbanip")) {
+            doTempBan(sender, "tempbanip", args);
+            return true;
+        }
+
+        // ===== /ban-ip 永久封禁（名字或IP，等效原生 ban ip/名字） =====
+        if (cmd.getName().equalsIgnoreCase("ban-ip")) {
+            doBanIp(sender, args);
+            return true;
+        }
+
+        // ===== /whois 玩家信息查询（普通玩家只查自己，OP/Tag管理员/控制台可查他人） =====
+        if (cmd.getName().equalsIgnoreCase("whois")) {
+            doWhoIs(sender, args);
+            return true;
+        }
+
+        // ===== /who 在线玩家列表（仅大后台/OP/插件管理员） =====
+        if (cmd.getName().equalsIgnoreCase("who")) {
+            doWho(sender);
             return true;
         }
 

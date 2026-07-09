@@ -1059,6 +1059,14 @@ public class ChatFilterManager {
         return muteReasons.get(name);
     }
 
+    /** 返回当前仍有效的禁言到期时间戳(ms)，已过期或未禁言返回 0 */
+    public long getMuteExpire(String name) {
+        Long expiry = mutedPlayers.get(name);
+        if (expiry == null) return 0;
+        if (System.currentTimeMillis() >= expiry) return 0;
+        return expiry;
+    }
+
     public void resetPlayer(String name) {
         mutedPlayers.remove(name);
         violationCount.remove(name);

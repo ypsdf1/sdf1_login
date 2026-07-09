@@ -156,4 +156,16 @@ commands:
 
   tempban:
     description: 临时封禁玩家
-    usage: /tempban <玩家名> <时长> [理由]
+    usage: /tempban <玩家名/IP> <时长> [理由]
+  tempbanip:
+    description: 临时封禁IP或玩家
+    usage: /tempbanip <IP/玩家名> <时长> [理由]
+  ban-ip:
+    description: 永久封禁IP或玩家
+    usage: /ban-ip <IP/玩家名> [永久] [理由]
+  whois:
+    description: 查询玩家信息
+    usage: /whois [玩家名]
+  who:
+    description: 查看在线玩家列表
+    usage: /who
