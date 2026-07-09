@@ -3908,6 +3908,39 @@ public class WebManager {
                             }
                             break;
                         }
+                        case "freeze": {
+                            // ★ 玩家主动冻结账号（异地登录邮件触发）：Bukkit 原生封禁
+                            String target = targetName;
+                            if (!target.isEmpty()) {
+                                String reason = "§c§l您的账号已被临时冻结（疑似被盗）\n§7请到网页修改密码后自动解冻";
+                                Bukkit.getBanList(
+                                        org.bukkit.BanList.Type.NAME)
+                                        .addBan(target, reason,
+                                                null, "security");
+                                org.bukkit.entity.Player fp =
+                                        Bukkit.getPlayerExact(target);
+                                if (fp != null)
+                                    fp.kickPlayer(reason);
+                                plugin.getLogger().info(
+                                        "[安全] 已按玩家请求冻结账号: "
+                                                + target);
+                                applied = true;
+                            }
+                            break;
+                        }
+                        case "unfreeze": {
+                            // ★ 玩家改密后解冻：解除 Bukkit 原生封禁
+                            String target = targetName;
+                            if (!target.isEmpty()) {
+                                Bukkit.getBanList(
+                                        org.bukkit.BanList.Type.NAME)
+                                        .pardon(target);
+                                plugin.getLogger().info(
+                                        "[安全] 已解冻账号: " + target);
+                                applied = true;
+                            }
+                            break;
+                        }
                         case "group_buy": {
                             // ★ 玩家端付费加入用户组：PHP写入pending → Java拉取执行
                             String buyGroup = String.valueOf(changeData.getOrDefault("group_name", ""));
@@ -5287,6 +5320,29 @@ public class WebManager {
 
     public String getSecretKey() {
         return secretKey;
+    }
+
+    /**
+     * 异步通知 PHP：玩家加入服务器，触发异地登录检测与提醒邮件。
+     * PHP 端比较 IP 归属并决定是否发邮件（含冻结/改密链接）。
+     */
+    public void reportLoginLocation(String name, String ip) {
+        if (!enabled) return;
+        try {
+            String url = webBaseUrl + "/api/security_alert.php"
+                    + "?action=login_location_alert"
+                    + "&secret=" + java.net.URLEncoder
+                            .encode(secretKey, "UTF-8")
+                    + "&name=" + java.net.URLEncoder
+                            .encode(name, "UTF-8")
+                    + "&ip=" + java.net.URLEncoder
+                            .encode(ip, "UTF-8");
+            doGet(url);
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[安全] 通知PHP异地登录检测失败: "
+                            + e.getMessage());
+        }
     }
 
     // ==================== Web登录轮询 ====================

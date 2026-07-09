@@ -110,6 +110,14 @@ public class PVPArenaManager implements Listener {
     private final Map<String, Integer> pvpKills = new ConcurrentHashMap<>();
     private final Map<String, Integer> pvpDeaths = new ConcurrentHashMap<>();
 
+    // 连杀播报（移植自 PVPManager，全服播报）
+    private final Map<String, PVPManager.KillSession>
+            arenaKillSessions =
+            new ConcurrentHashMap<>();
+    private final Set<String> arenaTripleAnnounced =
+            ConcurrentHashMap.newKeySet();
+    private static final String ARENA_LABEL = "PVP竞技场";
+
     // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
     private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
 
@@ -1094,8 +1102,54 @@ public class PVPArenaManager implements Listener {
         // paper-api 1.21.4: getKiller() 已移除，改用 DamageSource.getCausingEntity()
         org.bukkit.entity.Entity killer = event.getDamageSource().getCausingEntity();
         if (killer instanceof Player && inPVPArena.contains(killer.getName())) {
-            pvpKills.put(killer.getName(), pvpKills.getOrDefault(killer.getName(), 0) + 1);
-            ((Player) killer).sendMessage("\u00a7a\u00a7l击杀 " + player.getName() + "\u00a7a 当前击杀: " + pvpKills.get(killer.getName()));
+            String kName = killer.getName();
+            String vName = player.getName();
+            // 总榜击杀数
+            pvpKills.put(kName, pvpKills.getOrDefault(kName, 0) + 1);
+
+            // 击杀者连杀会话
+            PVPManager.KillSession ks = arenaKillSessions.get(kName);
+            if (ks == null
+                    || System.currentTimeMillis() - ks.lastKill
+                    > 5 * 60 * 1000) {
+                arenaTripleAnnounced.remove(kName);
+                PVPManager.KillSession ns =
+                        new PVPManager.KillSession();
+                ns.region = ARENA_LABEL;
+                ns.count = 1;
+                ns.firstKill = System.currentTimeMillis();
+                ns.lastKill = System.currentTimeMillis();
+                arenaKillSessions.put(kName, ns);
+            } else {
+                ks.count++;
+                ks.lastKill = System.currentTimeMillis();
+            }
+
+            // 终结检测：受害者连杀 >= 3 被终结
+            PVPManager.KillSession victimSession =
+                    arenaKillSessions.get(vName);
+            if (victimSession != null
+                    && victimSession.count >= 3) {
+                String endMsg = "§b§l" + kName + " §e终结了 "
+                        + vName + " §e的 " + victimSession.count
+                        + "连杀！§a恭喜终结者 " + kName
+                        + "§e！§7快来挑战！";
+                arenaKillSessions.remove(vName);
+                broadcastWithSound(endMsg,
+                        org.bukkit.Sound.ENTITY_ENDER_DRAGON_GROWL);
+            }
+            // 无论如何，死者连杀清零
+            arenaKillSessions.remove(vName);
+
+            // 多杀通报（全服播报）
+            PVPManager.KillSession killerSession =
+                    arenaKillSessions.get(kName);
+            if (killerSession != null) {
+                checkArenaMultiKill((Player) killer,
+                        killerSession);
+            }
+
+            ((Player) killer).sendMessage("\u00a7a\u00a7l击杀 " + vName + "\u00a7a 当前击杀: " + pvpKills.get(kName));
         }
         pvpDeaths.put(player.getName(), pvpDeaths.getOrDefault(player.getName(), 0) + 1);
         refreshPVPScoreboard();
@@ -1117,6 +1171,41 @@ public class PVPArenaManager implements Listener {
                 }
             }
         }.runTaskLater(plugin, 20L); // 1秒后
+    }
+
+    // ===== 全服击杀播报（移植自 PVPManager） =====
+    private void broadcastWithSound(String msg,
+                                    org.bukkit.Sound sound) {
+        Bukkit.broadcastMessage(msg);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.playSound(p.getLocation(), sound,
+                    1.0f, 1.0f);
+        }
+    }
+
+    private void checkArenaMultiKill(Player killer,
+                                     PVPManager.KillSession session) {
+        int count = session.count;
+        String kName = killer.getName();
+        String msg = null;
+        if (count >= 5) {
+            msg = "§c§l" + kName + " §e在「" + ARENA_LABEL
+                    + "」达成 " + count + "连杀！§7§l快来挑战！";
+        } else if (count == 3) {
+            if (arenaTripleAnnounced.add(kName)) {
+                msg = "§6§l三杀！" + kName
+                        + " 势不可挡！§7快来挑战！";
+            }
+        }
+        if (msg != null) {
+            if (count >= 5) {
+                broadcastWithSound(msg,
+                        org.bukkit.Sound.ENTITY_ENDER_DRAGON_GROWL);
+            } else {
+                broadcastWithSound(msg,
+                        org.bukkit.Sound.BLOCK_END_PORTAL_SPAWN);
+            }
+        }
     }
 
     /**

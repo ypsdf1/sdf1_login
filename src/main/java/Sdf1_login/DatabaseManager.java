@@ -91,6 +91,22 @@ public class DatabaseManager {
             // UI偏好：1=CLI(默认), 0=GUI
             safeAdd(st, "ui_mode",
                     "INTEGER DEFAULT 1");
+            // ===== 风控 / 封禁相关列 =====
+            // IP归属（省+市+区），用于异地登录检测
+            safeAdd(st, "last_login_location",
+                    "TEXT DEFAULT ''");
+            // 账号冻结（玩家主动冻结防被盗）：0=正常 1=已冻结
+            safeAdd(st, "frozen",
+                    "INTEGER DEFAULT 0");
+            // 冻结校验 token（邮件链接防猜测）
+            safeAdd(st, "freeze_token",
+                    "TEXT DEFAULT ''");
+            // 禁言到期时间戳（毫秒），0=未禁言
+            safeAdd(st, "muted_until",
+                    "INTEGER DEFAULT 0");
+            // 禁言理由
+            safeAdd(st, "mute_reason",
+                    "TEXT DEFAULT ''");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
@@ -682,6 +698,36 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+    }
+
+    /** 读取当前仍有效的禁言列表（muted_until > now） */
+    public List<Object[]> getActiveMutes() {
+        List<Object[]> list =
+                new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name, muted_until, "
+                            + "mute_reason FROM users "
+                            + "WHERE muted_until > ?");
+            ps.setLong(1,
+                    System.currentTimeMillis());
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Object[] row = new Object[3];
+                row[0] = rs.getString(
+                        "player_name");
+                row[1] = rs.getLong(
+                        "muted_until");
+                row[2] = rs.getString(
+                        "mute_reason");
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
     }
 
     public Object getField(String name,

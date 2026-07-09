@@ -153,3 +153,7 @@ commands:
   back:
     description: 快速返回最近记录点
     usage: /back
+
+  tempban:
+    description: 临时封禁玩家
+    usage: /tempban <玩家名> <时长> [理由]

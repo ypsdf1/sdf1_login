@@ -36,6 +36,10 @@ public class ChatFilterManager {
     private final Map<String, Long>
             mutedPlayers =
             new ConcurrentHashMap<>();
+    // ★ 禁言理由（内存镜像，持久化到 users.muted_until / mute_reason）
+    private final Map<String, String>
+            muteReasons =
+            new ConcurrentHashMap<>();
     private final Map<String, String> messages =
             new LinkedHashMap<>();
     // ★ 广告机检测：记录每个玩家发送链接的频率
@@ -889,6 +893,8 @@ public class ChatFilterManager {
         if (System.currentTimeMillis()
                 >= expiry) {
             mutedPlayers.remove(name);
+            muteReasons.remove(name);
+            clearMuteDb(name);
             return false;
         }
         return true;
@@ -981,6 +987,76 @@ public class ChatFilterManager {
 
     public void unmutePlayer(String name) {
         mutedPlayers.remove(name);
+        muteReasons.remove(name);
+        clearMuteDb(name);
+    }
+
+    // ========== 禁言持久化（重启后仍生效） ==========
+
+    /** 禁言指定玩家，到期时间戳为 expireMs（绝对毫秒） */
+    public void mutePlayer(String name, long expireMs,
+                           String reason) {
+        mutedPlayers.put(name, expireMs);
+        if (reason != null && !reason.isEmpty())
+            muteReasons.put(name, reason);
+        persistMute(name, expireMs, reason);
+        plugin.getLogger().info(
+                "[聊天] 已禁言 " + name + " 至 "
+                        + new java.util.Date(expireMs));
+    }
+
+    private void persistMute(String name, long expireMs,
+                             String reason) {
+        try {
+            Main mainPlugin = (Main) plugin;
+            DatabaseManager db = mainPlugin.getDb();
+            if (db == null) return;
+            db.setField(name, "muted_until", expireMs);
+            db.setField(name, "mute_reason",
+                    reason == null ? "" : reason);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void clearMuteDb(String name) {
+        try {
+            Main mainPlugin = (Main) plugin;
+            DatabaseManager db = mainPlugin.getDb();
+            if (db == null) return;
+            db.setField(name, "muted_until", 0);
+            db.setField(name, "mute_reason", "");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 插件启动时从数据库加载仍有效的禁言 */
+    public void loadMutes() {
+        try {
+            Main mainPlugin = (Main) plugin;
+            DatabaseManager db = mainPlugin.getDb();
+            if (db == null) return;
+            for (Object[] row : db.getActiveMutes()) {
+                String name = (String) row[0];
+                long expire = (Long) row[1];
+                String reason = (String) row[2];
+                mutedPlayers.put(name, expire);
+                if (reason != null
+                        && !reason.isEmpty())
+                    muteReasons.put(name, reason);
+            }
+            if (!mutedPlayers.isEmpty())
+                plugin.getLogger().info(
+                        "[聊天] 已加载 " + mutedPlayers.size()
+                                + " 条有效禁言");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public String getMuteReason(String name) {
+        return muteReasons.get(name);
     }
 
     public void resetPlayer(String name) {

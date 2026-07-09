@@ -382,6 +382,7 @@ public class Main extends JavaPlugin
         chatFilter = new ChatFilterManager(this);
         chatFilter.loadConfig();
         chatFilter.loadIllegalDomains(); // 加载非法域名后缀
+        chatFilter.loadMutes(); // 启动加载持久化禁言（muted_until 字段）
         welcome = new WelcomeManager(this);
 
         // ===== 5.5 Web通信管理器 =====
@@ -1833,6 +1834,20 @@ public class Main extends JavaPlugin
                 getLogger().warning("[安全] 玩家 " + name + " 因名称含非法域名被踢出 (domain=true)");
                 return;
             }
+        }
+
+        // ===== 异地登录检测：异步通知PHP比较IP归属并发提醒邮件 =====
+        if (webManager != null && ip != null
+                && !ip.isEmpty()) {
+            final String alertName = name;
+            final String alertIp = ip;
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    webManager.reportLoginLocation(
+                            alertName, alertIp);
+                }
+            }.runTaskAsynchronously(this);
         }
 
         // ★ 传送联动：登录阶段自动开启接受传送（基岩版玩家跳过）
@@ -4656,6 +4671,67 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ===== /tempban 临时封禁 =====
+        if (cmd.getName().equalsIgnoreCase("tempban")) {
+            if (sender instanceof Player
+                    && !isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage(
+                        "§e/tempban <玩家名> <时长> [理由]");
+                sender.sendMessage(
+                        "§7时长示例: 1秒 / 1s / 1年 / 2026年7月9日 / 253402271999");
+                return true;
+            }
+            String target = args[0];
+            String durStr = args[1];
+            StringBuilder reason = new StringBuilder();
+            for (int i = 2; i < args.length; i++) {
+                if (reason.length() > 0)
+                    reason.append(" ");
+                reason.append(args[i]);
+            }
+            long expireMs;
+            try {
+                expireMs = DurationParser
+                        .parseToExpireMs(durStr);
+            } catch (IllegalArgumentException ex) {
+                sender.sendMessage("§c时长格式无法解析: "
+                        + ex.getMessage());
+                return true;
+            }
+            long durMs = expireMs
+                    - System.currentTimeMillis();
+            long MIN = 1000L;
+            long MAX = 10L * 365 * 24 * 3600 * 1000; // 约10年
+            if (durMs < MIN) {
+                sender.sendMessage("§c封禁时长至少 1 秒");
+                return true;
+            }
+            if (durMs > MAX) {
+                sender.sendMessage("§c封禁时长最长 10 年");
+                return true;
+            }
+            String r = reason.length() > 0
+                    ? reason.toString()
+                    : "您已被服务器封禁，效期至: "
+                    + DurationParser.formatExpire(expireMs);
+            Bukkit.getBanList(
+                    org.bukkit.BanList.Type.NAME).addBan(
+                    target, r,
+                    new java.util.Date(expireMs),
+                    sender.getName());
+            sender.sendMessage("§a已封禁 " + target
+                    + " 至 " + DurationParser.formatExpire(expireMs));
+            org.bukkit.entity.Player tp =
+                    Bukkit.getPlayerExact(target);
+            if (tp != null)
+                tp.kickPlayer("§c§l" + r);
+            return true;
+        }
+
         String sub = (args.length > 0) ? args[0].toLowerCase() : "";
 
 // ===== 在 onCommand 方法体内，最开头加： =====
@@ -5128,6 +5204,56 @@ public class Main extends JavaPlugin
                 return true;
             }
             String cs = args[0].toLowerCase();
+            if (cs.equals("mute")) {
+                if (args.length < 3) {
+                    sender.sendMessage(
+                            "§e/chat mute <玩家名> <时长> [理由]");
+                    sender.sendMessage(
+                            "§7时长示例: 1秒 / 1s / 1年 / 2026年7月9日 / 253402271999");
+                    return true;
+                }
+                String target = args[1];
+                String durStr = args[2];
+                StringBuilder reason = new StringBuilder();
+                for (int i = 3; i < args.length; i++) {
+                    if (reason.length() > 0)
+                        reason.append(" ");
+                    reason.append(args[i]);
+                }
+                long expireMs;
+                try {
+                    expireMs = DurationParser
+                            .parseToExpireMs(durStr);
+                } catch (IllegalArgumentException ex) {
+                    sender.sendMessage("§c时长格式无法解析: "
+                            + ex.getMessage());
+                    return true;
+                }
+                long durMs = expireMs
+                        - System.currentTimeMillis();
+                long MIN = 1000L;
+                long MAX = 30L * 24 * 3600 * 1000; // 1个月
+                if (durMs < MIN) {
+                    sender.sendMessage("§c禁言时长至少 1 秒");
+                    return true;
+                }
+                if (durMs > MAX) {
+                    sender.sendMessage("§c禁言时长最长 1 个月");
+                    return true;
+                }
+                String r = reason.length() > 0
+                        ? reason.toString()
+                        : "您已被管理员禁言，效期至："
+                        + DurationParser.formatExpire(expireMs);
+                chatFilter.mutePlayer(target, expireMs, r);
+                sender.sendMessage("§a已禁言 " + target
+                        + " 至 " + DurationParser.formatExpire(expireMs));
+                org.bukkit.entity.Player tp =
+                        Bukkit.getPlayerExact(target);
+                if (tp != null)
+                    tp.sendMessage("§c§l" + r);
+                return true;
+            }
             if (cs.equals("reload")) {
                 chatFilter.loadConfig();
                 sender.sendMessage("§a聊天配置已重载");
@@ -6856,7 +6982,7 @@ public class Main extends JavaPlugin
             list.addAll(Arrays.asList(
                     "reload", "add", "remove",
                     "addplayer", "takeplayer",
-                    "unmute", "reset"));
+                    "mute", "unmute", "reset"));
         }
         if (cmd.getName().equalsIgnoreCase("cypay")) {
             return cypayCommand.onTabComplete(sender, cmd, label, args);
