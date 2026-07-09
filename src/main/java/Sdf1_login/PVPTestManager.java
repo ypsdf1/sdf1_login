@@ -178,6 +178,10 @@ public class PVPTestManager implements Listener {
         w.setTime(6000);
         w.setKeepSpawnInMemory(false);
 
+        // ★ 测试场必须非和平：主世界和平时 MC 会在和平难度下瞬间移除所有敌对生物（含插件生成的练习生物）。
+        //   此处在世界创建/加载即生效，不依赖进入测试的流程（之前只在 startTest 内设置，导致加载出的世界仍是和平）。
+        applyTestWorldDifficulty(w);
+
         // 30×30 世界边界（中心 0,0，直径 30）
         WorldBorder wb = w.getWorldBorder();
         wb.setCenter(0, 0);
@@ -193,6 +197,20 @@ public class PVPTestManager implements Listener {
         // 预加载出生点区块
         w.loadChunk(w.getSpawnLocation().getChunk());
         plugin.getLogger().info("[PVP测试] 测试场世界就绪 (FLAT露天, 30x30边界, 自然刷怪已关闭)");
+    }
+
+    /**
+     * 测试场难度：必须非和平，否则 MC 在和平难度下会瞬间移除所有敌对生物（含插件 spawnEntity 生成的练习生物）。
+     * 主世界和平 → 强制困难；主世界非和平 → 沿用主世界难度。
+     * 在「世界创建/加载」「开始测试」「全部离场」三处都会调用，保证不依赖进入流程也能生效。
+     */
+    private void applyTestWorldDifficulty(World w) {
+        if (w == null) return;
+        World main = Bukkit.getWorlds().get(0);
+        Difficulty d = (main != null && main.getDifficulty() == Difficulty.PEACEFUL)
+                ? Difficulty.HARD
+                : (main != null ? main.getDifficulty() : Difficulty.NORMAL);
+        w.setDifficulty(d);
     }
 
     /** 在边界(±15)搭建 4 格高玻璃墙，作为露天练习场的可见边界 */
@@ -520,12 +538,10 @@ public class PVPTestManager implements Listener {
         clearInventory(p);
         giveEquip(p, equip);
 
-        // ★ 和平模式修复：若主世界是和平模式，测试场(默认同主世界难度)刷出的亡灵生物会被瞬间移除。
-        //   有人在场时，临时把测试场难度提到困难(保证亡灵生物存活)；主世界非和平则跳过(测试场本就非和平)。
+        // 主世界难度（仅用于下方日志；测试场难度由 applyTestWorldDifficulty 统一处理）
         World main = Bukkit.getWorlds().get(0);
-        if (main.getDifficulty() == Difficulty.PEACEFUL) {
-            w.setDifficulty(Difficulty.HARD);
-        }
+        // ★ 测试场难度必须非和平：否则插件生成的练习生物会被 MC 和平难度瞬间移除。详见 applyTestWorldDifficulty。
+        applyTestWorldDifficulty(w);
 
         inTest.add(p.getUniqueId());
 
@@ -711,9 +727,9 @@ public class PVPTestManager implements Listener {
         if (inTest.isEmpty()) {
             World w = Bukkit.getWorld(PVP_TEST_WORLD_NAME);
             if (w != null) {
-                Difficulty d = Bukkit.getWorlds().get(0).getDifficulty();
-                w.setDifficulty(d);
-                plugin.getLogger().info("[PVP测试] 测试场已无人，难度还原为 " + d.name());
+                // 复位为"非和平"难度（主世界和平→困难，否则沿用主世界）。保持测试场永远可刷练习生物。
+                applyTestWorldDifficulty(w);
+                plugin.getLogger().info("[PVP测试] 测试场已无人，难度复位(保证非和平): " + w.getDifficulty().name());
             }
         }
     }
