@@ -5918,7 +5918,18 @@ public class WebManager {
                         // ★ 通知玩家购买成功
                         player.sendMessage("§6[商城] §fWeb购买 §e" + itemId + " x" + itemCount + " §f成功！§c-" + amount + "§f 债券");
                         player.sendMessage("§6[债券] §f余额: §e" + (newBal + amount) + " §7→ §a" + newBal);
-                        dispatchItemByMaterialOrId(player, itemId, itemCount);
+                        boolean delivered = dispatchItemByMaterialOrId(player, itemId, itemCount);
+                        if (!delivered) {
+                            // ★ 发放失败（附魔书解析失败等）→ 整笔不确认 + 写退款，避免玩家付了钱拿不到东西
+                            plugin.getLogger().warning("[Web交易] 单笔购买发放失败，发起退款: " + itemId + " 交易#" + txId);
+                            player.sendMessage("§c[商城] §f商品发放失败，已自动退款：§e" + itemId);
+                            try {
+                                writeRefundTransaction(playerName, amount, txId, "单笔购买发放失败:" + itemId, "bond");
+                            } catch (Exception ex) {
+                                plugin.getLogger().warning("[Web交易] 写入退款记录失败: " + ex.getMessage());
+                            }
+                            return; // 不 confirm，PHP 端退款
+                        }
                     } else {
                         plugin.getLogger().info("[Web交易] 玩家离线，保存到离线邮件");
                         saveOfflineItem(playerName, itemId, itemCount);
@@ -6052,8 +6063,13 @@ public class WebManager {
                         } else {
                             for (CartEntry ce : entries) {
                                 try {
-                                    dispatchItemByMaterialOrId(player, ce.itemId, ce.amount, ce.name);
-                                    okItems.add(ce.name != null ? ce.name : ce.itemId);
+                                    boolean delivered = dispatchItemByMaterialOrId(player, ce.itemId, ce.amount, ce.name);
+                                    if (delivered) {
+                                        okItems.add(ce.name != null ? ce.name : ce.itemId);
+                                    } else {
+                                        // ★ 发放失败（含附魔书解析失败）→ 计入失败列表，触发整单取消+退款
+                                        failedItems.add(ce.itemId);
+                                    }
                                 } catch (Exception ex) {
                                     failedItems.add(ce.itemId);
                                     plugin.getLogger().warning("[Web交易] 发放商品异常: " + ce.itemId + " → " + ex.getMessage());
@@ -6232,15 +6248,15 @@ public class WebManager {
     /**
      * 通过Material名称或商品ID发放商品（兼容PHP传Material名称的情况）
      */
-    private void dispatchItemByMaterialOrId(Player player, String itemId, int amount) {
-        dispatchItemByMaterialOrId(player, itemId, amount, null);
+    private boolean dispatchItemByMaterialOrId(Player player, String itemId, int amount) {
+        return dispatchItemByMaterialOrId(player, itemId, amount, null);
     }
 
     /**
      * 发放单个商品（支持按购物车携带的真实显示名重建附魔书等带NBT物品）。
      * name 为 PHP 购物车携带的真实显示名（含附魔关键词），用于修正材质匹配取到裸附魔书的问题。
      */
-    private void dispatchItemByMaterialOrId(Player player, String itemId, int amount, String name) {
+    private boolean dispatchItemByMaterialOrId(Player player, String itemId, int amount, String name) {
         try {
             plugin.getLogger().info("[Web交易] 发放商品(材料匹配): " + itemId + " x" + amount + " 给 " + player.getName());
 
@@ -6313,6 +6329,7 @@ public class WebManager {
 
                 // ★ 附魔书空壳兜底（ID权威重建）：若上面任一路径给出无附魔的附魔书
                 //   （显示名解析失败、ENCHANT_MAP 为空等），用商品ID（MENDING_I 等）重建NBT。
+                //   若重建也失败，ensureEnchantedBookNbt 返回 null —— 不发放空壳，返回 false 触发整单取消/退款。
                 itemStack = plugin.getShopManager().ensureEnchantedBookNbt(itemStack, itemId, amount);
 
                 if (itemStack != null) {
@@ -6331,16 +6348,21 @@ public class WebManager {
                     }
                     player.sendMessage("§a[Web商城] §f成功购买商品: " + displayName + " x" + amount);
                     plugin.getLogger().info("[Web交易] 商品发放成功");
+                    return true;
                 } else {
-                    plugin.getLogger().warning("[Web交易] 商品不存在: " + itemId + "（Material或ID均无匹配）");
-                    player.sendMessage("§c[Web商城] §f商品不存在: " + itemId);
+                    // ★ 发放失败：附魔书解析失败或商品不存在 → 返回 false，由上层整单取消/退款
+                    plugin.getLogger().warning("[Web交易] 商品无法发放(附魔书解析失败或商品不存在): " + itemId);
+                    player.sendMessage("§c[Web商城] §f商品发放失败(解析失败): " + itemId);
+                    return false;
                 }
             } else {
                 plugin.getLogger().warning("[Web交易] ShopManager未初始化");
+                return false;
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易] 发放商品失败: " + e.getMessage());
             e.printStackTrace();
+            return false;
         }
     }
 

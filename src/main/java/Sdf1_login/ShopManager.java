@@ -1449,20 +1449,25 @@ public class ShopManager implements Listener {
     /**
      * 若传入的附魔书是“空壳”（无存储附魔），则尝试用商品ID权威重建附魔NBT。
      * 用于 Web 商城发放附魔书兜底，避免显示名解析失败/ENCHANT_MAP 为空导致空壳。
+     * ★ 若 ID 重建也失败（解析失败），返回 null —— 由上层整单取消并退款，绝不发放空壳。
      */
     public ItemStack ensureEnchantedBookNbt(ItemStack itemStack, String itemId, int amount) {
-        if (itemStack == null || itemStack.getType() != Material.ENCHANTED_BOOK) return itemStack;
+        if (itemStack == null) return null;
+        if (itemStack.getType() != Material.ENCHANTED_BOOK) return itemStack;
         ItemMeta m = itemStack.getItemMeta();
         boolean empty = !(m instanceof EnchantmentStorageMeta)
                 || ((EnchantmentStorageMeta) m).getStoredEnchants().isEmpty();
-        if (!empty) return itemStack;
+        if (!empty) return itemStack; // 已是带附魔的有效书
+        // 空壳 → 用商品ID权威重建
         ItemStack rebuilt = buildEnchantedBookFromId(itemId);
         if (rebuilt != null) {
             rebuilt.setAmount(amount);
             plugin.getLogger().info("[Shop] 附魔书空壳已用ID重建NBT: " + itemId);
             return rebuilt;
         }
-        return itemStack;
+        // ★ 解析失败：不再发放空壳，返回 null 交由上层整单取消/退款
+        plugin.getLogger().warning("[Shop] 附魔书无法由ID重建(解析失败)，取消发放: " + itemId);
+        return null;
     }
 
     private int parseEnchantLevel(String name, String keyword) {
