@@ -1367,7 +1367,7 @@ public class ShopManager implements Listener {
      */
     // ===== 附魔书：由显示名推断存储附魔 =====
     private static final java.util.regex.Pattern ROMAN_PAT =
-            java.util.regex.Pattern.compile("(?i)\\b(X{0,3}(?:IX|IV|V?I{1,3}))\\b");
+            java.util.regex.Pattern.compile("(?i)\\b(X{0,3}(?:IX|IV|V|I{1,3}))\\b");
     private static final java.util.regex.Pattern ARABIC_PAT =
             java.util.regex.Pattern.compile("\\d+");
     private static final java.util.regex.Pattern CN_PAT =
