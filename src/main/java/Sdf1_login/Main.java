@@ -1061,7 +1061,7 @@ public class Main extends JavaPlugin
             return;
         }
         if (args.length < 1) {
-            sender.sendMessage("§e/ban-ip <玩家名/IP> [永久] [理由]");
+            sender.sendMessage("§e/banip <玩家名/IP> [永久] [理由]");
             return;
         }
         String target = args[0];
@@ -4885,8 +4885,8 @@ public class Main extends JavaPlugin
             return true;
         }
 
-        // ===== /ban-ip 永久封禁（名字或IP，等效原生 ban ip/名字） =====
-        if (cmd.getName().equalsIgnoreCase("ban-ip")) {
+        // ===== /banip 永久封禁（名字或IP，等效原生 ban ip/名字） =====
+        if (cmd.getName().equalsIgnoreCase("banip")) {
             doBanIp(sender, args);
             return true;
         }
