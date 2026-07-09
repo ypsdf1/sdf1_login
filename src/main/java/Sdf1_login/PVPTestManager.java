@@ -7,6 +7,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
@@ -18,8 +19,11 @@ import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeModifier;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.projectiles.ProjectileSource;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.io.File;
 import java.util.*;
@@ -58,12 +62,12 @@ public class PVPTestManager implements Listener {
 
     private final Random rand = new Random();
 
-    /** 刷怪波次间隔(刻)：10秒 */
+    /** 刷怪波次间隔(刻)：10秒（玩家全清当前波次后才间隔刷下一波） */
     private static final long WAVE_INTERVAL_TICKS = 200L;
-    /** 单个玩家在场练习生物存活上限(安全阀，防止无限堆积卡服) */
-    private static final int MAX_ALIVE_PER_PLAYER = 30;
-    /** 死循环刷怪任务(有人在场时运行，全部退场即取消) */
-    private BukkitTask spawnTask = null;
+    /** 已安排"全清后10秒补一波"的玩家(防止重复排程) */
+    private final Set<UUID> pendingRespawn = new HashSet<>();
+    /** 练习生物 → 所属玩家(用于死亡事件反查触发下一波) */
+    private final Map<UUID, UUID> mobOwner = new HashMap<>();
 
     // ==================== 枚举定义 ====================
 
@@ -330,13 +334,12 @@ public class PVPTestManager implements Listener {
 
         inTest.add(p.getUniqueId());
 
-        // 立即来一波，之后每10秒一波，死循环直到所有人退场
+        // 立即来一波（之后仅在玩家清空当前波次后，间隔10秒再补下一波）
         spawnWaveFor(p);
-        startSpawnLoop();
 
         p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  装备: " + equip.display);
         p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。");
-        p.sendMessage("§7每10秒刷新一波，背包已附金苹果等回血食物。输入 /pvp leave 离开。");
+        p.sendMessage("§7清空当前波次后，每10秒刷新下一波；背包已附金苹果等回血食物。输入 /pvp leave 离开。");
         p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP测试] 玩家 " + p.getName()
                 + " 进入测试场 (难度=" + diff.name() + ", 装备=" + equip.name()
@@ -384,7 +387,6 @@ public class PVPTestManager implements Listener {
      */
     private void spawnWaveFor(Player p) {
         if (!inTest.contains(p.getUniqueId())) return;
-        if (aliveMobCount(p) >= MAX_ALIVE_PER_PLAYER) return; // 安全阀：超上限则跳过本波
         TestDifficulty diff = chosenDiff.get(p.getUniqueId());
         if (diff == null) return;
         TestEquip equip = chosenEquip.get(p.getUniqueId());
@@ -400,37 +402,71 @@ public class PVPTestManager implements Listener {
         }
     }
 
-    /** 死循环刷怪：每10秒为一波，遍历所有在场玩家各补一波，全部退场则取消任务 */
-    private void spawnWave() {
-        if (inTest.isEmpty()) {
-            stopSpawnLoop();
-            return;
-        }
-        for (UUID uid : new HashSet<>(inTest)) {
-            Player p = Bukkit.getPlayer(uid);
-            if (p != null && p.isOnline()) spawnWaveFor(p);
+    /**
+     * 玩家全清当前波次 → 发送提示 + 可点击超链接(返回床)，并安排 10秒后刷下一波。
+     * 仅在玩家在场、尚未安排、且当前确实无存活练习生物时触发；避免重复排程。
+     */
+    private void checkCleared(Player p) {
+        if (!inTest.contains(p.getUniqueId())) return;
+        if (pendingRespawn.contains(p.getUniqueId())) return;
+        if (aliveMobCount(p) > 0) return;
+
+        pendingRespawn.add(p.getUniqueId());
+        sendClearedMessage(p);
+
+        // 间隔10秒后刷新下一波（若届时仍在场且无存活生物）
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            pendingRespawn.remove(p.getUniqueId());
+            if (inTest.contains(p.getUniqueId()) && aliveMobCount(p) == 0) {
+                spawnWaveFor(p);
+            }
+        }, WAVE_INTERVAL_TICKS);
+    }
+
+    /** 全清提示 + 可点击超链接：点击直接返回出生点(床) */
+    private void sendClearedMessage(Player p) {
+        Component link = Component.text("[点击返回出生点(床)]")
+                .color(NamedTextColor.AQUA)
+                .clickEvent(ClickEvent.runCommand("/pvp back"))
+                .hoverEvent(HoverEvent.showText(Component.text("§7点击直接传送回你的床/出生点")));
+        p.sendMessage(Component.text("§a§l[PVP测试] §f已清空当前波次！§e10秒后刷新下一波。 ")
+                .append(link));
+    }
+
+    /** 练习生物死亡 → 反查所属玩家，检测是否全清以触发下一波 */
+    @EventHandler
+    public void onMobDeath(EntityDeathEvent e) {
+        LivingEntity ent = e.getEntity();
+        UUID owner = mobOwner.get(ent.getUniqueId());
+        if (owner == null) return;
+        Player p = Bukkit.getPlayer(owner);
+        if (p != null && p.isOnline()) {
+            checkCleared(p);
         }
     }
 
-    /** 启动刷怪循环(若未运行) */
-    private void startSpawnLoop() {
-        if (spawnTask != null) return;
-        spawnTask = Bukkit.getScheduler().runTaskTimer(
-                plugin, this::spawnWave, WAVE_INTERVAL_TICKS, WAVE_INTERVAL_TICKS);
-        plugin.getLogger().info("[PVP测试] 已启动死循环刷怪(每" + (WAVE_INTERVAL_TICKS / 20) + "秒一波)");
-    }
-
-    /** 停止刷怪循环并还原测试场难度(无人时调用) */
-    private void stopSpawnLoop() {
-        if (spawnTask != null) {
-            spawnTask.cancel();
-            spawnTask = null;
-            plugin.getLogger().info("[PVP测试] 刷怪循环已停止(无人)");
+    /**
+     * 返回出生点(床)：若在测试场则先清理并还原背包，再传送至床(无床则主世界出生点)。
+     * 供可点击超链接 /pvp back 调用。
+     */
+    public void handleBack(Player p) {
+        if (inTest.contains(p.getUniqueId())) {
+            removePlayerMobs(p);
+            restoreInventory(p);
+            inTest.remove(p.getUniqueId());
+            chosenDiff.remove(p.getUniqueId());
+            chosenEquip.remove(p.getUniqueId());
+            pendingRespawn.remove(p.getUniqueId());
+            checkAllLeft();
         }
-        World w = Bukkit.getWorld(PVP_TEST_WORLD_NAME);
-        if (w != null) {
-            // 还原为当前主世界难度(主世界和平则回到和平，符合"仅临时调整"语义)
-            w.setDifficulty(Bukkit.getWorlds().get(0).getDifficulty());
+        Location bed = p.getBedSpawnLocation();
+        World main = Bukkit.getWorlds().get(0);
+        Location dest = (bed != null) ? bed : main.getSpawnLocation();
+        p.teleport(dest);
+        if (bed != null) {
+            p.sendMessage("§a§l[PVP测试] 已传送回你的床(出生点)");
+        } else {
+            p.sendMessage("§e你尚未设置床，已传送回主世界出生点");
         }
     }
 
@@ -447,9 +483,16 @@ public class PVPTestManager implements Listener {
         return n;
     }
 
-    /** 全部退场后停止刷怪循环(恢复难度由 stopSpawnLoop 负责) */
+    /** 全部退场后还原测试场难度(和平模式下临时提困难，此时回到主世界难度) */
     private void checkAllLeft() {
-        if (inTest.isEmpty()) stopSpawnLoop();
+        if (inTest.isEmpty()) {
+            World w = Bukkit.getWorld(PVP_TEST_WORLD_NAME);
+            if (w != null) {
+                Difficulty d = Bukkit.getWorlds().get(0).getDifficulty();
+                w.setDifficulty(d);
+                plugin.getLogger().info("[PVP测试] 测试场已无人，难度还原为 " + d.name());
+            }
+        }
     }
 
     private void spawnRing(Player p, World w, TestDifficulty diff, EntityType type, int count) {
@@ -493,6 +536,7 @@ public class PVPTestManager implements Listener {
                     eq.setHelmetDropChance(0f); // 不会被打掉/掉落
                 }
                 mobDifficulty.put(mob.getUniqueId(), diff);
+                mobOwner.put(mob.getUniqueId(), p.getUniqueId());
                 playerMobs.computeIfAbsent(p.getUniqueId(), k -> new ArrayList<>()).add(mob.getUniqueId());
             }
         }
@@ -507,6 +551,7 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        pendingRespawn.remove(p.getUniqueId());
         restoreInventory(p);
         World main = Bukkit.getWorlds().get(0);
         p.teleport(main.getSpawnLocation());
@@ -522,6 +567,7 @@ public class PVPTestManager implements Listener {
                 Entity e = Bukkit.getEntity(uid);
                 if (e != null) e.remove();
                 mobDifficulty.remove(uid);
+                mobOwner.remove(uid);
             }
         }
     }
@@ -653,6 +699,7 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        pendingRespawn.remove(p.getUniqueId());
         World main = Bukkit.getWorlds().get(0);
         e.setRespawnLocation(main.getSpawnLocation());
         // 回到主世界后再还原背包，避免死亡瞬间覆盖
@@ -671,6 +718,7 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        pendingRespawn.remove(p.getUniqueId());
         checkAllLeft();
     }
 
@@ -685,6 +733,7 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        pendingRespawn.remove(p.getUniqueId());
         checkAllLeft();
     }
 }

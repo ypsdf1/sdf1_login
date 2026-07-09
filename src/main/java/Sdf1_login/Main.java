@@ -5138,6 +5138,12 @@ public class Main extends JavaPlugin
                 return true;
             }
 
+            // PVP练习测试场：/pvp back 返回出生点(床)，由测试场管理器处理
+            if (args.length > 0 && args[0].equalsIgnoreCase("back")) {
+                pvpTestManager.handleBack(p);
+                return true;
+            }
+
             // PVP竞技场命令（由pvpManager统一处理）
             if (args.length > 0 && args[0].equalsIgnoreCase("arena")) {
                 return pvpManager.onCommand(p, args);
