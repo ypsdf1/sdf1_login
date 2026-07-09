@@ -1120,7 +1120,7 @@ public class PVPManager implements Listener {
                 return true;
             case "leave":
             case "exit":
-                plugin.getPVPArenaManager().leaveArena(p);
+                plugin.leavePVP(p);
                 return true;
             default:
                 showStats(p, p.getName());

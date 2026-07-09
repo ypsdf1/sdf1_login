@@ -173,6 +173,8 @@ public class Main extends JavaPlugin
     private PVPManager pvpManager;
     //pvp竞技场（独立世界模式）
     private PVPArenaManager pvPArenaManager;
+    //pvp练习测试场（独立世界 pvp_test）
+    private PVPTestManager pvpTestManager;
 
 
 
@@ -519,6 +521,13 @@ public class Main extends JavaPlugin
         pvPArenaManager.ensurePVPWorldExists();
         // PVP模板世界改为懒加载：首次 /pvp join 时按需创建（不再启动时同步生成，避免拖慢启动50秒）
 
+        // 12.2 ===PVP练习测试场（独立世界 pvp_test，首次加载预生成30x30露天环境）===
+        pvpTestManager = new PVPTestManager(this);
+        getServer().getPluginManager()
+                .registerEvents(pvpTestManager, this);
+        // 确保测试场世界存在（首次生成/之后复用）
+        pvpTestManager.ensurePVPTestWorldExists();
+
         // 13 ====cypay债券====
         // 债券系统（独立DB）
         bondManager = new BondManager(this);
@@ -679,7 +688,9 @@ public class Main extends JavaPlugin
                                             "create", "stats",
                                             "list", "delete",
                                             "tool", "on", "off",
-                                            "tempban", "arena"};
+                                            "tempban", "arena",
+                                            "join", "leave",
+                                            "exit", "test"};
                                     for (String s : sub) {
                                         if (s.startsWith(
                                                 args[0]
@@ -3201,6 +3212,19 @@ public class Main extends JavaPlugin
     public PVPArenaManager getPVPArenaManager() {
         return pvPArenaManager;
     }
+
+    public PVPTestManager getPVPTestManager() {
+        return pvpTestManager;
+    }
+
+    /** 统一离开 PVP 场景：测试场优先，否则竞技场 */
+    public void leavePVP(Player p) {
+        if (pvpTestManager != null && pvpTestManager.isInTest(p)) {
+            pvpTestManager.leaveTest(p);
+        } else {
+            pvPArenaManager.leaveArena(p);
+        }
+    }
     // 在 Main.java 中（与其他 getter 放一起）
     public AreaProtection getAreaProtection() {
         return areaProtection;
@@ -3526,6 +3550,15 @@ public class Main extends JavaPlugin
             if (pvPArenaManager != null) {
                 e.setCancelled(true);
                 pvPArenaManager.handleEquipmentClick(p, e.getRawSlot());
+            }
+            return;
+        }
+
+        // ===== PVP练习测试场GUI点击处理 =====
+        if (title.equals("§6§lPVP测试场")) {
+            if (pvpTestManager != null) {
+                e.setCancelled(true);
+                pvpTestManager.handleClick(p, e.getRawSlot());
             }
             return;
         }
@@ -5098,12 +5131,18 @@ public class Main extends JavaPlugin
                 return true;
             }
             Player p = (Player) sender;
-            
+
+            // PVP练习测试场：/pvp test 打开设置面板
+            if (args.length > 0 && args[0].equalsIgnoreCase("test")) {
+                pvpTestManager.openGUI(p);
+                return true;
+            }
+
             // PVP竞技场命令（由pvpManager统一处理）
             if (args.length > 0 && args[0].equalsIgnoreCase("arena")) {
                 return pvpManager.onCommand(p, args);
             }
-            
+
             return pvpManager.onCommand(p, args);
         }
 
