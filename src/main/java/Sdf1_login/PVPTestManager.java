@@ -258,33 +258,65 @@ public class PVPTestManager implements Listener {
         int weaponTier = testWeaponTier.get(p.getUniqueId());
         int armorTier = testArmorTier.get(p.getUniqueId());
 
-        // 顶部信息
-        ItemStack info = new ItemStack(Material.PAPER);
-        ItemMeta im = info.getItemMeta();
-        if (im != null) {
-            im.setDisplayName("§6§lPVP测试场设置");
-            im.setLore(Arrays.asList(
-                    "§7选择难度与装备，点击确认开始练习",
-                    "",
-                    "§e当前难度: " + diff.display,
-                    "§e练习场景: " + equip.display,
-                    "§e主武器: " + WEAPON_TIER_NAMES[weaponTier] + "§b剑 + " + WEAPON_TIER_NAMES[weaponTier] + "§b斧",
-                    "§e护甲: " + ARMOR_TIER_NAMES[armorTier],
-                    "§e附魔: " + (enchant ? "§a开启" : "§c关闭"),
-                    "§e盾牌: " + (shield ? "§a装备" : "§c不装备")));
-            info.setItemMeta(im);
+        // ★ 顶部预览（0-7）：当前所选装备
+        gui.setItem(0, previewItem(SWORD_TIERS[weaponTier], "§b§l" + WEAPON_TIER_NAMES[weaponTier] + "§l剑", "§7主武器·必发"));
+        gui.setItem(1, previewItem(AXE_TIERS[weaponTier], "§b§l" + WEAPON_TIER_NAMES[weaponTier] + "§l斧", "§7主武器·必发"));
+        if (armorTier > 0 && ARMOR_SETS[armorTier] != null) {
+            gui.setItem(2, previewItem(ARMOR_SETS[armorTier][0], "§b§l" + ARMOR_TIER_NAMES[armorTier] + "§l盔", "§7护甲·全套4件"));
+            gui.setItem(3, previewItem(ARMOR_SETS[armorTier][1], "§b§l" + ARMOR_TIER_NAMES[armorTier] + "§l胸甲", "§7护甲·全套4件"));
+            gui.setItem(4, previewItem(ARMOR_SETS[armorTier][2], "§b§l" + ARMOR_TIER_NAMES[armorTier] + "§l腿甲", "§7护甲·全套4件"));
+            gui.setItem(5, previewItem(ARMOR_SETS[armorTier][3], "§b§l" + ARMOR_TIER_NAMES[armorTier] + "§l靴", "§7护甲·全套4件"));
+        } else {
+            for (int k = 2; k <= 5; k++) gui.setItem(k, grayPreview("§7§l无护甲", "§7不穿护甲"));
         }
-        gui.setItem(4, info);
+        if (shield) gui.setItem(6, previewItem(Material.SHIELD, "§a§l盾牌 ✓", "§7已选·副手装备"));
+        else gui.setItem(6, grayPreview("§7盾牌 ✗", "§7未选（可开启）"));
+        gui.setItem(7, previewItem(Material.COOKED_BEEF, "§c§l熟牛肉 x" + food, "§7补血普通食物"));
 
-        setDiffButton(gui, 19, TestDifficulty.EASY, diff);
-        setDiffButton(gui, 21, TestDifficulty.MEDIUM, diff);
-        setDiffButton(gui, 23, TestDifficulty.NIGHTMARE, diff);
+        // 信息面板（8）
+        ItemStack info = new ItemStack(Material.PAPER);
+        ItemMeta infoM = info.getItemMeta();
+        if (infoM != null) {
+            infoM.setDisplayName("§6§lPVP测试场设置");
+            List<String> lore = new ArrayList<>();
+            lore.add("§7直接点击选择装备/难度/场景，点击确认开始");
+            lore.add("");
+            lore.add("§e当前难度: " + diff.display);
+            lore.add("§e练习场景: " + equip.display);
+            lore.add("§e主武器: " + WEAPON_TIER_NAMES[weaponTier] + "§b剑 + " + WEAPON_TIER_NAMES[weaponTier] + "§b斧");
+            lore.add("§e护甲: " + ARMOR_TIER_NAMES[armorTier] + (armorTier > 0 ? "§b全套4件" : ""));
+            lore.add("§e附魔: " + (enchant ? "§a开启" : "§c关闭"));
+            lore.add("§e盾牌: " + (shield ? "§a装备" : "§c不装备"));
+            lore.add("§e熟牛肉: §a" + food + " §7个");
+            infoM.setLore(lore);
+            info.setItemMeta(infoM);
+        }
+        gui.setItem(8, info);
 
-        setEquipButton(gui, 28, TestEquip.MELEE, equip);
-        setEquipButton(gui, 30, TestEquip.RANGED, equip);
-        setEquipButton(gui, 32, TestEquip.MIXED, equip);
+        // 分组标签
+        gui.setItem(9, labelItem("§6§l主武器材质", "§7点击直接选择，自动切换"));
+        gui.setItem(18, labelItem("§6§l护甲材质", "§7点击直接选择（含「无」）"));
+        gui.setItem(27, labelItem("§6§l难度 / 场景", "§7点击直接选择"));
+        gui.setItem(36, labelItem("§6§l其他选项", "§7附魔 / 盾牌"));
 
-        // ★ 附魔开关（38）：锋利V + 击退II（作用于铁剑/铁斧）
+        // ★ 武器材质 4 档（10-13）：铁/金/钻/合金（直选）
+        for (int t = 0; t < 4; t++) {
+            gui.setItem(10 + t, makeWeaponTierButton(SWORD_TIERS[t], WEAPON_TIER_NAMES[t] + "§l剑", t, weaponTier));
+        }
+        // ★ 护甲材质 5 档（19-23）：无/铁/金/钻/合金（直选，tier=0 为不穿）
+        for (int t = 0; t < 5; t++) {
+            gui.setItem(19 + t, makeArmorTierButton(t, armorTier));
+        }
+        // ★ 难度 3 档（28/29/30）：简单/中等/噩梦（直选）
+        gui.setItem(28, makeDiffButton(TestDifficulty.EASY, diff));
+        gui.setItem(29, makeDiffButton(TestDifficulty.MEDIUM, diff));
+        gui.setItem(30, makeDiffButton(TestDifficulty.NIGHTMARE, diff));
+        // ★ 场景 3 档（32/33/34）：近战/远程/混合（直选）
+        gui.setItem(32, makeSceneButton(TestEquip.MELEE, equip));
+        gui.setItem(33, makeSceneButton(TestEquip.RANGED, equip));
+        gui.setItem(34, makeSceneButton(TestEquip.MIXED, equip));
+
+        // ★ 附魔开关（37）
         ItemStack enchBtn = new ItemStack(enchant ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
         ItemMeta em = enchBtn.getItemMeta();
         if (em != null) {
@@ -292,9 +324,9 @@ public class PVPTestManager implements Listener {
             em.setLore(Arrays.asList("§7锋利V + 击退II（铁剑/铁斧）", enchant ? "§a点击关闭" : "§a点击开启"));
             enchBtn.setItemMeta(em);
         }
-        gui.setItem(38, enchBtn);
+        gui.setItem(37, enchBtn);
 
-        // ★ 盾牌开关（42）
+        // ★ 盾牌开关（38）
         ItemStack shBtn = new ItemStack(shield ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
         ItemMeta sm2 = shBtn.getItemMeta();
         if (sm2 != null) {
@@ -302,93 +334,15 @@ public class PVPTestManager implements Listener {
             sm2.setLore(Arrays.asList("§7副手装备", shield ? "§a点击取消" : "§a点击装备"));
             shBtn.setItemMeta(sm2);
         }
-        gui.setItem(42, shBtn);
+        gui.setItem(38, shBtn);
 
-        // ★ 熟牛肉数量选择（47/-1，48/显示，50/+1），与主场一致(1~64)
-        ItemStack foodMinus = new ItemStack(Material.COOKED_BEEF);
-        ItemMeta fm = foodMinus.getItemMeta();
-        if (fm != null) {
-            fm.setDisplayName("§c§l熟牛肉 -1");
-            fm.setLore(Arrays.asList("§7当前: " + food + " 个", "§7范围 1~64", "§bShift点击 -16"));
-            foodMinus.setItemMeta(fm);
+        // ★ 熟牛肉快捷数量（45-48 = 8/16/32/64，点哪个直接设为哪个）
+        int[] foodOpts = {8, 16, 32, 64};
+        for (int i = 0; i < 4; i++) {
+            gui.setItem(45 + i, makeFoodButton(foodOpts[i], food));
         }
-        gui.setItem(47, foodMinus);
 
-        ItemStack foodInfo = new ItemStack(Material.PAPER);
-        ItemMeta fmi = foodInfo.getItemMeta();
-        if (fmi != null) {
-            fmi.setDisplayName("§6§l熟牛肉: " + food + " 个");
-            fmi.setLore(Arrays.asList("§7补血普通食物", "§7左键±1，§bShift±16"));
-            foodInfo.setItemMeta(fmi);
-        }
-        gui.setItem(48, foodInfo);
-
-        ItemStack foodPlus = new ItemStack(Material.COOKED_BEEF);
-        ItemMeta fp = foodPlus.getItemMeta();
-        if (fp != null) {
-            fp.setDisplayName("§a§l熟牛肉 +1");
-            fp.setLore(Arrays.asList("§7当前: " + food + " 个", "§7范围 1~64", "§bShift点击 +16"));
-            foodPlus.setItemMeta(fp);
-        }
-        gui.setItem(50, foodPlus);
-
-        // ★ 武器档位（11/-1，12/显示，13/+1）：自由选主武器材质(剑+斧)
-        ItemStack wMinus = new ItemStack(SWORD_TIERS[weaponTier]);
-        ItemMeta wm = wMinus.getItemMeta();
-        if (wm != null) {
-            wm.setDisplayName("§c§l武器档位 -");
-            wm.setLore(Arrays.asList("§7当前: " + WEAPON_TIER_NAMES[weaponTier], "§7剑+斧材质"));
-            wMinus.setItemMeta(wm);
-        }
-        gui.setItem(11, wMinus);
-
-        ItemStack wInfo = new ItemStack(Material.PAPER);
-        ItemMeta wmi = wInfo.getItemMeta();
-        if (wmi != null) {
-            wmi.setDisplayName("§6§l武器: " + WEAPON_TIER_NAMES[weaponTier]);
-            wmi.setLore(Arrays.asList("§7主武器材质(剑+斧)", "§7点击两侧切换"));
-            wInfo.setItemMeta(wmi);
-        }
-        gui.setItem(12, wInfo);
-
-        ItemStack wPlus = new ItemStack(SWORD_TIERS[weaponTier]);
-        ItemMeta wp = wPlus.getItemMeta();
-        if (wp != null) {
-            wp.setDisplayName("§a§l武器档位 +");
-            wp.setLore(Arrays.asList("§7当前: " + WEAPON_TIER_NAMES[weaponTier], "§7剑+斧材质"));
-            wPlus.setItemMeta(wp);
-        }
-        gui.setItem(13, wPlus);
-
-        // ★ 护甲档位（14/-1，15/显示，16/+1）：自由选全套护甲材质
-        ItemStack aMinus = new ItemStack(armorTier > 0 ? ARMOR_SETS[armorTier][1] : Material.LEATHER_CHESTPLATE);
-        ItemMeta am = aMinus.getItemMeta();
-        if (am != null) {
-            am.setDisplayName("§c§l护甲档位 -");
-            am.setLore(Arrays.asList("§7当前: " + ARMOR_TIER_NAMES[armorTier], "§7无=不穿护甲"));
-            aMinus.setItemMeta(am);
-        }
-        gui.setItem(14, aMinus);
-
-        ItemStack aInfo = new ItemStack(Material.PAPER);
-        ItemMeta ami = aInfo.getItemMeta();
-        if (ami != null) {
-            ami.setDisplayName("§6§l护甲: " + ARMOR_TIER_NAMES[armorTier]);
-            ami.setLore(Arrays.asList("§7全套护甲材质", "§7点击两侧切换"));
-            aInfo.setItemMeta(ami);
-        }
-        gui.setItem(15, aInfo);
-
-        ItemStack aPlus = new ItemStack(armorTier > 0 ? ARMOR_SETS[armorTier][1] : Material.LEATHER_CHESTPLATE);
-        ItemMeta ap = aPlus.getItemMeta();
-        if (ap != null) {
-            ap.setDisplayName("§a§l护甲档位 +");
-            ap.setLore(Arrays.asList("§7当前: " + ARMOR_TIER_NAMES[armorTier], "§7无=不穿护甲"));
-            aPlus.setItemMeta(ap);
-        }
-        gui.setItem(16, aPlus);
-
-        // 确认开始按钮
+        // 确认开始按钮（49）
         ItemStack start = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
         ItemMeta sm = start.getItemMeta();
         if (sm != null) {
@@ -396,8 +350,11 @@ public class PVPTestManager implements Listener {
             sm.setLore(Arrays.asList(
                     "§7难度: " + diff.display,
                     "§7场景: " + equip.display,
+                    "§7武器: " + WEAPON_TIER_NAMES[weaponTier] + "§b剑 + " + WEAPON_TIER_NAMES[weaponTier] + "§b斧",
+                    "§7护甲: " + ARMOR_TIER_NAMES[armorTier] + (armorTier > 0 ? "§b全套4件" : ""),
                     "§7附魔: " + (enchant ? "§d开启" : "§7关闭"),
                     "§7盾牌: " + (shield ? "§a装备" : "§7不装备"),
+                    "§7熟牛肉 x" + food,
                     "",
                     "§e点击进入测试场"));
             start.setItemMeta(sm);
@@ -413,12 +370,70 @@ public class PVPTestManager implements Listener {
         p.openInventory(gui);
     }
 
-    private void setDiffButton(Inventory gui, int slot, TestDifficulty d, TestDifficulty current) {
+    private ItemStack previewItem(Material mat, String name, String desc) {
+        ItemStack it = new ItemStack(mat);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName(name);
+            m.setLore(Arrays.asList(desc));
+            it.setItemMeta(m);
+        }
+        return it;
+    }
+
+    private ItemStack grayPreview(String name, String desc) {
+        return previewItem(Material.GRAY_STAINED_GLASS_PANE, name, desc);
+    }
+
+    private ItemStack labelItem(String name, String desc) {
+        ItemStack it = new ItemStack(Material.NAME_TAG);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName(name);
+            m.setLore(Arrays.asList(desc));
+            it.setItemMeta(m);
+        }
+        return it;
+    }
+
+    private ItemStack makeWeaponTierButton(Material mat, String label, int tier, int selectedTier) {
+        boolean selected = (tier == selectedTier);
+        ItemStack it = new ItemStack(mat);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName(label + (selected ? " §a✔" : ""));
+            List<String> lore = new ArrayList<>();
+            lore.add("§7主武器材质(剑+斧)");
+            lore.add(selected ? "§a当前选择，点击取消" : "§a点击选择此材质");
+            m.setLore(lore);
+            it.setItemMeta(m);
+        }
+        return it;
+    }
+
+    private ItemStack makeArmorTierButton(int tier, int selectedTier) {
+        boolean selected = (tier == selectedTier);
+        Material icon = (tier > 0 && ARMOR_SETS[tier] != null) ? ARMOR_SETS[tier][1] : Material.LEATHER_CHESTPLATE;
+        ItemStack it = new ItemStack(icon);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName(ARMOR_TIER_NAMES[tier] + (selected ? " §a✔" : ""));
+            List<String> lore = new ArrayList<>();
+            if (tier == 0) lore.add("§7不穿护甲");
+            else lore.add("§7全套护甲(4件)");
+            lore.add(selected ? "§a当前选择，点击取消" : "§a点击选择此材质");
+            m.setLore(lore);
+            it.setItemMeta(m);
+        }
+        return it;
+    }
+
+    private ItemStack makeDiffButton(TestDifficulty d, TestDifficulty current) {
         boolean selected = (d == current);
         ItemStack btn = new ItemStack(selected ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
         ItemMeta m = btn.getItemMeta();
         if (m != null) {
-            m.setDisplayName(d.display);
+            m.setDisplayName(d.display + (selected ? " §a✔" : ""));
             List<String> lore = new ArrayList<>();
             lore.add("§7僵尸伤害: " + (int) d.zombieDamage);
             lore.add("§7小白伤害: " + (int) d.skeletonDamage);
@@ -427,17 +442,17 @@ public class PVPTestManager implements Listener {
             m.setLore(lore);
             btn.setItemMeta(m);
         }
-        gui.setItem(slot, btn);
+        return btn;
     }
 
-    private void setEquipButton(Inventory gui, int slot, TestEquip e, TestEquip current) {
+    private ItemStack makeSceneButton(TestEquip e, TestEquip current) {
         boolean selected = (e == current);
         Material icon = e == TestEquip.MELEE ? Material.IRON_SWORD
                 : e == TestEquip.RANGED ? Material.BOW : Material.NETHER_STAR;
         ItemStack btn = new ItemStack(icon);
         ItemMeta m = btn.getItemMeta();
         if (m != null) {
-            m.setDisplayName(e.display);
+            m.setDisplayName(e.display + (selected ? " §a✔" : ""));
             List<String> lore = new ArrayList<>();
             lore.add(e == TestEquip.MELEE ? "§7练习近战(僵尸)" :
                     e == TestEquip.RANGED ? "§7练习远程(小白)" : "§7练习近战+远程");
@@ -445,70 +460,76 @@ public class PVPTestManager implements Listener {
             m.setLore(lore);
             btn.setItemMeta(m);
         }
-        gui.setItem(slot, btn);
+        return btn;
+    }
+
+    private ItemStack makeFoodButton(int foodVal, int currentFood) {
+        boolean selected = (foodVal == currentFood);
+        ItemStack it = new ItemStack(Material.COOKED_BEEF);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName("§c§l熟牛肉 x" + foodVal + (selected ? " §a✔" : ""));
+            m.setLore(Arrays.asList("§7补血普通食物", selected ? "§a当前数量" : "§a点击直接设为 " + foodVal + " 个"));
+            it.setItemMeta(m);
+        }
+        return it;
     }
 
     public void handleClick(Player p, int slot, boolean shift) {
         if (!p.getOpenInventory().getTitle().equals(TEST_GUI_TITLE)) return;
 
-        if (slot == 19) { chosenDiff.put(p.getUniqueId(), TestDifficulty.EASY); openGUI(p); return; }
-        if (slot == 21) { chosenDiff.put(p.getUniqueId(), TestDifficulty.MEDIUM); openGUI(p); return; }
-        if (slot == 23) { chosenDiff.put(p.getUniqueId(), TestDifficulty.NIGHTMARE); openGUI(p); return; }
-        if (slot == 28) { chosenEquip.put(p.getUniqueId(), TestEquip.MELEE); openGUI(p); return; }
-        if (slot == 30) { chosenEquip.put(p.getUniqueId(), TestEquip.RANGED); openGUI(p); return; }
-        if (slot == 32) { chosenEquip.put(p.getUniqueId(), TestEquip.MIXED); openGUI(p); return; }
-        // ★ 附魔开关（38）/ 盾牌开关（42）
-        if (slot == 38) {
-            UUID id = p.getUniqueId();
+        UUID id = p.getUniqueId();
+
+        // ★ 武器材质直选（10-13）：铁/金/钻/合金，点哪个直接切换
+        if (slot >= 10 && slot <= 13) {
+            testWeaponTier.put(id, slot - 10);
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            openGUI(p); return;
+        }
+        // ★ 护甲材质直选（19-23）：无/铁/金/钻/合金
+        if (slot >= 19 && slot <= 23) {
+            testArmorTier.put(id, slot - 19);
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            openGUI(p); return;
+        }
+        // ★ 难度直选（28/29/30）
+        if (slot == 28) { chosenDiff.put(id, TestDifficulty.EASY); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        if (slot == 29) { chosenDiff.put(id, TestDifficulty.MEDIUM); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        if (slot == 30) { chosenDiff.put(id, TestDifficulty.NIGHTMARE); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        // ★ 场景直选（32/33/34）
+        if (slot == 32) { chosenEquip.put(id, TestEquip.MELEE); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        if (slot == 33) { chosenEquip.put(id, TestEquip.RANGED); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        if (slot == 34) { chosenEquip.put(id, TestEquip.MIXED); p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f); openGUI(p); return; }
+        // ★ 附魔开关（37）
+        if (slot == 37) {
             testEnchant.put(id, !testEnchant.getOrDefault(id, false));
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
             openGUI(p); return;
         }
-        if (slot == 42) {
-            UUID id = p.getUniqueId();
+        // ★ 盾牌开关（38）
+        if (slot == 38) {
             testShield.put(id, !testShield.getOrDefault(id, true));
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
             openGUI(p); return;
         }
-        // ★ 武器档位（11/-1，12/显示，13/+1）
-        if (slot == 11) {
-            UUID id = p.getUniqueId();
-            testWeaponTier.put(id, Math.max(0, testWeaponTier.getOrDefault(id, 0) - 1));
+        // ★ 熟牛肉直选（45-48 = 8/16/32/64）
+        if (slot >= 45 && slot <= 48) {
+            int[] foodOpts = {8, 16, 32, 64};
+            testFood.put(id, foodOpts[slot - 45]);
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
             openGUI(p); return;
         }
-        if (slot == 12) { openGUI(p); return; }
-        if (slot == 13) {
-            UUID id = p.getUniqueId();
-            testWeaponTier.put(id, Math.min(WEAPON_TIER_NAMES.length - 1, testWeaponTier.getOrDefault(id, 0) + 1));
-            openGUI(p); return;
-        }
-        // ★ 护甲档位（14/-1，15/显示，16/+1）
-        if (slot == 14) {
-            UUID id = p.getUniqueId();
-            testArmorTier.put(id, Math.max(0, testArmorTier.getOrDefault(id, 0) - 1));
-            openGUI(p); return;
-        }
-        if (slot == 15) { openGUI(p); return; }
-        if (slot == 16) {
-            UUID id = p.getUniqueId();
-            testArmorTier.put(id, Math.min(ARMOR_TIER_NAMES.length - 1, testArmorTier.getOrDefault(id, 0) + 1));
-            openGUI(p); return;
-        }
-        // ★ 熟牛肉数量 ±1（47/-1，50/+1，48仅显示）
-        if (slot == 47) {
-            UUID id = p.getUniqueId();
-            testFood.put(id, Math.max(1, testFood.getOrDefault(id, 16) - (shift ? 16 : 1)));
-            openGUI(p); return;
-        }
-        if (slot == 48) { openGUI(p); return; }
-        if (slot == 50) {
-            UUID id = p.getUniqueId();
-            testFood.put(id, Math.min(64, testFood.getOrDefault(id, 16) + (shift ? 16 : 1)));
-            openGUI(p); return;
-        }
+        // ★ 确认开始（49）
         if (slot == 49) {
             p.closeInventory();
             startTest(p,
                     chosenDiff.getOrDefault(p.getUniqueId(), TestDifficulty.EASY),
                     chosenEquip.getOrDefault(p.getUniqueId(), TestEquip.MELEE));
+            return;
+        }
+        // 标签 / 预览区（0-8, 9, 18, 27, 36）：仅音效
+        if ((slot >= 0 && slot <= 8) || slot == 9 || slot == 18 || slot == 27 || slot == 36) {
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
             return;
         }
     }

@@ -3819,11 +3819,13 @@ public class WebManager {
                             break;
                         }
                         case "perm_change": {
-                            String playerName = targetName;
+                            // handleUpdateVisitorPerm: target_name=玩家名，changeData 不含 player
+                            // handleChangeVisitorRole: target_name=领地名，changeData 含 player
+                            String playerName = changeData.containsKey("player")
+                                    ? String.valueOf(changeData.get("player"))
+                                    : targetName;
                             String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
                             String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
-                            // ★ 仅 change_visitor_role 会在 change_data 中携带 role；调整权限(update_visitor_perm)不带 role，
-                            //   从而 Java 端不会把已授权的管理员误降级为访客
                             String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
                                 areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);

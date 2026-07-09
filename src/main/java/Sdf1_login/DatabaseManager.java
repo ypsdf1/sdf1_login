@@ -950,17 +950,41 @@ public class DatabaseManager {
             ps.close();
 
             // 仅保留最近 3 份，删除该玩家更早的备份
-            PreparedStatement del =
-                    db.prepareStatement(
+            // ★ 2026-07-10：改为先查后删，避免某些 SQLite 版本/驱动把带 LIMIT 的子查询优化掉，
+            //   导致只保留最新一份的问题。
+            try {
+                PreparedStatement sel =
+                        db.prepareStatement(
+                                "SELECT id FROM inventory_backups "
+                                        + "WHERE player_name=? "
+                                        + "ORDER BY save_time DESC LIMIT 3");
+                sel.setString(1, name);
+                ResultSet rs = sel.executeQuery();
+                java.util.List<Integer> keep = new java.util.ArrayList<>();
+                while (rs.next()) {
+                    keep.add(rs.getInt("id"));
+                }
+                rs.close();
+                sel.close();
+
+                if (keep.size() == 3) {
+                    // 保留 3 份，删除其余
+                    StringBuilder in = new StringBuilder();
+                    for (int i = 0; i < keep.size(); i++) {
+                        if (i > 0) in.append(",");
+                        in.append(keep.get(i));
+                    }
+                    PreparedStatement del = db.prepareStatement(
                             "DELETE FROM inventory_backups "
                                     + "WHERE player_name=? AND id NOT IN ("
-                                    + "SELECT id FROM inventory_backups "
-                                    + "WHERE player_name=? "
-                                    + "ORDER BY save_time DESC LIMIT 3)");
-            del.setString(1, name);
-            del.setString(2, name);
-            del.executeUpdate();
-            del.close();
+                                    + in.toString() + ")");
+                    del.setString(1, name);
+                    del.executeUpdate();
+                    del.close();
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }

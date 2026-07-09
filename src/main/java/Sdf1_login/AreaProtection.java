@@ -8213,23 +8213,38 @@ public class AreaProtection implements Listener {
 
                 // ★ 角色同步：仅当 PHP 显式携带 role(change_visitor_role)时才切换，
                 //   避免"调整访客权限"时把已授权的管理员误降级为访客
+                String effectiveRole = "visitor";
                 if (role != null && !role.isEmpty()) {
+                    effectiveRole = role.toLowerCase();
                     if ("admin".equalsIgnoreCase(role)) {
                         setLandAdmin(lname, playerName, true);
                     } else if ("visitor".equalsIgnoreCase(role) && isLandAdmin(lname, playerName)) {
                         setLandAdmin(lname, playerName, false);
                     }
+                } else {
+                    // 未带 role 时，沿用本地已有角色；若本地无记录则默认 visitor
+                    String localRole = getLocalRole(landId, playerName);
+                    if (localRole != null && !localRole.isEmpty()) {
+                        effectiveRole = localRole;
+                    }
                 }
 
-                // 更新数据库中的自定义权限（ON CONFLICT 只更新 permissions，不动 role，管理员身份安全）
+                plugin.getLogger().info("[防护][更新权限] 入参 land=" + lname + " player=" + playerName
+                        + " role=" + role + " localRole=" + getLocalRole(landId, playerName)
+                        + " effectiveRole=" + effectiveRole
+                        + " permsLen=" + (permsJson == null ? "null" : String.valueOf(permsJson.length()))
+                        + (role != null && !role.isEmpty() ? " (PHP显式携带role)" : " (沿用本地)"));
+
+                // 更新数据库中的自定义权限（同时写回 effectiveRole，确保新记录角色正确）
                 PreparedStatement ps = dbConnection.prepareStatement(
                     "INSERT INTO area_land_permissions (land_id, land_name, player_name, role, permissions, granted_at, synced_at) " +
-                    "VALUES (?, ?, ?, 'member', ?, 0, 0) " +
-                    "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = excluded.permissions");
+                    "VALUES (?, ?, ?, ?, ?, 0, 0) " +
+                    "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = excluded.permissions, role = excluded.role");
                 ps.setInt(1, landId);
                 ps.setString(2, lname);
                 ps.setString(3, playerName);
-                ps.setString(4, permsJson);
+                ps.setString(4, effectiveRole);
+                ps.setString(5, permsJson);
                 ps.executeUpdate();
                 ps.close();
             }
@@ -8237,6 +8252,29 @@ public class AreaProtection implements Listener {
             plugin.getLogger().info("[防护] PHP端更新权限: " + playerName + " @ " + Arrays.toString(landNames));
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 更新权限失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 查询本地 area_land_permissions 表中指定玩家在当前领地的角色
+     */
+    private String getLocalRole(int landId, String playerName) {
+        if (dbConnection == null) return null;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT role FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            ResultSet rs = stmt.executeQuery();
+            String role = null;
+            if (rs.next()) {
+                role = rs.getString("role");
+            }
+            rs.close();
+            stmt.close();
+            return role;
+        } catch (SQLException e) {
+            return null;
         }
     }
 
