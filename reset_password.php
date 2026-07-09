@@ -55,14 +55,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         // 更新密码凭证
         storeWebLoginCredentials($player, $passwordHash, $salt);
-        
+
+        // ★ 解冻：清除 frozen 标记并通知 Java 解除 Bukkit 原生封禁
+        $db->exec("UPDATE users SET frozen = 0, freeze_token = '' WHERE player_name = " . SQLite3::escapeString($player));
+        $now = time();
+        $unf = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('unfreeze', 0, :name, '{}', :now)");
+        $unf->bindValue(':name', $player, SQLITE3_TEXT);
+        $unf->bindValue(':now', $now, SQLITE3_INTEGER);
+        $unf->execute();
+
         // 删除重置token
         $stmt = $db->prepare("DELETE FROM password_reset_tokens WHERE token = :token");
         $stmt->bindValue(':token', $token, SQLITE3_TEXT);
         $stmt->execute();
         
         $success = true;
-        $message = '密码重置成功！请在游戏中使用新密码登录';
+        $message = '密码重置成功！账号已解冻，请在游戏中使用新密码登录';
     }
 }
 ?>

@@ -411,6 +411,24 @@ function initTables(SQLite3 $db) {
             total_online_time INTEGER DEFAULT 0
         )");
 
+        // ===== 风控 / 封禁相关列（安全迁移，避免 ALTER 锁表） =====
+        $userCols = [];
+        $ci = $db->query("PRAGMA table_info(users)");
+        while ($c = $ci->fetchArray(SQLITE3_ASSOC)) {
+            $userCols[] = $c['name'];
+        }
+        $addCols = [
+            'last_login_location' => "TEXT DEFAULT ''",
+            'last_login_ip'        => "TEXT DEFAULT ''",
+            'frozen'               => "INTEGER DEFAULT 0",
+            'freeze_token'         => "TEXT DEFAULT ''",
+        ];
+        foreach ($addCols as $col => $type) {
+            if (!in_array($col, $userCols)) {
+                $db->exec("ALTER TABLE users ADD COLUMN $col $type");
+            }
+        }
+
         // Web登录Token表
         $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (
             player_name TEXT PRIMARY KEY,
@@ -1587,4 +1605,198 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
     $sessionToken = recordWebSession($playerName, $ipAddress);
     debugLog("validateWebAccess: 验证成功", ['player' => $playerName, 'mode' => 'full']);
     return ['ok' => true, 'mode' => 'full', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '验证成功'];
+}
+
+// =====================================================================
+// 异地登录检测 / 账号冻结 公共函数（security_alert.php / freeze.php 复用）
+// =====================================================================
+
+/**
+ * SMTP 邮件发送（已从 api/sync.php 上移至此处，统一复用，避免重复定义）
+ */
+function smtpSendEmail($host, $port, $user, $pass, $to, $subject, $htmlBody, $headers, $useSSL = true) {
+    $errno = 0;
+    $errstr = '';
+
+    // 创建socket连接
+    if ($useSSL) {
+        $socket = @fsockopen('ssl://' . $host, $port, $errno, $errstr, 30);
+    } else {
+        $socket = @fsockopen($host, $port, $errno, $errstr, 30);
+    }
+
+    if (!$socket) {
+        throw new Exception("SMTP连接失败: $errstr ($errno)");
+    }
+
+    // 读取服务器响应
+    $response = fgets($socket);
+    if (strpos($response, '220') !== 0) {
+        fclose($socket);
+        throw new Exception("SMTP服务器拒绝连接: $response");
+    }
+
+    // 发送EHLO
+    fwrite($socket, "EHLO localhost\r\n");
+    $response = fread($socket, 1024);
+
+    // 登录认证
+    fwrite($socket, "AUTH LOGIN\r\n");
+    $response = fgets($socket);
+    if (strpos($response, '334') !== 0) {
+        fclose($socket);
+        throw new Exception("SMTP认证失败: $response");
+    }
+
+    // 发送用户名
+    fwrite($socket, base64_encode($user) . "\r\n");
+    $response = fgets($socket);
+    if (strpos($response, '334') !== 0) {
+        fclose($socket);
+        throw new Exception("SMTP用户名错误: $response");
+    }
+
+    // 发送密码
+    fwrite($socket, base64_encode($pass) . "\r\n");
+    $response = fgets($socket);
+    if (strpos($response, '235') !== 0) {
+        fclose($socket);
+        throw new Exception("SMTP密码错误: $response");
+    }
+
+    // 发送邮件
+    fwrite($socket, "MAIL FROM:<$user>\r\n");
+    fgets($socket);
+
+    fwrite($socket, "RCPT TO:<$to>\r\n");
+    fgets($socket);
+
+    fwrite($socket, "DATA\r\n");
+    fgets($socket);
+
+    // 发送邮件头和正文
+    $emailData = "Subject: $subject\r\n";
+    $emailData .= $headers;
+    $emailData .= "\r\n";
+    $emailData .= $htmlBody;
+    $emailData .= "\r\n.\r\n";
+
+    fwrite($socket, $emailData);
+    $response = fgets($socket);
+
+    // 退出
+    fwrite($socket, "QUIT\r\n");
+    fgets($socket);
+
+    fclose($socket);
+
+    return true;
+}
+
+/**
+ * 查询登录 IP 归属（ip9.com.cn）
+ * 注意：与 admin.php 的 queryIpLocation 区分命名，避免重复定义冲突。
+ * @return string|null 归属字符串（如 "广东深圳"），失败或内网返回 null
+ */
+function queryLoginIpLocation($ip) {
+    if (empty($ip) || $ip === '-' || $ip === '127.0.0.1'
+        || strpos($ip, '10.') === 0 || strpos($ip, '192.168.') === 0
+        || !filter_var($ip, FILTER_VALIDATE_IP)) {
+        return null;
+    }
+    $url = 'https://ip9.com.cn/get?ip=' . urlencode($ip);
+    $ctx = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'timeout' => 3,
+            'ignore_errors' => true,
+            'header' => "Accept: application/json, text/plain, */*\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nReferer: https://ip9.com.cn/\r\nOrigin: https://ip9.com.cn"
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+    ]);
+    $response = @file_get_contents($url, false, $ctx);
+    if ($response === false) return null;
+    $response = trim($response);
+    if ($response === '') return null;
+    $data = json_decode($response, true);
+    if (!$data || !is_array($data)) return null;
+    $item = null;
+    if (isset($data['data'][0]) && is_array($data['data'][0])) {
+        $item = $data['data'][0];
+    } elseif (isset($data['data']) && is_array($data['data']) && isset($data['data']['prov'])) {
+        $item = $data['data'];
+    }
+    if (!$item) return null;
+    $loc = '';
+    if (isset($item['prov'])) $loc .= $item['prov'];
+    if (isset($item['city'])) $loc .= $item['city'];
+    if (isset($item['area']) && ($item['area'] !== ($item['city'] ?? '')) && ($item['area'] !== ($item['prov'] ?? ''))) {
+        $loc .= $item['area'];
+    }
+    $loc = trim($loc);
+    return $loc === '' ? null : $loc;
+}
+
+/**
+ * 构建站点绝对基址（用于邮件链接）
+ */
+function getBaseUrl() {
+    $host = $_SERVER['HTTP_HOST'] ?? '';
+    if ($host === '' || $host === '127.0.0.1' || $host === 'localhost') {
+        $host = 'caoyuan.ypshidifu.cn';
+    }
+    // 站点统一使用 HTTPS
+    $base = 'https://' . $host;
+    $sub = trim(WEBSUB_DIR, '/');
+    if ($sub !== '') $base .= '/' . $sub;
+    return rtrim($base, '/');
+}
+
+/**
+ * 发送异地登录提醒邮件（附带冻结 / 改密链接）
+ * @param string $freezeToken 已持久化到 users.freeze_token 的令牌
+ */
+function sendLocationAlertEmail($name, $email, $ip, $location, $lastLoc, $freezeToken) {
+    $db = getDB();
+    // 生成改密 token（30分钟内有效）
+    $resetToken = bin2hex(random_bytes(16));
+    $expire = time() + 1800;
+    $ins = $db->prepare("INSERT INTO password_reset_tokens (token, player_name, expire_at) VALUES (:t, :n, :e)");
+    $ins->bindValue(':t', $resetToken, SQLITE3_TEXT);
+    $ins->bindValue(':n', $name, SQLITE3_TEXT);
+    $ins->bindValue(':e', $expire, SQLITE3_INTEGER);
+    $ins->execute();
+
+    $base = getBaseUrl();
+    $freezeLink = $base . '/freeze.php?token=' . urlencode($freezeToken);
+    $resetLink  = $base . '/reset_password.php?token=' . urlencode($resetToken);
+
+    $subject = '[Sdf1] 异地登录提醒：您的账号于 ' . $location . ' 登录';
+
+    $html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+        . '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        . '<title>异地登录提醒</title></head><body style="margin:0;padding:0;background:#f4f6f9;font-family:Segoe UI,Tahoma,sans-serif;">'
+        . '<div style="max-width:560px;margin:0 auto;padding:24px;">'
+        . '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.08);">'
+        . '<div style="background:linear-gradient(135deg,#e0533d,#c0392b);padding:28px 32px;color:#fff;">'
+        . '<h1 style="margin:0;font-size:22px;">⚠️ 异地登录提醒</h1>'
+        . '<p style="margin:8px 0 0;opacity:.9;font-size:14px;">Sdf1 Minecraft 账号安全中心</p></div>'
+        . '<div style="padding:32px;">'
+        . '<p style="margin:0 0 16px;font-size:15px;color:#333;">亲爱的 <b>' . htmlspecialchars($name) . '</b>：</p>'
+        . '<p style="margin:0 0 16px;font-size:15px;color:#555;line-height:1.7;">我们检测到您的账号于 <b style="color:#e0533d;">' . htmlspecialchars($location) . '</b> 发起了登录，'
+        . '而您上一次的登录地点为 <b>' . htmlspecialchars($lastLoc ?: '未知') . '</b>。如果该登录并非您本人操作，账号可能已泄露。</p>'
+        . '<div style="background:#fff7f5;border:1px solid #f3c4ba;border-radius:8px;padding:14px 16px;margin:0 0 20px;font-size:14px;color:#8a4b3a;">'
+        . '本次登录 IP：' . htmlspecialchars($ip) . '<br>登录时间：' . date('Y-m-d H:i:s') . '</div>'
+        . '<p style="margin:0 0 12px;font-size:14px;color:#555;">如确认存在风险，请点击下方按钮<b>冻结账号</b>（将立即封禁游戏登录，需改密后解冻）：</p>'
+        . '<div style="text-align:center;margin:0 0 24px;"><a href="' . htmlspecialchars($freezeLink) . '" style="display:inline-block;background:linear-gradient(135deg,#e0533d,#c0392b);color:#fff;text-decoration:none;padding:13px 36px;border-radius:8px;font-size:15px;font-weight:600;">立即冻结账号</a></div>'
+        . '<p style="margin:0 0 12px;font-size:14px;color:#555;">如确认是本人操作，也建议您定期修改密码以保障安全：</p>'
+        . '<div style="text-align:center;margin:0 0 8px;"><a href="' . htmlspecialchars($resetLink) . '" style="display:inline-block;background:#fff;color:#e0533d;border:1px solid #e0533d;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600;">修改密码</a></div>'
+        . '<p style="margin:24px 0 0;font-size:12px;color:#999;border-top:1px solid #eee;padding-top:16px;">本邮件由系统自动发送，请勿直接回复。若您未触发任何登录，请尽快冻结账号并修改密码。</p>'
+        . '</div></div></div></body></html>';
+
+    $headers = "From: " . SMTP_SENDER_NAME . " <" . SMTP_USER . ">\r\n"
+        . "Reply-To: " . SMTP_USER . "\r\n"
+        . "MIME-Version: 1.0\r\n"
+        . "Content-Type: text/html; charset=UTF-8\r\n";
+    smtpSendEmail(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, $email, $subject, $html, $headers, SMTP_USE_SSL);
 }

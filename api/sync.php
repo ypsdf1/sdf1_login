@@ -50,85 +50,7 @@ set_exception_handler(function($e) {
 
 // debugLog() 函数已在 core.php 中定义，无需重复声明
 
-// ===== SMTP邮件发送函数 =====
-function smtpSendEmail($host, $port, $user, $pass, $to, $subject, $htmlBody, $headers, $useSSL = true) {
-    $errno = 0;
-    $errstr = '';
-
-    // 创建socket连接
-    if ($useSSL) {
-        $socket = @fsockopen('ssl://' . $host, $port, $errno, $errstr, 30);
-    } else {
-        $socket = @fsockopen($host, $port, $errno, $errstr, 30);
-    }
-
-    if (!$socket) {
-        throw new Exception("SMTP连接失败: $errstr ($errno)");
-    }
-
-    // 读取服务器响应
-    $response = fgets($socket);
-    if (strpos($response, '220') !== 0) {
-        fclose($socket);
-        throw new Exception("SMTP服务器拒绝连接: $response");
-    }
-
-    // 发送EHLO
-    fwrite($socket, "EHLO localhost\r\n");
-    $response = fread($socket, 1024);
-
-    // 登录认证
-    fwrite($socket, "AUTH LOGIN\r\n");
-    $response = fgets($socket);
-    if (strpos($response, '334') !== 0) {
-        fclose($socket);
-        throw new Exception("SMTP认证失败: $response");
-    }
-
-    // 发送用户名
-    fwrite($socket, base64_encode($user) . "\r\n");
-    $response = fgets($socket);
-    if (strpos($response, '334') !== 0) {
-        fclose($socket);
-        throw new Exception("SMTP用户名错误: $response");
-    }
-
-    // 发送密码
-    fwrite($socket, base64_encode($pass) . "\r\n");
-    $response = fgets($socket);
-    if (strpos($response, '235') !== 0) {
-        fclose($socket);
-        throw new Exception("SMTP密码错误: $response");
-    }
-
-    // 发送邮件
-    fwrite($socket, "MAIL FROM:<$user>\r\n");
-    fgets($socket);
-
-    fwrite($socket, "RCPT TO:<$to>\r\n");
-    fgets($socket);
-
-    fwrite($socket, "DATA\r\n");
-    fgets($socket);
-
-    // 发送邮件头和正文
-    $emailData = "Subject: $subject\r\n";
-    $emailData .= $headers;
-    $emailData .= "\r\n";
-    $emailData .= $htmlBody;
-    $emailData .= "\r\n.\r\n";
-
-    fwrite($socket, $emailData);
-    $response = fgets($socket);
-
-    // 退出
-    fwrite($socket, "QUIT\r\n");
-    fgets($socket);
-
-    fclose($socket);
-
-    return true;
-}
+// ===== SMTP邮件发送函数（已统一移至 core.php，通过 require_once core.php 复用，避免重复定义） =====
 
 
 /**
@@ -2440,6 +2362,14 @@ function completeWebLoginRequest() {
 
         // 如果验证成功，写入web_login_confirmations和web_login_verified
         if ($status === 'success') {
+            // ★ 冻结账号禁止 Web 登录（异地登录自冻结保护）
+            $fz = $db->prepare("SELECT frozen FROM users WHERE player_name = :name");
+            $fz->bindValue(':name', $player, SQLITE3_TEXT);
+            $fzr = $fz->execute()->fetchArray(SQLITE3_ASSOC);
+            if ($fzr && (int)$fzr['frozen'] === 1) {
+                error('账号已被冻结，请修改密码后重试');
+            }
+
             $db->exec("CREATE TABLE IF NOT EXISTS web_login_confirmations (player_name TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL, consumed INTEGER DEFAULT 0)");
             $confirmStmt = $db->prepare("INSERT OR REPLACE INTO web_login_confirmations (player_name, confirmed_at, consumed) VALUES (:player, :time, 0)");
             $confirmStmt->bindValue(':player', $player, SQLITE3_TEXT);
