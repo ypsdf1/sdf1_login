@@ -410,8 +410,8 @@ public class PVPArenaManager implements Listener {
         }
         scoreEntries.clear();
         // 按击杀数降序排列（手动选择排序，不使用 Comparator/lambda，规避 JDK26 javac 类型推断内部崩溃）
-        List<String> sorted = new ArrayList<String>(inPVPArena.size());
-        sorted.addAll(inPVPArena);
+        // ★ 显示所有曾踏入本世界的参与者（即使已离开但世界未销毁，战绩仍保留在死亡榜上）
+        List<String> sorted = new ArrayList<String>(pvpKills.keySet());
         for (int i = 0; i < sorted.size(); i++) {
             for (int j = i + 1; j < sorted.size(); j++) {
                 if (pvpKills.getOrDefault(sorted.get(j), 0) > pvpKills.getOrDefault(sorted.get(i), 0)) {
@@ -430,23 +430,18 @@ public class PVPArenaManager implements Listener {
         }
     }
 
-    /** 玩家离开PVP世界时清除其战绩并恢复默认记分板 */
+    /** 玩家离开PVP世界时仅将其个人记分板切回主世界；其战绩(击杀/死亡)保留在死亡榜上，
+     *  直到 PVP 世界被真正销毁(deletePVPWorld) 才统一清空。
+     *  ★ 修复：之前无论世界是否销毁都会删除该玩家战绩，导致“世界不销毁却清空战机”。 */
     private void cleanupPlayerStats(Player p) {
         if (p == null) return;
         String name = p.getName();
-        pvpKills.remove(name);
-        pvpDeaths.remove(name);
-        String entry = scoreEntries.remove(name);
-        if (pvpScoreboard != null && entry != null) {
-            pvpScoreboard.resetScores(entry);
-        }
+        // 仅将离场玩家个人记分板切回主世界（其战绩行仍保留在PVP记分板供其余玩家查看）
         if (p.isOnline()) {
             p.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());
         }
-        // 无人则销毁本局记分板，下次重建
-        if (inPVPArena.isEmpty() && pvpScoreboard != null) {
-            pvpScoreboard = null;
-        } else {
+        // 世界未被销毁 → 保留所有参与者战绩，仅刷新榜面（含已离开玩家）
+        if (pvpScoreboard != null) {
             refreshPVPScoreboard();
         }
     }
@@ -707,6 +702,11 @@ public class PVPArenaManager implements Listener {
      */
     private void deletePVPWorld(World world) {
         if (world == null) return;
+        // ★ 世界销毁：清空本局所有玩家战绩(击杀/死亡)与死亡榜（仅此时才清战机）
+        pvpKills.clear();
+        pvpDeaths.clear();
+        scoreEntries.clear();
+        pvpScoreboard = null;
         // 兜底：确保世界内无玩家（理论上冷却结束时已无人）
         for (Player p : new ArrayList<>(world.getPlayers())) {
             World main = Bukkit.getWorlds().get(0);
@@ -1761,6 +1761,11 @@ public class PVPArenaManager implements Listener {
         guiReopening.clear();
         guiOpenedMillis.clear();
         selectedTier.clear();
+        // ★ 同时清空本局所有玩家战绩(击杀/死亡)与死亡榜
+        pvpKills.clear();
+        pvpDeaths.clear();
+        scoreEntries.clear();
+        pvpScoreboard = null;
         // 取消所有超时定时器
         for (BukkitTask t : kickTimeoutTasks.values()) {
             if (t != null && !t.isCancelled()) t.cancel();

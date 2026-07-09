@@ -173,9 +173,11 @@ public class ShopManager implements Listener {
     }
     private static void regEnchant(String cn, String key) {
         try {
-            Enchantment e = Enchantment.getByKey(NamespacedKey.minecraft(key));
+            // ★ 优先用现代 Registry API（paper-api 新版 Enchantment.getByKey 可能返回 null，导致 ENCHANT_MAP 为空→附魔书全空壳）
+            Enchantment e = org.bukkit.Registry.ENCHANTMENT.get(NamespacedKey.minecraft(key));
+            if (e == null) e = Enchantment.getByKey(NamespacedKey.minecraft(key));
             if (e != null) ENCHANT_MAP.put(cn, e);
-        } catch (Exception ignored) {}
+        } catch (Throwable ignored) {}
     }
 
     public static class CartItem {
@@ -1399,6 +1401,68 @@ public class ShopManager implements Listener {
         } catch (Exception ex) {
             return null;
         }
+    }
+
+    /**
+     * 由商品ID权威重建附魔书（ID格式 <enchantKey>_<level>，如 MENDING_I / SHARPNESS_V / FLAME_I / BREACH_IV / WIND_BURST_III）。
+     * ID 使用标准 Bukkit 附魔键，比显示名可靠（显示名多变：火矢/破甲/致密/风爆/水下速掘 等不匹配关键词）。
+     */
+    private ItemStack buildEnchantedBookFromId(String id) {
+        if (id == null) return null;
+        int us = id.lastIndexOf('_');
+        if (us <= 0 || us >= id.length() - 1) return null;
+        String keyPart = id.substring(0, us).toLowerCase();
+        String lvlPart = id.substring(us + 1).trim();
+        if (lvlPart.isEmpty()) return null;
+        org.bukkit.enchantments.Enchantment ench = null;
+        try {
+            ench = org.bukkit.Registry.ENCHANTMENT.get(NamespacedKey.minecraft(keyPart));
+        } catch (Throwable ignored) {}
+        if (ench == null) {
+            try { ench = Enchantment.getByKey(NamespacedKey.minecraft(keyPart)); } catch (Throwable ignored) {}
+        }
+        if (ench == null) return null;
+        int lvl = parseLevelFromRomanOrArabic(lvlPart);
+        if (lvl < 1) lvl = 1;
+        int max = ench.getMaxLevel();
+        if (max > 0 && lvl > max) lvl = max;
+        ItemStack book = new ItemStack(Material.ENCHANTED_BOOK);
+        EnchantmentStorageMeta meta = (EnchantmentStorageMeta) book.getItemMeta();
+        if (meta == null) return null;
+        meta.addStoredEnchant(ench, lvl, true);
+        book.setItemMeta(meta);
+        return book;
+    }
+
+    private int parseLevelFromRomanOrArabic(String s) {
+        if (s == null || s.isEmpty()) return 1;
+        String t = s.trim();
+        java.util.regex.Matcher m = ROMAN_PAT.matcher(t);
+        if (m.find()) { int v = romanToInt(m.group()); if (v >= 1) return v; }
+        java.util.regex.Matcher m2 = ARABIC_PAT.matcher(t);
+        if (m2.find()) {
+            try { int v = Integer.parseInt(m2.group()); if (v >= 1) return v; } catch (NumberFormatException ignored) {}
+        }
+        return 1;
+    }
+
+    /**
+     * 若传入的附魔书是“空壳”（无存储附魔），则尝试用商品ID权威重建附魔NBT。
+     * 用于 Web 商城发放附魔书兜底，避免显示名解析失败/ENCHANT_MAP 为空导致空壳。
+     */
+    public ItemStack ensureEnchantedBookNbt(ItemStack itemStack, String itemId, int amount) {
+        if (itemStack == null || itemStack.getType() != Material.ENCHANTED_BOOK) return itemStack;
+        ItemMeta m = itemStack.getItemMeta();
+        boolean empty = !(m instanceof EnchantmentStorageMeta)
+                || ((EnchantmentStorageMeta) m).getStoredEnchants().isEmpty();
+        if (!empty) return itemStack;
+        ItemStack rebuilt = buildEnchantedBookFromId(itemId);
+        if (rebuilt != null) {
+            rebuilt.setAmount(amount);
+            plugin.getLogger().info("[Shop] 附魔书空壳已用ID重建NBT: " + itemId);
+            return rebuilt;
+        }
+        return itemStack;
     }
 
     private int parseEnchantLevel(String name, String keyword) {

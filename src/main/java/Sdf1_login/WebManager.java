@@ -6311,6 +6311,10 @@ public class WebManager {
                     }
                 }
 
+                // ★ 附魔书空壳兜底（ID权威重建）：若上面任一路径给出无附魔的附魔书
+                //   （显示名解析失败、ENCHANT_MAP 为空等），用商品ID（MENDING_I 等）重建NBT。
+                itemStack = plugin.getShopManager().ensureEnchantedBookNbt(itemStack, itemId, amount);
+
                 if (itemStack != null) {
                     java.util.HashMap<Integer, org.bukkit.inventory.ItemStack> leftover = player.getInventory().addItem(itemStack);
                     if (!leftover.isEmpty()) {
@@ -6430,6 +6434,8 @@ public class WebManager {
                 itemStack = fromName;
             }
         }
+        // ★ 附魔书空壳兜底（ID权威重建）
+        itemStack = plugin.getShopManager().ensureEnchantedBookNbt(itemStack, itemId, amount);
         return itemStack;
     }
 
