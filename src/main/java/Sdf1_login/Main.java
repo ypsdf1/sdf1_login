@@ -2499,6 +2499,18 @@ public class Main extends JavaPlugin
         }
     }
 
+    // ★ 防止玩家主动丢弃菜单雪球（避免丢失后无法拾取）
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onPlayerDropMenuSnowball(
+            org.bukkit.event.player.PlayerDropItemEvent e) {
+        if (e.isCancelled()) return;
+        ItemStack item = e.getItemDrop().getItemStack();
+        if (isMenuSnowball(item)) {
+            e.setCancelled(true);
+            e.getPlayer().sendMessage("§c§l[菜单] §f菜单雪球不可丢弃");
+        }
+    }
+
     // ★ 防止任何生物拾取菜单雪球掉落物（防恶魂投喂）
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onEntityPickupItem(
@@ -2506,6 +2518,8 @@ public class Main extends JavaPlugin
         if (e.isCancelled()) return;
         ItemStack item = e.getItem().getItemStack();
         if (isMenuSnowball(item)) {
+            // 玩家自己可以拾取（防丢失），仅阻止生物（如恶魂）投喂
+            if (e.getEntity() instanceof Player) return;
             e.setCancelled(true);
         }
     }
