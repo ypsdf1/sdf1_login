@@ -14,6 +14,8 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.util.Vector;
 
@@ -386,6 +388,12 @@ public class PVPTestManager implements Listener {
                     m.setPersistent(true);
                     m.setTarget(p);
                 }
+                // 亡灵生物(僵尸/小白)在白天会被太阳灼烧(SUNBURN)。
+                // 加一个长时效防火效果，直接免疫太阳灼烧，保证练习生物不会自燃。
+                mob.addPotionEffect(new PotionEffect(
+                        PotionEffectType.FIRE_RESISTANCE,
+                        630720000, // ≈1年(游戏刻)，练习生物离开即清理，足够覆盖整次练习
+                        0, false, false, false));
                 mobDifficulty.put(mob.getUniqueId(), diff);
                 playerMobs.computeIfAbsent(p.getUniqueId(), k -> new ArrayList<>()).add(mob.getUniqueId());
             }
