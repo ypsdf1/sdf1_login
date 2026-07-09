@@ -284,6 +284,9 @@ switch ($action) {
     case 'clear_admin_prices':
         clearAdminPrices();
         break;
+    case 'write_shop_refund':
+        writeShopRefund();
+        break;
     case 'check_shop_prices_changed':
         checkShopPricesChanged();
         break;
@@ -2939,6 +2942,77 @@ function clearAdminPrices() {
     $db = getDB();
     $db->exec("UPDATE shop_items SET admin_buy_price = NULL, admin_sell_price = NULL WHERE admin_buy_price IS NOT NULL OR admin_sell_price IS NOT NULL");
     success([], '已清除管理员价格标记');
+}
+
+// ===== Java端写入购物车退款请求（发货失败时触发） =====
+function writeShopRefund() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $rawInput = file_get_contents('php://input');
+    $data = json_decode($rawInput, true);
+    if (!$data) error('无效JSON');
+
+    $playerName = $data['player_name'] ?? '';
+    $amount = (int)($data['amount'] ?? 0);
+    $origTxId = $data['orig_tx_id'] ?? '';
+    $reason = $data['reason'] ?? '';
+    $payMode = $data['pay_mode'] ?? 'bond';
+
+    if (!$playerName || $amount <= 0) error('退款参数缺失');
+    if ($payMode !== 'cash') {
+        // 非现金模式：退还债券
+        $db = getDB();
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $stmt = $db->prepare("UPDATE bond_cache SET amount = amount + :amt WHERE player_name = :player");
+            $stmt->bindValue(':amt', $amount, SQLITE3_INTEGER);
+            $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $stmt->execute();
+            if ($stmt->changes() === 0) {
+                // 玩家不在缓存中，插入
+                $ins = $db->prepare("INSERT OR IGNORE INTO bond_cache (player_name, amount) VALUES (:player, :amt)");
+                $ins->bindValue(':player', $playerName, SQLITE3_TEXT);
+                $ins->bindValue(':amt', $amount, SQLITE3_INTEGER);
+                $ins->execute();
+            }
+            // 记录退款交易
+            $refStmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_refund', :amount, :reason, :detail, 'completed', :time)");
+            $refStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $refStmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            $refStmt->bindValue(':reason', "购物车自动退款(发货失败): " . $reason . " [原交易#" . $origTxId . "]", SQLITE3_TEXT);
+            $refStmt->bindValue(':detail', json_encode(['orig_tx_id' => $origTxId, 'refund_reason' => $reason, 'pay_mode' => $payMode], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $refStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $refStmt->execute();
+
+            // 标记原交易为已退款（避免重复处理）
+            $markStmt = $db->prepare("UPDATE web_transactions SET status = 'refunded' WHERE id = :txid OR reason LIKE :txidLike");
+            $markStmt->bindValue(':txid', $origTxId, SQLITE3_TEXT);
+            $markStmt->bindValue(':txidLike', '%' . $origTxId . '%', SQLITE3_TEXT);
+            $markStmt->execute();
+
+            $db->exec('COMMIT');
+            debugLog('[shop_refund] 退款成功: 玩家=' . $playerName . ' 金额=' . $amount . ' 原因=' . $reason);
+            success(['refunded_amount' => $amount, 'player' => $playerName], '退款成功');
+        } catch (\Throwable $e) {
+            try { $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
+            error('退款处理失败: ' . $e->getMessage(), 500);
+        }
+    } else {
+        // 现金模式：仅记账退款标记，不操作债券
+        $db = getDB();
+        try {
+            $refStmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, reason, detail, status, created_at) VALUES (:player, 'shop_refund', 0, :reason, :detail, 'completed', :time)");
+            $refStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $refStmt->bindValue(':reason', "购物车退款标记(现金模式/发货失败): " . $reason, SQLITE3_TEXT);
+            $refStmt->bindValue(':detail', json_encode(['orig_tx_id' => $origTxId, 'refund_reason' => $reason, 'pay_mode' => 'cash'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $refStmt->bindValue(':time', time(), SQLITE3_INTEGER);
+            $refStmt->execute();
+            success(['refunded_amount' => 0, 'player' => $playerName, 'note' => '现金模式仅记账'], '退款标记已记录(现金模式不扣债券)');
+        } catch (\Throwable $e) {
+            error('退款标记失败: ' . $e->getMessage(), 500);
+        }
+    }
 }
 
 // ===== 高频轮询：检测价格是否有改动（轻量级接口） =====

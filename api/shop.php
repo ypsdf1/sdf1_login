@@ -410,6 +410,27 @@ function shopBuyCart($token) {
         if (!$item) error('商品不存在: ' . $p['item_id']);
         if ($item['stock'] == 0) error('商品已售罄: ' . $item['display_name']);
         if ($item['stock'] > 0 && $item['stock'] < $p['amount']) error('库存不足: ' . $item['display_name'] . '（剩余' . $item['stock'] . '）');
+
+        // ★ 发货前验证：检查商品material是否为Java端可识别的有效值
+        //   防止扣款后发现Java无法匹配该材料（如附魔书ID被误写为material字段）导致钱扣了货没给
+        $mat = strtoupper(trim($item['material']));
+        $validMaterial = (
+            // 标准Bukkit Material：大写字母+数字+下划线，如 DIAMOND_SWORD, ENCHANTED_BOOK
+            preg_match('/^[A-Z][A-Z0-9_]+$/', $mat) &&
+            // 排除明显不是合法Material的值（如附魔书ID MENDING_I 等——这些应写在id而非material列）
+            // ENCHANTED_BOOK 是唯一合法的附魔书Material
+            ($mat === 'ENCHANTED_BOOK' || !preg_match('/_(I{1,3}|II|III|IV|V|[1-5])$/', $mat))
+        );
+        // 允许 id 字段是附魔书格式（如 MENDING_I），此时 material 必须是 ENCHANTED_BOOK
+        if (!$validMaterial) {
+            $pid = strtoupper(trim($p['item_id']));
+            $isEnchantedId = preg_match('/^[A-Z][A-Z0-9]*_[IVX12]+$/', $pid);
+            if (!($isEnchantedId && $mat === 'ENCHANTED_BOOK') && $mat !== 'ENCHANTED_BOOK') {
+                error('商品无法发放（material无效）: ' . $item['display_name']
+                    . ' [material=' . $item['material'] . ', id=' . $p['item_id'] . ']'
+                    . ' — 请管理员检查该商品的material字段是否正确');
+            }
+        }
         $lineTotal = (int)$item['buy_price'] * $p['amount'];
         $subtotal += $lineTotal;
         $p['item'] = $item;
