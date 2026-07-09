@@ -18,6 +18,7 @@ import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeModifier;
 import org.bukkit.inventory.EntityEquipment;
 import org.bukkit.projectiles.ProjectileSource;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
 import java.io.File;
@@ -56,6 +57,13 @@ public class PVPTestManager implements Listener {
     private final Map<UUID, InventoryBackup> inventoryBackups = new HashMap<>();
 
     private final Random rand = new Random();
+
+    /** 刷怪波次间隔(刻)：10秒 */
+    private static final long WAVE_INTERVAL_TICKS = 200L;
+    /** 单个玩家在场练习生物存活上限(安全阀，防止无限堆积卡服) */
+    private static final int MAX_ALIVE_PER_PLAYER = 30;
+    /** 死循环刷怪任务(有人在场时运行，全部退场即取消) */
+    private BukkitTask spawnTask = null;
 
     // ==================== 枚举定义 ====================
 
@@ -313,16 +321,26 @@ public class PVPTestManager implements Listener {
         clearInventory(p);
         giveEquip(p, equip);
 
+        // ★ 和平模式修复：若主世界是和平模式，测试场(默认同主世界难度)刷出的亡灵生物会被瞬间移除。
+        //   有人在场时，临时把测试场难度提到困难(保证亡灵生物存活)；主世界非和平则跳过(测试场本就非和平)。
+        World main = Bukkit.getWorlds().get(0);
+        if (main.getDifficulty() == Difficulty.PEACEFUL) {
+            w.setDifficulty(Difficulty.HARD);
+        }
+
         inTest.add(p.getUniqueId());
 
-        // 生成练习生物
-        spawnMobs(p, w, diff, equip);
+        // 立即来一波，之后每10秒一波，死循环直到所有人退场
+        spawnWaveFor(p);
+        startSpawnLoop();
 
         p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  装备: " + equip.display);
-        p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。输入 /pvp leave 离开。");
+        p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。");
+        p.sendMessage("§7每10秒刷新一波，背包已附金苹果等回血食物。输入 /pvp leave 离开。");
         p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP测试] 玩家 " + p.getName()
-                + " 进入测试场 (难度=" + diff.name() + ", 装备=" + equip.name() + ")");
+                + " 进入测试场 (难度=" + diff.name() + ", 装备=" + equip.name()
+                + ", 主世界难度=" + main.getDifficulty().name() + ")");
     }
 
     private void giveEquip(Player p, TestEquip equip) {
@@ -354,18 +372,84 @@ public class PVPTestManager implements Listener {
                 p.getInventory().setArmorContents(ironArmor);
                 break;
         }
+        // 回血类食物：金苹果(回血+再生) + 熟牛肉(维持饱食度)
+        p.getInventory().addItem(new ItemStack(Material.GOLDEN_APPLE, 16));
+        p.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, 32));
     }
 
-    private void spawnMobs(Player p, World w, TestDifficulty diff, TestEquip equip) {
+    /**
+     * 单玩家的一波：
+     *   单场景(近战/远程) → 3只/组；混合场景 → 6只/组(3僵尸+3小白)。
+     * 仅在该玩家在场生物未超上限时补一波。
+     */
+    private void spawnWaveFor(Player p) {
+        if (!inTest.contains(p.getUniqueId())) return;
+        if (aliveMobCount(p) >= MAX_ALIVE_PER_PLAYER) return; // 安全阀：超上限则跳过本波
+        TestDifficulty diff = chosenDiff.get(p.getUniqueId());
+        if (diff == null) return;
+        TestEquip equip = chosenEquip.get(p.getUniqueId());
+        if (equip == null) equip = TestEquip.MELEE;
+        World w = p.getWorld();
         if (equip == TestEquip.MIXED) {
-            // 2 僵尸 + 2 小白
-            spawnRing(p, w, diff, EntityType.ZOMBIE, 2);
-            spawnRing(p, w, diff, EntityType.SKELETON, 2);
+            spawnRing(p, w, diff, EntityType.ZOMBIE, 3);
+            spawnRing(p, w, diff, EntityType.SKELETON, 3);
         } else if (equip == TestEquip.RANGED) {
-            spawnRing(p, w, diff, EntityType.SKELETON, 4);
+            spawnRing(p, w, diff, EntityType.SKELETON, 3);
         } else {
-            spawnRing(p, w, diff, EntityType.ZOMBIE, 4);
+            spawnRing(p, w, diff, EntityType.ZOMBIE, 3);
         }
+    }
+
+    /** 死循环刷怪：每10秒为一波，遍历所有在场玩家各补一波，全部退场则取消任务 */
+    private void spawnWave() {
+        if (inTest.isEmpty()) {
+            stopSpawnLoop();
+            return;
+        }
+        for (UUID uid : new HashSet<>(inTest)) {
+            Player p = Bukkit.getPlayer(uid);
+            if (p != null && p.isOnline()) spawnWaveFor(p);
+        }
+    }
+
+    /** 启动刷怪循环(若未运行) */
+    private void startSpawnLoop() {
+        if (spawnTask != null) return;
+        spawnTask = Bukkit.getScheduler().runTaskTimer(
+                plugin, this::spawnWave, WAVE_INTERVAL_TICKS, WAVE_INTERVAL_TICKS);
+        plugin.getLogger().info("[PVP测试] 已启动死循环刷怪(每" + (WAVE_INTERVAL_TICKS / 20) + "秒一波)");
+    }
+
+    /** 停止刷怪循环并还原测试场难度(无人时调用) */
+    private void stopSpawnLoop() {
+        if (spawnTask != null) {
+            spawnTask.cancel();
+            spawnTask = null;
+            plugin.getLogger().info("[PVP测试] 刷怪循环已停止(无人)");
+        }
+        World w = Bukkit.getWorld(PVP_TEST_WORLD_NAME);
+        if (w != null) {
+            // 还原为当前主世界难度(主世界和平则回到和平，符合"仅临时调整"语义)
+            w.setDifficulty(Bukkit.getWorlds().get(0).getDifficulty());
+        }
+    }
+
+    /** 统计某玩家在场且存活的练习生物数量 */
+    private int aliveMobCount(Player p) {
+        int n = 0;
+        List<UUID> list = playerMobs.get(p.getUniqueId());
+        if (list != null) {
+            for (UUID uid : list) {
+                Entity e = Bukkit.getEntity(uid);
+                if (e != null && !e.isDead()) n++;
+            }
+        }
+        return n;
+    }
+
+    /** 全部退场后停止刷怪循环(恢复难度由 stopSpawnLoop 负责) */
+    private void checkAllLeft() {
+        if (inTest.isEmpty()) stopSpawnLoop();
     }
 
     private void spawnRing(Player p, World w, TestDifficulty diff, EntityType type, int count) {
@@ -399,7 +483,7 @@ public class PVPTestManager implements Listener {
                     // 抵消皮革帽自带的1点护甲，使其不增加玩家对练习生物的伤害减免(纯用于挡太阳)
                     hm.addAttributeModifier(Attribute.ARMOR,
                             new AttributeModifier(
-                                    UUID.randomUUID(), "pvp_test_no_armor", -1.0,
+                                    "pvp_test_no_armor", -1.0,
                                     AttributeModifier.Operation.ADD_NUMBER));
                     hat.setItemMeta(hm);
                 }
@@ -427,6 +511,7 @@ public class PVPTestManager implements Listener {
         World main = Bukkit.getWorlds().get(0);
         p.teleport(main.getSpawnLocation());
         p.sendMessage("§a§l[PVP测试] 已离开测试场，背包已还原");
+        checkAllLeft();
     }
 
     private void removePlayerMobs(Player p) {
@@ -573,6 +658,7 @@ public class PVPTestManager implements Listener {
         // 回到主世界后再还原背包，避免死亡瞬间覆盖
         final Player fp = p;
         Bukkit.getScheduler().runTaskLater(plugin, () -> restoreInventory(fp), 1L);
+        checkAllLeft();
     }
 
     /** 退出：清理练习生物并还原背包 */
@@ -585,6 +671,7 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        checkAllLeft();
     }
 
     /** 通过其他方式离开测试世界（如指令传送）→ 视为离开 */
@@ -598,5 +685,6 @@ public class PVPTestManager implements Listener {
         inTest.remove(p.getUniqueId());
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
+        checkAllLeft();
     }
 }
