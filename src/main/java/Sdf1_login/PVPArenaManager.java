@@ -76,7 +76,7 @@ public class PVPArenaManager implements Listener {
     // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
     private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
 
-    // ★ GUI打开时间戳（仅用于历史清理兼容，当前检测逻辑已改为基于 selectedTier 状态判断）
+    // ★ GUI打开时间戳（用于宽限期机制：GUI刚打开后短时间内的关闭事件视为过渡误触，忽略遣返）
     private final Map<String, Long> guiOpenedMillis = new ConcurrentHashMap<>();
 
     // 玩家背包备份缓存 (玩家名 -> 备份数据)
@@ -124,27 +124,28 @@ public class PVPArenaManager implements Listener {
     // 装备选择GUI标题
     private static final String EQUIPMENT_GUI_TITLE = "§6§l选择PVP装备";
 
-    // ★ 装备档位定义
-    public enum EquipmentTier {
-        LEATHER("§e皮革套装", "轻便敏捷，适合新手", Material.LEATHER_HELMET, 1),
-        CHAINMAIL("§7锁链套装", "攻守平衡，进阶选择", Material.CHAINMAIL_HELMET, 2),
-        IRON("§f铁甲套装", "经典配置，可靠之选", Material.IRON_HELMET, 3),
-        DIAMOND("§b钻石套装", "高端防护，强力输出", Material.DIAMOND_HELMET, 4),
-        NETHERITE("§6下合金套装", "顶级装备，所向披靡", Material.NETHERITE_HELMET, 5);
+    // ★ 新装备模型（取代原5档护甲系统，2026-07-09 改版）：
+    //   主武器 = 铁剑 + 铁斧（两者必发，保证公平一致）；
+    //   附魔 = 锋利V + 击退II（作用于主武器）；盾牌可选（副手）；补血普通食物 = 熟牛肉（数量可调）。
+    //   ★ 公平锁定：首个进入PVP世界的玩家定死"主武器是否附魔"，后续加入者不可更改（保证公平）。
+    //     盾牌与熟牛肉数量对所有玩家始终可选。
+    private final Map<String, Boolean> selEnchant = new ConcurrentHashMap<>(); // 该玩家是否要附魔主武器
+    private final Map<String, Boolean> selShield = new ConcurrentHashMap<>();  // 该玩家是否拿盾牌
+    private final Map<String, Integer> selFood = new ConcurrentHashMap<>();    // 熟牛肉数量
 
-        public final String displayName;
-        public final String description;
-        public final Material helmetMaterial;
-        public final int tierId;
+    private static final int FOOD_MIN = 1;
+    private static final int FOOD_MAX = 64;
+    private static final int FOOD_DEFAULT = 16;
 
-        EquipmentTier(String displayName, String desc, Material helmet, int id) {
-            this.displayName = displayName; this.description = desc;
-            this.helmetMaterial = helmet; this.tierId = id;
-        }
-    }
+    // ★ 公平锁定状态：首个进入本局PVP世界的玩家定死附魔选择
+    private String lockedEnchantOwner = null;  // 定锁玩家名（null=本局尚无首人）
+    private Boolean lockedEnchant = null;      // 首人定死的附魔选择（true/false）；本局所有人主武器附魔以此为准
 
-    // 玩家当前选中的装备档位
-    private final Map<String, EquipmentTier> selectedTier = new ConcurrentHashMap<>();
+    // 玩家是否已在装备GUI中发生过交互（点击任意功能按钮），用于 onInventoryClose 区分"已选/ESC跳过"
+    private final Set<String> equipInteracted = ConcurrentHashMap.newKeySet();
+
+    // PVP专属物品标记（写入 lore，isPVPEquipment 据此精准识别，避免误删玩家自带同材质物品）
+    private static final String PVP_ITEM_MARKER = "§8§o[PVP竞技场专属]";
 
     /**
      * 背包备份数据类
@@ -724,6 +725,8 @@ public class PVPArenaManager implements Listener {
         Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
         // ★ 同样用重命名移走，避免 Windows 删除锁导致旧世界残留
         moveWorldToTrash(new File(Bukkit.getWorldContainer(), pvpWorldName));
+        // ★ 世界销毁 → 重置本局公平锁定，下一局首位玩家重新定死附魔
+        resetMatchLock();
         plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
     }
 
@@ -846,28 +849,24 @@ public class PVPArenaManager implements Listener {
 
         // ★★★ 核心改进：基于确定性状态判断，而非猜测关闭原因 ★★★
         //
-        // 方案：检查玩家是否已选择了装备档位（selectedTier 有值）
-        //   - 已选档位 → 玩家在浏览/切换，自动重开 GUI（不遣返）
-        //   - 从未选择 → 玩家直接跳过了（ESC/未交互），执行遣返
+        // 方案：检查玩家是否已在装备GUI中操作过（equipInteracted 有值）
+        //   - 已操作过 → 玩家在浏览/切换，自动重开 GUI（不遣返）
+        //   - 从未操作 → 玩家直接跳过了（ESC/未交互），执行遣返
         //
         // 同时配合超时安全网（onPlayerEnterPVPWorld 中注册60秒定时器），
         // 防止玩家一直开着 GUI 不操作也不退出
 
         // ★ 关键修复：确认过装备（equipmentConfirmed 有值）也绝不能遣返。
-        //   确认流程 confirmEquipment() 内 equipFullSet() 会 selectedTier.remove()，
-        //   若此时 guiReopening 已被前置宽限期自动重开消费，则关闭事件落入遣返分支。
-        //   故同时判断 equipmentConfirmed，二者任一成立即不遣返。
-        if (selectedTier.containsKey(player.getName())
-                || equipmentConfirmed.contains(player.getName())) {
-            if (equipmentConfirmed.contains(player.getName())) {
-                plugin.getLogger().info("[PVP] 玩家 " + player.getName()
-                        + " 已确认装备但GUI关闭，忽略（不遣返）");
-                return;
-            }
-            // 玩家已选择了档位 → 自动重开 GUI 让其继续操作或点确认
+        if (equipmentConfirmed.contains(player.getName())) {
             plugin.getLogger().info("[PVP] 玩家 " + player.getName()
-                    + " 已选择档位但未确认就关了GUI，自动重开（selectedTier="
-                    + selectedTier.get(player.getName()) + "）");
+                    + " 已确认装备但GUI关闭，忽略（不遣返）");
+            return;
+        }
+
+        // 玩家已在GUI中操作过（点过附魔/盾牌/食物/确认）→ 自动重开GUI让其继续或点确认
+        if (equipInteracted.contains(player.getName())) {
+            plugin.getLogger().info("[PVP] 玩家 " + player.getName()
+                    + " 已操作装备GUI但未确认就关了，自动重开");
             Bukkit.getScheduler().runTaskLater(plugin, () -> {
                 if (inPVPArena.contains(player.getName())
                         && !equipmentConfirmed.contains(player.getName())
@@ -994,7 +993,10 @@ public class PVPArenaManager implements Listener {
                 guiReopening.remove(playerName);
                 guiOpenedMillis.remove(playerName);
                 graceReopenCount.remove(playerName);
-                selectedTier.remove(playerName);
+                selEnchant.remove(playerName);
+                selShield.remove(playerName);
+                selFood.remove(playerName);
+                equipInteracted.remove(playerName);
                 if (p != null && p.isOnline()) {
                     p.closeInventory();
                     World main = Bukkit.getWorlds().get(0);
@@ -1050,7 +1052,10 @@ public class PVPArenaManager implements Listener {
         guiReopening.remove(playerName);
         guiOpenedMillis.remove(playerName);
         graceReopenCount.remove(playerName);
-        selectedTier.remove(playerName);
+        selEnchant.remove(playerName);
+        selShield.remove(playerName);
+        selFood.remove(playerName);
+        equipInteracted.remove(playerName);
         cancelKickTimeout(playerName);
         cleanupPlayerStats(player);
 
@@ -1264,7 +1269,10 @@ public class PVPArenaManager implements Listener {
                 guiReopening.remove(player.getName());
                 guiOpenedMillis.remove(player.getName());
                 graceReopenCount.remove(player.getName());
-                selectedTier.remove(player.getName());
+                selEnchant.remove(player.getName());
+                selShield.remove(player.getName());
+                selFood.remove(player.getName());
+                equipInteracted.remove(player.getName());
                 cancelKickTimeout(player.getName());
                 cleanupPlayerStats(player);
             }
@@ -1386,20 +1394,14 @@ public class PVPArenaManager implements Listener {
      */
     private boolean isPVPEquipment(ItemStack item) {
         if (item == null) return false;
-        Material type = item.getType();
-        String name = type.name();
-
-        // 所有档位可能用到的盔甲材料
-        boolean isArmor = name.endsWith("_HELMET") || name.endsWith("_CHESTPLATE")
-                || name.endsWith("_LEGGINGS") || name.endsWith("_BOOTS");
-
-        // PVP 武器和消耗品
-        boolean isWeapon = (name.contains("SWORD") || name.contains("BOW") || name.equals("CROSSBOW"));
-        boolean isAmmo = (type == Material.ARROW || type == Material.SPECTRAL_ARROW);
-        boolean isConsumable = (type == Material.GOLDEN_APPLE || type == Material.POTION
-                || type == Material.ENDER_PEARL);
-
-        return isArmor || isWeapon || isAmmo || isConsumable;
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) return false;
+        List<String> lore = meta.getLore();
+        if (lore == null) return false;
+        for (String line : lore) {
+            if (line != null && line.contains("PVP竞技场专属")) return true;
+        }
+        return false;
     }
 
     /**
@@ -1410,206 +1412,175 @@ public class PVPArenaManager implements Listener {
         guiOpenedMillis.put(player.getName(), System.currentTimeMillis());
         graceReopenCount.put(player.getName(), 0);
 
+        String name = player.getName();
+
+        // ★ 公平锁定：本局首位进入PVP世界的玩家定死"主武器是否附魔"，后续加入者不可更改
+        boolean isFirst = (lockedEnchantOwner == null);
+        if (isFirst) {
+            lockedEnchantOwner = name;
+            lockedEnchant = false; // 默认值，首位玩家可在GUI中切换
+        }
+        // 为所有玩家初始化默认值（后续玩家附魔默认跟随首人定锁值）
+        if (!selEnchant.containsKey(name)) selEnchant.put(name, lockedEnchant != null ? lockedEnchant : false);
+        if (!selShield.containsKey(name)) selShield.put(name, true);
+        if (!selFood.containsKey(name)) selFood.put(name, FOOD_DEFAULT);
+
+        boolean enchantLocked = (lockedEnchantOwner != null && !lockedEnchantOwner.equals(name));
+        boolean myEnchant = selEnchant.getOrDefault(name, false);
+        boolean myShield = selShield.getOrDefault(name, true);
+        int myFood = selFood.getOrDefault(name, FOOD_DEFAULT);
+
         Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
 
-        // ★ 顶部：当前选中档位的装备预览（第0-8格显示当前档位的装备）
-        EquipmentTier tier = selectedTier.getOrDefault(player.getName(), EquipmentTier.IRON);
-        List<ItemStack> tierItems = buildTierEquipment(tier);
-        for (int i = 0; i < tierItems.size() && i < 9; i++) {
-            gui.setItem(i, tierItems.get(i));
-        }
-        // 填充空位
-        for (int i = tierItems.size(); i < 9; i++) {
-            gui.setItem(i, new ItemStack(Material.GRAY_STAINED_GLASS_PANE));
-        }
+        // ★ 顶部预览（0-8）：主武器 + 盾牌 + 食物
+        gui.setItem(0, previewItem(Material.IRON_SWORD, "§b§l铁剑", "§7主武器·必发"));
+        gui.setItem(1, previewItem(Material.IRON_AXE, "§b§l铁斧", "§7主武器·必发"));
+        gui.setItem(2, myShield
+                ? previewItem(Material.SHIELD, "§a§l盾牌 ✓", "§7已选·副手装备")
+                : grayPreview("§7盾牌 ✗", "§7未选（可开启）"));
+        gui.setItem(3, previewItem(Material.COOKED_BEEF, "§c§l熟牛肉 x" + myFood, "§7补血普通食物"));
 
-        // ★ 中间行：5个装备档位按钮（第18-26格，每行3个）
-        int[] tierSlots = {19, 21, 23, 25, 27};
-        Material[] tierIcons = {Material.LEATHER, Material.CHAINMAIL_CHESTPLATE,
-                Material.IRON_CHESTPLATE, Material.DIAMOND_CHESTPLATE, Material.NETHERITE_CHESTPLATE};
-        String[] tierLore = {"§7速度+ | 防御低", "§7平衡型", "§7经典配置",
-                "§7高防高伤", "§7最强装备"};
-
-        for (int t = 0; t < EquipmentTier.values().length; t++) {
-            EquipmentTier et = EquipmentTier.values()[t];
-            ItemStack tierBtn = new ItemStack(tierIcons[t]);
-            ItemMeta tm = tierBtn.getItemMeta();
-            if (tm != null) {
-                tm.setDisplayName(et.displayName);
-                boolean isSelected = (tier == et);
-                List<String> lore = new ArrayList<>();
-                lore.add("§7" + et.description);
-                lore.add("");
-                lore.add(tierLore[t]);
-                lore.add("");
-                if (isSelected) {
-                    lore.add("§a✓ 当前选中");
-                    // 给选中的加个绿色玻璃框效果
-                    tierBtn = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
-                    tm = tierBtn.getItemMeta();
-                    if (tm != null) {
-                        tm.setDisplayName(et.displayName);
-                        tm.setLore(lore);
-                        tierBtn.setItemMeta(tm);
-                    }
-                } else {
-                    lore.add("§e点击选择此档位");
-                    tm.setLore(lore);
-                    tierBtn.setItemMeta(tm);
-                }
-            }
-            gui.setItem(tierSlots[t], tierBtn);
-        }
-
-        // 分隔线
+        // 分隔线（36-44，跳过40）
         for (int i = 36; i < 45; i++) {
             if (i == 40) continue;
             gui.setItem(i, new ItemStack(Material.GRAY_STAINED_GLASS_PANE));
         }
 
-        // 当前档位信息
+        // 信息面板（40）
         ItemStack info = new ItemStack(Material.PAPER);
         ItemMeta infoM = info.getItemMeta();
         if (infoM != null) {
-            infoM.setDisplayName("§6§l当前: " + tier.displayName);
-            infoM.setLore(Arrays.asList(
-                    "§7" + tier.description,
-                    "",
-                    "§e点击上方档位切换",
-                    "§a点击下方确认开始战斗"));
+            infoM.setDisplayName("§6§lPVP装备选择");
+            List<String> lore = new ArrayList<>();
+            lore.add("§7主武器: §b铁剑 + 铁斧 §7（必发）");
+            lore.add("§7附魔: §d锋利V + 击退II");
+            lore.add("");
+            lore.add("§7你的附魔: " + (myEnchant ? "§a已开启" : "§c未开启"));
+            lore.add("§7你的盾牌: " + (myShield ? "§a已装备" : "§c未装备"));
+            lore.add("§7熟牛肉: §a" + myFood + " §7个");
+            if (enchantLocked) {
+                lore.add("");
+                lore.add("§e⚠ 附魔已由首位玩家锁定: " + (lockedEnchant ? "开启" : "关闭"));
+            }
+            infoM.setLore(lore);
             info.setItemMeta(infoM);
         }
         gui.setItem(40, info);
 
-        // 确认选择按钮
+        // 附魔开关（19）— 仅首位玩家可切换，后续玩家灰显锁定
+        ItemStack enchBtn = new ItemStack(
+                enchantLocked ? Material.GRAY_STAINED_GLASS_PANE
+                        : (myEnchant ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE));
+        ItemMeta em = enchBtn.getItemMeta();
+        if (em != null) {
+            em.setDisplayName(enchantLocked ? "§7§l附魔 (已锁定)"
+                    : (myEnchant ? "§a§l附魔: 开" : "§c§l附魔: 关"));
+            List<String> lore = new ArrayList<>();
+            lore.add("§7锋利V + 击退II（作用于铁剑与铁斧）");
+            if (enchantLocked) {
+                lore.add("§e由首位玩家设定: " + (lockedEnchant ? "开启" : "关闭"));
+                lore.add("§7本局不可更改");
+            } else {
+                lore.add(myEnchant ? "§a点击关闭" : "§a点击开启");
+            }
+            em.setLore(lore);
+            enchBtn.setItemMeta(em);
+        }
+        gui.setItem(19, enchBtn);
+
+        // 盾牌开关（21）— 所有玩家可切换
+        ItemStack shBtn = new ItemStack(myShield ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
+        ItemMeta sm = shBtn.getItemMeta();
+        if (sm != null) {
+            sm.setDisplayName(myShield ? "§a§l盾牌: 装备" : "§c§l盾牌: 不装备");
+            sm.setLore(Arrays.asList("§7副手装备，可随时开关", myShield ? "§a点击取消" : "§a点击装备"));
+            shBtn.setItemMeta(sm);
+        }
+        gui.setItem(21, shBtn);
+
+        // 熟牛肉数量 -1（23）/ 当前（24）/ +1（25）
+        ItemStack minus = new ItemStack(Material.RED_STAINED_GLASS_PANE);
+        ItemMeta mm = minus.getItemMeta();
+        if (mm != null) {
+            mm.setDisplayName("§c§l熟牛肉 -1");
+            mm.setLore(Arrays.asList("§7当前: " + myFood + " 个", "§7范围 " + FOOD_MIN + "~" + FOOD_MAX));
+            minus.setItemMeta(mm);
+        }
+        gui.setItem(23, minus);
+
+        ItemStack cnt = new ItemStack(Material.PAPER);
+        ItemMeta cm = cnt.getItemMeta();
+        if (cm != null) {
+            cm.setDisplayName("§6§l熟牛肉: " + myFood);
+            cm.setLore(Arrays.asList("§7补血普通食物数量", "§7点击 -1 / +1 调整"));
+            cnt.setItemMeta(cm);
+        }
+        gui.setItem(24, cnt);
+
+        ItemStack plus = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
+        ItemMeta pm = plus.getItemMeta();
+        if (pm != null) {
+            pm.setDisplayName("§a§l熟牛肉 +1");
+            pm.setLore(Arrays.asList("§7当前: " + myFood + " 个", "§7范围 " + FOOD_MIN + "~" + FOOD_MAX));
+            plus.setItemMeta(pm);
+        }
+        gui.setItem(25, plus);
+
+        // 确认（49）
         ItemStack confirm = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
         ItemMeta confirmMeta = confirm.getItemMeta();
         if (confirmMeta != null) {
-            confirmMeta.setDisplayName("§a§l确认选择（将备份你的原背包）");
-            confirmMeta.setLore(Arrays.asList(
-                    "§7确认后将发放 " + tier.displayName,
-                    "§7并备份你当前的背包"));
+            confirmMeta.setDisplayName("§a§l确认装备（将备份你的原背包）");
+            List<String> lore = new ArrayList<>();
+            lore.add("§7铁剑 + 铁斧" + (myEnchant ? "（§d附魔§7）" : "（§7未附魔§7）"));
+            lore.add(myShield ? "§7含 §a盾牌" : "§7不含盾牌");
+            lore.add("§7熟牛肉 x" + myFood);
+            confirmMeta.setLore(lore);
             confirm.setItemMeta(confirmMeta);
         }
         gui.setItem(49, confirm);
 
-        // 一键装备全套按钮
-        ItemStack selectAll = new ItemStack(Material.NETHER_STAR);
-        ItemMeta selectAllMeta = selectAll.getItemMeta();
-        if (selectAllMeta != null) {
-            selectAllMeta.setDisplayName("§b§l一键装备全套");
-            selectAllMeta.setLore(Arrays.asList("§7使用 " + tier.displayName + " §7快速开始"));
-            selectAll.setItemMeta(selectAllMeta);
-        }
-        gui.setItem(53, selectAll);
-
         player.openInventory(gui);
     }
 
-    /**
-     * 根据档位构建装备列表
-     */
-    private List<ItemStack> buildTierEquipment(EquipmentTier tier) {
-        List<ItemStack> items = new ArrayList<>();
-
-        switch (tier) {
-            case LEATHER:
-                items.add(new ItemStack(Material.LEATHER_HELMET));
-                items.add(new ItemStack(Material.LEATHER_CHESTPLATE));
-                items.add(new ItemStack(Material.LEATHER_LEGGINGS));
-                items.add(new ItemStack(Material.LEATHER_BOOTS));
-                items.add(makeWeapon(Material.STONE_SWORD, "§7PVP石剑", false));
-                items.add(new ItemStack(Material.BOW));
-                items.add(new ItemStack(Material.ARROW, 32));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 4));
-                break;
-
-            case CHAINMAIL:
-                items.add(new ItemStack(Material.CHAINMAIL_HELMET));
-                items.add(new ItemStack(Material.CHAINMAIL_CHESTPLATE));
-                items.add(new ItemStack(Material.CHAINMAIL_LEGGINGS));
-                items.add(new ItemStack(Material.CHAINMAIL_BOOTS));
-                items.add(makeWeapon(Material.IRON_SWORD, "§7PVP铁剑", false));
-                items.add(new ItemStack(Material.BOW));
-                items.add(new ItemStack(Material.ARROW, 48));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 6));
-                break;
-
-            case IRON:
-                items.add(new ItemStack(Material.IRON_HELMET));
-                items.add(new ItemStack(Material.IRON_CHESTPLATE));
-                items.add(new ItemStack(Material.IRON_LEGGINGS));
-                items.add(new ItemStack(Material.IRON_BOOTS));
-                items.add(makeWeapon(Material.DIAMOND_SWORD, "§b§lPVP钻石剑", false));
-                items.add(new ItemStack(Material.BOW));
-                items.add(new ItemStack(Material.ARROW, 64));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 8));
-                items.add(makePotion(3));
-                break;
-
-            case DIAMOND:
-                items.add(new ItemStack(Material.DIAMOND_HELMET));
-                items.add(new ItemStack(Material.DIAMOND_CHESTPLATE));
-                items.add(new ItemStack(Material.DIAMOND_LEGGINGS));
-                items.add(new ItemStack(Material.DIAMOND_BOOTS));
-                items.add(makeWeapon(Material.DIAMOND_SWORD, "§b§lPVP钻石剑", true));
-                items.add(new ItemStack(Material.CROSSBOW));
-                items.add(new ItemStack(Material.ARROW, 64));
-                items.add(new ItemStack(Material.SPECTRAL_ARROW, 8));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 10));
-                items.add(makePotion(5));
-                break;
-
-            case NETHERITE:
-                items.add(new ItemStack(Material.NETHERITE_HELMET));
-                items.add(new ItemStack(Material.NETHERITE_CHESTPLATE));
-                items.add(new ItemStack(Material.NETHERITE_LEGGINGS));
-                items.add(new ItemStack(Material.NETHERITE_BOOTS));
-                items.add(makeWeapon(Material.NETHERITE_SWORD, "§6§lPVP下合金剑", true));
-                items.add(new ItemStack(Material.CROSSBOW));
-                items.add(new ItemStack(Material.ARROW, 64));
-                items.add(new ItemStack(Material.SPECTRAL_ARROW, 16));
-                items.add(new ItemStack(Material.GOLDEN_APPLE, 12));
-                items.add(makePotion(8));
-                items.add(new ItemStack(Material.ENDER_PEARL, 4));
-                break;
+    private ItemStack previewItem(Material mat, String name, String desc) {
+        ItemStack it = new ItemStack(mat);
+        ItemMeta m = it.getItemMeta();
+        if (m != null) {
+            m.setDisplayName(name);
+            m.setLore(Arrays.asList(desc));
+            it.setItemMeta(m);
         }
-
-        return items;
+        return it;
     }
+
+    private ItemStack grayPreview(String name, String desc) {
+        return previewItem(Material.GRAY_STAINED_GLASS_PANE, name, desc);
+    }
+
+    // ★ 旧5档护甲系统已废弃（2026-07-09 改版为铁剑+铁斧+可选盾牌+可选附魔+可调熟牛肉）
+    //   原 buildTierEquipment(EquipmentTier) 与 makePotion 整体移除，装备由 equipFullSet 按新模型直接构建。
 
     private ItemStack makeWeapon(Material mat, String name, boolean enchant) {
-        ItemStack sword = new ItemStack(mat);
-        ItemMeta meta = sword.getItemMeta();
+        ItemStack item = new ItemStack(mat);
+        ItemMeta meta = item.getItemMeta();
         if (meta != null) {
             meta.setDisplayName(name);
+            List<String> lore = new ArrayList<>();
+            lore.add("§7PVP竞技场主武器");
             if (enchant) {
-                meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS, 4, true);
-                meta.addEnchant(org.bukkit.enchantments.Enchantment.UNBREAKING, 3, true);
-                meta.addEnchant(org.bukkit.enchantments.Enchantment.MENDING, 1, true);
+                // ★ 新附魔：锋利V + 击退II（取代旧 SHARPNESS4/UNBREAKING3/MENDING1）
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS, 5, true);
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.KNOCKBACK, 2, true);
+                lore.add("§d附魔: 锋利V + 击退II");
+            } else {
+                lore.add("§7未附魔");
             }
-            sword.setItemMeta(meta);
+            lore.add(PVP_ITEM_MARKER);
+            meta.setLore(lore);
+            item.setItemMeta(meta);
         }
-        return sword;
-    }
-
-    private ItemStack makePotion(int count) {
-        ItemStack potion = new ItemStack(Material.POTION, count);
-        ItemMeta meta = potion.getItemMeta();
-        if (meta instanceof PotionMeta) {
-            PotionMeta pMeta = (PotionMeta) meta;
-            pMeta.setDisplayName("§a§l瞬间治疗药水");
-            // ★ 写入真实药水效果 NBT：瞬间治疗（数量越多档位越高效果越强），
-            //   否则客户端只显示"药水"却没有任何效果（玩家反馈"药水无效果"）。
-            pMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
-                    org.bukkit.potion.PotionEffectType.INSTANT_HEALTH,
-                    1,                       // 瞬间效果，duration 无意义
-                    count >= 8 ? 1 : 0,      // 下合金档(8瓶)→治疗II，其余治疗I
-                    false, false), true);
-            pMeta.setBasePotionType(org.bukkit.potion.PotionType.HEALING);
-            potion.setItemMeta(pMeta);
-        }
-        return potion;
+        return item;
     }
 
     /**
@@ -1624,43 +1595,62 @@ public class PVPArenaManager implements Listener {
             return false;
         }
 
-        // ★ 档位选择按钮（19,21,23,25,27）
-        int[] tierSlots = {19, 21, 23, 25, 27};
-        for (int t = 0; t < tierSlots.length; t++) {
-            if (slot == tierSlots[t]) {
-                EquipmentTier chosen = EquipmentTier.values()[t];
-                selectedTier.put(player.getName(), chosen);
-                // 标记：接下来重开GUI导致的旧GUI关闭事件需忽略（避免误触发遣返）
-                guiReopening.add(player.getName());
-                // 刷新 GUI 显示新档位的装备预览
-                openEquipmentSelection(player);
-                player.sendMessage("§a已选择: " + chosen.displayName);
-                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+        String name = player.getName();
+
+        // ★ 附魔开关（19）— 仅首位玩家可切换，后续玩家锁定不可改
+        if (slot == 19) {
+            if (lockedEnchantOwner != null && !lockedEnchantOwner.equals(name)) {
+                player.sendMessage("§e[PVP] §7本局附魔已由首位玩家锁定，不可更改");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 return true;
             }
+            boolean cur = selEnchant.getOrDefault(name, false);
+            selEnchant.put(name, !cur);
+            lockedEnchant = !cur; // 首人实时定锁
+            equipInteracted.add(name);
+            guiReopening.add(name);
+            openEquipmentSelection(player);
+            player.sendMessage("§a[PVP] 主武器附魔已" + (!cur ? "§d开启（锋利V+击退II）" : "§7关闭"));
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            return true;
         }
 
-        // 确认选择按钮 → 备份+清空+发装备（使用当前选中的档位）
+        // 盾牌开关（21）— 所有玩家可切换
+        if (slot == 21) {
+            boolean cur = selShield.getOrDefault(name, true);
+            selShield.put(name, !cur);
+            equipInteracted.add(name);
+            guiReopening.add(name);
+            openEquipmentSelection(player);
+            player.sendMessage("§a[PVP] 盾牌已" + (!cur ? "§a装备" : "§c取消"));
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            return true;
+        }
+
+        // 熟牛肉 -1（23）/ +1（25）
+        if (slot == 23 || slot == 25) {
+            int cur = selFood.getOrDefault(name, FOOD_DEFAULT);
+            int next = slot == 23
+                    ? Math.max(FOOD_MIN, cur - 1)
+                    : Math.min(FOOD_MAX, cur + 1);
+            selFood.put(name, next);
+            equipInteracted.add(name);
+            guiReopening.add(name);
+            openEquipmentSelection(player);
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
+            return true;
+        }
+
+        // 确认（49）→ 备份+清空+发装备
         if (slot == 49) {
-            // ★ 关键修复：标记即将关闭GUI，避免 onInventoryClose 将"确认关闭"误判为
-            //   "未选装备/ESC关闭"而遣返。（Paper 的 closeInventory 会延迟到下一tick触发
-            //   关闭事件，届时 confirmEquipment 已同步执行完，selectedTier 已被移除，
-            //   若不标记会落入 else 遣返分支）
-            guiReopening.add(player.getName());
+            equipInteracted.add(name);
+            guiReopening.add(name);
             player.closeInventory();
             confirmEquipment(player);
             return true;
         }
 
-        // 一键装备全套 → 同样触发确认流程
-        if (slot == 53) {
-            guiReopening.add(player.getName());
-            player.closeInventory();
-            confirmEquipment(player);
-            return true;
-        }
-
-        // 预览区物品（只看不动）
+        // 预览区（0-8）：仅提示，不操作
         if (slot >= 0 && slot < 9) {
             player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
             return true;
@@ -1670,41 +1660,52 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 装备全套PVP装备到玩家背包（根据玩家选择的档位）
+     * 装备全套PVP装备到玩家背包（按新模型：铁剑+铁斧+可选盾牌+可选附魔+可调熟牛肉）
      */
     private void equipFullSet(Player player) {
-        EquipmentTier tier = selectedTier.getOrDefault(player.getName(), EquipmentTier.IRON);
-        List<ItemStack> equipment = buildTierEquipment(tier);
+        String name = player.getName();
 
-        for (ItemStack item : equipment) {
-            ItemStack clone = item.clone();
-            Material type = clone.getType();
-            String typeName = type.name();
+        // ★ 公平锁定：非首人玩家强制使用首人定死的附魔值；首人使用自身选择
+        boolean enchant;
+        if (lockedEnchantOwner != null && !lockedEnchantOwner.equals(name)) {
+            enchant = (lockedEnchant != null) ? lockedEnchant : false;
+        } else {
+            enchant = selEnchant.getOrDefault(name, false);
+        }
+        boolean shield = selShield.getOrDefault(name, true);
+        int food = selFood.getOrDefault(name, FOOD_DEFAULT);
 
-            // 头盔
-            if (typeName.endsWith("_HELMET")) {
-                player.getInventory().setHelmet(clone);
+        // 主武器：铁剑 + 铁斧（两者都发）
+        player.getInventory().addItem(makeWeapon(Material.IRON_SWORD, "§b§lPVP铁剑", enchant));
+        player.getInventory().addItem(makeWeapon(Material.IRON_AXE, "§b§lPVP铁斧", enchant));
+
+        // 盾牌（可选，副手）
+        if (shield) {
+            ItemStack sh = new ItemStack(Material.SHIELD);
+            ItemMeta m = sh.getItemMeta();
+            if (m != null) {
+                m.setDisplayName("§a§lPVP盾牌");
+                m.setLore(Arrays.asList("§7格挡近战攻击", PVP_ITEM_MARKER));
+                sh.setItemMeta(m);
             }
-            // 胸甲
-            else if (typeName.endsWith("_CHESTPLATE")) {
-                player.getInventory().setChestplate(clone);
-            }
-            // 护腿
-            else if (typeName.endsWith("_LEGGINGS")) {
-                player.getInventory().setLeggings(clone);
-            }
-            // 靴子
-            else if (typeName.endsWith("_BOOTS")) {
-                player.getInventory().setBoots(clone);
-            }
-            // 其他物品（武器、弓箭、药水等）放入背包
-            else {
-                player.getInventory().addItem(clone);
-            }
+            player.getInventory().setItemInOffHand(sh);
         }
 
-        // 清除档位选择记录（已使用）
-        selectedTier.remove(player.getName());
+        // 补血普通食物：熟牛肉（数量可调）
+        if (food > 0) {
+            ItemStack beef = new ItemStack(Material.COOKED_BEEF, food);
+            ItemMeta m = beef.getItemMeta();
+            if (m != null) {
+                m.setDisplayName("§c§lPVP熟牛肉");
+                m.setLore(Arrays.asList("§7补血普通食物 x" + food, PVP_ITEM_MARKER));
+                beef.setItemMeta(m);
+            }
+            player.getInventory().addItem(beef);
+        }
+
+        plugin.getLogger().info("[PVP] 玩家 " + name + " 发放装备: 铁剑+铁斧"
+                + (enchant ? "(附魔)" : "(未附魔)") + (shield ? " +盾牌" : "")
+                + " 熟牛肉x" + food);
     }
 
     // ==================== 命令入口 ====================
@@ -1843,13 +1844,23 @@ public class PVPArenaManager implements Listener {
         saveConfig();
     }
 
+    /** 重置本局公平锁定状态（世界销毁/全量重置时调用，下一局首位玩家重新定死附魔） */
+    private void resetMatchLock() {
+        lockedEnchantOwner = null;
+        lockedEnchant = null;
+        selEnchant.clear();
+        selShield.clear();
+        selFood.clear();
+        equipInteracted.clear();
+    }
+
     public void clearAllPVPArenaStates() {
         inPVPArena.clear();
         equipmentConfirmed.clear();
         inventoryBackups.clear();
         guiReopening.clear();
         guiOpenedMillis.clear();
-        selectedTier.clear();
+        resetMatchLock();
         // ★ 同时清空本局所有玩家战绩(击杀/死亡)与死亡榜
         pvpKills.clear();
         pvpDeaths.clear();

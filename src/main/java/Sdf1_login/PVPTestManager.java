@@ -53,6 +53,9 @@ public class PVPTestManager implements Listener {
     /** 每个玩家选择的难度/装备（GUI 暂存） */
     private final Map<UUID, TestDifficulty> chosenDiff = new HashMap<>();
     private final Map<UUID, TestEquip> chosenEquip = new HashMap<>();
+    /** 测试场玩家装备选项（测试世界跳过公平锁定，全员自由选） */
+    private final Map<UUID, Boolean> testEnchant = new HashMap<>(); // 主武器是否附魔(锋利V+击退II)
+    private final Map<UUID, Boolean> testShield = new HashMap<>();  // 是否拿盾牌
     /** 每个练习生物对应的难度（用于固定伤害 + 噩梦走位判定） */
     private final Map<UUID, TestDifficulty> mobDifficulty = new HashMap<>();
     /** 每个玩家生成的练习生物 UUID 列表（离开时按玩家清理） */
@@ -206,6 +209,11 @@ public class PVPTestManager implements Listener {
 
         TestDifficulty diff = chosenDiff.getOrDefault(p.getUniqueId(), TestDifficulty.EASY);
         TestEquip equip = chosenEquip.getOrDefault(p.getUniqueId(), TestEquip.MELEE);
+        // 测试世界跳过公平锁定，全员自由选装备（附魔/盾牌），默认附魔关、盾牌开
+        testEnchant.putIfAbsent(p.getUniqueId(), false);
+        testShield.putIfAbsent(p.getUniqueId(), true);
+        boolean enchant = testEnchant.get(p.getUniqueId());
+        boolean shield = testShield.get(p.getUniqueId());
 
         // 顶部信息
         ItemStack info = new ItemStack(Material.PAPER);
@@ -216,7 +224,10 @@ public class PVPTestManager implements Listener {
                     "§7选择难度与装备，点击确认开始练习",
                     "",
                     "§e当前难度: " + diff.display,
-                    "§e当前装备: " + equip.display));
+                    "§e练习场景: " + equip.display,
+                    "§e主武器: §b铁剑 + 铁斧 §7(必发)",
+                    "§e附魔: " + (enchant ? "§a开启" : "§c关闭"),
+                    "§e盾牌: " + (shield ? "§a装备" : "§c不装备")));
             info.setItemMeta(im);
         }
         gui.setItem(4, info);
@@ -229,6 +240,26 @@ public class PVPTestManager implements Listener {
         setEquipButton(gui, 30, TestEquip.RANGED, equip);
         setEquipButton(gui, 32, TestEquip.MIXED, equip);
 
+        // ★ 附魔开关（38）：锋利V + 击退II（作用于铁剑/铁斧）
+        ItemStack enchBtn = new ItemStack(enchant ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
+        ItemMeta em = enchBtn.getItemMeta();
+        if (em != null) {
+            em.setDisplayName(enchant ? "§a§l附魔: 开" : "§c§l附魔: 关");
+            em.setLore(Arrays.asList("§7锋利V + 击退II（铁剑/铁斧）", enchant ? "§a点击关闭" : "§a点击开启"));
+            enchBtn.setItemMeta(em);
+        }
+        gui.setItem(38, enchBtn);
+
+        // ★ 盾牌开关（42）
+        ItemStack shBtn = new ItemStack(shield ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
+        ItemMeta sm2 = shBtn.getItemMeta();
+        if (sm2 != null) {
+            sm2.setDisplayName(shield ? "§a§l盾牌: 装备" : "§c§l盾牌: 不装备");
+            sm2.setLore(Arrays.asList("§7副手装备", shield ? "§a点击取消" : "§a点击装备"));
+            shBtn.setItemMeta(sm2);
+        }
+        gui.setItem(42, shBtn);
+
         // 确认开始按钮
         ItemStack start = new ItemStack(Material.LIME_STAINED_GLASS_PANE);
         ItemMeta sm = start.getItemMeta();
@@ -236,7 +267,9 @@ public class PVPTestManager implements Listener {
             sm.setDisplayName("§a§l确认开始");
             sm.setLore(Arrays.asList(
                     "§7难度: " + diff.display,
-                    "§7装备: " + equip.display,
+                    "§7场景: " + equip.display,
+                    "§7附魔: " + (enchant ? "§d开启" : "§7关闭"),
+                    "§7盾牌: " + (shield ? "§a装备" : "§7不装备"),
                     "",
                     "§e点击进入测试场"));
             start.setItemMeta(sm);
@@ -296,6 +329,17 @@ public class PVPTestManager implements Listener {
         if (slot == 28) { chosenEquip.put(p.getUniqueId(), TestEquip.MELEE); openGUI(p); return; }
         if (slot == 30) { chosenEquip.put(p.getUniqueId(), TestEquip.RANGED); openGUI(p); return; }
         if (slot == 32) { chosenEquip.put(p.getUniqueId(), TestEquip.MIXED); openGUI(p); return; }
+        // ★ 附魔开关（38）/ 盾牌开关（42）
+        if (slot == 38) {
+            UUID id = p.getUniqueId();
+            testEnchant.put(id, !testEnchant.getOrDefault(id, false));
+            openGUI(p); return;
+        }
+        if (slot == 42) {
+            UUID id = p.getUniqueId();
+            testShield.put(id, !testShield.getOrDefault(id, true));
+            openGUI(p); return;
+        }
         if (slot == 49) {
             p.closeInventory();
             startTest(p,
@@ -313,6 +357,9 @@ public class PVPTestManager implements Listener {
             p.sendMessage("§c§l[PVP测试] 测试场世界未加载，请联系管理员");
             return;
         }
+
+        boolean enchant = testEnchant.getOrDefault(p.getUniqueId(), false);
+        boolean shield = testShield.getOrDefault(p.getUniqueId(), true);
 
         // 清掉该玩家之前的练习生物（支持重新配置）
         removePlayerMobs(p);
@@ -337,7 +384,9 @@ public class PVPTestManager implements Listener {
         // 立即来一波（之后仅在玩家清空当前波次后，间隔10秒再补下一波）
         spawnWaveFor(p);
 
-        p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  装备: " + equip.display);
+        p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  场景: " + equip.display
+                + "  附魔:" + (enchant ? "§d开" : "§7关") + "  盾牌:" + (shield ? "§a有" : "§7无"));
+        p.sendMessage("§7主武器: 铁剑 + 铁斧" + (enchant ? "（附魔）" : "（未附魔）") + (shield ? " +盾牌" : ""));
         p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。");
         p.sendMessage("§7清空当前波次后，每10秒刷新下一波；背包已附金苹果等回血食物。输入 /pvp leave 离开。");
         p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
@@ -347,37 +396,41 @@ public class PVPTestManager implements Listener {
     }
 
     private void giveEquip(Player p, TestEquip equip) {
-        ItemStack[] ironArmor = new ItemStack[]{
-                new ItemStack(Material.IRON_BOOTS),
-                new ItemStack(Material.IRON_LEGGINGS),
-                new ItemStack(Material.IRON_CHESTPLATE),
-                new ItemStack(Material.IRON_HELMET)};
-        ItemStack[] leatherArmor = new ItemStack[]{
-                new ItemStack(Material.LEATHER_BOOTS),
-                new ItemStack(Material.LEATHER_LEGGINGS),
-                new ItemStack(Material.LEATHER_CHESTPLATE),
-                new ItemStack(Material.LEATHER_HELMET)};
+        // ★ 2026-07-09 改版：主武器 = 铁剑 + 铁斧（都给）；附魔=锋利V+击退II；盾牌可选；无护甲（与PVP竞技场一致）。
+        boolean enchant = testEnchant.getOrDefault(p.getUniqueId(), false);
+        boolean shield = testShield.getOrDefault(p.getUniqueId(), true);
 
-        switch (equip) {
-            case MELEE:
-                p.getInventory().addItem(new ItemStack(Material.IRON_SWORD));
-                p.getInventory().setArmorContents(ironArmor);
-                break;
-            case RANGED:
-                p.getInventory().addItem(new ItemStack(Material.BOW));
-                p.getInventory().addItem(new ItemStack(Material.ARROW, 64));
-                p.getInventory().setArmorContents(leatherArmor);
-                break;
-            case MIXED:
-                p.getInventory().addItem(new ItemStack(Material.IRON_SWORD));
-                p.getInventory().addItem(new ItemStack(Material.BOW));
-                p.getInventory().addItem(new ItemStack(Material.ARROW, 64));
-                p.getInventory().setArmorContents(ironArmor);
-                break;
+        p.getInventory().addItem(makeTestWeapon(Material.IRON_SWORD, "§b§l练习铁剑", enchant));
+        p.getInventory().addItem(makeTestWeapon(Material.IRON_AXE, "§b§l练习铁斧", enchant));
+
+        if (shield) {
+            ItemStack sh = new ItemStack(Material.SHIELD);
+            ItemMeta m = sh.getItemMeta();
+            if (m != null) {
+                m.setDisplayName("§a§l练习盾牌");
+                m.setLore(Arrays.asList("§7格挡近战攻击"));
+                sh.setItemMeta(m);
+            }
+            p.getInventory().setItemInOffHand(sh);
         }
+
         // 回血类食物：金苹果(回血+再生) + 熟牛肉(维持饱食度)
         p.getInventory().addItem(new ItemStack(Material.GOLDEN_APPLE, 16));
         p.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, 32));
+    }
+
+    private ItemStack makeTestWeapon(Material mat, String name, boolean enchant) {
+        ItemStack item = new ItemStack(mat);
+        ItemMeta meta = item.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(name);
+            if (enchant) {
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.SHARPNESS, 5, true);
+                meta.addEnchant(org.bukkit.enchantments.Enchantment.KNOCKBACK, 2, true);
+            }
+            item.setItemMeta(meta);
+        }
+        return item;
     }
 
     /**
