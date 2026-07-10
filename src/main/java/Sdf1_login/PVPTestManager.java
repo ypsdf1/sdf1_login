@@ -8,6 +8,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -990,6 +991,24 @@ public class PVPTestManager implements Listener {
         if (isTestMob(e.getEntity()) && e.getTarget() != null && isTestMob(e.getTarget())) {
             e.setCancelled(true);
         }
+    }
+
+    /** 死亡：清空测试装备掉落物 + 强制不保留背包，防止玩家死亡界面/快速重连携带测试场装备 */
+    @EventHandler
+    public void onPlayerDeath(PlayerDeathEvent e) {
+        Player p = e.getEntity();
+        if (!inTest.contains(p.getUniqueId())) return;
+        // 清空所有掉落物（测试装备不落地）
+        e.getDrops().clear();
+        // 不保留经验
+        e.setKeepLevel(false);
+        e.setDroppedExp(0);
+        // ★ 关键：不保留背包，死亡后身上清空（onRespawn 会立即还原原背包）
+        e.setKeepInventory(false);
+        // 主动清空玩家身上的测试装备，防止死亡界面显示测试装备
+        p.getInventory().clear();
+        p.getInventory().setArmorContents(null);
+        p.getInventory().setItemInOffHand(null);
     }
 
     /** 死亡：保留背包（KEEP_INVENTORY），送回主世界并还原 */
