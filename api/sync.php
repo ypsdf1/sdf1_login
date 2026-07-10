@@ -681,9 +681,22 @@ function syncPermissions() {
     )");
 
     $now = time();
-    $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+    // ★ 用 ON CONFLICT 替代 INSERT OR REPLACE，避免角色降级：
+    //   如果已有管理员/成员角色，不接受被降级为访客
+    $stmt = $db->prepare("INSERT INTO web_area_permissions
         (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
-        VALUES (:land_id, :land_name, :player, :role, :perms, :granted, :expires, :synced)");
+        VALUES (:land_id, :land_name, :player, :role, :perms, :granted, :expires, :synced)
+        ON CONFLICT(land_id, player_name) DO UPDATE SET
+            land_name = excluded.land_name,
+            permissions = excluded.permissions,
+            granted_at = excluded.granted_at,
+            expires_at = excluded.expires_at,
+            synced_at = excluded.synced_at,
+            role = CASE
+                WHEN excluded.role IN ('admin', 'member') THEN excluded.role
+                WHEN excluded.role = 'visitor' AND web_area_permissions.role IN ('admin', 'member') THEN web_area_permissions.role
+                ELSE excluded.role
+            END");
     $count = 0;
     foreach ($perms as $p) {
         $stmt->bindValue(':land_id', (int)($p['land_id'] ?? 0), SQLITE3_INTEGER);
