@@ -4281,6 +4281,25 @@ public class AreaProtection implements Listener {
     }
 
     @EventHandler
+    public void onEntityPlace(org.bukkit.event.entity.EntityPlaceEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = e.getPlayer();
+        Location loc = e.getEntity().getLocation();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                loc.getBlockX(),
+                loc.getBlockY(),
+                loc.getBlockZ());
+        if (ac == null) return;
+
+        // 船、矿车等实体放置也受 denyBlockPlace 控制
+        if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止放置实体");
+        }
+    }
+
+    @EventHandler
     public void onBlockBreak(BlockBreakEvent e) {
         Player p = e.getPlayer();
         AreaConfig ac = getArea(
@@ -9617,6 +9636,24 @@ public class AreaProtection implements Listener {
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+            return;
+        }
+
+        // 船、矿车等Vehicle破坏拦截
+        if (entity instanceof org.bukkit.entity.Vehicle) {
+            if (!(e.getDamager() instanceof Player)) return;
+            Player p = (Player) e.getDamager();
+            Location loc = entity.getLocation();
+            AreaConfig ac = getArea(
+                    p.getWorld().getName(),
+                    loc.getBlockX(),
+                    loc.getBlockY(),
+                    loc.getBlockZ());
+            if (ac == null) return;
+            if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+            }
             return;
         }
     }
