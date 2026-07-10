@@ -3164,6 +3164,8 @@ async function addClearEffect(landName) {
         current.push(eff);
 
         const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_land_field');
+        url.searchParams.set('token', TOKEN);
         const body = new URLSearchParams();
         body.set('name', landName);
         body.set('field', 'clear_effects');
@@ -3244,6 +3246,8 @@ async function addGiveEffect(landName) {
         current.push([eff, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
 
         const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_land_field');
+        url.searchParams.set('token', TOKEN);
         const body = new URLSearchParams();
         body.set('name', landName);
         body.set('field', 'give_effects');
@@ -3264,6 +3268,8 @@ async function addGiveEffect(landName) {
 async function removeLandEffect(landName, field, effValue) {
     try {
         const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_land_field');
+        url.searchParams.set('token', TOKEN);
         const detailUrl = new URL(API + 'land_api.php', location.href);
         detailUrl.searchParams.set('action', 'land_detail');
         detailUrl.searchParams.set('token', TOKEN);

@@ -469,7 +469,7 @@ function syncLands() {
          peace_mode, peace_mode_duration, peace_whitelist, enforce_game_mode, mode_exempt,
          enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
          deny_block_break, deny_block_place, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
-         deny_item_frame, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
+         deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
          deny_all_damage, clear_effects, give_effects, clear_all_bad_effects,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
          deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
@@ -478,7 +478,7 @@ function syncLands() {
                 :peace_mode, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
                 :deny_block_break, :deny_block_place, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
-                :deny_item_frame, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
+                :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
                 :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad_effects,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
                 :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding,
@@ -515,6 +515,7 @@ function syncLands() {
         $stmt->bindValue(':deny_fire_spread', (int)($land['deny_fire_spread'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_all_effects', (int)($land['deny_all_effects'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_item_frame', (int)($land['deny_item_frame'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_entity_interact', (int)($land['deny_entity_interact'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_move', (int)($land['deny_move'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_pickup', (int)($land['deny_pickup'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_drop', (int)($land['deny_drop'] ?? 0), SQLITE3_INTEGER);

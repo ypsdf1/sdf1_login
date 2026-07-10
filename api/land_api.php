@@ -500,6 +500,7 @@ function initLandTables($db) {
         'deny_raid' => "INTEGER DEFAULT 0",
         'deny_fire_spread' => "INTEGER DEFAULT 0",
         'deny_item_frame' => "INTEGER DEFAULT 0",
+        'deny_entity_interact' => "INTEGER DEFAULT 0",
         'deny_move' => "INTEGER DEFAULT 0",
         'deny_pickup' => "INTEGER DEFAULT 0",
         'deny_fire' => "INTEGER DEFAULT 0",
@@ -632,7 +633,7 @@ function handleSyncLands($db, $post) {
          punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage,
          deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl,
          deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread,
-         deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire,
+         deny_all_effects, deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_fire,
          peace_mode, peace_mode_duration,
          peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg,
          confiscate_msg, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction,
@@ -647,7 +648,7 @@ function handleSyncLands($db, $post) {
                 :punish_commands, :deny_block_place, :deny_block_break, :deny_pvp, :deny_fall_damage,
                 :deny_hunger, :deny_all_damage, :deny_drop, :deny_mount, :deny_ender_pearl,
                 :deny_bow, :deny_potion, :deny_explosion, :deny_raid, :deny_fire_spread,
-                :deny_all_effects, :deny_item_frame, :deny_move, :deny_pickup, :deny_fire,
+                :deny_all_effects, :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_fire,
                 :peace_mode, :peace_mode_duration,
                 :peace_whitelist, :enforce_game_mode, :mode_exempt, :enter_msg, :leave_msg,
                 :confiscate_msg, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction,
@@ -694,6 +695,7 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':deny_fire_spread', (int)($land['deny_fire_spread'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_all_effects', (int)($land['deny_all_effects'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_item_frame', (int)($land['deny_item_frame'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_entity_interact', (int)($land['deny_entity_interact'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_move', (int)($land['deny_move'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_pickup', (int)($land['deny_pickup'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_fire', (int)($land['deny_fire'] ?? 0), SQLITE3_INTEGER);
@@ -1205,6 +1207,23 @@ function playerExists($db, $playerName) {
         if ($row && $row['cnt'] > 0) return true;
     } catch (\Throwable $e) {
         // 表可能不存在，忽略
+    }
+
+    // ★ 兜底：检查login.db（Java游戏库，玩家注册的权威数据源）
+    try {
+        $loginDbPath = defined('GAME_LOGIN_DB') ? GAME_LOGIN_DB : (__DIR__ . '/../../plugin/login.db');
+        if (file_exists($loginDbPath)) {
+            $loginDb = new SQLite3($loginDbPath);
+            $loginDb->enableExceptions(true);
+            $stmt = $loginDb->prepare("SELECT COUNT(*) as cnt FROM users WHERE player_name = :player");
+            $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $result = $stmt->execute();
+            $row = $result->fetchArray(SQLITE3_ASSOC);
+            $loginDb->close();
+            if ($row && $row['cnt'] > 0) return true;
+        }
+    } catch (\Throwable $e) {
+        // login.db 可能不存在，忽略
     }
 
     return false;
