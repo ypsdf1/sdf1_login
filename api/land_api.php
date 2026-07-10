@@ -1570,10 +1570,26 @@ function handleChangeVisitorRole($db, $playerName, $post) {
     $currentRole = $permRow ? ($permRow['role'] ?? '') : '';
     error_log("[领地权限][切换角色] land=$landName visitor=$visitor newRole=$newRole currentRole=$currentRole");
 
-    // 已授权玩家（管理员/成员）不能被强制降级为访客；仅允许把访客提升为 admin
-    if ($newRole === 'visitor' && ($currentRole === 'admin' || $currentRole === 'member')) {
-        error_log("[领地权限][切换角色] 拦截降级: $visitor 当前为 $currentRole，拒绝强制设为访客");
-        echo json_encode(['success' => false, 'error' => '已授权玩家(管理员/成员)不能通过切换访客角色降级，请通过成员管理手动处理']);
+    // ★ 领地主可自由切换任何角色（admin↔member↔visitor）
+    // 如果是访客且当前无记录，先插入一条
+    if (empty($currentRole) && $permRow === null) {
+        $stmtIns = $db->prepare("INSERT OR IGNORE INTO web_area_permissions (land_id, player_name, role, permissions, granted_at)
+            VALUES (:land_id, :player, :role, '', :now)");
+        $stmtIns->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
+        $stmtIns->bindValue(':player', $visitor, SQLITE3_TEXT);
+        $stmtIns->bindValue(':role', $newRole, SQLITE3_TEXT);
+        $stmtIns->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmtIns->execute();
+        // 写入变更队列通知Java
+        $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName]);
+        $stmtC = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
+        $stmtC->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
+        $stmtC->bindValue(':name', $landName, SQLITE3_TEXT);
+        $stmtC->bindValue(':data', $changeData, SQLITE3_TEXT);
+        $stmtC->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmtC->execute();
+        $roleLabel = $newRole === 'admin' ? '管理员' : ($newRole === 'member' ? '成员' : '访客');
+        echo json_encode(['success' => true, 'message' => "已将 $visitor 设为$roleLabel"]);
         return;
     }
 
@@ -1596,7 +1612,7 @@ function handleChangeVisitorRole($db, $playerName, $post) {
     $stmt3->bindValue(':now', $now, SQLITE3_INTEGER);
     $stmt3->execute();
 
-    $roleLabel = $newRole === 'admin' ? '管理员' : '访客';
+    $roleLabel = $newRole === 'admin' ? '管理员' : ($newRole === 'member' ? '成员' : '访客');
     echo json_encode(['success' => true, 'message' => "已将 $visitor 设为$roleLabel"]);
 }
 

@@ -3086,9 +3086,13 @@ async function addLandVisitor(landName) {
 }
 
 async function changeVisitorRole(landName, player, currentRole) {
-    const newRole = currentRole === 'admin' ? 'visitor' : 'admin';
-    const roleLabel = newRole === 'admin' ? '管理员' : '访客';
-    if (!await glassConfirm(`确定将 ${player} 设为${roleLabel}吗？${newRole === 'admin' ? '\n管理员将拥有领地管理权限！' : ''}`)) return;
+    // 三角色循环: visitor → admin → member → visitor
+    const roleOrder = ['visitor', 'admin', 'member'];
+    const roleLabels = {visitor: '访客', admin: '管理员', member: '成员'};
+    const nextIdx = (roleOrder.indexOf(currentRole) + 1) % roleOrder.length;
+    const newRole = roleOrder[nextIdx];
+    const roleLabel = roleLabels[newRole];
+    if (!await glassConfirm(`确定将 ${player} 设为${roleLabel}吗？${newRole === 'admin' ? '\n管理员将拥有领地管理权限！' : ''}${newRole === 'member' ? '\n成员将拥有独立权限控制。' : ''}`)) return;
     try {
         const url = new URL(API + 'land_api.php', location.href);
         const body = new URLSearchParams();
