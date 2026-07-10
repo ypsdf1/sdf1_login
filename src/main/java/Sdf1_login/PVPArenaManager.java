@@ -1856,7 +1856,11 @@ public class PVPArenaManager implements Listener {
         player.getInventory().addItem(makeWeapon(AXE_TIERS[wTier], "§l" + WEAPON_TIER_NAMES[wTier] + "§l斧", enchant));
 
         // 护甲：同材质全套 4 件（带 PVP 标记，便于回收；不附魔）
-        for (Material armorMat : ARMOR_SETS[aTier]) {
+        // ★ ARMOR_SETS 顺序: [头盔, 胸甲, 护腿, 靴子]
+        //   setArmorContents 顺序: [靴子, 护腿, 胸甲, 头盔] — 必须反转
+        ItemStack[] armorPieces = new ItemStack[4];
+        for (int i = 0; i < ARMOR_SETS[aTier].length; i++) {
+            Material armorMat = ARMOR_SETS[aTier][i];
             ItemStack a = new ItemStack(armorMat);
             ItemMeta m = a.getItemMeta();
             if (m != null) {
@@ -1864,8 +1868,9 @@ public class PVPArenaManager implements Listener {
                 m.setLore(Arrays.asList("§7PVP竞技场护甲", PVP_ITEM_MARKER));
                 a.setItemMeta(m);
             }
-            player.getInventory().addItem(a);
+            armorPieces[3 - i] = a; // 反转: armorPieces[0]=靴子, armorPieces[3]=头盔
         }
+        player.getInventory().setArmorContents(armorPieces);
 
         // 盾牌（可选，副手）
         if (shield) {

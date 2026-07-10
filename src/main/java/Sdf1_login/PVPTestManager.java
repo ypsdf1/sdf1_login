@@ -615,6 +615,8 @@ public class PVPTestManager implements Listener {
 
         if (at > 0 && ARMOR_SETS[at] != null) {
             Material[] set = ARMOR_SETS[at];
+            // ★ ARMOR_SETS 顺序: [头盔, 胸甲, 护腿, 靴子]
+            //   setArmorContents 顺序: [靴子, 护腿, 胸甲, 头盔] — 必须反转
             ItemStack[] armor = new ItemStack[4];
             for (int i = 0; i < 4; i++) {
                 ItemStack piece = new ItemStack(set[i]);
@@ -624,7 +626,7 @@ public class PVPTestManager implements Listener {
                     m.setLore(Arrays.asList("§7" + ARMOR_TIER_NAMES[at].replace("§", "") + "套装"));
                     piece.setItemMeta(m);
                 }
-                armor[i] = piece;
+                armor[3 - i] = piece; // 反转: armor[0]=靴子, armor[3]=头盔
             }
             p.getInventory().setArmorContents(armor);
         }
