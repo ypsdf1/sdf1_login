@@ -7326,7 +7326,7 @@ public class Main extends JavaPlugin
                     if (action.equals("toggleplayerperm")) {
                         // 权限key
                         return filterTab(Arrays.asList(
-                                "denyMove", "denyBlockPlace", "denyBlockBreak", "denyPVP", "denyMount",
+                                "denyMove", "denyBlockPlace", "denyBlockBreak", "denyEntityInteract", "denyPVP", "denyMount",
                                 "denyEnderPearl", "denyThrownProjectiles", "denyRaid", "denyBow", "denyPotion",
                                 "denyFire", "denyFireSpread", "denyPickup", "denyDrop", "denyExplosion",
                                 "denyFallDamage", "denyHunger", "denyAllDamage", "denyAllEffects",

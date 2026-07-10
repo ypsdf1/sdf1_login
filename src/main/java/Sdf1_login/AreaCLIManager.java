@@ -520,6 +520,7 @@ public class AreaCLIManager {
             case "move": oldState = land.denyMove; land.denyMove = !land.denyMove; break;
             case "block_place": oldState = land.denyBlockPlace; land.denyBlockPlace = !land.denyBlockPlace; break;
             case "block_break": oldState = land.denyBlockBreak; land.denyBlockBreak = !land.denyBlockBreak; break;
+            case "entity_interact": oldState = land.denyEntityInteract; land.denyEntityInteract = !land.denyEntityInteract; break;
             case "container": oldState = land.denyContainer; land.denyContainer = !land.denyContainer; break;
             case "pvp": oldState = land.denyPVP; land.denyPVP = !land.denyPVP; break;
             case "mount": oldState = land.denyMount; land.denyMount = !land.denyMount; break;
@@ -576,6 +577,7 @@ public class AreaCLIManager {
             case "move": return "denyMove";
             case "block_place": return "denyBlockPlace";
             case "block_break": return "denyBlockBreak";
+            case "entity_interact": return "denyEntityInteract";
             case "container": return "denyContainer";
             case "pvp": return "denyPVP";
             case "mount": return "denyMount";
@@ -634,6 +636,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("move", "移动", !land.denyMove));
         perms.add(new PermItem("block_place", "放置方块", !land.denyBlockPlace));
         perms.add(new PermItem("block_break", "破坏方块", !land.denyBlockBreak));
+        perms.add(new PermItem("entity_interact", "实体交互(船/矿车/盔甲架/展示框)", !land.denyEntityInteract));
         perms.add(new PermItem("container", "容器管理", !land.denyContainer));
         perms.add(new PermItem("pvp", "玩家对战", !land.denyPVP));
         perms.add(new PermItem("mount", "骑乘坐具", !land.denyMount));
@@ -1083,6 +1086,7 @@ public class AreaCLIManager {
                 {"move", "移动", "denyMove"},
                 {"block_place", "放置方块", "denyBlockPlace"},
                 {"block_break", "破坏方块", "denyBlockBreak"},
+                {"entity_interact", "实体交互", "denyEntityInteract"},
                 {"container", "容器管理", "denyContainer"},
                 {"pvp", "玩家对战", "denyPVP"},
                 {"mount", "骑乘坐具", "denyMount"},
@@ -1162,6 +1166,7 @@ public class AreaCLIManager {
             case "denyMove": return land.denyMove;
             case "denyBlockPlace": return land.denyBlockPlace;
             case "denyBlockBreak": return land.denyBlockBreak;
+            case "denyEntityInteract": return land.denyEntityInteract;
             case "denyContainer": return land.denyContainer;
             case "denyPVP": return land.denyPVP;
             case "denyMount": return land.denyMount;

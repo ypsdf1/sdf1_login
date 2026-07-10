@@ -9,7 +9,6 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
-import org.bukkit.event.block.NotePlayEvent;
 import org.bukkit.event.entity.*;
 import org.bukkit.event.player.*;
 import org.bukkit.inventory.ItemStack;
@@ -22,7 +21,6 @@ import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.BlockGrowEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Animals;
-import org.bukkit.entity.EnderPearl;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.block.BlockState;
@@ -994,6 +992,7 @@ public class AreaProtection implements Listener {
                 ac.denyFireSpread = rs.getInt("deny_fire_spread") == 1;
                 ac.denyAllEffects = rs.getInt("deny_all_effects") == 1;
                 ac.denyItemFrame = rs.getInt("deny_item_frame") == 1;
+                try { ac.denyEntityInteract = rs.getInt("deny_entity_interact") == 1; } catch (Exception ignored) {}
                 try { ac.denyMove = rs.getInt("deny_move") == 1; } catch (Exception ignored) {}
                 try { ac.allowPickup = rs.getInt("deny_pickup") == 1; } catch (Exception ignored) {}
                 try { ac.denyFire = rs.getInt("deny_fire") == 1; } catch (Exception ignored) {}
@@ -1128,6 +1127,7 @@ public class AreaProtection implements Listener {
                             + "deny_fire_spread INTEGER DEFAULT 0,"
                             + "deny_all_effects INTEGER DEFAULT 0,"
                             + "deny_item_frame INTEGER DEFAULT 0,"
+                            + "deny_entity_interact INTEGER DEFAULT 0,"
                             + "deny_move INTEGER DEFAULT 0,"
                             + "deny_pickup INTEGER DEFAULT 0,"
                             + "deny_fire INTEGER DEFAULT 0,"
@@ -1209,6 +1209,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 流体阻止
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_fluid INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 二级权限：实体交互（受一级放置/破坏总开关影响）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_entity_interact INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -1286,11 +1288,11 @@ public class AreaProtection implements Listener {
                     + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
                     + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
                     + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
-                    + "deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire, "
+                    + "deny_all_effects, deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_fire, "
                     + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
             for (File f : txtFiles) {
                 try {
@@ -1335,21 +1337,22 @@ public class AreaProtection implements Listener {
                     insertStmt.setInt(29, ac.denyFireSpread ? 1 : 0);
                     insertStmt.setInt(30, ac.denyAllEffects ? 1 : 0);
                     insertStmt.setInt(31, ac.denyItemFrame ? 1 : 0);
-                    insertStmt.setInt(32, ac.denyMove ? 1 : 0);
-                    insertStmt.setInt(33, ac.allowPickup ? 1 : 0);
-                    insertStmt.setInt(34, ac.denyFire ? 1 : 0);
-                    insertStmt.setInt(35, ac.peaceMode ? 1 : 0);
-                    insertStmt.setInt(36, ac.peaceModeDuration / 1000); // 存秒
-                    insertStmt.setString(37, String.join(",", ac.peaceWhitelist));
-                    insertStmt.setString(38, ac.enforceGameMode != null ? ac.enforceGameMode : "");
-                    insertStmt.setString(39, String.join(",", ac.modeExempt));
-                    insertStmt.setString(40, ac.enterMsg);
-                    insertStmt.setString(41, ac.leaveMsg);
-                    insertStmt.setString(42, ac.confiscateMsg);
-                    insertStmt.setInt(43, ac.enableAnnounce ? 1 : 0);
-                    insertStmt.setString(44, ac.announceTemplate);
-                    insertStmt.setString(45, txtContent);
-                    insertStmt.setLong(46, System.currentTimeMillis() / 1000);
+                    insertStmt.setInt(32, ac.denyEntityInteract ? 1 : 0);
+                    insertStmt.setInt(33, ac.denyMove ? 1 : 0);
+                    insertStmt.setInt(34, ac.allowPickup ? 1 : 0);
+                    insertStmt.setInt(35, ac.denyFire ? 1 : 0);
+                    insertStmt.setInt(36, ac.peaceMode ? 1 : 0);
+                    insertStmt.setInt(37, ac.peaceModeDuration / 1000); // 存秒
+                    insertStmt.setString(38, String.join(",", ac.peaceWhitelist));
+                    insertStmt.setString(39, ac.enforceGameMode != null ? ac.enforceGameMode : "");
+                    insertStmt.setString(40, String.join(",", ac.modeExempt));
+                    insertStmt.setString(41, ac.enterMsg);
+                    insertStmt.setString(42, ac.leaveMsg);
+                    insertStmt.setString(43, ac.confiscateMsg);
+                    insertStmt.setInt(44, ac.enableAnnounce ? 1 : 0);
+                    insertStmt.setString(45, ac.announceTemplate);
+                    insertStmt.setString(46, txtContent);
+                    insertStmt.setLong(47, System.currentTimeMillis() / 1000);
                     insertStmt.executeUpdate();
                     migrated++;
                     plugin.getLogger().info("[防护] 迁移txt→db: " + name);
@@ -2534,6 +2537,7 @@ public class AreaProtection implements Listener {
             case "denyFireSpread": return ac.denyFireSpread;
             case "denyAllEffects": return ac.denyAllEffects;
             case "denyItemFrame": return ac.denyItemFrame;
+            case "denyEntityInteract": return ac.denyEntityInteract;
             case "denyPickup": return !ac.allowPickup;
             case "denyFire": return ac.denyFire;
             case "denyThrownProjectiles": return ac.denyThrownProjectiles;
@@ -4277,10 +4281,23 @@ public class AreaProtection implements Listener {
                 loc.getBlockZ());
         if (ac == null) return;
 
-        // 船、矿车等实体放置也受 denyBlockPlace 控制
+        // 层级：denyBlockPlace (一级) → denyEntityInteract (二级) → denyItemFrame (三级)
         if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
             e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止放置方块或实体");
+            return;
+        }
+        if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止放置实体");
+            return;
+        }
+        // 三级：展示框特定
+        String typeName = e.getEntity().getType().name();
+        if ((typeName.equals("ITEM_FRAME") || typeName.equals("GLOW_ITEM_FRAME"))
+                && getEffectiveDeny(p, ac, "denyItemFrame")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止放置展示框");
         }
     }
 
@@ -4467,11 +4484,13 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // ===== 放置实体类物品时不检查（展示框、矿车、船、地图等）=====
+        // ===== 实体类物品放置：层级管控 =====
+        // Level 1: denyBlockPlace（一级总开关）→ 禁止一切放置
+        // Level 2: denyEntityInteract（二级实体交互）→ 禁止实体交互
+        // Level 3: denyItemFrame（三级展示框）→ 仅限展示框具体控制
         Material mat = hand.getType();
-        if (mat == Material.ITEM_FRAME
-                || mat == Material.GLOW_ITEM_FRAME
-                || mat == Material.MINECART
+        boolean isControlledEntity =
+                   mat == Material.MINECART
                 || mat == Material.TNT_MINECART
                 || mat == Material.CHEST_MINECART
                 || mat == Material.HOPPER_MINECART
@@ -4484,10 +4503,44 @@ public class AreaProtection implements Listener {
                 || mat == Material.MANGROVE_BOAT
                 || mat == Material.CHERRY_BOAT
                 || mat == Material.BAMBOO_RAFT
-                || mat == Material.MAP
-                || mat == Material.ARMOR_STAND) {
+                || mat == Material.ARMOR_STAND
+                || mat == Material.ITEM_FRAME
+                || mat == Material.GLOW_ITEM_FRAME;
+        if (isControlledEntity) {
+            // ★ 使用被点击方块定位，而非玩家脚下位置
+            Block clicked = e.getClickedBlock();
+            Location checkLoc = (clicked != null) ? clicked.getLocation() : p.getLocation();
+            AreaConfig ac = getArea(
+                    p.getWorld().getName(),
+                    checkLoc.getBlockX(),
+                    checkLoc.getBlockY(),
+                    checkLoc.getBlockZ());
+            if (ac != null) {
+                // Level 1: 方块放置总开关
+                if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
+                    e.setCancelled(true);
+                    p.sendMessage("§c§l[区域防护] §f禁止放置方块或实体");
+                    return;
+                }
+                // Level 2: 实体交互
+                if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+                    e.setCancelled(true);
+                    p.sendMessage("§c§l[区域防护] §f禁止放置实体");
+                    return;
+                }
+                // Level 3: 展示框单独控制
+                boolean isFrame = (mat == Material.ITEM_FRAME
+                        || mat == Material.GLOW_ITEM_FRAME);
+                if (isFrame && getEffectiveDeny(p, ac, "denyItemFrame")) {
+                    e.setCancelled(true);
+                    p.sendMessage("§c§l[区域防护] §f禁止放置展示框");
+                    return;
+                }
+            }
+            // 实体物品不再往下走区域规则（防止误触发末影珍珠等检查）
             return;
         }
+
 
         // ===== 区域规则检查 =====
         AreaConfig ac = getArea(
@@ -7878,21 +7931,21 @@ public class AreaProtection implements Listener {
                     + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
                     + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
                     + "deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread, "
-                    + "deny_all_effects, deny_item_frame, deny_move, deny_pickup, deny_fire, "
+                    + "deny_all_effects, deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_fire, "
                     + "peace_mode, peace_mode_duration, "
                     + "peace_whitelist, enforce_game_mode, mode_exempt, enter_msg, leave_msg, "
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
                     + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
                     + "punish_commands=excluded.punish_commands, deny_block_place=excluded.deny_block_place, deny_block_break=excluded.deny_block_break, deny_pvp=excluded.deny_pvp, deny_fall_damage=excluded.deny_fall_damage, "
                     + "deny_hunger=excluded.deny_hunger, deny_all_damage=excluded.deny_all_damage, deny_drop=excluded.deny_drop, deny_mount=excluded.deny_mount, deny_ender_pearl=excluded.deny_ender_pearl, "
                     + "deny_bow=excluded.deny_bow, deny_potion=excluded.deny_potion, deny_explosion=excluded.deny_explosion, deny_raid=excluded.deny_raid, deny_fire_spread=excluded.deny_fire_spread, "
-                    + "deny_all_effects=excluded.deny_all_effects, deny_item_frame=excluded.deny_item_frame, deny_move=excluded.deny_move, deny_pickup=excluded.deny_pickup, deny_fire=excluded.deny_fire, "
+                    + "deny_all_effects=excluded.deny_all_effects, deny_item_frame=excluded.deny_item_frame, deny_entity_interact=excluded.deny_entity_interact, deny_move=excluded.deny_move, deny_pickup=excluded.deny_pickup, deny_fire=excluded.deny_fire, "
                     + "peace_mode=excluded.peace_mode, peace_mode_duration=excluded.peace_mode_duration, "
                     + "peace_whitelist=excluded.peace_whitelist, enforce_game_mode=excluded.enforce_game_mode, mode_exempt=excluded.mode_exempt, enter_msg=excluded.enter_msg, leave_msg=excluded.leave_msg, "
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
@@ -7967,6 +8020,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(63, ac.denyMobAttack ? 1 : 0);
             stmt.setInt(64, ac.isPublicBuilding ? 1 : 0);
             stmt.setInt(65, ac.allowVisitorTeleport ? 1 : 0);
+            stmt.setInt(66, ac.denyEntityInteract ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -8178,7 +8232,7 @@ public class AreaProtection implements Listener {
                 "deny_block_place", "deny_block_break", "deny_pvp", "deny_fall_damage",
                 "deny_hunger", "deny_all_damage", "deny_drop", "deny_mount", "deny_ender_pearl",
                 "deny_bow", "deny_potion", "deny_explosion", "deny_raid", "deny_fire_spread",
-                "deny_all_effects", "deny_item_frame", "deny_move", "deny_pickup", "deny_fire",
+                "deny_all_effects", "deny_item_frame", "deny_entity_interact", "deny_move", "deny_pickup", "deny_fire",
                 "confiscate_items", "deny_use_items", "punish_commands",
                 "peace_mode", "peace_mode_duration", "enforce_game_mode",
                 "enter_msg", "leave_msg", "confiscate_msg",
@@ -9494,7 +9548,19 @@ public class AreaProtection implements Listener {
 
             // ★ 统一白名单检查（支持per-player权限）
             AreaConfig ac = findFrameArea(entity);
-            if (ac == null || !getEffectiveDeny(p, ac, "denyItemFrame")) return;
+            if (ac == null) return;
+            // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框
+            if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+                return;
+            }
+            if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+                return;
+            }
+            if (!getEffectiveDeny(p, ac, "denyItemFrame")) return;
 
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
@@ -9582,7 +9648,18 @@ public class AreaProtection implements Listener {
         // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(clicked);
         if (ac == null) return;
-        // ★ 展示框同时受denyItemFrame和denyContainer控制
+        // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框/容器
+        if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止交互实体");
+            return;
+        }
+        if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止交互实体");
+            return;
+        }
+        // ★ 三级：展示框同时受denyItemFrame和denyContainer控制
         if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
         // 非白名单 → 拦截
@@ -9638,7 +9715,18 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
 
-            // ★ 展示框同时受denyItemFrame和denyContainer控制
+            // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框/容器
+            if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+                return;
+            }
+            if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+                return;
+            }
+            // ★ 三级：展示框同时受denyItemFrame和denyContainer控制
             if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
             e.setCancelled(true);
@@ -9646,18 +9734,34 @@ public class AreaProtection implements Listener {
             return;
         }
 
-        // 船、矿车等Vehicle破坏拦截
-        if (entity instanceof org.bukkit.entity.Vehicle) {
+        // 船、矿车、盔甲架等实体破坏拦截（受 L1 破坏总开关 + L2 实体交互管控）
+        if (entity instanceof org.bukkit.entity.Vehicle
+                || entity instanceof org.bukkit.entity.ArmorStand) {
             if (!(e.getDamager() instanceof Player)) return;
             Player p = (Player) e.getDamager();
-            Location loc = entity.getLocation();
+            // ★ 取区域方式与放置一致：优先玩家位置，实体位置兜底
             AreaConfig ac = getArea(
                     p.getWorld().getName(),
-                    loc.getBlockX(),
-                    loc.getBlockY(),
-                    loc.getBlockZ());
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+            if (ac == null) {
+                Location loc = entity.getLocation();
+                ac = getArea(
+                        p.getWorld().getName(),
+                        loc.getBlockX(),
+                        loc.getBlockY(),
+                        loc.getBlockZ());
+            }
             if (ac == null) return;
+            // L1: 破坏总开关
             if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+                return;
+            }
+            // L2: 实体交互
+            if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
                 e.setCancelled(true);
                 p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
             }
@@ -9671,8 +9775,9 @@ public class AreaProtection implements Listener {
         int bz = loc.getBlockZ();
         String world = loc.getWorld().getName();
 
+        // ★ 按位置返回区域（不再要求 denyItemFrame 为真，以支持 L1/L2 先行判定）
         AreaConfig ac = getArea(world, bx, by, bz);
-        if (ac != null && ac.denyItemFrame) return ac;
+        if (ac != null) return ac;
 
         int[][] offsets = {
                 {0, 0, 1}, {0, 0, -1},
@@ -9682,7 +9787,7 @@ public class AreaProtection implements Listener {
         for (int[] off : offsets) {
             ac = getArea(world,
                     bx + off[0], by + off[1], bz + off[2]);
-            if (ac != null && ac.denyItemFrame) return ac;
+            if (ac != null) return ac;
         }
         return null;
     }
@@ -9704,7 +9809,18 @@ public class AreaProtection implements Listener {
         // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(hit);
         if (ac == null) return;
-        // ★ 展示框同时受denyItemFrame和denyContainer控制
+        // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框/容器
+        if (getEffectiveDeny(shooter, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            shooter.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+            return;
+        }
+        if (getEffectiveDeny(shooter, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
+            shooter.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+            return;
+        }
+        // ★ 三级：展示框同时受denyItemFrame和denyContainer控制
         if (!getEffectiveDeny(shooter, ac, "denyItemFrame") && !getEffectiveDeny(shooter, ac, "denyContainer")) return;
 
         e.setCancelled(true);
@@ -10149,6 +10265,9 @@ public class AreaProtection implements Listener {
         public boolean peaceMode = false;
         public int peaceModeDuration = 5000; // 和平模式生物保护期(毫秒)，默认5秒，最大3600秒
         public boolean denyItemFrame = false;
+        // ★ 二级权限：实体交互（受denyBlockPlace/denyBlockBreak一级权限影响）
+        //   其下三级：denyItemFrame 等具体实体权限
+        public boolean denyEntityInteract = false;
         public Set<String> peaceWhitelist = new HashSet<>();
         public String enforceGameMode = null;  // 强制游戏模式
         public Set<String> modeExempt = new HashSet<>(); // 模式排除名单
@@ -10266,6 +10385,7 @@ public class AreaProtection implements Listener {
             if (!denyUseItems.isEmpty()) c++;
             if (peaceMode) c++;
             if (denyItemFrame) c++;
+            if (denyEntityInteract) c++;
             if (denyThrownProjectiles) c++;
             if (denyGlowing) c++;
             if (denyRedstoneInteraction) c++;
