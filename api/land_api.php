@@ -551,6 +551,7 @@ function initLandTables($db) {
         'deny_fluid' => "INTEGER DEFAULT 0",
         'clear_all_bad' => "INTEGER DEFAULT 0",
         'is_public_building' => "INTEGER DEFAULT 0",
+        'allow_visitor_teleport' => "INTEGER DEFAULT 0",
     ];
     foreach ($permColumns as $col => $type) {
         try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN $col $type"); } catch (\Throwable $e) {}
@@ -657,7 +658,7 @@ function handleSyncLands($db, $post) {
          deny_wool_shear, deny_animal_feeding,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
          deny_container, deny_mob_attack,
-         enable_announce, announce_template, txt_content, deny_fluid, is_public_building)
+         enable_announce, announce_template, txt_content, deny_fluid, is_public_building, allow_visitor_teleport)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax,
                 :size, :created, :synced,
                 :confiscate_items, :deny_use_items, :give_effects, :clear_effects, :clear_all_bad,
@@ -672,7 +673,7 @@ function handleSyncLands($db, $post) {
                 :deny_wool_shear, :deny_animal_feeding,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
                 :deny_container, :deny_mob_attack,
-                :enable_announce, :announce_template, :txt_content, :deny_fluid, :is_public_building)");
+                :enable_announce, :announce_template, :txt_content, :deny_fluid, :is_public_building, :allow_visitor_teleport)");
 
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -747,6 +748,7 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_fluid', (int)($land['deny_fluid'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':is_public_building', (int)($land['is_public_building'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':allow_visitor_teleport', (int)($land['allow_visitor_teleport'] ?? 0), SQLITE3_INTEGER);
         $stmt->execute();
     }
 
@@ -1403,8 +1405,27 @@ function handleUpdateLandField($db, $playerName, $post) {
         return;
     }
 
-    // 允许的字段白名单
-    $allowedFields = ['clear_effects', 'give_effects', 'clear_all_bad', 'deny_all_effects'];
+    // 允许的字段白名单（与Java端 updateLandFieldFromWeb 白名单完全对齐）
+    $allowedFields = [
+        // 效果管理
+        'clear_effects', 'give_effects', 'clear_all_bad', 'deny_all_effects',
+        // 基础权限（与Java GUI访客权限列表一致）
+        'deny_move', 'deny_block_place', 'deny_block_break', 'deny_entity_interact',
+        'deny_container', 'deny_pvp', 'deny_mount', 'deny_ender_pearl',
+        'deny_thrown_projectiles', 'deny_raid', 'deny_bow', 'deny_potion',
+        'deny_fire', 'deny_fire_spread', 'deny_pickup', 'deny_drop',
+        'deny_explosion', 'deny_fall_damage', 'deny_hunger', 'deny_all_damage',
+        'deny_item_frame', 'deny_glowing', 'deny_redstone_interaction',
+        'deny_door_interaction', 'deny_noteblock_jukebox', 'deny_lead',
+        'deny_crop_harvest', 'deny_wool_shear', 'deny_animal_feeding',
+        'deny_mob_attack', 'deny_fluid',
+        // 高级设置
+        'confiscate_items', 'deny_use_items', 'punish_commands',
+        'peace_mode', 'peace_mode_duration', 'enforce_game_mode',
+        'enter_msg', 'leave_msg', 'confiscate_msg',
+        // 传送与公共建筑
+        'allow_visitor_teleport', 'is_public_building',
+    ];
     if (!in_array($field, $allowedFields)) {
         echo json_encode(['success' => false, 'error' => '不允许的字段: ' . $field]);
         return;

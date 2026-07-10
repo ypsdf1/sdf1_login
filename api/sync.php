@@ -462,6 +462,21 @@ function syncLands() {
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    // ★ 新增权限列迁移（与Java area_lands表完整对齐）
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_mount INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_ender_pearl INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_bow INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_potion INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_fire INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_raid INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN allow_visitor_teleport INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN confiscate_items TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_use_items TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN punish_commands TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
 
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
@@ -470,19 +485,25 @@ function syncLands() {
          enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
          deny_block_break, deny_block_place, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
          deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
-         deny_all_damage, clear_effects, give_effects, clear_all_bad_effects,
+         deny_all_damage, clear_effects, give_effects, clear_all_bad,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
          deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
-         warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world)
+         warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
+         deny_mount, deny_ender_pearl, deny_bow, deny_potion, deny_fire, deny_raid,
+         deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport,
+         confiscate_items, deny_use_items, punish_commands, clear_all_bad_effects)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced,
                 :peace_mode, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
                 :deny_block_break, :deny_block_place, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
                 :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
-                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad_effects,
+                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
                 :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding,
-                :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world)");
+                :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
+                :deny_mount, :deny_ender_pearl, :deny_bow, :deny_potion, :deny_fire, :deny_raid,
+                :deny_container, :deny_mob_attack, :is_public_building, :allow_visitor_teleport,
+                :confiscate_items, :deny_use_items, :punish_commands, :clear_all_bad_effects)");
     $count = 0;
     foreach ($lands as $land) {
         $stmt->bindValue(':id', (int)($land['id'] ?? 0), SQLITE3_INTEGER);
@@ -543,6 +564,21 @@ function syncLands() {
         $stmt->bindValue(':warp_yaw', (float)($land['warp_yaw'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_pitch', (float)($land['warp_pitch'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_world', $land['warp_world'] ?? '', SQLITE3_TEXT);
+        // ★ 新增字段绑定（与Java area_lands表完整对齐）
+        $stmt->bindValue(':deny_mount', (int)($land['deny_mount'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_ender_pearl', (int)($land['deny_ender_pearl'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_bow', (int)($land['deny_bow'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_potion', (int)($land['deny_potion'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_fire', (int)($land['deny_fire'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_raid', (int)($land['deny_raid'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_container', (int)($land['deny_container'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_mob_attack', (int)($land['deny_mob_attack'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':is_public_building', (int)($land['is_public_building'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':allow_visitor_teleport', (int)($land['allow_visitor_teleport'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':confiscate_items', $land['confiscate_items'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':deny_use_items', $land['deny_use_items'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':punish_commands', $land['punish_commands'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':clear_all_bad', (int)($land['clear_all_bad'] ?? 0), SQLITE3_INTEGER);
         $stmt->execute();
         $count++;
     }

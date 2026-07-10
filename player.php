@@ -2936,6 +2936,69 @@ async function renderLandDetail(el, landName) {
         }
         html += `</div>`;
 
+        // ★★★ 领地权限开关面板（与Java端GUI访客权限列表完全对齐） ★★★
+        const permDefs = [
+            // [字段名, 显示名, 是否反转(allow类)]
+            ['deny_move', '移动', false],
+            ['deny_block_place', '放置方块', false],
+            ['deny_block_break', '破坏方块', false],
+            ['deny_entity_interact', '实体交互(船/矿车/盔甲架/展示框)', false],
+            ['deny_container', '容器管理', false],
+            ['deny_pvp', '玩家对战', false],
+            ['deny_mount', '骑乘坐具', false],
+            ['deny_ender_pearl', '投掷末影珍珠', false],
+            ['deny_thrown_projectiles', '投掷物(三叉戟/雪球/风蛋)', false],
+            ['deny_raid', '袭击', false],
+            ['deny_bow', '弓箭射击', false],
+            ['deny_potion', '药水效果', false],
+            ['deny_fire', '点燃', false],
+            ['deny_fire_spread', '火焰蔓延', false],
+            ['deny_pickup', '拾取物品', true],   // allowPickup: true=允许
+            ['deny_drop', '丢弃物品', true],     // allowDrop: true=允许
+            ['deny_explosion', '爆炸', false],
+            ['deny_fall_damage', '摔落伤害', false],
+            ['deny_hunger', '饥饿', false],
+            ['deny_all_damage', '所有伤害', false],
+            ['deny_all_effects', '所有效果', false],
+            ['deny_item_frame', '展示框交互', false],
+            ['deny_glowing', '玩家发光', false],
+            ['deny_redstone_interaction', '红石电路(按钮/压力板/中继器)', false],
+            ['deny_door_interaction', '门禁交互(门/栅栏门)', false],
+            ['deny_noteblock_jukebox', '音频(音符盒/唱片机)', false],
+            ['deny_lead', '拴绳使用', false],
+            ['deny_crop_harvest', '农作物收获', false],
+            ['deny_wool_shear', '剪切羊毛/生物', false],
+            ['deny_animal_feeding', '投喂动物', false],
+            ['deny_mob_attack', '攻击生物', false],
+            ['deny_fluid', '流体放置', false],
+            ['allow_visitor_teleport', '允许传送', true],
+            ['is_public_building', '公共建筑设施', true],
+        ];
+
+        html += `<div class="card" style="margin-top:12px">
+            <h3 style="margin:0 0 12px;color:var(--fg)">🛡️ 领地权限</h3>
+            <p style="color:var(--dim);font-size:12px;margin-bottom:12px">点击切换权限状态。启用=允许该行为，禁用=阻止该行为。</p>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">`;
+
+        for (const [field, label, isInverted] of permDefs) {
+            const rawVal = parseInt(land[field] || 0);
+            // 反转类(allow_*/is_public)：1=启用；deny类：0=启用
+            const isEnabled = isInverted ? (rawVal === 1) : (rawVal === 0);
+            const bgColor = isEnabled ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.1)';
+            const borderColor = isEnabled ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.3)';
+            const textColor = isEnabled ? '#22c55e' : '#ef4444';
+            const icon = isEnabled ? '✓' : '✕';
+
+            html += `<span onclick="togglePerm('${escHtml(land.name)}','${field}',${isInverted})"
+                style="padding:5px 12px;border-radius:16px;font-size:12px;cursor:pointer;transition:all 0.2s;
+                background:${bgColor};color:${textColor};
+                border:1px solid ${borderColor}">
+                ${icon} ${escHtml(label)}
+            </span>`;
+        }
+
+        html += `</div></div>`;
+
         html += `</div>`;
 
         el.innerHTML = html;
@@ -3087,6 +3150,45 @@ async function toggleLandField(landName, field) {
 
         const currentVal = !!parseInt(detailData.land[field] || 0);
         const newVal = currentVal ? '0' : '1';
+
+        const url = new URL(API + 'land_api.php', location.href);
+        url.searchParams.set('action', 'update_land_field');
+        url.searchParams.set('token', TOKEN);
+        const body = new URLSearchParams();
+        body.set('name', landName);
+        body.set('field', field);
+        body.set('value', newVal);
+        const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
+        const data = await res.json();
+        if (data.success) {
+            landsState.currentLand = landName;
+            await renderLandDetail(document.getElementById('content'), landName);
+        } else {
+            glassAlert(data.error || '操作失败');
+        }
+    } catch (e) {
+        glassAlert('操作失败: ' + e.message);
+    }
+}
+
+// ★ 权限开关切换（处理deny/allow反转逻辑）
+// isInverted=true时：DB值1=禁用(显示红)，DB值0=启用(显示绿)
+// isInverted=false时：DB值1=禁用(显示红)，DB值0=启用(显示绿) — 相同逻辑，反转体现在发送值
+async function togglePerm(landName, field, isInverted) {
+    try {
+        // 读取当前值
+        const detailUrl = new URL(API + 'land_api.php', location.href);
+        detailUrl.searchParams.set('action', 'land_detail');
+        detailUrl.searchParams.set('token', TOKEN);
+        detailUrl.searchParams.set('name', landName);
+        const detailRes = await fetch(detailUrl);
+        const detailData = await detailRes.json();
+        if (!detailData.success) { glassAlert(detailData.error); return; }
+
+        const currentDbVal = parseInt(detailData.land[field] || 0);
+        // deny类：当前0(允许)→发送1(禁止)；allow类：当前0(禁止)→发送1(允许)
+        // 统一取反即可
+        const newVal = currentDbVal ? '0' : '1';
 
         const url = new URL(API + 'land_api.php', location.href);
         url.searchParams.set('action', 'update_land_field');
