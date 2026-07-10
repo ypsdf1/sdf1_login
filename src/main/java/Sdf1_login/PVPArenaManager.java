@@ -11,13 +11,13 @@ import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.PotionMeta;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.scoreboard.*;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
 
@@ -901,6 +901,9 @@ public class PVPArenaManager implements Listener {
         plugin.getLogger().info("[PVP] 玩家 " + player.getName()
                 + " 未选择任何装备就关闭了PVP装备GUI，执行遣返");
 
+        // 还原原背包（进入时已清空）
+        restoreInventory(player);
+
         // 清理状态并取消超时定时器
         inPVPArena.remove(player.getName());
         cancelKickTimeout(player.getName());
@@ -944,21 +947,25 @@ public class PVPArenaManager implements Listener {
         registerPlayerStats(player);
         equipmentConfirmed.remove(playerName);
 
-        // ★ 关键变更：先选装备，不急着备份清空
+        // ★ 进入竞技场立即备份并清空原背包，防止玩家用自带装备战斗
+        backupInventory(player);
+        clearInventory(player);
+
+        // 打开装备选择GUI
         openEquipmentSelection(player);
 
         // ★ 注册超时安全网：60秒内必须确认，否则自动遣返
         scheduleKickTimeout(playerName);
 
         player.sendMessage("§a§l欢迎来到PVP竞技场!");
-        player.sendMessage("§7请先选择你的装备套装，确认后将备份你的原背包");
+        player.sendMessage("§7请先选择你的装备套装，确认后将发放PVP装备");
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
 
-        plugin.getLogger().info("[PVP] 玩家 " + playerName + " 进入PVP竞技场（等待选装备）");
+        plugin.getLogger().info("[PVP] 玩家 " + playerName + " 进入PVP竞技场（已备份清空原背包，等待选装备）");
     }
 
     /**
-     * 执行"确认装备"步骤：备份原背包 → 清空 → 发放PVP装备
+     * 执行"确认装备"步骤：发放PVP装备
      * 由装备GUI的确认按钮和一键装备按钮触发
      */
     public void confirmEquipment(Player player) {
@@ -966,13 +973,7 @@ public class PVPArenaManager implements Listener {
         if (!inPVPArena.contains(playerName)) return;
         if (equipmentConfirmed.contains(playerName)) return;
 
-        // ★ 第一步：备份原背包（在清空之前！）
-        backupInventory(player);
-
-        // ★ 第二步：清空背包
-        clearInventory(player);
-
-        // ★ 第三步：发放PVP装备
+        // 此时背包已在进入时清空，直接发放PVP装备
         equipFullSet(player);
 
         // 标记已完成装备确认 + 取消超时定时器
@@ -1007,6 +1008,10 @@ public class PVPArenaManager implements Listener {
                 plugin.getLogger().info("[PVP] 超时遣返: " + playerName
                         + " 进入PVP超过 " + EQUIPMENT_SELECT_TIMEOUT_SECONDS + "秒未确认装备");
                 kickTimeoutTasks.remove(playerName);
+                // 超时未确认：还原原背包并送走
+                if (p != null && p.isOnline()) {
+                    restoreInventory(p);
+                }
                 inPVPArena.remove(playerName);
                 cleanupPlayerStats(p);
                 guiReopening.remove(playerName);
@@ -1185,20 +1190,42 @@ public class PVPArenaManager implements Listener {
         // 死亡时保留经验（避免丢失）
         event.setKeepLevel(true);
         event.setKeepInventory(true); // 不掉落PVP装备（因为要回收）
+        // 复活处理统一交给 onPlayerRespawn，避免1秒空窗期被利用
+    }
 
-        // 延迟1秒后强制离开（等死亡事件处理完）
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (player.isOnline()) {
-                    forceLeaveArena(player, false);
-                    // 传回主世界
-                    World main = Bukkit.getWorlds().get(0);
-                    player.teleport(main.getSpawnLocation());
-                    player.sendMessage("§c§l你在PVP中阵亡，已自动退出并还原背包");
-                }
-            }
-        }.runTaskLater(plugin, 20L); // 1秒后
+    /**
+     * 玩家复活事件 — 在PVP竞技场阵亡后立即还原背包并送回主世界
+     */
+    @EventHandler
+    public void onPlayerRespawn(PlayerRespawnEvent event) {
+        Player player = event.getPlayer();
+        if (!inPVPArena.contains(player.getName())) return;
+
+        World main = Bukkit.getWorlds().get(0);
+        event.setRespawnLocation(main.getSpawnLocation());
+
+        if (!equipmentConfirmed.contains(player.getName())) {
+            // 未确认装备：身上仍是原背包，只需清状态
+            cleanupPlayerStats(player);
+            inPVPArena.remove(player.getName());
+            equipmentConfirmed.remove(player.getName());
+            guiReopening.remove(player.getName());
+            guiOpenedMillis.remove(player.getName());
+            graceReopenCount.remove(player.getName());
+            selEnchant.remove(player.getName());
+            selShield.remove(player.getName());
+            selFood.remove(player.getName());
+            selWeaponTier.remove(player.getName());
+            selArmorTier.remove(player.getName());
+            equipInteracted.remove(player.getName());
+            cancelKickTimeout(player.getName());
+            player.sendMessage("§c§l你在PVP中阵亡，已自动退出");
+            return;
+        }
+
+        // 已确认装备：回收PVP装备并还原原背包
+        forceLeaveArena(player, false);
+        player.sendMessage("§c§l你在PVP中阵亡，已自动退出并还原背包");
     }
 
     // ===== 全服击杀播报（移植自 PVPManager） =====
@@ -1237,7 +1264,7 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 玩家加入事件 — 如果上次在PVP中断线，还原背包
+     * 玩家加入事件 — 如果上次在PVP中断线，还原背包并送回主世界
      */
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
@@ -1250,6 +1277,7 @@ public class PVPArenaManager implements Listener {
                     + " 上次在PVP中断线，正在还原背包...");
             // 延迟2 tick 让玩家完全加载
             plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                if (!player.isOnline()) return;
                 InventoryBackup backup = new InventoryBackup(
                         deserializeItems(data[0]),
                         deserializeItems(data[1]),
@@ -1261,15 +1289,29 @@ public class PVPArenaManager implements Listener {
                 restoreInventory(player);
                 db.deletePvpInventoryBackup(player.getName());
                 player.sendMessage("§a§l检测到你上次在PVP中断线，背包已自动恢复");
+
+                // 若仍在竞技场世界，送回主世界
+                if (player.getWorld().getName().equals(pvpWorldName)) {
+                    World main = Bukkit.getWorlds().get(0);
+                    player.teleport(main.getSpawnLocation());
+                    cleanupPlayerStats(player);
+                    inPVPArena.remove(player.getName());
+                    player.sendMessage("§e[PVP] 已送你回主世界");
+                }
             }, 2L);
+            return;
         }
 
         // 防止玩家登录时就在PVP世界（异常情况兜底）
         if (player.getWorld().getName().equals(pvpWorldName)) {
-            inPVPArena.add(player.getName());
-            registerPlayerStats(player);
-            // 给个提示但不自动操作，让玩家自己决定
-            player.sendMessage("§e[PVP] 你当前在PVP竞技场世界，输入 /pvp leave 离开");
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                if (!player.isOnline()) return;
+                World main = Bukkit.getWorlds().get(0);
+                player.teleport(main.getSpawnLocation());
+                cleanupPlayerStats(player);
+                inPVPArena.remove(player.getName());
+                player.sendMessage("§e[PVP] 检测到你在竞技场非正常断线，已送你回主世界");
+            }, 5L);
         }
     }
 
@@ -1283,10 +1325,11 @@ public class PVPArenaManager implements Listener {
             // 断线前最后备份一次当前状态
             if (equipmentConfirmed.contains(player.getName())) {
                 // 已装备确认过 → 当前身上是PVP装备，需要用之前的备份来还原
-                // 备份已经在confirmEquipment时做过，这里只需标记
+                // 备份已经在进入时做过，这里只需标记
                 forceLeaveArena(player, true); // isDisconnect=true
             } else {
-                // 还没确认装备 → 身上还是原背包，不需要特殊处理
+                // 还没确认装备 → 进入时已清空，必须还原原背包
+                restoreInventory(player);
                 inPVPArena.remove(player.getName());
                 equipmentConfirmed.remove(player.getName());
                 guiReopening.remove(player.getName());

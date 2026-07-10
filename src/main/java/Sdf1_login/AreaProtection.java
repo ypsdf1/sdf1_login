@@ -8216,10 +8216,16 @@ public class AreaProtection implements Listener {
                 String effectiveRole = "visitor";
                 if (role != null && !role.isEmpty()) {
                     effectiveRole = role.toLowerCase();
+                    boolean isAdmin = isLandAdmin(lname, playerName);
                     if ("admin".equalsIgnoreCase(role)) {
                         setLandAdmin(lname, playerName, true);
-                    } else if ("visitor".equalsIgnoreCase(role) && isLandAdmin(lname, playerName)) {
+                    } else if ("visitor".equalsIgnoreCase(role) && isAdmin) {
                         setLandAdmin(lname, playerName, false);
+                    } else if ("member".equalsIgnoreCase(role) && isAdmin) {
+                        // ★ PHP 发来 member 角色但玩家是管理员 — 不能降级，保留 admin
+                        plugin.getLogger().warning("[防护][更新权限] 拦截角色降级: " + playerName
+                                + " @ " + lname + " 尝试从 admin 降为 member，已保留 admin");
+                        effectiveRole = "admin";
                     }
                 } else {
                     // 未带 role 时，沿用本地已有角色；若本地无记录则默认 visitor

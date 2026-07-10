@@ -10,6 +10,7 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityTargetLivingEntityEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.Inventory;
@@ -543,6 +544,22 @@ public class PVPTestManager implements Listener {
             return;
         }
 
+        // 已经在测试场则不允许重复进入（防止备份被覆盖）
+        if (inTest.contains(p.getUniqueId())) {
+            p.sendMessage("§e§l[PVP测试] 你已经在测试场中，无需重复进入");
+            return;
+        }
+
+        // 兜底：死亡/断线后未正常恢复则先恢复，防止把场外/场内残留装备再带进去
+        if (inventoryBackups.containsKey(p.getUniqueId())) {
+            p.sendMessage("§e§l[PVP测试] 检测到未恢复背包，正在恢复...");
+            restoreInventory(p);
+            removePlayerMobs(p);
+            chosenDiff.remove(p.getUniqueId());
+            chosenEquip.remove(p.getUniqueId());
+            pendingRespawn.remove(p.getUniqueId());
+        }
+
         boolean enchant = testEnchant.getOrDefault(p.getUniqueId(), false);
         boolean shield = testShield.getOrDefault(p.getUniqueId(), true);
         int wt = testWeaponTier.getOrDefault(p.getUniqueId(), 0);
@@ -987,9 +1004,8 @@ public class PVPTestManager implements Listener {
         pendingRespawn.remove(p.getUniqueId());
         World main = Bukkit.getWorlds().get(0);
         e.setRespawnLocation(main.getSpawnLocation());
-        // 回到主世界后再还原背包，避免死亡瞬间覆盖
-        final Player fp = p;
-        Bukkit.getScheduler().runTaskLater(plugin, () -> restoreInventory(fp), 1L);
+        // 复活瞬间立即还原原背包，杜绝利用快速重进保留/携带测试场装备
+        restoreInventory(p);
         checkAllLeft();
     }
 
@@ -1004,6 +1020,32 @@ public class PVPTestManager implements Listener {
         chosenDiff.remove(p.getUniqueId());
         chosenEquip.remove(p.getUniqueId());
         pendingRespawn.remove(p.getUniqueId());
+        checkAllLeft();
+    }
+
+    /** 登录：若上次在测试场断线（或非正常离开），强制还原背包并送回主世界 */
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent e) {
+        Player p = e.getPlayer();
+        // 情况1：测试场世界里有记录或身上有测试场装备残留
+        boolean inTestWorld = isTestWorld(p.getWorld());
+        boolean hasBackup = inventoryBackups.containsKey(p.getUniqueId());
+        if (!inTestWorld && !hasBackup && !inTest.contains(p.getUniqueId())) return;
+
+        if (hasBackup) {
+            restoreInventory(p);
+        }
+        removePlayerMobs(p);
+        inTest.remove(p.getUniqueId());
+        chosenDiff.remove(p.getUniqueId());
+        chosenEquip.remove(p.getUniqueId());
+        pendingRespawn.remove(p.getUniqueId());
+
+        if (inTestWorld) {
+            World main = Bukkit.getWorlds().get(0);
+            p.teleport(main.getSpawnLocation());
+            p.sendMessage("§c§l[PVP测试] 检测到你在测试场非正常断线，已送你回主世界并恢复背包");
+        }
         checkAllLeft();
     }
 
