@@ -3819,38 +3819,31 @@ public class WebManager {
                             break;
                         }
                         case "perm_change": {
-                            // [已注释] PHP→Java权限同步暂时禁用（排查领地权限被强制同步bug）
-                            plugin.getLogger().info("[Web通信] [已跳过] PHP端perm_change: " + targetName + " (禁用中)");
-                            applied = true;
+                            // handleUpdateVisitorPerm: target_name=玩家名，changeData 不含 player
+                            // handleChangeVisitorRole: target_name=领地名，changeData 含 player
+                            String playerName = changeData.containsKey("player")
+                                    ? String.valueOf(changeData.get("player"))
+                                    : targetName;
+                            String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
+                            String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
+                            if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
+                                areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);
+                                plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson
+                                        + (roleJson.isEmpty() ? "" : " role=" + roleJson));
+                                applied = true;
+                            }
                             break;
-                            // ★ 以下是原逻辑（暂时禁用）
-                            // String playerName = changeData.containsKey("player")
-                            //         ? String.valueOf(changeData.get("player"))
-                            //         : targetName;
-                            // String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
-                            // String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
-                            // String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
-                            // if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
-                            //     areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);
-                            //     plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson
-                            //             + (roleJson.isEmpty() ? "" : " role=" + roleJson));
-                            //     applied = true;
-                            // }
-                            // break;
                         }
                         case "land_field_change": {
-                            // [已注释] PHP→Java领地字段同步暂时禁用（排查权限强制同步bug）
-                            plugin.getLogger().info("[Web通信] [已跳过] PHP端land_field_change: " + targetName + " (禁用中)");
-                            applied = true;
+                            String field = String.valueOf(changeData.getOrDefault("field", ""));
+                            String value = String.valueOf(changeData.getOrDefault("value", ""));
+                            if (!field.isEmpty() && !targetName.isEmpty()) {
+                                areaProtect.updateLandFieldFromWeb(targetName, field, value);
+                                plugin.getLogger().info("[Web通信] PHP端更新领地字段: " + targetName + "." + field);
+                                applied = true;
+                            }
                             break;
-                            // String field = String.valueOf(changeData.getOrDefault("field", ""));
-                            // String value = String.valueOf(changeData.getOrDefault("value", ""));
-                            // if (!field.isEmpty() && !targetName.isEmpty()) {
-                            //     areaProtect.updateLandFieldFromWeb(targetName, field, value);
-                            //     plugin.getLogger().info("[Web通信] PHP端更新领地字段: " + targetName + "." + field);
-                            //     applied = true;
-                            // }
-                            // break;
                         }
                         case "config_change": {
                             String configKey = String.valueOf(changeData.getOrDefault("key", ""));

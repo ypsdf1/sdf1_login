@@ -6000,12 +6000,12 @@ public class AreaProtection implements Listener {
                         sender.sendMessage("§c未知配置项: " + key);
                         return true;
                 }
-                // ★ [已注释] 配置变更：PHP同步暂时禁用（排查领地权限被强制同步bug）
-                // try {
-                //     if (plugin.webManager != null) {
-                //         plugin.webManager.requestImmediateLandSync();
-                //     }
-                // } catch (Exception ignored) {}
+                // ★ 配置变更：立即触发PHP同步
+                try {
+                    if (plugin.webManager != null) {
+                        plugin.webManager.requestImmediateLandSync();
+                    }
+                } catch (Exception ignored) {}
 
                 // ★ 更新后显示完整配置页面（而非仅打印"已更新"）
                 if (plugin.areaCLIManager != null) {
@@ -7597,8 +7597,8 @@ public class AreaProtection implements Listener {
                     areaName, oldOwner, newOwner, expiresAt, 0, 0, snapshot
                 );
                 plugin.webManager.trackTransfer(areaName, info);
-                // 通知PHP同步 [已注释 - 排查权限强制同步bug]
-                // plugin.webManager.requestImmediateLandSync();
+                // 通知PHP同步
+                plugin.webManager.requestImmediateLandSync();
             }
 
             sender.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + newOwner + "§a，§e60秒冷却期内可取消");
@@ -7969,12 +7969,12 @@ public class AreaProtection implements Listener {
             stmt.setInt(65, ac.allowVisitorTeleport ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
-            // ★ [已注释] 领地设置变更：PHP同步暂时禁用（排查权限强制同步bug）
-            // try {
-            //     if (plugin.webManager != null) {
-            //         plugin.webManager.requestImmediateLandSync();
-            //     }
-            // } catch (Exception ignored) {}
+            // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
+            try {
+                if (plugin.webManager != null) {
+                    plugin.webManager.requestImmediateLandSync();
+                }
+            } catch (Exception ignored) {}
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 保存到DB失败: " + ac.name + " - " + e.getMessage());
         }
@@ -7990,12 +7990,12 @@ public class AreaProtection implements Listener {
             stmt.setString(1, name);
             stmt.executeUpdate();
             stmt.close();
-            // ★ [已注释] 领地删除：PHP同步暂时禁用（排查权限强制同步bug）
-            // try {
-            //     if (plugin.webManager != null) {
-            //         plugin.webManager.requestImmediateLandSync();
-            //     }
-            // } catch (Exception ignored) {}
+            // ★ 领地删除：立即触发PHP同步
+            try {
+                if (plugin.webManager != null) {
+                    plugin.webManager.requestImmediateLandSync();
+                }
+            } catch (Exception ignored) {}
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 从DB删除领地失败: " + name + " - " + e.getMessage());
         }
@@ -8775,8 +8775,7 @@ public class AreaProtection implements Listener {
                 areaName, oldOwner, newOwner, expiresAt, 0, 0, snapshot
             );
             plugin.webManager.trackTransfer(areaName, info);
-            // [已注释] PHP同步暂时禁用（排查权限强制同步bug）
-            // plugin.webManager.requestImmediateLandSync();
+            plugin.webManager.requestImmediateLandSync();
         }
 
         p.sendMessage("§a已将 §e" + areaName + " §a从 §e" + (oldOwner != null ? oldOwner : "无") + " §a转让给 §e" + newOwner + "§a，§e60秒冷却期内可取消");
