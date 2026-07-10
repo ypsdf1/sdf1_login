@@ -602,6 +602,10 @@ public class PVPTestManager implements Listener {
 
         inTest.add(p.getUniqueId());
 
+        // ★ 写入 chosenDiff/chosenEquip（spawnWaveFor 依赖这两个 map，之前遗漏导致 null→不刷怪）
+        chosenDiff.put(p.getUniqueId(), diff);
+        chosenEquip.put(p.getUniqueId(), equip);
+
         // 立即来一波（之后仅在玩家清空当前波次后，间隔10秒再补下一波）
         spawnWaveFor(p);
 
