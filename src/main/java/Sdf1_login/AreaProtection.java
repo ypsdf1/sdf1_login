@@ -7869,8 +7869,11 @@ public class AreaProtection implements Listener {
     public void saveAreaToDb(AreaConfig ac) {
         if (dbConnection == null) return;
         try {
+            // ★ 使用 INSERT ... ON CONFLICT 替代 INSERT OR REPLACE：
+            //   INSERT OR REPLACE 会删除旧行插入新行，导致自增 id 改变，
+            //   进而使 area_land_permissions.land_id 指向不存在的老 id，造成管理员/成员权限丢失。
             PreparedStatement stmt = dbConnection.prepareStatement(
-                    "INSERT OR REPLACE INTO area_lands (name, owner, world, x1, z1, x2, z2, y_min, y_max, "
+                    "INSERT INTO area_lands (name, owner, world, x1, z1, x2, z2, y_min, y_max, "
                     + "confiscate_items, deny_use_items, give_effects, clear_effects, clear_all_bad, "
                     + "punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage, "
                     + "deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl, "
@@ -7882,7 +7885,20 @@ public class AreaProtection implements Listener {
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
                     + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "ON CONFLICT(name) DO UPDATE SET "
+                    + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
+                    + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
+                    + "punish_commands=excluded.punish_commands, deny_block_place=excluded.deny_block_place, deny_block_break=excluded.deny_block_break, deny_pvp=excluded.deny_pvp, deny_fall_damage=excluded.deny_fall_damage, "
+                    + "deny_hunger=excluded.deny_hunger, deny_all_damage=excluded.deny_all_damage, deny_drop=excluded.deny_drop, deny_mount=excluded.deny_mount, deny_ender_pearl=excluded.deny_ender_pearl, "
+                    + "deny_bow=excluded.deny_bow, deny_potion=excluded.deny_potion, deny_explosion=excluded.deny_explosion, deny_raid=excluded.deny_raid, deny_fire_spread=excluded.deny_fire_spread, "
+                    + "deny_all_effects=excluded.deny_all_effects, deny_item_frame=excluded.deny_item_frame, deny_move=excluded.deny_move, deny_pickup=excluded.deny_pickup, deny_fire=excluded.deny_fire, "
+                    + "peace_mode=excluded.peace_mode, peace_mode_duration=excluded.peace_mode_duration, "
+                    + "peace_whitelist=excluded.peace_whitelist, enforce_game_mode=excluded.enforce_game_mode, mode_exempt=excluded.mode_exempt, enter_msg=excluded.enter_msg, leave_msg=excluded.leave_msg, "
+                    + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
+                    + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
+                    + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
