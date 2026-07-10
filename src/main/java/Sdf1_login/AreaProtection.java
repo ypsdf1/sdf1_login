@@ -9804,6 +9804,40 @@ public class AreaProtection implements Listener {
         }
     }
 
+    // ===== ★ 载具乘坐拦截：VehicleEnterEvent 是骑乘的权威事件 =====
+    // 当玩家右键已放置的船/矿车进入时触发，需检查实体交互权限。
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onVehicleEnter(org.bukkit.event.vehicle.VehicleEnterEvent e) {
+        Entity entered = e.getEntered();
+        if (!(entered instanceof Player)) return; // 只处理玩家乘坐
+        Player p = (Player) entered;
+        org.bukkit.entity.Vehicle v = e.getVehicle();
+        // ★ 区域取法与放置/破坏一致：优先载具坐标，玩家坐标兜底
+        AreaConfig ac = getArea(
+                v.getWorld().getName(),
+                v.getLocation().getBlockX(),
+                v.getLocation().getBlockY(),
+                v.getLocation().getBlockZ());
+        if (ac == null) {
+            ac = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+        }
+        if (ac == null) return;
+        // 层级：L2 实体交互 → L3 骑乘
+        if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止乘坐载具");
+            return;
+        }
+        if (getEffectiveDeny(p, ac, "denyMount")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止乘坐载具");
+        }
+    }
+
     // ===== ★ 悬挂物破坏拦截（展示框/画等）：HangingBreakEvent 是破坏的权威事件 =====
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onHangingBreak(org.bukkit.event.hanging.HangingBreakEvent e) {
