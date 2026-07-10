@@ -2873,13 +2873,13 @@ async function renderLandDetail(el, landName) {
         // ★★★ 效果管理 ★★★
         const clearEffects = land.clear_effects ? JSON.parse(land.clear_effects) : [];
         const giveEffects = land.give_effects ? JSON.parse(land.give_effects) : [];
-        const clearAllBad = !!parseInt(land.clear_all_bad_effects || 0);
+        const clearAllBad = !!parseInt(land.clear_all_bad || 0);
         const denyAll = !!parseInt(land.deny_all_effects || 0);
 
         html += `<div class="card" style="margin-top:12px">
             <h3 style="margin:0 0 12px;color:var(--fg)">✨ 效果管理</h3>
             <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
-                <span onclick="toggleLandField('${escHtml(land.name)}','clear_all_bad_effects')"
+                <span onclick="toggleLandField('${escHtml(land.name)}','clear_all_bad')"
                     style="padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer;transition:all 0.2s;
                     background:${clearAllBad ? 'var(--green)' : 'var(--bg)'};color:${clearAllBad ? '#fff' : 'var(--dim)'};
                     border:1px solid ${clearAllBad ? 'var(--green)' : 'var(--border)'}">

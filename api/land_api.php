@@ -147,7 +147,23 @@ try {
         $playerName = is_array($tokenInfo) ? $tokenInfo['player'] : $tokenInfo;
     } else {
         // 未知action：默认放行（部分公开GET读取）
-        if ($method === 'POST' && !validateSecret($secret)) {
+        // ★ 防御性保底：如果前面的数组检查遗漏了已知的玩家端action，在这里兜底
+        $knownPlayerActions = array_merge(
+            $playerActions ?? [], $playerPermActions ?? [], $memberPermActions ?? [], $playerFieldActions ?? []
+        );
+        if (in_array($action, $knownPlayerActions)) {
+            $token = $_GET['token'] ?? $_POST['token'] ?? '';
+            if (empty($token)) {
+                echo json_encode(['success' => false, 'error' => '需要登录', 'needLogin' => true]);
+                exit;
+            }
+            $tokenInfo = validateTokenSilent($token);
+            if (!$tokenInfo) {
+                echo json_encode(['success' => false, 'error' => 'token无效或已过期', 'needLogin' => true]);
+                exit;
+            }
+            $playerName = is_array($tokenInfo) ? $tokenInfo['player'] : $tokenInfo;
+        } elseif ($method === 'POST' && !validateSecret($secret)) {
             echo json_encode(['success' => false, 'error' => 'invalid secret']);
             exit;
         }
@@ -1159,7 +1175,23 @@ function validatePlayerViaJava($db, $playerName, $requestType = 'general', $extr
         // status='pending' → 还在验证中
     }
 
-    // 2. 无缓存或已过期 → 写入pending表，触发Java异步验证
+    // 2. 直接查本地DB验证（不依赖Java异步验证）
+    if (playerExists($db, $playerName)) {
+        // 写入缓存，避免下次再走异步
+        try {
+            $stmtCache = $db->prepare("INSERT INTO pending_player_validations (player_name, request_type, request_data, status, created_at, validated_at)
+                VALUES (:player, :type, :data, 'valid', :now, :now)");
+            $stmtCache->bindValue(':player', $playerName, SQLITE3_TEXT);
+            $stmtCache->bindValue(':type', $requestType, SQLITE3_TEXT);
+            $stmtCache->bindValue(':data', json_encode($extraData), SQLITE3_TEXT);
+            $stmtCache->bindValue(':now', time(), SQLITE3_INTEGER);
+            $stmtCache->execute();
+        } catch (\Throwable $e) { /* 静默 */ }
+        debugLog("validatePlayerViaJava: 本地验证通过", ['player' => $playerName]);
+        return true;
+    }
+
+    // 3. 本地找不到 → 写入pending表，触发Java异步验证
     $stmt2 = $db->prepare("INSERT INTO pending_player_validations (player_name, request_type, request_data, status, created_at)
         VALUES (:player, :type, :data, 'pending', :now)");
     $stmt2->bindValue(':player', $playerName, SQLITE3_TEXT);
@@ -1318,17 +1350,29 @@ function handleValidationCallback($db, $data) {
             debugLog("validation_callback: 自动执行add_group_member", ['player' => $player, 'group' => $group]);
         }
 
-        // --- add_visitor: 自动将玩家加入领地访客列表 ---
+        // --- add_visitor: 自动将玩家加入领地访客列表（写入web_area_permissions，与handleAddVisitor一致）---
         if ($reqType === 'add_visitor' && !empty($reqData['land'])) {
             $landName = $reqData['land'];
             $now = time();
             try {
-                $stmt5 = $db->prepare("INSERT OR IGNORE INTO web_area_visitors (land_name, player_name, added_by, added_time)
-                    VALUES (:land, :player, 'admin', :time)");
-                $stmt5->bindValue(':land', $landName, SQLITE3_TEXT);
-                $stmt5->bindValue(':player', $player, SQLITE3_TEXT);
-                $stmt5->bindValue(':time', $now, SQLITE3_INTEGER);
-                $stmt5->execute();
+                // 先查land_id
+                $stmtLand = $db->prepare("SELECT id FROM web_area_lands WHERE name = :name");
+                $stmtLand->bindValue(':name', $landName, SQLITE3_TEXT);
+                $rsLand = $stmtLand->execute();
+                $landRow = $rsLand->fetchArray(SQLITE3_ASSOC);
+                $landId = $landRow ? (int)$landRow['id'] : 0;
+
+                if ($landId > 0) {
+                    $stmt5 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+                        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+                        VALUES (:land_id, :land_name, :player, 'visitor', '', :now, 0, :now)");
+                    $stmt5->bindValue(':land_id', $landId, SQLITE3_INTEGER);
+                    $stmt5->bindValue(':land_name', $landName, SQLITE3_TEXT);
+                    $stmt5->bindValue(':player', $player, SQLITE3_TEXT);
+                    $stmt5->bindValue(':time', $now, SQLITE3_INTEGER);
+                    $stmt5->bindValue(':now', $now, SQLITE3_INTEGER);
+                    $stmt5->execute();
+                }
 
                 // 写入变更队列，通知Java端
                 $stmt6 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at)
@@ -1338,7 +1382,7 @@ function handleValidationCallback($db, $data) {
                 $stmt6->bindValue(':data', json_encode(['action' => 'add_visitor', 'player' => $player]), SQLITE3_TEXT);
                 $stmt6->bindValue(':time', $now, SQLITE3_INTEGER);
                 $stmt6->execute();
-            } catch (\Throwable $e) { /* 静默 */ }
+            } catch (\Throwable $e) { debugLog("validation_callback add_visitor error: " . $e->getMessage()); }
 
             debugLog("validation_callback: 自动执行add_visitor", ['player' => $player, 'land' => $landName]);
         }
