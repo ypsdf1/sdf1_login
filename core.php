@@ -727,16 +727,42 @@ function initTables(SQLite3 $db) {
             deny_block_break INTEGER DEFAULT 0
         )");
 
-        // 领地权限表
+        // 领地权限表（★ 必须含 UNIQUE(land_id, player_name)，否则 ON CONFLICT 不触发导致角色降级）
         $db->exec("CREATE TABLE IF NOT EXISTS web_area_permissions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             land_id INTEGER NOT NULL,
+            land_name TEXT DEFAULT '',
             player_name TEXT NOT NULL,
-            role TEXT DEFAULT 'visitor',
+            role TEXT NOT NULL DEFAULT 'visitor',
             permissions TEXT DEFAULT '',
             granted_at INTEGER DEFAULT 0,
-            synced_at INTEGER DEFAULT 0
+            expires_at INTEGER DEFAULT 0,
+            synced_at INTEGER DEFAULT 0,
+            UNIQUE(land_id, player_name)
         )");
+        // ★ 迁移：旧表可能缺少 UNIQUE 约束和字段，检测并重建
+        $pragma = $db->querySingle("SELECT sql FROM sqlite_master WHERE type='table' AND name='web_area_permissions'");
+        if ($pragma && strpos($pragma, 'UNIQUE') === false) {
+            $db->exec("BEGIN TRANSACTION");
+            $db->exec("CREATE TABLE IF NOT EXISTS web_area_permissions_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                land_id INTEGER NOT NULL,
+                land_name TEXT DEFAULT '',
+                player_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'visitor',
+                permissions TEXT DEFAULT '',
+                granted_at INTEGER DEFAULT 0,
+                expires_at INTEGER DEFAULT 0,
+                synced_at INTEGER DEFAULT 0,
+                UNIQUE(land_id, player_name)
+            )");
+            $db->exec("INSERT OR IGNORE INTO web_area_permissions_new (land_id, land_name, player_name, role, permissions, granted_at, synced_at)
+                SELECT land_id, '', player_name, role, permissions, granted_at, synced_at FROM web_area_permissions");
+            $db->exec("DROP TABLE web_area_permissions");
+            $db->exec("ALTER TABLE web_area_permissions_new RENAME TO web_area_permissions");
+            $db->exec("COMMIT");
+            error_log("[core] web_area_permissions 表已迁移：添加 UNIQUE 约束 + land_name + expires_at 字段");
+        }
 
         // ===== 收银员账号表 =====
         $db->exec("CREATE TABLE IF NOT EXISTS cashiers (
