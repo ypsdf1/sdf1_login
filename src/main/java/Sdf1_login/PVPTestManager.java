@@ -63,6 +63,8 @@ public class PVPTestManager implements Listener {
     /** 自由装备档位（测试世界跳过公平锁定，全员自由选武器/护甲材质） */
     private final Map<UUID, Integer> testWeaponTier = new HashMap<>(); // 0铁 1金 2钻 3下界合金
     private final Map<UUID, Integer> testArmorTier = new HashMap<>();  // 0无 1铁 2金 3钻 4下界合金
+    private final Map<UUID, Integer> testRangedWeapon = new HashMap<>(); // 0弓(默认) 1弩
+    private final Map<UUID, Integer> testWaveKills = new HashMap<>();   // 本波击杀计数（用于击杀奖励）
 
     private static final Material[] SWORD_TIERS = {
             Material.IRON_SWORD, Material.GOLDEN_SWORD, Material.DIAMOND_SWORD, Material.NETHERITE_SWORD };
@@ -263,12 +265,13 @@ public class PVPTestManager implements Listener {
 
         TestDifficulty diff = chosenDiff.getOrDefault(p.getUniqueId(), TestDifficulty.EASY);
         TestEquip equip = chosenEquip.getOrDefault(p.getUniqueId(), TestEquip.MELEE);
-        // 测试世界跳过公平锁定，全员自由选装备（附魔/盾牌/熟牛肉数量），默认附魔关、盾牌开、熟牛肉16
+        // 测试世界跳过公平锁定，全员自由选装备（附魔/盾牌/熟牛肉数量），默认附魔关、盾牌开、熟牛肉16、远程武器弓
         testEnchant.putIfAbsent(p.getUniqueId(), false);
         testShield.putIfAbsent(p.getUniqueId(), true);
         testFood.putIfAbsent(p.getUniqueId(), 16);
         testWeaponTier.putIfAbsent(p.getUniqueId(), 0);
         testArmorTier.putIfAbsent(p.getUniqueId(), 0);
+        testRangedWeapon.putIfAbsent(p.getUniqueId(), 0); // 0=弓(默认)
         boolean enchant = testEnchant.get(p.getUniqueId());
         boolean shield = testShield.get(p.getUniqueId());
         int food = testFood.get(p.getUniqueId());
@@ -352,6 +355,21 @@ public class PVPTestManager implements Listener {
             shBtn.setItemMeta(sm2);
         }
         gui.setItem(38, shBtn);
+
+        // ★ 远程武器选择（39）：弓/弩二选一，默认弓
+        int rangedWeapon = testRangedWeapon.getOrDefault(p.getUniqueId(), 0);
+        Material rangedIcon = rangedWeapon == 0 ? Material.BOW : Material.CROSSBOW;
+        ItemStack rwBtn = new ItemStack(rangedIcon);
+        ItemMeta rwM = rwBtn.getItemMeta();
+        if (rwM != null) {
+            String name = rangedWeapon == 0 ? "§a§l远程武器: 弓" : "§b§l远程武器: 弩";
+            rwM.setDisplayName(name);
+            rwM.setLore(Arrays.asList("§7切换弓/弩（默认弓）",
+                    "§e当前: " + (rangedWeapon == 0 ? "弓 (BOW)" : "弩 (CROSSBOW)"),
+                    "§7点击切换"));
+            rwBtn.setItemMeta(rwM);
+        }
+        gui.setItem(39, rwBtn);
 
         // ★ 熟牛肉快捷数量（45-48 = 8/16/32/64，点哪个直接设为哪个）
         int[] foodOpts = {8, 16, 32, 64};
@@ -529,6 +547,13 @@ public class PVPTestManager implements Listener {
             p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
             openGUI(p); return;
         }
+        // ★ 远程武器切换（39）：弓/弩二选一
+        if (slot == 39) {
+            int current = testRangedWeapon.getOrDefault(id, 0);
+            testRangedWeapon.put(id, current == 0 ? 1 : 0);
+            p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            openGUI(p); return;
+        }
         // ★ 熟牛肉直选（45-48 = 8/16/32/64）
         if (slot >= 45 && slot <= 48) {
             int[] foodOpts = {8, 16, 32, 64};
@@ -610,10 +635,13 @@ public class PVPTestManager implements Listener {
         spawnWaveFor(p);
 
         int beef = testFood.getOrDefault(p.getUniqueId(), 16);
+        int rw = testRangedWeapon.getOrDefault(p.getUniqueId(), 0);
+        String rangedName = rw == 1 ? "§b弩" : "§b弓";
         p.sendMessage("§a§l[PVP测试] 已进入测试场! 难度: " + diff.display + "  场景: " + equip.display
                 + "  武器:" + WEAPON_TIER_NAMES[wt] + "  护甲:" + ARMOR_TIER_NAMES[at]
-                + "  附魔:" + (enchant ? "§d开" : "§7关") + "  盾牌:" + (shield ? "§a有" : "§7无") + "  熟牛肉:" + beef);
-        p.sendMessage("§7主武器: " + WEAPON_TIER_NAMES[wt] + "§b剑 + " + WEAPON_TIER_NAMES[wt] + "§b斧"
+                + "  附魔:" + (enchant ? "§d开" : "§7关") + "  盾牌:" + (shield ? "§a有" : "§7无")
+                + "  远程:" + rangedName + "  熟牛肉:" + beef);
+        p.sendMessage("§7主武器: " + WEAPON_TIER_NAMES[wt] + "§b剑 + " + WEAPON_TIER_NAMES[wt] + "§b斧 + " + rangedName
                 + (at > 0 ? " + " + ARMOR_TIER_NAMES[at] + "§b护甲" : "")
                 + (enchant ? "（附魔）" : "（未附魔）") + (shield ? " +盾牌" : ""));
         p.sendMessage("§7练习生物血量统一为40。敌对生物互不攻击(友伤免疫)。");
@@ -661,6 +689,30 @@ public class PVPTestManager implements Listener {
                 sh.setItemMeta(m);
             }
             p.getInventory().setItemInOffHand(sh);
+        }
+
+        // ★ 远程武器（默认装备）：弓/弩二选一，默认弓。统一发放对应弹药（箭）。
+        int rw = testRangedWeapon.getOrDefault(p.getUniqueId(), 0);
+        if (rw == 1) {
+            ItemStack crossbow = new ItemStack(Material.CROSSBOW);
+            ItemMeta cm = crossbow.getItemMeta();
+            if (cm != null) {
+                cm.setDisplayName("§a§l练习弩");
+                cm.setLore(Arrays.asList("§7远程武器（默认装备）", "§e弓/弩二选一，默认弓"));
+                crossbow.setItemMeta(cm);
+            }
+            p.getInventory().addItem(crossbow);
+            p.getInventory().addItem(new ItemStack(Material.ARROW, 64));
+        } else {
+            ItemStack bow = new ItemStack(Material.BOW);
+            ItemMeta bm = bow.getItemMeta();
+            if (bm != null) {
+                bm.setDisplayName("§a§l练习弓");
+                bm.setLore(Arrays.asList("§7远程武器（默认装备）", "§e弓/弩二选一，默认弓"));
+                bow.setItemMeta(bm);
+            }
+            p.getInventory().addItem(bow);
+            p.getInventory().addItem(new ItemStack(Material.ARROW, 64));
         }
 
         // 回血类食物：熟牛肉(维持饱食度)，数量与主场一致可调(1~64)，无金苹果(与主场一致)
@@ -715,6 +767,16 @@ public class PVPTestManager implements Listener {
 
         pendingRespawn.add(p.getUniqueId());
         sendClearedMessage(p);
+
+        // ★ 击杀奖励：完成一波击杀发放16个牛排用于补血（背包满则只发能放下的）
+        int reward = 16;
+        Map<Integer, ItemStack> leftover = p.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, reward));
+        int given = reward;
+        for (ItemStack rem : leftover.values()) given -= rem.getAmount();
+        if (given > 0) {
+            p.sendMessage("§a§l[PVP测试] §f完成一波击杀！获得 §6" + given + " 个牛排 §7(补血)");
+            p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.6f, 1.4f);
+        }
 
         // 间隔10秒后刷新下一波（若届时仍在场且无存活生物）
         Bukkit.getScheduler().runTaskLater(plugin, () -> {

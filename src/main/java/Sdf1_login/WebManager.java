@@ -87,6 +87,7 @@ public class WebManager {
     // 默认配置
     private String webBaseUrl = "https://caoyuan.ypshidifu.cn/plugin";
     private boolean enabled = false;
+    private boolean pollingStarted = false; // 合并定时器是否已启动（用于运行时重载启停）
     private int tokenExpireSeconds = 600; // 10分钟
     private int syncIntervalMinutes = 5;
     private String secretKey = "sdf1_web_comm_2026_ypshidifu";
@@ -789,8 +790,19 @@ public class WebManager {
      * 重载后端设置（仅Web通信相关配置）
      */
     public void reloadWebConfig() {
+        boolean wasEnabled = enabled;
         loadConfig();
-        plugin.getLogger().info("[Web通信] Web后端配置已重载: 地址=" + webBaseUrl + " 密钥=" + secretKey);
+        plugin.getLogger().info("[Web通信] Web后端配置已重载: 地址=" + webBaseUrl + " 启用=" + enabled + " 密钥=" + secretKey);
+
+        // ★★★ 运行时启停：根据enabled状态动态启动/停止轮询定时器
+        // 1) 已禁用：定时器内部已有 !enabled 守卫，下一轮自动跳过HTTP请求（无需手动取消）
+        // 2) 从禁用→启用且定时器未启动：立即启动合并定时器
+        if (enabled && !pollingStarted) {
+            plugin.getLogger().info("[Web通信] ★ 重载后检测到已启用，启动合并定时器（A/B/C/D/E）");
+            startMergedPolling();
+        } else if (!enabled && wasEnabled) {
+            plugin.getLogger().info("[Web通信] ★ 重载后检测到已禁用，定时器将在下一轮自动停止请求Web后端");
+        }
         plugin.getLogger().warning("\n" +
                 "                                          _                                                                          \n" +
                 "                                         | |                                                                         \n" +
@@ -1546,6 +1558,7 @@ public class WebManager {
      * 三者错峰：首次启动带±5秒随机偏移，后续通过calcStaggeredDelay自动错开≥8秒
      */
     private void startMergedPolling() {
+        pollingStarted = true; // ★ 标记定时器已启动（运行时重载启停判断用）
         // ★ 首次启动加±5秒随机偏移，避免精确对齐导致并发
         long randA = (long)(Math.random() * 10) * 2; // 0~10秒(偶数tick)
         long randB = (long)(Math.random() * 10) * 2;
@@ -1574,6 +1587,13 @@ public class WebManager {
             public void run() {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_A] = now; }
+
+                // ★★★ Web通信未启用时跳过所有轮询（支持运行时通过重载配置关闭）
+                // 修复bug：之前仅在start()判断enabled，重载配置为false后定时器仍持续请求web配置地址
+                if (!enabled) {
+                    scheduleTimerA(calcStaggeredDelay(TIMER_A, 3, 5));
+                    return;
+                }
 
                 // ★ PHP锁库退避检查：如果PHP正忙，跳过本轮
                 if (phpBusyUntil > System.currentTimeMillis()) {
@@ -1680,6 +1700,12 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_B] = now; }
 
+                // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                if (!enabled) {
+                    scheduleTimerB(calcStaggeredDelay(TIMER_B, 0, 10));
+                    return;
+                }
+
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {
                     plugin.getLogger().info("[合并B] ★ 全员下线，Timer B已暂停");
@@ -1736,6 +1762,12 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_C] = now; }
 
+                // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                if (!enabled) {
+                    scheduleTimerC(calcStaggeredDelay(TIMER_C, 10, 20));
+                    return;
+                }
+
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {
                     plugin.getLogger().info("[合并C] ★ 全员下线，Timer C已暂停");
@@ -1781,6 +1813,12 @@ public class WebManager {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_D] = now; }
 
+                // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                if (!enabled) {
+                    scheduleTimerD(calcStaggeredDelay(TIMER_D, 15, 25));
+                    return;
+                }
+
                 // ★ Timer D独立：不检查timersBCPaused（v17重构设计）
 
                 // ★ PHP锁库退避检查
@@ -1815,6 +1853,12 @@ public class WebManager {
             public void run() {
                 long now = System.currentTimeMillis();
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_E] = now; }
+
+                // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                if (!enabled) {
+                    scheduleTimerE(calcStaggeredDelay(TIMER_E, 20, 30));
+                    return;
+                }
 
                 // ★ 全员下线暂停：不调度下一轮
                 if (timersBCPaused) {

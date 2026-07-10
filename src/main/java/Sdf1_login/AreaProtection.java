@@ -1041,25 +1041,62 @@ public class AreaProtection implements Listener {
     }
 
     /**
-     * 逗号分隔字符串 → List
+     * 逗号分隔字符串或JSON数组 → List
+     * 兼容: "a,b,c" 或 ["a","b","c"]
      */
     private List<String> splitToList(String s) {
         List<String> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
+        String trimmed = s.trim();
+        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"]
+        if (trimmed.startsWith("[\"")) {
+            try {
+                String inner = trimmed.substring(1, trimmed.length() - 1);
+                for (String part : inner.split(",")) {
+                    String cleaned = part.trim().replaceAll("^\"|\"$", "").replaceAll("^'|'$", "");
+                    if (!cleaned.isEmpty()) result.add(cleaned);
+                }
+                if (!result.isEmpty()) return result;
+            } catch (Exception ignored) {
+                // 回退到逗号分隔
+            }
+        }
         for (String item : s.split(",")) {
-            String trimmed = item.trim();
-            if (!trimmed.isEmpty()) result.add(trimmed);
+            String itemTrimmed = item.trim().replaceAll("^\"|\"$", "").replaceAll("^'|'$", "");
+            if (!itemTrimmed.isEmpty()) result.add(itemTrimmed);
         }
         return result;
     }
 
     /**
      * 解析效果存储字符串 → List<String[]>
-     * 格式: 效果名:等级:秒数|效果名:等级:秒数
+     * 格式: 管道格式 "效果名:等级:秒数|效果名:等级:秒数"
+     *     或 JSON格式 [["效果名",等级,秒数],...]
      */
     private List<String[]> parseEffectsString(String s) {
         List<String[]> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
+
+        // ★ 支持JSON格式（PHP端存储格式）
+        String trimmed = s.trim();
+        if (trimmed.startsWith("[[")) {
+            try {
+                // 去掉外层方括号
+                String inner = trimmed.substring(1, trimmed.length() - 1);
+                // 用正则匹配每个 ["name",level,dur] 数组
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\\[\"([^\"]*)\",(\\d+),(\\d+)\\]")
+                    .matcher(inner);
+                while (m.find()) {
+                    result.add(new String[]{m.group(1), m.group(2), m.group(3)});
+                }
+                if (!result.isEmpty()) return result;
+            } catch (Exception ignored) {
+                // JSON解析失败，回退到管道格式
+            }
+        }
+
+        // ★ 管道格式（Java端GUI存储格式）: 效果名:等级:秒数|效果名:等级:秒数
         for (String part : s.split("\\|")) {
             String[] pieces = part.split(":");
             if (pieces.length >= 3) {

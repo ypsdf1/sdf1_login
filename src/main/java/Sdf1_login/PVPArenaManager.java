@@ -134,6 +134,7 @@ public class PVPArenaManager implements Listener {
     private final Map<String, Boolean> selShield = new ConcurrentHashMap<>();  // 该玩家是否拿盾牌
     private final Map<String, Integer> selFood = new ConcurrentHashMap<>();    // 熟牛肉数量
     private final Map<String, Integer> selWeaponTier = new ConcurrentHashMap<>(); // 主武器材质档 0铁1金2钻3合金
+    private final Map<String, Integer> selRangedWeapon = new ConcurrentHashMap<>(); // 远程武器 0弓(默认) 1弩
     private final Map<String, Integer> selArmorTier = new ConcurrentHashMap<>();  // 护甲材质档 0铁1金2钻3合金
 
     private static final int FOOD_MIN = 1;
@@ -1021,6 +1022,7 @@ public class PVPArenaManager implements Listener {
                 selShield.remove(playerName);
                 selFood.remove(playerName);
                 selWeaponTier.remove(playerName);
+                selRangedWeapon.remove(playerName);
                 selArmorTier.remove(playerName);
                 equipInteracted.remove(playerName);
                 if (p != null && p.isOnline()) {
@@ -1139,6 +1141,19 @@ public class PVPArenaManager implements Listener {
             String vName = player.getName();
             // 总榜击杀数
             pvpKills.put(kName, pvpKills.getOrDefault(kName, 0) + 1);
+
+            // ★ 击杀奖励：PVP世界每完成2次杀敌，发放16个牛排用于补血（背包满则只发能放下的）
+            int newKills = pvpKills.get(kName);
+            if (newKills % 2 == 0) {
+                Player killerP = (Player) killer;
+                Map<Integer, ItemStack> leftover = killerP.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, 16));
+                int given = 16;
+                for (ItemStack rem : leftover.values()) given -= rem.getAmount();
+                if (given > 0) {
+                    killerP.sendMessage("§a§l[PVP] §f完成 2 次杀敌！获得 §6" + given + " 个牛排 §7(补血)");
+                    killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.6f, 1.4f);
+                }
+            }
 
             // 击杀者连杀会话
             PVPManager.KillSession ks = arenaKillSessions.get(kName);
@@ -1339,6 +1354,7 @@ public class PVPArenaManager implements Listener {
                 selShield.remove(player.getName());
                 selFood.remove(player.getName());
                 selWeaponTier.remove(player.getName());
+                selRangedWeapon.remove(player.getName());
                 selArmorTier.remove(player.getName());
                 equipInteracted.remove(player.getName());
                 cancelKickTimeout(player.getName());
@@ -1498,6 +1514,7 @@ public class PVPArenaManager implements Listener {
         if (!selEnchant.containsKey(name)) selEnchant.put(name, lockedEnchant != null ? lockedEnchant : false);
         if (!selShield.containsKey(name)) selShield.put(name, true);
         if (!selFood.containsKey(name)) selFood.put(name, FOOD_DEFAULT);
+        if (!selRangedWeapon.containsKey(name)) selRangedWeapon.put(name, 0); // 0=弓(默认)
 
         boolean weaponLocked = (lockedWeaponOwner != null && !lockedWeaponOwner.equals(name));
         boolean armorLocked = (lockedArmorOwner != null && !lockedArmorOwner.equals(name));
@@ -1508,6 +1525,7 @@ public class PVPArenaManager implements Listener {
         boolean myEnchant = selEnchant.getOrDefault(name, false);
         boolean myShield = selShield.getOrDefault(name, true);
         int myFood = selFood.getOrDefault(name, FOOD_DEFAULT);
+        int myRanged = selRangedWeapon.getOrDefault(name, 0); // 0弓 1弩
 
         Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
 
@@ -1534,6 +1552,7 @@ public class PVPArenaManager implements Listener {
             lore.add("");
             lore.add("§7你的附魔: " + (myEnchant ? "§a已开启" : "§c未开启"));
             lore.add("§7你的盾牌: " + (myShield ? "§a已装备" : "§c未装备"));
+            lore.add("§7远程武器: " + (myRanged == 1 ? "§b弩" : "§b弓") + "§7（默认装备）");
             lore.add("§7熟牛肉: §a" + myFood + " §7个");
             if (weaponLocked || armorLocked || enchantLocked) {
                 lore.add("");
@@ -1598,6 +1617,16 @@ public class PVPArenaManager implements Listener {
         }
         gui.setItem(30, shBtn);
 
+        // 远程武器切换（29）— 弓/弩二选一，默认弓，属默认装备
+        ItemStack rwBtn = new ItemStack(myRanged == 1 ? Material.CROSSBOW : Material.BOW);
+        ItemMeta rwm = rwBtn.getItemMeta();
+        if (rwm != null) {
+            rwm.setDisplayName(myRanged == 1 ? "§b§l远程武器: 弩" : "§a§l远程武器: 弓");
+            rwm.setLore(Arrays.asList("§7点击在 弓 / 弩 之间切换", "§e当前: " + (myRanged == 1 ? "弩 (默认装备)" : "弓 (默认装备)"), "§7会同时发放对应箭矢"));
+            rwBtn.setItemMeta(rwm);
+        }
+        gui.setItem(29, rwBtn);
+
         // 熟牛肉快捷数量（32-35 = 8/16/32/64，点哪个直接设为哪个）
         int[] foodOpts = {8, 16, 32, 64};
         for (int i = 0; i < 4; i++) {
@@ -1614,6 +1643,7 @@ public class PVPArenaManager implements Listener {
                     + (myEnchant ? "（§d附魔§7）" : "（§7未附魔§7）"));
             lore.add(ARMOR_TIER_NAMES[myArmor] + "§7全套护甲");
             lore.add(myShield ? "§7含 §a盾牌" : "§7不含盾牌");
+            lore.add("§7远程武器: " + (myRanged == 1 ? "§b弩" : "§b弓") + "（默认发放）");
             lore.add("§7熟牛肉 x" + myFood);
             confirmMeta.setLore(lore);
             confirm.setItemMeta(confirmMeta);
@@ -1803,6 +1833,18 @@ public class PVPArenaManager implements Listener {
             return true;
         }
 
+        // 远程武器切换（29）— 弓/弩二选一，默认弓
+        if (slot == 29) {
+            int cur = selRangedWeapon.getOrDefault(name, 0);
+            selRangedWeapon.put(name, cur == 0 ? 1 : 0);
+            equipInteracted.add(name);
+            guiReopening.add(name);
+            openEquipmentSelection(player);
+            player.sendMessage("§a[PVP] 远程武器已切换为 " + (cur == 0 ? "§b弩" : "§b弓") + "§a（默认装备）");
+            player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+            return true;
+        }
+
         // 熟牛肉快捷数量（32-35 = 8/16/32/64），点哪个直接设为哪个
         if (slot >= 32 && slot <= 35) {
             int[] foodOpts = {8, 16, 32, 64};
@@ -1850,6 +1892,7 @@ public class PVPArenaManager implements Listener {
         int aTier = selArmorTier.getOrDefault(name, 0);
         boolean shield = selShield.getOrDefault(name, true);
         int food = selFood.getOrDefault(name, FOOD_DEFAULT);
+        int rw = selRangedWeapon.getOrDefault(name, 0); // 0弓 1弩
 
         // 主武器：同材质剑 + 斧（两者都发，附魔作用于两者）
         player.getInventory().addItem(makeWeapon(SWORD_TIERS[wTier], "§l" + WEAPON_TIER_NAMES[wTier] + "§l剑", enchant));
@@ -1884,6 +1927,29 @@ public class PVPArenaManager implements Listener {
             player.getInventory().setItemInOffHand(sh);
         }
 
+        // 远程武器（默认装备）：弓/弩二选一，默认弓，统一发放对应弹药（箭）
+        if (rw == 1) {
+            ItemStack crossbow = new ItemStack(Material.CROSSBOW);
+            ItemMeta cm = crossbow.getItemMeta();
+            if (cm != null) {
+                cm.setDisplayName("§b§lPVP弩");
+                cm.setLore(Arrays.asList("§7远程武器（默认装备）", PVP_ITEM_MARKER));
+                crossbow.setItemMeta(cm);
+            }
+            player.getInventory().addItem(crossbow);
+            player.getInventory().addItem(new ItemStack(Material.ARROW, 64));
+        } else {
+            ItemStack bow = new ItemStack(Material.BOW);
+            ItemMeta bm = bow.getItemMeta();
+            if (bm != null) {
+                bm.setDisplayName("§b§lPVP弓");
+                bm.setLore(Arrays.asList("§7远程武器（默认装备）", PVP_ITEM_MARKER));
+                bow.setItemMeta(bm);
+            }
+            player.getInventory().addItem(bow);
+            player.getInventory().addItem(new ItemStack(Material.ARROW, 64));
+        }
+
         // 补血普通食物：熟牛肉（数量可调）
         if (food > 0) {
             ItemStack beef = new ItemStack(Material.COOKED_BEEF, food);
@@ -1899,7 +1965,7 @@ public class PVPArenaManager implements Listener {
         plugin.getLogger().info("[PVP] 玩家 " + name + " 发放装备: "
                 + WEAPON_TIER_NAMES[wTier] + "剑+斧 / " + ARMOR_TIER_NAMES[aTier] + "护甲"
                 + (enchant ? "(附魔)" : "(未附魔)") + (shield ? " +盾牌" : "")
-                + " 熟牛肉x" + food);
+                + " 远程:" + (rw == 1 ? "弩" : "弓") + " 熟牛肉x" + food);
     }
 
     // ==================== 命令入口 ====================
@@ -2050,6 +2116,7 @@ public class PVPArenaManager implements Listener {
         selShield.clear();
         selFood.clear();
         selWeaponTier.clear();
+        selRangedWeapon.clear();
         selArmorTier.clear();
         equipInteracted.clear();
     }
