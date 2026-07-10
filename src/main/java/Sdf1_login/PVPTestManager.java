@@ -171,12 +171,13 @@ public class PVPTestManager implements Listener {
             return;
         }
 
-        // 世界规则：常昼 / 无天气 / 关闭自然刷怪（只有我们生成的练习生物）/ 死亡不掉装备 / PVP 开启
+        // 世界规则：常昼 / 无天气 / 关闭自然刷怪（只有我们生成的练习生物）/ PVP 开启
+        // ★ KEEP_INVENTORY=false：死亡掉落由事件处理器清空掉落物+复活时还原，避免gamerule与事件冲突
         w.setPVP(true);
         w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
         w.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         w.setGameRule(GameRule.DO_MOB_SPAWNING, false);
-        w.setGameRule(GameRule.KEEP_INVENTORY, true);
+        w.setGameRule(GameRule.KEEP_INVENTORY, false);
         w.setTime(6000);
         w.setKeepSpawnInMemory(false);
 
@@ -993,7 +994,11 @@ public class PVPTestManager implements Listener {
         }
     }
 
-    /** 死亡：清空测试装备掉落物 + 强制不保留背包，防止玩家死亡界面/快速重连携带测试场装备 */
+    /** 死亡：清空测试装备掉落物 + 强制不保留背包。
+     *  KEEP_INVENTORY=false(gamerule) 保证服务器会清空背包；
+     *  e.setKeepInventory(false) 双重保险；e.getDrops().clear() 防掉落物落地。
+     *  ★ 不在 DeathEvent 里直接 clearInventory（Paper快照机制可能导致无效），
+     *    改由 onRespawn 统一从备份还原。 */
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent e) {
         Player p = e.getEntity();
@@ -1003,12 +1008,8 @@ public class PVPTestManager implements Listener {
         // 不保留经验
         e.setKeepLevel(false);
         e.setDroppedExp(0);
-        // ★ 关键：不保留背包，死亡后身上清空（onRespawn 会立即还原原背包）
+        // 不保留背包（配合 gamerule=false 双重保险）
         e.setKeepInventory(false);
-        // 主动清空玩家身上的测试装备，防止死亡界面显示测试装备
-        p.getInventory().clear();
-        p.getInventory().setArmorContents(null);
-        p.getInventory().setItemInOffHand(null);
     }
 
     /** 死亡：保留背包（KEEP_INVENTORY），送回主世界并还原 */

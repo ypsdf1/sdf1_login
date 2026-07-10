@@ -8215,29 +8215,35 @@ public class AreaProtection implements Listener {
                 int landId = getLandIdFromDb(lname);
                 if (landId < 0) continue;
 
-                // ★ 角色同步：仅当 PHP 显式携带 role(change_visitor_role)时才切换，
-                //   避免"调整访客权限"时把已授权的管理员误降级为访客
+                // ★ 角色同步铁律：admin 永远不允许被 PHP 的 perm_change 降级。
+                //   PHP 的 handleUpdateVisitorPerm 本身已拦截 admin/member，
+                //   但竞态（admin 在 Java 设置后、同步到 PHP 前，PHP 已发 perm_change）
+                //   仍可能导致此方法收到 role="visitor" 降级请求。
+                //   解决：admin 只能通过 change_visitor_role（显式角色切换）改变，
+                //   perm_change 只更新 permissions JSON，不动 role。
                 String effectiveRole = "visitor";
-                if (role != null && !role.isEmpty()) {
-                    effectiveRole = role.toLowerCase();
-                    boolean isAdmin = isLandAdmin(lname, playerName);
-                    if ("admin".equalsIgnoreCase(role)) {
-                        setLandAdmin(lname, playerName, true);
-                    } else if ("visitor".equalsIgnoreCase(role) && isAdmin) {
-                        setLandAdmin(lname, playerName, false);
-                    } else if ("member".equalsIgnoreCase(role) && isAdmin) {
-                        // ★ PHP 发来 member 角色但玩家是管理员 — 不能降级，保留 admin
-                        plugin.getLogger().warning("[防护][更新权限] 拦截角色降级: " + playerName
-                                + " @ " + lname + " 尝试从 admin 降为 member，已保留 admin");
-                        effectiveRole = "admin";
-                    }
-                } else {
-                    // 未带 role 时，沿用本地已有角色；若本地无记录则默认 visitor
+                boolean isAdmin = false;
+                {
                     String localRole = getLocalRole(landId, playerName);
                     if (localRole != null && !localRole.isEmpty()) {
                         effectiveRole = localRole;
                     }
+                    isAdmin = "admin".equalsIgnoreCase(effectiveRole);
                 }
+
+                if (isAdmin) {
+                    // ★ 管理员：永远保留 admin 角色，只更新 permissions JSON
+                    effectiveRole = "admin";
+                } else if (role != null && !role.isEmpty()) {
+                    // 非管理员：显式角色切换（来自 change_visitor_role）
+                    effectiveRole = role.toLowerCase();
+                    if ("admin".equalsIgnoreCase(role)) {
+                        setLandAdmin(lname, playerName, true);
+                        effectiveRole = "admin";
+                    }
+                    // ★ 移除旧逻辑：不再允许通过 perm_change 将 admin 降为 visitor/member
+                }
+                // role 为空或 visitor + 非 admin：effectiveRole 保持 localRole 或默认 visitor
 
                 plugin.getLogger().info("[防护][更新权限] 入参 land=" + lname + " player=" + playerName
                         + " role=" + role + " localRole=" + getLocalRole(landId, playerName)
