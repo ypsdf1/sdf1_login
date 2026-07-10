@@ -9768,6 +9768,71 @@ public class AreaProtection implements Listener {
             return;
         }
     }
+
+    // ===== ★ 载具破坏拦截（船/矿车等）：VehicleDestroyEvent 是破坏的权威事件 =====
+    // 仅靠 EntityDamageByEntityEvent 取消伤害，在部分版本/路径下不足以阻止载具被移除并掉落，
+    // 此处直接拦截破坏事件本身，确保 L1破坏总开关 / L2实体交互 对载具稳定生效。
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onVehicleDestroy(org.bukkit.event.vehicle.VehicleDestroyEvent e) {
+        org.bukkit.entity.Vehicle v = e.getVehicle();
+        Entity attacker = e.getAttacker();
+        if (!(attacker instanceof Player)) return; // 仅拦截玩家主动破坏，环境破坏（如撞击）不在此处理
+        Player p = (Player) attacker;
+        // ★ 取区域方式与放置一致：优先载具坐标，玩家坐标兜底
+        AreaConfig ac = getArea(
+                v.getWorld().getName(),
+                v.getLocation().getBlockX(),
+                v.getLocation().getBlockY(),
+                v.getLocation().getBlockZ());
+        if (ac == null) {
+            ac = getArea(
+                    p.getWorld().getName(),
+                    p.getLocation().getBlockX(),
+                    p.getLocation().getBlockY(),
+                    p.getLocation().getBlockZ());
+        }
+        if (ac == null) return;
+        // 层级：L1 破坏总开关 → L2 实体交互
+        if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏载具");
+            return;
+        }
+        if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏载具");
+        }
+    }
+
+    // ===== ★ 悬挂物破坏拦截（展示框/画等）：HangingBreakEvent 是破坏的权威事件 =====
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onHangingBreak(org.bukkit.event.hanging.HangingBreakEvent e) {
+        org.bukkit.entity.Hanging hanging = e.getEntity();
+        AreaConfig ac = findFrameArea(hanging);
+        if (ac == null) return;
+        // ★ HangingBreakEvent 本身无 getRemover()，玩家/实体破坏走子类 HangingBreakByEntityEvent
+        Entity remover = null;
+        if (e instanceof org.bukkit.event.hanging.HangingBreakByEntityEvent) {
+            remover = ((org.bukkit.event.hanging.HangingBreakByEntityEvent) e).getRemover();
+        }
+        if (!(remover instanceof Player)) return; // 玩家主动破坏；箭矢命中由 onProjectileHit 处理
+        Player p = (Player) remover;
+        // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框
+        if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+            return;
+        }
+        if (getEffectiveDeny(p, ac, "denyEntityInteract")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏实体");
+            return;
+        }
+        if (!getEffectiveDeny(p, ac, "denyItemFrame")) return;
+        e.setCancelled(true);
+        p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+    }
+
     private AreaConfig findFrameArea(Entity frame) {
         Location loc = frame.getLocation();
         int bx = loc.getBlockX();
