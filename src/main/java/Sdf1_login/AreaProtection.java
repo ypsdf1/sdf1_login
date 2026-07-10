@@ -8237,7 +8237,8 @@ public class AreaProtection implements Listener {
                 "deny_thrown_projectiles", "deny_glowing", "deny_redstone_interaction",
                 "deny_door_interaction", "deny_noteblock_jukebox", "deny_lead",
                 "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding",
-                "deny_container", "deny_mob_attack", "deny_fluid"
+                "deny_container", "deny_mob_attack", "deny_fluid",
+                "is_public_building", "allow_visitor_teleport"
             ));
             if (!allowedFields.contains(field)) {
                 plugin.getLogger().warning("[防护] PHP端更新未知字段: " + field);
@@ -8299,17 +8300,18 @@ public class AreaProtection implements Listener {
                     isAdmin = "admin".equalsIgnoreCase(effectiveRole);
                 }
 
-                if (isAdmin) {
-                    // ★ 管理员：永远保留 admin 角色，只更新 permissions JSON
-                    effectiveRole = "admin";
-                } else if (role != null && !role.isEmpty()) {
-                    // 非管理员：显式角色切换（来自 change_visitor_role）
+                if (role != null && !role.isEmpty()) {
+                    // ★ PHP显式携带role（来自changeVisitorRole）：允许任何角色切换
                     effectiveRole = role.toLowerCase();
                     if ("admin".equalsIgnoreCase(role)) {
                         setLandAdmin(lname, playerName, true);
-                        effectiveRole = "admin";
+                    } else if ("member".equals(effectiveRole) || "visitor".equals(effectiveRole)) {
+                        // 降级：取消管理员标记
+                        setLandAdmin(lname, playerName, false);
                     }
-                    // ★ 移除旧逻辑：不再允许通过 perm_change 将 admin 降为 visitor/member
+                } else if (isAdmin) {
+                    // 无显式role + 本地是admin：保留admin角色，只更新permissions
+                    effectiveRole = "admin";
                 }
                 // role 为空或 visitor + 非 admin：effectiveRole 保持 localRole 或默认 visitor
 
