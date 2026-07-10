@@ -195,6 +195,12 @@ public class Main extends JavaPlugin
     private String pendingDeleteName = null;
     private BukkitRunnable pendingDeleteTask = null;
 
+    // ★ 定时任务引用（onDisable 时需取消）
+    private int chatFilterIdleTaskId = -1;
+    private int chatFilterCleanupTaskId = -1;
+    private BukkitTask glowCheckTask = null;
+    private BukkitTask peaceModeTask = null;
+
     private final Map<String, PwdRollback>
             pwdRollback =
             new ConcurrentHashMap<>();
@@ -417,11 +423,11 @@ public class Main extends JavaPlugin
         // 启动广告机/挂机检测定时器 + 验证码过期清理
         if (chatFilter != null) {
             // 每60秒检查一次广告机和挂机
-            Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+            chatFilterIdleTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
                 chatFilter.checkIdlePlayers();
             }, 6000L, 6000L);
             // 每5秒清理一次过期的验证码
-            Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
+            chatFilterCleanupTaskId = Bukkit.getScheduler().scheduleSyncRepeatingTask(this, () -> {
                 chatFilter.cleanupExpiredVerifications();
             }, 5000L, 5000L);
         }
@@ -571,14 +577,14 @@ public class Main extends JavaPlugin
         areaCLIManager = new AreaCLIManager(this, areaProtection);
 
 // 发光效果检测（每2秒扫描一次）
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        glowCheckTask = getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection != null) {
                 areaProtection.checkGlowingPlayers();
             }
         }, 20L, 40L);
 
 // 和平模式独立检测
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        peaceModeTask = getServer().getScheduler().runTaskTimer(this, () -> {
             if (areaProtection == null) return;
             areaProtection.scanAllLandsPeaceMode();
         }, 40L, 40L);
@@ -746,6 +752,23 @@ public class Main extends JavaPlugin
                             + "取消待删除: "
                             + pendingDeleteName);
             pendingDeleteName = null;
+        }
+        // ★ 取消所有定时任务，避免 async task 未关闭警告
+        if (chatFilterIdleTaskId != -1) {
+            Bukkit.getScheduler().cancelTask(chatFilterIdleTaskId);
+            chatFilterIdleTaskId = -1;
+        }
+        if (chatFilterCleanupTaskId != -1) {
+            Bukkit.getScheduler().cancelTask(chatFilterCleanupTaskId);
+            chatFilterCleanupTaskId = -1;
+        }
+        if (glowCheckTask != null) {
+            glowCheckTask.cancel();
+            glowCheckTask = null;
+        }
+        if (peaceModeTask != null) {
+            peaceModeTask.cancel();
+            peaceModeTask = null;
         }
         if (db != null) db.close();
         if (garbage != null) garbage.close();
