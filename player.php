@@ -3483,9 +3483,14 @@ async function toggleMemberPerm(landName, targetPlayer, permKey, el) {
         body.set('perm', permKey);
 
         // 从元素中获取当前状态
-        const statusSpan = el.querySelector('span:last-child');
-        const isCustom = statusSpan.textContent.includes('自定义');
-        const isEnabled = statusSpan.textContent.includes('启用');
+        // 状态文字在 flex div 的最后一个 span 里（✓ 启用 / ✗ 禁用 / 默认）
+        const spans = el.querySelectorAll('span');
+        const statusSpan = spans[spans.length - 1]; // 第二个 span 是状态
+        const statusText = statusSpan ? statusSpan.textContent : '';
+        const isEnabled = statusText.includes('启用');
+        // "★ 自定义" 在第二个 div 里
+        const divs = el.querySelectorAll('div');
+        const isCustom = divs.length > 1 && divs[divs.length - 1].textContent.includes('自定义');
 
         if (isCustom) {
             // 已有自定义：切换启用/禁用

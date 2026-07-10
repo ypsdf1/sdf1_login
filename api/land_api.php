@@ -133,8 +133,8 @@ try {
             $isAdmin = true;
         }
     } elseif (in_array($action, $playerActions) || in_array($action, $playerPermActions) || in_array($action, $memberPermActions) || in_array($action, $playerFieldActions)) {
-        // 玩家端：需要token
-        $token = $_GET['token'] ?? '';
+        // 玩家端：需要token（兼容 GET 和 POST）
+        $token = $_GET['token'] ?? $_POST['token'] ?? '';
         if (empty($token)) {
             echo json_encode(['success' => false, 'error' => '需要登录', 'needLogin' => true]);
             exit;
