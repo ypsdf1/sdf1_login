@@ -5172,9 +5172,9 @@ public class Main extends JavaPlugin
             }
             Player p = (Player) sender;
 
-            // PVP练习测试场：/pvp test 打开设置面板
+            // PVP练习测试场：/pvp test 打开设置面板（强制选装追踪）
             if (args.length > 0 && args[0].equalsIgnoreCase("test")) {
-                pvpTestManager.openGUI(p);
+                pvpTestManager.openGUIWithTracking(p);
                 return true;
             }
 

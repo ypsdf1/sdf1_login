@@ -14,6 +14,7 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -82,6 +83,10 @@ public class PVPTestManager implements Listener {
     /** 每个玩家生成的练习生物 UUID 列表（离开时按玩家清理） */
     private final Map<UUID, List<UUID>> playerMobs = new HashMap<>();
     /** 玩家原背包备份（仅内存，练习场为临时场景） */
+    /** ★ 强制选装追踪：等待选装确认的玩家集合 */
+    private final Set<UUID> pendingEquipSelect = new HashSet<>();
+    /** ★ GUI关闭次数追踪：玩家关闭选装GUI的次数（≥2次遣返出生点） */
+    private final Map<UUID, Integer> guiCloseCount = new HashMap<>();
     private final Map<UUID, InventoryBackup> inventoryBackups = new HashMap<>();
 
     private final Random rand = new Random();
@@ -243,6 +248,15 @@ public class PVPTestManager implements Listener {
     }
 
     // ==================== GUI ====================
+
+    /** ★ 强制选装追踪版打开GUI：/pvp test 调用，关闭2次遣返 */
+    public void openGUIWithTracking(Player p) {
+        UUID uid = p.getUniqueId();
+        pendingEquipSelect.add(uid);
+        guiCloseCount.put(uid, 0);
+        p.sendMessage("§e§l[PVP测试] 请选择装备！关闭GUI 2次将被遣返主世界。");
+        openGUI(p);
+    }
 
     public void openGUI(Player p) {
         Inventory gui = Bukkit.createInventory(null, 54, TEST_GUI_TITLE);
@@ -524,6 +538,9 @@ public class PVPTestManager implements Listener {
         }
         // ★ 确认开始（49）
         if (slot == 49) {
+            // 清除强制选装追踪
+            pendingEquipSelect.remove(id);
+            guiCloseCount.remove(id);
             p.closeInventory();
             startTest(p,
                     chosenDiff.getOrDefault(p.getUniqueId(), TestDifficulty.EASY),
@@ -731,13 +748,17 @@ public class PVPTestManager implements Listener {
      * 供可点击超链接 /pvp back 调用。
      */
     public void handleBack(Player p) {
-        if (inTest.contains(p.getUniqueId())) {
+        UUID uid = p.getUniqueId();
+        // 清除强制选装追踪
+        pendingEquipSelect.remove(uid);
+        guiCloseCount.remove(uid);
+        if (inTest.contains(uid)) {
             removePlayerMobs(p);
             restoreInventory(p);
-            inTest.remove(p.getUniqueId());
-            chosenDiff.remove(p.getUniqueId());
-            chosenEquip.remove(p.getUniqueId());
-            pendingRespawn.remove(p.getUniqueId());
+            inTest.remove(uid);
+            chosenDiff.remove(uid);
+            chosenEquip.remove(uid);
+            pendingRespawn.remove(uid);
             checkAllLeft();
         }
         Location bed = p.getBedSpawnLocation();
@@ -1018,12 +1039,16 @@ public class PVPTestManager implements Listener {
     @EventHandler
     public void onRespawn(PlayerRespawnEvent e) {
         Player p = e.getPlayer();
-        if (!inTest.contains(p.getUniqueId())) return;
+        UUID uid = p.getUniqueId();
+        // 清除强制选装追踪
+        pendingEquipSelect.remove(uid);
+        guiCloseCount.remove(uid);
+        if (!inTest.contains(uid)) return;
         removePlayerMobs(p);
-        inTest.remove(p.getUniqueId());
-        chosenDiff.remove(p.getUniqueId());
-        chosenEquip.remove(p.getUniqueId());
-        pendingRespawn.remove(p.getUniqueId());
+        inTest.remove(uid);
+        chosenDiff.remove(uid);
+        chosenEquip.remove(uid);
+        pendingRespawn.remove(uid);
         World main = Bukkit.getWorlds().get(0);
         e.setRespawnLocation(main.getSpawnLocation());
         // 复活瞬间立即还原原背包，杜绝利用快速重进保留/携带测试场装备
@@ -1035,12 +1060,16 @@ public class PVPTestManager implements Listener {
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         Player p = e.getPlayer();
-        if (!inTest.contains(p.getUniqueId())) return;
+        UUID uid = p.getUniqueId();
+        // 清除强制选装追踪
+        pendingEquipSelect.remove(uid);
+        guiCloseCount.remove(uid);
+        if (!inTest.contains(uid)) return;
         removePlayerMobs(p);
         restoreInventory(p);
-        inTest.remove(p.getUniqueId());
-        chosenDiff.remove(p.getUniqueId());
-        chosenEquip.remove(p.getUniqueId());
+        inTest.remove(uid);
+        chosenDiff.remove(uid);
+        chosenEquip.remove(uid);
         pendingRespawn.remove(p.getUniqueId());
         checkAllLeft();
     }
@@ -1049,19 +1078,23 @@ public class PVPTestManager implements Listener {
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
         Player p = e.getPlayer();
+        UUID uid = p.getUniqueId();
+        // 清除强制选装追踪
+        pendingEquipSelect.remove(uid);
+        guiCloseCount.remove(uid);
         // 情况1：测试场世界里有记录或身上有测试场装备残留
         boolean inTestWorld = isTestWorld(p.getWorld());
-        boolean hasBackup = inventoryBackups.containsKey(p.getUniqueId());
-        if (!inTestWorld && !hasBackup && !inTest.contains(p.getUniqueId())) return;
+        boolean hasBackup = inventoryBackups.containsKey(uid);
+        if (!inTestWorld && !hasBackup && !inTest.contains(uid)) return;
 
         if (hasBackup) {
             restoreInventory(p);
         }
         removePlayerMobs(p);
-        inTest.remove(p.getUniqueId());
-        chosenDiff.remove(p.getUniqueId());
-        chosenEquip.remove(p.getUniqueId());
-        pendingRespawn.remove(p.getUniqueId());
+        inTest.remove(uid);
+        chosenDiff.remove(uid);
+        chosenEquip.remove(uid);
+        pendingRespawn.remove(uid);
 
         if (inTestWorld) {
             World main = Bukkit.getWorlds().get(0);
@@ -1075,14 +1108,48 @@ public class PVPTestManager implements Listener {
     @EventHandler
     public void onChangedWorld(PlayerChangedWorldEvent e) {
         Player p = e.getPlayer();
-        if (!inTest.contains(p.getUniqueId())) return;
+        UUID uid = p.getUniqueId();
+        if (!inTest.contains(uid)) {
+            // ★ 未正式入测试但进入测试世界（如/back传送）→ 强制选装
+            if (isTestWorld(p.getWorld()) && !pendingEquipSelect.contains(uid)) {
+                pendingEquipSelect.add(uid);
+                guiCloseCount.put(uid, 0);
+                p.sendMessage("§e§l[PVP测试] 你已进入测试世界，请先选择装备！关闭GUI 2次将被遣返主世界。");
+                Bukkit.getScheduler().runTaskLater(plugin, () -> openGUI(p), 5L);
+            }
+            return;
+        }
         if (isTestWorld(p.getWorld())) return; // 仍在测试场
+        // 清除强制选装追踪（离开测试世界）
+        pendingEquipSelect.remove(uid);
+        guiCloseCount.remove(uid);
         removePlayerMobs(p);
         restoreInventory(p);
-        inTest.remove(p.getUniqueId());
-        chosenDiff.remove(p.getUniqueId());
-        chosenEquip.remove(p.getUniqueId());
-        pendingRespawn.remove(p.getUniqueId());
+        inTest.remove(uid);
+        chosenDiff.remove(uid);
+        chosenEquip.remove(uid);
+        pendingRespawn.remove(uid);
         checkAllLeft();
+    }
+
+    /** ★ 选装GUI关闭追踪：关闭2次遣返主世界 */
+    @EventHandler
+    public void onInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent e) {
+        if (!(e.getPlayer() instanceof Player p)) return;
+        if (!p.getOpenInventory().getTitle().equals(TEST_GUI_TITLE)) return;
+        UUID uid = p.getUniqueId();
+        if (!pendingEquipSelect.contains(uid)) return;
+        int count = guiCloseCount.getOrDefault(uid, 0) + 1;
+        guiCloseCount.put(uid, count);
+        if (count >= 2) {
+            // 遣返主世界
+            pendingEquipSelect.remove(uid);
+            guiCloseCount.remove(uid);
+            World main = Bukkit.getWorlds().get(0);
+            p.teleport(main.getSpawnLocation());
+            p.sendMessage("§c§l[PVP测试] 你多次关闭选装界面，已被遣返主世界。");
+        } else {
+            p.sendMessage("§e§l[PVP测试] 还需选择装备！再关闭 " + (2 - count) + " 次将被遣返。");
+        }
     }
 }

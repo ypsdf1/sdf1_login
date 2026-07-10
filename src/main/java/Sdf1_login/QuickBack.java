@@ -102,7 +102,14 @@ public class QuickBack implements Listener, CommandExecutor, TabCompleter {
             player.sendMessage("§c位置世界信息无效");
             return true;
         }
-        
+
+        // ★ 禁止/back传送至PVP测试世界
+        String worldName = loc.getWorld().getName();
+        if (worldName != null && worldName.startsWith("pvp_test_")) {
+            player.sendMessage("§c§l[快速返回] §c无法返回PVP测试世界，请使用 /pvp test 进入测试场选装");
+            return true;
+        }
+
         Location dest = loc.clone().add(0.5, 0, 0.5); // 对齐格子中心
         player.teleport(dest);
         
