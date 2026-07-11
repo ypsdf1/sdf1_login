@@ -92,9 +92,9 @@ try {
     // 同步类action只接受secret验证（Java端推送）
     $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
-    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_add_visitor_status'];
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member'];
     // 玩家端action：需要token
-    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group', 'get_player_groups'];
+    $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group', 'get_player_groups', 'get_add_visitor_status'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
     $playerFieldActions = ['update_land_field'];
     // ★ 玩家端权限操作action
@@ -3132,7 +3132,7 @@ function handleGetAddVisitorStatus($db, $get) {
         $stmtTime->bindValue(':name', $name, SQLITE3_TEXT);
         $rsTime = $stmtTime->execute();
         $timeRow = $rsTime->fetchArray(SQLITE3_ASSOC);
-        if ($timeRow && (time() - (int)$timeRow['created_at']) > 65) {
+        if ($timeRow && (time() - (int)$timeRow['created_at']) >= 60) {
             // 超时：标记失败
             $db->query("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = " . time() . " WHERE change_type = 'add_visitor' AND target_name = '" . $name . "' AND status = 'pending'");
             debugLog("handleGetAddVisitorStatus: 添加成员 {$player} → {$name} 超时（超过65秒未处理），已自动标记失败");
