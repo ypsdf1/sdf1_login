@@ -735,10 +735,14 @@ function syncPermissions() {
                 ELSE excluded.role
             END");
     $count = 0;
+    // 收集所有incoming的(land_id, player_name)对，用于后续删除清理
+    $incomingKeys = [];
     foreach ($perms as $p) {
-        $stmt->bindValue(':land_id', (int)($p['land_id'] ?? 0), SQLITE3_INTEGER);
+        $lid = (int)($p['land_id'] ?? 0);
+        $player = $p['player_name'] ?? '';
+        $stmt->bindValue(':land_id', $lid, SQLITE3_INTEGER);
         $stmt->bindValue(':land_name', $p['land_name'] ?? '', SQLITE3_TEXT);
-        $stmt->bindValue(':player', $p['player_name'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':player', $player, SQLITE3_TEXT);
         $stmt->bindValue(':role', $p['role'] ?? 'visitor', SQLITE3_TEXT);
         $stmt->bindValue(':perms', $p['permissions'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':granted', (int)($p['granted_at'] ?? 0), SQLITE3_INTEGER);
@@ -746,8 +750,34 @@ function syncPermissions() {
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
         $stmt->execute();
         $count++;
+        if ($lid > 0 && !empty($player)) {
+            $incomingKeys[$lid][] = $player;
+        }
     }
-    success("访客权限同步成功: {$count}个");
+
+    // ★ 删除Java端已移除的成员（同步清理）
+    // 对于每个有incoming数据的land_id，删除不在incoming列表中的旧记录
+    // 但保留最近120秒内被PHP端添加/修改的记录（防止PHP刚添加、Java还没处理就被删）
+    $deleted = 0;
+    foreach ($incomingKeys as $lid => $players) {
+        $placeholders = implode(',', array_fill(0, count($players), '?'));
+        $cutoff = $now - 120; // 120秒宽限期
+        $delStmt = $db->prepare("DELETE FROM web_area_permissions
+            WHERE land_id = ? AND player_name NOT IN ($placeholders)
+            AND synced_at < ?");
+        $delStmt->bindValue(1, $lid, SQLITE3_INTEGER);
+        $idx = 2;
+        foreach ($players as $p) {
+            $delStmt->bindValue($idx++, $p, SQLITE3_TEXT);
+        }
+        $delStmt->bindValue($idx, $cutoff, SQLITE3_INTEGER);
+        $delStmt->execute();
+        $deleted += $db->changes();
+    }
+
+    $msg = "访客权限同步成功: {$count}个";
+    if ($deleted > 0) $msg .= ", 清理{$deleted}个已移除成员";
+    success($msg);
 }
 
 // ===== 用户组同步 =====

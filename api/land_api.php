@@ -1115,18 +1115,7 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
-    // ★ 校验玩家是否存在于login.db（异步验证）
-    $visitorValid = validatePlayerViaJava($db, $visitor, 'add_visitor', ['land' => $landName]);
-    if ($visitorValid === null) {
-        echo json_encode(['success' => true, 'pending' => true, 'message' => "玩家 {$visitor} 的验证请求已提交，系统将在1-2分钟内自动完成验证"]);
-        return;
-    }
-    if (!$visitorValid) {
-        echo json_encode(['success' => false, 'error' => "玩家 {$visitor} 尚未注册，请确认玩家名是否正确"]);
-        return;
-    }
-
-    // 获取领地
+    // ★ 先获取领地（先校验，再添加）
     $stmt = $db->prepare("SELECT * FROM web_area_lands WHERE name = :name");
     $stmt->bindValue(':name', $landName, SQLITE3_TEXT);
     $result = $stmt->execute();
@@ -1142,7 +1131,18 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
-    // 插入访客
+    // ★ 检查是否已是成员
+    $checkStmt = $db->prepare("SELECT COUNT(*) as cnt FROM web_area_permissions WHERE land_id = :lid AND player_name = :player");
+    $checkStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
+    $checkStmt->bindValue(':player', $visitor, SQLITE3_TEXT);
+    $checkResult = $checkStmt->execute();
+    $checkRow = $checkResult->fetchArray(SQLITE3_ASSOC);
+    if ($checkRow && $checkRow['cnt'] > 0) {
+        echo json_encode(['success' => false, 'error' => "玩家 {$visitor} 已是该领地成员"]);
+        return;
+    }
+
+    // ★ 直接插入访客（先执行操作，再异步验证）
     $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
         (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
         VALUES (:land_id, :land_name, :player, 'visitor', '', :now, 0, :now)");
@@ -1162,6 +1162,16 @@ function handleAddVisitor($db, $playerName, $req) {
         $changeStmt->execute();
     } catch (\Throwable $e) {
         // 非致命
+    }
+
+    // ★ 异步验证玩家是否存在（仅记录日志，不阻塞操作）
+    try {
+        $visitorValid = validatePlayerViaJava($db, $visitor, 'add_visitor', ['land' => $landName]);
+        if ($visitorValid === false) {
+            error_log("[访客管理] 警告: 玩家 {$visitor} 可能不存在于login.db，但已添加为访客");
+        }
+    } catch (\Throwable $e) {
+        // 验证失败不阻塞
     }
 
     echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
