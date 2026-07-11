@@ -3195,13 +3195,22 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("deny_potion", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_raid", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("is_public_building", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("allow_visitor_teleport", 0)).append(":");
                 // 效果和消息
                 hashBuilder.append(land.getOrDefault("peace_mode", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("peace_mode_duration", 0)).append(":");
-                hashBuilder.append(land.getOrDefault("enforce_game_mode", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("enforce_game_mode", "")).append(":");
+                hashBuilder.append(land.getOrDefault("confiscate_items", "")).append(":");
+                hashBuilder.append(land.getOrDefault("deny_use_items", "")).append(":");
+                hashBuilder.append(land.getOrDefault("punish_commands", "")).append(":");
                 hashBuilder.append(land.getOrDefault("enter_msg", "")).append(":");
                 hashBuilder.append(land.getOrDefault("leave_msg", "")).append(":");
                 hashBuilder.append(land.getOrDefault("confiscate_msg", "")).append(":");
+                hashBuilder.append(land.getOrDefault("enable_announce", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("announce_template", "")).append(":");
+                hashBuilder.append(land.getOrDefault("txt_content", "")).append(":");
+                hashBuilder.append(land.getOrDefault("peace_whitelist", "")).append(":");
+                hashBuilder.append(land.getOrDefault("mode_exempt", "")).append(":");
                 hashBuilder.append(land.getOrDefault("clear_effects", "")).append(":");
                 hashBuilder.append(land.getOrDefault("give_effects", "")).append(":");
                 hashBuilder.append(land.getOrDefault("clear_all_bad", 0)).append(":");
@@ -3226,7 +3235,7 @@ public class WebManager {
             plugin.getLogger().info("[防护-sync] hash变化: lands=" + lands.size() + " config=" + cfgForHash.size() + "项，开始同步");
             lastLandDataHash = currentHash;
 
-            // 1. 同步领地列表（全字段）
+            // 1. 同步领地列表（全字段）——用POST避免GET URL长度限制
             if (!lands.isEmpty()) {
                 StringBuilder sb = new StringBuilder("[");
                 for (int i = 0; i < lands.size(); i++) {
@@ -3234,11 +3243,9 @@ public class WebManager {
                     sb.append(mapToJson(lands.get(i)));
                 }
                 sb.append("]");
-                Map<String, String> params = new LinkedHashMap<>();
-                params.put("action", "sync_lands");
-                params.put("secret", secretKey);
-                params.put("lands", sb.toString());
-                String resp = httpGet("api/sync.php", params);
+                // 构建JSON body（含action+secret+lands）
+                String jsonBody = "{\"action\":\"sync_lands\",\"secret\":\"" + escapeJson(secretKey) + "\",\"lands\":" + sb.toString() + "}";
+                String resp = httpPost("api/sync.php", jsonBody);
                 plugin.getLogger().fine("[防护-sync] 领地同步: " + resp);
             }
 
