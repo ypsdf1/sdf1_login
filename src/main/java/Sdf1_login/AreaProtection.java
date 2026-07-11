@@ -64,6 +64,8 @@ public class AreaProtection implements Listener {
     private final Map<String, AreaConfig> areas =
             new ConcurrentHashMap<>();
     private Connection dbConnection;
+    // ★ 防止"无法识别效果"刷屏：同一名称只警告一次
+    private static final Set<String> UNKNOWN_EFFECT_WARNINGS = ConcurrentHashMap.newKeySet();
 
     // 全局白名单（玩家）
     private final Set<String> globalPlayerWhitelist =
@@ -1048,12 +1050,17 @@ public class AreaProtection implements Listener {
         List<String> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
         String trimmed = s.trim();
-        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"]
-        if (trimmed.startsWith("[\"")) {
+        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"] 或 ["\u8bd5\u70bc..."]
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
             try {
                 String inner = trimmed.substring(1, trimmed.length() - 1);
-                for (String part : inner.split(",")) {
-                    String cleaned = part.trim().replaceAll("^\"|\"$", "").replaceAll("^'|'$", "");
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"(?:\\\\.|[^\"\\\\])*\"")
+                    .matcher(inner);
+                while (m.find()) {
+                    String raw = m.group();
+                    String cleaned = unescapeJsonString(raw.substring(1, raw.length() - 1));
+                    cleaned = cleaned.replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
                     if (!cleaned.isEmpty()) result.add(cleaned);
                 }
                 if (!result.isEmpty()) return result;
@@ -1062,10 +1069,51 @@ public class AreaProtection implements Listener {
             }
         }
         for (String item : s.split(",")) {
-            String itemTrimmed = item.trim().replaceAll("^\"|\"$", "").replaceAll("^'|'$", "");
+            String itemTrimmed = item.trim().replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
             if (!itemTrimmed.isEmpty()) result.add(itemTrimmed);
         }
         return result;
+    }
+
+    /**
+     * 简单JSON字符串unescape（支持 \\  \"  \/  \b  \f  \n  \r  \t 以及反斜杠u开头的Unicode四位十六进制转义）
+     */
+    private String unescapeJsonString(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                char next = s.charAt(i + 1);
+                switch (next) {
+                    case '"': case '\\': case '/': sb.append(next); i++; break;
+                    case 'b': sb.append('\b'); i++; break;
+                    case 'f': sb.append('\f'); i++; break;
+                    case 'n': sb.append('\n'); i++; break;
+                    case 'r': sb.append('\r'); i++; break;
+                    case 't': sb.append('\t'); i++; break;
+                    case 'u':
+                        if (i + 5 < s.length()) {
+                            try {
+                                int code = Integer.parseInt(s.substring(i + 2, i + 6), 16);
+                                sb.append((char) code);
+                                i += 5;
+                            } catch (NumberFormatException e) {
+                                sb.append(c);
+                            }
+                        } else {
+                            sb.append(c);
+                        }
+                        break;
+                    default:
+                        sb.append(next);
+                        i++;
+                        break;
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     /**
@@ -1077,18 +1125,20 @@ public class AreaProtection implements Listener {
         List<String[]> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
 
-        // ★ 支持JSON格式（PHP端存储格式）
         String trimmed = s.trim();
-        if (trimmed.startsWith("[[")) {
+        // ★ 支持JSON格式（PHP端存储格式）[["效果名",等级,秒数],...]
+        if (trimmed.startsWith("[")) {
             try {
-                // 去掉外层方括号
                 String inner = trimmed.substring(1, trimmed.length() - 1);
-                // 用正则匹配每个 ["name",level,dur] 数组
                 java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("\\[\"([^\"]*)\",(\\d+),(\\d+)\\]")
+                    .compile("\\[\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\]")
                     .matcher(inner);
                 while (m.find()) {
-                    result.add(new String[]{m.group(1), m.group(2), m.group(3)});
+                    String name = unescapeJsonString(m.group(1))
+                            .replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
+                    if (!name.isEmpty()) {
+                        result.add(new String[]{name, m.group(2), m.group(3)});
+                    }
                 }
                 if (!result.isEmpty()) return result;
             } catch (Exception ignored) {
@@ -1100,7 +1150,8 @@ public class AreaProtection implements Listener {
         for (String part : s.split("\\|")) {
             String[] pieces = part.split(":");
             if (pieces.length >= 3) {
-                result.add(new String[]{pieces[0], pieces[1], pieces[2]});
+                String name = pieces[0].trim().replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
+                result.add(new String[]{name, pieces[1], pieces[2]});
             }
         }
         return result;
@@ -3635,8 +3686,11 @@ public class AreaProtection implements Listener {
     private PotionEffectType resolveEffectType(String name) {
         if (name == null || name.isEmpty()) return null;
 
+        // 去除首尾空白、引号、反斜杠等残留转义字符（PHP JSON存储偶尔带入的\前缀）
+        String clean = name.trim().replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
+        if (clean.isEmpty()) return null;
+
         // 去掉"效果"后缀
-        String clean = name;
         if (clean.endsWith("效果")) {
             clean = clean.substring(0, clean.length() - 2);
         }
@@ -3734,13 +3788,16 @@ public class AreaProtection implements Listener {
         }
 
 
-// 兜底：直接用原版英文ID查（★ 注意是 PotionEffectType.getByName，不是 resolveEffectType）
+        // 兜底：直接用原版英文ID查
         PotionEffectType fallback = PotionEffectType.getByName(clean);
         if (fallback != null) return fallback;
         fallback = PotionEffectType.getByName(clean.toLowerCase());
         if (fallback != null) return fallback;
 
-        plugin.getLogger().warning("[防护] 无法识别效果: " + name);
+        // 同一名称只警告一次，避免控制台刷屏
+        if (UNKNOWN_EFFECT_WARNINGS.add(name)) {
+            plugin.getLogger().warning("[防护] 无法识别效果: " + name + " (clean=" + clean + ")，已抑制后续相同警告");
+        }
         return null;
 
     }
