@@ -3870,6 +3870,8 @@ public class WebManager {
                         case "perm_clear": {
                             String playerName = targetName;
                             String landNameJson = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            // ★ 防御：清除双重JSON编码引入的反斜杠
+                            landNameJson = landNameJson.replace("\\", "");
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
                                 areaProtect.clearPlayerPermFromWeb(landNameJson, playerName);
                                 plugin.getLogger().info("[Web通信] PHP端清除成员权限: " + playerName + " @ " + landNameJson);
@@ -3887,6 +3889,8 @@ public class WebManager {
                             String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
                             String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
+                                // 防御：清除PHP双重JSON编码引入的反斜杠
+                                landNameJson = landNameJson.replace("\\", "");
                                 // ★ 确保玩家在白名单中（PHP端可能直接添加了成员但未走add_visitor流程）
                                 areaProtect.addPlayerToAreaWhitelist(landNameJson, playerName);
                                 areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);
@@ -3901,6 +3905,8 @@ public class WebManager {
                             String playerName2 = changeData.containsKey("player")
                                     ? String.valueOf(changeData.get("player")) : targetName;
                             String landName2 = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            // ★ 防御：清除双重JSON编码引入的反斜杠
+                            landName2 = landName2.replace("\\", "");
                             String role2 = String.valueOf(changeData.getOrDefault("role", "visitor"));
                             if (!playerName2.isEmpty() && !landName2.isEmpty()) {
                                 // ★ 验证玩家是否存在（login.db）
@@ -3936,6 +3942,8 @@ public class WebManager {
                             String playerName3 = changeData.containsKey("player")
                                     ? String.valueOf(changeData.get("player")) : targetName;
                             String landName3 = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            // ★ 防御：清除双重JSON编码引入的反斜杠
+                            landName3 = landName3.replace("\\", "");
                             if (!playerName3.isEmpty() && !landName3.isEmpty()) {
                                 areaProtect.removePlayerFromAreaWhitelist(landName3, playerName3);
                                 plugin.getLogger().info("[Web通信] PHP端移除成员: " + playerName3 + " ← " + landName3);

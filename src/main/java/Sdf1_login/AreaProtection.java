@@ -8509,6 +8509,13 @@ public class AreaProtection implements Listener {
             // 解析可能的JSON数组格式
             String[] landNames = landName.startsWith("[") ? parseJsonArray(landName) : new String[]{landName};
 
+            // 防御：清除PHP双重JSON编码引入的反斜杠（JSON中 uXXXX 被双重转义后残留在领地名中）
+            for (int i = 0; i < landNames.length; i++) {
+                if (landNames[i].contains("\\")) {
+                    landNames[i] = landNames[i].replace("\\", "");
+                }
+            }
+
             for (String lname : landNames) {
                 int landId = getLandIdFromDb(lname);
                 if (landId < 0) continue;
