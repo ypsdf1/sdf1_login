@@ -2852,16 +2852,15 @@ async function renderLandDetail(el, landName) {
             html += `<table class="table"><thead><tr><th>玩家名</th><th>角色</th><th>授权时间</th><th>操作</th></tr></thead><tbody>`;
             for (const v of visitors) {
                 const grantDate = v.granted_at ? new Date(v.granted_at * 1000).toLocaleString('zh-CN') : '未知';
-                const isAdmin = v.role === 'admin';
-                const roleColor = isAdmin ? 'var(--accent)' : 'var(--dim)';
-                const roleBg = isAdmin ? 'rgba(99,102,241,0.15)' : 'rgba(107,114,128,0.1)';
-                const nextRoleLabel = isAdmin ? '设为访客' : '设为管理员';
+                const roleMap = {admin: {label:'👑 管理员', color:'var(--accent)', bg:'rgba(99,102,241,0.15)'}, member: {label:'🔧 成员', color:'#f59e0b', bg:'rgba(245,158,11,0.15)'}, visitor: {label:'👤 访客', color:'var(--dim)', bg:'rgba(107,114,128,0.1)'}};
+                const r = roleMap[v.role] || roleMap.member;
                 html += `<tr>
                     <td><strong>${escHtml(v.player_name)}</strong> <button class="btn" style="font-size:10px;padding:1px 6px;color:var(--accent);border-color:var(--accent)" onclick="event.stopPropagation();landsState.view='member_perm_detail';landsState.currentLand='${escHtml(land.name)}';landsState.currentMember='${escHtml(v.player_name)}';renderLands(document.getElementById('content'))">权限</button></td>
-                    <td><span onclick="changeVisitorRole('${escHtml(land.name)}','${escHtml(v.player_name)}','${escHtml(v.role)}')"
-                        style="cursor:pointer;padding:2px 8px;border-radius:12px;font-size:12px;background:${roleBg};color:${roleColor};border:1px solid ${roleColor};transition:all 0.2s"
-                        onmouseover="this.style.opacity='0.7'" onmouseout="this.style.opacity='1'"
-                        title="点击${nextRoleLabel}">${isAdmin ? '👑 管理员' : '👤 访客'}</span></td>
+                    <td><select onchange="if(this.value &&this.value!=='${v.role}')changeVisitorRole('${escHtml(land.name)}','${escHtml(v.player_name)}',this.value);this.value='${v.role}'"
+                        style="cursor:pointer;padding:2px 6px;border-radius:12px;font-size:12px;background:${r.bg};color:${r.color};border:1px solid ${r.color};transition:all 0.2s;appearance:auto;-webkit-appearance:auto">
+                        <option value="admin" ${v.role==='admin'?'selected':''}>👑 管理员</option>
+                        <option value="member" ${v.role==='member'?'selected':''}>🔧 成员</option>
+                    </select></td>
                     <td style="font-size:12px;color:var(--dim)">${grantDate}</td>
                     <td><button class="btn" style="color:var(--red);font-size:11px;padding:3px 8px" onclick="removeLandVisitor('${escHtml(land.name)}','${escHtml(v.player_name)}')">移除</button></td>
                 </tr>`;
@@ -2973,6 +2972,7 @@ async function renderLandDetail(el, landName) {
             ['deny_fluid', '流体放置', false],
             ['allow_visitor_teleport', '允许传送', true],
             ['is_public_building', '公共建筑设施', true],
+            ['peace_mode', '和平模式(禁生物)', false],
         ];
 
         html += `<div class="card" style="margin-top:12px">
@@ -3118,14 +3118,10 @@ async function addLandVisitor(landName) {
     }
 }
 
-async function changeVisitorRole(landName, player, currentRole) {
-    // 三角色循环: visitor → admin → member → visitor
-    const roleOrder = ['visitor', 'admin', 'member'];
-    const roleLabels = {visitor: '访客', admin: '管理员', member: '成员'};
-    const nextIdx = (roleOrder.indexOf(currentRole) + 1) % roleOrder.length;
-    const newRole = roleOrder[nextIdx];
-    const roleLabel = roleLabels[newRole];
-    if (!await glassConfirm(`确定将 ${player} 设为${roleLabel}吗？${newRole === 'admin' ? '\n管理员将拥有领地管理权限！' : ''}${newRole === 'member' ? '\n成员将拥有独立权限控制。' : ''}`)) return;
+async function changeVisitorRole(landName, player, newRole) {
+    const roleLabels = {admin: '管理员', member: '成员'};
+    const roleLabel = roleLabels[newRole] || newRole;
+    if (!await glassConfirm(`确定将 ${player} 设为${roleLabel}吗？${newRole === 'admin' ? '\n管理员将拥有领地管理权限！' : ''}${newRole === 'member' ? '\n成员将降级为普通成员。' : ''}`)) return;
     try {
         const url = new URL(API + 'land_api.php', location.href);
         const body = new URLSearchParams();
@@ -3491,22 +3487,17 @@ async function renderMemberPermDetail(el, landName, targetPlayer) {
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">`;
 
         for (const [key, label] of permEntries) {
-            const isCustom = permMap.hasOwnProperty(key);
-            const enabled = isCustom ? permMap[key] : false;
-            const defaultVal = land[key] || false;
+            const denied = permMap[key] === true; // true = deny类权限激活=禁止
 
             html += `<div onclick="toggleMemberPerm('${escHtml(landName)}','${escHtml(targetPlayer)}','${key}',this)"
-                style="background:${isCustom ? (enabled ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)') : 'var(--bg)'};
-                border:1px solid ${isCustom ? (enabled ? 'var(--green)' : 'var(--red)') : 'var(--border)'};
+                style="background:${denied ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)'};
+                border:1px solid ${denied ? 'var(--red)' : 'var(--green)'};
                 border-radius:8px;padding:12px;cursor:pointer;transition:all 0.2s">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
                     <span style="color:var(--fg);font-size:13px;font-weight:500">${label}</span>
-                    <span style="font-size:11px;color:${isCustom ? (enabled ? 'var(--green)' : 'var(--red)') : 'var(--dim)'}">
-                        ${isCustom ? (enabled ? '✓ 启用' : '✗ 禁用') : '默认'}
+                    <span style="font-size:11px;color:${denied ? 'var(--red)' : 'var(--green)'}">
+                        ${denied ? '✗ 禁止' : '✓ 允许'}
                     </span>
-                </div>
-                <div style="font-size:11px;color:var(--dim)">
-                    ${isCustom ? '★ 自定义' : `领地默认: ${defaultVal ? '禁止' : '允许'}`}
                 </div>
             </div>`;
         }
@@ -3528,23 +3519,12 @@ async function toggleMemberPerm(landName, targetPlayer, permKey, el) {
         body.set('player', targetPlayer);
         body.set('perm', permKey);
 
-        // 从元素中获取当前状态
-        // 状态文字在 flex div 的最后一个 span 里（✓ 启用 / ✗ 禁用 / 默认）
+        // 点击"允许"→切换为禁止(enabled=true)；点击"禁止"→切换为允许(enabled=false)
         const spans = el.querySelectorAll('span');
-        const statusSpan = spans[spans.length - 1]; // 第二个 span 是状态
+        const statusSpan = spans[spans.length - 1];
         const statusText = statusSpan ? statusSpan.textContent : '';
-        const isEnabled = statusText.includes('启用');
-        // "★ 自定义" 在第二个 div 里
-        const divs = el.querySelectorAll('div');
-        const isCustom = divs.length > 1 && divs[divs.length - 1].textContent.includes('自定义');
-
-        if (isCustom) {
-            // 已有自定义：切换启用/禁用
-            body.set('enabled', (!isEnabled).toString());
-        } else {
-            // 无自定义：设置为启用
-            body.set('enabled', 'true');
-        }
+        const newDenied = statusText.includes('允许'); // 当前允许→新值禁止(true)；当前禁止→新值允许(false)
+        body.set('enabled', newDenied.toString());
 
         const res = await fetch(url, {
             method: 'POST',

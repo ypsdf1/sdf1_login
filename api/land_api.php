@@ -36,28 +36,31 @@ function convertEffectsForFrontend($row) {
 }
 
 // ★ 29种权限类型定义（必须在try之前，否则handleGetMemberPerms调用时变量未定义）
+// ★ 与Java AreaProtection.getLandDefaultDeny 完全对齐（32个per-player权限键）
 $PERM_TYPES = [
     'denyMove' => '移动',
     'denyBlockPlace' => '放置方块',
     'denyBlockBreak' => '破坏方块',
     'denyContainer' => '容器管理',
     'denyPVP' => 'PVP战斗',
-    'denyMount' => '骑乘',
-    'denyEnderPearl' => '末影珍珠',
-    'denyThrownProjectiles' => '投掷物',
-    'denyRaid' => '袭击',
-    'denyBow' => '弓箭',
-    'denyPotion' => '药水',
-    'denyFire' => '点火',
-    'denyFireSpread' => '火焰蔓延',
-    'denyPickup' => '拾取物品',
-    'denyDrop' => '丢弃物品',
-    'denyExplosion' => '爆炸',
     'denyFallDamage' => '摔落伤害',
     'denyHunger' => '饥饿',
     'denyAllDamage' => '所有伤害',
+    'denyDrop' => '丢弃物品',
+    'denyMount' => '骑乘',
+    'denyEnderPearl' => '末影珍珠',
+    'denyBow' => '弓箭',
+    'denyPotion' => '药水',
+    'denyExplosion' => '爆炸',
+    'denyRaid' => '袭击',
+    'denyFireSpread' => '火焰蔓延',
     'denyAllEffects' => '所有效果',
     'denyItemFrame' => '物品展示框',
+    'denyEntityInteract' => '实体交互',
+    'denyPickup' => '拾取物品',
+    'denyFire' => '点火',
+    'denyThrownProjectiles' => '投掷物',
+    'denyGlowing' => '发光效果',
     'denyRedstoneInteraction' => '红石交互',
     'denyDoorInteraction' => '门禁交互',
     'denyNoteblockJukebox' => '音符盒/唱片机',
@@ -65,8 +68,8 @@ $PERM_TYPES = [
     'denyCropHarvest' => '收割作物',
     'denyWoolShear' => '剪羊毛',
     'denyAnimalFeeding' => '投喂动物',
-    'denyGlowing' => '发光效果',
-    'denyPeaceMode' => '和平模式'
+    'denyMobAttack' => '攻击生物',
+    'peaceMode' => '和平模式',
 ];
 
 try {
@@ -567,6 +570,22 @@ function initLandTables($db) {
         try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN $col $type"); } catch (\Throwable $e) {}
     }
 
+    // ★ 数据迁移：修复旧键名 denyPeaceMode → peaceMode（对齐Java端key）
+    try {
+        $rows = $db->query("SELECT id, permissions FROM web_area_permissions WHERE permissions LIKE '%denyPeaceMode%'");
+        while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
+            $decoded = json_decode($row['permissions'], true);
+            if (is_array($decoded) && isset($decoded['denyPeaceMode'])) {
+                $decoded['peaceMode'] = $decoded['denyPeaceMode'];
+                unset($decoded['denyPeaceMode']);
+                $stmtFix = $db->prepare("UPDATE web_area_permissions SET permissions = :perms WHERE id = :id");
+                $stmtFix->bindValue(':perms', json_encode($decoded, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                $stmtFix->bindValue(':id', (int)$row['id'], SQLITE3_INTEGER);
+                $stmtFix->execute();
+            }
+        }
+    } catch (\Throwable $e) { /* 表可能还不存在 */ }
+
     $db->exec("CREATE TABLE IF NOT EXISTS web_area_shop (
         id INTEGER PRIMARY KEY,
         land_id INTEGER NOT NULL,
@@ -1034,12 +1053,9 @@ function handleSyncPermissions($db, $post) {
             granted_at = excluded.granted_at,
             expires_at = excluded.expires_at,
             synced_at = excluded.synced_at,
-            role = CASE
-                WHEN excluded.role IN ('admin', 'member') THEN excluded.role
-                WHEN excluded.role = 'visitor' AND web_area_permissions.role IN ('admin', 'member') THEN web_area_permissions.role
-                ELSE excluded.role
-            END");
+            role = excluded.role");
 
+    $syncedKeys = [];
     foreach ($perms as $p) {
         $stmt->bindValue(':land_id', (int)($p['land_id'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':land_name', $p['land_name'] ?? '', SQLITE3_TEXT);
@@ -1050,9 +1066,40 @@ function handleSyncPermissions($db, $post) {
         $stmt->bindValue(':expires', (int)($p['expires_at'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
         $stmt->execute();
+        $syncedKeys[] = ((int)($p['land_id'] ?? 0)) . ':' . ($p['player_name'] ?? '');
     }
 
-    echo json_encode(['success' => true, 'count' => count($perms)]);
+    // ★ 删除PHP中有但Java同步列表中不存在的旧记录（120秒宽限期防误删）
+    // NULL synced_at 的记录视为"PHP本地创建，从未被Java同步过"，不删
+    $deleted = 0;
+    if (!empty($syncedKeys)) {
+        $stmtAll = $db->prepare("SELECT id, land_id, player_name, synced_at FROM web_area_permissions");
+        $allRows = $stmtAll->execute()->fetchArray(SQLITE3_ASSOC);
+        $toDelete = [];
+        while ($allRows) {
+            $key = $allRows['land_id'] . ':' . $allRows['player_name'];
+            if (!in_array($key, $syncedKeys)) {
+                $syncedAt = $allRows['synced_at'] ?? null;
+                // NULL synced_at = PHP本地创建，从未被Java同步过 → 不删
+                // synced_at非NULL但超过120秒 → 确认Java已不包含此记录 → 删
+                if ($syncedAt !== null && ($now - (int)$syncedAt) > 120) {
+                    $toDelete[] = (int)$allRows['id'];
+                }
+            }
+            $allRows = $stmtAll->execute()->fetchArray(SQLITE3_ASSOC);
+        }
+        if (!empty($toDelete)) {
+            $delPlaceholders = implode(',', array_fill(0, count($toDelete), '?'));
+            $stmtDel = $db->prepare("DELETE FROM web_area_permissions WHERE id IN ($delPlaceholders)");
+            foreach ($toDelete as $idx => $id) {
+                $stmtDel->bindValue($idx + 1, $id, SQLITE3_INTEGER);
+            }
+            $stmtDel->execute();
+            $deleted = count($toDelete);
+        }
+    }
+
+    echo json_encode(['success' => true, 'count' => count($perms), 'deleted' => $deleted]);
 }
 
 // ==================== 玩家端：我拥有的领地 ====================
@@ -1157,7 +1204,7 @@ function handleAddVisitor($db, $playerName, $req) {
     $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at, status) VALUES ('add_visitor', :id, :name, :data, :now, 'pending')");
     $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt4->bindValue(':name', $landName, SQLITE3_TEXT);
-    $stmt4->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName, 'role' => 'visitor', 'source' => 'admin_panel'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt4->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName, 'role' => 'member', 'source' => 'admin_panel'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
     $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt4->execute();
 
@@ -1603,7 +1650,7 @@ function handleChangeVisitorRole($db, $playerName, $post) {
         $stmtIns->bindValue(':now', time(), SQLITE3_INTEGER);
         $stmtIns->execute();
         // ★ 新成员走 add_visitor 流程，确保 Java 端加入白名单
-        $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName]);
+        $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName], JSON_UNESCAPED_UNICODE);
         $stmtC = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('add_visitor', :id, :name, :data, :now)");
         $stmtC->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
         $stmtC->bindValue(':name', $landName, SQLITE3_TEXT);
@@ -1626,7 +1673,7 @@ function handleChangeVisitorRole($db, $playerName, $post) {
     $now = time();
     $oldPerms = $permRow ? ($permRow['permissions'] ?? '') : '';
     error_log("[领地权限][切换角色] 已写入变更队列 role=$newRole oldPermsLen=" . strlen($oldPerms));
-    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName, 'permissions' => $oldPerms]);
+    $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName, 'permissions' => $oldPerms], JSON_UNESCAPED_UNICODE);
     $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt3->bindValue(':name', $landName, SQLITE3_TEXT);
@@ -1791,7 +1838,7 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
     $stmt2->execute();
 
     // ★ 写入web_admin_changes以便Java同步（带 role，确保Java端不会把访客误写为 member）
-    $changeData = json_encode(['land_name' => $landName, 'permissions' => $permissions, 'role' => $role]);
+    $changeData = json_encode(['land_name' => $landName, 'permissions' => $permissions, 'role' => $role], JSON_UNESCAPED_UNICODE);
     error_log("[领地权限][更新访客权限] 放行写入: land=$landName visitor=$visitor role=$role permsLen=" . strlen($permissions) . " changeData=$changeData");
     $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
     $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
@@ -1862,7 +1909,7 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
     $landName = $post['land'] ?? '';
     $targetPlayer = $post['player'] ?? '';
     $permKey = $post['perm'] ?? '';
-    $enabled = isset($post['enabled']) ? (bool)$post['enabled'] : false;
+    $enabled = filter_var($post['enabled'] ?? 'false', FILTER_VALIDATE_BOOLEAN);
 
     if (empty($landName) || empty($targetPlayer) || empty($permKey)) {
         echo json_encode(['success' => false, 'error' => '缺少参数']);
@@ -1908,12 +1955,8 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
         }
     }
 
-    // 更新权限
-    if ($enabled) {
-        $permMap[$permKey] = true;
-    } else {
-        unset($permMap[$permKey]);
-    }
+    // 更新权限（成员权限只有两种状态：启用true / 禁用false，不存在"默认"）
+    $permMap[$permKey] = (bool)$enabled;
 
     // 写回数据库（不改变角色，只改权限）
     $newJson = json_encode($permMap, JSON_UNESCAPED_UNICODE);
@@ -1975,8 +2018,13 @@ function handleClearMemberPerm($db, $playerName, $post) {
     $old_perm = $result_old->fetchArray(SQLITE3_ASSOC);
     $old_perms = $old_perm ? ($old_perm['permissions'] ?? '') : '';
 
-    // 清除权限
-    $stmt2 = $db->prepare("UPDATE web_area_permissions SET permissions = '', synced_at = :now WHERE land_id = :land_id AND player_name = :player");
+    // 清除权限（全部设为禁用 false，而非清空回到"默认"）
+    global $PERM_TYPES;
+    $resetPerms = [];
+    foreach (array_keys($PERM_TYPES) as $k) { $resetPerms[$k] = false; }
+    $newJson = json_encode($resetPerms, JSON_UNESCAPED_UNICODE);
+    $stmt2 = $db->prepare("UPDATE web_area_permissions SET permissions = :perms, synced_at = :now WHERE land_id = :land_id AND player_name = :player");
+    $stmt2->bindValue(':perms', $newJson, SQLITE3_TEXT);
     $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt2->bindValue(':player', $targetPlayer, SQLITE3_TEXT);
@@ -1987,7 +2035,7 @@ function handleClearMemberPerm($db, $playerName, $post) {
         $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_clear', :id, :name, :data, :now)");
         $stmt3->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
         $stmt3->bindValue(':name', $targetPlayer, SQLITE3_TEXT);
-        $stmt3->bindValue(':data', json_encode(['land_name' => $landName, 'old_permissions' => $old_perms]), SQLITE3_TEXT);
+        $stmt3->bindValue(':data', json_encode(['land_name' => $landName, 'old_permissions' => $old_perms], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
         $stmt3->execute();
     }
