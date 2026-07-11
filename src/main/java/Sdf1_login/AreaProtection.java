@@ -2181,7 +2181,7 @@ public class AreaProtection implements Listener {
         }
 
         if (cleared > 0) {
-            plugin.getLogger().info("[和平模式扫描] 清理未命名敌对生物: " + cleared + " 个");
+      //      plugin.getLogger().info("[和平模式扫描] 清理未命名敌对生物: " + cleared + " 个");
         }
     }
 
@@ -7569,7 +7569,16 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
                     return true;
                 }
+                // ★ 校验玩家是否在login.db中注册
+                {
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr != null && !dbMgr.userExists(args[1])) {
+                        sender.sendMessage("§c§l[添加成员] §f玩家 " + args[1] + " 不存在（未在login.db中注册）");
+                        return true;
+                    }
+                }
                 addPlayerToAreaWhitelist(ac.name, args[1]);
+                insertLandPermission(ac.name, args[1], "visitor");
                 sender.sendMessage("§a已添加 §e" + args[1] + " §a为 §e" + ac.name + " §a的访客");
                 return true;
             }
@@ -7585,12 +7594,21 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
                 return true;
             }
+            // ★ 校验玩家是否在login.db中注册
+            {
+                DatabaseManager dbMgr = plugin.getDb();
+                if (dbMgr != null && !dbMgr.userExists(playerName)) {
+                    sender.sendMessage("§c§l[添加成员] §f玩家 " + playerName + " 不存在（未在login.db中注册）");
+                    return true;
+                }
+            }
             // ★ 删除冷却期间添加成员 → 自动取消删除
             if (hasPendingDelete(areaName)) {
                 cancelPendingDelete(areaName);
                 p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
             }
             addPlayerToAreaWhitelist(areaName, playerName);
+            insertLandPermission(areaName, playerName, "visitor");
             sender.sendMessage("§a已添加 §e" + playerName + " §a为 §e" + areaName + " §a的访客");
             return true;
         }
@@ -8796,6 +8814,7 @@ public class AreaProtection implements Listener {
 
         // 添加成员
         addLandMember(landName, playerName);
+        insertLandPermission(landName, playerName, "visitor");
         p.sendMessage("§a§l[添加成员] §f已成功添加 " + playerName + " 为领地成员");
 
         // 刷新GUI（必须切主线程）

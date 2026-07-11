@@ -3879,6 +3879,8 @@ public class WebManager {
                             String permsJson = String.valueOf(changeData.getOrDefault("permissions", "{}"));
                             String roleJson = String.valueOf(changeData.getOrDefault("role", ""));
                             if (!playerName.isEmpty() && !landNameJson.isEmpty()) {
+                                // ★ 确保玩家在白名单中（PHP端可能直接添加了成员但未走add_visitor流程）
+                                areaProtect.addPlayerToAreaWhitelist(landNameJson, playerName);
                                 areaProtect.updateVisitorPermFromWeb(landNameJson, playerName, permsJson, roleJson);
                                 plugin.getLogger().info("[Web通信] PHP端更新访客权限: " + playerName + " @ " + landNameJson
                                         + (roleJson.isEmpty() ? "" : " role=" + roleJson));
