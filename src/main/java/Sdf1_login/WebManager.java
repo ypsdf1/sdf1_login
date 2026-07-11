@@ -3227,6 +3227,14 @@ public class WebManager {
             for (Map.Entry<String, String> entry : cfgForHash.entrySet()) {
                 hashBuilder.append("cfg:").append(entry.getKey()).append("=").append(entry.getValue()).append(":");
             }
+            // ★ 权限数据变化也触发同步（成员增删改查）
+            List<Map<String, Object>> permsForHash = areaProtect.getAllPermsForSync();
+            hashBuilder.append("perms:").append(permsForHash.size()).append(":");
+            for (Map<String, Object> p : permsForHash) {
+                hashBuilder.append(p.getOrDefault("land_id", 0)).append(":")
+                           .append(p.getOrDefault("player_name", "")).append(":")
+                           .append(p.getOrDefault("role", "")).append(":");
+            }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
             if (currentHash.equals(lastLandDataHash)) {
                 // ★ hash未变化，静默跳过（但首次运行或强制刷新时会同步）
