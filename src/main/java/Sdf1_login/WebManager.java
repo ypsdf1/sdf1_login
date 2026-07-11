@@ -3886,6 +3886,37 @@ public class WebManager {
                             }
                             break;
                         }
+                        case "add_visitor": {
+                            // ★ PHP端添加成员 → 添加到Java白名单+权限表
+                            String playerName2 = changeData.containsKey("player")
+                                    ? String.valueOf(changeData.get("player")) : targetName;
+                            String landName2 = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            String role2 = String.valueOf(changeData.getOrDefault("role", "visitor"));
+                            if (!playerName2.isEmpty() && !landName2.isEmpty()) {
+                                areaProtect.addPlayerToAreaWhitelist(landName2, playerName2);
+                                // 写入area_land_permissions表：admin走setLandAdmin，其他角色走INSERT OR IGNORE
+                                if ("admin".equalsIgnoreCase(role2)) {
+                                    areaProtect.setLandAdmin(landName2, playerName2, true);
+                                } else {
+                                    areaProtect.insertLandPermission(landName2, playerName2, role2);
+                                }
+                                plugin.getLogger().info("[Web通信] PHP端添加成员: " + playerName2 + " → " + landName2 + " role=" + role2);
+                                applied = true;
+                            }
+                            break;
+                        }
+                        case "remove_visitor": {
+                            // ★ PHP端移除成员 → 从Java白名单+权限表删除
+                            String playerName3 = changeData.containsKey("player")
+                                    ? String.valueOf(changeData.get("player")) : targetName;
+                            String landName3 = String.valueOf(changeData.getOrDefault("land_name", ""));
+                            if (!playerName3.isEmpty() && !landName3.isEmpty()) {
+                                areaProtect.removePlayerFromAreaWhitelist(landName3, playerName3);
+                                plugin.getLogger().info("[Web通信] PHP端移除成员: " + playerName3 + " ← " + landName3);
+                                applied = true;
+                            }
+                            break;
+                        }
                         case "land_field_change": {
                             String field = String.valueOf(changeData.getOrDefault("field", ""));
                             String value = String.valueOf(changeData.getOrDefault("value", ""));

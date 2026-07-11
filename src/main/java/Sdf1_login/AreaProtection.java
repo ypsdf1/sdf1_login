@@ -2570,6 +2570,28 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * 插入一条领地权限记录（角色为 member/visitor），已存在则忽略
+     * 用于 PHP 端添加成员时同步到 Java
+     */
+    public void insertLandPermission(String landName, String playerName, String role) {
+        int landId = getLandIdFromDb(landName);
+        if (landId <= 0 || dbConnection == null) return;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "INSERT OR IGNORE INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
+                    "VALUES (?, ?, ?, '', ?)");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            stmt.setString(3, role != null && !role.isEmpty() ? role : "visitor");
+            stmt.setLong(4, System.currentTimeMillis() / 1000);
+            stmt.executeUpdate();
+            stmt.close();
+        } catch (SQLException e) {
+            // 忽略
+        }
+    }
+
+    /**
      * ★ 核心方法：获取玩家的effective deny状态
      * 优先级：per-player权限 > 领地默认权限
      * @param permName 权限字段名（如 "denyMove"）
@@ -4222,6 +4244,8 @@ public class AreaProtection implements Listener {
             }
             saveWhitelists();
         }
+        // ★ 同步删除 area_land_permissions 记录（确保 admin 身份一并清除）
+        removePlayerFromAreaWhitelist(landName, playerName);
     }
 
     /**
@@ -8510,14 +8534,14 @@ public class AreaProtection implements Listener {
 
                 // 更新数据库中的自定义权限（同时写回 effectiveRole，确保新记录角色正确）
                 PreparedStatement ps = dbConnection.prepareStatement(
-                    "INSERT INTO area_land_permissions (land_id, land_name, player_name, role, permissions, granted_at, synced_at) " +
-                    "VALUES (?, ?, ?, ?, ?, 0, 0) " +
+                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
+                    "VALUES (?, ?, ?, ?, ?) " +
                     "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = excluded.permissions, role = excluded.role");
                 ps.setInt(1, landId);
-                ps.setString(2, lname);
-                ps.setString(3, playerName);
-                ps.setString(4, effectiveRole);
-                ps.setString(5, permsJson);
+                ps.setString(2, playerName);
+                ps.setString(3, effectiveRole);
+                ps.setString(4, permsJson);
+                ps.setLong(5, System.currentTimeMillis() / 1000);
                 ps.executeUpdate();
                 ps.close();
             }
@@ -8759,6 +8783,14 @@ public class AreaProtection implements Listener {
         AreaConfig ac = getLand(landName);
         if (ac != null && ac.owner != null && ac.owner.equalsIgnoreCase(playerName)) {
             p.sendMessage("§c§l[添加成员] §f领地主不能作为成员添加");
+            return true;
+        }
+
+        // ★ 校验玩家是否在login.db中注册（防止添加不存在的玩家）
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr != null && !dbMgr.userExists(playerName)) {
+            p.sendMessage("§c§l[添加成员] §f玩家 " + playerName + " 不存在（未在login.db中注册）");
+            p.sendMessage("§7请确认玩家名是否正确，或输入 cancel 取消");
             return true;
         }
 
@@ -9603,6 +9635,31 @@ public class AreaProtection implements Listener {
         boolean ok = wl.remove(playerName);
         if (!ok) ok = wl.remove(playerName.toLowerCase());
         if (ok) saveWhitelists();
+
+        // ★ 移除成员时，同步删除 area_land_permissions 记录
+        //   确保 admin 身份一并清除，不再继承
+        if (dbConnection != null) {
+            try {
+                int landId = getLandIdFromDb(areaName);
+                if (landId > 0) {
+                    PreparedStatement ps = dbConnection.prepareStatement(
+                        "DELETE FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
+                    ps.setInt(1, landId);
+                    ps.setString(2, playerName);
+                    ps.executeUpdate();
+                    ps.close();
+                    // 同时删小写
+                    PreparedStatement ps2 = dbConnection.prepareStatement(
+                        "DELETE FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
+                    ps2.setInt(1, landId);
+                    ps2.setString(2, playerName.toLowerCase());
+                    ps2.executeUpdate();
+                    ps2.close();
+                }
+            } catch (SQLException e) {
+                plugin.getLogger().warning("[防护] 移除成员时清理权限失败: " + e.getMessage());
+            }
+        }
         return ok;
     }
 
