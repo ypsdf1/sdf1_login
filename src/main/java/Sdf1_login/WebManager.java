@@ -3907,9 +3907,9 @@ public class WebManager {
                                 boolean playerExists = plugin.getDb() != null && plugin.getDb().userExists(playerName2);
                                 if (!playerExists) {
                                     plugin.getLogger().warning("[Web通信] PHP添加成员失败: 玩家 " + playerName2 + " 不存在于login.db");
-                                    // ★ 回调PHP标记失败
+                                    // ★ 回调PHP标记失败（无论回调是否成功，都ack此记录避免无限重试）
                                     callbackAddVisitorToPHP(id, false, "玩家 " + playerName2 + " 不存在");
-                                    applied = false;
+                                    applied = true;  // ★ 必须ack，否则同一条记录会被无限重新处理
                                     break;
                                 }
                                 // ★ 玩家存在，执行添加
@@ -3921,8 +3921,12 @@ public class WebManager {
                                     areaProtect.insertLandPermission(landName2, playerName2, role2);
                                 }
                                 plugin.getLogger().info("[Web通信] PHP端添加成员: " + playerName2 + " → " + landName2 + " role=" + role2);
-                                // ★ 回调PHP标记成功
+                                // ★ 回调PHP标记成功（无论回调是否成功，都ack此记录）
                                 callbackAddVisitorToPHP(id, true, "");
+                                applied = true;
+                            } else {
+                                plugin.getLogger().warning("[Web通信] PHP添加成员数据不完整: player=" + playerName2 + " land=" + landName2);
+                                // ★ 数据不完整也必须ack，避免无限重试
                                 applied = true;
                             }
                             break;
@@ -4300,9 +4304,18 @@ public class WebManager {
                 + "&success=" + (success ? "1" : "0")
                 + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
             String response = doGet(url);
-            plugin.getLogger().fine("[Web通信] 回调PHP添加成员结果: change_id=" + changeId + ", success=" + success);
+            if (response == null) {
+                // ★ 首次失败：尝试HTTP降级重试
+                plugin.getLogger().warning("[Web通信] 回调PHP添加成员结果失败(HTTPS无响应), 尝试HTTP降级: change_id=" + changeId);
+                response = doGetHttpFallback(url);
+            }
+            if (response == null) {
+                plugin.getLogger().warning("[Web通信] 回调PHP添加成员结果失败(HTTPS+HTTP均失败): change_id=" + changeId);
+            } else {
+                plugin.getLogger().info("[Web通信] 回调PHP添加成员结果: change_id=" + changeId + ", success=" + success + ", response=" + response.substring(0, Math.min(response.length(), 100)));
+            }
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 回调PHP添加成员结果失败: " + e.getMessage());
+            plugin.getLogger().warning("[Web通信] 回调PHP添加成员结果异常: change_id=" + changeId + ", " + e.getMessage());
         }
     }
 
