@@ -8347,15 +8347,108 @@ public class AreaProtection implements Listener {
             ps.close();
 
             if (affected > 0) {
-                // 更新内存缓存
+                // ★ 直接更新内存 AreaConfig 字段（reloadAreaConfigFromDb 只重载 area_config 全局表，不碰 area_lands）
                 AreaConfig ac = getLand(landName);
                 if (ac != null) {
-                    reloadAreaConfigFromDb(); // 简单起见重新加载
+                    applyFieldToAreaConfig(ac, field, value);
                 }
                 plugin.getLogger().info("[防护] PHP端更新领地字段: " + landName + "." + field + " = " + value);
             }
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] PHP端更新领地字段失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 将 PHP 端同步过来的单个字段值直接写入内存 AreaConfig 对象
+     */
+    private void applyFieldToAreaConfig(AreaConfig ac, String field, String value) {
+        switch (field) {
+            // boolean 权限字段 (DB int 0/1 → boolean)
+            case "deny_block_place":    ac.denyBlockPlace = "1".equals(value); break;
+            case "deny_block_break":    ac.denyBlockBreak = "1".equals(value); break;
+            case "deny_container":      ac.denyContainer = "1".equals(value); break;
+            case "deny_pvp":            ac.denyPVP = "1".equals(value); break;
+            case "deny_fall_damage":    ac.denyFallDamage = "1".equals(value); break;
+            case "deny_hunger":         ac.denyHunger = "1".equals(value); break;
+            case "deny_all_damage":     ac.denyAllDamage = "1".equals(value); break;
+            case "deny_mount":          ac.denyMount = "1".equals(value); break;
+            case "deny_ender_pearl":    ac.denyEnderPearl = "1".equals(value); break;
+            case "deny_bow":            ac.denyBow = "1".equals(value); break;
+            case "deny_potion":         ac.denyPotion = "1".equals(value); break;
+            case "deny_explosion":      ac.denyExplosion = "1".equals(value); break;
+            case "deny_move":           ac.denyMove = "1".equals(value); break;
+            case "deny_fire":           ac.denyFire = "1".equals(value); break;
+            case "deny_fire_spread":    ac.denyFireSpread = "1".equals(value); break;
+            case "deny_all_effects":    ac.denyAllEffects = "1".equals(value); break;
+            case "deny_raid":           ac.denyRaid = "1".equals(value); break;
+            case "deny_thrown_projectiles": ac.denyThrownProjectiles = "1".equals(value); break;
+            case "deny_glowing":        ac.denyGlowing = "1".equals(value); break;
+            case "deny_redstone_interaction": ac.denyRedstoneInteraction = "1".equals(value); break;
+            case "deny_door_interaction": ac.denyDoorInteraction = "1".equals(value); break;
+            case "deny_noteblock_jukebox": ac.denyNoteblockJukebox = "1".equals(value); break;
+            case "deny_lead":           ac.denyLead = "1".equals(value); break;
+            case "deny_crop_harvest":   ac.denyCropHarvest = "1".equals(value); break;
+            case "deny_wool_shear":     ac.denyWoolShear = "1".equals(value); break;
+            case "deny_animal_feeding": ac.denyAnimalFeeding = "1".equals(value); break;
+            case "deny_mob_attack":     ac.denyMobAttack = "1".equals(value); break;
+            case "deny_item_frame":     ac.denyItemFrame = "1".equals(value); break;
+            case "deny_entity_interact": ac.denyEntityInteract = "1".equals(value); break;
+            case "deny_pickup":         ac.allowPickup = "0".equals(value); break; // deny_pickup 反向
+            case "deny_drop":           ac.allowDrop = "0".equals(value); break;   // deny_drop 反向
+            case "is_public_building":  ac.isPublicBuilding = "1".equals(value); break;
+            case "allow_visitor_teleport": ac.allowVisitorTeleport = "1".equals(value); break;
+            // boolean 配置字段
+            case "peace_mode":          ac.peaceMode = "1".equals(value); break;
+            case "clear_all_bad":       ac.clearAllBadEffects = "1".equals(value); break;
+            // int 字段
+            case "peace_mode_duration":
+                try { ac.peaceModeDuration = Integer.parseInt(value); } catch (Exception ignored) {}
+                break;
+            // String 字段
+            case "enter_msg":           ac.enterMsg = value; break;
+            case "leave_msg":           ac.leaveMsg = value; break;
+            case "confiscate_msg":      ac.confiscateMsg = value; break;
+            case "enforce_game_mode":   ac.enforceGameMode = value; break;
+            // 复合字段（JSON 数组 → List）
+            case "give_effects":
+                ac.giveEffects.clear();
+                if (value != null && !value.isEmpty()) {
+                    try {
+                        String[] parts = value.startsWith("[") ? parseJsonArray(value) : value.split("\\|");
+                        for (String p : parts) {
+                            String[] ep = p.startsWith("[") ? parseEffectJson(p) : p.split(":");
+                            if (ep.length >= 3) ac.giveEffects.add(ep);
+                        }
+                    } catch (Exception ignored) {}
+                }
+                break;
+            case "clear_effects":
+                ac.clearEffects.clear();
+                if (value != null && !value.isEmpty()) {
+                    ac.clearEffects.addAll(splitToList(value));
+                }
+                break;
+            default:
+                plugin.getLogger().warning("[防护] applyFieldToAreaConfig: 未处理字段 " + field);
+                break;
+        }
+    }
+
+    /**
+     * 从 ["name","level","dur"] 格式提取效果数组
+     */
+    private String[] parseEffectJson(String s) {
+        try {
+            String inner = s.trim();
+            if (inner.startsWith("[") && inner.endsWith("]")) inner = inner.substring(1, inner.length() - 1);
+            String[] parts = inner.split(",");
+            String name = parts[0].trim().replaceAll("^\"|\"$", "");
+            String lvl = parts.length > 1 ? parts[1].trim() : "1";
+            String dur = parts.length > 2 ? parts[2].trim() : "60";
+            return new String[]{name, lvl, dur};
+        } catch (Exception e) {
+            return new String[]{"", "1", "60"};
         }
     }
 
