@@ -1152,6 +1152,18 @@ function handleAddVisitor($db, $playerName, $req) {
     $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt2->execute();
 
+    // ★ 写入变更队列通知Java同步（add_visitor）
+    try {
+        $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('add_visitor', :lid, :name, :data, :now)");
+        $changeStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
+        $changeStmt->bindValue(':name', $landName, SQLITE3_TEXT);
+        $changeStmt->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName, 'role' => 'visitor'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
+        $changeStmt->execute();
+    } catch (\Throwable $e) {
+        // 非致命
+    }
+
     echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
 }
 
@@ -1523,6 +1535,18 @@ function handleRemoveVisitor($db, $playerName, $req) {
     $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
     $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
     $stmt2->execute();
+
+    // ★ 写入变更队列通知Java同步（remove_visitor）
+    try {
+        $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('remove_visitor', :lid, :name, :data, :now)");
+        $changeStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
+        $changeStmt->bindValue(':name', $landName, SQLITE3_TEXT);
+        $changeStmt->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
+        $changeStmt->execute();
+    } catch (\Throwable $e) {
+        // 非致命
+    }
 
     echo json_encode(['success' => true, 'message' => "已移除访客: $visitor"]);
 }
