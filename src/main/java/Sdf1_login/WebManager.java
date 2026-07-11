@@ -3897,12 +3897,22 @@ public class WebManager {
                             break;
                         }
                         case "add_visitor": {
-                            // ★ PHP端添加成员 → 添加到Java白名单+权限表
+                            // ★ PHP端添加成员 → 先验证玩家是否存在，再添加到Java白名单+权限表
                             String playerName2 = changeData.containsKey("player")
                                     ? String.valueOf(changeData.get("player")) : targetName;
                             String landName2 = String.valueOf(changeData.getOrDefault("land_name", ""));
                             String role2 = String.valueOf(changeData.getOrDefault("role", "visitor"));
                             if (!playerName2.isEmpty() && !landName2.isEmpty()) {
+                                // ★ 验证玩家是否存在（login.db）
+                                boolean playerExists = plugin.getDb() != null && plugin.getDb().userExists(playerName2);
+                                if (!playerExists) {
+                                    plugin.getLogger().warning("[Web通信] PHP添加成员失败: 玩家 " + playerName2 + " 不存在于login.db");
+                                    // ★ 回调PHP标记失败
+                                    callbackAddVisitorToPHP(id, false, "玩家 " + playerName2 + " 不存在");
+                                    applied = false;
+                                    break;
+                                }
+                                // ★ 玩家存在，执行添加
                                 areaProtect.addPlayerToAreaWhitelist(landName2, playerName2);
                                 // 写入area_land_permissions表：admin走setLandAdmin，其他角色走INSERT OR IGNORE
                                 if ("admin".equalsIgnoreCase(role2)) {
@@ -3911,6 +3921,8 @@ public class WebManager {
                                     areaProtect.insertLandPermission(landName2, playerName2, role2);
                                 }
                                 plugin.getLogger().info("[Web通信] PHP端添加成员: " + playerName2 + " → " + landName2 + " role=" + role2);
+                                // ★ 回调PHP标记成功
+                                callbackAddVisitorToPHP(id, true, "");
                                 applied = true;
                             }
                             break;
@@ -4275,6 +4287,22 @@ public class WebManager {
             plugin.getLogger().fine("[Web通信] 回调PHP改主结果: change_id=" + changeId + ", success=" + success);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 回调PHP改主结果失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 回调PHP：添加成员执行结果
+     */
+    public void callbackAddVisitorToPHP(int changeId, boolean success, String reason) {
+        try {
+            String url = webBaseUrl + "/api/land_api.php?action=add_visitor_callback&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                + "&change_id=" + changeId
+                + "&success=" + (success ? "1" : "0")
+                + "&reason=" + java.net.URLEncoder.encode(reason, "UTF-8");
+            String response = doGet(url);
+            plugin.getLogger().fine("[Web通信] 回调PHP添加成员结果: change_id=" + changeId + ", success=" + success);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 回调PHP添加成员结果失败: " + e.getMessage());
         }
     }
 
