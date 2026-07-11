@@ -7,7 +7,7 @@
 define('SECRET_KEY', 'sdf1_web_comm_2026_ypshidifu');
 
 // ===== Token配置 =====
-define('TOKEN_EXPIRE_SECONDS', 600);  // 10分钟
+define('TOKEN_EXPIRE_SECONDS', 86400);  // 24小时
 
 // ===== 数据库路径 =====
 define('DB_PATH', __DIR__ . '/db/web.db');

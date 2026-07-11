@@ -78,9 +78,14 @@ function getDB() {
         }
     }
 
-    // ★ 安全网：每次获取连接时强制清理上一次请求可能残留的未提交事务
+    // ★ 安全网：仅在首次创建连接时清理上一次请求可能残留的未提交事务
     // （PHP-FPM/opcache复用进程时，前一个请求异常退出可能遗留BEGIN但无COMMIT/ROLLBACK）
-    try { $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
+    // 注意：不能每次调用都ROLLBACK，否则会中断当前请求正在进行的事务
+    static $rollbackDone = false;
+    if (!$rollbackDone) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $_) {}
+        $rollbackDone = true;
+    }
 
     return $db;
 }
@@ -956,6 +961,10 @@ function validateAndUseToken($token) {
  * 同时支持普通token和weblogin token
  */
 function validateTokenSilent($token) {
+    if (empty($token)) {
+        return false;
+    }
+
     // 先尝试普通token
     $info = validateToken($token);
     if ($info) return $info;
@@ -967,11 +976,15 @@ function validateTokenSilent($token) {
         $stmt->bindValue(':token', $token, SQLITE3_TEXT);
         $result = $stmt->execute();
         $row = $result->fetchArray(SQLITE3_ASSOC);
-        if (!$row) return false;
+        if (!$row) {
+            return false;
+        }
 
         $createdAt = (int)$row['created_at'];
         $expireSeconds = (int)$row['expire_seconds'];
-        if (time() - $createdAt > $expireSeconds) return false;
+        if (time() - $createdAt > $expireSeconds) {
+            return false;
+        }
 
         return [
             'player' => $row['player_name'],
@@ -979,7 +992,8 @@ function validateTokenSilent($token) {
             'created_at' => $createdAt,
             'expires_at' => $createdAt + $expireSeconds
         ];
-    } catch (Exception $e) {
+    } catch (\Throwable $e) {
+        debugLog("[validateTokenSilent] EXCEPTION: " . $e->getMessage());
         return false;
     }
 }
