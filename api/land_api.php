@@ -1539,7 +1539,7 @@ function handleChangeVisitorRole($db, $playerName, $post) {
         return;
     }
 
-    if (!in_array($newRole, ['admin', 'visitor'])) {
+    if (!in_array($newRole, ['admin', 'visitor', 'member'])) {
         echo json_encode(['success' => false, 'error' => '无效角色: ' . $newRole]);
         return;
     }

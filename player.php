@@ -3259,15 +3259,17 @@ async function addClearEffect(landName) {
         if (!detailData.success) { glassAlert(detailData.error); return; }
         const current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : [];
 
-        // 过滤掉已添加的效果
-        const available = EFFECTS.filter(e => !current.includes(e.value));
+        // 过滤掉已添加的效果（兼容中文名和英文名）
+        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+        const available = EFFECTS.filter(e => !current.includes(e.value) && !current.includes(EN_TO_CN[e.value]));
         if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
 
         const eff = await glassSelect('选择要清除的效果', available, '点击选择效果，将在领地内自动清除该效果');
         if (!eff || eff === false) return;
 
-        if (current.includes(eff)) { glassAlert('该效果已在清除列表中'); return; }
-        current.push(eff);
+        const cnName = EN_TO_CN[eff] || eff;
+        if (current.includes(cnName) || current.includes(eff)) { glassAlert('该效果已在清除列表中'); return; }
+        current.push(cnName);
 
         const url = new URL(API + 'land_api.php', location.href);
         url.searchParams.set('action', 'update_land_field');
@@ -3332,10 +3334,11 @@ async function addGiveEffect(landName) {
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
         const current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : [];
-        const existingNames = current.map(e => Array.isArray(e) ? e[0] : e);
 
-        // 过滤掉已添加的效果
-        const available = EFFECTS.filter(e => !existingNames.includes(e.value));
+        // 过滤掉已添加的效果（兼容中文名和英文名）
+        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+        const existingNames = current.map(e => Array.isArray(e) ? e[0] : e);
+        const available = EFFECTS.filter(e => !existingNames.includes(e.value) && !existingNames.includes(EN_TO_CN[e.value]));
         if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
 
         const eff = await glassSelect('选择要添加的增益效果', available, '点击选择效果');
@@ -3349,7 +3352,9 @@ async function addGiveEffect(landName) {
         if (durStr === null || durStr === false) return;
         const duration = parseInt(durStr) || 300;
 
-        current.push([eff, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
+        // ★ 存储中文效果名（Java端resolveEffectType使用中文→英文映射）
+        const cnName = EN_TO_CN[eff] || eff;
+        current.push([cnName, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
 
         const url = new URL(API + 'land_api.php', location.href);
         url.searchParams.set('action', 'update_land_field');
@@ -3386,12 +3391,16 @@ async function removeLandEffect(landName, field, effValue) {
 
         let current = detailData.land[field] ? JSON.parse(detailData.land[field]) : [];
         if (field === 'clear_effects') {
-            current = current.filter(e => e !== effValue);
+            // clear_effects: 效果名可能是中文或英文，两种都匹配
+            const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+            const cnName = EN_TO_CN[effValue] || effValue;
+            current = current.filter(e => e !== effValue && e !== cnName);
         } else {
-            // give_effects: try matching by name or full JSON
+            // give_effects: 通过名称或完整JSON匹配
             current = current.filter(e => {
+                const name = Array.isArray(e) ? e[0] : e;
                 const jsonStr = JSON.stringify(e);
-                return jsonStr !== effValue && e[0] !== effValue;
+                return jsonStr !== effValue && name !== effValue;
             });
         }
 
