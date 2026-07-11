@@ -1604,9 +1604,9 @@ function handleChangeVisitorRole($db, $playerName, $post) {
         $stmtIns->bindValue(':role', $newRole, SQLITE3_TEXT);
         $stmtIns->bindValue(':now', time(), SQLITE3_INTEGER);
         $stmtIns->execute();
-        // 写入变更队列通知Java
+        // ★ 新成员走 add_visitor 流程，确保 Java 端加入白名单
         $changeData = json_encode(['player' => $visitor, 'role' => $newRole, 'land_name' => $landName]);
-        $stmtC = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('perm_change', :id, :name, :data, :now)");
+        $stmtC = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('add_visitor', :id, :name, :data, :now)");
         $stmtC->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
         $stmtC->bindValue(':name', $landName, SQLITE3_TEXT);
         $stmtC->bindValue(':data', $changeData, SQLITE3_TEXT);
