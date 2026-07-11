@@ -92,7 +92,7 @@ try {
     // 同步类action只接受secret验证（Java端推送）
     $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
     // 管理面板action：支持admin_token或secret
-    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member'];
+    $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member', 'get_add_visitor_status'];
     // 玩家端action：需要token
     $playerActions = ['my_lands', 'land_detail', 'add_visitor', 'remove_visitor', 'list_visitors', 'land_shop', 'buy_permission', 'transfer_land', 'cancel_transfer', 'transfer_status', 'renew_group', 'list_available_groups', 'buy_group', 'get_player_groups'];
     // ★ 玩家端领地字段更新（效果管理、开关等）
@@ -102,7 +102,7 @@ try {
     // ★ 成员独立权限操作action（领地所有者编辑成员权限）
     $memberPermActions = ['get_member_perms', 'update_member_perm', 'clear_member_perm'];
     // ★ Java端轮询PHP管理员变更 + Java回调过户结果
-    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'delete_land_callback', 'poll_group_renews', 'renew_group_callback'];
+    $syncFromPhpActions = ['poll_admin_changes', 'ack_admin_changes', 'transfer_callback', 'owner_change_callback', 'add_visitor_callback', 'delete_land_callback', 'poll_group_renews', 'renew_group_callback'];
     // ★ Java同步扣费记录
     $bondActions = ['sync_bond_record'];
     // ★ Java端：推送成员变更到PHP（add/remove_group_member由secret调用）
@@ -396,6 +396,11 @@ try {
             handleOwnerChangeCallback($db, $_POST + $_GET);
             break;
 
+        // ===== Java端：管理面板添加成员结果回调 =====
+        case 'add_visitor_callback':
+            handleAddVisitorCallback($db, $_POST + $_GET);
+            break;
+
         case 'delete_land_callback':
             handleDeleteLandCallback($db, $_GET);
             break;
@@ -451,6 +456,11 @@ try {
         // ===== 管理面板：查询改主状态 =====
         case 'get_owner_change_status':
             handleGetOwnerChangeStatus($db, $_GET);
+            break;
+
+        // ===== 管理面板：查询添加成员状态 =====
+        case 'get_add_visitor_status':
+            handleGetAddVisitorStatus($db, $_GET);
             break;
 
         default:
@@ -1142,39 +1152,17 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
-    // ★ 直接插入访客（先执行操作，再异步验证）
-    $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
-        (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
-        VALUES (:land_id, :land_name, :player, 'visitor', '', :now, 0, :now)");
-    $stmt2->bindValue(':land_id', (int)$land['id'], SQLITE3_INTEGER);
-    $stmt2->bindValue(':land_name', $landName, SQLITE3_TEXT);
-    $stmt2->bindValue(':player', $visitor, SQLITE3_TEXT);
-    $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
-    $stmt2->execute();
+    // ★ 参考改领地主流程：先写入pending队列，等Java验证玩家是否存在后再入库
+    // 写入web_admin_changes让Java端pollAdminChanges拉取并验证执行
+    $stmt4 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at, status) VALUES ('add_visitor', :id, :name, :data, :now, 'pending')");
+    $stmt4->bindValue(':id', (int)$land['id'], SQLITE3_INTEGER);
+    $stmt4->bindValue(':name', $landName, SQLITE3_TEXT);
+    $stmt4->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName, 'role' => 'visitor', 'source' => 'admin_panel'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+    $stmt4->bindValue(':now', time(), SQLITE3_INTEGER);
+    $stmt4->execute();
 
-    // ★ 写入变更队列通知Java同步（add_visitor）
-    try {
-        $changeStmt = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('add_visitor', :lid, :name, :data, :now)");
-        $changeStmt->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
-        $changeStmt->bindValue(':name', $landName, SQLITE3_TEXT);
-        $changeStmt->bindValue(':data', json_encode(['player' => $visitor, 'land_name' => $landName, 'role' => 'visitor'], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-        $changeStmt->bindValue(':now', time(), SQLITE3_INTEGER);
-        $changeStmt->execute();
-    } catch (\Throwable $e) {
-        // 非致命
-    }
-
-    // ★ 异步验证玩家是否存在（仅记录日志，不阻塞操作）
-    try {
-        $visitorValid = validatePlayerViaJava($db, $visitor, 'add_visitor', ['land' => $landName]);
-        if ($visitorValid === false) {
-            error_log("[访客管理] 警告: 玩家 {$visitor} 可能不存在于login.db，但已添加为访客");
-        }
-    } catch (\Throwable $e) {
-        // 验证失败不阻塞
-    }
-
-    echo json_encode(['success' => true, 'message' => "已添加访客: $visitor"]);
+    debugLog("handleAddVisitor: 管理面板添加成员 {$visitor} → {$landName} (已写入pending队列，等待Java验证)");
+    echo json_encode(['success' => true, 'pending' => true, 'message' => "添加成员请求已提交: [{$landName}] {$visitor}，等待Java端验证后生效"]);
 }
 
 /**
@@ -3058,6 +3046,105 @@ function handleDeleteLandCallback($db, $get) {
 
     debugLog("handleDeleteLandCallback: 删除领地 {$name} Java端处理成功，已删除PHP副本");
     echo json_encode(['success' => true, 'message' => "领地 [{$name}] 已删除"]);
+}
+
+/**
+ * ★ Java端管理面板添加成员结果回调
+ * 验证通过→更新PHP本地副本+记录变更；验证失败→标记失败
+ */
+function handleAddVisitorCallback($db, $post) {
+    $changeId = (int)($post['change_id'] ?? 0);
+    $success = (int)($post['success'] ?? 0);
+    $reason = $post['reason'] ?? '';
+
+    if ($changeId <= 0) {
+        echo json_encode(['success' => false, 'error' => '缺少change_id']);
+        return;
+    }
+
+    // 查找pending的add_visitor记录
+    $stmt = $db->prepare("SELECT * FROM web_admin_changes WHERE id = :id AND change_type = 'add_visitor' AND (status = 'pending' OR status IS NULL OR status = 'done')");
+    $stmt->bindValue(':id', $changeId, SQLITE3_INTEGER);
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo json_encode(['success' => false, 'error' => '变更记录不存在或已处理']);
+        return;
+    }
+
+    $targetName = $row['target_name'];
+    $changeData = json_decode($row['change_data'] ?? '{}', true);
+    $player = $changeData['player'] ?? '';
+    $role = $changeData['role'] ?? 'visitor';
+    $landName = $changeData['land_name'] ?? $targetName;
+
+    if ($success) {
+        // ★ Java验证通过：更新PHP本地副本
+        $stmt2 = $db->prepare("INSERT OR REPLACE INTO web_area_permissions
+            (land_id, land_name, player_name, role, permissions, granted_at, expires_at, synced_at)
+            VALUES (:land_id, :land_name, :player, :role, '', :now, 0, :now)");
+        $stmt2->bindValue(':land_id', (int)($row['target_id'] ?? 0), SQLITE3_INTEGER);
+        $stmt2->bindValue(':land_name', $landName, SQLITE3_TEXT);
+        $stmt2->bindValue(':player', $player, SQLITE3_TEXT);
+        $stmt2->bindValue(':role', $role, SQLITE3_TEXT);
+        $stmt2->bindValue(':now', time(), SQLITE3_INTEGER);
+        $stmt2->execute();
+
+        // 标记处理完成
+        $db->query("UPDATE web_admin_changes SET status = 'completed', acknowledged = 1, acked_at = " . time() . " WHERE id = " . $changeId);
+        debugLog("handleAddVisitorCallback: 添加成员 {$player} → {$landName} Java验证通过，已更新PHP副本");
+        echo json_encode(['success' => true, 'message' => '添加成员验证通过，已更新']);
+    } else {
+        // ★ Java验证失败：标记失败
+        $db->query("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = " . time() . " WHERE id = " . $changeId);
+        debugLog("handleAddVisitorCallback: 添加成员 {$player} → {$landName} Java验证失败: {$reason}");
+        echo json_encode(['success' => true, 'message' => "添加成员验证失败: {$reason}"]);
+    }
+}
+
+/**
+ * ★ 管理面板：查询添加成员状态
+ */
+function handleGetAddVisitorStatus($db, $get) {
+    $name = $get['name'] ?? '';
+    if (empty($name)) {
+        echo json_encode(['success' => false, 'error' => '缺少name参数']);
+        return;
+    }
+
+    $stmt = $db->prepare("SELECT status, change_data FROM web_admin_changes WHERE change_type = 'add_visitor' AND target_name = :name ORDER BY id DESC LIMIT 1");
+    $stmt->bindValue(':name', $name, SQLITE3_TEXT);
+
+    $rs = $stmt->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo json_encode(['success' => true, 'status' => 'none', 'message' => '没有添加成员记录']);
+        return;
+    }
+
+    $status = $row['status'] ?? 'pending';
+    $changeData = json_decode($row['change_data'] ?? '{}', true);
+    $player = $changeData['player'] ?? '';
+
+    // ★ 65秒超时自动回滚
+    if ($status === 'pending') {
+        $stmtTime = $db->prepare("SELECT created_at FROM web_admin_changes WHERE change_type = 'add_visitor' AND target_name = :name ORDER BY id DESC LIMIT 1");
+        $stmtTime->bindValue(':name', $name, SQLITE3_TEXT);
+        $rsTime = $stmtTime->execute();
+        $timeRow = $rsTime->fetchArray(SQLITE3_ASSOC);
+        if ($timeRow && (time() - (int)$timeRow['created_at']) > 65) {
+            // 超时：标记失败
+            $db->query("UPDATE web_admin_changes SET status = 'failed', acknowledged = 1, acked_at = " . time() . " WHERE change_type = 'add_visitor' AND target_name = '" . $name . "' AND status = 'pending'");
+            debugLog("handleGetAddVisitorStatus: 添加成员 {$player} → {$name} 超时（超过65秒未处理），已自动标记失败");
+            echo json_encode(['success' => true, 'status' => 'failed', 'reason' => 'Java端处理超时', 'message' => '添加成员超时，Java端可能未启动或处理延迟']);
+            return;
+        }
+        echo json_encode(['success' => true, 'status' => 'pending', 'message' => '等待Java端验证...']);
+    } elseif ($status === 'completed') {
+        echo json_encode(['success' => true, 'status' => 'completed', 'player' => $player, 'message' => '添加成员成功']);
+    } else {
+        echo json_encode(['success' => true, 'status' => 'failed', 'message' => '添加成员失败: 玩家可能不存在']);
+    }
 }
 
 /**

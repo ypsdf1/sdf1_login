@@ -3075,8 +3075,41 @@ async function addLandVisitor(landName) {
         const res = await fetch(url);
         const data = await res.json();
         if (data.success) {
-            landsState.currentLand = landName;
-            await renderLandDetail(document.getElementById('content'), landName);
+            // ★ 参考改领地主流程：异步验证，轮询状态
+            if (data.pending) {
+                glassAlert('添加成员请求已提交，正在验证玩家...');
+                // 轮询等待验证结果（65秒超时）
+                let pollCount = 0;
+                const maxPolls = 13; // 65秒 / 5秒
+                const pollInterval = setInterval(async () => {
+                    pollCount++;
+                    try {
+                        const statusUrl = new URL(API + 'land_api.php', location.href);
+                        statusUrl.searchParams.set('action', 'get_add_visitor_status');
+                        statusUrl.searchParams.set('name', landName);
+                        statusUrl.searchParams.set('token', TOKEN);
+                        const statusRes = await fetch(statusUrl);
+                        const statusData = await statusRes.json();
+                        if (statusData.status === 'completed') {
+                            clearInterval(pollInterval);
+                            glassAlert('添加成员成功！');
+                            landsState.currentLand = landName;
+                            await renderLandDetail(document.getElementById('content'), landName);
+                        } else if (statusData.status === 'failed') {
+                            clearInterval(pollInterval);
+                            glassAlert('添加成员失败: ' + (statusData.reason || '玩家可能不存在'));
+                        } else if (pollCount >= maxPolls) {
+                            clearInterval(pollInterval);
+                            glassAlert('验证超时，请稍后刷新查看');
+                        }
+                    } catch (e) {
+                        // 继续轮询
+                    }
+                }, 5000);
+            } else {
+                landsState.currentLand = landName;
+                await renderLandDetail(document.getElementById('content'), landName);
+            }
         } else {
             glassAlert(data.error || '操作失败');
         }
