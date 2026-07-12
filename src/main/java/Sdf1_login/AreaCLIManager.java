@@ -70,7 +70,7 @@ public class AreaCLIManager {
         return Component.text(text).color(color);
     }
 
-    private Component header(String title) {
+    public static Component header(String title) {
         return Component.text("\n§6§l═══════ " + title + " ═══════\n");
     }
 
@@ -336,6 +336,19 @@ public class AreaCLIManager {
         // ★ 新增：领地公告管理
         p.sendMessage(clickableAction("📢", "领地公告（进出提示消息）",
                 "/protect cli announcement " + land.name + " 1"));
+        // ★ 新增：领地改名
+        long[] cooldown = areaProtect.getRenameCooldown(p);
+        String renameHint;
+        if (cooldown != null) {
+            long remainMin = cooldown[0] / 60;
+            long remainSecR = cooldown[0] % 60;
+            renameHint = "§c冷却中（已用" + cooldown[1] + "/" + 5 + "次，"
+                    + remainMin + "分" + remainSecR + "秒后解锁）";
+        } else {
+            renameHint = "§a点击输入新名字（1小时限5次）";
+        }
+        p.sendMessage(clickableAction("✏️", "领地改名",
+                "/protect cli rename " + land.name));
 
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回列表]")

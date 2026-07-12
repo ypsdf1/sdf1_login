@@ -245,6 +245,19 @@ public class AreaGUIManager implements Listener {
                 "§7将领地所有权转移给他人",
                 "§7需要有领地所有者权限"));
 
+        // 领地改名（位置33）
+        long[] cd = areaProtect.getRenameCooldown(p);
+        String renameLore;
+        if (cd != null) {
+            long rm = cd[0] / 60;
+            long rs = cd[0] % 60;
+            renameLore = "§c冷却中（已用" + cd[1] + "/5次）\n§c" + rm + "分" + rs + "秒后解锁";
+        } else {
+            renameLore = "§7剩余次数: §a" + areaProtect.getRemainingRenames(p) + "/5\n§71小时限5次，自然滚动窗口";
+        }
+        inv.setItem(33, createItem(Material.NAME_TAG, "§e§l领地改名",
+                renameLore, "", "§e点击输入新名字"));
+
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回领地列表", ""));
 
@@ -941,6 +954,22 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 32) {
                 // 过户领地
                 openTransferLandPanel(p, landName);
+            } else if (raw == 33) {
+                // ★ 领地改名
+                p.closeInventory();
+                areaProtect.pendingEffectInput.put(p.getUniqueId(),
+                        new String[]{landName, "rename_land"});
+                p.sendMessage(AreaCLIManager.header("领地改名: " + landName));
+                long[] cooldownInfo = areaProtect.getRenameCooldown(p);
+                if (cooldownInfo != null) {
+                    long rm = cooldownInfo[0] / 60;
+                    long rs = cooldownInfo[0] % 60;
+                    p.sendMessage("§c冷却中！已用" + cooldownInfo[1] + "/5次，" + rm + "分" + rs + "秒后解锁");
+                } else {
+                    p.sendMessage("§7剩余次数: §a" + areaProtect.getRemainingRenames(p) + "/5");
+                }
+                p.sendMessage("§e请在聊天栏输入新的领地名:");
+                p.sendMessage("§7输入 §c取消 §7放弃修改");
             } else if (raw == 31) {
                 // 传送 - 优先传送点，否则安全搜索中心
                 p.closeInventory();

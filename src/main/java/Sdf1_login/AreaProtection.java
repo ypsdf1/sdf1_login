@@ -101,11 +101,15 @@ public class AreaProtection implements Listener {
     // ★ 添加成员输入等待：UUID → 领地名
     private final Map<java.util.UUID, String> pendingAddMemberInput = new ConcurrentHashMap<>();
     // ★ 效果管理待处理输入：UUID → [landName, inputType]
-    private final Map<java.util.UUID, String[]> pendingEffectInput = new ConcurrentHashMap<>();
+    public final Map<java.util.UUID, String[]> pendingEffectInput = new ConcurrentHashMap<>();
     // ★ 过户领地待输入新所有者：UUID → [landName]
     public final Map<java.util.UUID, String[]> pendingTransferInput = new ConcurrentHashMap<>();
     // ★ 用户组配置编辑待输入：UUID → [groupName, field("price"|"maxlands"|"priority")]
     public final Map<java.util.UUID, String[]> pendingGroupEditInput = new ConcurrentHashMap<>();
+    // ★ 领地改名冷却：UUID → 改名时间戳列表（自然滚动窗口，1小时限5次）
+    private final Map<java.util.UUID, java.util.List<Long>> renameCooldownMap = new ConcurrentHashMap<>();
+    private static final int RENAME_LIMIT = 5;
+    private static final long RENAME_WINDOW_MS = 3600_000L; // 1小时
 
     // ★ 全局配置默认值
     private int globalCreatePricePerSqm = 10;  // 每㎡创建价格
@@ -6271,6 +6275,42 @@ public class AreaProtection implements Listener {
                     }
                     plugin.areaCLIManager.showAnnouncementManagement(p, args[2], annPage);
                     break;
+                case "rename":
+                    // ★ 领地改名（交互式输入）
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli rename <领地名>");
+                        break;
+                    }
+                    {
+                        String rnLandName = args[2];
+                        AreaConfig rnAc = getLand(rnLandName);
+                        if (rnAc == null) {
+                            p.sendMessage("§c领地不存在: " + rnLandName);
+                            break;
+                        }
+                        boolean rnOwner = p.getName().equalsIgnoreCase(rnAc.owner);
+                        boolean rnAdmin = isAreaAdmin(p);
+                        if (!rnOwner && !rnAdmin) {
+                            p.sendMessage("§c需要领地所有者或管理员权限");
+                            break;
+                        }
+                        // 设置等待输入状态
+                        pendingEffectInput.put(p.getUniqueId(),
+                                new String[]{rnLandName, "rename_land"});
+                        p.sendMessage(AreaCLIManager.header("领地改名: " + rnLandName));
+                        long[] cd = getRenameCooldown(p);
+                        if (cd != null) {
+                            long rm = cd[0] / 60;
+                            long rs = cd[0] % 60;
+                            p.sendMessage(Component.text("§c冷却中！已用" + cd[1] + "/" + RENAME_LIMIT + "次，"
+                                    + rm + "分" + rs + "秒后解锁"));
+                        } else {
+                            p.sendMessage(Component.text("§7剩余次数: §a" + getRemainingRenames(p) + "/" + RENAME_LIMIT));
+                        }
+                        p.sendMessage(Component.text("§e请在聊天栏输入新的领地名:"));
+                        p.sendMessage(Component.text("§7输入 §c取消 §7放弃修改"));
+                    }
+                    break;
                 case "create":
                     // 跳转到创建命令
                     // 直接转发
@@ -8897,6 +8937,120 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 领地改名（带冷却检查）
+     * @return null=成功, 非null=错误/冷却信息
+     */
+    public String renameLand(Player p, String oldName, String newName) {
+        // 1. 基本校验
+        if (newName == null || newName.trim().isEmpty()) return "新名字不能为空";
+        newName = newName.trim();
+        if (newName.length() > 20) return "名字不能超过20个字符";
+        if (newName.contains(" ") || newName.contains("§")) return "名字不能包含空格或颜色代码";
+        if (newName.equalsIgnoreCase(oldName)) return "新名字和旧名字相同";
+
+        // 2. 重名检查
+        if (getLand(newName) != null) return "已存在同名领地: " + newName;
+
+        // 3. 冷却检查
+        long now = System.currentTimeMillis();
+        java.util.List<Long> timestamps = renameCooldownMap.computeIfAbsent(
+                p.getUniqueId(), k -> new java.util.ArrayList<>());
+
+        // 清除过期记录（超出1小时窗口的）
+        timestamps.removeIf(t -> now - t > RENAME_WINDOW_MS);
+
+        if (timestamps.size() >= RENAME_LIMIT) {
+            long firstInWindow = timestamps.get(0);
+            long unlockTime = firstInWindow + RENAME_WINDOW_MS;
+            long remainSec = (unlockTime - now) / 1000;
+            long remainMin = remainSec / 60;
+            long remainSecR = remainSec % 60;
+            return "改名冷却中！本小时已改名" + RENAME_LIMIT + "次，"
+                    + remainMin + "分" + remainSecR + "秒后解锁";
+        }
+
+        // 4. 执行改名
+        try {
+            if (dbConnection == null || dbConnection.isClosed()) return "数据库未连接";
+
+            // 4a. 更新 area_lands 表的 name
+            PreparedStatement ps = dbConnection.prepareStatement(
+                    "UPDATE area_lands SET name = ? WHERE name = ?");
+            ps.setString(1, newName);
+            ps.setString(2, oldName);
+            int affected = ps.executeUpdate();
+            ps.close();
+
+            if (affected <= 0) return "数据库中未找到领地: " + oldName;
+
+            // 4b. 更新 area_land_permissions 表的 land_id（如果用name关联）
+            // land_id 是 area_lands 的自增 id，改名不影响 id，所以无需更新
+
+            // 4c. 更新内存
+            AreaConfig ac = areas.remove(oldName);
+            if (ac != null) {
+                ac.name = newName;
+                areas.put(newName, ac);
+            }
+
+            // 4d. 更新内存中的成员权限缓存等（如果有以旧名字为key的缓存）
+            // areaPlayerWhitelist 也以 landName 为 key，需同步
+            java.util.Set<String> whitelist = areaPlayerWhitelist.remove(oldName);
+            if (whitelist != null) {
+                areaPlayerWhitelist.put(newName, whitelist);
+            }
+
+            // 4e. 记录冷却
+            timestamps.add(now);
+
+            // 4f. 触发PHP同步
+            try {
+                plugin.webManager.syncLandData();
+            } catch (Exception ignored) {}
+
+            plugin.getLogger().info("[防护] 领地改名: " + oldName + " → " + newName + " (by " + p.getName() + ")");
+            return null; // 成功
+        } catch (SQLException e) {
+            plugin.getLogger().warning("[防护] 领地改名失败: " + e.getMessage());
+            return "数据库错误: " + e.getMessage();
+        }
+    }
+
+    /**
+     * ★ 获取改名冷却信息（用于显示在菜单中）
+     * @return [剩余秒数, 已用次数] 或 null（无冷却）
+     */
+    public long[] getRenameCooldown(Player p) {
+        long now = System.currentTimeMillis();
+        java.util.List<Long> timestamps = renameCooldownMap.get(p.getUniqueId());
+        if (timestamps == null || timestamps.isEmpty()) return null;
+
+        // 清除过期
+        timestamps.removeIf(t -> now - t > RENAME_WINDOW_MS);
+
+        int used = timestamps.size();
+        if (used == 0) return null;
+
+        long firstInWindow = timestamps.get(0);
+        long unlockTime = firstInWindow + RENAME_WINDOW_MS;
+        if (now >= unlockTime) return null; // 已解锁
+
+        long remainSec = (unlockTime - now) / 1000;
+        return new long[]{remainSec, used};
+    }
+
+    /**
+     * 获取剩余改名次数
+     */
+    public int getRemainingRenames(Player p) {
+        long now = System.currentTimeMillis();
+        java.util.List<Long> timestamps = renameCooldownMap.get(p.getUniqueId());
+        if (timestamps == null) return RENAME_LIMIT;
+        timestamps.removeIf(t -> now - t > RENAME_WINDOW_MS);
+        return Math.max(0, RENAME_LIMIT - timestamps.size());
+    }
+
+    /**
      * 将 PHP 端同步过来的单个字段值直接写入内存 AreaConfig 对象
      */
     private void applyFieldToAreaConfig(AreaConfig ac, String field, String value) {
@@ -9467,6 +9621,24 @@ public class AreaProtection implements Listener {
             }
             saveAreaToDb(land);
             if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 3);
+        } else if ("rename_land".equals(inputType)) {
+            // ★ 领地改名输入处理
+            if (message.trim().equals("取消") || message.trim().equals("0")) {
+                p.sendMessage(Component.text("§e已取消改名，保持原样"));
+                if (plugin.areaCLIManager != null) plugin.areaCLIManager.showLandManage(p, landName, 1);
+                return true;
+            }
+            String newName = message.trim();
+            String error = renameLand(p, landName, newName);
+            if (error != null) {
+                p.sendMessage(Component.text("§c改名失败: " + error));
+                p.sendMessage(Component.text("§7请重新输入（或输入 §c取消§7）"));
+                pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "rename_land"});
+                return true;
+            }
+            p.sendMessage(Component.text("§a✓ 领地已改名: §f" + landName + " §a→ §f" + newName));
+            if (plugin.areaCLIManager != null) plugin.areaCLIManager.showLandManage(p, newName, 1);
+            return true;
         }
 
         // 刷新GUI，回到原来的subPage（必须切主线程）

@@ -3343,6 +3343,9 @@ public class WebManager {
             // 4. 同步成员权限数据（area_land_permissions → web_area_permissions）
             syncPermissions(areaProtect);
 
+            // 5. 同步封禁名单到PHP
+            syncBans();
+
             // 5. ★ 同步插件管理员列表到PHP
             syncAdmins();
 
@@ -3485,6 +3488,63 @@ public class WebManager {
             plugin.getLogger().fine("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 同步封禁名单到PHP（供用户管理页面显示封禁状态）
+     */
+    private void syncBans() {
+        if (!enabled) return;
+        try {
+            org.bukkit.BanList nameBanList = Bukkit.getBanList(org.bukkit.BanList.Type.NAME);
+            org.bukkit.BanList ipBanList = Bukkit.getBanList(org.bukkit.BanList.Type.IP);
+
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+
+            // 名字封禁
+            @SuppressWarnings("unchecked")
+            Set<org.bukkit.BanEntry<?>> nameEntries = (Set<org.bukkit.BanEntry<?>>)(Set<?>) nameBanList.getEntries();
+            for (org.bukkit.BanEntry<?> entry : nameEntries) {
+                if (!first) sb.append(",");
+                first = false;
+                String target = entry.getTarget();
+                String reason = entry.getReason() != null ? entry.getReason() : "";
+                String source = entry.getSource() != null ? entry.getSource() : "";
+                long expireDate = entry.getExpiration() != null ? entry.getExpiration().getTime() : 0;
+                sb.append("{\"type\":\"name\",\"target\":\"").append(escapeJson(target))
+                  .append("\",\"reason\":\"").append(escapeJson(reason))
+                  .append("\",\"source\":\"").append(escapeJson(source))
+                  .append("\",\"expire\":").append(expireDate).append("}");
+            }
+
+            // IP封禁
+            @SuppressWarnings("unchecked")
+            Set<org.bukkit.BanEntry<?>> ipEntries = (Set<org.bukkit.BanEntry<?>>)(Set<?>) ipBanList.getEntries();
+            for (org.bukkit.BanEntry<?> entry : ipEntries) {
+                if (!first) sb.append(",");
+                first = false;
+                String target = entry.getTarget();
+                String reason = entry.getReason() != null ? entry.getReason() : "";
+                String source = entry.getSource() != null ? entry.getSource() : "";
+                long expireDate = entry.getExpiration() != null ? entry.getExpiration().getTime() : 0;
+                sb.append("{\"type\":\"ip\",\"target\":\"").append(escapeJson(target))
+                  .append("\",\"reason\":\"").append(escapeJson(reason))
+                  .append("\",\"source\":\"").append(escapeJson(source))
+                  .append("\",\"expire\":").append(expireDate).append("}");
+            }
+
+            sb.append("]");
+
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "sync_bans");
+            params.put("secret", secretKey);
+            params.put("bans", sb.toString());
+            String resp = httpGet("api/sync.php", params);
+            plugin.getLogger().fine("[防护-sync] 封禁名单同步: " + resp);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 封禁名单同步异常: " + e.getMessage());
         }
     }
 

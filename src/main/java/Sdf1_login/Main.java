@@ -1033,6 +1033,103 @@ public class Main extends JavaPlugin
         Bukkit.getBanList(type).addBan(target, reason,
                 expireMs == null ? null : new java.util.Date(expireMs),
                 sender.getName());
+
+        // ★ 公屏广播封禁警告
+        broadcastBanWarning(target, type, reason, expireMs, sender.getName());
+    }
+
+    /**
+     * ★ 封禁事件公屏广播警告
+     * 从"释放警告消息.txt"读取随机标语，结合封禁信息发送给全服
+     */
+    private void broadcastBanWarning(String target, org.bukkit.BanList.Type type,
+                                     String reason, Long expireMs, String adminName) {
+        try {
+            // 确定封禁类型描述
+            boolean isIpBan = (type == org.bukkit.BanList.Type.IP);
+            boolean isPerm = (expireMs == null);
+
+            // 如果是IP封禁，获取被封IP对应的在线玩家名
+            String displayTarget = target;
+            String ipInfo = "";
+            if (isIpBan) {
+                // IP封禁：target是IP，尝试查找对应玩家
+                for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.getAddress() != null && p.getAddress().getAddress() != null) {
+                        String playerIp = p.getAddress().getAddress().getHostAddress();
+                        if (target.equals(playerIp)) {
+                            displayTarget = p.getName();
+                            ipInfo = ",IP: " + target;
+                            break;
+                        }
+                    }
+                }
+                if (displayTarget.equals(target)) {
+                    // 没找到在线玩家，直接用IP
+                    ipInfo = ",IP: " + target;
+                }
+            }
+
+            // 构建封禁描述
+            String banDesc;
+            if (isIpBan) {
+                banDesc = "被永久封禁IP";
+            } else if (isPerm) {
+                banDesc = "被终身封禁";
+            } else {
+                banDesc = "被封禁至" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(expireMs));
+            }
+
+            // 读取警告标语
+            String warningLine = loadBanWarningMessage();
+
+            // 构建消息
+            String msg = "§c§l⚠ " + displayTarget + ipInfo + "因违反服务器规则" + banDesc + "。";
+            if (reason != null && !reason.isEmpty() && !reason.startsWith("§")) {
+                msg += "§r§7理由: " + reason + "。";
+            }
+            msg += "§r§c" + warningLine;
+
+            // 广播
+            for (org.bukkit.entity.Player online : Bukkit.getOnlinePlayers()) {
+                online.sendMessage(msg);
+            }
+            // 控制台也打印
+            getLogger().info("[封禁广播] " + msg.replaceAll("§[0-9a-fk-orA-FK-OR]", ""));
+        } catch (Exception e) {
+            getLogger().warning("[封禁广播] 异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 从"释放警告消息.txt"读取随机标语
+     */
+    private String loadBanWarningMessage() {
+        try {
+            java.io.File file = new java.io.File(getDataFolder(), "释放警告消息.txt");
+            if (!file.exists()) {
+                // 创建默认文件
+                getDataFolder().mkdirs();
+                java.io.FileWriter fw = new java.io.FileWriter(file);
+                fw.write("请大家引以为戒，务必遵守服务器规则。\n");
+                fw.write("请大家务必遵守服务器规则，切勿以身试险。\n");
+                fw.write("请大家务必遵守规则，注意一言一行。\n");
+                fw.close();
+            }
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(new java.io.FileInputStream(file), java.nio.charset.StandardCharsets.UTF_8));
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty()) lines.add(line);
+            }
+            br.close();
+            if (lines.isEmpty()) return "请大家遵守服务器规则。";
+            return lines.get(new java.util.Random().nextInt(lines.size()));
+        } catch (Exception e) {
+            return "请大家遵守服务器规则。";
+        }
     }
 
     /** 临时封禁（名字或IP），由 /tempban 与 /tempbanip 共用 */
