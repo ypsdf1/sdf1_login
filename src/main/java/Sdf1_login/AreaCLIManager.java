@@ -1715,7 +1715,7 @@ public class AreaCLIManager {
         if (message.equals("取消") || message.equals("0")) {
             p.sendMessage(Component.text("§e已取消修改，保持原样"));
             pendingEffectInput.remove(p.getUniqueId());
-            showAnnouncementManagement(p, landName, type.equals("announcement_enter") ? 2 : 3);
+            showAnnouncementManagement(p, landName, 1); // 返回主菜单，不再进入编辑子页面
             return true;
         }
         String value = message.equals("清空") ? "" : message;
