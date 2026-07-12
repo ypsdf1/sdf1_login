@@ -778,9 +778,25 @@ public class AreaProtection implements Listener {
      * 4. 自动添加 [区域防护] 前缀
      */
     private String formatAreaMsg(String raw) {
+        return formatAreaMsg(raw, null, null);
+    }
+
+    /**
+     * 格式化区域消息（支持变量替换）
+     * 支持括号: () [] {} 【】 <> 《》
+     */
+    private String formatAreaMsg(String raw, String playerName, String landName) {
         if (raw == null || raw.isEmpty()) return "";
 
         String msg = raw;
+
+        // ★ 变量替换：支持多种括号格式
+        if (playerName != null) {
+            msg = msg.replaceAll("[（(\\[【<《]玩家[）)\\]】>》]", playerName);
+        }
+        if (landName != null) {
+            msg = msg.replaceAll("[（(\\[【<《]领地[）)\\]】>》]", landName);
+        }
 
         // & → §
         for (int i = 0; i <= 9; i++) {
@@ -3028,10 +3044,11 @@ public class AreaProtection implements Listener {
 
             AreaConfig oldAc = areas.get(oldArea);
 
-            // 离开提示
-            if (oldAc != null && oldAc.leaveMsg != null
-                    && !oldAc.leaveMsg.isEmpty()) {
-                p.sendMessage(formatAreaMsg(oldAc.leaveMsg));
+            // 离开提示（默认消息：感谢(玩家)光临(领地)）
+            String leaveMsg = (oldAc != null && oldAc.leaveMsg != null && !oldAc.leaveMsg.isEmpty())
+                    ? oldAc.leaveMsg : "感谢(玩家)光临(领地)";
+            if (oldAc != null) {
+                p.sendMessage(formatAreaMsg(leaveMsg, p.getName(), oldArea));
             }
 
             // ★ 离开领地时展示边框粒子（3秒）
@@ -3147,11 +3164,10 @@ public class AreaProtection implements Listener {
                     return;
                 }
 
-                if (newAc.enterMsg != null
-                        && !newAc.enterMsg.isEmpty()) {
-                    p.sendMessage(
-                            formatAreaMsg(newAc.enterMsg));
-                }
+                // 进入提示（默认消息：欢迎(玩家)来到(领地)）
+                String enterMsg = (newAc.enterMsg != null && !newAc.enterMsg.isEmpty())
+                        ? newAc.enterMsg : "欢迎(玩家)来到(领地)";
+                p.sendMessage(formatAreaMsg(enterMsg, p.getName(), newArea));
                 // ★ 进入领地时展示边框粒子（3秒）
                 showBorderBrief(p, newAc);
                 // ★ 公共建筑设施：访客自动获得传送、免疫伤害、攻击敌对生物权限
@@ -4212,10 +4228,11 @@ public class AreaProtection implements Listener {
 
             }
 
-            // 离开提示
-            if (fromArea != null && fromArea.leaveMsg != null
-                    && !fromArea.leaveMsg.isEmpty()) {
-                p.sendMessage(formatAreaMsg(fromArea.leaveMsg));
+            // 离开提示（默认消息：感谢(玩家)光临(领地)）
+            String leaveMsg2 = (fromArea != null && fromArea.leaveMsg != null && !fromArea.leaveMsg.isEmpty())
+                    ? fromArea.leaveMsg : "感谢(玩家)光临(领地)";
+            if (fromArea != null) {
+                p.sendMessage(formatAreaMsg(leaveMsg2, p.getName(), fromName));
             }
             // ★ 离开领地时展示边框粒子（3秒）
             if (fromArea != null) {
@@ -4242,11 +4259,10 @@ public class AreaProtection implements Listener {
                 }
             }
 
-            // 进入提示
-            if (toArea != null && toArea.enterMsg != null
-                    && !toArea.enterMsg.isEmpty()) {
-                p.sendMessage(formatAreaMsg(toArea.enterMsg));
-            }
+            // 进入提示（默认消息：欢迎(玩家)来到(领地)）
+            String enterMsg2 = (toArea != null && toArea.enterMsg != null && !toArea.enterMsg.isEmpty())
+                    ? toArea.enterMsg : "欢迎(玩家)来到(领地)";
+            p.sendMessage(formatAreaMsg(enterMsg2, p.getName(), toName));
 
             // ★ 进入领地时展示边框粒子（3秒）
             if (toArea != null) {

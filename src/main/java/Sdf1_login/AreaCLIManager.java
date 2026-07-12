@@ -1625,8 +1625,8 @@ public class AreaCLIManager {
             p.sendMessage(Component.text("§7配置玩家进出领地时的提示消息"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
 
-            // 显示当前进入消息
-            String enterMsg = (land.enterMsg != null && !land.enterMsg.isEmpty()) ? land.enterMsg : "§7（未设置）";
+            // 显示当前进入消息（含变量说明）
+            String enterMsg = (land.enterMsg != null && !land.enterMsg.isEmpty()) ? land.enterMsg : "§7（未设置，默认: 欢迎(玩家)来到(领地)）";
             p.sendMessage(Component.text("§a进入消息: §f" + enterMsg));
             p.sendMessage(Component.empty()
                     .append(Component.text("§e[编辑进入消息] ")
@@ -1636,8 +1636,8 @@ public class AreaCLIManager {
 
             p.sendMessage(Component.text(""));
 
-            // 显示当前离开消息
-            String leaveMsg = (land.leaveMsg != null && !land.leaveMsg.isEmpty()) ? land.leaveMsg : "§7（未设置）";
+            // 显示当前离开消息（含变量说明）
+            String leaveMsg = (land.leaveMsg != null && !land.leaveMsg.isEmpty()) ? land.leaveMsg : "§7（未设置，默认: 感谢(玩家)光临(领地)）";
             p.sendMessage(Component.text("§a离开消息: §f" + leaveMsg));
             p.sendMessage(Component.empty()
                     .append(Component.text("§e[编辑离开消息] ")
@@ -1646,8 +1646,9 @@ public class AreaCLIManager {
                     .append(Component.text("§7点击编辑")));
 
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
-            p.sendMessage(Component.text("§7提示: 使用 §f&7§l颜色代码 §7格式化消息"));
-            p.sendMessage(Component.text("§7例如: §f&a欢迎来到 §6领地名"));
+            p.sendMessage(Component.text("§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名"));
+            p.sendMessage(Component.text("§7支持括号: §f() [] {} 【】 <> 《》"));
+            p.sendMessage(Component.text("§7颜色: §f&a绿色 §6金色 §c红色 §7灰色"));
 
             // 返回按钮
             p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli manage " + landName));

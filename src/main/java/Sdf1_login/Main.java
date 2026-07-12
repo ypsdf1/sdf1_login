@@ -2964,7 +2964,7 @@ public class Main extends JavaPlugin
                     p.sendMessage("§c§l⚠ 安全警告：§e你刚才在公屏发送了有效的webtoken！");
                     p.sendMessage("§c该token已被立即作废，以防止他人盗用。");
                     p.sendMessage("§e请勿将token分享给任何人，token是你唯一的登录凭证。");
-                    p.sendMessage("§7如需重新获取token，请执行 /weblogin");
+                    p.sendMessage("§7如需重新获取token，请执行 /web");
                 }
             }
         }

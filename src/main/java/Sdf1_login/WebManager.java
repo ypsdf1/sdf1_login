@@ -1173,12 +1173,30 @@ public class WebManager {
 
     /**
      * 作废指定Token（安全防线：公屏泄露时立即销毁）
+     * 同时联控PHP后端删除weblogin_tokens表中的记录
      *
      * @param token 要作废的token
      * @return 如果token存在并被成功作废返回true
      */
     public boolean revokeToken(String token) {
-        return tokenStore.remove(token) != null;
+        boolean removed = tokenStore.remove(token) != null;
+
+        // 异步联控PHP作废该token
+        if (removed) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    String urlStr = webBaseUrl + "/api/sync.php?action=revoke_weblogin_token"
+                            + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                            + "&token=" + java.net.URLEncoder.encode(token, "UTF-8");
+                    String response = doGet(urlStr);
+                    plugin.getLogger().info("[安全防线] PHP联控作废token结果: " + response);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[安全防线] PHP联控作废token失败: " + e.getMessage());
+                }
+            });
+        }
+
+        return removed;
     }
 
     /**
