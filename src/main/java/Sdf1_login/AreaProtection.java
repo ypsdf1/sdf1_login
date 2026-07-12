@@ -165,6 +165,9 @@ public class AreaProtection implements Listener {
             = new ConcurrentHashMap<>();
     // ★ 拾取消息节流（5~10秒随机间隔）
     private final Map<UUID, Long> lastPickupMsgTime = new ConcurrentHashMap<>();
+    // ★ 效果热更新节流（每2秒最多检查一次）
+    private final Map<UUID, Long> lastEffectHotUpdate = new ConcurrentHashMap<>();
+    private static final long EFFECT_HOT_UPDATE_INTERVAL_MS = 2000;
     private static final String[] PICKUP_MSGS = {
             "§c§l[区域防护] §f禁止拾取物品",
             "§c§l[区域防护] §f此区域不允许拾取",
@@ -2999,6 +3002,9 @@ public class AreaProtection implements Listener {
                     // ★ 每次移动都清除指定效果
                     clearBadEffects(p, ac);
 
+                    // ★ 效果热更新：实时增删效果（2秒冷却）
+                    hotUpdateRegionEffects(p, uid, newArea, ac);
+
                     // ★ 每次移动都强制游戏模式
                     if (ac.enforceGameMode != null
                             && !ac.enforceGameMode.isEmpty()
@@ -3380,6 +3386,101 @@ public class AreaProtection implements Listener {
                     "[防护-贴标] 新建标记: "
                             + applied.size()
                             + " 个, 玩家=" + p.getName());*/
+        }
+    }
+
+    /**
+     * 效果热更新：玩家在领地内移动时，实时对比领地效果配置，
+     * 增删缺失/多余的效果（2秒冷却防止频繁计算）
+     */
+    private void hotUpdateRegionEffects(Player p, UUID uid,
+                                         String areaName, AreaConfig ac) {
+        if (ac == null) return;
+
+        // 冷却检查
+        Long lastTime = lastEffectHotUpdate.get(uid);
+        long now = System.currentTimeMillis();
+        if (lastTime != null && now - lastTime < EFFECT_HOT_UPDATE_INTERVAL_MS) {
+            return;
+        }
+        lastEffectHotUpdate.put(uid, now);
+
+        // 领地无效果配置 → 跳过
+        if (ac.giveEffects == null || ac.giveEffects.isEmpty()) return;
+
+        // 1. 构建领地当前期望的效果集合
+        Map<PotionEffectType, int[]> expectedEffects = new LinkedHashMap<>();
+        for (String[] eff : ac.giveEffects) {
+            PotionEffectType type = resolveEffectType(eff[0]);
+            if (type == null) continue;
+            try {
+                int lv = Integer.parseInt(eff[1]) - 1;  // MC amplifier从0开始
+                int dur = Integer.parseInt(eff[2]) * 20;  // 秒→tick
+                expectedEffects.put(type, new int[]{lv, dur});
+            } catch (NumberFormatException ignored) {}
+        }
+
+        // 2. 获取当前标记的效果（即本领地给予的效果）
+        List<PotionEffectType> marked = playerMarkedEffects.get(uid);
+        Set<PotionEffectType> currentMarked = (marked != null)
+                ? new HashSet<>(marked) : new HashSet<>();
+
+        // 3. 添加缺失的效果
+        List<PotionEffectType> newMarked = new ArrayList<>(currentMarked);
+        for (Map.Entry<PotionEffectType, int[]> entry : expectedEffects.entrySet()) {
+            PotionEffectType type = entry.getKey();
+            int lv = entry.getValue()[0];
+            int dur = entry.getValue()[1];
+
+            if (currentMarked.contains(type)) {
+                // 已标记 → 检查等级是否需要更新
+                PotionEffect existing = p.getPotionEffect(type);
+                if (existing != null && existing.getAmplifier() < lv) {
+                    // 等级提升 → 重新给效果
+                    p.addPotionEffect(new PotionEffect(type, dur, lv));
+                    plugin.getLogger().info("[防护-热更新] 等级提升: "
+                            + type.getName() + " Lv" + (lv + 1)
+                            + " 玩家=" + p.getName());
+                }
+                continue;
+            }
+
+            // 新效果 → 添加
+            PotionEffect existing = p.getPotionEffect(type);
+            if (existing == null || existing.getAmplifier() < lv) {
+                p.addPotionEffect(new PotionEffect(type, dur, lv));
+                newMarked.add(type);
+                plugin.getLogger().info("[防护-热更新] 新增效果: "
+                        + type.getName() + " Lv" + (lv + 1) + " " + dur / 20 + "s"
+                        + " 玩家=" + p.getName());
+            }
+        }
+
+        // 4. 移除多余的效果（领地不再给予的）
+        List<PotionEffectType> toRemove = new ArrayList<>();
+        for (PotionEffectType type : currentMarked) {
+            if (!expectedEffects.containsKey(type)) {
+                // 该效果不在领地配置中 → 移除
+                PotionEffect existing = p.getPotionEffect(type);
+                if (existing != null) {
+                    p.removePotionEffect(type);
+                    toRemove.add(type);
+                    plugin.getLogger().info("[防护-热更新] 移除效果: "
+                            + type.getName()
+                            + " 玩家=" + p.getName());
+                }
+            }
+        }
+
+        // 5. 更新标记
+        if (!toRemove.isEmpty() || !newMarked.equals(currentMarked)) {
+            List<PotionEffectType> updatedMarked = new ArrayList<>(newMarked);
+            updatedMarked.removeAll(toRemove);
+            if (updatedMarked.isEmpty()) {
+                playerMarkedEffects.remove(uid);
+            } else {
+                playerMarkedEffects.put(uid, updatedMarked);
+            }
         }
     }
 
