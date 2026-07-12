@@ -1249,7 +1249,7 @@ public class AreaGUIManager implements Listener {
                 p.closeInventory();
                 p.sendMessage("§a请输入§f离开消息§a（支持HTML标签和颜色代码）:");
                 p.sendMessage("§7当前: " + (land.leaveMsg != null && !land.leaveMsg.isEmpty() ? land.leaveMsg : "（默认: 感谢(玩家)光临(领地)）"));
-                p.sendMessage("§7输入 §c清空 §7可恢复默认。§7输入 §c取消 §7放弃修改");
+                p.sendMessage("§7输入 §c清空 §7可恢复默认。§7输入 §c取消 §7或 §c0 §7放弃修改");
                 p.sendMessage("§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名");
                 p.sendMessage("§7括号: §f() [] {} 【】 <> 《》");
                 p.sendMessage("§7标签: &lt;b&gt;加粗 &lt;i&gt;斜体 &lt;u&gt;下划线 &lt;s&gt;删除线");

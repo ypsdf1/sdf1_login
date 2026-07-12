@@ -790,12 +790,20 @@ public class AreaProtection implements Listener {
 
         String msg = raw;
 
-        // ★ 变量替换：支持多种括号格式
+        // ★ 变量替换：支持多种括号格式（DOTALL确保跨行匹配）
         if (playerName != null) {
-            msg = msg.replaceAll("[（(\\[【<《]玩家[）)\\]】>》]", playerName);
+            java.util.regex.Pattern varPattern = java.util.regex.Pattern.compile(
+                    "[（(\\[【<《]玩家[）)\\]】>》]",
+                    java.util.regex.Pattern.DOTALL);
+            msg = varPattern.matcher(msg).replaceAll(
+                    java.util.regex.Matcher.quoteReplacement(playerName));
         }
         if (landName != null) {
-            msg = msg.replaceAll("[（(\\[【<《]领地[）)\\]】>》]", landName);
+            java.util.regex.Pattern varPattern = java.util.regex.Pattern.compile(
+                    "[（(\\[【<《]领地[）)\\]】>》]",
+                    java.util.regex.Pattern.DOTALL);
+            msg = varPattern.matcher(msg).replaceAll(
+                    java.util.regex.Matcher.quoteReplacement(landName));
         }
 
         // HTML实体解码（必须在&颜色代码之前，防止&amp;a被误转为§amp;）
@@ -815,7 +823,7 @@ public class AreaProtection implements Listener {
         msg = msg.replace("<br />", "\n");
         msg = msg.replace("\\n", "\n");
 
-        // <p style="color:..."> 和 <span style="color:..."> 颜色标签预处理
+        // <p style="color:..."> 和 <span style="color:..."> 颜色标签预处理 — 必须在HTML标签转换之前
         msg = processColorTags(msg);
 
         // HTML → Minecraft格式（栈式解析，支持嵌套）
@@ -990,14 +998,28 @@ public class AreaProtection implements Listener {
      * 栈式HTML标签解析
      * 处理 <u><b>text</b> rest</u> 这样的嵌套标签
      * 内层关闭时重新应用外层格式
+     * ★ 支持颜色追踪：processColorTags设置的§c等颜色码在标签关闭§r后自动恢复
      */
     private String convertHtmlTags(String msg) {
         StringBuilder sb = new StringBuilder();
         java.util.Deque<Character> stack =
                 new ArrayDeque<>();
+        String activeColor = null; // 追踪processColorTags设置的颜色
         int i = 0;
 
         while (i < msg.length()) {
+            // ★ 追踪MC颜色码（§0-§f）：当processColorTags插入颜色码时记录
+            if (msg.charAt(i) == '§' && i + 1 < msg.length()) {
+                char next = Character.toLowerCase(msg.charAt(i + 1));
+                if ("0123456789abcdef".indexOf(next) >= 0) {
+                    activeColor = "" + msg.charAt(i) + next;
+                }
+                sb.append(msg.charAt(i));
+                sb.append(msg.charAt(i + 1));
+                i += 2;
+                continue;
+            }
+
             if (msg.charAt(i) == '<'
                     && i + 1 < msg.length()) {
                 if (msg.charAt(i + 1) == '/') {
@@ -1014,14 +1036,13 @@ public class AreaProtection implements Listener {
                     if (code != 0 && !stack.isEmpty()
                             && stack.peek() == code) {
                         stack.pop();
-                        if (!stack.isEmpty()) {
-                            // 重置后重新应用外层格式
-                            sb.append("§r");
-                            for (char c : stack) {
-                                sb.append("§").append(c);
-                            }
-                        } else {
-                            sb.append("§r");
+                        // ★ 重置后先恢复颜色，再重新应用外层格式
+                        sb.append("§r");
+                        if (activeColor != null) {
+                            sb.append(activeColor);
+                        }
+                        for (char c : stack) {
+                            sb.append("§").append(c);
                         }
                     }
                     i = end + 1;

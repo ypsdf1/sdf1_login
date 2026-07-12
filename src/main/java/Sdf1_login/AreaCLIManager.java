@@ -977,8 +977,9 @@ public class AreaCLIManager {
         }
 
         boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
-        if (!isOwner) {
-            p.sendMessage(Component.text("§c只有领地所有者才能操作管理员身份"));
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c只有领地所有者或插件管理员才能操作管理员身份"));
             return;
         }
 
@@ -1661,7 +1662,7 @@ public class AreaCLIManager {
             p.sendMessage(Component.text("§7当前进入消息: §f" + (land.enterMsg != null && !land.enterMsg.isEmpty() ? land.enterMsg : "（空）")));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
             p.sendMessage(Component.text("§e请在聊天栏输入新的进入消息:"));
-            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息"));
+            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息，输入 §c取消 §7或 §c0 §7放弃修改"));
 
             // 标记等待输入
             pendingEffectInput.put(p.getUniqueId(), new String[]{"announcement_enter", landName, ""});
@@ -1674,7 +1675,7 @@ public class AreaCLIManager {
             p.sendMessage(Component.text("§7当前离开消息: §f" + (land.leaveMsg != null && !land.leaveMsg.isEmpty() ? land.leaveMsg : "（空）")));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
             p.sendMessage(Component.text("§e请在聊天栏输入新的离开消息:"));
-            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息"));
+            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息，输入 §c取消 §7或 §c0 §7放弃修改"));
 
             // 标记等待输入
             pendingEffectInput.put(p.getUniqueId(), new String[]{"announcement_leave", landName, ""});
@@ -1710,6 +1711,13 @@ public class AreaCLIManager {
         }
 
         String field = type.equals("announcement_enter") ? "enter_msg" : "leave_msg";
+        // ★ 取消/0 = 保持原样放弃修改
+        if (message.equals("取消") || message.equals("0")) {
+            p.sendMessage(Component.text("§e已取消修改，保持原样"));
+            pendingEffectInput.remove(p.getUniqueId());
+            showAnnouncementManagement(p, landName, type.equals("announcement_enter") ? 2 : 3);
+            return true;
+        }
         String value = message.equals("清空") ? "" : message;
 
         // 保存到内存
