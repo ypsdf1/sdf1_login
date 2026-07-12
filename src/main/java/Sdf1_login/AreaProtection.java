@@ -791,16 +791,18 @@ public class AreaProtection implements Listener {
         String msg = raw;
 
         // ★ 变量替换：支持多种括号格式（DOTALL确保跨行匹配）
+        // 支持 () [] {} 【】 <> 《》 六种括号
         if (playerName != null) {
             java.util.regex.Pattern varPattern = java.util.regex.Pattern.compile(
-                    "[（(\\[【<《]玩家[）)\\]】>》]",
+                    "[（(\\[【<《{]玩家[）)\\]】>》}]",
                     java.util.regex.Pattern.DOTALL);
             msg = varPattern.matcher(msg).replaceAll(
                     java.util.regex.Matcher.quoteReplacement(playerName));
         }
         if (landName != null) {
+            // 同时支持"领地"和"领地名"两种写法
             java.util.regex.Pattern varPattern = java.util.regex.Pattern.compile(
-                    "[（(\\[【<《]领地[）)\\]】>》]",
+                    "[(（\\[【<《{]领地名?[）)\\]】>》}]",
                     java.util.regex.Pattern.DOTALL);
             msg = varPattern.matcher(msg).replaceAll(
                     java.util.regex.Matcher.quoteReplacement(landName));
