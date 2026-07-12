@@ -3081,33 +3081,48 @@ public class AreaProtection implements Listener {
                         "[防护-移动-离开] 取消旧延时");
             }
 
-            // 创建延时清理
-            if (marked != null && !marked.isEmpty()) {
+            // ★★★ 离开到野外（无新区域）：立即清除领地给予的效果 ★★★
+            if (newArea == null && oldAc != null
+                    && oldAc.giveEffects != null && !oldAc.giveEffects.isEmpty()) {
+                plugin.getLogger().info(
+                        "[防护-移动-离开野外] ★★★立即清除效果: 玩家=" + p.getName()
+                                + " 区域=" + oldArea);
+                int cleared = 0;
+                for (String[] eff : oldAc.giveEffects) {
+                    PotionEffectType type = resolveEffectType(eff[0]);
+                    if (type != null) {
+                        PotionEffect pe = p.getPotionEffect(type);
+                        if (pe != null) {
+                            p.removePotionEffect(type);
+                            cleared++;
+                            plugin.getLogger().info(
+                                    "[防护-移动-离开野外] ★清除: " + eff[0]);
+                        }
+                    }
+                }
+                removePlayerEffects(uid, oldArea);
+                plugin.getLogger().info(
+                        "[防护-移动-离开野外] ★完成: 清除"
+                                + cleared + "/" + oldAc.giveEffects.size() + "个效果");
+            }
+
+            // 创建延时清理（领地→领地跨区域差量清理）
+            if (marked != null && !marked.isEmpty() && newArea != null) {
                 String clearArea = oldArea;
                 UUID clearUid = uid;
                 List<PotionEffectType> toClear =
                         new ArrayList<>(marked);
                 pendingClearArea.put(uid, clearArea);
                 pendingClearEffects.put(uid, toClear);
-             /*   plugin.getLogger().info(
-                        "[防护-移动-离开] ★★★创建延时任务: "
-                                + toClear.size() + "个");*/
 
                 BukkitTask task = new BukkitRunnable() {
                     @Override
                     public void run() {
-                    /*    plugin.getLogger().info(
-                                "[防护-移动-清理] ★★★延时触发!");*/
                         pendingClearTask.remove(clearUid);
                         pendingClearArea.remove(clearUid);
 
                         Player online =
                                 Bukkit.getPlayer(clearUid);
-
-                        plugin.getLogger().info(
-                                "[防护-移动-清理] 在线="
-                                        + (online != null && online.isOnline())
-                                        + " 效果数=" + toClear.size());
 
                         if (online == null || !online.isOnline()) {
                             removePlayerEffects(
@@ -3119,10 +3134,6 @@ public class AreaProtection implements Listener {
                         for (PotionEffectType type : toClear) {
                             PotionEffect eff =
                                     online.getPotionEffect(type);
-                 /*           plugin.getLogger().info(
-                                    "[防护-移动-清理] 检查: "
-                                            + type.getName()
-                                            + " 身上=" + (eff != null));*/
                             if (eff != null) {
                                 online.removePotionEffect(type);
                                 cleared++;
@@ -3130,7 +3141,7 @@ public class AreaProtection implements Listener {
                         }
                         removePlayerEffects(clearUid, clearArea);
                         plugin.getLogger().info(
-                                "[防护-移动-清理] + cleared" + toClear.size());
+                                "[防护-移动-清理] cleared " + cleared + "/" + toClear.size());
                     }
                 }.runTaskLater(plugin, 100L); // 5秒 = 100 tick
                 pendingClearTask.put(uid, task);
@@ -4166,8 +4177,33 @@ public class AreaProtection implements Listener {
                 pendingClearEffects.remove(uid);
             }
 
-            // 创建5秒延时清理
-            if (marked != null && !marked.isEmpty()) {
+            // ★★★ 传送到野外（无目标区域）：立即清除领地效果 ★★★
+            if (toName == null && fromArea != null
+                    && fromArea.giveEffects != null && !fromArea.giveEffects.isEmpty()) {
+                plugin.getLogger().info(
+                        "[防护-传送-离开野外] ★★★立即清除效果: 玩家=" + p.getName()
+                                + " 区域=" + fromName);
+                int cleared = 0;
+                for (String[] eff : fromArea.giveEffects) {
+                    PotionEffectType type = resolveEffectType(eff[0]);
+                    if (type != null) {
+                        PotionEffect pe = p.getPotionEffect(type);
+                        if (pe != null) {
+                            p.removePotionEffect(type);
+                            cleared++;
+                            plugin.getLogger().info(
+                                    "[防护-传送-离开野外] ★清除: " + eff[0]);
+                        }
+                    }
+                }
+                removePlayerEffects(uid, fromName);
+                plugin.getLogger().info(
+                        "[防护-传送-离开野外] ★完成: 清除"
+                                + cleared + "/" + fromArea.giveEffects.size() + "个效果");
+            }
+
+            // 创建5秒延时清理（传送跨领地差量清理）
+            if (marked != null && !marked.isEmpty() && toName != null) {
                 String clearArea = fromName;
                 UUID clearUid = uid;
                 List<PotionEffectType> toClear =
@@ -4175,26 +4211,14 @@ public class AreaProtection implements Listener {
                 pendingClearArea.put(uid, clearArea);
                 pendingClearEffects.put(uid, toClear);
 
-            /*    plugin.getLogger().info(
-                        "[防护-传送-离开] ★★★创建延时任务: "
-                                + toClear.size() + "个效果");*/
-
                 BukkitTask task = new BukkitRunnable() {
                     @Override
                     public void run() {
-                       /* plugin.getLogger().info(
-                                "[防护-传送-清理] ★★★延时触发!");*/
                         pendingClearTask.remove(clearUid);
                         pendingClearArea.remove(clearUid);
 
                         Player online =
                                 Bukkit.getPlayer(clearUid);
-/*
-                        plugin.getLogger().info(
-                                "[防护-传送-清理] 在线="
-                                        + (online != null && online.isOnline())
-                                        + " 效果数=" + toClear.size()
-                                        + " 区域=" + clearArea);*/
 
                         if (online == null
                                 || !online.isOnline()) {
@@ -4209,10 +4233,6 @@ public class AreaProtection implements Listener {
                         for (PotionEffectType type : toClear) {
                             PotionEffect eff =
                                     online.getPotionEffect(type);
-                         /*   plugin.getLogger().info(
-                                    "[防护-传送-清理] 检查: "
-                                            + type.getName()
-                                            + " 身上=" + (eff != null));*/
                             if (eff != null) {
                                 online.removePotionEffect(type);
                                 cleared++;
@@ -4220,7 +4240,7 @@ public class AreaProtection implements Listener {
                         }
                         removePlayerEffects(clearUid, clearArea);
                         plugin.getLogger().info(
-                                "[防护-传送-清理] ★★★完成: 清除"
+                                "[防护-传送-清理] cleared "
                                         + cleared + "/" + toClear.size());
                     }
                 }.runTaskLater(plugin, 100L); // 5秒 = 100 tick
