@@ -757,22 +757,63 @@ function syncPermissions() {
 
     // ★ 删除Java端已移除的成员（同步清理）
     // 对于每个有incoming数据的land_id，删除不在incoming列表中的旧记录
-    // 但保留最近120秒内被PHP端添加/修改的记录（防止PHP刚添加、Java还没处理就被删）
+    // 但如果该玩家有待处理的PHP变更（add_visitor/perm_change），则跳过删除
+    // （防止PHP刚添加、Java还没处理就被删；同时避免旧120秒宽限期导致删除永远不生效）
     $deleted = 0;
+    $skipped = 0;
+    // 先收集所有待处理的PHP变更的(land_name, player_name)对
+    $pendingChanges = [];
+    $pcStmt = $db->prepare("SELECT change_data FROM web_admin_changes WHERE change_type IN ('perm_change','add_visitor') AND acknowledged = 0");
+    $pcRes = $pcStmt->execute();
+    while ($pcRow = $pcRes->fetchArray(SQLITE3_ASSOC)) {
+        $pcData = json_decode($pcRow['change_data'] ?? '{}', true);
+        if (is_array($pcData)) {
+            $pcLand = $pcData['land_name'] ?? '';
+            $pcPlayer = $pcData['player'] ?? '';
+            if ($pcLand !== '' && $pcPlayer !== '') {
+                $pendingChanges[$pcLand][] = $pcPlayer;
+            }
+        }
+    }
     foreach ($incomingKeys as $lid => $players) {
         $placeholders = implode(',', array_fill(0, count($players), '?'));
-        $cutoff = $now - 120; // 120秒宽限期
-        $delStmt = $db->prepare("DELETE FROM web_area_permissions
-            WHERE land_id = ? AND player_name NOT IN ($placeholders)
-            AND synced_at < ?");
-        $delStmt->bindValue(1, $lid, SQLITE3_INTEGER);
+        // 查出待删除的玩家名单
+        $selStmt = $db->prepare("SELECT player_name, land_name FROM web_area_permissions
+            WHERE land_id = ? AND player_name NOT IN ($placeholders)");
+        $selStmt->bindValue(1, $lid, SQLITE3_INTEGER);
         $idx = 2;
         foreach ($players as $p) {
-            $delStmt->bindValue($idx++, $p, SQLITE3_TEXT);
+            $selStmt->bindValue($idx++, $p, SQLITE3_TEXT);
         }
-        $delStmt->bindValue($idx, $cutoff, SQLITE3_INTEGER);
-        $delStmt->execute();
-        $deleted += $db->changes();
+        $selRes = $selStmt->execute();
+        $toDelete = [];
+        while ($selRow = $selRes->fetchArray(SQLITE3_ASSOC)) {
+            $dPlayer = $selRow['player_name'];
+            $dLand = $selRow['land_name'] ?? '';
+            // 检查是否有待处理的PHP变更保护该玩家
+            $isProtected = false;
+            if (isset($pendingChanges[$dLand])) {
+                $isProtected = in_array($dPlayer, $pendingChanges[$dLand]);
+            }
+            if ($isProtected) {
+                $skipped++;
+                debugLog("[syncPermissions] 跳过删除(有待处理PHP变更)", ['land' => $dLand, 'player' => $dPlayer]);
+            } else {
+                $toDelete[] = $dPlayer;
+            }
+        }
+        if (!empty($toDelete)) {
+            $delPlaceholders = implode(',', array_fill(0, count($toDelete), '?'));
+            $delStmt = $db->prepare("DELETE FROM web_area_permissions
+                WHERE land_id = ? AND player_name IN ($delPlaceholders)");
+            $delStmt->bindValue(1, $lid, SQLITE3_INTEGER);
+            $dIdx = 2;
+            foreach ($toDelete as $dp) {
+                $delStmt->bindValue($dIdx++, $dp, SQLITE3_TEXT);
+            }
+            $delStmt->execute();
+            $deleted += $db->changes();
+        }
     }
 
     // ★ 清理与Java同步状态冲突的待处理PHP变更（防止 stale pending 覆盖Java最新状态）
@@ -824,6 +865,7 @@ function syncPermissions() {
 
     $msg = "访客权限同步成功: {$count}个";
     if ($deleted > 0) $msg .= ", 清理{$deleted}个已移除成员";
+    if ($skipped > 0) $msg .= ", 跳过{$skipped}个待处理变更保护";
     if ($conflictCleaned > 0) $msg .= ", 忽略{$conflictCleaned}个冲突待处理变更";
     success($msg);
 }
