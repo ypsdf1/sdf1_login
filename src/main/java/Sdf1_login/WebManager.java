@@ -1172,6 +1172,23 @@ public class WebManager {
     }
 
     /**
+     * 作废指定Token（安全防线：公屏泄露时立即销毁）
+     *
+     * @param token 要作废的token
+     * @return 如果token存在并被成功作废返回true
+     */
+    public boolean revokeToken(String token) {
+        return tokenStore.remove(token) != null;
+    }
+
+    /**
+     * 检查token是否存在（不消耗）
+     */
+    public boolean hasToken(String token) {
+        return tokenStore.containsKey(token);
+    }
+
+    /**
      * 使用并销毁Token（一次性）
      */
     public String[] useToken(String token) {

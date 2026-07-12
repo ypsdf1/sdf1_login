@@ -2952,7 +2952,23 @@ public class Main extends JavaPlugin
     public void onChat(AsyncPlayerChatEvent e) {
         Player p = e.getPlayer();
         String msg = e.getMessage();
-        
+
+        // ★ 安全防线：检测公屏泄露的webtoken并立即作废
+        if (webManager != null && msg.length() >= 48) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\\b([a-f0-9]{48})\\b")
+                    .matcher(msg.toLowerCase());
+            while (m.find()) {
+                String leakedToken = m.group(1);
+                if (webManager.revokeToken(leakedToken)) {
+                    p.sendMessage("§c§l⚠ 安全警告：§e你刚才在公屏发送了有效的webtoken！");
+                    p.sendMessage("§c该token已被立即作废，以防止他人盗用。");
+                    p.sendMessage("§e请勿将token分享给任何人，token是你唯一的登录凭证。");
+                    p.sendMessage("§7如需重新获取token，请执行 /weblogin");
+                }
+            }
+        }
+
         // ★ 标记玩家活跃（用于挂机检测）
         if (chatFilter != null) {
             chatFilter.markPlayerActive(p.getName());
