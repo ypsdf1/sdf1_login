@@ -3488,11 +3488,11 @@ public class WebManager {
             }
             sb.append("]");
 
-            Map<String, String> params = new LinkedHashMap<>();
-            params.put("action", "sync_admins");
-            params.put("secret", secretKey);
-            params.put("admins", sb.toString());
-            String resp = httpGet("api/sync.php", params);
+            // ★ 改用POST避免GET URL过长
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("secret", secretKey);
+            body.put("admins", sb.toString());
+            String resp = httpPost("api/sync.php?action=sync_admins", mapToJson(body));
             plugin.getLogger().info("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
@@ -3559,11 +3559,11 @@ public class WebManager {
             }
             lastBansHash = currentHash;
 
-            Map<String, String> params = new LinkedHashMap<>();
-            params.put("action", "sync_bans");
-            params.put("secret", secretKey);
-            params.put("bans", sb.toString());
-            String resp = httpGet("api/sync.php", params);
+            // ★ 改用POST避免GET URL过长（55条封禁URL可达数KB）
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("secret", secretKey);
+            body.put("bans", sb.toString());
+            String resp = httpPost("api/sync.php?action=sync_bans", mapToJson(body));
             plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size()) + "条 → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 封禁名单同步异常: " + e.getMessage());

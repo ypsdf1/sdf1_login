@@ -2919,7 +2919,7 @@ public class Main extends JavaPlugin
                     String reason = entry.getReason() != null ? entry.getReason() : "已被服务器封禁";
                     String source = entry.getSource() != null ? entry.getSource() : "Server";
                     java.util.Date expireDate = entry.getExpiration();
-                    long expireMs = expireDate != null ? expireDate.getTime() : null;
+                    Long expireMs = expireDate != null ? expireDate.getTime() : null;
                     broadcastBanWarning(target, org.bukkit.BanList.Type.NAME, reason, expireMs, source);
                 } else {
                     // IP封禁：target可能是玩家名或IP，尝试解析为IP
@@ -2934,7 +2934,7 @@ public class Main extends JavaPlugin
                     String reason = entry.getReason() != null ? entry.getReason() : "已被服务器封禁";
                     String source = entry.getSource() != null ? entry.getSource() : "Server";
                     java.util.Date expireDate = entry.getExpiration();
-                    long expireMs = expireDate != null ? expireDate.getTime() : null;
+                    Long expireMs = expireDate != null ? expireDate.getTime() : null;
                     broadcastBanWarning(ip, org.bukkit.BanList.Type.IP, reason, expireMs, source);
                 }
 
