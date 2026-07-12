@@ -72,6 +72,62 @@ $PERM_TYPES = [
     'peaceMode' => '和平模式',
 ];
 
+// ★ 领地默认权限列映射：perm键 → web_area_lands 列名
+//   reverse=true 表示该列存储的是 allow 标志（1=允许），需取反得到 deny 默认值
+//   与 Java AreaProtection.getLandDefaultDeny 完全对齐
+//   （注意：denyDrop/denyPickup 在 area_lands 表中以 deny_drop/deny_pickup 列存储 allow 标志，实际存的是反义）
+$PERM_DEFAULT_COLS = [
+    'denyMove' => ['col' => 'deny_move'],
+    'denyBlockPlace' => ['col' => 'deny_block_place'],
+    'denyBlockBreak' => ['col' => 'deny_block_break'],
+    'denyContainer' => ['col' => 'deny_container'],
+    'denyPVP' => ['col' => 'deny_pvp'],
+    'denyFallDamage' => ['col' => 'deny_fall_damage'],
+    'denyHunger' => ['col' => 'deny_hunger'],
+    'denyAllDamage' => ['col' => 'deny_all_damage'],
+    'denyDrop' => ['col' => 'deny_drop', 'reverse' => true],
+    'denyMount' => ['col' => 'deny_mount'],
+    'denyEnderPearl' => ['col' => 'deny_ender_pearl'],
+    'denyBow' => ['col' => 'deny_bow'],
+    'denyPotion' => ['col' => 'deny_potion'],
+    'denyExplosion' => ['col' => 'deny_explosion'],
+    'denyRaid' => ['col' => 'deny_raid'],
+    'denyFireSpread' => ['col' => 'deny_fire_spread'],
+    'denyAllEffects' => ['col' => 'deny_all_effects'],
+    'denyItemFrame' => ['col' => 'deny_item_frame'],
+    'denyEntityInteract' => ['col' => 'deny_entity_interact'],
+    'denyPickup' => ['col' => 'deny_pickup', 'reverse' => true],
+    'denyFire' => ['col' => 'deny_fire'],
+    'denyThrownProjectiles' => ['col' => 'deny_thrown_projectiles'],
+    'denyGlowing' => ['col' => 'deny_glowing'],
+    'denyRedstoneInteraction' => ['col' => 'deny_redstone_interaction'],
+    'denyDoorInteraction' => ['col' => 'deny_door_interaction'],
+    'denyNoteblockJukebox' => ['col' => 'deny_noteblock_jukebox'],
+    'denyLead' => ['col' => 'deny_lead'],
+    'denyCropHarvest' => ['col' => 'deny_crop_harvest'],
+    'denyWoolShear' => ['col' => 'deny_wool_shear'],
+    'denyAnimalFeeding' => ['col' => 'deny_animal_feeding'],
+    'denyMobAttack' => ['col' => 'deny_mob_attack'],
+    'peaceMode' => ['col' => 'peace_mode'],
+];
+
+// ★ 计算领地默认权限映射（与游戏内 getEffectiveDeny 的"领地默认"回退一致）
+//   普通 deny* 列：1=禁止；denyDrop/denyPickup 列存 allow 标志，需取反
+function getLandDefaultPerms($land) {
+    global $PERM_DEFAULT_COLS;
+    $defaults = [];
+    foreach ($PERM_DEFAULT_COLS as $key => $info) {
+        $raw = isset($land[$info['col']]) ? (int)$land[$info['col']] : 0;
+        if (!empty($info['reverse'])) {
+            // 列存 allow 标志（1=允许）→ 取反得 deny 默认
+            $defaults[$key] = ($raw !== 1);
+        } else {
+            $defaults[$key] = ($raw === 1);
+        }
+    }
+    return $defaults;
+}
+
 try {
     // ★ 加载core.php（与sync.php相同的加载方式）
     $coreFile = dirname(__DIR__) . '/core.php';
@@ -1900,6 +1956,7 @@ function handleGetMemberPerms($db, $playerName, $landName) {
     echo json_encode([
         'success' => true,
         'land' => $land,
+        'default_perms' => getLandDefaultPerms($land),
         'members' => $members,
         'perm_types' => $PERM_TYPES
     ]);

@@ -3475,6 +3475,7 @@ async function renderMemberPermDetail(el, landName, targetPlayer) {
         }
 
         const permMap = member.perm_map || {};
+        const defaultPerms = data.default_perms || {};
         const permEntries = Object.entries(permTypes);
 
         let html = `<div class="card">
@@ -3487,14 +3488,17 @@ async function renderMemberPermDetail(el, landName, targetPlayer) {
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">`;
 
         for (const [key, label] of permEntries) {
-            const denied = permMap[key] === true; // true = deny类权限激活=禁止
+            // ★ 与游戏内 getEffectiveDeny 一致：有自定义覆盖用自定义，否则回退领地默认
+            const hasCustom = Object.prototype.hasOwnProperty.call(permMap, key);
+            const denied = hasCustom ? (permMap[key] === true) : (defaultPerms[key] === true);
+            const isDefault = !hasCustom; // 继承领地默认
 
             html += `<div onclick="toggleMemberPerm('${escHtml(landName)}','${escHtml(targetPlayer)}','${key}',this)"
                 style="background:${denied ? 'rgba(239,68,68,0.1)' : 'rgba(34,197,94,0.1)'};
                 border:1px solid ${denied ? 'var(--red)' : 'var(--green)'};
-                border-radius:8px;padding:12px;cursor:pointer;transition:all 0.2s">
+                border-radius:8px;padding:12px;cursor:pointer;transition:all 0.2s;${isDefault ? 'opacity:.82' : ''}">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                    <span style="color:var(--fg);font-size:13px;font-weight:500">${label}</span>
+                    <span style="color:var(--fg);font-size:13px;font-weight:500">${label}${isDefault ? ' <span style="font-size:9px;color:var(--dim)">默认</span>' : ''}</span>
                     <span style="font-size:11px;color:${denied ? 'var(--red)' : 'var(--green)'}">
                         ${denied ? '✗ 禁止' : '✓ 允许'}
                     </span>
