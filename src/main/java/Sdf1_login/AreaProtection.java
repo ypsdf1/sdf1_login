@@ -3717,105 +3717,182 @@ public class AreaProtection implements Listener {
             clean = clean.substring(0, clean.length() - 2);
         }
 
-        // 硬编码中文名→英文ID映射（不依赖任何外部Map）
+        // ★ 直接用 PotionEffectType 常量映射（不依赖 getByName，兼容所有 MC 版本）
+        //   中文名、英文ID（大写/小写/snake_case）全部在此处理
         switch (clean) {
-            // 负面
-            case "缓慢":
-                return resolveEffectType("slowness");
-            case "挖掘疲劳":
-                return resolveEffectType("mining_fatigue");
-            case "瞬间伤害":
-                return resolveEffectType("instant_damage");
-            case "反胃":
-                return resolveEffectType("nausea");
-            case "失明":
-                return resolveEffectType("blindness");
-            case "饥饿":
-                return resolveEffectType("hunger");
-            case "虚弱":
-                return resolveEffectType("weakness");
-            case "中毒":
-                return resolveEffectType("poison");
-            case "凋零":
-                return resolveEffectType("wither");
-            case "飘浮":
-                return resolveEffectType("levitation");
-            case "霉运":
-                return resolveEffectType("unluck");
-            case "黑暗":
-                return resolveEffectType("darkness");
-            case "蓄风":
-                return resolveEffectType("wind_charged");
-            case "盘丝":
-                return resolveEffectType("weaving");
-            case "渗浆":
-                return resolveEffectType("oozing");
-            case "寄生":
-                return resolveEffectType("infested");
-            // 中性
-            case "不祥之兆":
-            case "不祥征兆":
-                return resolveEffectType("bad_omen");
-            case "袭击之兆":
-            case "袭击征兆":
-                return resolveEffectType("raid_omen");
-            case "试炼之兆":
-            case "试炼征兆":
-                return resolveEffectType("trial_omen");
-            // 正面
-            case "迅捷":
-                return resolveEffectType("speed");
+            // ========== 正面 ==========
+            // 速度
+            case "迅捷": case "速度":
+            case "speed": case "SPEED":
+                return PotionEffectType.SPEED;
+            // 急迫
             case "急迫":
-                return resolveEffectType("haste");
+            case "haste": case "HASTE":
+                return PotionEffectType.HASTE;
+            // 力量
             case "力量":
-                return resolveEffectType("strength");
-            case "瞬间治疗":
-                return resolveEffectType("instant_health");
+            case "strength": case "STRENGTH":
+            case "INCREASE_DAMAGE":
+                return PotionEffectType.STRENGTH;
+            // 瞬间治疗
+            case "瞬间治疗": case "治疗":
+            case "instant_health": case "INSTANT_HEALTH":
+            case "HEAL":
+                return PotionEffectType.INSTANT_HEALTH;
+            // 跳跃提升
             case "跳跃提升":
-                return resolveEffectType("jump_boost");
-            case "生命恢复":
-            case "再生":
-            case "回复":
-                return resolveEffectType("regeneration");
+            case "jump_boost": case "JUMP_BOOST":
+            case "JUMP":
+                return PotionEffectType.JUMP_BOOST;
+            // 生命恢复/再生/回复
+            case "生命恢复": case "再生": case "回复":
+            case "regeneration": case "REGENERATION":
+                return PotionEffectType.REGENERATION;
+            // 抗性提升
             case "抗性提升":
-                return resolveEffectType("resistance");
+            case "resistance": case "RESISTANCE":
+            case "DAMAGE_RESISTANCE":
+                return PotionEffectType.RESISTANCE;
+            // 抗火
             case "抗火":
-                return resolveEffectType("fire_resistance");
+            case "fire_resistance": case "FIRE_RESISTANCE":
+                return PotionEffectType.FIRE_RESISTANCE;
+            // 水下呼吸
             case "水下呼吸":
-                return resolveEffectType("water_breathing");
+            case "water_breathing": case "WATER_BREATHING":
+                return PotionEffectType.WATER_BREATHING;
+            // 隐身
             case "隐身":
-                return resolveEffectType("invisibility");
+            case "invisibility": case "INVISIBILITY":
+                return PotionEffectType.INVISIBILITY;
+            // 夜视
             case "夜视":
-                return resolveEffectType("night_vision");
+            case "night_vision": case "NIGHT_VISION":
+                return PotionEffectType.NIGHT_VISION;
+            // 发光
             case "发光":
-                return resolveEffectType("glowing");
+            case "glowing": case "GLOWING":
+                return PotionEffectType.GLOWING;
+            // 生命提升
             case "生命提升":
-                return resolveEffectType("health_boost");
-            case "伤害吸收":
-                return resolveEffectType("absorption");
+            case "health_boost": case "HEALTH_BOOST":
+                return PotionEffectType.HEALTH_BOOST;
+            // 伤害吸收
+            case "伤害吸收": case "吸收":
+            case "absorption": case "ABSORPTION":
+                return PotionEffectType.ABSORPTION;
+            // 饱和
             case "饱和":
-                return resolveEffectType("saturation");
+            case "saturation": case "SATURATION":
+                return PotionEffectType.SATURATION;
+            // 幸运
             case "幸运":
-                return resolveEffectType("luck");
+            case "luck": case "LUCK":
+                return PotionEffectType.LUCK;
+            // 村庄英雄
             case "村庄英雄":
-                return resolveEffectType("hero_of_the_village");
+            case "hero_of_the_village": case "HERO_OF_THE_VILLAGE":
+                return PotionEffectType.HERO_OF_THE_VILLAGE;
+            // 缓降
             case "缓降":
-                return resolveEffectType("slow_falling");
+            case "slow_falling": case "SLOW_FALLING":
+                return PotionEffectType.SLOW_FALLING;
+            // 潮涌能量
             case "潮涌能量":
-                return resolveEffectType("conduit_power");
+            case "conduit_power": case "CONDUIT_POWER":
+                return PotionEffectType.CONDUIT_POWER;
+            // 海豚的恩惠
             case "海豚的恩惠":
-                return resolveEffectType("dolphins_grace");
-            case "致命中毒":
-                return resolveEffectType("poison");
+            case "dolphins_grace": case "DOLPHINS_GRACE":
+                return PotionEffectType.DOLPHINS_GRACE;
+            // ========== 负面 ==========
+            // 缓慢
+            case "缓慢":
+            case "slowness": case "SLOWNESS":
+            case "SLOW":
+                return PotionEffectType.SLOWNESS;
+            // 挖掘疲劳
+            case "挖掘疲劳":
+            case "mining_fatigue": case "MINING_FATIGUE":
+            case "SLOW_DIGGING":
+                return PotionEffectType.MINING_FATIGUE;
+            // 瞬间伤害
+            case "瞬间伤害": case "伤害药水":
+            case "instant_damage": case "INSTANT_DAMAGE":
+            case "HARM":
+                return PotionEffectType.INSTANT_DAMAGE;
+            // 反胃
+            case "反胃":
+            case "nausea": case "NAUSEA":
+                return PotionEffectType.NAUSEA;
+            // 失明
+            case "失明":
+            case "blindness": case "BLINDNESS":
+                return PotionEffectType.BLINDNESS;
+            // 饥饿
+            case "饥饿":
+            case "hunger": case "HUNGER":
+                return PotionEffectType.HUNGER;
+            // 虚弱
+            case "虚弱":
+            case "weakness": case "WEAKNESS":
+                return PotionEffectType.WEAKNESS;
+            // 中毒/致命中毒
+            case "中毒": case "致命中毒":
+            case "poison": case "POISON":
+            case "poisonous":
+                return PotionEffectType.POISON;
+            // 凋零
+            case "凋零":
+            case "wither": case "WITHER":
+                return PotionEffectType.WITHER;
+            // 飘浮/漂浮
+            case "飘浮": case "漂浮":
+            case "levitation": case "LEVITATION":
+                return PotionEffectType.LEVITATION;
+            // 霉运/厄运
+            case "霉运": case "厄运": case "不幸":
+            case "unluck": case "UNLUCK":
+                return PotionEffectType.UNLUCK;
+            // 黑暗
+            case "黑暗":
+            case "darkness": case "DARKNESS":
+                return PotionEffectType.DARKNESS;
+            // 蓄风
+            case "蓄风":
+            case "wind_charged": case "WIND_CHARGED":
+                return PotionEffectType.WIND_CHARGED;
+            // 盘丝
+            case "盘丝":
+            case "weaving": case "WEAVING":
+                return PotionEffectType.WEAVING;
+            // 渗浆
+            case "渗浆":
+            case "oozing": case "OOZING":
+                return PotionEffectType.OOZING;
+            // 寄生
+            case "寄生":
+            case "infested": case "INFESTED":
+                return PotionEffectType.INFESTED;
+            // ========== 中性 ==========
+            // 不祥之兆
+            case "不祥之兆": case "不祥征兆":
+            case "bad_omen": case "BAD_OMEN":
+                return PotionEffectType.BAD_OMEN;
+            // 袭击之兆
+            case "袭击之兆": case "袭击征兆":
+            case "raid_omen": case "RAID_OMEN":
+                return PotionEffectType.RAID_OMEN;
+            // 试炼之兆
+            case "试炼之兆": case "试炼征兆":
+            case "trial_omen": case "TRIAL_OMEN":
+                return PotionEffectType.TRIAL_OMEN;
             default:
                 break;
         }
 
-
-        // 兜底：直接用原版英文ID查
-        PotionEffectType fallback = PotionEffectType.getByName(clean);
-        if (fallback != null) return fallback;
-        fallback = PotionEffectType.getByName(clean.toLowerCase());
+        // ★ 终极兜底：用原版 getByName（兼容未来新增效果）
+        PotionEffectType fallback = PotionEffectType.getByName(clean.toLowerCase());
         if (fallback != null) return fallback;
 
         // 同一名称只警告一次，避免控制台刷屏
