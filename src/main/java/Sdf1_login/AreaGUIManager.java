@@ -1200,7 +1200,12 @@ public class AreaGUIManager implements Listener {
                 // ★ GUI模式不发送聊天消息
                 openLandSettings(p, landName);
             } else if (raw == 15) {
-                // 切换强制游戏模式
+                // 切换强制游戏模式 —— 仅服务器管理员可操作
+                if (!areaProtect.isAreaAdmin(p)) {
+                    p.sendMessage("§c仅服务器管理员可操作强制游戏模式");
+                    openLandSettings(p, landName);
+                    return;
+                }
                 if (land.enforceGameMode == null || land.enforceGameMode.isEmpty()) {
                     land.enforceGameMode = "SURVIVAL";
                 } else if ("SURVIVAL".equals(land.enforceGameMode)) {
@@ -1491,12 +1496,20 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击切换"));
 
-        // 强制游戏模式（位置15）
-        String modeStr = land.enforceGameMode != null ? land.enforceGameMode : "无";
-        inv.setItem(15, createItem(Material.COMPASS, "§e§l强制游戏模式",
-                "§7当前模式: §f" + modeStr,
-                "",
-                "§e点击切换: 生存→创造→冒险→旁观→无"));
+        // 强制游戏模式（位置15）—— 仅服务器管理员可操作
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (isAdmin) {
+            String modeStr = land.enforceGameMode != null ? land.enforceGameMode : "无";
+            inv.setItem(15, createItem(Material.COMPASS, "§e§l强制游戏模式",
+                    "§7当前模式: §f" + modeStr,
+                    "",
+                    "§e点击切换: 生存→创造→冒险→旁观→无"));
+        } else {
+            inv.setItem(15, createItem(Material.BARRIER, "§7§l强制游戏模式",
+                    "§7当前模式: §f" + (land.enforceGameMode != null ? land.enforceGameMode : "无"),
+                    "",
+                    "§c仅服务器管理员可操作"));
+        }
 
         // ★ 设置传送点（位置31）
         inv.setItem(31, createItem(Material.ENDER_PEARL, "§a§l设置传送点",

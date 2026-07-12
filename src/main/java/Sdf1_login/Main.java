@@ -3035,6 +3035,12 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 领地公告管理输入拦截（CLI输入进出消息）
+        if (areaCLIManager != null && areaCLIManager.handleAnnouncementInput(p, msg)) {
+            e.setCancelled(true);
+            return;
+        }
+
         // ★ 过户领地输入拦截（CLI输入新所有者名）
         if (areaProtection != null && areaProtection.handleTransferInput(p, msg)) {
             e.setCancelled(true);

@@ -3034,6 +3034,11 @@ public class AreaProtection implements Listener {
                 p.sendMessage(formatAreaMsg(oldAc.leaveMsg));
             }
 
+            // ★ 离开领地时展示边框粒子（3秒）
+            if (oldAc != null) {
+                showBorderBrief(p, oldAc);
+            }
+
             // 收标
             List<PotionEffectType> marked =
                     playerMarkedEffects.remove(uid);
@@ -3147,6 +3152,8 @@ public class AreaProtection implements Listener {
                     p.sendMessage(
                             formatAreaMsg(newAc.enterMsg));
                 }
+                // ★ 进入领地时展示边框粒子（3秒）
+                showBorderBrief(p, newAc);
                 // ★ 公共建筑设施：访客自动获得传送、免疫伤害、攻击敌对生物权限
                 if (newAc.isPublicBuilding && !p.getName().equalsIgnoreCase(newAc.owner) && !isAreaAdmin(p)) {
                     p.sendMessage("§a§l[公共建筑] §f欢迎来到公共设施: §e" + newAc.name);
@@ -4210,6 +4217,10 @@ public class AreaProtection implements Listener {
                     && !fromArea.leaveMsg.isEmpty()) {
                 p.sendMessage(formatAreaMsg(fromArea.leaveMsg));
             }
+            // ★ 离开领地时展示边框粒子（3秒）
+            if (fromArea != null) {
+                showBorderBrief(p, fromArea);
+            }
         }
 
         // ===== 进入新区域 =====
@@ -4235,6 +4246,11 @@ public class AreaProtection implements Listener {
             if (toArea != null && toArea.enterMsg != null
                     && !toArea.enterMsg.isEmpty()) {
                 p.sendMessage(formatAreaMsg(toArea.enterMsg));
+            }
+
+            // ★ 进入领地时展示边框粒子（3秒）
+            if (toArea != null) {
+                showBorderBrief(p, toArea);
             }
 
             // 发放效果
@@ -4322,6 +4338,64 @@ public class AreaProtection implements Listener {
 
     public Set<String> getAreaNames() {
         return areas.keySet();
+    }
+
+    // ==================== 领地边框粒子展示 ====================
+
+    /**
+     * 向玩家展示领地边框粒子特效（只展示给指定玩家）
+     * @param ac 领地配置
+     * @param durationTicks 持续tick数（20tick=1秒）
+     */
+    public void showBorderParticles(Player p, AreaConfig ac, int durationTicks) {
+        if (ac == null) return;
+        World world = Bukkit.getWorld(ac.world);
+        if (world == null) return;
+
+        int minX = Math.min(ac.x1, ac.x2);
+        int maxX = Math.max(ac.x1, ac.x2);
+        int minZ = Math.min(ac.z1, ac.z2);
+        int maxZ = Math.max(ac.z1, ac.z2);
+
+        Particle.DustTransition dust = new Particle.DustTransition(org.bukkit.Color.fromRGB(0, 255, 255), org.bukkit.Color.fromRGB(255, 255, 0), 1.2f);
+
+        // 每20tick刷新一次粒子（共durationTicks/20次）
+        int rounds = Math.max(1, durationTicks / 20);
+        for (int i = 0; i < rounds; i++) {
+            final int round = i;
+            new org.bukkit.scheduler.BukkitRunnable() {
+                @Override
+                public void run() {
+                    if (!p.isOnline()) { cancel(); return; }
+
+                    // 在玩家Y层展示四条边
+                    int playerY = p.getLocation().getBlockY();
+                    int y = Math.max(ac.yMin, Math.min(playerY, ac.yMax));
+
+                    // 四条边
+                    for (int x = minX; x <= maxX; x += 2) {
+                        p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, x + 0.5, y, minZ + 0.5), 1, dust);
+                        p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, x + 0.5, y, maxZ + 0.5), 1, dust);
+                    }
+                    for (int z = minZ; z <= maxZ; z += 2) {
+                        p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, minX + 0.5, y, z + 0.5), 1, dust);
+                        p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, maxX + 0.5, y, z + 0.5), 1, dust);
+                    }
+                    // 四个角高亮
+                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, minZ + 0.5), 3);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, minZ + 0.5), 3);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, maxZ + 0.5), 3);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, maxZ + 0.5), 3);
+                }
+            }.runTaskLater(plugin, round * 20L);
+        }
+    }
+
+    /**
+     * 短时间展示领地边框（进入/离开时，3秒）
+     */
+    public void showBorderBrief(Player p, AreaConfig ac) {
+        showBorderParticles(p, ac, 60); // 3秒
     }
 
     /** 获取所有用户组名（tab补全用） */
@@ -5958,6 +6032,18 @@ public class AreaProtection implements Listener {
                     }
                     plugin.areaCLIManager.startEditGiveEffect(p, args[2], args[3], args[4]);
                     break;
+                case "announcement":
+                    // ★ 领地公告管理
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli announcement <领地名> [子页]");
+                        break;
+                    }
+                    int annPage = 1;
+                    if (args.length >= 4) {
+                        try { annPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    }
+                    plugin.areaCLIManager.showAnnouncementManagement(p, args[2], annPage);
+                    break;
                 case "create":
                     // 跳转到创建命令
                     // 直接转发
@@ -7590,6 +7676,8 @@ public class AreaProtection implements Listener {
             } else if (level == PermissionLevel.VISITOR) {
                 p.sendMessage("§7(你是此领地的访客)");
             }
+            // ★ info时展示领地边框粒子（5秒）
+            showBorderParticles(p, ac, 100);
             return true;
         }
 

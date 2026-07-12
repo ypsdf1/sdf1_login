@@ -333,6 +333,9 @@ public class AreaCLIManager {
                 "/protect settp " + land.name));
         p.sendMessage(clickableAction("🔄", "过户领地（需要所有者权限）",
                 "/protect transfeland " + land.name));
+        // ★ 新增：领地公告管理
+        p.sendMessage(clickableAction("📢", "领地公告（进出提示消息）",
+                "/protect cli announcement " + land.name + " 1"));
 
         p.sendMessage(Component.empty()
                 .append(Component.text("§a[◀ 返回列表]")
@@ -1593,5 +1596,128 @@ public class AreaCLIManager {
         String desc = effName + " Lv" + level + " " + duration + "秒";
         p.sendMessage(Component.text("§a已添加增益效果: §f" + desc));
         areaProtect.saveAreaToDb(land);
+    }
+
+    // ==================== 领地公告管理 ====================
+
+    /**
+     * 领地公告管理主页面
+     * @param subPage 1=主菜单, 2=编辑进入消息, 3=编辑离开消息
+     */
+    public void showAnnouncementManagement(Player p, String landName, int subPage) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+
+        // 权限检查
+        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
+        // ========== 主菜单 ==========
+        if (subPage == 1) {
+            p.sendMessage(header("领地公告: " + landName));
+            p.sendMessage(Component.text("§7配置玩家进出领地时的提示消息"));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+
+            // 显示当前进入消息
+            String enterMsg = (land.enterMsg != null && !land.enterMsg.isEmpty()) ? land.enterMsg : "§7（未设置）";
+            p.sendMessage(Component.text("§a进入消息: §f" + enterMsg));
+            p.sendMessage(Component.empty()
+                    .append(Component.text("§e[编辑进入消息] ")
+                            .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑进入领地时的提示消息")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli announcement " + landName + " 2")))
+                    .append(Component.text("§7点击编辑")));
+
+            p.sendMessage(Component.text(""));
+
+            // 显示当前离开消息
+            String leaveMsg = (land.leaveMsg != null && !land.leaveMsg.isEmpty()) ? land.leaveMsg : "§7（未设置）";
+            p.sendMessage(Component.text("§a离开消息: §f" + leaveMsg));
+            p.sendMessage(Component.empty()
+                    .append(Component.text("§e[编辑离开消息] ")
+                            .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑离开领地时的提示消息")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli announcement " + landName + " 3")))
+                    .append(Component.text("§7点击编辑")));
+
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+            p.sendMessage(Component.text("§7提示: 使用 §f&7§l颜色代码 §7格式化消息"));
+            p.sendMessage(Component.text("§7例如: §f&a欢迎来到 §6领地名"));
+
+            // 返回按钮
+            p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli manage " + landName));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 编辑进入消息 ==========
+        else if (subPage == 2) {
+            p.sendMessage(header("编辑进入消息: " + landName));
+            p.sendMessage(Component.text("§7当前进入消息: §f" + (land.enterMsg != null && !land.enterMsg.isEmpty() ? land.enterMsg : "（空）")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+            p.sendMessage(Component.text("§e请在聊天栏输入新的进入消息:"));
+            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息"));
+
+            // 标记等待输入
+            pendingEffectInput.put(p.getUniqueId(), new String[]{"announcement_enter", landName, ""});
+            savePageInfo(p, "announcement", landName, 2);
+        }
+
+        // ========== 编辑离开消息 ==========
+        else if (subPage == 3) {
+            p.sendMessage(header("编辑离开消息: " + landName));
+            p.sendMessage(Component.text("§7当前离开消息: §f" + (land.leaveMsg != null && !land.leaveMsg.isEmpty() ? land.leaveMsg : "（空）")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+            p.sendMessage(Component.text("§e请在聊天栏输入新的离开消息:"));
+            p.sendMessage(Component.text("§7输入 §c清空 §7可清除消息"));
+
+            // 标记等待输入
+            pendingEffectInput.put(p.getUniqueId(), new String[]{"announcement_leave", landName, ""});
+            savePageInfo(p, "announcement", landName, 3);
+        }
+    }
+
+    /**
+     * 处理公告消息输入（在ChatEvent中调用）
+     */
+    public boolean handleAnnouncementInput(Player p, String message) {
+        String[] pending = pendingEffectInput.get(p.getUniqueId());
+        if (pending == null) return false;
+
+        String type = pending[0];
+        String landName = pending[1];
+
+        if (!type.startsWith("announcement_")) return false;
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            pendingEffectInput.remove(p.getUniqueId());
+            return true;
+        }
+
+        String field = type.equals("announcement_enter") ? "enter_msg" : "leave_msg";
+        String value = message.equals("清空") ? "" : message;
+
+        // 保存到内存
+        if (type.equals("announcement_enter")) {
+            land.enterMsg = value;
+        } else {
+            land.leaveMsg = value;
+        }
+
+        // 保存到DB
+        areaProtect.saveAreaToDb(land);
+
+        p.sendMessage(Component.text("§a已保存" + (type.equals("announcement_enter") ? "进入" : "离开") + "消息: §f" + (value.isEmpty() ? "（已清空）" : value)));
+        pendingEffectInput.remove(p.getUniqueId());
+
+        // 返回公告管理页面
+        showAnnouncementManagement(p, landName, 1);
+        return true;
     }
 }
