@@ -91,6 +91,9 @@ public class Main extends JavaPlugin
             new HashMap<>();
     public MenuManager menu;
 
+    // ★ 自身发起的封禁标记（防止PlayerBanEvent双重广播）
+    private final Set<String> selfInitiatedBans = ConcurrentHashMap.newKeySet();
+
     private final Set<String> loggedIn =
             new TreeSet<>(
                     String.CASE_INSENSITIVE_ORDER);
@@ -1030,12 +1033,19 @@ public class Main extends JavaPlugin
         org.bukkit.BanList.Type type = isIpTarget(target)
                 ? org.bukkit.BanList.Type.IP
                 : org.bukkit.BanList.Type.NAME;
+        // ★ 标记为自身发起（防止PlayerBanEvent双重广播）
+        selfInitiatedBans.add(target.toLowerCase());
+
         Bukkit.getBanList(type).addBan(target, reason,
                 expireMs == null ? null : new java.util.Date(expireMs),
                 sender.getName());
 
         // ★ 公屏广播封禁警告
         broadcastBanWarning(target, type, reason, expireMs, sender.getName());
+
+        // ★ 清除标记（延迟1秒，确保事件已触发）
+        String tgt = target.toLowerCase();
+        Bukkit.getScheduler().runTaskLater(this, () -> selfInitiatedBans.remove(tgt), 20L);
     }
 
     /**
@@ -2853,6 +2863,60 @@ public class Main extends JavaPlugin
             e.setCancelled(true);
             return;
         }
+    }
+
+    // ★ 拦截原版 /ban、/ban-ip 命令，补充广播封禁警告（覆盖永久/临时封禁）
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPlayerCommandPreprocess(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
+        if (e.isCancelled()) return;
+        String msg = e.getMessage().trim();
+        String lower = msg.toLowerCase();
+
+        boolean isNameBan = lower.equals("/ban") || lower.startsWith("/ban ");
+        boolean isIpBan = lower.equals("/ban-ip") || lower.startsWith("/ban-ip ")
+                || lower.equals("/banip") || lower.startsWith("/banip ");
+        if (!isNameBan && !isIpBan) return;
+
+        // 解析 /ban <player> [reason...] 或 /ban-ip <player|ip> [reason...]
+        String[] parts = msg.split("\\s+");
+        if (parts.length < 2) return;
+        String target = parts[1];
+
+        // ★ 延迟2tick执行（等Vanilla ban完成后读取BanList）
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            try {
+                // 检查是否已被自身插件处理（防御重复广播）
+                if (selfInitiatedBans.remove(target.toLowerCase())) return;
+
+                if (isNameBan) {
+                    org.bukkit.BanList banList = Bukkit.getBanList(org.bukkit.BanList.Type.NAME);
+                    org.bukkit.BanEntry<?> entry = banList.getBanEntry(target);
+                    if (entry == null) return;
+                    String reason = entry.getReason() != null ? entry.getReason() : "已被服务器封禁";
+                    String source = entry.getSource() != null ? entry.getSource() : "Server";
+                    java.util.Date expireDate = entry.getExpiration();
+                    long expireMs = expireDate != null ? expireDate.getTime() : null;
+                    broadcastBanWarning(target, org.bukkit.BanList.Type.NAME, reason, expireMs, source);
+                } else {
+                    // IP封禁：target可能是玩家名或IP，尝试解析为IP
+                    String ip = target;
+                    org.bukkit.entity.Player tp = Bukkit.getPlayerExact(target);
+                    if (tp != null && tp.getAddress() != null && tp.getAddress().getAddress() != null) {
+                        ip = tp.getAddress().getAddress().getHostAddress();
+                    }
+                    org.bukkit.BanList ipList = Bukkit.getBanList(org.bukkit.BanList.Type.IP);
+                    org.bukkit.BanEntry<?> entry = ipList.getBanEntry(ip);
+                    if (entry == null) return;
+                    String reason = entry.getReason() != null ? entry.getReason() : "已被服务器封禁";
+                    String source = entry.getSource() != null ? entry.getSource() : "Server";
+                    java.util.Date expireDate = entry.getExpiration();
+                    long expireMs = expireDate != null ? expireDate.getTime() : null;
+                    broadcastBanWarning(ip, org.bukkit.BanList.Type.IP, reason, expireMs, source);
+                }
+            } catch (Exception ex) {
+                getLogger().warning("[封禁广播] 拦截ban命令异常: " + ex.getMessage());
+            }
+        }, 2L);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)

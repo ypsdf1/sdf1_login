@@ -9031,6 +9031,9 @@ public class AreaProtection implements Listener {
         int used = timestamps.size();
         if (used == 0) return null;
 
+        // ★ 仅在达到上限时才提示冷却，未达上限时只显示剩余次数
+        if (used < RENAME_LIMIT) return null;
+
         long firstInWindow = timestamps.get(0);
         long unlockTime = firstInWindow + RENAME_WINDOW_MS;
         if (now >= unlockTime) return null; // 已解锁
