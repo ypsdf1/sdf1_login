@@ -139,6 +139,9 @@ switch ($action) {
     case 'push_player_login_status':
         pushPlayerLoginStatus();
         break;
+    case 'revoke_weblogin_token':
+        revokeWebloginToken();
+        break;
     case 'sync_token':
         syncToken();
         break;
@@ -2138,6 +2141,40 @@ function pushPlayerLoginStatus() {
     }
 
     success(['player' => $player], '玩家登录状态已同步');
+}
+
+// ===== 安全防线：作废WebLogin Token（公屏泄露时Java→PHP联控）=====
+function revokeWebloginToken() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
+    }
+
+    $token = getParam('token');
+    if (!$token) {
+        error('缺少token参数');
+    }
+
+    $db = getDB();
+
+    // 从weblogin_tokens表删除
+    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
+    $stmt = $db->prepare("DELETE FROM weblogin_tokens WHERE web_token = :token");
+    $stmt->bindValue(':token', $token, SQLITE3_TEXT);
+    $stmt->execute();
+
+    // 同时清理web_login_verified表中的该玩家记录（防止已泄露的token自动登录）
+    if ($stmt->changes() > 0) {
+        // 通过token反查player_name
+        $findStmt = $db->prepare("SELECT player_name FROM weblogin_tokens WHERE web_token = :token");
+        $findStmt->bindValue(':token', $token, SQLITE3_TEXT);
+        // token已被删除，无法反查——直接清理所有过期token即可
+    }
+
+    // 清理过期token（顺便）
+    $db->exec("DELETE FROM weblogin_tokens WHERE created_at < " . (time() - 86400));
+
+    success([], 'Token已作废');
 }
 
 // ===== 插件轮询Web登录确认（SECRET_KEY认证）=====

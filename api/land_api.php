@@ -181,7 +181,7 @@ try {
     $isAdmin = false;
 
     // 同步类action只接受secret验证（Java端推送）
-    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback', 'sync_admins'];
+    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback', 'sync_admins', 'sync_bans'];
     // 管理面板action：支持admin_token或secret
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member'];
     // 玩家端action：需要token
@@ -284,6 +284,11 @@ try {
         // ===== Java端推送插件管理员列表 =====
         case 'sync_admins':
             handleSyncAdmins($db, $_POST);
+            break;
+
+        // ===== Java端推送封禁名单 =====
+        case 'sync_bans':
+            handleSyncBans($db, $_POST);
             break;
 
         // ===== 管理面板：获取所有领地 =====
@@ -759,6 +764,17 @@ function initLandTables($db) {
         player_name TEXT PRIMARY KEY,
         synced_at INTEGER DEFAULT 0
     )");
+
+    // ★ 封禁名单（Java端同步Bukkit BanList）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_player_bans (
+        target TEXT NOT NULL,
+        ban_type TEXT NOT NULL DEFAULT 'name',
+        reason TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        expire_time INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0,
+        PRIMARY KEY (target, ban_type)
+    )");
 }
 
 /**
@@ -929,6 +945,29 @@ function handleSyncAdmins($db, $post) {
         $stmt->execute();
     }
     echo json_encode(['success' => true, 'count' => count($admins)]);
+}
+
+function handleSyncBans($db, $post) {
+    $bans = json_decode($post['bans'] ?? '[]', true);
+    if (!is_array($bans)) {
+        echo json_encode(['success' => false, 'error' => 'invalid bans data']);
+        return;
+    }
+    $now = time();
+    // 先清空旧数据再全量写入
+    $db->exec("DELETE FROM web_player_bans");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at) VALUES (:target, :type, :reason, :source, :expire, :now)");
+    foreach ($bans as $ban) {
+        if (empty($ban['target'])) continue;
+        $stmt->bindValue(':target', $ban['target'], SQLITE3_TEXT);
+        $stmt->bindValue(':type', $ban['type'] ?? 'name', SQLITE3_TEXT);
+        $stmt->bindValue(':reason', $ban['reason'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':source', $ban['source'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':expire', (int)($ban['expire'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true, 'count' => count($bans)]);
 }
 
 function handleSyncShop($db, $post) {

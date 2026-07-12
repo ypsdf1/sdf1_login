@@ -77,6 +77,7 @@ switch ($action) {
     case 'list_same_ip':        adminListSameIp(); break;
     case 'list_users_paginated': adminListUsersPaginated(); break;
     case 'cdk_delete':          adminDeleteCDK(); break;
+    case 'list_bans':           adminListBans(); break;
     default:              exit(json_encode(['success' => false, 'message' => 'Unknown action: ' . $action], JSON_UNESCAPED_UNICODE));
 }
 } catch (\Throwable $e) {
@@ -2436,6 +2437,25 @@ function adminDeleteCDK() {
         }
     } catch (Exception $e) {
         @error_log('[adminDeleteCDK] Error: ' . $e->getMessage());
+        exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+    }
+}
+
+/**
+ * 获取封禁名单（供用户管理页面显示封禁状态）
+ */
+function adminListBans() {
+    requireAdminSession();
+    try {
+        $db = getDB();
+        $result = $db->query("SELECT target, ban_type, reason, source, expire_time FROM web_player_bans");
+        $bans = [];
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $bans[] = $row;
+        }
+        exit(json_encode(['success' => true, 'data' => $bans], JSON_UNESCAPED_UNICODE));
+    } catch (\Throwable $e) {
+        @error_log('[adminListBans] Error: ' . $e->getMessage());
         exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
     }
 }

@@ -752,10 +752,11 @@ async function doGenToken() {
 // ===== 用户管理 =====
 async function loadUsers(el) {
     el.innerHTML = '<div class="card">加载中...</div>';
-    // ★ 不再调用 list_users（非分页），直接用轻量级接口获取在线状态
-    // 分页数据由 lazyLoadUsersPage 单独获取
     try {
-        const onlineR = await jsonApi('admin.php?action=list_online_names');
+        const [onlineR, bansR] = await Promise.all([
+            jsonApi('admin.php?action=list_online_names'),
+            jsonApi('admin.php?action=list_bans')
+        ]);
         const onlineMap = {};
         const onlineSet = new Set();
         if (onlineR.success && onlineR.data) {
@@ -764,8 +765,19 @@ async function loadUsers(el) {
                 onlineSet.add(name.toLowerCase());
             });
         }
+        // 构建封禁映射：playerName → {type, reason, source, expire}
+        const banMap = {};
+        if (bansR.success && bansR.data) {
+            bansR.data.forEach(b => {
+                const key = b.target.toLowerCase();
+                if (!banMap[key]) banMap[key] = [];
+                banMap[key].push(b);
+            });
+        }
+        window._banMap = banMap;
         renderUserTabs(el, [], onlineSet, onlineMap);
     } catch(e) {
+        window._banMap = {};
         renderUserTabs(el, [], new Set(), {});
     }
 }
@@ -1018,10 +1030,29 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
                 const ipLoc = u.ip_location || '-';
                 const foldSuffix = u._foldCount > 0 ? ` <span style="color:var(--yellow);font-size:12px">(同ip段${u._foldCount}名)</span>` : '';
 
+                // ★ 封禁状态检查
+                const banMap = window._banMap || {};
+                const bans = banMap[(u.player_name || '').toLowerCase()];
+                let banBadge = '';
+                let nameStyle = '';
+                if (bans && bans.length > 0) {
+                    const b = bans[0];
+                    const now = Date.now();
+                    // 检查是否仍在封禁期（永久封禁expire=0，限时封禁需检查expire）
+                    const isActive = b.expire_time === 0 || b.expire_time > now;
+                    if (isActive) {
+                        nameStyle = 'color:#ff4444;font-weight:bold';
+                        const reasonText = b.reason ? b.reason.substring(0, 30) : '无理由';
+                        const isPerm = b.expire_time === 0;
+                        const typeLabel = b.ban_type === 'ip' ? 'IP封禁' : '封禁';
+                        banBadge = ` <span style="color:#ff6666;font-size:11px;background:rgba(255,0,0,0.1);padding:1px 5px;border-radius:3px" title="${typeLabel}: ${b.reason || '无理由'} | 来源: ${b.source || '未知'} | ${isPerm ? '永久封禁' : '至 ' + new Date(b.expire_time).toLocaleString()}">🚫${typeLabel}</span>`;
+                    }
+                }
+
                 const tr = document.createElement('tr');
                 tr.setAttribute('data-name', (u.player_name || '').toLowerCase());
                 tr.innerHTML = `
-                    <td class="${playerNameClass}">${isOnline ? '🟢 ' : ''}${u.player_name}${foldSuffix}</td>
+                    <td class="${playerNameClass}" style="${nameStyle}">${isOnline ? '🟢 ' : ''}${u.player_name}${banBadge}${foldSuffix}</td>
                     <td>${regTime}</td>
                     <td>${loginTime}</td>
                     <td>${u.points || 0}</td>
