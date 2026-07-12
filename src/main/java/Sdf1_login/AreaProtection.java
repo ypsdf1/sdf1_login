@@ -3774,6 +3774,8 @@ public class AreaProtection implements Listener {
             case "跳跃提升":
                 return resolveEffectType("jump_boost");
             case "生命恢复":
+            case "再生":
+            case "回复":
                 return resolveEffectType("regeneration");
             case "抗性提升":
                 return resolveEffectType("resistance");
