@@ -107,6 +107,8 @@ public class WebManager {
     private String lastServiceProviderHash = "";
     private String lastBondBalanceHash = "";
     private String lastLandDataHash = "";
+    private String lastBansHash = "";
+    private String lastAdminsHash = "";
     private String lastPushCredentialsHash = "";
     private String lastUserRegistrationHash = "";
 
@@ -3272,6 +3274,11 @@ public class WebManager {
                            .append(p.getOrDefault("permissions", "")).append("|");
             }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
+
+            // ★ 封禁名单和管理员列表独立于领地hash变化，必须每次都同步
+            syncBans();
+            syncAdmins();
+
             if (currentHash.equals(lastLandDataHash)) {
                 // ★ hash未变化，静默跳过（但首次运行或强制刷新时会同步）
                 return;
@@ -3342,12 +3349,6 @@ public class WebManager {
 
             // 4. 同步成员权限数据（area_land_permissions → web_area_permissions）
             syncPermissions(areaProtect);
-
-            // 5. 同步封禁名单到PHP
-            syncBans();
-
-            // 5. ★ 同步插件管理员列表到PHP
-            syncAdmins();
 
             plugin.getLogger().fine("[Web通信] 领地数据同步完成");
         } catch (Exception e) {
@@ -3470,6 +3471,13 @@ public class WebManager {
                 }
             }
 
+            String currentHash = adminNames.stream().sorted().collect(Collectors.joining("|"));
+            if (currentHash.equals(lastAdminsHash)) {
+                plugin.getLogger().fine("[防护-sync] 管理员列表无变化，跳过");
+                return;
+            }
+            lastAdminsHash = currentHash;
+
             // 构建JSON数组
             StringBuilder sb = new StringBuilder("[");
             boolean first = true;
@@ -3485,10 +3493,15 @@ public class WebManager {
             params.put("secret", secretKey);
             params.put("admins", sb.toString());
             String resp = httpGet("api/sync.php", params);
-            plugin.getLogger().fine("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
+            plugin.getLogger().info("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
         }
+    }
+
+    public void forceSyncBansAndAdmins() {
+        syncBans();
+        syncAdmins();
     }
 
     /**
@@ -3502,6 +3515,7 @@ public class WebManager {
 
             StringBuilder sb = new StringBuilder("[");
             boolean first = true;
+            StringBuilder hashBuilder = new StringBuilder();
 
             // 名字封禁
             @SuppressWarnings("unchecked")
@@ -3517,6 +3531,7 @@ public class WebManager {
                   .append("\",\"reason\":\"").append(escapeJson(reason))
                   .append("\",\"source\":\"").append(escapeJson(source))
                   .append("\",\"expire\":").append(expireDate).append("}");
+                hashBuilder.append("n:").append(target).append(":").append(reason).append(":").append(expireDate).append("|");
             }
 
             // IP封禁
@@ -3533,16 +3548,23 @@ public class WebManager {
                   .append("\",\"reason\":\"").append(escapeJson(reason))
                   .append("\",\"source\":\"").append(escapeJson(source))
                   .append("\",\"expire\":").append(expireDate).append("}");
+                hashBuilder.append("i:").append(target).append(":").append(reason).append(":").append(expireDate).append("|");
             }
 
             sb.append("]");
+            String currentHash = hashBuilder.toString();
+            if (currentHash.equals(lastBansHash)) {
+                plugin.getLogger().fine("[防护-sync] 封禁名单无变化，跳过");
+                return;
+            }
+            lastBansHash = currentHash;
 
             Map<String, String> params = new LinkedHashMap<>();
             params.put("action", "sync_bans");
             params.put("secret", secretKey);
             params.put("bans", sb.toString());
             String resp = httpGet("api/sync.php", params);
-            plugin.getLogger().fine("[防护-sync] 封禁名单同步: " + resp);
+            plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size()) + "条 → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 封禁名单同步异常: " + e.getMessage());
         }

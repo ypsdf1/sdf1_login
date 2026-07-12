@@ -1043,6 +1043,12 @@ public class Main extends JavaPlugin
         // ★ 公屏广播封禁警告
         broadcastBanWarning(target, type, reason, expireMs, sender.getName());
 
+        // ★ 立即异步同步封禁到PHP（避免等待15-25秒定时同步）
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            WebManager wm = webManager;
+            if (wm != null) wm.forceSyncBansAndAdmins();
+        });
+
         // ★ 清除标记（延迟1秒，确保事件已触发）
         String tgt = target.toLowerCase();
         Bukkit.getScheduler().runTaskLater(this, () -> selfInitiatedBans.remove(tgt), 20L);
@@ -2870,15 +2876,33 @@ public class Main extends JavaPlugin
     public void onPlayerCommandPreprocess(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
         if (e.isCancelled()) return;
         String msg = e.getMessage().trim();
-        String lower = msg.toLowerCase();
+        if (msg.isEmpty() || msg.charAt(0) != '/') return;
+        handleBanCommand(msg.substring(1));
+    }
 
-        boolean isNameBan = lower.equals("/ban") || lower.startsWith("/ban ");
-        boolean isIpBan = lower.equals("/ban-ip") || lower.startsWith("/ban-ip ")
-                || lower.equals("/banip") || lower.startsWith("/banip ");
+    // ★ 拦截控制台 ban、ban-ip 命令（包括 minecraft:ban 形式）
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onServerCommand(org.bukkit.event.server.ServerCommandEvent e) {
+        if (e.isCancelled()) return;
+        handleBanCommand(e.getCommand().trim());
+    }
+
+    private void handleBanCommand(String rawCommand) {
+        if (rawCommand.isEmpty()) return;
+        String lower = rawCommand.toLowerCase();
+        // 兼容 minecraft:ban / minecraft:ban-ip 形式
+        if (lower.startsWith("minecraft:")) {
+            rawCommand = rawCommand.substring(10);
+            lower = lower.substring(10);
+        }
+
+        boolean isNameBan = lower.equals("ban") || lower.startsWith("ban ");
+        boolean isIpBan = lower.equals("ban-ip") || lower.startsWith("ban-ip ")
+                || lower.equals("banip") || lower.startsWith("banip ");
         if (!isNameBan && !isIpBan) return;
 
         // 解析 /ban <player> [reason...] 或 /ban-ip <player|ip> [reason...]
-        String[] parts = msg.split("\\s+");
+        String[] parts = rawCommand.split("\\s+");
         if (parts.length < 2) return;
         String target = parts[1];
 
@@ -2913,6 +2937,12 @@ public class Main extends JavaPlugin
                     long expireMs = expireDate != null ? expireDate.getTime() : null;
                     broadcastBanWarning(ip, org.bukkit.BanList.Type.IP, reason, expireMs, source);
                 }
+
+                // 立即同步封禁到PHP（ Vanilla ban 不走 applyBan，所以这里手动触发）
+                Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                    WebManager wm = webManager;
+                    if (wm != null) wm.forceSyncBansAndAdmins();
+                });
             } catch (Exception ex) {
                 getLogger().warning("[封禁广播] 拦截ban命令异常: " + ex.getMessage());
             }
