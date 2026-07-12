@@ -798,6 +798,9 @@ public class AreaProtection implements Listener {
             msg = msg.replaceAll("[（(\\[【<《]领地[）)\\]】>》]", landName);
         }
 
+        // HTML实体解码（必须在&颜色代码之前，防止&amp;a被误转为§amp;）
+        msg = decodeHtmlEntities(msg);
+
         // & → §
         for (int i = 0; i <= 9; i++) {
             msg = msg.replace("&" + i, "§" + i);
@@ -808,7 +811,12 @@ public class AreaProtection implements Listener {
 
         // 换行
         msg = msg.replace("<br>", "\n");
+        msg = msg.replace("<br/>", "\n");
+        msg = msg.replace("<br />", "\n");
         msg = msg.replace("\\n", "\n");
+
+        // <p style="color:..."> 和 <span style="color:..."> 颜色标签预处理
+        msg = processColorTags(msg);
 
         // HTML → Minecraft格式（栈式解析，支持嵌套）
         msg = convertHtmlTags(msg);
@@ -817,6 +825,165 @@ public class AreaProtection implements Listener {
         msg = "§c§l【区域防护】§r " + msg;
 
         return msg;
+    }
+
+    /**
+     * HTML实体解码
+     * 支持: &amp; &lt; &gt; &quot; &apos; &#39; &#x27; &nbsp; &ensp; &emsp;
+     */
+    private String decodeHtmlEntities(String msg) {
+        msg = msg.replace("&amp;", "&");
+        msg = msg.replace("&lt;", "<");
+        msg = msg.replace("&gt;", ">");
+        msg = msg.replace("&quot;", "\"");
+        msg = msg.replace("&apos;", "'");
+        msg = msg.replace("&#39;", "'");
+        msg = msg.replace("&#x27;", "'");
+        msg = msg.replace("&nbsp;", " ");
+        msg = msg.replace("&ensp;", " ");
+        msg = msg.replace("&emsp;", "  ");
+        return msg;
+    }
+
+    /**
+     * 处理HTML颜色标签: <p style="color:#xxx">和<span style="color:xxx">
+     * 转换为Minecraft颜色代码
+     */
+    private String processColorTags(String msg) {
+        // <p style="color:xxx">text</p> → §color text§r
+        java.util.regex.Pattern pPattern = java.util.regex.Pattern.compile(
+                "<p\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\))\\s*;?[\"']\\s*>(.*?)</p>",
+                java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL);
+        java.util.regex.Matcher pMatcher = pPattern.matcher(msg);
+        StringBuilder sb = new StringBuilder();
+        while (pMatcher.find()) {
+            String color = pMatcher.group(1);
+            String text = pMatcher.group(2);
+            String mcColor = convertHtmlColorToMc(color);
+            pMatcher.appendReplacement(sb, mcColor + text + "§r");
+        }
+        pMatcher.appendTail(sb);
+        msg = sb.toString();
+
+        // <span style="color:xxx">text</span> → §color text§r
+        java.util.regex.Pattern sPattern = java.util.regex.Pattern.compile(
+                "<span\\s+style=[\"']color:\\s*(#[0-9a-fA-F]{3,8}|[a-zA-Z_]+|rgb\\([^)]+\\))\\s*;?[\"']\\s*>(.*?)</span>",
+                java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL);
+        java.util.regex.Matcher sMatcher = sPattern.matcher(msg);
+        sb = new StringBuilder();
+        while (sMatcher.find()) {
+            String color = sMatcher.group(1);
+            String text = sMatcher.group(2);
+            String mcColor = convertHtmlColorToMc(color);
+            sMatcher.appendReplacement(sb, mcColor + text + "§r");
+        }
+        sMatcher.appendTail(sb);
+        msg = sb.toString();
+
+        // 清理残留的<p>和<span>标签
+        msg = msg.replaceAll("<p>(.*?)</p>", "$1");
+        msg = msg.replaceAll("<span>(.*?)</span>", "$1");
+
+        return msg;
+    }
+
+    /**
+     * HTML颜色值→Minecraft颜色代码
+     * 支持: #RRGGBB, 颜色名(red/green/blue等), rgb()
+     */
+    private String convertHtmlColorToMc(String color) {
+        if (color == null || color.isEmpty()) return "§f";
+        String lower = color.toLowerCase().trim();
+
+        // rgb()函数
+        if (lower.startsWith("rgb(")) {
+            try {
+                String content = color.substring(color.indexOf('(') + 1, color.lastIndexOf(')'));
+                String[] parts = content.split(",");
+                if (parts.length >= 3) {
+                    int r = Integer.parseInt(parts[0].trim());
+                    int g = Integer.parseInt(parts[1].trim());
+                    int b = Integer.parseInt(parts[2].trim());
+                    return convertRgbToMc(r, g, b);
+                }
+            } catch (Exception ignored) {}
+            return "§f";
+        }
+
+        // 十六进制
+        if (lower.startsWith("#")) {
+            String hex = lower.substring(1);
+            try {
+                if (hex.length() == 3) {
+                    hex = "" + hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+                }
+                int r = Integer.parseInt(hex.substring(0, 2), 16);
+                int g = Integer.parseInt(hex.substring(2, 4), 16);
+                int b = Integer.parseInt(hex.substring(4, 6), 16);
+                return convertRgbToMc(r, g, b);
+            } catch (Exception ignored) {}
+            return "§f";
+        }
+
+        // 颜色名映射
+        switch (lower) {
+            case "red": return "§c";
+            case "green": case "lime": return "§a";
+            case "blue": return "§9";
+            case "yellow": return "§e";
+            case "white": return "§f";
+            case "black": return "§0";
+            case "gray": case "grey": return "§7";
+            case "dark_gray": case "dark_grey": return "§8";
+            case "orange": case "gold": return "§6";
+            case "aqua": case "cyan": return "§b";
+            case "pink": case "light_purple": return "§d";
+            case "purple": case "dark_purple": return "§5";
+            case "dark_red": return "§4";
+            case "dark_green": return "§2";
+            case "dark_blue": case "navy": return "§1";
+            case "dark_aqua": case "dark_cyan": return "§3";
+            default: return "§f";
+        }
+    }
+
+    /**
+     * RGB值→最近的Minecraft颜色代码
+     */
+    private String convertRgbToMc(int r, int g, int b) {
+        // MC 16色匹配（取色差最小的）
+        int[][] mcColors = {
+            {0, 0, 0},       // §0 black
+            {0, 0, 170},     // §1 dark_blue
+            {0, 170, 0},     // §2 dark_green
+            {0, 170, 170},   // §3 dark_aqua
+            {170, 0, 0},     // §4 dark_red
+            {170, 0, 170},   // §5 dark_purple
+            {255, 170, 0},   // §6 gold
+            {170, 170, 170}, // §7 gray
+            {85, 85, 85},    // §8 dark_gray
+            {85, 85, 255},   // §9 blue
+            {85, 255, 85},   // §a green
+            {85, 255, 255},  // §b aqua
+            {255, 85, 85},   // §c red
+            {255, 85, 255},  // §d light_purple
+            {255, 255, 85},  // §e yellow
+            {255, 255, 255}, // §f white
+        };
+        char[] codes = "0123456789abcdef".toCharArray();
+        int bestIdx = 15;
+        int bestDist = Integer.MAX_VALUE;
+        for (int i = 0; i < mcColors.length; i++) {
+            int dr = r - mcColors[i][0];
+            int dg = g - mcColors[i][1];
+            int db = b - mcColors[i][2];
+            int dist = dr * dr + dg * dg + db * db;
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+        return "§" + codes[bestIdx];
     }
 
     /**
@@ -885,10 +1052,11 @@ public class AreaProtection implements Listener {
 
     private char htmlToMc(String tag) {
         switch (tag) {
-            case "b": return 'l';
-            case "i": return 'o';
-            case "u": return 'n';
-            case "s": return 'm';
+            case "b": case "strong": case "h1": case "h2": case "h3": case "h4": case "h5": case "h6": return 'l';
+            case "i": case "em": case "var": return 'o';
+            case "u": case "ins": return 'n';
+            case "s": case "del": case "strike": return 'm';
+            case "center": case "p": case "span": case "div": case "font": return 0; // 颜色标签已在processColorTags处理，此处跳过
             default: return 0;
         }
     }

@@ -1221,6 +1221,32 @@ public class AreaGUIManager implements Listener {
                 String modeStr = land.enforceGameMode != null ? land.enforceGameMode : "无";
                 p.sendMessage("§a强制游戏模式: §f" + modeStr);
                 openLandSettings(p, landName);
+            } else if (raw == 19) {
+                // ★ 编辑进入消息 → 关闭GUI，提示聊天输入
+                p.closeInventory();
+                p.sendMessage("§a请输入§f进入消息§a（支持HTML标签和颜色代码）:");
+                p.sendMessage("§7当前: " + (land.enterMsg != null && !land.enterMsg.isEmpty() ? land.enterMsg : "（默认: 欢迎(玩家)来到(领地)）"));
+                p.sendMessage("§7输入 §c清空 §7可恢复默认。§7输入 §c取消 §7放弃修改");
+                p.sendMessage("§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名");
+                p.sendMessage("§7括号: §f() [] {} 【】 <> 《》");
+                p.sendMessage("§7标签: §f<b>加粗</b> §o<i>斜体</i> §n<u>下划线</u> §m<s>删除线</s>");
+                p.sendMessage("§7HTML: &amp; &lt; &gt; &quot; &apos; &nbsp;");
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.setPendingAnnouncementInput(p.getUniqueId(), landName, "announcement_enter");
+                }
+            } else if (raw == 21) {
+                // ★ 编辑离开消息 → 关闭GUI，提示聊天输入
+                p.closeInventory();
+                p.sendMessage("§a请输入§f离开消息§a（支持HTML标签和颜色代码）:");
+                p.sendMessage("§7当前: " + (land.leaveMsg != null && !land.leaveMsg.isEmpty() ? land.leaveMsg : "（默认: 感谢(玩家)光临(领地)）"));
+                p.sendMessage("§7输入 §c清空 §7可恢复默认。§7输入 §c取消 §7放弃修改");
+                p.sendMessage("§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名");
+                p.sendMessage("§7括号: §f() [] {} 【】 <> 《》");
+                p.sendMessage("§7标签: &lt;b&gt;加粗 &lt;i&gt;斜体 &lt;u&gt;下划线 &lt;s&gt;删除线");
+                p.sendMessage("§7HTML: &amp; &lt; &gt; &quot; &apos; &nbsp;");
+                if (plugin.areaCLIManager != null) {
+                    plugin.areaCLIManager.setPendingAnnouncementInput(p.getUniqueId(), landName, "announcement_leave");
+                }
             } else if (raw == 31) {
                 // ★ 设置传送点
                 p.closeInventory();
@@ -1487,6 +1513,28 @@ public class AreaGUIManager implements Listener {
                 "§7当前状态: " + (land.enableAnnounce ? "§a已启用" : "§c已禁用"),
                 "",
                 "§e点击切换"));
+
+        // 进入消息编辑（位置19）
+        String enterPreview = (land.enterMsg != null && !land.enterMsg.isEmpty()) ? land.enterMsg : "§7（默认: 欢迎(玩家)来到(领地)）";
+        inv.setItem(19, createItem(Material.WRITTEN_BOOK, "§a§l编辑进入消息",
+                "§7当前: " + enterPreview,
+                "",
+                "§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名",
+                "§7支持: §f() [] {} 【】 <> 《》",
+                "§7颜色: §f&a绿色 §6金色 §c红色 §7灰色",
+                "",
+                "§e点击编辑（聊天栏输入）"));
+
+        // 离开消息编辑（位置21）
+        String leavePreview = (land.leaveMsg != null && !land.leaveMsg.isEmpty()) ? land.leaveMsg : "§7（默认: 感谢(玩家)光临(领地)）";
+        inv.setItem(21, createItem(Material.WRITTEN_BOOK, "§b§l编辑离开消息",
+                "§7当前: " + leavePreview,
+                "",
+                "§7变量: §f(玩家) §7= 玩家名, §f(领地) §7= 领地名",
+                "§7支持: §f() [] {} 【】 <> 《》",
+                "§7颜色: §f&a绿色 §6金色 §c红色 §7灰色",
+                "",
+                "§e点击编辑（聊天栏输入）"));
 
         // 和平模式（位置13）
         Material peaceMat = land.peaceMode ? Material.LIME_DYE : Material.GRAY_DYE;

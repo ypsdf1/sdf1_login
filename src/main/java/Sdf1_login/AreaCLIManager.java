@@ -1683,6 +1683,14 @@ public class AreaCLIManager {
     }
 
     /**
+     * 设置待公告输入状态（GUI调用入口）
+     * @param type "announcement_enter" 或 "announcement_leave"
+     */
+    public void setPendingAnnouncementInput(java.util.UUID uuid, String landName, String type) {
+        pendingEffectInput.put(uuid, new String[]{type, landName, ""});
+    }
+
+    /**
      * 处理公告消息输入（在ChatEvent中调用）
      */
     public boolean handleAnnouncementInput(Player p, String message) {
