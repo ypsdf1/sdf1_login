@@ -775,8 +775,56 @@ function syncPermissions() {
         $deleted += $db->changes();
     }
 
+    // ★ 清理与Java同步状态冲突的待处理PHP变更（防止 stale pending 覆盖Java最新状态）
+    // Java是角色/权限的权威源之一；当Java推送最新状态时，Ack掉PHP端尚未被Java轮询到的、
+    // 且与Java状态冲突的 pending perm_change / add_visitor 记录。
+    $conflictCleaned = 0;
+    $pendingStmt = $db->prepare("SELECT id, change_type, target_name, change_data, created_at FROM web_admin_changes WHERE change_type IN ('perm_change','add_visitor') AND acknowledged = 0 AND created_at < :now");
+    $pendingStmt->bindValue(':now', $now, SQLITE3_INTEGER);
+    $res = $pendingStmt->execute();
+    $toAck = [];
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $data = json_decode($row['change_data'] ?? '{}', true);
+        if (!is_array($data)) continue;
+        $cLand = $data['land_name'] ?? '';
+        $cPlayer = $data['player'] ?? $row['target_name'] ?? '';
+        $cRole = $data['role'] ?? '';
+        if ($cLand === '' || $cPlayer === '' || $cRole === '') continue;
+        // 查找对应incoming记录
+        $matchedRole = null;
+        foreach ($perms as $p) {
+            if (($p['land_name'] ?? '') === $cLand && ($p['player_name'] ?? '') === $cPlayer) {
+                $matchedRole = $p['role'] ?? 'visitor';
+                break;
+            }
+        }
+        if ($matchedRole !== null && $cRole !== $matchedRole) {
+            $toAck[] = (int)$row['id'];
+            debugLog("[syncPermissions] 清理冲突pending变更", [
+                'id' => $row['id'],
+                'type' => $row['change_type'],
+                'land' => $cLand,
+                'player' => $cPlayer,
+                'php_role' => $cRole,
+                'java_role' => $matchedRole
+            ]);
+        }
+    }
+    if (!empty($toAck)) {
+        $placeholders = implode(',', array_fill(0, count($toAck), '?'));
+        $ackStmt = $db->prepare("UPDATE web_admin_changes SET acknowledged = 1, acked_at = :now WHERE id IN ($placeholders)");
+        $ackStmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $idx = 1;
+        foreach ($toAck as $id) {
+            $ackStmt->bindValue($idx++, $id, SQLITE3_INTEGER);
+        }
+        $ackStmt->execute();
+        $conflictCleaned = count($toAck);
+    }
+
     $msg = "访客权限同步成功: {$count}个";
     if ($deleted > 0) $msg .= ", 清理{$deleted}个已移除成员";
+    if ($conflictCleaned > 0) $msg .= ", 忽略{$conflictCleaned}个冲突待处理变更";
     success($msg);
 }
 
