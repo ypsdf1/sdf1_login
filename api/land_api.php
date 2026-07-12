@@ -181,7 +181,7 @@ try {
     $isAdmin = false;
 
     // 同步类action只接受secret验证（Java端推送）
-    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback'];
+    $syncActions = ['sync_lands', 'sync_shop', 'sync_permissions', 'get_pending_validations', 'validation_callback', 'sync_admins'];
     // 管理面板action：支持admin_token或secret
     $adminActions = ['list_lands', 'list_shop', 'get_config', 'update_config', 'delete_land', 'update_land_owner', 'delete_shop_item', 'list_user_groups', 'get_user_group', 'update_user_group', 'delete_user_group', 'list_group_members', 'add_group_member', 'remove_group_member'];
     // 玩家端action：需要token
@@ -279,6 +279,11 @@ try {
         // ===== Java端推送访客权限数据 =====
         case 'sync_permissions':
             handleSyncPermissions($db, $_POST);
+            break;
+
+        // ===== Java端推送插件管理员列表 =====
+        case 'sync_admins':
+            handleSyncAdmins($db, $_POST);
             break;
 
         // ===== 管理面板：获取所有领地 =====
@@ -748,6 +753,37 @@ function initLandTables($db) {
         completed_at INTEGER DEFAULT 0,
         expires_at INTEGER DEFAULT 0
     )");
+
+    // ★ 插件管理员列表（Java端同步全局tag管理员名单）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_plugin_admins (
+        player_name TEXT PRIMARY KEY,
+        synced_at INTEGER DEFAULT 0
+    )");
+}
+
+/**
+ * ★ 检查玩家是否为全局插件管理员（tag管理员）
+ * 查询 web_plugin_admins 表（Java端同步）
+ */
+function isPluginAdmin($db, $playerName) {
+    if (empty($playerName)) return false;
+    try {
+        $stmt = $db->prepare("SELECT 1 FROM web_plugin_admins WHERE player_name = :name");
+        $stmt->bindValue(':name', $playerName, SQLITE3_TEXT);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        return $row !== false;
+    } catch (\Throwable $e) {
+        return false;
+    }
+}
+
+/**
+ * ★ 检查玩家是否有权限管理某领地（领地主 或 插件管理员）
+ */
+function canManageLand($db, $playerName, $land) {
+    if ($land['owner'] === $playerName) return true;
+    return isPluginAdmin($db, $playerName);
 }
 
 function handleSyncLands($db, $post) {
@@ -870,6 +906,29 @@ function handleSyncLands($db, $post) {
     }
 
     echo json_encode(['success' => true, 'count' => count($lands)]);
+}
+
+/**
+ * ★ Java端推送插件管理员列表
+ * POST admins=JSON数组 ["player1","player2",...]
+ */
+function handleSyncAdmins($db, $post) {
+    $admins = json_decode($post['admins'] ?? '[]', true);
+    if (!is_array($admins)) {
+        echo json_encode(['success' => false, 'error' => 'invalid admins data']);
+        return;
+    }
+    $now = time();
+    // 先清空旧数据再全量写入
+    $db->exec("DELETE FROM web_plugin_admins");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_plugin_admins (player_name, synced_at) VALUES (:name, :now)");
+    foreach ($admins as $name) {
+        if (empty($name)) continue;
+        $stmt->bindValue(':name', strtolower($name), SQLITE3_TEXT);
+        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+    echo json_encode(['success' => true, 'count' => count($admins)]);
 }
 
 function handleSyncShop($db, $post) {
@@ -1225,8 +1284,8 @@ function handleLandDetail($db, $playerName, $landName) {
     }
 
     // 权限检查：只有所有者或管理员能查看详情
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者']);
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者或管理员']);
         return;
     }
 
@@ -1271,8 +1330,8 @@ function handleAddVisitor($db, $playerName, $req) {
         return;
     }
 
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能添加访客']);
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或插件管理员才能添加访客']);
         return;
     }
 
@@ -1586,8 +1645,8 @@ function handleUpdateLandField($db, $playerName, $post) {
         echo json_encode(['success' => false, 'error' => '领地不存在']);
         return;
     }
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者']);
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '你不是此领地的所有者或管理员']);
         return;
     }
 
@@ -1660,8 +1719,8 @@ function handleRemoveVisitor($db, $playerName, $req) {
         return;
     }
 
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能移除访客']);
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或插件管理员才能移除访客']);
         return;
     }
 
@@ -1713,8 +1772,8 @@ function handleChangeVisitorRole($db, $playerName, $post) {
         return;
     }
 
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能修改角色']);
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或插件管理员才能修改角色']);
         return;
     }
 
@@ -1883,9 +1942,9 @@ function handleUpdateVisitorPerm($db, $playerName, $post) {
         return;
     }
 
-    // 权限检查：只有所有者能更新权限
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能更新权限']);
+    // 权限检查：只有所有者或管理员能更新权限
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或管理员才能更新权限']);
         return;
     }
 
@@ -1960,9 +2019,9 @@ function handleGetMemberPerms($db, $playerName, $landName) {
         return;
     }
 
-    // 权限检查：只有所有者能编辑成员权限
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能编辑成员权限']);
+    // 权限检查：只有所有者或管理员能编辑成员权限
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或管理员才能编辑成员权限']);
         return;
     }
 
@@ -2017,9 +2076,9 @@ function handleUpdateMemberPerm($db, $playerName, $post) {
         return;
     }
 
-    // 权限检查
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能编辑成员权限']);
+    // 权限检查：只有所有者或管理员能编辑成员权限
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或管理员才能编辑成员权限']);
         return;
     }
 
@@ -2094,9 +2153,9 @@ function handleClearMemberPerm($db, $playerName, $post) {
         return;
     }
 
-    // 权限检查
-    if ($land['owner'] !== $playerName) {
-        echo json_encode(['success' => false, 'error' => '只有领地所有者才能清除成员权限']);
+    // 权限检查：只有所有者或管理员能清除成员权限
+    if (!canManageLand($db, $playerName, $land)) {
+        echo json_encode(['success' => false, 'error' => '只有领地所有者或管理员才能清除成员权限']);
         return;
     }
 
