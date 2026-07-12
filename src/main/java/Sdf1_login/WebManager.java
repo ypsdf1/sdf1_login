@@ -3233,7 +3233,8 @@ public class WebManager {
             for (Map<String, Object> p : permsForHash) {
                 hashBuilder.append(p.getOrDefault("land_id", 0)).append(":")
                            .append(p.getOrDefault("player_name", "")).append(":")
-                           .append(p.getOrDefault("role", "")).append(":");
+                           .append(p.getOrDefault("role", "")).append(":")
+                           .append(p.getOrDefault("permissions", "")).append("|");
             }
             String currentHash = lands.size() + ":" + hashBuilder.toString();
             if (currentHash.equals(lastLandDataHash)) {
