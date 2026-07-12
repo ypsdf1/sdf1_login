@@ -519,6 +519,7 @@ function syncLands() {
         $stmt->bindValue(':size', (int)($land['area_size'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':created', (int)($land['created_at'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
+        $stmt->bindValue(':peace_mode', (int)($land['peace_mode'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':peace_dur', (int)($land['peace_mode_duration'] ?? 5), SQLITE3_INTEGER);
         $stmt->bindValue(':peace_wl', $land['peace_whitelist'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':enforce_gm', $land['enforce_game_mode'] ?? '', SQLITE3_TEXT);

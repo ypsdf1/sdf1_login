@@ -2974,7 +2974,7 @@ async function renderLandDetail(el, landName) {
             ['deny_fluid', '流体放置', false],
             ['allow_visitor_teleport', '允许传送', true],
             ['is_public_building', '公共建筑设施', true],
-            ['peace_mode', '和平模式(禁生物)', false],
+            ['peace_mode', '和平模式(禁生物)', true],
         ];
 
         html += `<div class="card" style="margin-top:12px">
@@ -3257,7 +3257,7 @@ async function addClearEffect(landName) {
         {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
         {value:'REGENERATION',label:'❤️ 再生',desc:'REGENERATION - 缓慢恢复生命'},
         {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
-        {value:'FIRE_RESISTANCE',label:'🔥 火焰抗性',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
+        {value:'FIRE_RESISTANCE',label:'🔥 抗火',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
         {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
         {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
         {value:'BLINDNESS',label:' blinded 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
@@ -3276,7 +3276,7 @@ async function addClearEffect(landName) {
         {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳'},
         {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
         {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
-        {value:'HERO_OF_THE_VILLAGE',label:'🏆 英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
+        {value:'HERO_OF_THE_VILLAGE',label:'🏆 村庄英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
     ];
 
     // 获取当前已有的清除效果，过滤掉已选的
@@ -3292,7 +3292,7 @@ async function addClearEffect(landName) {
         try { current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : []; } catch(e) { current = []; }
 
         // 过滤掉已添加的效果（兼容中文名和英文名）
-        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'抗火',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'村庄英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
         const available = EFFECTS.filter(e => !current.includes(e.value) && !current.includes(EN_TO_CN[e.value]));
         if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
 
@@ -3335,7 +3335,7 @@ async function addGiveEffect(landName) {
         {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
         {value:'REGENERATION',label:'❤️ 再生',desc:'REGENERATION - 缓慢恢复生命'},
         {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
-        {value:'FIRE_RESISTANCE',label:'🔥 火焰抗性',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
+        {value:'FIRE_RESISTANCE',label:'🔥 抗火',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
         {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
         {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
         {value:'BLINDNESS',label:'🌑 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
@@ -3354,7 +3354,7 @@ async function addGiveEffect(landName) {
         {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳'},
         {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
         {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
-        {value:'HERO_OF_THE_VILLAGE',label:'🏆 英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
+        {value:'HERO_OF_THE_VILLAGE',label:'🏆 村庄英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
     ];
 
     try {
@@ -3369,7 +3369,7 @@ async function addGiveEffect(landName) {
         try { current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : []; } catch(e) { current = []; }
 
         // 过滤掉已添加的效果（兼容中文名和英文名）
-        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'抗火',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'村庄英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
         const existingNames = current.map(e => Array.isArray(e) ? e[0] : e);
         const available = EFFECTS.filter(e => !existingNames.includes(e.value) && !existingNames.includes(EN_TO_CN[e.value]));
         if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
@@ -3426,7 +3426,7 @@ async function removeLandEffect(landName, field, effValue) {
         try { current = detailData.land[field] ? JSON.parse(detailData.land[field]) : []; } catch(e) { current = []; }
         if (field === 'clear_effects') {
             // clear_effects: 效果名可能是中文或英文，两种都匹配
-            const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+            const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'抗火',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'村庄英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
             const cnName = EN_TO_CN[effValue] || effValue;
             current = current.filter(e => e !== effValue && e !== cnName);
         } else {
