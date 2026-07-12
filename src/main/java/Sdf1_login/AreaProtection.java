@@ -8452,18 +8452,9 @@ public class AreaProtection implements Listener {
             case "leave_msg":           ac.leaveMsg = value; break;
             case "confiscate_msg":      ac.confiscateMsg = value; break;
             case "enforce_game_mode":   ac.enforceGameMode = value; break;
-            // 复合字段（JSON 数组 → List）
+            // 复合字段（JSON 数组或管道格式 → List）
             case "give_effects":
-                ac.giveEffects.clear();
-                if (value != null && !value.isEmpty()) {
-                    try {
-                        String[] parts = value.startsWith("[") ? parseJsonArray(value) : value.split("\\|");
-                        for (String p : parts) {
-                            String[] ep = p.startsWith("[") ? parseEffectJson(p) : p.split(":");
-                            if (ep.length >= 3) ac.giveEffects.add(ep);
-                        }
-                    } catch (Exception ignored) {}
-                }
+                ac.giveEffects = parseEffectsString(value);
                 break;
             case "clear_effects":
                 ac.clearEffects.clear();
