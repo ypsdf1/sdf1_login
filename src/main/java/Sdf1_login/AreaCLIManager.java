@@ -938,7 +938,7 @@ public class AreaCLIManager {
         }
 
         // ★ 设为管理员按钮（全局置顶，打印在最后=聊天窗口最底部）
-        if (isOwner && !targetPlayer.equalsIgnoreCase(land.owner)) {
+        if ((isOwner || isAdmin) && !targetPlayer.equalsIgnoreCase(land.owner)) {
             Component adminLine = Component.empty();
             adminLine = adminLine.append(Component.text("§7✘ §f身份: §7普通成员"));
             adminLine = adminLine.append(Component.text(" "));

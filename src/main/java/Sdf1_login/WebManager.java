@@ -3343,6 +3343,9 @@ public class WebManager {
             // 4. 同步成员权限数据（area_land_permissions → web_area_permissions）
             syncPermissions(areaProtect);
 
+            // 5. ★ 同步插件管理员列表到PHP
+            syncAdmins();
+
             plugin.getLogger().fine("[Web通信] 领地数据同步完成");
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 领地同步异常: " + e.getMessage());
@@ -3425,6 +3428,64 @@ public class WebManager {
 
         // 6. ★ 从PHP拉取用户组（PHP→Java反向同步）
         pullUserGroupsFromPHP();
+    }
+
+    /**
+     * ★ 同步插件管理员列表到PHP
+     * 收集所有具有areaProtectAdminTag的玩家，推送到PHP的web_plugin_admins表
+     */
+    private void syncAdmins() {
+        if (!enabled) return;
+        try {
+            // 获取管理员tag名
+            String adminTag = plugin.getConfigMgr().areaProtectAdminTag;
+            if (adminTag == null || adminTag.isEmpty()) adminTag = "admin";
+
+            // 收集所有在线+离线玩家中具有该tag的玩家
+            // ★ 使用Scoreboard获取所有注册过tag的玩家
+            java.util.Set<String> adminNames = new java.util.HashSet<>();
+            for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
+                if (player.hasPermission("group." + adminTag) || player.isOp()) {
+                    // 检查ScoreboardTag
+                    for (String tag : player.getScoreboardTags()) {
+                        if (tag.equalsIgnoreCase(adminTag)) {
+                            adminNames.add(player.getName().toLowerCase());
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // ★ 也检查AreaProtection的admin列表（如果有的话）
+            AreaProtection areaProtect = plugin.getAreaProtection();
+            if (areaProtect != null) {
+                // 遍历所有在线玩家检查tag
+                for (org.bukkit.entity.Player player : Bukkit.getOnlinePlayers()) {
+                    if (areaProtect.isAreaAdmin(player)) {
+                        adminNames.add(player.getName().toLowerCase());
+                    }
+                }
+            }
+
+            // 构建JSON数组
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (String name : adminNames) {
+                if (!first) sb.append(",");
+                sb.append("\"").append(escapeJson(name)).append("\"");
+                first = false;
+            }
+            sb.append("]");
+
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("action", "sync_admins");
+            params.put("secret", secretKey);
+            params.put("admins", sb.toString());
+            String resp = httpGet("api/sync.php", params);
+            plugin.getLogger().fine("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
+        }
     }
 
     /**

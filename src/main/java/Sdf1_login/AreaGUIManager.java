@@ -435,14 +435,15 @@ public class AreaGUIManager implements Listener {
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
         int slot = 0;
 
-        // ★ 权限检查：只有所有者或管理员能编辑成员权限
+        // ★ 权限检查：只有所有者、全局tag管理员、或领地管理员能编辑成员权限
         boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isGlobalAdmin = areaProtect.isAreaAdmin(p);
 
         // ★ 管理员状态检测（领地级管理员，非全局tag）
         boolean isAdmin = areaProtect.isLandAdmin(landName, targetPlayer);
 
-        // ★ 管理员提示：非领地主操作管理员时简化显示
-        if (isAdmin && !isOwner) {
+        // ★ 管理员提示：非领地主且非全局tag管理员操作管理员时简化显示
+        if (isAdmin && !isOwner && !isGlobalAdmin) {
             inv.setItem(22, createItem(Material.GOLD_BLOCK, "§6§l管理员权限",
                     "§7该玩家是此领地管理员，自动获得所有权限",
                     "§7点击切换管理员身份"));
@@ -871,15 +872,24 @@ public class AreaGUIManager implements Listener {
             event.setCancelled(true);
             if (raw < 0 || raw >= 54) return;
 
-            // 获取当前页的领地
+            // ★ 获取可管理领地列表（和openLandList一致，包含管理员可见领地）
+            String playerName = p.getName();
+            List<AreaProtection.AreaConfig> allManageableLands = new ArrayList<>(areaProtect.getLandsByOwner(playerName));
+            if (areaProtect.isAreaAdmin(p)) {
+                for (AreaProtection.AreaConfig ac : areaProtect.getAllLands().values()) {
+                    if (!allManageableLands.contains(ac)) {
+                        allManageableLands.add(ac);
+                    }
+                }
+            }
+
             int page = landListPages.getOrDefault(p.getUniqueId(), 0);
-            List<AreaProtection.AreaConfig> lands = areaProtect.getLandsByOwner(p.getName());
             int start = page * PAGE_SIZE;
-            int end = Math.min(start + PAGE_SIZE, lands.size());
+            int end = Math.min(start + PAGE_SIZE, allManageableLands.size());
 
             if (raw >= 0 && raw < (end - start)) {
                 // 点击领地
-                AreaProtection.AreaConfig land = lands.get(start + raw);
+                AreaProtection.AreaConfig land = allManageableLands.get(start + raw);
                 if (event.isLeftClick() && !event.isShiftClick()) {
                     openLandManage(p, land.name);
                 } else if (event.isRightClick()) {
@@ -906,7 +916,7 @@ public class AreaGUIManager implements Listener {
                 }
             } else if (raw == 45 && page > 0) {
                 openLandList(p, page - 1);
-            } else if (raw == 53 && page < (int) Math.ceil((double) lands.size() / PAGE_SIZE) - 1) {
+            } else if (raw == 53 && page < (int) Math.ceil((double) allManageableLands.size() / PAGE_SIZE) - 1) {
                 openLandList(p, page + 1);
             } else if (raw == 48) {
                 openMainMenu(p);
