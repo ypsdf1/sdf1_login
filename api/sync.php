@@ -311,6 +311,12 @@ switch ($action) {
     case 'check_player_registered':
         checkPlayerRegistered();
         break;
+    case 'sync_admins':
+        syncAdmins();
+        break;
+    case 'sync_bans':
+        syncBans();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -4334,4 +4340,69 @@ function pushCdkValidateResult() {
         @error_log('[pushCdkValidateResult] Error: ' . $e->getMessage());
         error('推送失败: ' . $e->getMessage());
     }
+}
+
+// ===== Java端推送插件管理员列表 =====
+function syncAdmins() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $adminsRaw = getParam('admins', '[]');
+    $admins = json_decode($adminsRaw, true);
+    if (!is_array($admins)) error('admins格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_plugin_admins (
+        player_name TEXT PRIMARY KEY,
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $now = time();
+    // 先清空旧数据再全量写入
+    $db->exec("DELETE FROM web_plugin_admins");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_plugin_admins (player_name, synced_at) VALUES (:name, :now)");
+    foreach ($admins as $name) {
+        if (empty($name)) continue;
+        $stmt->bindValue(':name', strtolower($name), SQLITE3_TEXT);
+        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+    success(['count' => count($admins)]);
+}
+
+// ===== Java端推送封禁名单到PHP =====
+function syncBans() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $bansRaw = getParam('bans', '[]');
+    $bans = json_decode($bansRaw, true);
+    if (!is_array($bans)) error('bans格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_player_bans (
+        target TEXT NOT NULL,
+        ban_type TEXT NOT NULL DEFAULT 'name',
+        reason TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        expire_time INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0,
+        PRIMARY KEY (target, ban_type)
+    )");
+
+    $now = time();
+    // 先清空旧数据再全量写入
+    $db->exec("DELETE FROM web_player_bans");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at) VALUES (:target, :type, :reason, :source, :expire, :now)");
+    foreach ($bans as $ban) {
+        if (empty($ban['target'])) continue;
+        $stmt->bindValue(':target', $ban['target'], SQLITE3_TEXT);
+        $stmt->bindValue(':type', $ban['type'] ?? 'name', SQLITE3_TEXT);
+        $stmt->bindValue(':reason', $ban['reason'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':source', $ban['source'] ?? '', SQLITE3_TEXT);
+        $stmt->bindValue(':expire', (int)($ban['expire'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+    success(['count' => count($bans)]);
 }
