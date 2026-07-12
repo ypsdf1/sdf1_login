@@ -11,28 +11,60 @@ error_reporting(E_ERROR | E_PARSE);
  * ★ 将Java自定义格式转换为JSON数组
  * give_effects: "夜视:1:99999|SPEED:2:60" → [["夜视","1","99999"],["SPEED","2","60"]]
  * clear_effects: "POISON,WITHER" → ["POISON","WITHER"]
+ * 兼容JSON格式（Java sync回写时可能是JSON）：[["夜视","1","99999"]] → 直接返回
  */
 function convertEffectsForFrontend($row) {
-    if (!empty($row['give_effects']) && $row['give_effects'][0] !== '[') {
-        $parts = explode('|', $row['give_effects']);
-        $arr = [];
-        foreach ($parts as $p) {
-            $p = trim($p);
-            if (empty($p)) continue;
-            $pieces = explode(':', $p);
-            if (count($pieces) >= 2) {
-                $arr[] = $pieces;
+    if (!empty($row['give_effects'])) {
+        $raw = $row['give_effects'];
+        if ($raw[0] === '[') {
+            // 可能是JSON格式，验证是否有效
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded)) {
+                // 有效JSON，确保每个元素都是数组格式
+                $arr = [];
+                foreach ($decoded as $e) {
+                    if (is_array($e) && count($e) >= 2) {
+                        $arr[] = array_map('strval', $e);
+                    } elseif (is_string($e)) {
+                        $arr[] = [$e, '1', '99999'];
+                    }
+                }
+                $row['give_effects'] = json_encode($arr, JSON_UNESCAPED_UNICODE);
             } else {
-                $arr[] = [$pieces[0], '1', '99999'];
+                // JSON无效，尝试作为管道格式解析
+                $row['give_effects'] = convertPipeEffectsToFrontend($raw);
             }
+        } else {
+            $row['give_effects'] = convertPipeEffectsToFrontend($raw);
         }
-        $row['give_effects'] = json_encode($arr);
     }
     if (!empty($row['clear_effects']) && $row['clear_effects'][0] !== '[') {
         $names = array_filter(explode(',', $row['clear_effects']), function($n) { return !empty(trim($n)); });
         $row['clear_effects'] = json_encode(array_values(array_map('trim', $names)));
     }
     return $row;
+}
+
+/**
+ * 管道格式 → JSON数组
+ * "力量:255:60|速度:1:300" → [["力量","255","60"],["速度","1","300"]]
+ */
+function convertPipeEffectsToFrontend($raw) {
+    $parts = explode('|', $raw);
+    $arr = [];
+    foreach ($parts as $p) {
+        $p = trim($p);
+        if (empty($p)) continue;
+        $pieces = explode(':', $p);
+        if (count($pieces) >= 3) {
+            $arr[] = [$pieces[0], $pieces[1], $pieces[2]];
+        } elseif (count($pieces) === 2) {
+            $arr[] = [$pieces[0], $pieces[1], '300'];
+        } elseif (count($pieces) === 1 && $pieces[0] !== '') {
+            $arr[] = [$pieces[0], '1', '99999'];
+        }
+    }
+    return json_encode($arr, JSON_UNESCAPED_UNICODE);
 }
 
 // ★ 29种权限类型定义（必须在try之前，否则handleGetMemberPerms调用时变量未定义）
@@ -1595,10 +1627,11 @@ function handleUpdateLandField($db, $playerName, $post) {
     $stmt2->execute();
 
     // 记录变更到变更队列（Java端轮询）
+    // ★ 统一存储转换后的格式（管道格式），Java端parseEffectsString原生支持
     $stmt3 = $db->prepare("INSERT INTO web_admin_changes (change_type, target_id, target_name, change_data, created_at) VALUES ('land_field_change', :lid, :name, :data, :now)");
     $stmt3->bindValue(':lid', (int)$land['id'], SQLITE3_INTEGER);
     $stmt3->bindValue(':name', $name, SQLITE3_TEXT);
-    $stmt3->bindValue(':data', json_encode(['field' => $field, 'value' => $value]), SQLITE3_TEXT);
+    $stmt3->bindValue(':data', json_encode(['field' => $field, 'value' => $storeValue], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
     $stmt3->bindValue(':now', time(), SQLITE3_INTEGER);
     $stmt3->execute();
 

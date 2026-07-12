@@ -2870,8 +2870,10 @@ async function renderLandDetail(el, landName) {
         html += `</div></div>`;
 
         // ★★★ 效果管理 ★★★
-        const clearEffects = land.clear_effects ? JSON.parse(land.clear_effects) : [];
-        const giveEffects = land.give_effects ? JSON.parse(land.give_effects) : [];
+        let clearEffects = [];
+        let giveEffects = [];
+        try { clearEffects = land.clear_effects ? JSON.parse(land.clear_effects) : []; } catch(e) { clearEffects = []; }
+        try { giveEffects = land.give_effects ? JSON.parse(land.give_effects) : []; } catch(e) { giveEffects = []; }
         const clearAllBad = !!parseInt(land.clear_all_bad || 0);
         const denyAll = !!parseInt(land.deny_all_effects || 0);
 
@@ -3286,7 +3288,8 @@ async function addClearEffect(landName) {
         const detailRes = await fetch(detailUrl);
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
-        const current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : [];
+        let current = [];
+        try { current = detailData.land.clear_effects ? JSON.parse(detailData.land.clear_effects) : []; } catch(e) { current = []; }
 
         // 过滤掉已添加的效果（兼容中文名和英文名）
         const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
@@ -3362,7 +3365,8 @@ async function addGiveEffect(landName) {
         const detailRes = await fetch(detailUrl);
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
-        const current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : [];
+        let current = [];
+        try { current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : []; } catch(e) { current = []; }
 
         // 过滤掉已添加的效果（兼容中文名和英文名）
         const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
@@ -3418,7 +3422,8 @@ async function removeLandEffect(landName, field, effValue) {
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
 
-        let current = detailData.land[field] ? JSON.parse(detailData.land[field]) : [];
+        let current = [];
+        try { current = detailData.land[field] ? JSON.parse(detailData.land[field]) : []; } catch(e) { current = []; }
         if (field === 'clear_effects') {
             // clear_effects: 效果名可能是中文或英文，两种都匹配
             const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'火焰抗性',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
