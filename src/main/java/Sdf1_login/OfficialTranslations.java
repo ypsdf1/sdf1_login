@@ -41,7 +41,8 @@ public class OfficialTranslations {
 
     /**
      * 初始化（在 onEnable 调用）。<br>
-     * 同步加载本地缓存；异步从 Mojang API 下载更新。
+     * 纯同步：先读本地缓存 &rarr; 没有则从 Mojang API 下载并写缓存。<br>
+     * 缓存文件由部署脚本随 JAR 一起上传，确保服务器不直连 Mojang 也能加载。
      */
     public static void init(Main plugin) {
         File cacheFile = new File(plugin.getDataFolder(), "zh_cn.json");
@@ -52,50 +53,26 @@ public class OfficialTranslations {
                 String content = Files.readString(cacheFile.toPath(), StandardCharsets.UTF_8);
                 loadFromJson(content);
                 plugin.getLogger().info("[官方翻译] 已加载本地缓存 zh_cn.json（" + map.size() + " 条）");
+                return; // 缓存命中，完毕
             } catch (Exception e) {
-                plugin.getLogger().warning("[官方翻译] 本地缓存加载失败: " + e.getMessage());
+                plugin.getLogger().warning("[官方翻译] 本地缓存损坏: " + e.getMessage());
             }
         }
 
-        // 2. 无缓存或缓存为空 → 同步下载（确保立即可用）
-        if (map.isEmpty()) {
-            plugin.getLogger().info("[官方翻译] 本地缓存不存在/为空，同步从 Mojang API 下载...");
-            try {
-                String version = getMinecraftVersion();
-                if (version != null) {
-                    String json = downloadFromMojang(version);
-                    if (json != null) {
-                        Files.writeString(cacheFile.toPath(), json, StandardCharsets.UTF_8);
-                        loadFromJson(json);
-                        plugin.getLogger().info("[官方翻译] Mojang 同步下载成功（" + map.size() + " 条）");
-                    } else {
-                        plugin.getLogger().warning("[官方翻译] Mojang API 同步下载失败，走机翻兜底");
-                    }
-                }
-            } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "[官方翻译] 同步下载异常: " + e.getMessage(), e);
-            }
-            return; // 同步完成，不需要异步
+        // 2. 无缓存或损坏 → 同步从 Mojang API 下载
+        plugin.getLogger().info("[官方翻译] 本地缓存不存在/损坏，从 Mojang API 同步下载...");
+        try {
+            String version = getMinecraftVersion();
+            if (version == null) throw new RuntimeException("无法获取服务器版本号");
+            String json = downloadFromMojang(version);
+            if (json == null) throw new RuntimeException("下载返回空");
+            Files.writeString(cacheFile.toPath(), json, StandardCharsets.UTF_8);
+            loadFromJson(json);
+            plugin.getLogger().info("[官方翻译] Mojang 下载成功（" + map.size() + " 条），已缓存至 " + cacheFile.getName());
+        } catch (Exception e) {
+            plugin.getLogger().warning("[官方翻译] 同步下载失败: " + e.getMessage() + "，走机翻兜底");
+            plugin.getLogger().log(Level.FINE, "[官方翻译] 同步下载详情", e);
         }
-
-        // 3. 有缓存 → 异步后台静默刷新（不影响启动速度）
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                String version = getMinecraftVersion();
-                if (version == null) {
-                    plugin.getLogger().warning("[官方翻译] 无法获取服务器版本号");
-                    return;
-                }
-                String json = downloadFromMojang(version);
-                if (json != null) {
-                    Files.writeString(cacheFile.toPath(), json, StandardCharsets.UTF_8);
-                    loadFromJson(json);
-                    plugin.getLogger().info("[官方翻译] Mojang 后台刷新成功（" + map.size() + " 条，版本 " + version + "）");
-                }
-            } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "[官方翻译] 异步刷新异常: " + e.getMessage(), e);
-            }
-        });
     }
 
     /**
