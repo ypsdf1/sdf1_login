@@ -960,6 +960,7 @@ public class PVPArenaManager implements Listener {
 
         player.sendMessage("§a§l欢迎来到PVP竞技场!");
         player.sendMessage("§7请先选择你的装备套装，确认后将发放PVP装备");
+        player.sendMessage("§e§l★ 选装期间免疫一切伤害，请放心选择");
         player.playSound(player.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
 
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 进入PVP竞技场（已备份清空原背包，等待选装备）");
@@ -1128,6 +1129,20 @@ public class PVPArenaManager implements Listener {
     // ==================== 事件处理器 ====================
 
     /**
+     * ★ 选装前无敌：玩家在PVP世界中未完成装备选择时，免疫一切伤害
+     */
+    @EventHandler
+    public void onEntityDamage(org.bukkit.event.entity.EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof Player)) return;
+        Player player = (Player) event.getEntity();
+        String name = player.getName();
+        // 在PVP世界中但未确认装备 → 取消所有伤害
+        if (inPVPArena.contains(name) && !equipmentConfirmed.contains(name)) {
+            event.setCancelled(true);
+        }
+    }
+
+    /**
      * 玩家死亡事件 — 死亡后强制离开PVP
      */
     @EventHandler
@@ -1152,6 +1167,30 @@ public class PVPArenaManager implements Listener {
                 if (given > 0) {
                     killerP.sendMessage("§a§l[PVP] §f完成 2 次杀敌！获得 §6" + given + " 个牛排 §7(补血)");
                     killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.6f, 1.4f);
+                }
+            }
+
+            // ★ 击杀≥10奖励：替换完整铁甲 + 喷溅瞬间治疗2 ×1（一次性）
+            if (newKills >= 10) {
+                Player killerP = (Player) killer;
+                if (!killerP.hasPermission("sdf1.kit.pvp.reward10")) {
+                    // 替换完整铁甲
+                    killerP.getInventory().setHelmet(new ItemStack(Material.IRON_HELMET));
+                    killerP.getInventory().setChestplate(new ItemStack(Material.IRON_CHESTPLATE));
+                    killerP.getInventory().setLeggings(new ItemStack(Material.IRON_LEGGINGS));
+                    killerP.getInventory().setBoots(new ItemStack(Material.IRON_BOOTS));
+                    // 喷溅瞬间治疗2 ×1（正确NBT）
+                    ItemStack potion = new ItemStack(Material.SPLASH_POTION, 1);
+                    PotionMeta potionMeta = (PotionMeta) potion.getItemMeta();
+                    potionMeta.setBasePotionType(org.bukkit.potion.PotionType.HEALING);
+                    potionMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
+                            org.bukkit.potion.PotionEffectType.INSTANT_HEALTH, 1, 1, false, false), true);
+                    potion.setItemMeta(potionMeta);
+                    killerP.getInventory().addItem(potion);
+                    // 授予临时权限标记（本次重启内有效，防止重复发放）
+                    killerP.addAttachment(plugin, "sdf1.kit.pvp.reward10", true);
+                    killerP.sendMessage("§a§l[PVP] §f击杀达 §610 §f次！获得 §b铁甲套装 §f+ §c喷溅瞬间治疗II ×1");
+                    killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
                 }
             }
 
@@ -2089,6 +2128,16 @@ public class PVPArenaManager implements Listener {
 
     public boolean isInPVPArena(String playerName) {
         return inPVPArena.contains(playerName);
+    }
+
+    /** 获取PVP世界击杀数据（供外部排行榜汇总） */
+    public Map<String, Integer> getPVPWorldKills() {
+        return Collections.unmodifiableMap(pvpKills);
+    }
+
+    /** 获取PVP世界死亡数据（供外部排行榜汇总） */
+    public Map<String, Integer> getPVPWorldDeaths() {
+        return Collections.unmodifiableMap(pvpDeaths);
     }
 
     public World getPVPWorld() {

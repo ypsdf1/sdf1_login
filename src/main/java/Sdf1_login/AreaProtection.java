@@ -6065,6 +6065,21 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // ===== 回声碎片（领地记录查询工具）=====
+        if (sub.equals("echoshard") || sub.equals("回声碎片")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (plugin.landRecordManager != null) {
+                plugin.landRecordManager.giveEchoShard(p);
+            } else {
+                p.sendMessage("§c领地记录管理器未初始化");
+            }
+            return true;
+        }
+
         // ===== UI模式偏好 =====
         if (sub.equals("uimode") || sub.equals("偏好")) {
             if (!(sender instanceof Player)) {

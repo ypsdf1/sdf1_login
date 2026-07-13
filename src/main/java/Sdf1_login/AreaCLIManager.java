@@ -110,6 +110,10 @@ public class AreaCLIManager {
         p.sendMessage(clickableAction("🏛", "公共设施列表/传送",
                 "/protect listpublic"));
 
+        // ★ 回声碎片：领地记录查询工具
+        p.sendMessage(clickableAction("🔮", "回声碎片（领地记录工具）",
+                "/protect echoshard"));
+
         // ★ 管理员配置入口
         if (areaProtect.isAreaAdmin(p)) {
             p.sendMessage(clickableAction("⚙", "全局配置",

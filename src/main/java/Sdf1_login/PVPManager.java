@@ -1350,9 +1350,28 @@ public class PVPManager implements Listener {
         if (region == null) {
             p.sendMessage("§6§l" + target
                     + " 的PVP战绩:");
+
+            // ★ PVP世界战绩（从PvPArenaManager获取）
+            int pvpWorldKills = 0;
+            int pvpWorldDeaths = 0;
+            if (plugin.getPVPArenaManager() != null) {
+                Map<String, Integer> wk = plugin.getPVPArenaManager().getPVPWorldKills();
+                Map<String, Integer> wd = plugin.getPVPArenaManager().getPVPWorldDeaths();
+                pvpWorldKills = wk.getOrDefault(target, 0);
+                pvpWorldDeaths = wd.getOrDefault(target, 0);
+            }
+            if (pvpWorldKills > 0 || pvpWorldDeaths > 0) {
+                double pvpKd = pvpWorldDeaths > 0
+                        ? (double) pvpWorldKills / pvpWorldDeaths : pvpWorldKills;
+                p.sendMessage("§e- §fPVP世界 §a击杀:" + pvpWorldKills
+                        + " §c死亡:" + pvpWorldDeaths
+                        + " §eKD:" + String.format("%.2f", pvpKd));
+            }
+
+            // PVP区域战绩
             List<Map<String, Object>> all =
                     getAllRegions();
-            boolean has = false;
+            boolean has = pvpWorldKills > 0 || pvpWorldDeaths > 0;
             for (Map<String, Object> row :
                     all) {
                 String rn = (String) row
@@ -1369,6 +1388,21 @@ public class PVPManager implements Listener {
                                     + " §c死亡:" + deaths);
                     has = true;
                 }
+            }
+            // ★ 总计
+            int totalKills = pvpWorldKills;
+            int totalDeaths = pvpWorldDeaths;
+            for (Map<String, Object> row : all) {
+                String rn = (String) row.get("name");
+                totalKills += getKills(target, rn);
+                totalDeaths += getDeaths(target, rn);
+            }
+            if (totalKills > 0 || totalDeaths > 0) {
+                double totalKd = totalDeaths > 0
+                        ? (double) totalKills / totalDeaths : totalKills;
+                p.sendMessage("§6§l- §f总计 §a击杀:" + totalKills
+                        + " §c死亡:" + totalDeaths
+                        + " §eKD:" + String.format("%.2f", totalKd));
             }
             if (!has)
                 p.sendMessage(
