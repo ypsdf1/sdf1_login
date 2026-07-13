@@ -4870,6 +4870,10 @@ public class AreaProtection implements Listener {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止放置方块");
         }
+        // ★ 领地记录：记录成功放置的方块（事件未被取消才记录）
+        if (!e.isCancelled()) {
+            plugin.landRecordManager.recordBlockPlace(ac, p, e.getBlock());
+        }
     }
 
     @EventHandler
@@ -4929,6 +4933,10 @@ public class AreaProtection implements Listener {
         if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏方块");
+        }
+        // ★ 领地记录：记录成功破坏的方块（事件未被取消才记录）
+        if (!e.isCancelled()) {
+            plugin.landRecordManager.recordBlockBreak(ac, p, e.getBlock());
         }
     }
 
@@ -5373,6 +5381,15 @@ public class AreaProtection implements Listener {
 
         // ★ 容器交互已启用时，无权限级别的玩家也允许访问（访客权限）
         // 只有denyContainer=true时才检查权限级别
+
+        // ★ 领地记录：记录实际打开的容器（含打开快照用于计算拿取差异）
+        String containerType;
+        if (loc.getBlock().getType() != org.bukkit.Material.AIR) {
+            containerType = loc.getBlock().getType().name();
+        } else {
+            containerType = holder.getClass().getSimpleName();
+        }
+        plugin.landRecordManager.recordContainerOpen(ac, p, loc, containerType, e.getInventory());
     }
 
     public void loadWhitelists() {

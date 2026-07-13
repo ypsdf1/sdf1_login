@@ -304,6 +304,53 @@ public class DatabaseManager {
             safeAdd(st, "menu_snowball",
                     "INTEGER DEFAULT 1");
 
+            // 领地方块记录表：记录领地内谁破坏/放置了什么方块（7天滚动）
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "land_block_log ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "land_name TEXT,"
+                    + "land_id INTEGER,"
+                    + "world TEXT,"
+                    + "x INTEGER,"
+                    + "y INTEGER,"
+                    + "z INTEGER,"
+                    + "player_name TEXT,"
+                    + "action TEXT,"
+                    + "material TEXT,"
+                    + "time INTEGER"
+                    + ")");
+
+            // 领地容器记录表：记录领地内容器的打开/拿取（7天滚动）
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "land_container_log ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "land_name TEXT,"
+                    + "land_id INTEGER,"
+                    + "world TEXT,"
+                    + "x INTEGER,"
+                    + "y INTEGER,"
+                    + "z INTEGER,"
+                    + "player_name TEXT,"
+                    + "action TEXT,"
+                    + "container_type TEXT,"
+                    + "detail TEXT,"
+                    + "amount INTEGER,"
+                    + "time INTEGER"
+                    + ")");
+
+            // 背包自动滚动备份表（15分钟定时）：每位玩家保留最近 3 份
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "inv_backup_auto ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "player_name TEXT NOT NULL,"
+                    + "contents_b64 TEXT DEFAULT '',"
+                    + "armor_b64 TEXT DEFAULT '',"
+                    + "extra_b64 TEXT DEFAULT '',"
+                    + "level INTEGER DEFAULT 0,"
+                    + "experience REAL DEFAULT 0,"
+                    + "save_time INTEGER DEFAULT 0"
+                    + ")");
+
             // 注：传送请求不再落库，仅驻留内存（配置项才落库），故不再建 teleport_requests 表
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
@@ -2112,6 +2159,231 @@ public class DatabaseManager {
             e.printStackTrace();
         }
         return list;
+    }
+
+    // ==================== 领地方块/容器记录 ====================
+
+    /** 记录领地方块破坏/放置 */
+    public void recordLandBlock(String landName, int landId,
+                                String world, int x, int y, int z,
+                                String playerName, String action,
+                                String material) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO land_block_log"
+                            + " (land_name, land_id, world, x, y, z,"
+                            + " player_name, action, material, time)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?)");
+            ps.setString(1, landName);
+            ps.setInt(2, landId);
+            ps.setString(3, world);
+            ps.setInt(4, x);
+            ps.setInt(5, y);
+            ps.setInt(6, z);
+            ps.setString(7, playerName);
+            ps.setString(8, action);
+            ps.setString(9, material);
+            ps.setLong(10, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 记录领地容器打开/拿取 */
+    public void recordLandContainer(String landName, int landId,
+                                    String world, int x, int y, int z,
+                                    String playerName, String action,
+                                    String containerType, String detail,
+                                    int amount) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO land_container_log"
+                            + " (land_name, land_id, world, x, y, z,"
+                            + " player_name, action, container_type,"
+                            + " detail, amount, time)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+            ps.setString(1, landName);
+            ps.setInt(2, landId);
+            ps.setString(3, world);
+            ps.setInt(4, x);
+            ps.setInt(5, y);
+            ps.setInt(6, z);
+            ps.setString(7, playerName);
+            ps.setString(8, action);
+            ps.setString(9, containerType);
+            ps.setString(10, detail);
+            ps.setInt(11, amount);
+            ps.setLong(12, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 查询某坐标最近的方块记录（按时间倒序） */
+    public List<Map<String, Object>> getLandBlockLogAt(
+            String world, int x, int y, int z, int limit) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT time, player_name, action, material"
+                            + " FROM land_block_log"
+                            + " WHERE world=? AND x=? AND y=? AND z=?"
+                            + " ORDER BY time DESC LIMIT ?");
+            ps.setString(1, world);
+            ps.setInt(2, x);
+            ps.setInt(3, y);
+            ps.setInt(4, z);
+            ps.setInt(5, limit > 0 ? limit : 20);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                row.put("time", rs.getLong("time"));
+                row.put("player_name",
+                        rs.getString("player_name"));
+                row.put("action", rs.getString("action"));
+                row.put("material", rs.getString("material"));
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /** 查询某坐标最近的容器记录（按时间倒序） */
+    public List<Map<String, Object>> getLandContainerLogAt(
+            String world, int x, int y, int z, int limit) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT time, player_name, action, container_type,"
+                            + " detail, amount"
+                            + " FROM land_container_log"
+                            + " WHERE world=? AND x=? AND y=? AND z=?"
+                            + " ORDER BY time DESC LIMIT ?");
+            ps.setString(1, world);
+            ps.setInt(2, x);
+            ps.setInt(3, y);
+            ps.setInt(4, z);
+            ps.setInt(5, limit > 0 ? limit : 20);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                row.put("time", rs.getLong("time"));
+                row.put("player_name",
+                        rs.getString("player_name"));
+                row.put("action", rs.getString("action"));
+                row.put("container_type",
+                        rs.getString("container_type"));
+                row.put("detail", rs.getString("detail"));
+                row.put("amount", rs.getInt("amount"));
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /** 清理超过 cutoff（毫秒时间戳）的领地记录，返回删除行数 */
+    public int pruneLandRecordsOlderThan(long cutoff) {
+        int deleted = 0;
+        try {
+            PreparedStatement ps1 = db.prepareStatement(
+                    "DELETE FROM land_block_log WHERE time < ?");
+            ps1.setLong(1, cutoff);
+            deleted += ps1.executeUpdate();
+            ps1.close();
+
+            PreparedStatement ps2 = db.prepareStatement(
+                    "DELETE FROM land_container_log WHERE time < ?");
+            ps2.setLong(1, cutoff);
+            deleted += ps2.executeUpdate();
+            ps2.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return deleted;
+    }
+
+    // ==================== 背包自动滚动备份（15分钟定时）====================
+
+    /**
+     * 保存背包自动备份 —— 追加写入，每位玩家仅保留最近 3 份。
+     * 跳过 PVP 竞技场/测试场的判断由调用方（InventoryAutoBackup）负责。
+     */
+    public void saveAutoBackup(String name,
+                               String contents, String armor,
+                               String extra, int level,
+                               double experience) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "INSERT INTO inv_backup_auto"
+                                    + " (player_name, "
+                                    + "contents_b64, "
+                                    + "armor_b64, "
+                                    + "extra_b64, "
+                                    + "level, "
+                                    + "experience, "
+                                    + "save_time) "
+                                    + "VALUES (?,?,?,?,?,?,?)");
+            ps.setString(1, name);
+            ps.setString(2, contents);
+            ps.setString(3, armor);
+            ps.setString(4, extra);
+            ps.setInt(5, level);
+            ps.setDouble(6, experience);
+            ps.setLong(7, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+
+            // 仅保留最近 3 份，删除该玩家更早的备份（先查后删，避免 LIMIT 子查询被优化）
+            try {
+                PreparedStatement sel =
+                        db.prepareStatement(
+                                "SELECT id FROM inv_backup_auto "
+                                        + "WHERE player_name=? "
+                                        + "ORDER BY save_time DESC LIMIT 3");
+                sel.setString(1, name);
+                ResultSet rs = sel.executeQuery();
+                List<Integer> keep = new ArrayList<>();
+                while (rs.next()) {
+                    keep.add(rs.getInt("id"));
+                }
+                rs.close();
+                sel.close();
+
+                if (keep.size() == 3) {
+                    StringBuilder in = new StringBuilder();
+                    for (int i = 0; i < keep.size(); i++) {
+                        if (i > 0) in.append(",");
+                        in.append(keep.get(i));
+                    }
+                    PreparedStatement del = db.prepareStatement(
+                            "DELETE FROM inv_backup_auto "
+                                    + "WHERE player_name=? AND id NOT IN ("
+                                    + in.toString() + ")");
+                    del.setString(1, name);
+                    del.executeUpdate();
+                    del.close();
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
     }
 
     public Connection getDb() {

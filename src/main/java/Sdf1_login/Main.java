@@ -150,6 +150,8 @@ public class Main extends JavaPlugin
     public AreaProtection areaProtection;
     public AreaGUIManager areaGUIManager;
     public AreaCLIManager areaCLIManager;
+    public LandRecordManager landRecordManager;
+    public InventoryAutoBackup inventoryAutoBackup;
     private TeleportManager teleportMgr;
     private HomeManager homeMgr;
     private DeathReport deathReport;
@@ -596,6 +598,49 @@ public class Main extends JavaPlugin
             areaProtection.reload();
             areaProtection.startEnforceTask();
         }
+
+// 15.1 ====领地记录系统（回声碎片）====
+        landRecordManager = new LandRecordManager(this);
+        getServer().getPluginManager()
+                .registerEvents(landRecordManager, this);
+
+// 15.2 ====背包滚动自动备份（每15分钟）====
+        inventoryAutoBackup = new InventoryAutoBackup(this);
+        getServer().getScheduler().runTaskTimer(this,
+                () -> {
+                    if (inventoryAutoBackup != null) {
+                        inventoryAutoBackup.runBackup();
+                    }
+                },
+                InventoryAutoBackup.INTERVAL_TICKS,   // 首跑延迟 15 分钟
+                InventoryAutoBackup.INTERVAL_TICKS);  // 之后每 15 分钟
+
+// 15.3 ====领地记录每日清理（保留 7 天）====
+        // 每天 0 点附近跑一次：用 24h 周期，首跑延迟到下一个整点对齐不强制，
+        // 这里简单采用「每小时检测一次，命中当天 0 点窗口即清理」过于繁琐，
+        // 故改为每日定时：延迟 1 小时后启动，之后每 24 小时执行一次。
+        long dayTicks = 24L * 60L * 60L * 20L;
+        getServer().getScheduler().runTaskTimer(this,
+                () -> {
+                    try {
+                        long cutoff = System.currentTimeMillis()
+                                - (long) LandRecordManager.RETENTION_DAYS
+                                * 24L * 60L * 60L * 1000L;
+                        int removed = getDb().pruneLandRecordsOlderThan(
+                                cutoff);
+                        if (removed > 0) {
+                            getLogger().info("[领地记录] 已清理 "
+                                    + removed + " 条超过 "
+                                    + LandRecordManager.RETENTION_DAYS
+                                    + " 天的旧记录");
+                        }
+                    } catch (Exception e) {
+                        getLogger().warning("[领地记录] 每日清理失败: "
+                                + e.getMessage());
+                    }
+                },
+                3600L,   // 首跑：启动 1 小时后
+                dayTicks); // 之后每 24 小时
 
         // ★ 启动时异步检查更新（GitHub/Gitee双通道）
         updateChecker = new UpdateChecker(this);
@@ -5147,6 +5192,21 @@ public class Main extends JavaPlugin
             String[] tpArgs = new String[]{"tp", args[0]};
             try {
                 return areaProtection.handleCommand(sender, tpArgs);
+            } catch (Exception e) {
+                sender.sendMessage("§c执行出错: " + e.getMessage());
+                e.printStackTrace();
+                return true;
+            }
+        }
+
+        // ★ 领地记录系统：/landrec 命令（回声碎片发放）
+        if (cmd.getName().equalsIgnoreCase("landrec")) {
+            if (landRecordManager == null) {
+                sender.sendMessage("§c领地记录系统未初始化");
+                return true;
+            }
+            try {
+                return landRecordManager.handleCommand(sender, args);
             } catch (Exception e) {
                 sender.sendMessage("§c执行出错: " + e.getMessage());
                 e.printStackTrace();

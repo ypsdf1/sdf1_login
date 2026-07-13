@@ -129,6 +129,14 @@ public class AreaGUIManager implements Listener {
                 "",
                 "§e点击切换"));
 
+        // ★ 回声碎片：领地记录查询工具（位置33）
+        inv.setItem(33, createItem(Material.ECHO_SHARD, "§b§l回声碎片",
+                "§7获取领地记录查询工具",
+                "§7手持后右键/左键方块或容器",
+                "§7查看该处的破坏/拿取记录",
+                "",
+                "§e点击获取"));
+
         // 返回按钮（位置49）
         inv.setItem(49, createItem(Material.ARROW, "§c§l返回主菜单", ""));
 
@@ -876,6 +884,10 @@ public class AreaGUIManager implements Listener {
                 openPublicBuildingList(p);
             } else if (raw == 49) {
                 plugin.getGui().openMain(p);
+            } else if (raw == 33) {
+                // ★ 回声碎片：发放领地记录查询工具
+                p.closeInventory();
+                plugin.landRecordManager.giveEchoShard(p);
             }
             return;
         }

@@ -102,6 +102,9 @@ commands:
   protect:
     description: 区域保护
     usage: /protect
+  landrec:
+    description: 领地记录系统（回声碎片发放）
+    usage: /landrec give [玩家]
   传送:
     description: 传送至领地
     usage: /传送 <领地名>
