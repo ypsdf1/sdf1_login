@@ -17,27 +17,45 @@ function getTodayBondData() {
     global $todayStart, $todayEnd;
     $spendData = [];
     $incomeData = [];
-    // web.db 今日债券变动：amount > 0 为收入，amount < 0 为消费（取绝对值）
     try {
         $db = getDB();
-        // 收入
-        $stmt = $db->prepare("SELECT player_name, SUM(amount) AS total_income FROM web_transactions WHERE amount > 0 AND created_at >= :start AND created_at < :end GROUP BY player_name ORDER BY total_income DESC");
+        // ===== web_transactions（Web端交易） =====
+        // 收入（amount > 0）
+        $stmt = $db->prepare("SELECT player_name, SUM(amount) AS total_income FROM web_transactions WHERE amount > 0 AND created_at >= :start AND created_at < :end GROUP BY player_name");
         $stmt->bindValue(':start', $todayStart, SQLITE3_INTEGER);
         $stmt->bindValue(':end', $todayEnd, SQLITE3_INTEGER);
         $res = $stmt->execute();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $incomeData[$row['player_name']] = (int)$row['total_income'];
+            $incomeData[$row['player_name']] = ($incomeData[$row['player_name']] ?? 0) + (int)$row['total_income'];
         }
-        // 消费（负金额绝对值）
-        $stmt2 = $db->prepare("SELECT player_name, SUM(ABS(amount)) AS total_spend FROM web_transactions WHERE amount < 0 AND created_at >= :start AND created_at < :end GROUP BY player_name ORDER BY total_spend DESC");
+        // 消费（amount < 0 取绝对值）
+        $stmt2 = $db->prepare("SELECT player_name, SUM(ABS(amount)) AS total_spend FROM web_transactions WHERE amount < 0 AND created_at >= :start AND created_at < :end GROUP BY player_name");
         $stmt2->bindValue(':start', $todayStart, SQLITE3_INTEGER);
         $stmt2->bindValue(':end', $todayEnd, SQLITE3_INTEGER);
         $res2 = $stmt2->execute();
         while ($row = $res2->fetchArray(SQLITE3_ASSOC)) {
-            $spendData[$row['player_name']] = (int)$row['total_spend'];
+            $spendData[$row['player_name']] = ($spendData[$row['player_name']] ?? 0) + (int)$row['total_spend'];
+        }
+
+        // ===== game_transactions（游戏内交易） =====
+        // 收入（amount > 0）
+        $stmt3 = $db->prepare("SELECT player_name, SUM(amount) AS total_income FROM game_transactions WHERE amount > 0 AND tx_time >= :start2 AND tx_time < :end2 GROUP BY player_name");
+        $stmt3->bindValue(':start2', $todayStart, SQLITE3_INTEGER);
+        $stmt3->bindValue(':end2', $todayEnd, SQLITE3_INTEGER);
+        $res3 = $stmt3->execute();
+        while ($row = $res3->fetchArray(SQLITE3_ASSOC)) {
+            $incomeData[$row['player_name']] = ($incomeData[$row['player_name']] ?? 0) + (int)$row['total_income'];
+        }
+        // 消费（amount < 0 取绝对值）
+        $stmt4 = $db->prepare("SELECT player_name, SUM(ABS(amount)) AS total_spend FROM game_transactions WHERE amount < 0 AND tx_time >= :start3 AND tx_time < :end3 GROUP BY player_name");
+        $stmt4->bindValue(':start3', $todayStart, SQLITE3_INTEGER);
+        $stmt4->bindValue(':end3', $todayEnd, SQLITE3_INTEGER);
+        $res4 = $stmt4->execute();
+        while ($row = $res4->fetchArray(SQLITE3_ASSOC)) {
+            $spendData[$row['player_name']] = ($spendData[$row['player_name']] ?? 0) + (int)$row['total_spend'];
         }
     } catch (\Throwable $e) {
-        debugLog('[today_bonds] 查询 web_transactions 异常: ' . $e->getMessage());
+        debugLog('[today_bonds] 查询异常: ' . $e->getMessage());
     }
     $allPlayers = array_unique(array_merge(array_keys($spendData), array_keys($incomeData)));
     $rows = [];
