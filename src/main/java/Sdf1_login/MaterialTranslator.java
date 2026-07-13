@@ -1,5 +1,7 @@
 package Sdf1_login;
 
+import org.bukkit.Bukkit;
+
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -63,22 +65,33 @@ public class MaterialTranslator {
     public static String translate(String materialName) {
         if (materialName == null || materialName.isEmpty()) return "";
         String key = materialName.toUpperCase();
-        if (cache.containsKey(key)) return cache.get(key);
+
+        // 缓存命中
+        if (cache.containsKey(key)) {
+            Bukkit.getLogger().info("[翻译] translate 缓存命中: " + materialName + " → " + cache.get(key));
+            return cache.get(key);
+        }
 
         // 1. 官方翻译（基于原始 Material 名 GRASS_BLOCK → block.minecraft.grass_block）
+        Bukkit.getLogger().info("[翻译] translate 查官方: " + materialName);
         String official = OfficialTranslations.lookUp(materialName);
         if (official != null && !official.isEmpty()) {
+            Bukkit.getLogger().info("[翻译] translate 官方命中: " + materialName + " → " + official);
             cache.put(key, official);
             return official;
         }
 
         // 2. 机翻兜底
         String readable = toReadable(key);
+        Bukkit.getLogger().info("[翻译] translate 官方未命中，走机翻: " + materialName + " → readable=" + readable);
         String zh = translateWithFallback(readable);
         if (zh != null && !zh.isEmpty()) {
+            Bukkit.getLogger().info("[翻译] translate 机翻成功: " + materialName + " → " + zh);
             cache.put(key, zh);
             return zh;
         }
+
+        Bukkit.getLogger().info("[翻译] translate 全部失败，返回可读英文: " + readable);
         return readable; // fallback 可读英文
     }
 
@@ -121,6 +134,7 @@ public class MaterialTranslator {
      * 多源翻译，按优先级尝试，失败自动降级
      */
     private static String translateWithFallback(String text) {
+        Bukkit.getLogger().info("[翻译] 机翻开始降级轮询: \"" + text + "\"");
         for (TranslationSource source : SOURCES) {
             try {
                 String result = null;
@@ -136,12 +150,16 @@ public class MaterialTranslator {
                         break;
                 }
                 if (result != null && !result.isEmpty()) {
+                    Bukkit.getLogger().info("[翻译] 机翻 " + source.name + " 成功: \"" + text + "\" → \"" + result + "\"");
                     return result;
+                } else {
+                    Bukkit.getLogger().warning("[翻译] 机翻 " + source.name + " 返回空结果，降级下一源");
                 }
             } catch (Exception e) {
-                // 该源失败，尝试下一个
+                Bukkit.getLogger().warning("[翻译] 机翻 " + source.name + " 异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
         }
+        Bukkit.getLogger().warning("[翻译] 机翻全部源失败，返回 null");
         return null;
     }
 

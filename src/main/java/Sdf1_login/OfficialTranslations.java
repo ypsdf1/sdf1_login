@@ -90,18 +90,32 @@ public class OfficialTranslations {
         if (materialName == null || materialName.isEmpty()) return null;
         String lower = materialName.toLowerCase(Locale.ROOT);
 
+        // 日志：当前 map 状态
+        Bukkit.getLogger().info("[翻译] officialLookUp: " + materialName
+                + " | map已加载=" + isLoaded() + " 条目数=" + map.size());
+
         // 1. 精确匹配（部分 key 可直接用）
         String val = map.get(lower);
-        if (val != null) return val;
+        if (val != null) {
+            Bukkit.getLogger().info("[翻译] officialLookUp 命中(精确): " + lower + " → " + val);
+            return val;
+        }
 
         // 2. block.minecraft.<name>
         val = map.get("block.minecraft." + lower);
-        if (val != null) return val;
+        if (val != null) {
+            Bukkit.getLogger().info("[翻译] officialLookUp 命中(block): " + lower + " → " + val);
+            return val;
+        }
 
         // 3. item.minecraft.<name>
         val = map.get("item.minecraft." + lower);
-        if (val != null) return val;
+        if (val != null) {
+            Bukkit.getLogger().info("[翻译] officialLookUp 命中(item): " + lower + " → " + val);
+            return val;
+        }
 
+        Bukkit.getLogger().info("[翻译] officialLookUp 未命中: " + lower + "，将走机翻兜底");
         return null; // 未命中 -> 调用者走机翻
     }
 
