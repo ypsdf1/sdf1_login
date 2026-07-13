@@ -2832,6 +2832,13 @@ public class AreaProtection implements Listener {
             if (playerPerms.containsKey(permName)) {
                 return playerPerms.get(permName);
             }
+            // ★ allowPickup/allowDrop 与 denyPickup/denyDrop 键名反转映射
+            if ("denyPickup".equals(permName) && playerPerms.containsKey("allowPickup")) {
+                return !playerPerms.get("allowPickup");
+            }
+            if ("denyDrop".equals(permName) && playerPerms.containsKey("allowDrop")) {
+                return !playerPerms.get("allowDrop");
+            }
         }
 
         // 回退到领地默认权限
