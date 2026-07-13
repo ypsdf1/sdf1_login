@@ -17,22 +17,10 @@ function getTodayBondData() {
     global $todayStart, $todayEnd;
     $spendData = [];
     $incomeData = [];
-    // orders.db 今日消费
-    try {
-        $odb = getOrdersDB();
-        $stmt = $odb->prepare("SELECT player_name, SUM(total_price) AS total_spend FROM cashier_orders WHERE status='completed' AND created_at >= :start AND created_at < :end GROUP BY player_name ORDER BY total_spend DESC");
-        $stmt->bindValue(':start', $todayStart, SQLITE3_INTEGER);
-        $stmt->bindValue(':end', $todayEnd, SQLITE3_INTEGER);
-        $res = $stmt->execute();
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $spendData[$row['player_name']] = (int)$row['total_spend'];
-        }
-    } catch (\Throwable $e) {
-        debugLog('[today_bonds] 查询消费异常: ' . $e->getMessage());
-    }
-    // web.db 今日收入（amount>0）
+    // web.db 今日债券变动：amount > 0 为收入，amount < 0 为消费（取绝对值）
     try {
         $db = getDB();
+        // 收入
         $stmt = $db->prepare("SELECT player_name, SUM(amount) AS total_income FROM web_transactions WHERE amount > 0 AND created_at >= :start AND created_at < :end GROUP BY player_name ORDER BY total_income DESC");
         $stmt->bindValue(':start', $todayStart, SQLITE3_INTEGER);
         $stmt->bindValue(':end', $todayEnd, SQLITE3_INTEGER);
@@ -40,8 +28,16 @@ function getTodayBondData() {
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $incomeData[$row['player_name']] = (int)$row['total_income'];
         }
+        // 消费（负金额绝对值）
+        $stmt2 = $db->prepare("SELECT player_name, SUM(ABS(amount)) AS total_spend FROM web_transactions WHERE amount < 0 AND created_at >= :start AND created_at < :end GROUP BY player_name ORDER BY total_spend DESC");
+        $stmt2->bindValue(':start', $todayStart, SQLITE3_INTEGER);
+        $stmt2->bindValue(':end', $todayEnd, SQLITE3_INTEGER);
+        $res2 = $stmt2->execute();
+        while ($row = $res2->fetchArray(SQLITE3_ASSOC)) {
+            $spendData[$row['player_name']] = (int)$row['total_spend'];
+        }
     } catch (\Throwable $e) {
-        debugLog('[today_bonds] 查询收入异常: ' . $e->getMessage());
+        debugLog('[today_bonds] 查询 web_transactions 异常: ' . $e->getMessage());
     }
     $allPlayers = array_unique(array_merge(array_keys($spendData), array_keys($incomeData)));
     $rows = [];

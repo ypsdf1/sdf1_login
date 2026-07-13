@@ -40,9 +40,29 @@ function recordSnapshot() {
     return $count;
 }
 
+// ===== 确保有最新快照（如果上次快照超过60秒则自动记录） =====
+function ensureRecentSnapshot() {
+    try {
+        $db = getDB();
+        $res = $db->query("SELECT MAX(snapshot_time) AS last_time FROM online_snapshots");
+        $row = $res->fetchArray(SQLITE3_ASSOC);
+        $lastTime = (int)($row['last_time'] ?? 0);
+        $now = time();
+        // 没有快照，或上次快照超过 55 秒（留 5 秒余量防止频繁写）
+        if ($lastTime === 0 || ($now - $lastTime) > 55) {
+            return recordSnapshot();
+        }
+    } catch (\Throwable $e) {
+        debugLog('[online_curve] ensureRecentSnapshot 异常: ' . $e->getMessage());
+    }
+    return null;
+}
+
 // ===== 获取24小时聚合数据（按小时） =====
 function getHourlyData() {
     ensureSnapshotTable();
+    // 每次查询数据时自动确保有最新快照（如果超过60秒未记录）
+    ensureRecentSnapshot();
     // 24小时前的时间戳
     $since = time() - 86400;
     // 按自然小时聚合：分桶到 h0~h23，取平均值
