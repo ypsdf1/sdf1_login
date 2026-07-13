@@ -57,7 +57,28 @@ public class OfficialTranslations {
             }
         }
 
-        // 2. Mojang API —— 异步下载并覆盖缓存
+        // 2. 无缓存或缓存为空 → 同步下载（确保立即可用）
+        if (map.isEmpty()) {
+            plugin.getLogger().info("[官方翻译] 本地缓存不存在/为空，同步从 Mojang API 下载...");
+            try {
+                String version = getMinecraftVersion();
+                if (version != null) {
+                    String json = downloadFromMojang(version);
+                    if (json != null) {
+                        Files.writeString(cacheFile.toPath(), json, StandardCharsets.UTF_8);
+                        loadFromJson(json);
+                        plugin.getLogger().info("[官方翻译] Mojang 同步下载成功（" + map.size() + " 条）");
+                    } else {
+                        plugin.getLogger().warning("[官方翻译] Mojang API 同步下载失败，走机翻兜底");
+                    }
+                }
+            } catch (Exception e) {
+                plugin.getLogger().log(Level.WARNING, "[官方翻译] 同步下载异常: " + e.getMessage(), e);
+            }
+            return; // 同步完成，不需要异步
+        }
+
+        // 3. 有缓存 → 异步后台静默刷新（不影响启动速度）
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 String version = getMinecraftVersion();
@@ -69,12 +90,10 @@ public class OfficialTranslations {
                 if (json != null) {
                     Files.writeString(cacheFile.toPath(), json, StandardCharsets.UTF_8);
                     loadFromJson(json);
-                    plugin.getLogger().info("[官方翻译] Mojang 下载更新成功（" + map.size() + " 条，版本 " + version + "）");
-                } else {
-                    plugin.getLogger().warning("[官方翻译] Mojang API 下载失败，将使用缓存/机翻兜底");
+                    plugin.getLogger().info("[官方翻译] Mojang 后台刷新成功（" + map.size() + " 条，版本 " + version + "）");
                 }
             } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "[官方翻译] 异步下载异常: " + e.getMessage(), e);
+                plugin.getLogger().log(Level.WARNING, "[官方翻译] 异步刷新异常: " + e.getMessage(), e);
             }
         });
     }
