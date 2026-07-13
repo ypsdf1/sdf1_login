@@ -1561,7 +1561,7 @@ public class DatabaseManager {
             PreparedStatement ps =
                     db.prepareStatement(
                             "SELECT id, save_time "
-                                    + "FROM inventory_backups "
+                                    + "FROM inv_backup_auto "
                                     + "WHERE player_name=? "
                                     + "ORDER BY save_time DESC "
                                     + "LIMIT ?");
@@ -1599,7 +1599,7 @@ public class DatabaseManager {
                                     + "extra_b64, "
                                     + "level, "
                                     + "experience "
-                                    + "FROM inventory_backups "
+                                    + "FROM inv_backup_auto "
                                     + "WHERE id=?");
             ps.setInt(1, backupId);
             ResultSet rs = ps.executeQuery();
