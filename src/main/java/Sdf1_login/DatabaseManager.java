@@ -2327,62 +2327,52 @@ public class DatabaseManager {
                                String extra, int level,
                                double experience) {
         try {
-            PreparedStatement ps =
-                    db.prepareStatement(
-                            "INSERT INTO inv_backup_auto"
-                                    + " (player_name, "
-                                    + "contents_b64, "
-                                    + "armor_b64, "
-                                    + "extra_b64, "
-                                    + "level, "
-                                    + "experience, "
-                                    + "save_time) "
-                                    + "VALUES (?,?,?,?,?,?,?)");
-            ps.setString(1, name);
-            ps.setString(2, contents);
-            ps.setString(3, armor);
-            ps.setString(4, extra);
-            ps.setInt(5, level);
-            ps.setDouble(6, experience);
-            ps.setLong(7, System.currentTimeMillis());
-            ps.executeUpdate();
-            ps.close();
+            try (PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO inv_backup_auto "
+                    + "(player_name, contents_b64, armor_b64, "
+                    + "extra_b64, level, experience, save_time) "
+                    + "VALUES (?,?,?,?,?,?,?)")) {
+                ps.setString(1, name);
+                ps.setString(2, contents);
+                ps.setString(3, armor);
+                ps.setString(4, extra);
+                ps.setInt(5, level);
+                ps.setDouble(6, experience);
+                ps.setLong(7, System.currentTimeMillis());
+                ps.executeUpdate();
+            }
 
-            // 仅保留最近 3 份，删除该玩家更早的备份（先查后删，避免 LIMIT 子查询被优化）
-            try {
-                PreparedStatement sel =
-                        db.prepareStatement(
-                                "SELECT id FROM inv_backup_auto "
-                                        + "WHERE player_name=? "
-                                        + "ORDER BY save_time DESC LIMIT 3");
+            // 保留最近 3 份 —— 先查最新 3 个 ID，再删其余
+            List<Integer> keep = new ArrayList<>();
+            try (PreparedStatement sel = db.prepareStatement(
+                    "SELECT id FROM inv_backup_auto "
+                    + "WHERE player_name=? "
+                    + "ORDER BY save_time DESC LIMIT 3")) {
                 sel.setString(1, name);
-                ResultSet rs = sel.executeQuery();
-                List<Integer> keep = new ArrayList<>();
-                while (rs.next()) {
-                    keep.add(rs.getInt("id"));
+                try (ResultSet rs = sel.executeQuery()) {
+                    while (rs.next()) keep.add(rs.getInt("id"));
                 }
-                rs.close();
-                sel.close();
+            }
 
-                if (keep.size() == 3) {
-                    StringBuilder in = new StringBuilder();
-                    for (int i = 0; i < keep.size(); i++) {
-                        if (i > 0) in.append(",");
-                        in.append(keep.get(i));
-                    }
-                    PreparedStatement del = db.prepareStatement(
-                            "DELETE FROM inv_backup_auto "
-                                    + "WHERE player_name=? AND id NOT IN ("
-                                    + in.toString() + ")");
-                    del.setString(1, name);
-                    del.executeUpdate();
-                    del.close();
+            if (keep.size() == 3) {
+                StringBuilder in = new StringBuilder();
+                for (int i = 0; i < keep.size(); i++) {
+                    if (i > 0) in.append(",");
+                    in.append(keep.get(i));
                 }
-            } catch (SQLException e) {
-                e.printStackTrace();
+                try (PreparedStatement del = db.prepareStatement(
+                        "DELETE FROM inv_backup_auto "
+                        + "WHERE player_name=? AND id NOT IN ("
+                        + in + ")")) {
+                    del.setString(1, name);
+                    int removed = del.executeUpdate();
+                    if (removed > 0) {
+                        logger.info("[自动备份] " + name + " 滚动清理 " + removed + " 份旧备份");
+                    }
+                }
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            logger.warning("[自动备份] 保存/清理失败 (" + name + "): " + e.getMessage());
         }
     }
 

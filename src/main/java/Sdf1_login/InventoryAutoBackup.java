@@ -75,5 +75,6 @@ public class InventoryAutoBackup {
         plugin.getDb().saveAutoBackup(
                 name, contentsB64, armorB64, extraB64,
                 level, experience);
+        plugin.getLogger().info("[自动备份] " + name + " 背包已备份");
     }
 }

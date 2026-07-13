@@ -19,6 +19,7 @@ import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.BlockGrowEvent;
+import org.bukkit.event.block.SignChangeEvent;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Animals;
 import org.bukkit.event.player.PlayerInteractAtEntityEvent;
@@ -4983,6 +4984,25 @@ public class AreaProtection implements Listener {
         // ★ 领地记录：记录成功破坏的方块（事件未被取消才记录）
         if (!e.isCancelled()) {
             plugin.landRecordManager.recordBlockBreak(ac, p, e.getBlock());
+        }
+    }
+
+    @EventHandler
+    public void onSignChange(SignChangeEvent e) {
+        Player p = e.getPlayer();
+        if (p.hasPermission("sdf1.admin")) return; // 管理员跳过
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                e.getBlock().getX(),
+                e.getBlock().getY(),
+                e.getBlock().getZ());
+        if (ac == null) return;
+        if (p.getName().equalsIgnoreCase(ac.owner)) return; // 领地主免检
+        if (isAreaAdmin(p)) return; // 插件管理员免检
+
+        if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止编辑告示牌");
         }
     }
 
