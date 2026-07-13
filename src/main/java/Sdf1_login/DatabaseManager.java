@@ -1587,6 +1587,62 @@ public class DatabaseManager {
 
 
     /**
+     * 获取玩家登录备份列表（inventory_backups）
+     */
+    public List<Map<String, Object>> getLoginBackups(
+            String name, int limit) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT id, save_time FROM inventory_backups "
+                            + "WHERE player_name=? ORDER BY save_time DESC LIMIT ?");
+            ps.setString(1, name);
+            ps.setInt(2, limit);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getInt("id"));
+                row.put("save_time", rs.getLong("save_time"));
+                list.add(row);
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
+     * 获取指定ID的登录备份数据
+     */
+    public String[] getLoginBackupById(int backupId) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT contents_b64, armor_b64, extra_b64, level, experience "
+                            + "FROM inventory_backups WHERE id=?");
+            ps.setInt(1, backupId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String[] result = new String[5];
+                result[0] = rs.getString("contents_b64");
+                result[1] = rs.getString("armor_b64");
+                result[2] = rs.getString("extra_b64");
+                result[3] = String.valueOf(rs.getInt("level"));
+                result[4] = String.valueOf(rs.getDouble("experience"));
+                rs.close();
+                ps.close();
+                return result;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    /**
      * 获取指定ID的备份数据
      */
     public String[] getInventoryBackupById(

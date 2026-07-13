@@ -2018,13 +2018,14 @@ public class Main extends JavaPlugin
 
     /**
      * 读取备份，返回物品名预览
+     * @param tableType "login" 查 inventory_backups，其他查 inv_backup_auto
      */
     private String getBackupItemPreview(
-            int backupId) {
+            int backupId, String tableType) {
         try {
-            String[] backup =
-                    db.getInventoryBackupById(
-                            backupId);
+            String[] backup = "login".equals(tableType)
+                    ? db.getLoginBackupById(backupId)
+                    : db.getInventoryBackupById(backupId);
             if (backup == null
                     || backup[0] == null
                     || backup[0].isEmpty())
@@ -6386,27 +6387,41 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§c权限不足");
                 return true;
             }
-            // ... 保持原有back代码不变 ...
             if (args.length < 2) {
-                sender.sendMessage("§e用法: /sdf1_login back <玩家> [#编号]");
+                sender.sendMessage("§e用法: /sdf1_login back <玩家> [#L编号|#A编号]");
                 return true;
             }
-            // 原有back逻辑
             String backTarget = args[1];
-            if (args.length >= 3
-                    && args[2].startsWith("#")) {
-                int backupId;
+
+            // 解析 #Lxxx / #Axxx / #xxx
+            boolean hasRestoreArg = false;
+            Integer bid = null;
+            boolean isLoginBk = false;
+            if (args.length >= 3 && args[2].startsWith("#")) {
+                hasRestoreArg = true;
+                String raw = args[2].substring(1);
                 try {
-                    backupId = Integer.parseInt(
-                            args[2].replace("#", ""));
-                } catch (NumberFormatException ex) {
-                    sender.sendMessage("§c无效编号");
+                    if (raw.toUpperCase().startsWith("L")) {
+                        isLoginBk = true;
+                        bid = Integer.parseInt(raw.substring(1));
+                    } else if (raw.toUpperCase().startsWith("A")) {
+                        isLoginBk = false;
+                        bid = Integer.parseInt(raw.substring(1));
+                    } else {
+                        bid = Integer.parseInt(raw);
+                    }
+                } catch (NumberFormatException | StringIndexOutOfBoundsException ex) {
+                    sender.sendMessage("§c无效编号，格式: #L编号(登录) 或 #A编号(自动)");
                     return true;
                 }
-                String[] backup =
-                        db.getInventoryBackupById(backupId);
+            }
+
+            if (hasRestoreArg && bid != null) {
+                String[] backup = isLoginBk
+                        ? db.getLoginBackupById(bid)
+                        : db.getInventoryBackupById(bid);
                 if (backup == null) {
-                    sender.sendMessage("§c备份 #" + backupId + " 不存在");
+                    sender.sendMessage("§c备份 " + (isLoginBk ? "#L" : "#A") + bid + " 不存在");
                     return true;
                 }
                 Player tp = Bukkit.getPlayer(backTarget);
@@ -6423,7 +6438,9 @@ public class Main extends JavaPlugin
                         int lv = Integer.parseInt(backup[3]);
                         if (lv > 0) tp.setLevel(lv);
                         tp.sendMessage("§a管理员已恢复您的背包");
-                        sender.sendMessage("§a已恢复 " + backTarget + " (备份#" + backupId + ")");
+                        String typeLabel = isLoginBk ? "登录备份" : "自动备份";
+                        sender.sendMessage("§a已恢复 " + backTarget + " (" + typeLabel + "#"
+                                + (isLoginBk ? "L" : "A") + bid + ")");
                     } catch (Exception e) {
                         sender.sendMessage("§c恢复失败: " + e.getMessage());
                     }
@@ -6435,27 +6452,42 @@ public class Main extends JavaPlugin
                     sender.sendMessage("§a" + backTarget + " 离线，备份已写入");
                 }
             } else {
-                List<Map<String, Object>> backups =
+                // 列出登录+自动备份
+                List<Map<String, Object>> loginBks =
+                        db.getLoginBackups(backTarget, 3);
+                List<Map<String, Object>> autoBks =
                         db.getInventoryBackups(backTarget, 3);
-                if (backups.isEmpty()) {
+                if (loginBks.isEmpty() && autoBks.isEmpty()) {
                     sender.sendMessage("§c" + backTarget + " 没有背包备份");
                     return true;
                 }
-                sender.sendMessage("§e§l=== " + backTarget + " 背包备份（最近3份）===");
+                sender.sendMessage("§e§l=== " + backTarget + " 的背包备份 ===");
                 java.text.SimpleDateFormat sdf =
                         new java.text.SimpleDateFormat("MM-dd HH:mm:ss");
-                for (Map<String, Object> b : backups) {
-                    int bid = ((Number) b.get("id")).intValue();
-                    Object stObj = b.get("save_time");
-                    long st = stObj != null
-                            ? ((Number) stObj).longValue() : 0;
-                    String time = st > 0
-                            ? sdf.format(new java.util.Date(st))
-                            : "未知时间";
-                    String itemNames = getBackupItemPreview(bid);
-                    sender.sendMessage("§7#" + bid + " §f" + time + " §7: " + itemNames);
+                if (!loginBks.isEmpty()) {
+                    sender.sendMessage("§6[登录备份]（登录时保存）");
+                    for (Map<String, Object> b : loginBks) {
+                        int id = ((Number) b.get("id")).intValue();
+                        long st = b.get("save_time") != null
+                                ? ((Number) b.get("save_time")).longValue() : 0;
+                        String time = st > 0 ? sdf.format(new java.util.Date(st)) : "未知时间";
+                        sender.sendMessage("§7#L" + id + " §f" + time + " §7: "
+                                + getBackupItemPreview(id, "login"));
+                    }
                 }
-                sender.sendMessage("§7使用 §e/sdf1_login back " + backTarget + " #编号 §7恢复");
+                if (!autoBks.isEmpty()) {
+                    sender.sendMessage("§6[自动备份]（游戏中每15分钟保存）");
+                    for (Map<String, Object> b : autoBks) {
+                        int id = ((Number) b.get("id")).intValue();
+                        long st = b.get("save_time") != null
+                                ? ((Number) b.get("save_time")).longValue() : 0;
+                        String time = st > 0 ? sdf.format(new java.util.Date(st)) : "未知时间";
+                        sender.sendMessage("§7#A" + id + " §f" + time + " §7: "
+                                + getBackupItemPreview(id, "auto"));
+                    }
+                }
+                sender.sendMessage("§7使用 §e/sdf1_login back " + backTarget
+                        + " #L编号 §7(登录备份) §e#A编号 §7(自动备份)");
             }
             return true;
         }
@@ -6503,15 +6535,24 @@ public class Main extends JavaPlugin
                 }
             }
 
-            // 解析 #编号（玩家自助时为 args[1]；控制台时为玩家名之后的参数）
+            // 解析 #编号/#L编号/#A编号
             Integer bid = null;
+            boolean isLoginBackup = false;
             for (int i = 1; i < args.length; i++) {
                 if (args[i].startsWith("#")) {
+                    String raw = args[i].substring(1);
                     try {
-                        bid = Integer.parseInt(
-                                args[i].replace("#", ""));
-                    } catch (NumberFormatException ex) {
-                        sender.sendMessage("§c无效编号");
+                        if (raw.toUpperCase().startsWith("L")) {
+                            isLoginBackup = true;
+                            bid = Integer.parseInt(raw.substring(1));
+                        } else if (raw.toUpperCase().startsWith("A")) {
+                            isLoginBackup = false;
+                            bid = Integer.parseInt(raw.substring(1));
+                        } else {
+                            bid = Integer.parseInt(raw); // 无前缀默认自动备份
+                        }
+                    } catch (NumberFormatException | StringIndexOutOfBoundsException ex) {
+                        sender.sendMessage("§c无效编号，格式: #L编号(登录) 或 #A编号(自动)");
                         return true;
                     }
                 }
@@ -6524,9 +6565,11 @@ public class Main extends JavaPlugin
                             + " 当前不在线，无法还原实时背包");
                     return true;
                 }
-                String[] bk = db.getInventoryBackupById(bid);
+                String[] bk = isLoginBackup
+                        ? db.getLoginBackupById(bid)
+                        : db.getInventoryBackupById(bid);
                 if (bk == null) {
-                    sender.sendMessage("§c备份 #" + bid + " 不存在");
+                    sender.sendMessage("§c备份 " + (isLoginBackup ? "#L" : "#A") + bid + " 不存在");
                     return true;
                 }
                 try {
@@ -6541,40 +6584,61 @@ public class Main extends JavaPlugin
                     int lv = Integer.parseInt(bk[3]);
                     if (lv > 0) targetPlayer.setLevel(lv);
                     targetPlayer.setExp((float) Double.parseDouble(bk[4]));
+                    String typeLabel = isLoginBackup ? "登录备份" : "自动备份";
                     sender.sendMessage("§a已为 " + targetName
-                            + " 还原主背包备份 #" + bid);
+                            + " 还原" + typeLabel + " #" + (isLoginBackup ? "L" : "A") + bid);
                 } catch (Exception e) {
                     sender.sendMessage("§c还原失败: " + e.getMessage());
                 }
                 return true;
             }
 
-            // 不带编号 → 列出最近 3 份
-            List<Map<String, Object>> myList =
+            // 不带编号 → 列出登录备份 + 自动备份（各最近 3 份）
+            List<Map<String, Object>> loginList =
+                    db.getLoginBackups(targetName, 3);
+            List<Map<String, Object>> autoList =
                     db.getInventoryBackups(targetName, 3);
-            if (myList.isEmpty()) {
+
+            if (loginList.isEmpty() && autoList.isEmpty()) {
                 sender.sendMessage("§c" + targetName + " 没有任何背包备份");
                 return true;
             }
-            sender.sendMessage("§e§l=== " + targetName
-                    + " 的背包备份（最近3份）===");
+
             java.text.SimpleDateFormat sdf =
                     new java.text.SimpleDateFormat("MM-dd HH:mm:ss");
-            for (Map<String, Object> b : myList) {
-                int bidi = ((Number) b.get("id")).intValue();
-                Object stObj = b.get("save_time");
-                long st = stObj != null ? ((Number) stObj).longValue() : 0;
-                String time = st > 0 ? sdf.format(new java.util.Date(st))
-                        : "未知时间";
-                sender.sendMessage("§7#" + bidi + " §f" + time + " §7: "
-                        + getBackupItemPreview(bidi));
+
+            sender.sendMessage("§e§l=== " + targetName + " 的背包备份 ===");
+
+            // 登录备份
+            if (!loginList.isEmpty()) {
+                sender.sendMessage("§6[登录备份]（登录时保存）");
+                for (Map<String, Object> b : loginList) {
+                    int bidi = ((Number) b.get("id")).intValue();
+                    long st = b.get("save_time") != null
+                            ? ((Number) b.get("save_time")).longValue() : 0;
+                    String time = st > 0 ? sdf.format(new java.util.Date(st)) : "未知时间";
+                    sender.sendMessage("§7#L" + bidi + " §f" + time + " §7: "
+                            + getBackupItemPreview(bidi, "login"));
+                }
             }
-            if (sender instanceof Player
-                    && targetPlayer == (Player) sender)
-                sender.sendMessage("§7使用 §e/sdf1_login backup #编号 §7还原对应备份");
-            else
-                sender.sendMessage("§7使用 §e/sdf1_login backup "
-                        + targetName + " #编号 §7还原对应备份");
+
+            // 自动备份
+            if (!autoList.isEmpty()) {
+                sender.sendMessage("§6[自动备份]（游戏中每15分钟保存）");
+                for (Map<String, Object> b : autoList) {
+                    int bidi = ((Number) b.get("id")).intValue();
+                    long st = b.get("save_time") != null
+                            ? ((Number) b.get("save_time")).longValue() : 0;
+                    String time = st > 0 ? sdf.format(new java.util.Date(st)) : "未知时间";
+                    sender.sendMessage("§7#A" + bidi + " §f" + time + " §7: "
+                            + getBackupItemPreview(bidi, "auto"));
+                }
+            }
+
+            sender.sendMessage("§7使用 §e/sdf1_login backup "
+                    + (sender instanceof Player && targetPlayer == (Player) sender
+                    ? "#编号" : targetName + " #编号")
+                    + " §7（#L编号=登录备份, #A编号=自动备份）");
             return true;
         }
 
