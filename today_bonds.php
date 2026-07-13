@@ -20,55 +20,28 @@ function getTodayBondData() {
     try {
         $db = getDB();
         // ==========================================
-        // web_transactions（Web端交易）
-        // amount < 0 必定为消费（如 admin_deduct）
-        // amount > 0 则根据类型判断方向
+        // 单一数据源：game_transactions（Java同步的完整交易记录）
+        // 每笔交易都有 balance_before / balance_after，
+        // 用余额变化方向判断收入/支出，100% 准确无重复。
+        //
+        // 不使用 web_transactions 的原因：
+        // 同一笔 Web 商城购买会同时出现在 web_transactions（PHP端）
+        // 和 game_transactions（Java同步端），导致消费重复计算。
         // ==========================================
-        $spendWebTypes = ['shop_buy', 'shop_cart']; // 金额为正但属于消费的类型
-
-        // 消费：amount < 0 取绝对值
-        $stmt = $db->prepare("SELECT player_name, SUM(ABS(amount)) AS total_spend FROM web_transactions WHERE amount < 0 AND created_at >= :s1 AND created_at < :e1 GROUP BY player_name");
+        // 收入：余额增加
+        $stmt = $db->prepare("SELECT player_name, SUM(balance_after - balance_before) AS total_income FROM game_transactions WHERE balance_after > balance_before AND tx_time >= :s1 AND tx_time < :e1 GROUP BY player_name");
         $stmt->bindValue(':s1', $todayStart, SQLITE3_INTEGER);
         $stmt->bindValue(':e1', $todayEnd, SQLITE3_INTEGER);
         $res = $stmt->execute();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $spendData[$row['player_name']] = ($spendData[$row['player_name']] ?? 0) + (int)$row['total_spend'];
+            $incomeData[$row['player_name']] = ($incomeData[$row['player_name']] ?? 0) + (int)$row['total_income'];
         }
-        // 消费：amount > 0 类型为消费类（shop_buy, shop_cart）
-        $stmt2 = $db->prepare("SELECT player_name, SUM(amount) AS total_spend FROM web_transactions WHERE amount > 0 AND type IN ('shop_buy','shop_cart') AND created_at >= :s2 AND created_at < :e2 GROUP BY player_name");
+        // 消费：余额减少
+        $stmt2 = $db->prepare("SELECT player_name, SUM(balance_before - balance_after) AS total_spend FROM game_transactions WHERE balance_after < balance_before AND tx_time >= :s2 AND tx_time < :e2 GROUP BY player_name");
         $stmt2->bindValue(':s2', $todayStart, SQLITE3_INTEGER);
         $stmt2->bindValue(':e2', $todayEnd, SQLITE3_INTEGER);
         $res2 = $stmt2->execute();
         while ($row = $res2->fetchArray(SQLITE3_ASSOC)) {
-            $spendData[$row['player_name']] = ($spendData[$row['player_name']] ?? 0) + (int)$row['total_spend'];
-        }
-        // 收入：amount > 0 且非消费类
-        $stmt3 = $db->prepare("SELECT player_name, SUM(amount) AS total_income FROM web_transactions WHERE amount > 0 AND type NOT IN ('shop_buy','shop_cart') AND created_at >= :s3 AND created_at < :e3 GROUP BY player_name");
-        $stmt3->bindValue(':s3', $todayStart, SQLITE3_INTEGER);
-        $stmt3->bindValue(':e3', $todayEnd, SQLITE3_INTEGER);
-        $res3 = $stmt3->execute();
-        while ($row = $res3->fetchArray(SQLITE3_ASSOC)) {
-            $incomeData[$row['player_name']] = ($incomeData[$row['player_name']] ?? 0) + (int)$row['total_income'];
-        }
-
-        // ==========================================
-        // game_transactions（游戏内交易）
-        // 金额始终为正，用 balance_after-before 判断方向
-        // ==========================================
-        // 收入：余额增加
-        $stmt4 = $db->prepare("SELECT player_name, SUM(balance_after - balance_before) AS total_income FROM game_transactions WHERE balance_after > balance_before AND tx_time >= :s4 AND tx_time < :e4 GROUP BY player_name");
-        $stmt4->bindValue(':s4', $todayStart, SQLITE3_INTEGER);
-        $stmt4->bindValue(':e4', $todayEnd, SQLITE3_INTEGER);
-        $res4 = $stmt4->execute();
-        while ($row = $res4->fetchArray(SQLITE3_ASSOC)) {
-            $incomeData[$row['player_name']] = ($incomeData[$row['player_name']] ?? 0) + (int)$row['total_income'];
-        }
-        // 消费：余额减少
-        $stmt5 = $db->prepare("SELECT player_name, SUM(balance_before - balance_after) AS total_spend FROM game_transactions WHERE balance_after < balance_before AND tx_time >= :s5 AND tx_time < :e5 GROUP BY player_name");
-        $stmt5->bindValue(':s5', $todayStart, SQLITE3_INTEGER);
-        $stmt5->bindValue(':e5', $todayEnd, SQLITE3_INTEGER);
-        $res5 = $stmt5->execute();
-        while ($row = $res5->fetchArray(SQLITE3_ASSOC)) {
             $spendData[$row['player_name']] = ($spendData[$row['player_name']] ?? 0) + (int)$row['total_spend'];
         }
     } catch (\Throwable $e) {
