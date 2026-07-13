@@ -6460,23 +6460,31 @@ public class Main extends JavaPlugin
             return true;
         }
 
-// ===== backup（玩家自助还原主背包，最近3份任选）=====
+// ===== backup（背包备份管理——仅OP/插件管理员/控制台可用）=====
         if (sub.equals("backup")) {
-            // 解析目标玩家：玩家自助用自己；控制台/命令方块必须指定玩家名
-            Player self = (sender instanceof Player) ? (Player) sender : null;
+            // 权限检查：仅 OP、插件管理员(tag)、控制台可执行
+            if (!isPrivileged(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+
+            // 解析目标玩家
             String targetName;
-            Player targetPlayer = self;
-            if (self == null) {
-                // 控制台：第一个参数必须是玩家名（不能以 # 开头）
-                if (args.length < 2 || args[1].startsWith("#")) {
-                    sender.sendMessage(
-                            "§c用法: /sdf1_login backup <玩家名> [#编号]");
-                    return true;
-                }
+            Player targetPlayer = null;
+
+            if (args.length >= 2 && !args[1].startsWith("#")) {
+                // 有玩家名参数 → 查询目标玩家
                 targetName = args[1];
                 targetPlayer = Bukkit.getPlayerExact(targetName);
+            } else if (sender instanceof Player) {
+                // 无参数 + 玩家 → 默认显示自己
+                targetName = ((Player) sender).getName();
+                targetPlayer = (Player) sender;
             } else {
-                targetName = self.getName();
+                // 控制台必须带参数
+                sender.sendMessage(
+                        "§c用法: /sdf1_login backup <玩家名> [#编号]");
+                return true;
             }
 
             // 场内拦截（仅对在线目标生效）
@@ -6561,7 +6569,8 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§7#" + bidi + " §f" + time + " §7: "
                         + getBackupItemPreview(bidi));
             }
-            if (self != null)
+            if (sender instanceof Player
+                    && targetPlayer == (Player) sender)
                 sender.sendMessage("§7使用 §e/sdf1_login backup #编号 §7还原对应备份");
             else
                 sender.sendMessage("§7使用 §e/sdf1_login backup "
