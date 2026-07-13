@@ -184,23 +184,38 @@ public class LandRecordManager implements Listener {
         ContainerSnapshot snap = openSnapshots.remove(p.getName());
         if (snap == null) return;
 
-        Map<String, Integer> after =
-                scanInventory(e.getInventory());
-        for (Map.Entry<String, Integer> en :
-                snap.before.entrySet()) {
-            int taken = en.getValue() -
-                    after.getOrDefault(en.getKey(), 0);
+        Map<String, Integer> after = scanInventory(e.getInventory());
+
+        // 1. 拿取：before > after
+        for (Map.Entry<String, Integer> en : snap.before.entrySet()) {
+            int taken = en.getValue() - after.getOrDefault(en.getKey(), 0);
             if (taken > 0) {
-                try {
-                    plugin.getDb().recordLandContainer(
-                            snap.landName, snap.landId,
-                            snap.world, snap.x, snap.y, snap.z,
-                            p.getName(), "take",
-                            snap.containerType, en.getKey(), taken);
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
+                recordContainerChange(snap, p.getName(), "take",
+                        en.getKey(), taken);
             }
+        }
+
+        // 2. 存入：after > before
+        for (Map.Entry<String, Integer> en : after.entrySet()) {
+            int put = en.getValue() - snap.before.getOrDefault(en.getKey(), 0);
+            if (put > 0) {
+                recordContainerChange(snap, p.getName(), "put",
+                        en.getKey(), put);
+            }
+        }
+    }
+
+    private void recordContainerChange(ContainerSnapshot snap,
+                                       String playerName, String action,
+                                       String detail, int amount) {
+        try {
+            plugin.getDb().recordLandContainer(
+                    snap.landName, snap.landId,
+                    snap.world, snap.x, snap.y, snap.z,
+                    playerName, action, snap.containerType,
+                    detail, amount);
+        } catch (Exception ex) {
+            ex.printStackTrace();
         }
     }
 
@@ -269,8 +284,13 @@ public class LandRecordManager implements Listener {
             materials.add((String) r.get("material"));
         }
         for (Map<String, Object> r : containers) {
-            if ("take".equals(r.get("action"))) {
+            if ("take".equals(r.get("action")) || "put".equals(r.get("action"))) {
                 materials.add((String) r.get("detail"));
+            }
+            // 容器类型（如 CHEST）也要翻译
+            String ct = (String) r.get("container_type");
+            if (ct != null && !ct.isEmpty()) {
+                materials.add(ct);
             }
         }
 
@@ -320,6 +340,13 @@ public class LandRecordManager implements Listener {
                     p.sendMessage(" §7" + fmt((Long) r.get("time"))
                             + " §f" + r.get("player_name")
                             + " §c拿取 §e" + mat + " §a" + zh
+                            + " §7x" + r.get("amount"));
+                } else if ("put".equals(act)) {
+                    String mat = (String) r.get("detail");
+                    String zh = translations.getOrDefault(mat, MaterialTranslator.toReadable(mat));
+                    p.sendMessage(" §7" + fmt((Long) r.get("time"))
+                            + " §f" + r.get("player_name")
+                            + " §a存入 §e" + mat + " §a" + zh
                             + " §7x" + r.get("amount"));
                 }
             }
