@@ -5506,7 +5506,7 @@ public class WebManager {
                     } else {
                         player.sendMessage("§c[Web] Token同步失败，请检查Web后端: " + webBaseUrl);
                     }
-                    player.sendMessage("§7[Web] 使用 §e/sdf1_login weblogin §7可重新获取");
+                    player.sendMessage("§7[Web] 使用 §e/控制台 §7可重新获取");
                 }
             });
 

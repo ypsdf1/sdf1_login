@@ -3035,29 +3035,49 @@ public class AreaProtection implements Listener {
     // ==================== 边框显示 ====================
     private void showBorder(Player p, AreaConfig ac, boolean temp) {
         cancelBorder(p);
+        int minX = Math.min(ac.x1, ac.x2);
+        int maxX = Math.max(ac.x1, ac.x2);
+        int minZ = Math.min(ac.z1, ac.z2);
+        int maxZ = Math.max(ac.z1, ac.z2);
+        int edgeLenX = maxX - minX + 1;
+        int edgeLenZ = maxZ - minZ + 1;
+        // 超大领地跳过3D边框粒子
+        if (edgeLenX > 200 || edgeLenZ > 200) return;
+        int perimeter = 2 * (edgeLenX + edgeLenZ);
+        // 动态步长：保证每条边最多~25个粒子点
+        final int step = Math.max(4, Math.min(10, perimeter / 100));
+        // 动态层数：大领地减少层数（从6层降到2层）
+        final int dyStep = perimeter > 200 ? 10 : 5;
+        final int maxParticlesPerTick = 80;
+
         int taskId = Bukkit.getScheduler()
                 .runTaskTimer(plugin, new Runnable() {
                     @Override
                     public void run() {
                         if (!p.isOnline()) return;
                         Location loc = p.getLocation();
-                        int px = loc.getBlockX();
                         int py = loc.getBlockY();
-                        int pz = loc.getBlockZ();
-                        int minX = Math.min(ac.x1, ac.x2);
-                        int maxX = Math.max(ac.x1, ac.x2);
-                        int minZ = Math.min(ac.z1, ac.z2);
-                        int maxZ = Math.max(ac.z1, ac.z2);
-                        for (int dy = 5; dy <= 30; dy += 5) {
-                            for (int x = minX; x <= maxX; x += 4) {
-                                for (int z = minZ; z <= maxZ; z += 4) {
-                                    if (x == minX || x == maxX
-                                            || z == minZ || z == maxZ) {
-                                        p.spawnParticle(Particle.END_ROD,
-                                                x + 0.5, py + dy, z + 0.5,
-                                                1, 0, 0, 0, 0);
-                                    }
+                        int count = 0;
+                        for (int dy = 5; dy <= 30 && count < maxParticlesPerTick; dy += dyStep) {
+                            for (int x = minX; x <= maxX && count < maxParticlesPerTick; x += step) {
+                                if (x == minX || x == maxX) {
+                                    p.spawnParticle(Particle.END_ROD,
+                                            x + 0.5, py + dy, minZ + 0.5,
+                                            1, 0, 0, 0, 0);
+                                    p.spawnParticle(Particle.END_ROD,
+                                            x + 0.5, py + dy, maxZ + 0.5,
+                                            1, 0, 0, 0, 0);
+                                    count += 2;
                                 }
+                            }
+                            for (int z = minZ + step; z < maxZ && count < maxParticlesPerTick; z += step) {
+                                p.spawnParticle(Particle.END_ROD,
+                                        minX + 0.5, py + dy, z + 0.5,
+                                        1, 0, 0, 0, 0);
+                                p.spawnParticle(Particle.END_ROD,
+                                        maxX + 0.5, py + dy, z + 0.5,
+                                        1, 0, 0, 0, 0);
+                                count += 2;
                             }
                         }
                     }
@@ -4588,12 +4608,28 @@ public class AreaProtection implements Listener {
         int minZ = Math.min(ac.z1, ac.z2);
         int maxZ = Math.max(ac.z1, ac.z2);
 
+        // === 性能优化：动态密度控制 ===
+        int edgeLenX = maxX - minX + 1;
+        int edgeLenZ = maxZ - minZ + 1;
+        int perimeter = 2 * (edgeLenX + edgeLenZ);
+
+        // 超大领地直接跳过粒子（>200格边长）
+        if (edgeLenX > 200 || edgeLenZ > 200) {
+            return;
+        }
+
+        // 动态步长：保证每条边最多~30个粒子点
+        int step = Math.max(2, Math.min(6, perimeter / 120));
+        // 每轮粒子总量上限60（不含四角）
+        int maxParticlesPerRound = 60;
+
         Particle.DustTransition dust = new Particle.DustTransition(org.bukkit.Color.fromRGB(0, 255, 255), org.bukkit.Color.fromRGB(255, 255, 0), 1.2f);
 
         // 每20tick刷新一次粒子（共durationTicks/20次）
         int rounds = Math.max(1, durationTicks / 20);
         for (int i = 0; i < rounds; i++) {
             final int round = i;
+            final int fStep = step;
             new org.bukkit.scheduler.BukkitRunnable() {
                 @Override
                 public void run() {
@@ -4603,20 +4639,23 @@ public class AreaProtection implements Listener {
                     int playerY = p.getLocation().getBlockY();
                     int y = Math.max(ac.yMin, Math.min(playerY, ac.yMax));
 
+                    int count = 0;
                     // 四条边
-                    for (int x = minX; x <= maxX; x += 2) {
+                    for (int x = minX; x <= maxX && count < maxParticlesPerRound; x += fStep) {
                         p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, x + 0.5, y, minZ + 0.5), 1, dust);
                         p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, x + 0.5, y, maxZ + 0.5), 1, dust);
+                        count += 2;
                     }
-                    for (int z = minZ; z <= maxZ; z += 2) {
+                    for (int z = minZ; z <= maxZ && count < maxParticlesPerRound; z += fStep) {
                         p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, minX + 0.5, y, z + 0.5), 1, dust);
                         p.spawnParticle(Particle.DUST_COLOR_TRANSITION, new Location(world, maxX + 0.5, y, z + 0.5), 1, dust);
+                        count += 2;
                     }
-                    // 四个角高亮
-                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, minZ + 0.5), 3);
-                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, minZ + 0.5), 3);
-                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, maxZ + 0.5), 3);
-                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, maxZ + 0.5), 3);
+                    // 四个角高亮（各1个粒子，减少ProtocolLib包量）
+                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, minZ + 0.5), 1);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, minZ + 0.5), 1);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, minX + 0.5, y, maxZ + 0.5), 1);
+                    p.spawnParticle(Particle.END_ROD, new Location(world, maxX + 0.5, y, maxZ + 0.5), 1);
                 }
             }.runTaskLater(plugin, round * 20L);
         }
