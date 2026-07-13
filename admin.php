@@ -81,6 +81,31 @@
         .glass-alert-card .alert-label{font-size:12px;color:#8b949e;margin-bottom:4px;text-align:left}
         @keyframes glassFadeIn{from{opacity:0}to{opacity:1}}
         @keyframes glassSlideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+        /* ===== 今日债券 / 本时活跃 / 在线曲线 看板样式 ===== */
+        .dash-stats { display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+        .dash-stat { flex:1; min-width:120px; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:14px; text-align:center; }
+        .dash-stat .v { font-size:22px; font-weight:700; }
+        .dash-stat .v.green { color:var(--green); }
+        .dash-stat .v.red { color:var(--red); }
+        .dash-stat .v.blue { color:var(--accent); }
+        .dash-stat .v.yellow { color:var(--yellow); }
+        .dash-stat .l { font-size:11px; color:var(--dim); margin-top:4px; }
+        .pgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+        .pcard { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px 14px; transition:border-color .2s; }
+        .pcard:hover { border-color:var(--accent); }
+        .pcard .pn { font-size:14px; font-weight:700; margin-bottom:4px; }
+        .pcard .pm { font-size:11px; color:var(--dim); display:flex; justify-content:space-between; }
+        .pcard .pm .on { color:var(--green); }
+        .pcard .tbar { margin-top:6px; height:3px; background:var(--bg); border-radius:3px; overflow:hidden; }
+        .pcard .tbar .fill { height:100%; background:var(--green); border-radius:3px; }
+        .curve-bars { display:flex; align-items:flex-end; gap:3px; height:220px; padding:10px 0 0; border-bottom:1px solid var(--border); }
+        .cbar-item { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; cursor:default; }
+        .cbar { width:100%; background:linear-gradient(to top, rgba(88,166,255,0.3), var(--accent)); border-radius:3px 3px 0 0; min-height:2px; transition:height .4s ease; }
+        .cbar.empty-bar { background:var(--border); }
+        .cbar-item:hover .cbar:not(.empty-bar) { filter:brightness(1.2); }
+        .cbar-lbl { font-size:9px; color:var(--dim); margin-top:5px; white-space:nowrap; }
+        .curve-peak { font-size:12px; color:var(--dim); margin-top:10px; }
+        .curve-peak b { color:var(--accent); }
     </style>
 </head>
 <body>
@@ -106,6 +131,9 @@
         <div class="si" data-p="users" onclick="go('users')">👥 用户管理</div>
         <div class="si" data-p="online" onclick="go('online')">🟢 在线玩家</div>
         <div class="si" data-p="active" onclick="go('active')">⏱️ 活跃用户</div>
+        <div class="si" data-p="bonds_today" onclick="go('bonds_today')">📊 今日债券</div>
+        <div class="si" data-p="active_hour" onclick="go('active_hour')">🟢 本时活跃</div>
+        <div class="si" data-p="online_curve" onclick="go('online_curve')">📈 在线曲线</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
@@ -172,6 +200,9 @@ function go(p) {
     else if (p==='users') loadUsers(c);
     else if (p==='online') loadOnlinePlayers(c);
     else if (p==='active') loadActivePlayers(c);
+    else if (p==='bonds_today') loadBondsToday(c);
+    else if (p==='active_hour') loadActiveHour(c);
+    else if (p==='online_curve') loadOnlineCurve(c);
     else if (p==='reset_requests') loadResetRequests(c);
     else if (p==='tickets') loadTickets(c);
     else if (p==='lands') loadLands(c);
@@ -3324,6 +3355,142 @@ async function cmDelete(id) {
         else toast(d.message || '删除失败', 'err');
     } catch (e) { toast(e.message, 'err'); }
 }
+
+// ===== 今日债券变动看板 =====
+let _bondsTodayTimer = null;
+async function loadBondsToday(el) {
+    if (_bondsTodayTimer) clearInterval(_bondsTodayTimer);
+    el.innerHTML = '<div class="card">加载中...</div>';
+    const renderBonds = (data) => {
+        const fmt = n => Number(n).toLocaleString('zh-CN');
+        const netCls = data.net_total > 0 ? 'green' : data.net_total < 0 ? 'red' : 'blue';
+        const netSign = data.net_total >= 0 ? '+' : '';
+        el.innerHTML = `
+            <div class="card">
+                <h2>📊 今日债券变动 <span style="font-size:12px;color:var(--dim)">${data.date_label}</span>
+                    <button class="btn btn-blue" style="float:right;padding:4px 12px" onclick="loadBondsToday(document.getElementById('C'))">刷新</button>
+                </h2>
+                <div class="dash-stats">
+                    <div class="dash-stat"><div class="v red">${fmt(data.total_spend)}</div><div class="l">总消费</div></div>
+                    <div class="dash-stat"><div class="v green">${fmt(data.total_income)}</div><div class="l">总收入</div></div>
+                    <div class="dash-stat"><div class="v ${netCls}">${netSign}${fmt(data.net_total)}</div><div class="l">净变动</div></div>
+                    <div class="dash-stat"><div class="v yellow">${data.player_count}</div><div class="l">活跃玩家</div></div>
+                </div>
+                <table class="table">
+                    <tr><th>玩家</th><th style="text-align:right">消费</th><th style="text-align:right">收入</th><th style="text-align:right">净变动</th></tr>
+                    ${data.rows.length === 0 ? '<tr><td colspan="4" style="text-align:center;color:var(--dim)">今日暂无数据</td></tr>' :
+                      data.rows.map(r => {
+                        const nCls = r.net > 0 ? 'green' : r.net < 0 ? 'red' : '';
+                        const nSign = r.net >= 0 ? '+' : '';
+                        return `<tr><td>${esc(r.name)}</td><td style="text-align:right;color:var(--red)">${fmt(r.spend)}</td><td style="text-align:right;color:var(--green)">${fmt(r.income)}</td><td style="text-align:right;color:var(--${nCls||'dim'})">${nSign}${fmt(r.net)}</td></tr>`;
+                      }).join('')}
+                </table>
+            </div>`;
+    };
+    try {
+        const d = await fetch('today_bonds.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        renderBonds(d.data);
+        _bondsTodayTimer = setInterval(async () => {
+            try {
+                const d2 = await fetch('today_bonds.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+                if (d2.success) renderBonds(d2.data);
+            } catch(e){}
+        }, 30000);
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+}
+
+// ===== 本小时在线活跃看板 =====
+let _activeHourTimer = null;
+async function loadActiveHour(el) {
+    if (_activeHourTimer) clearInterval(_activeHourTimer);
+    el.innerHTML = '<div class="card">加载中...</div>';
+    const fmtDur = sec => sec < 60 ? sec+'秒' : sec < 3600 ? Math.floor(sec/60)+'分'+(sec%60)+'秒' : Math.floor(sec/3600)+'时'+Math.floor((sec%3600)/60)+'分';
+    const renderActive = (data) => {
+        el.innerHTML = `
+            <div class="card">
+                <h2>🟢 本小时在线活跃 <span class="tag tag-unused" style="margin-left:8px">${data.online_count} 人在线</span>
+                    <button class="btn btn-blue" style="float:right;padding:4px 12px" onclick="loadActiveHour(document.getElementById('C'))">刷新</button>
+                </h2>
+                <div class="pgrid">
+                    ${data.online_list.length === 0 ? '<div style="grid-column:1/-1;text-align:center;color:var(--dim);padding:30px">当前没有玩家在线</div>' :
+                      data.online_list.map(p => {
+                        const pct = Math.min(100, Math.round(p.duration / (6*3600) * 100));
+                        return `<div class="pcard"><div class="pn">${esc(p.name)}</div><div class="pm"><span>登录 ${p.login_time_fmt}</span><span class="on">在线 ${fmtDur(p.duration)}</span></div><div class="tbar"><div class="fill" style="width:${pct}%"></div></div></div>`;
+                      }).join('')}
+                </div>
+            </div>`;
+    };
+    try {
+        const d = await fetch('active_players.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        renderActive(d.data);
+        _activeHourTimer = setInterval(async () => {
+            try {
+                const d2 = await fetch('active_players.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+                if (d2.success) renderActive(d2.data);
+            } catch(e){}
+        }, 10000);
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+}
+
+// ===== 24小时在线曲线看板（纯CSS条形图） =====
+let _onlineCurveTimer = null;
+async function loadOnlineCurve(el) {
+    if (_onlineCurveTimer) clearInterval(_onlineCurveTimer);
+    el.innerHTML = '<div class="card">加载中...</div>';
+    const renderCurve = (data) => {
+        const buckets = data.buckets || [];
+        const hasData = buckets.some(b => b.samples > 0);
+        // 找峰值
+        let peakIdx = -1, peakVal = 0;
+        buckets.forEach((b,i) => { if (b.avg > peakVal) { peakVal = b.avg; peakIdx = i; } });
+        const maxVal = Math.max(1, ...buckets.map(b => b.avg));
+        el.innerHTML = `
+            <div class="card">
+                <h2>📈 24小时在线曲线
+                    <button class="btn btn-blue" style="float:right;padding:4px 12px" onclick="loadOnlineCurve(document.getElementById('C'))">刷新</button>
+                </h2>
+                <div class="dash-stats">
+                    <div class="dash-stat"><div class="v blue">${data.total_snapshots || 0}</div><div class="l">快照样本数</div></div>
+                    <div class="dash-stat"><div class="v yellow">${peakIdx>=0 ? buckets[peakIdx].hour : '-'}</div><div class="l">高峰时段</div></div>
+                    <div class="dash-stat"><div class="v green">${peakVal>0 ? peakVal.toFixed(1) : '0'}</div><div class="l">高峰均值</div></div>
+                </div>
+                ${hasData ? `
+                <div class="curve-bars">
+                    ${buckets.map(b => {
+                        const h = Math.max(2, Math.round(b.avg / maxVal * 100));
+                        const empty = b.samples === 0;
+                        return `<div class="cbar-item" title="${b.hour} 平均 ${b.avg} 人 (采样 ${b.samples})"><div class="cbar ${empty?'empty-bar':''}" style="height:${empty?'2px':h+'%'}"></div><div class="cbar-lbl">${b.hour.slice(0,2)}</div></div>`;
+                    }).join('')}
+                </div>
+                <div class="curve-peak">横轴为 00–23 时，每个柱为该时段<b>平均在线人数</b>；快照每60秒自动记录一次。</div>
+                ` : `
+                <div style="text-align:center;color:var(--dim);padding:50px">📊 数据收集中 — 页面每60秒记录一次快照，积累后将自动生成曲线</div>
+                `}
+            </div>`;
+    };
+    try {
+        const d = await fetch('online_curve.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        renderCurve(d.data);
+        _onlineCurveTimer = setInterval(async () => {
+            try {
+                const d2 = await fetch('online_curve.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
+                if (d2.success) renderCurve(d2.data);
+            } catch(e){}
+        }, 60000);
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+}
+
+// 切换页面时清理定时器
+const _origGo = go;
+go = function(p) {
+    if (_bondsTodayTimer) { clearInterval(_bondsTodayTimer); _bondsTodayTimer = null; }
+    if (_activeHourTimer) { clearInterval(_activeHourTimer); _activeHourTimer = null; }
+    if (_onlineCurveTimer) { clearInterval(_onlineCurveTimer); _onlineCurveTimer = null; }
+    return _origGo(p);
+};
 </script>
 <script src="cashier.js?<?php echo filemtime(__FILE__); ?>"></script>
 </body>
