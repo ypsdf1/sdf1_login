@@ -844,16 +844,16 @@ public class AreaCLIManager {
         // 获取该成员的per-player权限
         Map<String, Boolean> playerPerms = areaProtect.getPlayerPermMap(landId, targetPlayer);
 
-        // ★ 管理员简化面板：仅非领地主且非tag管理员时简化显示
+        // ★ 管理员简化面板：只要玩家是管理员，隐藏全部权限配置，只保留玩家发光
         boolean isTargetAdmin = areaProtect.isLandAdmin(land.name, targetPlayer);
-        if (isTargetAdmin && !isOwner && !isAdmin) {
+        if (isTargetAdmin) {
             p.sendMessage(header(targetPlayer + " 的独立权限"));
             p.sendMessage(Component.text(""));
             p.sendMessage(Component.text("§6§l该玩家是管理员，自动获得所有权限"));
             p.sendMessage(Component.text("§7管理员不受任何权限限制（发光效果除外）"));
             p.sendMessage(Component.text(""));
 
-            // ★ 领地主或tag管理员：可切换管理员身份
+            // ★ 领地主或插件管理员：可切换管理员身份（撤职）
             if ((isOwner || isAdmin) && !targetPlayer.equalsIgnoreCase(land.owner)) {
                 Component adminLine = Component.empty();
                 adminLine = adminLine.append(Component.text("§6✔ §f身份: §6管理员"));
