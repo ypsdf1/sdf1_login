@@ -263,6 +263,31 @@ public class LandRecordManager implements Listener {
             return;
         }
 
+        // 收集所有需要翻译的材料名
+        Set<String> materials = new LinkedHashSet<>();
+        for (Map<String, Object> r : blocks) {
+            materials.add((String) r.get("material"));
+        }
+        for (Map<String, Object> r : containers) {
+            if ("take".equals(r.get("action"))) {
+                materials.add((String) r.get("detail"));
+            }
+        }
+
+        // 异步批量翻译
+        MaterialTranslator.translateBatch(materials)
+                .thenAccept(translations -> {
+                    // 回到主线程发送消息
+                    plugin.getServer().getScheduler().runTask(plugin, () -> {
+                        printResults(p, x, y, z, blocks, containers, translations);
+                    });
+                });
+    }
+
+    private void printResults(Player p, int x, int y, int z,
+                              List<Map<String, Object>> blocks,
+                              List<Map<String, Object>> containers,
+                              Map<String, String> translations) {
         p.sendMessage("§6§l[回声碎片] §e坐标 ("
                 + x + "," + y + "," + z + ") 的记录：");
 
@@ -271,10 +296,11 @@ public class LandRecordManager implements Listener {
             for (Map<String, Object> r : blocks) {
                 String act = "break".equals(r.get("action"))
                         ? "§c破坏" : "§a放置";
+                String mat = (String) r.get("material");
+                String zh = translations.getOrDefault(mat, MaterialTranslator.toReadable(mat));
                 p.sendMessage(" §7" + fmt((Long) r.get("time"))
                         + " §f" + r.get("player_name")
-                        + " " + act + " §e"
-                        + r.get("material"));
+                        + " " + act + " §e" + mat + " §a" + zh);
             }
         }
 
@@ -283,14 +309,17 @@ public class LandRecordManager implements Listener {
             for (Map<String, Object> r : containers) {
                 String act = (String) r.get("action");
                 if ("open".equals(act)) {
+                    String ct = (String) r.get("container_type");
+                    String ctZh = translations.getOrDefault(ct, MaterialTranslator.toReadable(ct));
                     p.sendMessage(" §7" + fmt((Long) r.get("time"))
                             + " §f" + r.get("player_name")
-                            + " §d打开§7[" + r.get("container_type")
-                            + "]");
+                            + " §d打开§7[" + ct + "] §a" + ctZh);
                 } else if ("take".equals(act)) {
+                    String mat = (String) r.get("detail");
+                    String zh = translations.getOrDefault(mat, MaterialTranslator.toReadable(mat));
                     p.sendMessage(" §7" + fmt((Long) r.get("time"))
                             + " §f" + r.get("player_name")
-                            + " §c拿取 §e" + r.get("detail")
+                            + " §c拿取 §e" + mat + " §a" + zh
                             + " §7x" + r.get("amount"));
                 }
             }

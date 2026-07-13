@@ -5404,6 +5404,15 @@ public class AreaProtection implements Listener {
         AreaConfig ac = getArea(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
         if (ac == null) return;
 
+        // ★ 领地记录（所有容器打开都记录，含领地主/管理员/公共设施）
+        String containerType;
+        if (loc.getBlock().getType() != org.bukkit.Material.AIR) {
+            containerType = loc.getBlock().getType().name();
+        } else {
+            containerType = holder.getClass().getSimpleName();
+        }
+        plugin.landRecordManager.recordContainerOpen(ac, p, loc, containerType, e.getInventory());
+
         if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
 
         // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（跳过禁止检查）
@@ -5427,15 +5436,6 @@ public class AreaProtection implements Listener {
 
         // ★ 容器交互已启用时，无权限级别的玩家也允许访问（访客权限）
         // 只有denyContainer=true时才检查权限级别
-
-        // ★ 领地记录：记录实际打开的容器（含打开快照用于计算拿取差异）
-        String containerType;
-        if (loc.getBlock().getType() != org.bukkit.Material.AIR) {
-            containerType = loc.getBlock().getType().name();
-        } else {
-            containerType = holder.getClass().getSimpleName();
-        }
-        plugin.landRecordManager.recordContainerOpen(ac, p, loc, containerType, e.getInventory());
     }
 
     public void loadWhitelists() {
