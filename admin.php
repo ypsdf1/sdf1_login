@@ -839,8 +839,6 @@ function renderUserTabs(el, users, onlineSet, onlineMap) {
                 <div class="tab" data-tab="active1h" onclick="loadActiveTab(this, 3600)">1小时活跃</div>
                 <div class="tab" data-tab="active1d" onclick="loadActiveTab(this, 86400)">1天活跃</div>
                 <div class="tab" data-tab="active1w" onclick="loadActiveTab(this, 604800)">1周活跃</div>
-                <div class="tab" data-tab="banned" onclick="renderBannedUsers(this)">🚫 封禁玩家</div>
-                <div class="tab" data-tab="tempbanned" onclick="renderTempBannedUsers(this)">⏳ 临时封禁</div>
             </div>
             <div id="userTabContent"><div class="empty">点击标签页加载</div></div>
         </div>`;
@@ -869,10 +867,10 @@ function renderAllUsers(tab, users, onlineSet, onlineMap) {
     
     div.innerHTML = `
         <div class="form-row" style="margin-bottom:4px">
-            <input id="userSearch" placeholder="智能搜索：玩家名 / IP / 日期(2026-06-18) / 地区(广东) / todayreg / yesterdayreg" oninput="handleUserSearch()" style="flex:1">
+            <input id="userSearch" placeholder="智能搜索：玩家名 / IP / 日期(2026-06-18) / 地区(广东) / todayreg / yesterdayreg / ban / tempban" oninput="handleUserSearch()" style="flex:1">
             <button class="btn btn-blue" onclick="doLazyLoadSearch()">搜索</button>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">支持：纯文本→玩家名 | IP格式→IP搜索 | 日期格式→日期搜索 | 省/市名→地区搜索 | todayreg→今日注册 | yesterdayreg→昨日注册</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:12px">支持：纯文本→玩家名 | IP格式→IP搜索 | 日期格式→日期搜索 | 省/市名→地区搜索 | todayreg→今日注册 | yesterdayreg→昨日注册 | ban→封禁玩家 | tempban→临时封禁</div>
         <div id="userLazyContainer">
             <div class="empty">加载中...</div>
         </div>
@@ -1473,6 +1471,13 @@ function doLazyLoadSearch() {
     const search = searchInput ? searchInput.value.trim() : '';
     window.currentSearch = search;
     
+    // ★ ban/tempban 关键字：客户端筛选封禁玩家
+    const sl = search.toLowerCase();
+    if (sl === 'ban' || sl === 'tempban') {
+        renderBanSearchResults(sl);
+        return;
+    }
+    
     // 重置分页状态
     lazyLoadState.currentPage = 1;
     lazyLoadState.totalPages = 1;
@@ -1480,6 +1485,90 @@ function doLazyLoadSearch() {
     lazyLoadState.currentSearch = search;
     
     lazyLoadUsersPage(1, 50, search, cachedOnlineSet);
+}
+
+// ===== ban/tempban 搜索：客户端筛选封禁玩家 =====
+function renderBanSearchResults(type) {
+    const div = document.getElementById('userLazyContainer');
+    if (!div) return;
+    div.innerHTML = '<div class="empty">加载中...</div>';
+
+    const banMap = window._banMap || {};
+    document.getElementById('userLazyLoadMore').style.display = 'none';
+
+    jsonApi('admin.php?action=list_users').then(r => {
+        if (!r.success || !r.data) {
+            div.innerHTML = '<div class="empty">加载失败: ' + escAdmHtml(r.message || '未知错误') + '</div>';
+            return;
+        }
+        const now = Date.now();
+        const isTempban = type === 'tempban';
+        const users = r.data;
+        const filtered = users.filter(u => {
+            const name = (u.player_name || '').toLowerCase();
+            const bans = banMap[name];
+            if (!bans || bans.length === 0) return false;
+            return bans.some(b => {
+                const active = b.expire_time === 0 || b.expire_time > now;
+                if (!active) return false;
+                if (isTempban) return b.expire_time !== 0; // 临时封禁：expire_time > 0
+                return true; // 全部封禁：永久+临时
+            });
+        });
+        if (filtered.length === 0) {
+            div.innerHTML = '<div class="empty">暂无' + (isTempban ? '临时封禁玩家' : '封禁玩家') + '</div>';
+            return;
+        }
+        const label = isTempban ? '临时封禁' : '封禁玩家';
+        let html = '<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">' + label + ' <span style="color:var(--accent)">(' + filtered.length + '人)</span></h3>';
+        if (isTempban) {
+            // 临时封禁：额外显示剩余时间
+            html += '<table class="table"><tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>IP地址</th><th>封禁原因</th><th>到期时间</th><th>剩余时间</th></tr>';
+            filtered.forEach(u => {
+                const name = (u.player_name || '').toLowerCase();
+                const bans = banMap[name];
+                const b = bans[0];
+                const remainMs = b.expire_time - now;
+                const remainHours = Math.floor(remainMs / 3600000);
+                const remainMins = Math.floor((remainMs % 3600000) / 60000);
+                const remainStr = remainHours > 24
+                    ? Math.floor(remainHours / 24) + '天' + (remainHours % 24) + '小时'
+                    : remainHours + '小时' + remainMins + '分钟';
+                const expireStr = new Date(b.expire_time).toLocaleString();
+                html += '<tr>'
+                    + '<td style="color:#ff4444;font-weight:bold">' + escAdmHtml(u.player_name) + '</td>'
+                    + '<td>' + (u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-') + '</td>'
+                    + '<td>' + (u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-') + '</td>'
+                    + '<td style="font-size:12px;font-family:monospace">' + (u.ip_address || '-') + '</td>'
+                    + '<td style="font-size:12px">' + (b.reason ? escAdmHtml(b.reason.substring(0, 50)) : '-') + '</td>'
+                    + '<td style="font-size:12px;color:var(--yellow)">' + expireStr + '</td>'
+                    + '<td style="font-size:12px;color:var(--accent)">' + remainStr + '</td>'
+                    + '</tr>';
+            });
+        } else {
+            html += '<table class="table"><tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>IP地址</th><th>封禁类型</th><th>封禁原因</th><th>封禁到期</th></tr>';
+            filtered.forEach(u => {
+                const name = (u.player_name || '').toLowerCase();
+                const bans = banMap[name];
+                const b = bans[0];
+                const isPerm = b.expire_time === 0;
+                const typeLabel = b.ban_type === 'ip' ? 'IP封禁' : (isPerm ? '永久封禁' : '临时封禁');
+                html += '<tr>'
+                    + '<td style="color:#ff4444;font-weight:bold">' + escAdmHtml(u.player_name) + '</td>'
+                    + '<td>' + (u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-') + '</td>'
+                    + '<td>' + (u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-') + '</td>'
+                    + '<td style="font-size:12px;font-family:monospace">' + (u.ip_address || '-') + '</td>'
+                    + '<td><span style="color:#ff6666;font-size:11px;background:rgba(255,0,0,0.1);padding:1px 5px;border-radius:3px">🚫' + typeLabel + '</span></td>'
+                    + '<td style="font-size:12px">' + (b.reason ? escAdmHtml(b.reason.substring(0, 50)) : '-') + '</td>'
+                    + '<td style="font-size:12px;color:' + (isPerm ? '#ff6666' : 'var(--yellow)') + '">' + (isPerm ? '永久' : new Date(b.expire_time).toLocaleString()) + '</td>'
+                    + '</tr>';
+            });
+        }
+        html += '</table>';
+        div.innerHTML = html;
+    }).catch(e => {
+        div.innerHTML = '<div class="empty">网络错误: ' + escAdmHtml(e.message) + '</div>';
+    });
 }
 
 // ===== 活跃用户（独立标签页）=====
@@ -1612,124 +1701,6 @@ async function loadSameIpTab(tab) {
         html += `</table></div>`;
     });
     div.innerHTML = html;
-}
-
-// ===== 封禁玩家标签页（所有活跃封禁）=====
-function renderBannedUsers(tab) {
-    if (!tab) return;
-    document.querySelectorAll('#userTabs .tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-
-    const div = document.getElementById('userTabContent');
-    div.innerHTML = '<div class="empty">加载中...</div>';
-
-    const banMap = window._banMap || {};
-    jsonApi('admin.php?action=list_users').then(r => {
-        if (!r.success || !r.data) {
-            div.innerHTML = '<div class="empty">加载失败: ' + (r.message || '未知错误') + '</div>';
-            return;
-        }
-        const now = Date.now();
-        const users = r.data;
-        // 过滤：有活跃封禁的玩家（永久封禁expire_time=0 或 限时封禁且未过期）
-        const bannedUsers = users.filter(u => {
-            const name = (u.player_name || '').toLowerCase();
-            const bans = banMap[name];
-            if (!bans || bans.length === 0) return false;
-            return bans.some(b => b.expire_time === 0 || b.expire_time > now);
-        });
-        if (bannedUsers.length === 0) {
-            div.innerHTML = '<div class="empty">暂无封禁玩家</div>';
-            return;
-        }
-        let html = '<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">封禁玩家 <span style="color:var(--accent)">(' + bannedUsers.length + '人)</span></h3>';
-        html += '<table class="table"><tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>IP地址</th><th>封禁类型</th><th>封禁原因</th><th>封禁到期</th></tr>';
-        bannedUsers.forEach(u => {
-            const name = (u.player_name || '').toLowerCase();
-            const bans = banMap[name];
-            const b = bans[0];
-            const isPerm = b.expire_time === 0;
-            const typeLabel = b.ban_type === 'ip' ? 'IP封禁' : (isPerm ? '永久封禁' : '临时封禁');
-            const expireStr = isPerm ? '永久' : new Date(b.expire_time).toLocaleString();
-            const regTime = u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-';
-            const loginTime = u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-';
-            const ip = u.ip_address || '-';
-            html += '<tr>'
-                + '<td style="color:#ff4444;font-weight:bold">' + escAdmHtml(u.player_name) + '</td>'
-                + '<td>' + regTime + '</td>'
-                + '<td>' + loginTime + '</td>'
-                + '<td style="font-size:12px;font-family:monospace">' + ip + '</td>'
-                + '<td><span style="color:#ff6666;font-size:11px;background:rgba(255,0,0,0.1);padding:1px 5px;border-radius:3px">🚫' + typeLabel + '</span></td>'
-                + '<td style="font-size:12px">' + (b.reason ? escAdmHtml(b.reason.substring(0, 50)) : '-') + '</td>'
-                + '<td style="font-size:12px;color:' + (isPerm ? '#ff6666' : 'var(--yellow)') + '">' + expireStr + '</td>'
-                + '</tr>';
-        });
-        html += '</table>';
-        div.innerHTML = html;
-    }).catch(e => {
-        div.innerHTML = '<div class="empty">加载失败: ' + escAdmHtml(e.message) + '</div>';
-    });
-}
-
-// ===== 临时封禁标签页（仅限时封禁）=====
-function renderTempBannedUsers(tab) {
-    if (!tab) return;
-    document.querySelectorAll('#userTabs .tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-
-    const div = document.getElementById('userTabContent');
-    div.innerHTML = '<div class="empty">加载中...</div>';
-
-    const banMap = window._banMap || {};
-    jsonApi('admin.php?action=list_users').then(r => {
-        if (!r.success || !r.data) {
-            div.innerHTML = '<div class="empty">加载失败: ' + (r.message || '未知错误') + '</div>';
-            return;
-        }
-        const now = Date.now();
-        const users = r.data;
-        // 过滤：有活跃临时封禁的玩家（expire_time > 0 且未过期）
-        const bannedUsers = users.filter(u => {
-            const name = (u.player_name || '').toLowerCase();
-            const bans = banMap[name];
-            if (!bans || bans.length === 0) return false;
-            return bans.some(b => b.expire_time !== 0 && b.expire_time > now);
-        });
-        if (bannedUsers.length === 0) {
-            div.innerHTML = '<div class="empty">暂无临时封禁玩家</div>';
-            return;
-        }
-        let html = '<h3 style="color:var(--dim);font-size:14px;margin-bottom:12px">临时封禁 <span style="color:var(--accent)">(' + bannedUsers.length + '人)</span></h3>';
-        html += '<table class="table"><tr><th>玩家名</th><th>注册时间</th><th>最后登录</th><th>IP地址</th><th>封禁原因</th><th>到期时间</th><th>剩余时间</th></tr>';
-        bannedUsers.forEach(u => {
-            const name = (u.player_name || '').toLowerCase();
-            const bans = banMap[name];
-            const b = bans[0];
-            const remainMs = b.expire_time - now;
-            const remainHours = Math.floor(remainMs / 3600000);
-            const remainMins = Math.floor((remainMs % 3600000) / 60000);
-            const remainStr = remainHours > 24
-                ? Math.floor(remainHours / 24) + '天' + (remainHours % 24) + '小时'
-                : remainHours + '小时' + remainMins + '分钟';
-            const expireStr = new Date(b.expire_time).toLocaleString();
-            const regTime = u.register_time ? new Date(u.register_time * 1000).toLocaleString() : '-';
-            const loginTime = u.last_login_time ? new Date(u.last_login_time * 1000).toLocaleString() : '-';
-            const ip = u.ip_address || '-';
-            html += '<tr>'
-                + '<td style="color:#ff4444;font-weight:bold">' + escAdmHtml(u.player_name) + '</td>'
-                + '<td>' + regTime + '</td>'
-                + '<td>' + loginTime + '</td>'
-                + '<td style="font-size:12px;font-family:monospace">' + ip + '</td>'
-                + '<td style="font-size:12px">' + (b.reason ? escAdmHtml(b.reason.substring(0, 50)) : '-') + '</td>'
-                + '<td style="font-size:12px;color:var(--yellow)">' + expireStr + '</td>'
-                + '<td style="font-size:12px;color:var(--accent)">' + remainStr + '</td>'
-                + '</tr>';
-        });
-        html += '</table>';
-        div.innerHTML = html;
-    }).catch(e => {
-        div.innerHTML = '<div class="empty">加载失败: ' + escAdmHtml(e.message) + '</div>';
-    });
 }
 
 // ===== 在线玩家（独立标签页）=====
