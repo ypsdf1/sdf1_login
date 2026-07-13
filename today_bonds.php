@@ -82,7 +82,7 @@ function getTodayBondData() {
         $income = $incomeData[$p] ?? 0;
         $net = $income - $spend;
         $totalSpend += $spend; $totalIncome += $income;
-        $rows[] = ['name' => $p, 'spend' => $spend, 'income' => $income, 'net' => $net];
+        $rows[] = ['name' => (string)$p, 'spend' => $spend, 'income' => $income, 'net' => $net];
     }
     usort($rows, fn($a,$b) => $b['net'] - $a['net']);
     return [

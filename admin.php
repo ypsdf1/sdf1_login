@@ -2255,7 +2255,7 @@ async function adminSubmitCreateTicket() {
     } catch (e) { errEl.textContent = '创建失败: ' + e.message; }
 }
 
-function escAdmHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escAdmHtml(s) { return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function adminProcessInlineMd(text) {
     let s = text;
