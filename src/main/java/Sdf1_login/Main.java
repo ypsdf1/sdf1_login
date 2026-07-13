@@ -604,6 +604,9 @@ public class Main extends JavaPlugin
         getServer().getPluginManager()
                 .registerEvents(landRecordManager, this);
 
+// 15.1.1 ====MC官方中文翻译加载（异步下载 zh_cn.json）====
+        OfficialTranslations.init(this);
+
 // 15.2 ====背包滚动自动备份（每15分钟）====
         inventoryAutoBackup = new InventoryAutoBackup(this);
         getServer().getScheduler().runTaskTimer(this,

@@ -57,13 +57,22 @@ public class MaterialTranslator {
     }
 
     /**
-     * 同步翻译单个材料名（有缓存则直接返回）
+     * 同步翻译单个材料名（有缓存则直接返回）。
+     * 优先走 MC 官方 zh_cn.json 翻译，查不到才走机翻。
      */
     public static String translate(String materialName) {
         if (materialName == null || materialName.isEmpty()) return "";
         String key = materialName.toUpperCase();
         if (cache.containsKey(key)) return cache.get(key);
 
+        // 1. 官方翻译（基于原始 Material 名 GRASS_BLOCK → block.minecraft.grass_block）
+        String official = OfficialTranslations.lookUp(materialName);
+        if (official != null && !official.isEmpty()) {
+            cache.put(key, official);
+            return official;
+        }
+
+        // 2. 机翻兜底
         String readable = toReadable(key);
         String zh = translateWithFallback(readable);
         if (zh != null && !zh.isEmpty()) {
