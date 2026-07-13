@@ -9631,6 +9631,16 @@ public class AreaProtection implements Listener {
                 if (plugin.areaCLIManager != null) plugin.areaCLIManager.showLandManage(p, landName, 1);
                 return true;
             }
+            // ★ URL过滤：包含链接则拒绝，不计入改名次数
+            ChatFilterManager cf = plugin.getChatFilter();
+            if (cf != null) {
+                java.util.List<String> urls = cf.extractUrls(message);
+                if (!urls.isEmpty()) {
+                    p.sendMessage(Component.text("§c领地名不能包含链接！"));
+                    pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "rename_land"});
+                    return true;
+                }
+            }
             String newName = message.trim();
             String error = renameLand(p, landName, newName);
             if (error != null) {

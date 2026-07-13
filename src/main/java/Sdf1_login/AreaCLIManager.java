@@ -1731,6 +1731,18 @@ public class AreaCLIManager {
             showAnnouncementManagement(p, landName, 1); // 返回主菜单，不再进入编辑子页面
             return true;
         }
+
+        // ★ URL过滤：包含链接则拒绝，不保存
+        ChatFilterManager cf = plugin.getChatFilter();
+        if (cf != null) {
+            java.util.List<String> urls = cf.extractUrls(message);
+            if (!urls.isEmpty()) {
+                p.sendMessage(Component.text("§c消息不能包含链接！"));
+                // 保持pending状态，允许用户重新输入
+                return true;
+            }
+        }
+
         String value = message.equals("清空") ? "" : message;
 
         // 保存到内存
