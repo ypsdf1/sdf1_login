@@ -3382,14 +3382,14 @@ async function loadBondsToday(el) {
                       data.rows.map(r => {
                         const nCls = r.net > 0 ? 'green' : r.net < 0 ? 'red' : '';
                         const nSign = r.net >= 0 ? '+' : '';
-                        return `<tr><td>${esc(r.name)}</td><td style="text-align:right;color:var(--red)">${fmt(r.spend)}</td><td style="text-align:right;color:var(--green)">${fmt(r.income)}</td><td style="text-align:right;color:var(--${nCls||'dim'})">${nSign}${fmt(r.net)}</td></tr>`;
+                        return `<tr><td>${escAdmHtml(r.name)}</td><td style="text-align:right;color:var(--red)">${fmt(r.spend)}</td><td style="text-align:right;color:var(--green)">${fmt(r.income)}</td><td style="text-align:right;color:var(--${nCls||'dim'})">${nSign}${fmt(r.net)}</td></tr>`;
                       }).join('')}
                 </table>
             </div>`;
     };
     try {
         const d = await fetch('today_bonds.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
-        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        if (!d.success) { el.innerHTML = '<div class="card">'+escAdmHtml(d.message||'加载失败')+'</div>'; return; }
         renderBonds(d.data);
         _bondsTodayTimer = setInterval(async () => {
             try {
@@ -3397,7 +3397,7 @@ async function loadBondsToday(el) {
                 if (d2.success) renderBonds(d2.data);
             } catch(e){}
         }, 30000);
-    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+escAdmHtml(e.message)+'</div>'; }
 }
 
 // ===== 本小时在线活跃看板 =====
@@ -3416,14 +3416,14 @@ async function loadActiveHour(el) {
                     ${data.online_list.length === 0 ? '<div style="grid-column:1/-1;text-align:center;color:var(--dim);padding:30px">当前没有玩家在线</div>' :
                       data.online_list.map(p => {
                         const pct = Math.min(100, Math.round(p.duration / (6*3600) * 100));
-                        return `<div class="pcard"><div class="pn">${esc(p.name)}</div><div class="pm"><span>登录 ${p.login_time_fmt}</span><span class="on">在线 ${fmtDur(p.duration)}</span></div><div class="tbar"><div class="fill" style="width:${pct}%"></div></div></div>`;
+                        return `<div class="pcard"><div class="pn">${escAdmHtml(p.name)}</div><div class="pm"><span>登录 ${p.login_time_fmt}</span><span class="on">在线 ${fmtDur(p.duration)}</span></div><div class="tbar"><div class="fill" style="width:${pct}%"></div></div></div>`;
                       }).join('')}
                 </div>
             </div>`;
     };
     try {
         const d = await fetch('active_players.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
-        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        if (!d.success) { el.innerHTML = '<div class="card">'+escAdmHtml(d.message||'加载失败')+'</div>'; return; }
         renderActive(d.data);
         _activeHourTimer = setInterval(async () => {
             try {
@@ -3431,7 +3431,7 @@ async function loadActiveHour(el) {
                 if (d2.success) renderActive(d2.data);
             } catch(e){}
         }, 10000);
-    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+escAdmHtml(e.message)+'</div>'; }
 }
 
 // ===== 24小时在线曲线看板（纯CSS条形图） =====
@@ -3472,7 +3472,7 @@ async function loadOnlineCurve(el) {
     };
     try {
         const d = await fetch('online_curve.php?action=data&_t=' + Date.now(), { credentials:'same-origin' }).then(r=>r.json());
-        if (!d.success) { el.innerHTML = '<div class="card">'+esc(d.message||'加载失败')+'</div>'; return; }
+        if (!d.success) { el.innerHTML = '<div class="card">'+escAdmHtml(d.message||'加载失败')+'</div>'; return; }
         renderCurve(d.data);
         _onlineCurveTimer = setInterval(async () => {
             try {
@@ -3480,7 +3480,7 @@ async function loadOnlineCurve(el) {
                 if (d2.success) renderCurve(d2.data);
             } catch(e){}
         }, 60000);
-    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+esc(e.message)+'</div>'; }
+    } catch (e) { el.innerHTML = '<div class="card">网络错误: '+escAdmHtml(e.message)+'</div>'; }
 }
 
 // 切换页面时清理定时器
