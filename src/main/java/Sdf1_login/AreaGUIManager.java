@@ -497,6 +497,7 @@ public class AreaGUIManager implements Listener {
                 {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                 {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                 {"攻击生物", "denyMobAttack"},
+                {"禁止编辑告示牌", "denySignEdit"},
                 {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"}
         };
 
@@ -601,6 +602,7 @@ public class AreaGUIManager implements Listener {
             case "denyWoolShear": return land.denyWoolShear;
             case "denyAnimalFeeding": return land.denyAnimalFeeding;
             case "denyGlowing": return land.denyGlowing;
+            case "denySignEdit": return land.denySignEdit;
             case "peaceMode": return land.peaceMode;
             default: return false;
         }
@@ -684,6 +686,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermEntry(land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry(land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
+        perms.add(new PermEntry(land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
         perms.add(new PermEntry("传送", land.allowVisitorTeleport));
         perms.add(new PermEntry("和平模式", land.peaceMode));
@@ -744,6 +747,7 @@ public class AreaGUIManager implements Listener {
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
             case "禁止投喂": case "允许投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "禁止攻击生物": case "允许攻击生物": land.denyMobAttack = !land.denyMobAttack; break;
+            case "禁止编辑告示牌": case "允许编辑告示牌": land.denySignEdit = !land.denySignEdit; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
             case "传送": land.allowVisitorTeleport = !land.allowVisitorTeleport; break;
             case "和平模式": land.peaceMode = !land.peaceMode; break;
@@ -1145,6 +1149,7 @@ public class AreaGUIManager implements Listener {
                         {"门禁交互", "denyDoorInteraction"}, {"音频", "denyNoteblockJukebox"}, {"拴绳使用", "denyLead"},
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                         {"攻击生物", "denyMobAttack"},
+                        {"禁止编辑告示牌", "denySignEdit"},
                         {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"}
                 };
 
