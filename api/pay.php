@@ -165,7 +165,7 @@ function buildSign($params, $privateKeyPem) {
     if ($key === false) {
         throw new Exception('商户私钥加载失败: ' . openssl_error_string());
     }
-    openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256);
+    openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA1); // 尝试SHA1算法，彩虹易支付可能使用SHA1而非SHA256
     // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放；显式调用会触发弃用警告，污染 JSON 响应
     if (PHP_VERSION_ID < 80000) {
         @openssl_free_key($key);
