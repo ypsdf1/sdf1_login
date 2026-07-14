@@ -6502,7 +6502,21 @@ public class WebManager {
                     }
                 }
                 confirmTransaction(txId);
-            } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("recharge") || type.equals("admin_give")) {
+            } else if (type.equals("recharge") || type.equals("pay_recharge")) {
+                // 在线支付充值（债券在线充值平台）：增加债券
+                int balBefore = plugin.getBondManager().getBonds(playerName);
+                plugin.getBondManager().addBonds(playerName, amount, "pay_recharge", "", "支付平台", "在线充值");
+                int balAfter = plugin.getBondManager().getBonds(playerName);
+                plugin.getLogger().info("[Web交易] 玩家 " + playerName + " 在线充值，金额: " + amount + " 债券");
+                // 通知在线玩家
+                Player rechargePlayer = plugin.getServer().getPlayer(playerName);
+                if (rechargePlayer != null && rechargePlayer.isOnline()) {
+                    rechargePlayer.sendMessage("§6[充值] §f在线充值成功！§a+" + amount + " §f债券");
+                    rechargePlayer.sendMessage("§6[债券] §f余额: §e" + balBefore + " §7→ §a" + balAfter);
+                }
+                txSuccess = true;
+                confirmTransaction(txId);
+            } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("admin_give")) {
                 // 管理员充值：增加债券（充值不受冻结限制）
                 int balBefore = plugin.getBondManager().getBonds(playerName);
                 plugin.getBondManager().addBonds(playerName, amount, "web_recharge", "", "Web后台", "管理员充值");
