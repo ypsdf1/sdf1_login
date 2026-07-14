@@ -120,7 +120,7 @@
                 <h1 style="color:#f85149;margin-bottom:20px">🚫 访问被拒绝</h1>
                 <p style="color:var(--dim);font-size:16px;line-height:1.8">
                     Web登录必须通过游戏内Token验证。<br>
-                    请在游戏中执行 <b style="color:var(--accent)">/sdf1_login weblogin</b> 或 <b>/web</b><br>
+                    请在游戏中执行 <b style="color:var(--accent)"> <b>/web</b><br>
                     然后点击上方链接登录Web端。
                 </p>
             </div>

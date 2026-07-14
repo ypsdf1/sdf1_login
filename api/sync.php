@@ -182,6 +182,9 @@ switch ($action) {
     case 'pull_pending_transactions':
         pullPendingTransactions();
         break;
+    case 'ack_transaction':
+        ackTransaction();
+        break;
     case 'confirm_transaction':
         confirmTransaction();
         break;
@@ -492,7 +495,7 @@ function syncLands() {
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at,
          peace_mode, peace_mode_duration, peace_whitelist, enforce_game_mode, mode_exempt,
          enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
-         deny_block_break, deny_block_place, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
+         deny_block_break, deny_block_place, deny_sign_edit, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
          deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
          deny_all_damage, clear_effects, give_effects, clear_all_bad,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
@@ -504,7 +507,7 @@ function syncLands() {
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax, :size, :created, :synced,
                 :peace_mode, :peace_dur, :peace_wl, :enforce_gm, :mode_exempt,
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
-                :deny_block_break, :deny_block_place, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
+                :deny_block_break, :deny_block_place, :deny_sign_edit, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
                 :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
                 :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
@@ -541,6 +544,7 @@ function syncLands() {
         $stmt->bindValue(':txt_content', $land['txt_content'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_block_break', (int)($land['deny_block_break'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_block_place', (int)($land['deny_block_place'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_sign_edit', (int)($land['deny_sign_edit'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_fluid', (int)($land['deny_fluid'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_pvp', (int)($land['deny_pvp'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_fire_spread', (int)($land['deny_fire_spread'] ?? 0), SQLITE3_INTEGER);
@@ -2814,13 +2818,24 @@ function pullPendingTransactions() {
     $ids = [];
     try {
         $db->exec('BEGIN IMMEDIATE');
-        
-        // 恢复超时的processing交易（超过1小时未确认的恢复为pending；原60秒太短，服务器重启时异步confirm可能未完成）
-        if ($hasProcessedAt) {
-            $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 3600));
-        }
-        
-        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
+
+        // 确保confirmed_transactions表存在
+        $db->exec("CREATE TABLE IF NOT EXISTS confirmed_transactions (
+            tx_id TEXT NOT NULL,
+            tx_type TEXT NOT NULL,
+            confirmed_at INTEGER NOT NULL,
+            PRIMARY KEY (tx_id, tx_type)
+        )");
+
+        // ★ 移除processing→pending超时恢复（防止已处理交易被重复拉取）
+        // confirmed_transactions表+Java端ackTransaction双重保险
+
+        // ★ LEFT JOIN confirmed_transactions跳过已被Java确认的交易
+        $stmt = $db->prepare("SELECT wt.id, wt.player_name, wt.type, wt.amount, wt.reason, wt.detail
+            FROM web_transactions wt
+            LEFT JOIN confirmed_transactions ct ON wt.id = ct.tx_id AND wt.type = ct.tx_type
+            WHERE wt.status = 'pending' AND ct.tx_id IS NULL
+            ORDER BY wt.created_at ASC");
         $result = $stmt->execute();
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $transactions[] = $row;
@@ -2875,6 +2890,55 @@ function confirmTransaction() {
     }
 
     success(['tx_id' => $txId], '交易已确认');
+}
+
+// ===== 插件拉取交易后立即贴标确认（防重复处理） =====
+function ackTransaction() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $txId = getParam('tx_id');
+    if (!$txId) error('缺少tx_id');
+
+    $txType = getParam('tx_type');
+
+    $db = getDB();
+
+    // tx_type缺失时从web_transactions反查
+    if (!$txType) {
+        $stmt = $db->prepare("SELECT type FROM web_transactions WHERE id = :id");
+        $stmt->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
+        $result = $stmt->execute();
+        $row = $result->fetchArray(SQLITE3_ASSOC);
+        if ($row && !empty($row['type'])) {
+            $txType = $row['type'];
+        } else {
+            $txType = 'shop_cart'; // 兜底默认
+        }
+    }
+
+    // 确保confirmed_transactions表存在
+    $db->exec("CREATE TABLE IF NOT EXISTS confirmed_transactions (
+        tx_id TEXT NOT NULL,
+        tx_type TEXT NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        PRIMARY KEY (tx_id, tx_type)
+    )");
+
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $stmt = $db->prepare("INSERT OR IGNORE INTO confirmed_transactions (tx_id, tx_type, confirmed_at) VALUES (:tx_id, :tx_type, :time)");
+        $stmt->bindValue(':tx_id', $txId);
+        $stmt->bindValue(':tx_type', $txType);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt->execute();
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
+        debugLog("[ackTransaction] 失败: " . $e->getMessage());
+    }
+
+    success(['tx_id' => $txId, 'tx_type' => $txType], '已贴标确认');
 }
 
 // ===== 插件拉取Web端修改的商品库存 =====
