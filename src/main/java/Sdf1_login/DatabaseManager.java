@@ -317,8 +317,14 @@ public class DatabaseManager {
                     + "player_name TEXT,"
                     + "action TEXT,"
                     + "material TEXT,"
+                    + "detail TEXT,"
                     + "time INTEGER"
                     + ")");
+
+            // ★ 新增detail列（已有数据库兼容）
+            try {
+                st.executeUpdate("ALTER TABLE land_block_log ADD COLUMN detail TEXT");
+            } catch (SQLException ignored) {}
 
             // 领地容器记录表：记录领地内容器的打开/拿取（7天滚动）
             st.execute("CREATE TABLE IF NOT EXISTS "
@@ -2247,6 +2253,35 @@ public class DatabaseManager {
         }
     }
 
+    /** ★ 记录领地方块（含detail，用于告示牌内容等） */
+    public void recordLandBlockWithDetail(String landName, int landId,
+                                          String world, int x, int y, int z,
+                                          String playerName, String action,
+                                          String material, String detail) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO land_block_log"
+                            + " (land_name, land_id, world, x, y, z,"
+                            + " player_name, action, material, detail, time)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            ps.setString(1, landName);
+            ps.setInt(2, landId);
+            ps.setString(3, world);
+            ps.setInt(4, x);
+            ps.setInt(5, y);
+            ps.setInt(6, z);
+            ps.setString(7, playerName);
+            ps.setString(8, action);
+            ps.setString(9, material);
+            ps.setString(10, detail);
+            ps.setLong(11, System.currentTimeMillis());
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     /** 记录领地容器打开/拿取 */
     public void recordLandContainer(String landName, int landId,
                                     String world, int x, int y, int z,
@@ -2285,7 +2320,7 @@ public class DatabaseManager {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT time, player_name, action, material"
+                    "SELECT time, player_name, action, material, detail"
                             + " FROM land_block_log"
                             + " WHERE world=? AND x=? AND y=? AND z=?"
                             + " ORDER BY time DESC LIMIT ?");
@@ -2303,6 +2338,7 @@ public class DatabaseManager {
                         rs.getString("player_name"));
                 row.put("action", rs.getString("action"));
                 row.put("material", rs.getString("material"));
+                row.put("detail", rs.getString("detail"));
                 list.add(row);
             }
             rs.close();

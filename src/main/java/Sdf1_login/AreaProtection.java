@@ -4994,13 +4994,25 @@ public class AreaProtection implements Listener {
     @EventHandler
     public void onSignChange(SignChangeEvent e) {
         Player p = e.getPlayer();
-        if (p.hasPermission("sdf1.admin")) return; // 管理员跳过
         AreaConfig ac = getArea(
                 p.getWorld().getName(),
                 e.getBlock().getX(),
                 e.getBlock().getY(),
                 e.getBlock().getZ());
         if (ac == null) return;
+
+        // ★ 记录告示牌放置/编辑（权限检查前记录，被取消也要记录尝试）
+        // 检测是编辑还是放置：如果该位置已有告示牌方块数据
+        boolean isEdit = e.getBlock().getState() instanceof org.bukkit.block.Sign;
+        String[] lines = e.getLines();
+        // 延迟记录（等事件处理完后，内容已写入）
+        final boolean editFinal = isEdit;
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            plugin.landRecordManager.recordSignEdit(ac, p, e.getBlock(),
+                    lines, editFinal);
+        }, 1L);
+
+        if (p.hasPermission("sdf1.admin")) return; // 管理员跳过
         if (p.getName().equalsIgnoreCase(ac.owner)) return; // 领地主免检
         if (isAreaAdmin(p)) return; // 插件管理员免检
         // ★ 授权成员（白名单内玩家）也豁免denySignEdit

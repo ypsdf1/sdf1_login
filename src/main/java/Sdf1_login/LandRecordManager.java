@@ -133,6 +133,32 @@ public class LandRecordManager implements Listener {
         recordBlock(ac, p, block, "state_change");
     }
 
+    /** ★ 记录告示牌放置/编辑（含内容） */
+    public void recordSignEdit(AreaConfig ac, Player p, Block block,
+                               String[] lines, boolean isEdit) {
+        try {
+            int landId = plugin.areaProtection.getLandIdFromDb(ac.name);
+            // 拼接4行内容，空行跳过
+            StringBuilder sb = new StringBuilder();
+            for (String line : lines) {
+                if (line != null && !line.isEmpty()) {
+                    if (sb.length() > 0) sb.append(" | ");
+                    sb.append(line);
+                }
+            }
+            String detail = sb.toString();
+            String action = isEdit ? "sign_edit" : "sign_place";
+            plugin.getDb().recordLandBlockWithDetail(
+                    ac.name, landId,
+                    block.getWorld().getName(),
+                    block.getX(), block.getY(), block.getZ(),
+                    p.getName(), action,
+                    block.getType().name(), detail);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
     private void recordBlock(AreaConfig ac, Player p, Block block,
                              String action) {
         try {
@@ -328,14 +354,27 @@ public class LandRecordManager implements Listener {
                     act = "§a放置";
                 } else if ("state_change".equals(action)) {
                     act = "§e状态变化";
+                } else if ("sign_place".equals(action)) {
+                    act = "§a放置告示牌";
+                } else if ("sign_edit".equals(action)) {
+                    act = "§b编辑告示牌";
                 } else {
                     act = "§7" + action;
                 }
                 String mat = (String) r.get("material");
                 String zh = translations.getOrDefault(mat, MaterialTranslator.toReadable(mat));
-                p.sendMessage(" §7" + fmt((Long) r.get("time"))
-                        + " §f" + r.get("player_name")
-                        + " " + act + " §e" + mat + " §a" + zh);
+                StringBuilder msg = new StringBuilder();
+                msg.append(" §7").append(fmt((Long) r.get("time")))
+                   .append(" §f").append(r.get("player_name"))
+                   .append(" ").append(act)
+                   .append(" §e").append(mat).append(" §a").append(zh);
+                // ★ 告示牌内容显示
+                String detail = (String) r.get("detail");
+                if (detail != null && !detail.isEmpty()
+                        && ("sign_place".equals(action) || "sign_edit".equals(action))) {
+                    msg.append(" §7[§f").append(detail).append("§7]");
+                }
+                p.sendMessage(msg.toString());
             }
         }
 
