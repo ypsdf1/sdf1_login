@@ -276,6 +276,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="lands" onclick="switchPage('lands')">🏡 领地管理</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
+            <div class="sidebar-item" data-page="recharge" onclick="switchPage('recharge')">💳 在线充值</div>
             <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
         </div>
@@ -423,7 +424,12 @@ if ($currentVersion !== $BUILD_VERSION) {
                 // ★ 如果不需要密码，直接加载个人中心
                 if (typeof NEED_PASSWORD !== 'undefined' && !NEED_PASSWORD) {
                     setTimeout(() => {
-                        switchPage('dashboard');
+                        // 支付回跳 ?paid=1 直接进入充值页确认到账
+                        if (new URLSearchParams(location.search).get('paid') === '1') {
+                            switchPage('recharge');
+                        } else {
+                            switchPage('dashboard');
+                        }
                         // ★ Token跟随Java端配置过期时间自动过期，不续费
                         // startTokenPolling() 不再调用，仅保留变量声明
                     }, 100);
@@ -1045,6 +1051,116 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'groups') renderGroups(c);
         else if (page === 'account') renderAccount(c);
         else if (page === 'ticket') renderTicket(c);
+        else if (page === 'recharge') renderRecharge(c);
+    }
+
+    // ==================== 债券在线充值（测试：0.01元 → 1债券） ====================
+    function renderRecharge(el) {
+        el.innerHTML = `
+            <div class="card" style="max-width:520px;margin:0 auto">
+                <h2 style="margin:0 0 6px">💳 债券在线充值</h2>
+                <p style="color:var(--dim);font-size:13px;margin:0 0 18px">测试阶段：¥0.01 = 1 债券（仅支付宝）。支付成功后游戏内即时到账。</p>
+
+                <div style="border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px;background:linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                        <span style="font-size:14px;color:var(--fg)">测试充值档位</span>
+                        <span style="font-size:12px;color:var(--green);border:1px solid var(--green);border-radius:999px;padding:2px 10px">测试</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:baseline">
+                        <div><div style="font-size:28px;font-weight:800;color:var(--accent)">¥0.01</div><div style="font-size:12px;color:var(--dim)">支付金额</div></div>
+                        <div style="font-size:22px;color:var(--green)">→ 1 债券</div>
+                    </div>
+                </div>
+
+                <button id="rechargeBtn" class="btn btn-primary" style="width:100%;font-size:15px;padding:12px" onclick="startRecharge()">🅰️ 支付宝支付 ¥0.01</button>
+                <div id="rechargeStatus" style="margin-top:14px;font-size:13px;min-height:20px"></div>
+                <p style="color:var(--dim);font-size:12px;margin-top:14px;line-height:1.6">说明：点击后跳转至支付宝完成付款，浏览器会自动跳回本页并自动确认到账。若未自动到账，可点击下方按钮手动查询。</p>
+                <button id="rechargeQueryBtn" class="btn" style="width:100%;margin-top:8px;display:none" onclick="pollRechargeOrder(true)">🔄 查询到账状态</button>
+            </div>
+        `;
+
+        // 处理支付回跳 ?paid=1
+        const paid = new URLSearchParams(location.search).get('paid');
+        const lastNo = localStorage.getItem('sdf1_last_recharge_no');
+        if (paid === '1') {
+            const st = document.getElementById('rechargeStatus');
+            if (lastNo) {
+                st.innerHTML = '<span style="color:var(--accent)">检测到支付回跳，正在确认到账…</span>';
+                document.getElementById('rechargeQueryBtn').style.display = 'block';
+                pollRechargeOrder(false);
+            } else {
+                st.innerHTML = '<span style="color:var(--yellow)">已返回，但未找到本地订单记录。如已支付，请在「余额查询」确认或联系管理员。</span>';
+            }
+            // 清除 URL 中的 paid 标记，避免刷新重复提示
+            try {
+                const u = new URL(location.href);
+                u.searchParams.delete('paid');
+                history.replaceState({}, '', u);
+            } catch (e) {}
+        }
+    }
+
+    async function startRecharge() {
+        const btn = document.getElementById('rechargeBtn');
+        const st = document.getElementById('rechargeStatus');
+        if (!TOKEN) { toast('请先登录', 'error'); return; }
+        btn.disabled = true;
+        btn.textContent = '⏳ 正在创建订单…';
+        st.innerHTML = '<span style="color:var(--dim)">正在请求支付订单…</span>';
+        try {
+            const res = await api('pay.php', {action: 'create_order'});
+            if (!res.success) {
+                st.innerHTML = '<span style="color:var(--red)">创建订单失败：' + (res.message || '未知错误') + '</span>';
+                btn.disabled = false;
+                btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                return;
+            }
+            const { pay_url, out_trade_no } = res.data;
+            localStorage.setItem('sdf1_last_recharge_no', out_trade_no);
+            st.innerHTML = '<span style="color:var(--green)">订单已创建，正在跳转支付宝…（如未弹出，请允许浏览器打开新窗口）</span>';
+            document.getElementById('rechargeQueryBtn').style.display = 'block';
+            const w = window.open(pay_url, '_blank');
+            if (!w) {
+                st.innerHTML = '<span style="color:var(--yellow)">浏览器拦截了新窗口，<a href="' + pay_url + '" target="_blank" style="color:var(--accent)">点此手动打开支付页面</a></span>';
+            }
+            pollRechargeOrder(false);
+        } catch (e) {
+            st.innerHTML = '<span style="color:var(--red)">请求异常：' + e.message + '</span>';
+            btn.disabled = false;
+            btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+        }
+    }
+
+    let rechargePollTimer = null;
+    async function pollRechargeOrder(manual) {
+        const st = document.getElementById('rechargeStatus');
+        const no = localStorage.getItem('sdf1_last_recharge_no');
+        if (!no) { if (manual) toast('没有可查询的订单', 'error'); return; }
+        if (!TOKEN) { if (manual) toast('请先登录', 'error'); return; }
+        if (rechargePollTimer && !manual) return; // 已在轮询
+
+        const doPoll = async () => {
+            try {
+                const res = await api('pay.php', {action: 'query_order', out_trade_no: no});
+                if (res.success && res.data) {
+                    if (res.data.status === 'paid') {
+                        st.innerHTML = '<span style="color:var(--green)">✅ 支付成功！游戏内债券发放中，请稍候刷新「余额查询」。</span>';
+                        if (rechargePollTimer) { clearInterval(rechargePollTimer); rechargePollTimer = null; }
+                    } else {
+                        st.innerHTML = '<span style="color:var(--dim)">⏳ 订单处理中（' + (res.message || '等待支付平台通知') + '）…</span>';
+                    }
+                } else {
+                    st.innerHTML = '<span style="color:var(--orange)">' + (res.message || '查询失败') + '</span>';
+                }
+            } catch (e) {
+                st.innerHTML = '<span style="color:var(--orange)">查询异常：' + e.message + '</span>';
+            }
+        };
+        await doPoll();
+        if (!manual && !rechargePollTimer) {
+            rechargePollTimer = setInterval(doPoll, 3000);
+            setTimeout(() => { if (rechargePollTimer) { clearInterval(rechargePollTimer); rechargePollTimer = null; } }, 120000);
+        }
     }
 
     // ★ 新增：Token轮询检查（不续期，只检查是否被Java端主动销毁）
