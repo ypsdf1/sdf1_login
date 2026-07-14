@@ -145,12 +145,12 @@ function opensslLoadKey($pem, $isPrivate) {
 }
 
 /**
- * RSA(SHA256withRSA) 请求签名：取全部非空参数 → 剔除 sign → 参数名 ASCII 升序 → 原始值 k=v& 拼接 → 私钥签名
+ * RSA(SHA256withRSA) 请求签名：取全部非空参数 → 剔除 sign/sign_type → 参数名 ASCII 升序 → 原始值 k=v& 拼接 → 私钥签名
  */
 function buildSign($params, $privateKeyPem) {
     $filtered = [];
     foreach ($params as $k => $v) {
-        if ($k === 'sign') continue;  // 只跳过sign字段，保留sign_type
+        if ($k === 'sign' || $k === 'sign_type') continue;
         if ($v === '' || $v === null) continue;
         $filtered[$k] = $v;
     }
