@@ -1224,6 +1224,7 @@ public class AreaProtection implements Listener {
                 try { ac.denyAnimalFeeding = rs.getInt("deny_animal_feeding") == 1; } catch (Exception ignored) {}
                 try { ac.denyContainer = rs.getInt("deny_container") == 1; } catch (Exception ignored) {}
                 try { ac.denyMobAttack = rs.getInt("deny_mob_attack") == 1; } catch (Exception ignored) {}
+                try { ac.denySignEdit = rs.getInt("deny_sign_edit") == 1; } catch (Exception ignored) {}
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1508,6 +1509,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 玩家攻击生物权限列
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 告示牌编辑权限列
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_sign_edit INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 公共建筑标记
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 流体阻止
@@ -5000,7 +5003,7 @@ public class AreaProtection implements Listener {
         if (p.getName().equalsIgnoreCase(ac.owner)) return; // 领地主免检
         if (isAreaAdmin(p)) return; // 插件管理员免检
 
-        if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
+        if (getEffectiveDeny(p, ac, "denySignEdit")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止编辑告示牌");
         }
@@ -5598,9 +5601,25 @@ public class AreaProtection implements Listener {
                 e.getClickedBlock().getY(),
                 e.getClickedBlock().getZ());
         if (ac == null) return;
-        if (!getEffectiveDeny(p, ac, "denyRedstoneInteraction")) return;
+        // 权限检查：如果允许操作，记录状态变化并返回
+        if (!getEffectiveDeny(p, ac, "denyRedstoneInteraction")) {
+            // 记录红石元器件状态变化
+            if (isRedstoneComponent(mat)) {
+                plugin.landRecordManager.recordRedstoneStateChange(ac, p, e.getClickedBlock());
+            }
+            return;
+        }
+        // 权限禁止：检查是否为红石元器件并取消
+        if (isRedstoneComponent(mat)) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止操作红石元件");
+        }
+    }
+
+    /** 判断材质是否为红石元器件（压力板、按钮、拉杆、中继器、比较器等） */
+    private boolean isRedstoneComponent(Material mat) {
         String name = mat.name();
-        if (mat == Material.REPEATER || mat == Material.COMPARATOR
+        return mat == Material.REPEATER || mat == Material.COMPARATOR
                 || mat == Material.LEVER
                 || mat == Material.STONE_BUTTON || mat == Material.OAK_BUTTON
                 || mat == Material.SPRUCE_BUTTON || mat == Material.BIRCH_BUTTON
@@ -5620,10 +5639,7 @@ public class AreaProtection implements Listener {
                 || mat == Material.DAYLIGHT_DETECTOR
                 || name.contains("REPEATER") || name.contains("COMPARATOR")
                 || name.contains("BUTTON") || name.contains("PRESSURE_PLATE")
-                || name.contains("DAYLIGHT")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f禁止操作红石元件");
-        }
+                || name.contains("DAYLIGHT");
     }
 
     // ★ 音频交互检测（音符盒、唱片机）
@@ -8706,8 +8722,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -8720,7 +8736,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -8786,8 +8802,9 @@ public class AreaProtection implements Listener {
             stmt.setString(62, ac.warpWorld != null ? ac.warpWorld : "");
             stmt.setInt(63, ac.denyContainer ? 1 : 0);
             stmt.setInt(64, ac.denyMobAttack ? 1 : 0);
-            stmt.setInt(65, ac.isPublicBuilding ? 1 : 0);
-            stmt.setInt(66, ac.allowVisitorTeleport ? 1 : 0);
+            stmt.setInt(65, ac.denySignEdit ? 1 : 0);
+            stmt.setInt(66, ac.isPublicBuilding ? 1 : 0);
+            stmt.setInt(67, ac.allowVisitorTeleport ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -9160,6 +9177,7 @@ public class AreaProtection implements Listener {
             case "deny_block_place":    ac.denyBlockPlace = "1".equals(value); break;
             case "deny_block_break":    ac.denyBlockBreak = "1".equals(value); break;
             case "deny_container":      ac.denyContainer = "1".equals(value); break;
+            case "deny_sign_edit":      ac.denySignEdit = "1".equals(value); break;
             case "deny_pvp":            ac.denyPVP = "1".equals(value); break;
             case "deny_fall_damage":    ac.denyFallDamage = "1".equals(value); break;
             case "deny_hunger":         ac.denyHunger = "1".equals(value); break;
@@ -11357,6 +11375,7 @@ public class AreaProtection implements Listener {
         public List<String> punishCommands = new ArrayList<>();
         public boolean denyBlockPlace = false;
         public boolean denyBlockBreak = false;
+        public boolean denySignEdit = false;    // ★ 独立告示牌编辑权限
         public boolean denyContainer = false;   // ★ 独立容器管理权限
         public boolean denyPVP = false;
         public boolean denyFallDamage = false;

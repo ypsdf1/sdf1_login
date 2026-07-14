@@ -127,6 +127,12 @@ public class LandRecordManager implements Listener {
         recordBlock(ac, p, block, "place");
     }
 
+    /** 记录红石元器件状态变化（压力板、按钮、拉杆等） */
+    public void recordRedstoneStateChange(AreaConfig ac, Player p,
+                                         Block block) {
+        recordBlock(ac, p, block, "state_change");
+    }
+
     private void recordBlock(AreaConfig ac, Player p, Block block,
                              String action) {
         try {
@@ -314,8 +320,17 @@ public class LandRecordManager implements Listener {
         if (!blocks.isEmpty()) {
             p.sendMessage("§b— 方块记录 —");
             for (Map<String, Object> r : blocks) {
-                String act = "break".equals(r.get("action"))
-                        ? "§c破坏" : "§a放置";
+                String action = (String) r.get("action");
+                String act;
+                if ("break".equals(action)) {
+                    act = "§c破坏";
+                } else if ("place".equals(action)) {
+                    act = "§a放置";
+                } else if ("state_change".equals(action)) {
+                    act = "§e状态变化";
+                } else {
+                    act = "§7" + action;
+                }
                 String mat = (String) r.get("material");
                 String zh = translations.getOrDefault(mat, MaterialTranslator.toReadable(mat));
                 p.sendMessage(" §7" + fmt((Long) r.get("time"))
