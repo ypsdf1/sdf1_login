@@ -11,6 +11,11 @@
  *   本地 git-ignored 的「密钥文件_git拉黑.txt」读取；两者均不会进入版本库，也不会被部署脚本上传。
  */
 
+// 防止 PHP 错误/弃用警告以 HTML 形式污染 JSON / notify 纯文本响应
+@ini_set('display_errors', '0');
+@ini_set('html_errors', '0');
+error_reporting(E_ALL);
+
 // 防止任何前置输出污染 JSON / notify 纯文本响应
 ob_start();
 require_once __DIR__ . '/../core.php';
@@ -130,7 +135,10 @@ function buildSign($params, $privateKeyPem) {
         throw new Exception('商户私钥加载失败: ' . openssl_error_string());
     }
     openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256);
-    openssl_free_key($key);
+    // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放；显式调用会触发弃用警告，污染 JSON 响应
+    if (PHP_VERSION_ID < 80000) {
+        @openssl_free_key($key);
+    }
     return base64_encode($signature);
 }
 
@@ -156,7 +164,10 @@ function verifyNotifySign($params, $publicKeyPem) {
     $key = openssl_pkey_get_public($publicKeyPem);
     if ($key === false) return false;
     $ok = openssl_verify($data, base64_decode($sign), $key, OPENSSL_ALGO_SHA256);
-    openssl_free_key($key);
+    // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放
+    if (PHP_VERSION_ID < 80000) {
+        @openssl_free_key($key);
+    }
     return $ok === 1;
 }
 
