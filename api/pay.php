@@ -266,7 +266,7 @@ function createOrder($token) {
         'name'        => $name,
         'money'       => $money,
         'param'       => $player,
-        'timestamp'   => (string)time(),
+        'timestamp'   => date('c'), // ISO 8601 格式，符合彩虹易支付 V2 接口规范
         'sign_type'   => PAY_SIGN_TYPE,
     ];
     $params['sign'] = buildSign($params, $keys['private_key']);
