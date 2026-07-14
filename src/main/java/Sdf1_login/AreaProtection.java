@@ -2885,6 +2885,7 @@ public class AreaProtection implements Listener {
             case "denyWoolShear": return ac.denyWoolShear;
             case "denyAnimalFeeding": return ac.denyAnimalFeeding;
             case "denyMobAttack": return ac.denyMobAttack;
+            case "denySignEdit": return ac.denySignEdit;
             case "peaceMode": return ac.peaceMode;
             default: return false;
         }
@@ -5002,6 +5003,8 @@ public class AreaProtection implements Listener {
         if (ac == null) return;
         if (p.getName().equalsIgnoreCase(ac.owner)) return; // 领地主免检
         if (isAreaAdmin(p)) return; // 插件管理员免检
+        // ★ 授权成员（白名单内玩家）也豁免denySignEdit
+        if (isPlayerWhitelisted(p.getName(), ac)) return;
 
         if (getEffectiveDeny(p, ac, "denySignEdit")) {
             e.setCancelled(true);

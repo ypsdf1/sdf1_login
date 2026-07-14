@@ -6204,7 +6204,7 @@ public class WebManager {
                         // ★ 2026-07-14 关键修复：拉取即贴标 —— 立即ack防止重复处理
                         // 之前：拉取→processing→处理→confirm，中间任何环节失败都会导致重拉重复扣费
                         // 现在：拉取→立即ack（写confirmed表）→处理→confirm（保险）
-                        ackTransaction(txId);
+                        ackTransaction(txId, type);
 
                         // 在主线程处理交易
                         final String fTxId = txId;
@@ -6896,14 +6896,14 @@ public class WebManager {
      * 在处理交易之前调用，确保即使后续处理失败/服务器重启，PHP也不会重新下发该交易
      * 双重保险：confirmedTxIds(内存) + confirmed_transactions(PHP DB) + web_transactions.status=processed
      */
-    private void ackTransaction(String txId) {
+    private void ackTransaction(String txId, String txType) {
         try {
             confirmedTxIds.add(txId); // ★ 内存标记（当前会话防重）
-            String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
+            String bodyJson = "{\"tx_id\":\"" + txId + "\",\"tx_type\":\"" + (txType != null ? txType : "shop_cart") + "\"}";
             String postUrl = webBaseUrl + "/api/sync.php?action=ack_transaction&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             doPost(postUrl, bodyJson);
-            plugin.getLogger().info("[Web交易] 已贴标ack交易: ID=" + txId);
+            plugin.getLogger().info("[Web交易] 已贴标ack交易: ID=" + txId + ", type=" + txType);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易] 贴标ack交易 " + txId + " 失败（已标记本地内存，不会重复处理）: " + e.getMessage());
         }
