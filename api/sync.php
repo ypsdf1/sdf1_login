@@ -185,6 +185,9 @@ switch ($action) {
     case 'confirm_transaction':
         confirmTransaction();
         break;
+    case 'ack_transaction':
+        ackTransaction();
+        break;
     case 'pull_shop_stock':
         pullShopStock();
         break;
@@ -2798,6 +2801,11 @@ function pullPendingTransactions() {
 
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+    
+    // ★ 2026-07-14 新增：已确认交易记录表（防止重复处理）
+    $db->exec("CREATE TABLE IF NOT EXISTS confirmed_transactions (tx_id TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL)");
+    // 清理30天前的确认记录
+    $db->exec("DELETE FROM confirmed_transactions WHERE confirmed_at < " . (time() - 2592000));
 
     // 检查processed_at字段是否存在（旧库可能缺失）
     $hasProcessedAt = false;
@@ -2815,19 +2823,20 @@ function pullPendingTransactions() {
     try {
         $db->exec('BEGIN IMMEDIATE');
         
-        // 恢复超时的processing交易（超过1小时未确认的恢复为pending；原60秒太短，服务器重启时异步confirm可能未完成）
-        if ($hasProcessedAt) {
-            $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 3600));
-        }
-        
-        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
+        // ★ 2026-07-14 修复：移除processing超时恢复逻辑（防止重复处理）
+        // 同时跳过已确认的交易（confirmed_transactions表防重）
+        $stmt = $db->prepare("SELECT w.id, w.player_name, w.type, w.amount, w.reason, w.detail 
+            FROM web_transactions w 
+            LEFT JOIN confirmed_transactions c ON w.id = c.tx_id
+            WHERE w.status = 'pending' AND c.tx_id IS NULL 
+            ORDER BY w.created_at ASC");
         $result = $stmt->execute();
         while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
             $transactions[] = $row;
             $ids[] = (int)$row['id'];
         }
 
-        // 立即标记为processing（防止5秒后重复拉取）
+        // 如果有pending但已在confirmed表中的记录，直接标记为processed
         if (!empty($ids)) {
             $idList = implode(',', $ids);
             $db->exec("UPDATE web_transactions SET status = 'processing', processed_at = " . time() . " WHERE id IN ($idList)");
@@ -2840,6 +2849,40 @@ function pullPendingTransactions() {
     }
 
     success(['transactions' => $transactions, 'count' => count($transactions)]);
+}
+
+// ===== 2026-07-14 新增：立即标记交易已读（拉取即贴标，防重复处理）=====
+function ackTransaction() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $txId = getParam('tx_id');
+    if (!$txId) error('缺少tx_id');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS confirmed_transactions (tx_id TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL)");
+
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        // 写入confirmed表（拉取即贴标）
+        $ins = $db->prepare("INSERT OR REPLACE INTO confirmed_transactions (tx_id, confirmed_at) VALUES (:txid, :time)");
+        $ins->bindValue(':txid', $txId, SQLITE3_TEXT);
+        $ins->bindValue(':time', time(), SQLITE3_INTEGER);
+        $ins->execute();
+        
+        // 同时将web_transactions标记为processed（如果还是pending/processing）
+        $upd = $db->prepare("UPDATE web_transactions SET status = 'processed', processed_at = :time WHERE id = :id AND status IN ('pending', 'processing')");
+        $upd->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
+        $upd->bindValue(':time', time(), SQLITE3_INTEGER);
+        $upd->execute();
+        
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
+        @error_log("[ackTransaction] 失败: " . $e->getMessage());
+    }
+
+    success(['tx_id' => $txId], '交易已标记已读');
 }
 
 // ===== 插件确认交易已处理 =====
@@ -2868,6 +2911,14 @@ function confirmTransaction() {
         }
         $stmt->bindValue(':id', (int)$txId, SQLITE3_INTEGER);
         $stmt->execute();
+        
+        // ★ 2026-07-14 新增：写入confirmed_transactions表（双重保险防重）
+        // 即使web_transactions状态被意外回退（如超时恢复），confirmed表也能阻止重复拉取
+        $ins = $db->prepare("INSERT OR REPLACE INTO confirmed_transactions (tx_id, confirmed_at) VALUES (:txid, :time)");
+        $ins->bindValue(':txid', $txId, SQLITE3_TEXT);
+        $ins->bindValue(':time', time(), SQLITE3_INTEGER);
+        $ins->execute();
+        
         $db->exec('COMMIT');
     } catch (\Throwable $e) {
         try { $db->exec('ROLLBACK'); } catch (\Throwable $e2) {}
@@ -3254,14 +3305,18 @@ function resendPendingTransactions() {
 
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+    // ★ 确保confirmed_transactions表存在
+    $db->exec("CREATE TABLE IF NOT EXISTS confirmed_transactions (tx_id TEXT PRIMARY KEY, confirmed_at INTEGER NOT NULL)");
 
     // ★ 事务包装防止 "database is locked"
     $db->exec("BEGIN IMMEDIATE");
     try {
-        // 恢复超时processing交易（1小时超时，防止重启后重复发货）
-        $db->exec("UPDATE web_transactions SET status = 'pending' WHERE status = 'processing' AND processed_at < " . (time() - 3600));
-
-        $stmt = $db->prepare("SELECT id, player_name, type, amount, reason, detail FROM web_transactions WHERE status = 'pending' ORDER BY created_at ASC");
+        // ★ 2026-07-14 修复：跳过已确认的交易（与pullPendingTransactions一致）
+        $stmt = $db->prepare("SELECT w.id, w.player_name, w.type, w.amount, w.reason, w.detail 
+            FROM web_transactions w 
+            LEFT JOIN confirmed_transactions c ON w.id = c.tx_id
+            WHERE w.status = 'pending' AND c.tx_id IS NULL 
+            ORDER BY w.created_at ASC");
         $result = $stmt->execute();
         $transactions = [];
         $ids = [];
