@@ -7,8 +7,8 @@
  *  - notify       : 平台异步回调（GET）→ 平台公钥验签 → 金额校验 → 幂等 → 写 web_transactions(recharge)
  *  - query_order  : 前端补单/轮询订单状态
  *
- * ★ 安全：本文件不含任何密钥。密钥从 pay_secrets.php（git-ignored，仅定义常量的 .php）或
- *   本地 git-ignored 的「密钥文件_git拉黑.txt」读取；两者均不会进入版本库，也不会被部署脚本上传。
+ * ★ 安全：本文件不含任何密钥。密钥仅从 pay_secrets.php（git-ignored，仅定义常量）读取；
+ *   本地 txt 文件不会被代码引用，仅作人工本地备份。
  */
 
 // 防止 PHP 错误/弃用警告以 HTML 形式污染 JSON / notify 纯文本响应
@@ -36,29 +36,9 @@ define('PAY_TEST_BONDS', 1);        // 对应债券数量
 define('PAY_TEST_NAME', '债券充值-测试0.01元');
 
 // ====================================================================
-//  密钥加载（双来源：本地 txt 优先，服务器 pay_secrets.php 兜底）
+//  密钥加载（仅使用 pay_secrets.php，严禁引用本地 txt 记录文件）
 // ====================================================================
 function loadPayKeys() {
-    // 来源 A：本地/部署仓库中的 git-ignored 明文文件（源真相，便于改密）
-    $txtCandidates = [
-        __DIR__ . '/../密钥文件_git拉黑.txt',
-        __DIR__ . '/密钥文件_git拉黑.txt',
-    ];
-    foreach ($txtCandidates as $f) {
-        // @ 抑制：密钥文件可能不存在（正常情况），避免 open_basedir 等警告污染响应输出
-        if (@is_file($f) && @is_readable($f)) {
-            $parsed = parsePayKeyFile(@file_get_contents($f));
-            if (!empty($parsed['merchant_private']) && !empty($parsed['platform_public'])) {
-                return [
-                    'pid'         => $parsed['pid'],
-                    'private_key' => wrapPem($parsed['merchant_private'], 'private'),
-                    'public_key'  => wrapPem($parsed['platform_public'], 'public'),
-                ];
-            }
-        }
-    }
-
-    // 来源 B：服务器部署用的 pay_secrets.php（git-ignored，仅 define 常量，无输出，web 安全）
     $secretsFile = __DIR__ . '/pay_secrets.php';
     if (@is_file($secretsFile) && @is_readable($secretsFile)) {
         @require_once $secretsFile;
@@ -70,38 +50,7 @@ function loadPayKeys() {
             ];
         }
     }
-
     return ['pid' => '', 'private_key' => '', 'public_key' => ''];
-}
-
-/**
- * 解析「密钥文件_git拉黑.txt」格式：
- *   商户ID：1001
- *   平台公钥：<base64>
- *   商户公钥：<base64>
- *   商户私钥：<base64>
- *   MD5密钥：<base64>
- */
-function parsePayKeyFile($content) {
-    $lines = preg_split('/\r\n|\r|\n/', (string)$content);
-    $blocks = [];
-    $cur = null;
-    foreach ($lines as $ln) {
-        if (preg_match('/^([\x{4e00}-\x{9fa5}A-Za-z0-9 ]+)\s*[：:]\s*(.*)$/u', $ln, $m)) {
-            $cur = trim($m[1]);
-            $blocks[$cur] = $m[2];
-        } elseif ($cur !== null) {
-            $blocks[$cur] .= $ln;
-        }
-    }
-    $clean = function ($v) { return preg_replace('/\s+/', '', $v ?? ''); };
-    return [
-        'pid'             => trim($blocks['商户ID'] ?? ''),
-        'platform_public' => $clean($blocks['平台公钥'] ?? ''),
-        'merchant_public' => $clean($blocks['商户公钥'] ?? ''),
-        'merchant_private'=> $clean($blocks['商户私钥'] ?? ''),
-        'md5'             => trim($blocks['MD5密钥'] ?? ''),
-    ];
 }
 
 /** 将裸 base64 包装为 PEM。私钥自动探测 PKCS#1(RSA PRIVATE KEY) / PKCS#8(PRIVATE KEY)，公钥用 SubjectPublicKeyInfo(PUBLIC KEY) */
