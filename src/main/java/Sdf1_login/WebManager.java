@@ -6898,14 +6898,15 @@ public class WebManager {
      */
     private void ackTransaction(String txId, String txType) {
         try {
-            confirmedTxIds.add(txId); // ★ 内存标记（当前会话防重）
+            // ★ 不加confirmedTxIds！只写PHP confirmed_transactions表
+            // confirmedTxIds仅在confirmTransaction()处理完后才写入，防止拉取→ack→处理时被自己跳过
             String bodyJson = "{\"tx_id\":\"" + txId + "\",\"tx_type\":\"" + (txType != null ? txType : "shop_cart") + "\"}";
             String postUrl = webBaseUrl + "/api/sync.php?action=ack_transaction&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             doPost(postUrl, bodyJson);
             plugin.getLogger().info("[Web交易] 已贴标ack交易: ID=" + txId + ", type=" + txType);
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web交易] 贴标ack交易 " + txId + " 失败（已标记本地内存，不会重复处理）: " + e.getMessage());
+            plugin.getLogger().warning("[Web交易] 贴标ack交易 " + txId + " 失败: " + e.getMessage());
         }
     }
 
