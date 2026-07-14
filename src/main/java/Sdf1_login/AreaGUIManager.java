@@ -526,6 +526,9 @@ public class AreaGUIManager implements Listener {
             if (field.equals("denyMobAttack")) {
                 name = landDefault ? "禁止攻击生物" : "允许攻击生物";
             }
+            if (field.equals("denySignEdit")) {
+                name = landDefault ? "禁止编辑告示牌" : "允许编辑告示牌";
+            }
 
             // ★ 对于 allowPickup/allowDrop，enabled=true 表示"允许操作"（即 allow=true）
             // 其他权限，enabled = true 表示"允许操作"（即 deny=false）
