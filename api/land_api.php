@@ -73,6 +73,7 @@ $PERM_TYPES = [
     'denyMove' => '移动',
     'denyBlockPlace' => '放置方块',
     'denyBlockBreak' => '破坏方块',
+    'denySignEdit' => '告示牌编辑',
     'denyContainer' => '容器管理',
     'denyPVP' => 'PVP战斗',
     'denyFallDamage' => '摔落伤害',
@@ -111,6 +112,7 @@ $PERM_TYPES = [
 $PERM_DEFAULT_COLS = [
     'denyMove' => ['col' => 'deny_move'],
     'denyBlockPlace' => ['col' => 'deny_block_place'],
+    'denySignEdit' => ['col' => 'deny_sign_edit'],
     'denyBlockBreak' => ['col' => 'deny_block_break'],
     'denyContainer' => ['col' => 'deny_container'],
     'denyPVP' => ['col' => 'deny_pvp'],
@@ -614,6 +616,7 @@ function initLandTables($db) {
         'punish_commands' => "TEXT DEFAULT ''",
         'deny_block_place' => "INTEGER DEFAULT 0",
         'deny_block_break' => "INTEGER DEFAULT 0",
+        'deny_sign_edit' => "INTEGER DEFAULT 0",
         'deny_pvp' => "INTEGER DEFAULT 0",
         'deny_fall_damage' => "INTEGER DEFAULT 0",
         'deny_hunger' => "INTEGER DEFAULT 0",
@@ -816,7 +819,7 @@ function handleSyncLands($db, $post) {
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max,
          area_size, created_at, synced_at,
          confiscate_items, deny_use_items, give_effects, clear_effects, clear_all_bad,
-         punish_commands, deny_block_place, deny_block_break, deny_pvp, deny_fall_damage,
+         punish_commands, deny_block_place, deny_block_break, deny_sign_edit, deny_pvp, deny_fall_damage,
          deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl,
          deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread,
          deny_all_effects, deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_fire,
@@ -831,7 +834,7 @@ function handleSyncLands($db, $post) {
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax,
                 :size, :created, :synced,
                 :confiscate_items, :deny_use_items, :give_effects, :clear_effects, :clear_all_bad,
-                :punish_commands, :deny_block_place, :deny_block_break, :deny_pvp, :deny_fall_damage,
+                :punish_commands, :deny_block_place, :deny_block_break, :deny_sign_edit, :deny_pvp, :deny_fall_damage,
                 :deny_hunger, :deny_all_damage, :deny_drop, :deny_mount, :deny_ender_pearl,
                 :deny_bow, :deny_potion, :deny_explosion, :deny_raid, :deny_fire_spread,
                 :deny_all_effects, :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_fire,
@@ -867,6 +870,7 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':punish_commands', $land['punish_commands'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_block_place', (int)($land['deny_block_place'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_block_break', (int)($land['deny_block_break'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_sign_edit', (int)($land['deny_sign_edit'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_pvp', (int)($land['deny_pvp'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_fall_damage', (int)($land['deny_fall_damage'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_hunger', (int)($land['deny_hunger'] ?? 0), SQLITE3_INTEGER);
@@ -1653,7 +1657,7 @@ function handleUpdateLandField($db, $playerName, $post) {
         // 效果管理
         'clear_effects', 'give_effects', 'clear_all_bad', 'deny_all_effects',
         // 基础权限（与Java GUI访客权限列表一致）
-        'deny_move', 'deny_block_place', 'deny_block_break', 'deny_entity_interact',
+        'deny_move', 'deny_block_place', 'deny_block_break', 'deny_sign_edit', 'deny_entity_interact',
         'deny_container', 'deny_pvp', 'deny_mount', 'deny_ender_pearl',
         'deny_thrown_projectiles', 'deny_raid', 'deny_bow', 'deny_potion',
         'deny_fire', 'deny_fire_spread', 'deny_pickup', 'deny_drop',

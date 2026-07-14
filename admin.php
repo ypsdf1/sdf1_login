@@ -2763,7 +2763,7 @@ const LAND_API = 'api/land_api.php';
 
 // 权限名称映射（中文名→Java key）
 const PERM_NAMES = {
-    denyBlockBreak: '破坏方块', denyBlockPlace: '放置方块', denyPVP: 'PvP',
+    denyBlockBreak: '破坏方块', denyBlockPlace: '放置方块', denySignEdit: '告示牌编辑', denyPVP: 'PvP',
     denyFireSpread: '火势蔓延', denyExplosion: '爆炸', denyMobGrief: '怪物破坏',
     denyMobAttack: '怪物攻击', denyLeavesDecay: '树叶消退', denyWeather: '天气影响',
     denyCropTrample: '踩踏作物', denyItemDrop: '物品丢弃', denyItemPickup: '物品拾取',
