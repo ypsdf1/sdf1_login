@@ -104,13 +104,44 @@ function parsePayKeyFile($content) {
     ];
 }
 
-/** 将裸 base64 包装为 PEM（PKCS#8 私钥 / SubjectPublicKeyInfo 公钥） */
+/** 将裸 base64 包装为 PEM。私钥自动探测 PKCS#1(RSA PRIVATE KEY) / PKCS#8(PRIVATE KEY)，公钥用 SubjectPublicKeyInfo(PUBLIC KEY) */
 function wrapPem($b64, $type) {
     $b64 = preg_replace('/\s+/', '', $b64);
     if ($b64 === '') return '';
-    $header = ($type === 'private') ? 'PRIVATE KEY' : 'PUBLIC KEY';
+    // 探测 DER：PKCS#8(PRIVATE KEY) 与 PKCS#1(RSA PRIVATE KEY) 都以
+    //   SEQUENCE{INTEGER 0(version)} 开头（即 30 82 .. 02 01 00），无法靠前 7 字节区分。
+    // 关键在 version 之后紧跟的标签：PKCS#8 是 AlgorithmIdentifier 的 SEQUENCE(0x30)，
+    // PKCS#1 是 modulus 的 INTEGER(0x02)。据此决定用哪个 PEM 头（opensslLoadKey 仍有兜底重试）。
+    $header = 'PUBLIC KEY';
+    if ($type === 'private') {
+        $raw = @base64_decode($b64, true);
+        $isPkcs1 = ($raw !== false && strlen($raw) > 8
+            && $raw[0] === "\x30" && $raw[1] === "\x82"
+            && $raw[4] === "\x02" && $raw[5] === "\x01" && $raw[6] === "\x00"
+            && $raw[7] === "\x02");
+        $header = $isPkcs1 ? 'RSA PRIVATE KEY' : 'PRIVATE KEY';
+    }
     $body = trim(chunk_split($b64, 64, "\n"));
     return "-----BEGIN $header-----\n$body\n-----END $header-----\n";
+}
+
+/**
+ * 容错加载密钥：首次用给定 PEM 加载失败后，自动在 PKCS#1<->PKCS#8 头之间切换重试，
+ * 彻底规避「密钥格式与 PEM 头不匹配」导致的签名/验签失败（支付链路关键路径，必须健壮）。
+ */
+function opensslLoadKey($pem, $isPrivate) {
+    $fn = $isPrivate ? 'openssl_pkey_get_private' : 'openssl_pkey_get_public';
+    $key = @$fn($pem);
+    if ($key !== false) return $key;
+    if (!$isPrivate) return false;
+    // 私钥：在 RSA PRIVATE KEY <-> PRIVATE KEY 之间切换重试
+    $alt = preg_replace('/-----BEGIN RSA PRIVATE KEY-----/', "-----BEGIN PRIVATE KEY-----", $pem);
+    $alt = preg_replace('/-----END RSA PRIVATE KEY-----/', "-----END PRIVATE KEY-----", $alt);
+    if ($alt !== $pem && ($key = @$fn($alt)) !== false) return $key;
+    $alt = preg_replace('/-----BEGIN PRIVATE KEY-----/', "-----BEGIN RSA PRIVATE KEY-----", $pem);
+    $alt = preg_replace('/-----END PRIVATE KEY-----/', "-----END RSA PRIVATE KEY-----", $alt);
+    if ($alt !== $pem && ($key = @$fn($alt)) !== false) return $key;
+    return false;
 }
 
 /**
@@ -130,7 +161,7 @@ function buildSign($params, $privateKeyPem) {
     }
     $data = implode('&', $parts);
 
-    $key = openssl_pkey_get_private($privateKeyPem);
+    $key = opensslLoadKey($privateKeyPem, true);
     if ($key === false) {
         throw new Exception('商户私钥加载失败: ' . openssl_error_string());
     }
@@ -161,7 +192,7 @@ function verifyNotifySign($params, $publicKeyPem) {
     }
     $data = implode('&', $parts);
 
-    $key = openssl_pkey_get_public($publicKeyPem);
+    $key = opensslLoadKey($publicKeyPem, false);
     if ($key === false) return false;
     $ok = openssl_verify($data, base64_decode($sign), $key, OPENSSL_ALGO_SHA256);
     // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放
