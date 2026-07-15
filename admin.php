@@ -106,6 +106,34 @@
         .cbar-lbl { font-size:9px; color:var(--dim); margin-top:5px; white-space:nowrap; }
         .curve-peak { font-size:12px; color:var(--dim); margin-top:10px; }
         .curve-peak b { color:var(--accent); }
+        /* 充值对账标签页 */
+        .ro-stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:14px; }
+        .ro-sc { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; text-align:center; }
+        .ro-sc .ro-v { font-size:24px; font-weight:700; margin-bottom:2px; }
+        .ro-sc .ro-l { font-size:11px; color:var(--dim); }
+        .ro-sc.ro-b .ro-v { color:var(--accent); }
+        .ro-sc.ro-g .ro-v { color:var(--green); }
+        .ro-sc.ro-y .ro-v { color:var(--yellow); }
+        .ro-sc.ro-r .ro-v { color:var(--red); }
+        .ro-srch { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+        .ro-srch input,.ro-srch select { padding:7px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:12px; outline:none; flex:1; min-width:140px; }
+        .ro-srch input:focus { border-color:var(--accent); }
+        .ro-row { font-size:12px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:8px; margin-bottom:8px; cursor:pointer; transition:border-color .2s; }
+        .ro-row:hover { border-color:var(--accent); }
+        .ro-row .ro-t { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+        .ro-row .ro-no { color:var(--accent); font-weight:700; font-size:13px; }
+        .ro-row .ro-i { color:var(--dim); font-size:11px; margin-top:3px; line-height:1.5; }
+        .ro-tag { display:inline-block; padding:1px 7px; border-radius:999px; font-size:10px; font-weight:600; }
+        .ro-tag-p { background:rgba(63,185,80,.15); color:var(--green); }
+        .ro-tag-c { background:rgba(210,153,34,.15); color:var(--yellow); }
+        .ro-empty { text-align:center; color:var(--dim); padding:30px; font-size:13px; }
+        /* 充值订单详情毛玻璃弹窗 */
+        .ro-dtl-ol { display:none; position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,.55); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); z-index:6000; justify-content:center; align-items:flex-start; padding:24px 12px; overflow-y:auto; }
+        .ro-dtl-ol.show { display:flex; }
+        .ro-dtl-cd { background:rgba(22,27,34,0.95); backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); border:1px solid rgba(88,166,255,0.25); border-radius:16px; padding:24px; width:500px; max-width:100%; box-shadow:0 16px 48px rgba(0,0,0,.5); animation:glassSlideUp .3s ease; }
+        .ro-dtl-cd h2 { color:var(--accent); font-size:16px; margin-bottom:12px; }
+        .ro-dtl-cd .ro-dl { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; }
+        .ro-dtl-cd .ro-dl.ro-tt { border-bottom:none; font-size:15px; font-weight:700; margin-top:8px; padding-top:10px; border-top:2px solid var(--accent); }
     </style>
 </head>
 <body>
@@ -140,7 +168,7 @@
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
         <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
         <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
-        <div class="si" data-p="recharge_orders" onclick="openRechargeOrdersPage()">💳 充值对账(独立页)</div>
+        <div class="si" data-p="recharge_orders" onclick="go('recharge_orders')">💳 充值对账</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -210,6 +238,7 @@ function go(p) {
     else if (p==='usergroups') loadUserGroups(c);
     else if (p==='cashier') loadCashier(c);
     else if (p==='cashier_manage') loadCashierManage(c);
+    else if (p==='recharge_orders') loadRechargeOrders(c);
 }
 
 // 检查登录状态
@@ -3340,10 +3369,121 @@ function openCashierPage() {
     window.open('cashier.php', '_blank');
 }
 
-// ===== 充值订单对账（独立页面）=====
-function openRechargeOrdersPage() {
-    window.open('recharge_orders.php', '_blank');
+// ===== 充值订单对账（内嵌标签页）=====
+let _roOrders = [];
+function _roCloseDtl() {
+    const el = document.getElementById('roDtlOl');
+    if (el) el.classList.remove('show');
 }
+async function loadRechargeOrders(el) {
+    el.innerHTML = `
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h2>💳 充值订单对账</h2>
+                <button class="btn btn-green" onclick="loadRechargeOrders(document.getElementById('C'))">🔄 刷新</button>
+            </div>
+            <div class="ro-stats">
+                <div class="ro-sc ro-b"><div class="ro-v" id="roSt">-</div><div class="ro-l">总订单</div></div>
+                <div class="ro-sc ro-g"><div class="ro-v" id="roSp">-</div><div class="ro-l">已支付</div></div>
+                <div class="ro-sc ro-y"><div class="ro-v" id="roSc">-</div><div class="ro-l">待支付</div></div>
+                <div class="ro-sc ro-r"><div class="ro-v" id="roSm">-</div><div class="ro-l">总金额(元)</div></div>
+            </div>
+            <div class="ro-srch">
+                <input type="text" id="roPl" placeholder="玩家名..." oninput="_roLoad()">
+                <input type="text" id="roOn" placeholder="订单号..." oninput="_roLoad()">
+                <select id="roSts" onchange="_roLoad()">
+                    <option value="">全部状态</option>
+                    <option value="paid">已支付</option>
+                    <option value="created">待支付</option>
+                </select>
+                <select id="roLim" onchange="_roLoad()">
+                    <option value="30">30条</option>
+                    <option value="50" selected>50条</option>
+                    <option value="100">100条</option>
+                    <option value="200">200条</option>
+                </select>
+                <button class="btn btn-blue" onclick="_roReconcile()">🔄 立即对账</button>
+            </div>
+            <div id="roList"><div class="ro-empty">加载中...</div></div>
+        </div>`;
+    // 创建详情毛玻璃弹窗
+    if (!document.getElementById('roDtlOl')) {
+        const d = document.createElement('div');
+        d.id = 'roDtlOl'; d.className = 'ro-dtl-ol';
+        d.onclick = function(e) { if (e.target === this) _roCloseDtl(); };
+        d.innerHTML = '<div class="ro-dtl-cd" onclick="event.stopPropagation()"><h2>订单详情</h2><div id="roDtlCt"></div><div style="margin-top:14px;text-align:right"><button class="btn btn-ghost" onclick="_roCloseDtl()">关闭</button></div></div>';
+        document.body.appendChild(d);
+    }
+    _roLoad();
+}
+async function _roLoad() {
+    const el = document.getElementById('roList');
+    if (!el) return;
+    const pl = document.getElementById('roPl').value.trim();
+    const on = document.getElementById('roOn').value.trim();
+    const sts = document.getElementById('roSts').value;
+    const lim = document.getElementById('roLim').value;
+    try {
+        const p = new URLSearchParams({action:'list', limit:lim});
+        if (pl) p.append('player', pl);
+        if (on) p.append('order_no', on);
+        if (sts) p.append('status', sts);
+        const r = await fetch('api/recharge_orders_api.php?'+p.toString());
+        const d = await r.json();
+        if (d.error) { el.innerHTML = '<div class="ro-empty">加载失败: '+d.error.message+'</div>'; return; }
+        _roOrders = d.orders || [];
+        const st = d.stats || {};
+        document.getElementById('roSt').textContent = st.total||0;
+        document.getElementById('roSp').textContent = st.paid||0;
+        document.getElementById('roSc').textContent = st.created||0;
+        document.getElementById('roSm').textContent = st.totalMoney||'0.00';
+        if (!_roOrders.length) { el.innerHTML = '<div class="ro-empty">暂无订单</div>'; return; }
+        el.innerHTML = _roOrders.map(o => {
+            const tag = o.status==='paid' ? '<span class="ro-tag ro-tag-p">已支付</span>' : '<span class="ro-tag ro-tag-c">待支付</span>';
+            const ct = new Date(o.created_at*1000).toLocaleString('zh-CN');
+            const pt = o.paid_at ? new Date(o.paid_at*1000).toLocaleString('zh-CN') : '-';
+            return `<div class="ro-row" onclick="_roDtl('${o.out_trade_no}')">
+                <div class="ro-t"><span class="ro-no">${o.out_trade_no}</span>${tag}</div>
+                <div class="ro-i">玩家: ${o.player_name} | ¥${o.money} | ${o.bond_amount}债券</div>
+                <div class="ro-i" style="margin-top:2px;font-size:10px;color:var(--purple)">创建: ${ct} | 支付: ${pt}</div>
+            </div>`;
+        }).join('');
+    } catch(e) { el.innerHTML = '<div class="ro-empty">请求失败: '+e.message+'</div>'; }
+}
+function _roDtl(no) {
+    const o = _roOrders.find(x => x.out_trade_no === no);
+    if (!o) return;
+    const ct = new Date(o.created_at*1000).toLocaleString('zh-CN');
+    const pt = o.paid_at ? new Date(o.paid_at*1000).toLocaleString('zh-CN') : '-';
+    document.getElementById('roDtlCt').innerHTML = `
+        <div class="ro-dl"><span>订单号</span><span style="color:var(--accent)">${o.out_trade_no}</span></div>
+        <div class="ro-dl"><span>玩家</span><span>${o.player_name}</span></div>
+        <div class="ro-dl"><span>金额</span><span style="color:var(--green)">¥${o.money}</span></div>
+        <div class="ro-dl"><span>债券</span><span style="color:var(--yellow)">${o.bond_amount}</span></div>
+        <div class="ro-dl"><span>状态</span><span>${o.status==='paid'?'✅ 已支付':'⏳ 待支付'}</span></div>
+        <div class="ro-dl"><span>平台交易号</span><span>${o.trade_no||'-'}</span></div>
+        <div class="ro-dl"><span>创建</span><span>${ct}</span></div>
+        <div class="ro-dl"><span>支付</span><span>${pt}</span></div>
+        <div class="ro-dl"><span>商品</span><span>${o.name||'-'}</span></div>
+        <div class="ro-dl"><span>签名</span><span style="font-size:10px;color:var(--dim);word-break:break-all">${o.platform_sign||'-'}</span></div>`;
+    document.getElementById('roDtlOl').classList.add('show');
+}
+async function _roReconcile() {
+    if (!await glassConfirm('立即对账将查询支付平台已支付订单并补写流水，是否继续？')) return;
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=reconcile');
+        const d = await r.json();
+        if (d.error) { glassAlert('对账失败: '+d.error); return; }
+        if (d.result === 'already_running') { glassAlert('另一个对账进程正在运行，请稍后重试'); return; }
+        if (d.result === 'ok') {
+            glassAlert('对账完成！处理 '+d.processed+' 笔，跳过 '+d.skipped+' 笔');
+            _roLoad();
+        } else {
+            glassAlert('对账结果: '+(d.detail||d.result));
+        }
+    } catch(e) { glassAlert('对账请求失败: '+e.message); }
+}
+document.addEventListener('keydown', function(e) { if (e.key==='Escape') _roCloseDtl(); });
 
 async function loadCashierManage(el) {
     el.innerHTML = `<div class="card">

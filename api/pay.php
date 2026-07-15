@@ -255,9 +255,11 @@ function createOrder($token) {
     $db = getDB();
     ensurePayOrdersTable($db);
 
-    // ★ 防重复支付：检查玩家是否有未支付的已有订单
-    $checkStmt = $db->prepare("SELECT out_trade_no, submit_params, money, bond_amount FROM pay_orders WHERE player_name = :p AND status = 'created' ORDER BY created_at DESC LIMIT 1");
+    // ★ 防重复支付：检查玩家是否有未支付的已有订单（仅30分钟内有效）
+    $staleThreshold = time() - 1800; // 30分钟过期
+    $checkStmt = $db->prepare("SELECT out_trade_no, submit_params, money, bond_amount, created_at FROM pay_orders WHERE player_name = :p AND status = 'created' AND created_at >= :stale ORDER BY created_at DESC LIMIT 1");
     $checkStmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $checkStmt->bindValue(':stale', $staleThreshold, SQLITE3_INTEGER);
     $existingRow = $checkStmt->execute()->fetchArray(SQLITE3_ASSOC);
     if ($existingRow && !empty($existingRow['submit_params'])) {
         // 重用已有订单（返回原有支付链接，不创建新单）
@@ -272,6 +274,11 @@ function createOrder($token) {
             'reused'       => true,
         ], '检测到您有未支付的订单，已为您恢复支付链接');
     }
+    // ★ 清理该玩家30分钟前的陈旧created订单（已被实际支付但本地未更新），避免阻塞后续支付
+    $cleanStmt = $db->prepare("UPDATE pay_orders SET status = 'expired' WHERE player_name = :p AND status = 'created' AND created_at < :stale");
+    $cleanStmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $cleanStmt->bindValue(':stale', $staleThreshold, SQLITE3_INTEGER);
+    $cleanStmt->execute();
 
     // ===== 0.01 元测试档位（固定映射：0.01 元 → 1 债券） =====
     $money = PAY_TEST_MONEY;
