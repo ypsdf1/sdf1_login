@@ -493,9 +493,6 @@ function triggerPollerAsync() {
 //  动作：query_order（前端补单 / 轮询）
 // ====================================================================
 function queryOrder($token) {
-    // 后台触发轮询器（非阻塞），处理 Cloudflare WAF 拦截导致的未通知订单
-    @triggerPollerAsync();
-
     $info = validateTokenSilent($token);
     if (!$info || empty($info['player'])) {
         error('登录状态无效', 401);
@@ -513,10 +510,52 @@ function queryOrder($token) {
     if (!$row) {
         error('订单不存在');
     }
+
+    // ★ 2026-07-15 核心修复：如果本地还是 created，直接查平台MySQL
+    // 不依赖 poller 补单，确保支付成功后立即返回 paid 状态
     $status = $row['status'];
+    if ($status !== 'paid') {
+        $platformStatus = checkPlatformOrderStatus($outTradeNo);
+        if ($platformStatus === 'paid') {
+            // 平台已支付，立即更新本地状态
+            $now = time();
+            $upd = $db->prepare("UPDATE pay_orders SET status='paid', paid_at=:t WHERE out_trade_no=:no AND status != 'paid'");
+            $upd->bindValue(':t', $now, SQLITE3_INTEGER);
+            $upd->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+            $upd->execute();
+
+            // 写 web_transactions（幂等）
+            $txCheck = $db->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
+            $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+            $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
+            if (!$txRow) {
+                $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(直查)', '在线充值(支付宝)', :d, 'pending', :t)");
+                $txIns->bindValue(':p', $info['player'], SQLITE3_TEXT);
+                $txIns->bindValue(':a', (int)$row['bond_amount'], SQLITE3_INTEGER);
+                $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+                $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
+                $txIns->execute();
+            }
+
+            $status = 'paid';
+            debugLog('[queryOrder] 直查平台补单成功', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+        } else {
+            // 检查是否已过期（5分钟）
+            $nowSec = time();
+            if ($row['created_at'] && ($nowSec - $row['created_at']) > 300) {
+                $upd = $db->prepare("UPDATE pay_orders SET status='expired' WHERE out_trade_no=:no AND status='created'");
+                $upd->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+                $upd->execute();
+                $status = 'expired';
+            }
+        }
+    }
+
     $message = '订单创建中';
     if ($status === 'paid') {
         $message = '已支付，游戏内债券发放中（若未到账请稍候或联系管理员）';
+    } elseif ($status === 'expired') {
+        $message = '订单已过期（超过5分钟），请重新下单';
     }
     success([
         'out_trade_no' => $outTradeNo,
@@ -526,6 +565,28 @@ function queryOrder($token) {
         'paid_at'      => $row['paid_at'],
         'created_at'   => $row['created_at'],
     ], $message);
+}
+
+/**
+ * 直接查平台MySQL检查订单状态（不依赖poller）
+ * @return string 'paid'|'created'|'not_found'
+ */
+function checkPlatformOrderStatus($outTradeNo) {
+    try {
+        $pdo = new PDO(
+            "mysql:host=localhost;dbname=caihong;charset=utf8mb4",
+            'kH3C3LLinNwYdTF5',
+            'sRhsdxrpHBhmSsp8',
+            [PDO::ATTR_TIMEOUT => 3, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+        );
+        $stmt = $pdo->prepare("SELECT status FROM pay_order WHERE out_trade_no = ? AND status IN (1, 2) LIMIT 1");
+        $stmt->execute([$outTradeNo]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? 'paid' : 'not_found';
+    } catch (\Throwable $e) {
+        debugLog('[checkPlatformOrderStatus] 查询失败', ['error' => $e->getMessage(), 'out_trade_no' => $outTradeNo]);
+        return 'not_found';
+    }
 }
 
 // ====================================================================

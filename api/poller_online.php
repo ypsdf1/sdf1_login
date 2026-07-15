@@ -86,14 +86,18 @@ function getPlatformDB() {
     static $pdo = null;
     if ($pdo === null) {
         try {
+            debugLog('[poller] 正在连接平台MySQL...');
+            $start = microtime(true);
             $dsn = "mysql:host={$GLOBALS['PLATFORM_DB_HOST']};dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
             $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_TIMEOUT => 5,
+                PDO::ATTR_TIMEOUT => 10,  // ★ 增加到10秒，确保连接成功
             ]);
+            $elapsed = round((microtime(true) - $start) * 1000);
+            debugLog("[poller] MySQL连接成功", ['elapsed_ms' => $elapsed]);
         } catch (Exception $e) {
-            debugLog("Platform DB connection failed", ['error' => $e->getMessage()]);
-            throw $e; // re-throw to be caught by pollPaidOrders
+            debugLog("[poller] MySQL连接失败", ['error' => $e->getMessage(), 'elapsed_ms' => round((microtime(true) - $start) * 1000)]);
+            throw $e;
         }
     }
     return $pdo;
@@ -125,6 +129,9 @@ function pollerAcquireLock() {
 }
 
 function pollPaidOrders() {
+    $startTime = microtime(true);
+    debugLog('[poller] 补单开始');
+
     // 并发保护：已有补单进程在跑则直接跳过，杜绝重复补单
     if (!pollerAcquireLock()) {
         echo json_encode(['result' => 'already_running', 'detail' => '另一个补单进程正在运行，本次跳过']);
@@ -249,11 +256,15 @@ function pollPaidOrders() {
         $processed++;
     }
 
+    $elapsed = round((microtime(true) - $startTime) * 1000);
+    debugLog('[poller] 补单完成', ['processed' => $processed, 'skipped' => $skipped, 'elapsed_ms' => $elapsed]);
+
     echo json_encode([
         'result'   => 'ok',
         'processed' => $processed,
         'skipped'   => $skipped,
         'total'     => count($orders),
+        'elapsed_ms' => $elapsed,
     ]);
 }
 
