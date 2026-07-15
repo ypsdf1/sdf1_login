@@ -25,7 +25,7 @@ ob_end_clean();
 // 彩虹易支付 下单网关
 define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
 // 异步通知地址（平台服务器回调，必须公网可达）
-define('PAY_NOTIFY_URL', 'https://caoyuan.ypshidifu.cn/plugin/api/pay.php?action=notify');
+define('PAY_NOTIFY_URL', 'http://43.153.203.46/plugin/api/pay.php?action=notify');
 // 同步跳转地址（玩家付款后浏览器跳回）
 define('PAY_RETURN_URL', 'https://caoyuan.ypshidifu.cn/plugin/player.php?paid=1');
 define('PAY_SIGN_TYPE', 'MD5');   // 提交用 MD5（商户 MD5 密钥 pay_user.key，末尾无点）；用户新私钥数据损坏无法自验，暂用 MD5
@@ -136,11 +136,15 @@ function buildSign($params, $keys) {
  * 回调验签：根据回调 sign_type 选择算法（兼容平台RSA/MD5两种回调）
  */
 function verifyNotifySign($params, $keys) {
-    if (empty($params['sign'])) return false;
+    if (empty($params['sign'])) {
+        debugLog('[pay notify] 验签失败: 缺少sign参数', ['params_keys' => array_keys($params)]);
+        return false;
+    }
     $sign = $params['sign'];
     $filtered = [];
     foreach ($params as $k => $v) {
-        if ($k === 'sign' || $k === 'sign_type') continue;
+        // 排除 sign/sign_type（签名字段）和 action（URL路由参数，平台签名不含此项）
+        if ($k === 'sign' || $k === 'sign_type' || $k === 'action') continue;
         if ($v === '' || $v === null) continue;
         $filtered[$k] = $v;
     }
@@ -153,18 +157,32 @@ function verifyNotifySign($params, $keys) {
 
     $type = $params['sign_type'] ?? PAY_SIGN_TYPE;
     if ($type === 'RSA') {
-        if (empty($keys['public_key'])) return false;
+        if (empty($keys['public_key'])) {
+            debugLog('[pay notify] 验签失败: RSA但无公钥', ['type' => $type]);
+            return false;
+        }
         $key = opensslLoadKey($keys['public_key'], false);
-        if ($key === false) return false;
+        if ($key === false) {
+            debugLog('[pay notify] 验签失败: RSA公钥加载失败', ['public_key_start' => substr($keys['public_key'], 0, 50)]);
+            return false;
+        }
         $ok = openssl_verify($data, base64_decode($sign), $key, OPENSSL_ALGO_SHA256);
         if (PHP_VERSION_ID < 80000) {
             @openssl_free_key($key);
         }
+        debugLog('[pay notify] RSA验签结果', ['data' => $data, 'ok' => $ok]);
         return $ok === 1;
     }
     // MD5：与提交签名规则一致，md5(待签串 + 商户MD5密钥)，无 &key= 后缀
-    if (empty($keys['md5_key'])) return false;
-    return strtolower(md5($data . $keys['md5_key'])) === strtolower($sign);
+    if (empty($keys['md5_key'])) {
+        debugLog('[pay notify] 验签失败: MD5但无密钥', ['type' => $type]);
+        return false;
+    }
+    $expected = strtolower(md5($data . $keys['md5_key']));
+    $actual = strtolower($sign);
+    $ok = ($expected === $actual);
+    debugLog('[pay notify] MD5验签', ['data' => $data, 'md5_key' => $keys['md5_key'], 'expected' => $expected, 'actual' => $actual, 'ok' => $ok]);
+    return $ok;
 }
 
 // ====================================================================
@@ -294,7 +312,16 @@ function handleNotify() {
     while (ob_get_level() > 0) { ob_end_clean(); }
 
     $params = $_REQUEST;   // 平台回调以 GET 方式把签名参数 append 到 notify_url 后，统一用 $_REQUEST 兼容 GET/POST
-    debugLog('[pay notify] 收到异步回调', $params);
+    // 记录详细的请求信息用于调试
+    $requestInfo = [
+        'method' => $_SERVER['REQUEST_METHOD'] ?? 'unknown',
+        'remote_addr' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown',
+        'query_string' => $_SERVER['QUERY_STRING'] ?? '',
+        'params_count' => count($params),
+        'params_keys' => array_keys($params),
+    ];
+    debugLog('[pay notify] 收到异步回调', array_merge($requestInfo, $params));
 
     $keys = loadPayKeys();
 
