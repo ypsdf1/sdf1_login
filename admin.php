@@ -3403,6 +3403,7 @@ async function loadRechargeOrders(el) {
                     <option value="200">200条</option>
                 </select>
                 <button class="btn btn-blue" onclick="_roReconcile()">🔄 立即对账</button>
+                <button class="btn btn-yellow" onclick="_roSyncPlatform()" style="margin-left:4px">⬇️ 从平台同步</button>
             </div>
             <div id="roList"><div class="ro-empty">加载中...</div></div>
         </div>`;
@@ -3482,6 +3483,20 @@ async function _roReconcile() {
             glassAlert('对账结果: '+(d.detail||d.result));
         }
     } catch(e) { glassAlert('对账请求失败: '+e.message); }
+}
+async function _roSyncPlatform() {
+    if (!await glassConfirm('从支付平台同步所有已支付订单到本地数据库，同时写入充值流水供Java拉取。是否继续？')) return;
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=sync_platform');
+        const d = await r.json();
+        if (d.error) { glassAlert('同步失败: '+d.error); return; }
+        if (d.success) {
+            glassAlert('同步完成！平台共 '+d.data.platform_total+' 笔，新同步 '+d.data.synced+' 笔，已存在 '+d.data.already_paid+' 笔');
+            _roLoad();
+        } else {
+            glassAlert('同步失败: '+(d.message||'未知错误'));
+        }
+    } catch(e) { glassAlert('同步请求失败: '+e.message); }
 }
 document.addEventListener('keydown', function(e) { if (e.key==='Escape') _roCloseDtl(); });
 

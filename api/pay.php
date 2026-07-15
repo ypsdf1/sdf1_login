@@ -381,8 +381,36 @@ function handleNotify() {
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
     if (!$row) {
-        debugLog('[pay notify] 订单不存在: ' . $outTradeNo);
-        // 订单未知也返回 success，避免平台死循环重试无效通知
+        debugLog('[pay notify] 本地订单不存在: ' . $outTradeNo . '，尝试从平台同步');
+        // 本地没有订单 → 尝试从平台MySQL补建
+        $platformResult = checkPlatformOrderStatus($outTradeNo);
+        if (is_array($platformResult) && $platformResult['status'] === 'paid') {
+            $now = time();
+            $platformPlayer = $platformResult['player'] ?? ($params['param'] ?? 'unknown');
+            $bonds = PAY_TEST_BONDS;
+            $ins = $db->prepare("INSERT OR IGNORE INTO pay_orders (out_trade_no, trade_no, player_name, money, bond_amount, status, name, submit_params, created_at, paid_at) VALUES (:no, :tn, :p, :m, :b, 'paid', :n, '', :t, :t)");
+            $ins->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+            $ins->bindValue(':tn', $platformResult['trade_no'] ?? '', SQLITE3_TEXT);
+            $ins->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
+            $ins->bindValue(':m', $platformResult['money'] ?? '0.01', SQLITE3_TEXT);
+            $ins->bindValue(':b', $bonds, SQLITE3_INTEGER);
+            $ins->bindValue(':n', PAY_TEST_NAME, SQLITE3_TEXT);
+            $ins->bindValue(':t', $now, SQLITE3_INTEGER);
+            $ins->execute();
+
+            // 写 web_transactions
+            $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(callback同步)', '在线充值(支付宝)', :d, 'pending', :t)");
+            $txIns->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
+            $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
+            $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+            $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
+            $txIns->execute();
+
+            debugLog('[pay notify] callback同步成功', ['out_trade_no' => $outTradeNo, 'player' => $platformPlayer]);
+            echo 'success';
+            exit;
+        }
+        // 平台也没有 → 返回success避免死循环
         echo 'success';
         exit;
     }
@@ -515,16 +543,63 @@ function queryOrder($token) {
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
     $stmt->bindValue(':p', $info['player'], SQLITE3_TEXT);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+    // ★ 本地订单不存在 → 直接查平台MySQL，如果平台已支付则同步到本地
     if (!$row) {
-        error('订单不存在');
+        debugLog('[queryOrder] 本地订单不存在，尝试从平台同步', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+        $platformResult = checkPlatformOrderStatus($outTradeNo);
+        if (is_array($platformResult) && $platformResult['status'] === 'paid') {
+            // 平台已支付 → 创建本地订单并标记paid
+            $now = time();
+            $platformPlayer = $platformResult['player'] ?: $info['player'];
+            $bonds = PAY_TEST_BONDS;
+            $money = $platformResult['money'] ?? PAY_TEST_MONEY;
+            $ins = $db->prepare("INSERT OR IGNORE INTO pay_orders (out_trade_no, trade_no, player_name, money, bond_amount, status, name, submit_params, created_at, paid_at) VALUES (:no, :tn, :p, :m, :b, 'paid', :n, '', :t, :t)");
+            $ins->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+            $ins->bindValue(':tn', $platformResult['trade_no'] ?? '', SQLITE3_TEXT);
+            $ins->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
+            $ins->bindValue(':m', $money, SQLITE3_TEXT);
+            $ins->bindValue(':b', $bonds, SQLITE3_INTEGER);
+            $ins->bindValue(':n', PAY_TEST_NAME, SQLITE3_TEXT);
+            $ins->bindValue(':t', $now, SQLITE3_INTEGER);
+            $ins->execute();
+
+            // 写 web_transactions
+            $txCheck = $db->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
+            $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+            $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
+            if (!$txRow) {
+                $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(查询同步)', '在线充值(支付宝)', :d, 'pending', :t)");
+                $txIns->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
+                $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
+                $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+                $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
+                $txIns->execute();
+            }
+
+            debugLog('[queryOrder] 平台同步成功', ['out_trade_no' => $outTradeNo, 'player' => $platformPlayer]);
+            success([
+                'out_trade_no' => $outTradeNo,
+                'status'       => 'paid',
+                'money'        => $money,
+                'bonds'        => $bonds,
+                'paid_at'      => $now,
+                'created_at'   => $now,
+            ], '已支付，游戏内债券发放中（若未到账请稍候或联系管理员）');
+            return;
+        }
+        // 平台也没有 → 真的不存在
+        debugLog('[queryOrder] 平台也无此订单', ['out_trade_no' => $outTradeNo]);
+        error('订单不存在，请确认订单号是否正确');
     }
 
     // ★ 2026-07-15 核心修复：如果本地还是 created，直接查平台MySQL
     // 不依赖 poller 补单，确保支付成功后立即返回 paid 状态
     $status = $row['status'];
     if ($status !== 'paid') {
-        $platformStatus = checkPlatformOrderStatus($outTradeNo);
-        if ($platformStatus === 'paid') {
+        $platformResult = checkPlatformOrderStatus($outTradeNo);
+        $platformPaid = is_array($platformResult) && $platformResult['status'] === 'paid';
+        if ($platformPaid) {
             // 平台已支付，立即更新本地状态
             $now = time();
             $upd = $db->prepare("UPDATE pay_orders SET status='paid', paid_at=:t WHERE out_trade_no=:no AND status != 'paid'");
@@ -585,15 +660,19 @@ function checkPlatformOrderStatus($outTradeNo) {
             "mysql:host=localhost;dbname=caihong;charset=utf8mb4",
             'kH3C3LLinNwYdTF5',
             'sRhsdxrpHBhmSsp8',
-            [PDO::ATTR_TIMEOUT => 3, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+            [PDO::ATTR_TIMEOUT => 10, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
         );
-        $stmt = $pdo->prepare("SELECT status FROM pay_order WHERE out_trade_no = ? AND status IN (1, 2) LIMIT 1");
+        $stmt = $pdo->prepare("SELECT status, trade_no, money, param, addtime FROM pay_order WHERE out_trade_no = ? LIMIT 1");
         $stmt->execute([$outTradeNo]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row ? 'paid' : 'not_found';
+        if (!$row) return 'not_found';
+        if (in_array($row['status'], [1, 2])) {
+            return ['status' => 'paid', 'trade_no' => $row['trade_no'], 'money' => $row['money'], 'player' => $row['param'] ?? ''];
+        }
+        return 'not_paid';
     } catch (\Throwable $e) {
         debugLog('[checkPlatformOrderStatus] 查询失败', ['error' => $e->getMessage(), 'out_trade_no' => $outTradeNo]);
-        return 'not_found';
+        return 'error';
     }
 }
 
