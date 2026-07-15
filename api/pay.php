@@ -233,6 +233,8 @@ function ensureWebTransactionsTable($db) {
         status TEXT DEFAULT 'pending',
         created_at INTEGER
     )");
+    // 唯一约束：同 detail+type 不允许重复
+    @$db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_web_tx_detail_type ON web_transactions(detail, type)");
 }
 
 // ====================================================================
@@ -252,6 +254,24 @@ function createOrder($token) {
 
     $db = getDB();
     ensurePayOrdersTable($db);
+
+    // ★ 防重复支付：检查玩家是否有未支付的已有订单
+    $checkStmt = $db->prepare("SELECT out_trade_no, submit_params, money, bond_amount FROM pay_orders WHERE player_name = :p AND status = 'created' ORDER BY created_at DESC LIMIT 1");
+    $checkStmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $existingRow = $checkStmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if ($existingRow && !empty($existingRow['submit_params'])) {
+        // 重用已有订单（返回原有支付链接，不创建新单）
+        $scriptBase = preg_replace('/\?.*$/', '', PAY_NOTIFY_URL);
+        $payUrl = $scriptBase . '?action=pay_redirect&out_trade_no=' . urlencode($existingRow['out_trade_no']);
+        success([
+            'pay_url'      => $payUrl,
+            'out_trade_no' => $existingRow['out_trade_no'],
+            'money'        => $existingRow['money'],
+            'bonds'        => (int)$existingRow['bond_amount'],
+            'player'       => $player,
+            'reused'       => true,
+        ], '检测到您有未支付的订单，已为您恢复支付链接');
+    }
 
     // ===== 0.01 元测试档位（固定映射：0.01 元 → 1 债券） =====
     $money = PAY_TEST_MONEY;
@@ -450,7 +470,8 @@ function handlePayRedirect() {
 //  辅助：后台异步触发支付轮询器（非阻塞）
 // ====================================================================
 function triggerPollerAsync() {
-    $url = 'https://caoyuan.ypshidifu.cn/plugin/api/pay_poller.php';
+    // ★ 2026-07-15 改用 poller_online.php 补单（绕过 HTTP 回调，CF WAF 拦截 notify）
+    $url = 'https://caoyuan.ypshidifu.cn/plugin/api/poller_online.php';
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 3);

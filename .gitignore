@@ -8,6 +8,9 @@
 upload_debug.php
 upload_via_http.php
 upload_debug.ps1
+# 密钥文件
+密钥.md
+pay_secrets.php
 debug_admin_api.php
 debug_online.php
 debug_region.php

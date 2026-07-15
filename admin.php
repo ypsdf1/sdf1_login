@@ -140,6 +140,7 @@
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
         <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
         <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
+        <div class="si" data-p="recharge_orders" onclick="openRechargeOrdersPage()">💳 充值对账(独立页)</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -3337,6 +3338,11 @@ function glassPrompt(label, currentVal, hint = '') {
 // ===== 收银员管理（独立收银台账号）=====
 function openCashierPage() {
     window.open('cashier.php', '_blank');
+}
+
+// ===== 充值订单对账（独立页面）=====
+function openRechargeOrdersPage() {
+    window.open('recharge_orders.php', '_blank');
 }
 
 async function loadCashierManage(el) {
