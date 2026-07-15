@@ -561,6 +561,7 @@ public class AreaCLIManager {
             case "item_frame": oldState = land.denyItemFrame; land.denyItemFrame = !land.denyItemFrame; break;
             case "redstone": oldState = land.denyRedstoneInteraction; land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
             case "door": oldState = land.denyDoorInteraction; land.denyDoorInteraction = !land.denyDoorInteraction; break;
+            case "sign_edit": oldState = land.denySignEdit; land.denySignEdit = !land.denySignEdit; break;
             case "audio": oldState = land.denyNoteblockJukebox; land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "lead": oldState = land.denyLead; land.denyLead = !land.denyLead; break;
             case "crop_harvest": oldState = land.denyCropHarvest; land.denyCropHarvest = !land.denyCropHarvest; break;
@@ -677,6 +678,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("item_frame", "禁止展示框", !land.denyItemFrame));
         perms.add(new PermItem("redstone", "红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
         perms.add(new PermItem("door", "禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
+        perms.add(new PermItem("sign_edit", land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
         perms.add(new PermItem("audio", "音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
         perms.add(new PermItem("crop_harvest", land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
@@ -715,6 +717,7 @@ public class AreaCLIManager {
             case "item_frame": return "禁止展示框";
             case "redstone": return "红石电路";
             case "door": return "禁止门禁";
+            case "sign_edit": return "告示牌编辑";
             case "audio": return "音频";
             case "lead": return "拴绳使用";
             case "crop_harvest": return "农作物收获";
@@ -1128,6 +1131,7 @@ public class AreaCLIManager {
                 {"item_frame", "禁止展示框", "denyItemFrame"},
                 {"redstone", "红石电路(中继器/比较器)", "denyRedstoneInteraction"},
                 {"door", "禁止门禁(门/按钮/压力板)", "denyDoorInteraction"},
+                {"sign_edit", "禁止编辑告示牌", "denySignEdit"},
                 {"audio", "音频(音符盒/唱片机)", "denyNoteblockJukebox"},
                 {"lead", "拴绳使用", "denyLead"},
                 {"crop_harvest", "农作物收获", "denyCropHarvest"},
@@ -1164,6 +1168,10 @@ public class AreaCLIManager {
             // ★ denyMobAttack显示名称
             if (field.equals("denyMobAttack")) {
                 name = landDefault ? "禁止攻击生物" : "允许攻击生物";
+            }
+            // ★ denySignEdit显示名称
+            if (field.equals("denySignEdit")) {
+                name = landDefault ? "禁止编辑告示牌" : "允许编辑告示牌";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
@@ -1208,6 +1216,7 @@ public class AreaCLIManager {
             case "denyItemFrame": return land.denyItemFrame;
             case "denyRedstoneInteraction": return land.denyRedstoneInteraction;
             case "denyDoorInteraction": return land.denyDoorInteraction;
+            case "denySignEdit": return land.denySignEdit;
             case "denyNoteblockJukebox": return land.denyNoteblockJukebox;
             case "denyLead": return land.denyLead;
             case "denyCropHarvest": return land.denyCropHarvest;

@@ -1495,6 +1495,22 @@ public class WebManager {
      * 检查PHP端是否有待处理交易（由合并定时器B调用）
      */
     private void doTransactionPollCheck() {
+        // ★ 2026-07-15 高频补单触发：合并B定时器每~5秒跑一次，顺带触发 poller 快速检测已支付订单
+        //    poller 内部有 flock 锁 + 幂等去重，多次调用安全
+        if (System.currentTimeMillis() - lastPollerTriggerTime > 15000) { // 限流15秒一次
+            lastPollerTriggerTime = System.currentTimeMillis();
+            try {
+                String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                String pollerResp = doGet(pollerUrl);
+                if (pollerResp != null && pollerResp.contains("\"result\":\"ok\"")) {
+                    plugin.getLogger().info("[快速补单] 补单成功: " + pollerResp.substring(0, Math.min(100, pollerResp.length())));
+                }
+            } catch (Exception ignored) {
+                // 补单失败不影响交易拉取，静默忽略
+            }
+        }
+
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_transactions&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
@@ -6089,6 +6105,7 @@ public class WebManager {
     private long lastPullBondChangesLog = 0;
     private long lastPollRegisterRequestsLog = 0;
     private long lastPollWebLoginExceptionLog = 0;
+    private long lastPollerTriggerTime = 0; // 补单触发限流（15秒间隔）
     private static final long LOG_INTERVAL = 60000; // 1分钟内不重复打印相同日志
 
     /**
@@ -6099,6 +6116,22 @@ public class WebManager {
             @Override
             public void run() {
                 try {
+                    // ★ 2026-07-15 补单机制：拉取交易前先触发 poller_online.php 补单
+                    //   平台 HTTP 回调被 Cloudflare WAF 拦截，只能靠本脚本读平台 MySQL 已支付订单补单。
+                    //   先等补单返回（doGet 内置 10s 超时）再拉取 web_transactions，确保充值能到账。
+                    try {
+                        String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
+                                + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                        String pollerResp = doGet(pollerUrl);
+                        if (pollerResp != null) {
+                            plugin.getLogger().info("[Web交易] 补单触发完成: " + pollerResp);
+                        } else {
+                            plugin.getLogger().warning("[Web交易] 补单触发无响应(继续拉取)");
+                        }
+                    } catch (Exception pollerEx) {
+                        plugin.getLogger().warning("[Web交易] 补单触发异常(忽略，继续拉取): " + pollerEx.getMessage());
+                    }
+
                     String urlStr = webBaseUrl + "/api/sync.php?action=pull_pending_transactions&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
                     String json = doGet(urlStr);
