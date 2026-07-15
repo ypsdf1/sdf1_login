@@ -541,8 +541,8 @@ public class WebManager {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(10))
-                    .header("User-Agent", "Sdf1-WebManager/2.8")
+                    .timeout(Duration.ofSeconds(30))  // ★ 2026-07-15 增加到30秒，确保poller有足够时间连接MySQL
+                    .header("User-Agent", "Sdf1-WebManager/2.9")
                     .header("Accept", "application/json")
                     .GET()
                     .build();
@@ -1502,9 +1502,20 @@ public class WebManager {
             try {
                 String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
                         + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                long pollerStart = System.currentTimeMillis();
                 String pollerResp = doGet(pollerUrl);
-                if (pollerResp != null && pollerResp.contains("\"result\":\"ok\"")) {
-                    plugin.getLogger().info("[快速补单] 补单成功: " + pollerResp.substring(0, Math.min(100, pollerResp.length())));
+                long pollerElapsed = System.currentTimeMillis() - pollerStart;
+
+                if (pollerResp != null) {
+                    if (pollerResp.contains("\"result\":\"ok\"")) {
+                        plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
+                    } else if (pollerResp.contains("\"result\":\"already_running\"")) {
+                        plugin.getLogger().info("[快速补单] 补单进程正在运行，跳过 (" + pollerElapsed + "ms)");
+                    } else {
+                        plugin.getLogger().warning("[快速补单] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");
+                    }
+                } else {
+                    plugin.getLogger().warning("[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms");
                 }
             } catch (Exception ignored) {
                 // 补单失败不影响交易拉取，静默忽略
@@ -6118,15 +6129,24 @@ public class WebManager {
                 try {
                     // ★ 2026-07-15 补单机制：拉取交易前先触发 poller_online.php 补单
                     //   平台 HTTP 回调被 Cloudflare WAF 拦截，只能靠本脚本读平台 MySQL 已支付订单补单。
-                    //   先等补单返回（doGet 内置 10s 超时）再拉取 web_transactions，确保充值能到账。
+                    //   先等补单返回（doGet 内置 30s 超时）再拉取 web_transactions，确保充值能到账。
                     try {
                         String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
                                 + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                        long pollerStart = System.currentTimeMillis();
                         String pollerResp = doGet(pollerUrl);
+                        long pollerElapsed = System.currentTimeMillis() - pollerStart;
+
                         if (pollerResp != null) {
-                            plugin.getLogger().info("[Web交易] 补单触发完成: " + pollerResp);
+                            if (pollerResp.contains("\"result\":\"ok\"")) {
+                                plugin.getLogger().info("[Web交易] 补单成功 (" + pollerElapsed + "ms): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
+                            } else if (pollerResp.contains("\"result\":\"already_running\"")) {
+                                plugin.getLogger().info("[Web交易] 补单进程正在运行，跳过 (" + pollerElapsed + "ms)");
+                            } else {
+                                plugin.getLogger().warning("[Web交易] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");
+                            }
                         } else {
-                            plugin.getLogger().warning("[Web交易] 补单触发无响应(继续拉取)");
+                            plugin.getLogger().warning("[Web交易] 补单无响应(null)，耗时: " + pollerElapsed + "ms，继续拉取");
                         }
                     } catch (Exception pollerEx) {
                         plugin.getLogger().warning("[Web交易] 补单触发异常(忽略，继续拉取): " + pollerEx.getMessage());
