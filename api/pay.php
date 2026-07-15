@@ -287,15 +287,6 @@ function createOrder($token) {
 
     $outTradeNo = 'RE' . date('YmdHis') . sprintf('%04d', mt_rand(0, 9999));
 
-    $stmt = $db->prepare("INSERT INTO pay_orders (out_trade_no, player_name, tier_id, money, bond_amount, status, name, created_at) VALUES (:no, :p, 0, :m, :b, 'created', :n, :t)");
-    $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
-    $stmt->bindValue(':p', $player, SQLITE3_TEXT);
-    $stmt->bindValue(':m', $money, SQLITE3_TEXT);
-    $stmt->bindValue(':b', $bonds, SQLITE3_INTEGER);
-    $stmt->bindValue(':n', $name, SQLITE3_TEXT);
-    $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
-    $stmt->execute();
-
     // 构造提交参数（原始值，不做 urlencode；sign 在原始值上计算）
     $params = [
         'pid'         => $keys['pid'],
@@ -310,12 +301,21 @@ function createOrder($token) {
         'sign_type'   => PAY_SIGN_TYPE,
     ];
     $params['sign'] = buildSign($params, $keys);
+    $submitParamsJson = json_encode($params, JSON_UNESCAPED_SLASHES);
 
-    // 保存已签名的提交参数（含 sign），供本地中转页自动 POST 到网关使用
-    $stmt = $db->prepare("UPDATE pay_orders SET submit_params = :sp WHERE out_trade_no = :no");
-    $stmt->bindValue(':sp', json_encode($params, JSON_UNESCAPED_SLASHES), SQLITE3_TEXT);
+    // ★ 一次性 INSERT：submit_params 直接写入，避免 INSERT/UPDATE 之间被锁或异常导致空参数
+    $now = time();
+    $stmt = $db->prepare("INSERT INTO pay_orders (out_trade_no, player_name, tier_id, money, bond_amount, status, name, submit_params, created_at) VALUES (:no, :p, 0, :m, :b, 'created', :n, :sp, :t)");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+    $stmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $stmt->bindValue(':m', $money, SQLITE3_TEXT);
+    $stmt->bindValue(':b', $bonds, SQLITE3_INTEGER);
+    $stmt->bindValue(':n', $name, SQLITE3_TEXT);
+    $stmt->bindValue(':sp', $submitParamsJson, SQLITE3_TEXT);
+    $stmt->bindValue(':t', $now, SQLITE3_INTEGER);
     $stmt->execute();
+
+    debugLog('[createOrder] 订单创建成功', ['out_trade_no' => $outTradeNo, 'player' => $player, 'submit_params_len' => strlen($submitParamsJson)]);
 
     // 支付网关要求 POST 提交（$_POST['pid']），不能 GET 直接跳转。
     // 返回本地中转页 URL：浏览器打开后由 JS 自动 POST 表单到网关，规避 GET 传输下 notify_url 内 & 被截断的问题。
@@ -432,18 +432,26 @@ function handlePayRedirect() {
     while (ob_get_level() > 0) { ob_end_clean(); }
     $outTradeNo = getParam('out_trade_no');
     if (!$outTradeNo) {
+        debugLog('[pay_redirect] 缺少订单号');
         header('Content-Type: text/html; charset=utf-8');
         echo '缺少订单号';
         exit;
     }
     $db = getDB();
     ensurePayOrdersTable($db);
-    $stmt = $db->prepare("SELECT submit_params, status FROM pay_orders WHERE out_trade_no = :no");
+    $stmt = $db->prepare("SELECT submit_params, status, player_name FROM pay_orders WHERE out_trade_no = :no");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
-    if (!$row || empty($row['submit_params'])) {
+    if (!$row) {
+        debugLog('[pay_redirect] 订单不存在', ['out_trade_no' => $outTradeNo]);
         header('Content-Type: text/html; charset=utf-8');
-        echo '订单不存在或尚未生成支付参数';
+        echo '订单不存在';
+        exit;
+    }
+    if (empty($row['submit_params'])) {
+        debugLog('[pay_redirect] submit_params为空', ['out_trade_no' => $outTradeNo, 'status' => $row['status'], 'player' => $row['player_name']]);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '支付参数尚未生成，请返回重试';
         exit;
     }
     $params = json_decode($row['submit_params'], true);
