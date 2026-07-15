@@ -447,9 +447,27 @@ function handlePayRedirect() {
 }
 
 // ====================================================================
+//  辅助：后台异步触发支付轮询器（非阻塞）
+// ====================================================================
+function triggerPollerAsync() {
+    $url = 'https://caoyuan.ypshidifu.cn/plugin/api/pay_poller.php';
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+    curl_setopt($ch, CURLOPT_NOSIGNAL, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    // 不等待结果，后台执行
+    curl_exec($ch);
+    curl_close($ch);
+}
+
+// ====================================================================
 //  动作：query_order（前端补单 / 轮询）
 // ====================================================================
 function queryOrder($token) {
+    // 后台触发轮询器（非阻塞），处理 Cloudflare WAF 拦截导致的未通知订单
+    @triggerPollerAsync();
+
     $info = validateTokenSilent($token);
     if (!$info || empty($info['player'])) {
         error('登录状态无效', 401);
