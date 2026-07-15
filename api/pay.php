@@ -28,7 +28,7 @@ define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
 define('PAY_NOTIFY_URL', 'https://caoyuan.ypshidifu.cn/plugin/api/pay.php?action=notify');
 // 同步跳转地址（玩家付款后浏览器跳回）
 define('PAY_RETURN_URL', 'https://caoyuan.ypshidifu.cn/plugin/player.php?paid=1');
-define('PAY_SIGN_TYPE', 'RSA');   // 提交用 RSA（商户新私钥 ↔ 平台库内商户公钥 已配对验证通过）
+define('PAY_SIGN_TYPE', 'MD5');   // 提交用 MD5（商户 MD5 密钥 pay_user.key，末尾无点）；用户新私钥数据损坏无法自验，暂用 MD5
 
 // ===== 0.01 元测试配置（先跑通全链路，后续替换为 recharge_tiers 档位） =====
 define('PAY_TEST_MONEY', '0.01');   // 元（字符串，与回调比对）
