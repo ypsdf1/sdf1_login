@@ -1113,6 +1113,17 @@ if ($currentVersion !== $BUILD_VERSION) {
                             btn.textContent = '✅ 支付完成';
                             btn.onclick = null;
                         } else if (res.data.status === 'created') {
+                            // 检查订单是否已过期（5分钟）
+                            const nowSec = Math.floor(Date.now() / 1000);
+                            const createdAt = res.data.created_at || 0;
+                            if (createdAt && (nowSec - createdAt) > 300) {
+                                // 已过期：清除本地记录，重置按钮
+                                localStorage.removeItem('sdf1_last_recharge_no');
+                                st.innerHTML = '<span style="color:var(--yellow)">订单已过期（超过5分钟），请重新下单。</span>';
+                                btn.disabled = false;
+                                btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                                btn.onclick = startRecharge;
+                            } else {
                             // 未支付：显示继续支付
                             btn.textContent = '🔄 继续支付 ¥' + (res.data.money || '0.01');
                             btn.onclick = async function() {
@@ -1140,6 +1151,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                             };
                             st.innerHTML = '<span style="color:var(--yellow)">⚠️ 您有一笔未完成的订单，<a href="javascript:void(0)" onclick="document.getElementById(\'rechargeBtn\').click()" style="color:var(--accent)">点此继续支付</a></span>';
                             document.getElementById('rechargeQueryBtn').style.display = 'block';
+                            }
                         }
                         // 如果是 expired 或其他状态，不处理，保持默认按钮
                     }

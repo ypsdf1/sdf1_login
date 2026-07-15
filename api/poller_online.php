@@ -85,11 +85,16 @@ function getSQLite() {
 function getPlatformDB() {
     static $pdo = null;
     if ($pdo === null) {
-        $dsn = "mysql:host={$GLOBALS['PLATFORM_DB_HOST']};dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
-        $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_TIMEOUT => 5,
-        ]);
+        try {
+            $dsn = "mysql:host={$GLOBALS['PLATFORM_DB_HOST']};dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
+            $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_TIMEOUT => 5,
+            ]);
+        } catch (Exception $e) {
+            debugLog("Platform DB connection failed", ['error' => $e->getMessage()]);
+            throw $e; // re-throw to be caught by pollPaidOrders
+        }
     }
     return $pdo;
 }
@@ -267,5 +272,10 @@ function markNotified($pdo, $tradeNo) {
 // 不在此处自动执行补单（由调用方自行决定何时触发）。
 if (!defined('POLLER_NO_AUTO_RUN')) {
     header('Content-Type: application/json; charset=utf-8');
-    pollPaidOrders();
+    try {
+        pollPaidOrders();
+    } catch (\Throwable $e) {
+        debugLog('[poller_online] 未捕获异常', ['error' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()]);
+        echo json_encode(['error' => 'uncaught_exception', 'detail' => $e->getMessage()]);
+    }
 }

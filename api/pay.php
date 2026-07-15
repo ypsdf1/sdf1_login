@@ -524,6 +524,7 @@ function queryOrder($token) {
         'money'        => $row['money'],
         'bonds'        => (int)$row['bond_amount'],
         'paid_at'      => $row['paid_at'],
+        'created_at'   => $row['created_at'],
     ], $message);
 }
 
@@ -541,6 +542,9 @@ try {
             break;
         case 'pay_redirect':
             handlePayRedirect();   // 内部已 exit
+            break;
+        case 'sync_poller':
+            syncPoller(getParam('token'));
             break;
         case 'query_order':
             queryOrder(getParam('token'));
