@@ -28,7 +28,7 @@ define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
 define('PAY_NOTIFY_URL', 'https://caoyuan.ypshidifu.cn/plugin/api/pay.php?action=notify');
 // 同步跳转地址（玩家付款后浏览器跳回）
 define('PAY_RETURN_URL', 'https://caoyuan.ypshidifu.cn/plugin/player.php?paid=1');
-define('PAY_SIGN_TYPE', 'RSA');
+define('PAY_SIGN_TYPE', 'RSA');   // 提交用 RSA（商户新私钥 ↔ 平台库内商户公钥 已配对验证通过）
 
 // ===== 0.01 元测试配置（先跑通全链路，后续替换为 recharge_tiers 档位） =====
 define('PAY_TEST_MONEY', '0.01');   // 元（字符串，与回调比对）
@@ -47,10 +47,11 @@ function loadPayKeys() {
                 'pid'         => defined('PAY_PID') ? PAY_PID : '',
                 'private_key' => wrapPem(PAY_MCH_PRIVATE_KEY, 'private'),
                 'public_key'  => wrapPem(PAY_PLATFORM_PUBLIC_KEY, 'public'),
+                'md5_key'     => defined('PAY_MD5_KEY') ? PAY_MD5_KEY : '',
             ];
         }
     }
-    return ['pid' => '', 'private_key' => '', 'public_key' => ''];
+    return ['pid' => '', 'private_key' => '', 'public_key' => '', 'md5_key' => ''];
 }
 
 /** 将裸 base64 包装为 PEM。私钥自动探测 PKCS#1(RSA PRIVATE KEY) / PKCS#8(PRIVATE KEY)，公钥用 SubjectPublicKeyInfo(PUBLIC KEY) */
@@ -94,9 +95,11 @@ function opensslLoadKey($pem, $isPrivate) {
 }
 
 /**
- * RSA(SHA256withRSA) 请求签名：取全部非空参数 → 剔除 sign/sign_type → 参数名 ASCII 升序 → 原始值 k=v& 拼接 → 私钥签名
+ * 请求签名：根据 sign_type 选择算法
+ *  - RSA : 取全部非空参数 → 剔除 sign/sign_type → ASCII 升序 → k=v& 拼接 → 私钥 SHA256WithRSA 签名
+ *  - MD5 : 同上拼接后追加 &key=商户MD5密钥 → md5（彩虹易支付MD5方式，无需密钥对，可绕过RSA密钥不匹配）
  */
-function buildSign($params, $privateKeyPem) {
+function buildSign($params, $keys) {
     $filtered = [];
     foreach ($params as $k => $v) {
         if ($k === 'sign' || $k === 'sign_type') continue;
@@ -110,23 +113,30 @@ function buildSign($params, $privateKeyPem) {
     }
     $data = implode('&', $parts);
 
-    $key = opensslLoadKey($privateKeyPem, true);
-    if ($key === false) {
-        throw new Exception('商户私钥加载失败: ' . openssl_error_string());
+    $type = $params['sign_type'] ?? PAY_SIGN_TYPE;
+    if ($type === 'RSA') {
+        $key = opensslLoadKey($keys['private_key'], true);
+        if ($key === false) {
+            throw new Exception('商户私钥加载失败: ' . openssl_error_string());
+        }
+        openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256);
+        if (PHP_VERSION_ID < 80000) {
+            @openssl_free_key($key);
+        }
+        return base64_encode($signature);
     }
-    openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256); // 彩虹易支付V2接口使用SHA256WithRSA
-    // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放；显式调用会触发弃用警告，污染 JSON 响应
-    if (PHP_VERSION_ID < 80000) {
-        @openssl_free_key($key);
+    // MD5：平台规则为 md5(待签串 + 商户MD5密钥)，【无】&key= 后缀（与彩虹易支付源码 Payment::makeSign 一致）
+    if (empty($keys['md5_key'])) {
+        throw new Exception('商户MD5密钥未配置');
     }
-    return base64_encode($signature);
+    return md5($data . $keys['md5_key']);
 }
 
 /**
- * RSA(SHA256withRSA) 回调验签：用平台公钥验证（兼容平台新增的扩展字段——取回调全部非空参数参与）
+ * 回调验签：根据回调 sign_type 选择算法（兼容平台RSA/MD5两种回调）
  */
-function verifyNotifySign($params, $publicKeyPem) {
-    if (empty($params['sign']) || empty($publicKeyPem)) return false;
+function verifyNotifySign($params, $keys) {
+    if (empty($params['sign'])) return false;
     $sign = $params['sign'];
     $filtered = [];
     foreach ($params as $k => $v) {
@@ -141,14 +151,20 @@ function verifyNotifySign($params, $publicKeyPem) {
     }
     $data = implode('&', $parts);
 
-    $key = opensslLoadKey($publicKeyPem, false);
-    if ($key === false) return false;
-    $ok = openssl_verify($data, base64_decode($sign), $key, OPENSSL_ALGO_SHA256);
-    // PHP 8.0+ 已弃用 openssl_free_key，资源会自动释放
-    if (PHP_VERSION_ID < 80000) {
-        @openssl_free_key($key);
+    $type = $params['sign_type'] ?? PAY_SIGN_TYPE;
+    if ($type === 'RSA') {
+        if (empty($keys['public_key'])) return false;
+        $key = opensslLoadKey($keys['public_key'], false);
+        if ($key === false) return false;
+        $ok = openssl_verify($data, base64_decode($sign), $key, OPENSSL_ALGO_SHA256);
+        if (PHP_VERSION_ID < 80000) {
+            @openssl_free_key($key);
+        }
+        return $ok === 1;
     }
-    return $ok === 1;
+    // MD5：与提交签名规则一致，md5(待签串 + 商户MD5密钥)，无 &key= 后缀
+    if (empty($keys['md5_key'])) return false;
+    return strtolower(md5($data . $keys['md5_key'])) === strtolower($sign);
 }
 
 // ====================================================================
@@ -166,8 +182,38 @@ function ensurePayOrdersTable($db) {
         status TEXT DEFAULT 'created',
         name TEXT,
         platform_sign TEXT,
+        submit_params TEXT,
         created_at INTEGER,
         paid_at INTEGER
+    )");
+    // 旧表可能由早期版本创建、不含 submit_params 列；
+    // SQLite 不支持 ALTER ... ADD COLUMN IF NOT EXISTS，故用 PRAGMA 探测后补齐，
+    // 否则 CREATE TABLE IF NOT EXISTS 不会加列，导致 UPDATE submit_params 报 “no such column”。
+    $hasCol = false;
+    $res = $db->query("PRAGMA table_info(pay_orders)");
+    while ($col = $res->fetchArray(SQLITE3_ASSOC)) {
+        if ($col['name'] === 'submit_params') { $hasCol = true; break; }
+    }
+    if (!$hasCol) {
+        $db->exec("ALTER TABLE pay_orders ADD COLUMN submit_params TEXT");
+    }
+}
+
+/**
+ * 确保充值流水表存在（notify 写入 web_transactions 供 Java 高频定时器拉取）。
+ * 该表可能由其它模块创建，这里做幂等兜底，避免新部署时表不存在导致 notify 抛异常返回 fail。
+ */
+function ensureWebTransactionsTable($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        type TEXT,
+        amount INTEGER DEFAULT 0,
+        operator TEXT,
+        reason TEXT,
+        detail TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at INTEGER
     )");
 }
 
@@ -218,10 +264,18 @@ function createOrder($token) {
         'timestamp'   => (string)time(), // 10位Unix时间戳，单位秒，符合彩虹易支付接口要求
         'sign_type'   => PAY_SIGN_TYPE,
     ];
-    $params['sign'] = buildSign($params, $keys['private_key']);
+    $params['sign'] = buildSign($params, $keys);
 
-    // GET 跳转（浏览器跳转付款）。http_build_query 仅做传输层 urlencode，平台解码后还原为原始值参与验签。
-    $payUrl = PAY_GATEWAY . '?' . http_build_query($params);
+    // 保存已签名的提交参数（含 sign），供本地中转页自动 POST 到网关使用
+    $stmt = $db->prepare("UPDATE pay_orders SET submit_params = :sp WHERE out_trade_no = :no");
+    $stmt->bindValue(':sp', json_encode($params, JSON_UNESCAPED_SLASHES), SQLITE3_TEXT);
+    $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+    $stmt->execute();
+
+    // 支付网关要求 POST 提交（$_POST['pid']），不能 GET 直接跳转。
+    // 返回本地中转页 URL：浏览器打开后由 JS 自动 POST 表单到网关，规避 GET 传输下 notify_url 内 & 被截断的问题。
+    $scriptBase = preg_replace('/\?.*$/', '', PAY_NOTIFY_URL);
+    $payUrl = $scriptBase . '?action=pay_redirect&out_trade_no=' . urlencode($outTradeNo);
 
     success([
         'pay_url'      => $payUrl,
@@ -239,13 +293,13 @@ function handleNotify() {
     // 清空输出缓冲，确保最终只输出 success/fail
     while (ob_get_level() > 0) { ob_end_clean(); }
 
-    $params = $_GET;
+    $params = $_REQUEST;   // 平台回调以 GET 方式把签名参数 append 到 notify_url 后，统一用 $_REQUEST 兼容 GET/POST
     debugLog('[pay notify] 收到异步回调', $params);
 
     $keys = loadPayKeys();
 
-    // 1) 验签（平台公钥）
-    if (!verifyNotifySign($params, $keys['public_key'])) {
+    // 1) 验签（兼容平台RSA/MD5回调）
+    if (!verifyNotifySign($params, $keys)) {
         debugLog('[pay notify] 验签失败，疑似伪造', ['out_trade_no' => $params['out_trade_no'] ?? '']);
         echo 'fail';
         exit;
@@ -267,6 +321,7 @@ function handleNotify() {
 
     $db = getDB();
     ensurePayOrdersTable($db);
+    ensureWebTransactionsTable($db);
 
     $stmt = $db->prepare("SELECT * FROM pay_orders WHERE out_trade_no = :no");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
@@ -317,6 +372,54 @@ function handleNotify() {
 }
 
 // ====================================================================
+//  动作：pay_redirect（本地中转页，浏览器打开后自动 POST 到支付网关）
+// ====================================================================
+function handlePayRedirect() {
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    $outTradeNo = getParam('out_trade_no');
+    if (!$outTradeNo) {
+        header('Content-Type: text/html; charset=utf-8');
+        echo '缺少订单号';
+        exit;
+    }
+    $db = getDB();
+    ensurePayOrdersTable($db);
+    $stmt = $db->prepare("SELECT submit_params, status FROM pay_orders WHERE out_trade_no = :no");
+    $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row || empty($row['submit_params'])) {
+        header('Content-Type: text/html; charset=utf-8');
+        echo '订单不存在或尚未生成支付参数';
+        exit;
+    }
+    $params = json_decode($row['submit_params'], true);
+    if (!is_array($params)) {
+        header('Content-Type: text/html; charset=utf-8');
+        echo '支付参数损坏';
+        exit;
+    }
+
+    // 已支付则直接跳回结果页，不再重复提交
+    if ($row['status'] === 'paid') {
+        header('Location: ' . PAY_RETURN_URL, true, 302);
+        exit;
+    }
+
+    $fields = '';
+    foreach ($params as $k => $v) {
+        $fields .= '<input type="hidden" name="' . htmlspecialchars($k, ENT_QUOTES) . '" value="' . htmlspecialchars($v, ENT_QUOTES) . '">' . "\n";
+    }
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>正在跳转支付...</title></head><body>' .
+         '<form id="payform" action="' . htmlspecialchars(PAY_GATEWAY, ENT_QUOTES) . '" method="post">' .
+         $fields .
+         '</form>' .
+         '<script>document.getElementById("payform").submit();</script>' .
+         '</body></html>';
+    exit;
+}
+
+// ====================================================================
 //  动作：query_order（前端补单 / 轮询）
 // ====================================================================
 function queryOrder($token) {
@@ -362,6 +465,9 @@ try {
             break;
         case 'notify':
             handleNotify();   // 内部已 exit
+            break;
+        case 'pay_redirect':
+            handlePayRedirect();   // 内部已 exit
             break;
         case 'query_order':
             queryOrder(getParam('token'));
