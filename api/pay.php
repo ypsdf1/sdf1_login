@@ -255,8 +255,8 @@ function createOrder($token) {
     $db = getDB();
     ensurePayOrdersTable($db);
 
-    // ★ 防重复支付：检查玩家是否有未支付的已有订单（仅30分钟内有效）
-    $staleThreshold = time() - 1800; // 30分钟过期
+    // ★ 防重复支付：检查玩家是否有未支付的已有订单（仅5分钟内有效）
+    $staleThreshold = time() - 300; // 5分钟过期
     $checkStmt = $db->prepare("SELECT out_trade_no, submit_params, money, bond_amount, created_at FROM pay_orders WHERE player_name = :p AND status = 'created' AND created_at >= :stale ORDER BY created_at DESC LIMIT 1");
     $checkStmt->bindValue(':p', $player, SQLITE3_TEXT);
     $checkStmt->bindValue(':stale', $staleThreshold, SQLITE3_INTEGER);

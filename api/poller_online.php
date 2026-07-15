@@ -16,7 +16,10 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
-while (ob_get_level() > 0) { ob_end_clean(); }
+// 只在直接执行时清除输出缓冲区，被包含时保留
+if (!defined('POLLER_NO_AUTO_RUN')) {
+    while (ob_get_level() > 0) { ob_end_clean(); }
+}
 
 // ===== 配置 =====
 $PLATFORM_DB_HOST = 'localhost';
@@ -30,6 +33,7 @@ $SQLITE_DB_PATH = __DIR__ . '/../db/web.db';
 
 if (!function_exists('debugLog')) {
 function debugLog($msg, $ctx = []) {
+    $logFile = __DIR__ . '/../db/debug.log';
     $ts = date('Y-m-d H:i:s');
     $entry = "[$ts] $msg";
     if ($ctx) $entry .= ' | Context: ' . json_encode($ctx, JSON_UNESCAPED_UNICODE);

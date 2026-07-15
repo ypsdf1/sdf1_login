@@ -140,7 +140,10 @@ function handleReconcile() {
         error('对账脚本执行异常');
     }
     
-    success($result);
+    // 直接输出结果，不再用 success() 包装（避免双重 JSON）
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($result, JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
 /**

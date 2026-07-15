@@ -1102,35 +1102,46 @@ if ($currentVersion !== $BUILD_VERSION) {
             (async () => {
                 try {
                     const res = await api('pay.php', {action: 'query_order', out_trade_no: lastNo});
-                    if (res.success && res.data && res.data.status === 'created') {
+                    if (res.success && res.data) {
                         const st = document.getElementById('rechargeStatus');
                         const btn = document.getElementById('rechargeBtn');
-                        btn.textContent = '🔄 继续支付 ¥' + (res.data.money || '0.01');
-                        btn.onclick = async function() {
-                            try {
-                                btn.disabled = true;
-                                btn.textContent = '⏳ 获取支付链接…';
-                                const r = await api('pay.php', {action: 'create_order'});
-                                if (r.success && r.data.pay_url) {
-                                    localStorage.setItem('sdf1_last_recharge_no', r.data.out_trade_no);
-                                    const payUrl = r.data.pay_url;
-                                    st.innerHTML = '<span style="color:var(--green)">已打开支付页面…</span>';
-                                    document.getElementById('rechargeQueryBtn').style.display = 'block';
-                                    window.open(payUrl, '_blank');
-                                    pollRechargeOrder(false);
-                                } else {
-                                    st.innerHTML = '<span style="color:var(--red)">' + (r.message || '获取支付链接失败') + '</span>';
+                        if (res.data.status === 'paid') {
+                            // 已支付：清除本地记录，锁定按钮
+                            localStorage.removeItem('sdf1_last_recharge_no');
+                            st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成。</span>';
+                            btn.disabled = true;
+                            btn.textContent = '✅ 支付完成';
+                            btn.onclick = null;
+                        } else if (res.data.status === 'created') {
+                            // 未支付：显示继续支付
+                            btn.textContent = '🔄 继续支付 ¥' + (res.data.money || '0.01');
+                            btn.onclick = async function() {
+                                try {
+                                    btn.disabled = true;
+                                    btn.textContent = '⏳ 获取支付链接…';
+                                    const r = await api('pay.php', {action: 'create_order'});
+                                    if (r.success && r.data.pay_url) {
+                                        localStorage.setItem('sdf1_last_recharge_no', r.data.out_trade_no);
+                                        const payUrl = r.data.pay_url;
+                                        st.innerHTML = '<span style="color:var(--green)">已打开支付页面…</span>';
+                                        document.getElementById('rechargeQueryBtn').style.display = 'block';
+                                        window.open(payUrl, '_blank');
+                                        pollRechargeOrder(false);
+                                    } else {
+                                        st.innerHTML = '<span style="color:var(--red)">' + (r.message || '获取支付链接失败') + '</span>';
+                                        btn.disabled = false;
+                                        btn.textContent = '🔄 继续支付';
+                                    }
+                                } catch (e) {
+                                    st.innerHTML = '<span style="color:var(--red)">请求异常: ' + e.message + '</span>';
                                     btn.disabled = false;
                                     btn.textContent = '🔄 继续支付';
                                 }
-                            } catch (e) {
-                                st.innerHTML = '<span style="color:var(--red)">请求异常: ' + e.message + '</span>';
-                                btn.disabled = false;
-                                btn.textContent = '🔄 继续支付';
-                            }
-                        };
-                        st.innerHTML = '<span style="color:var(--yellow)">⚠️ 您有一笔未完成的订单，<a href="javascript:void(0)" onclick="document.getElementById(\'rechargeBtn\').click()" style="color:var(--accent)">点此继续支付</a></span>';
-                        document.getElementById('rechargeQueryBtn').style.display = 'block';
+                            };
+                            st.innerHTML = '<span style="color:var(--yellow)">⚠️ 您有一笔未完成的订单，<a href="javascript:void(0)" onclick="document.getElementById(\'rechargeBtn\').click()" style="color:var(--accent)">点此继续支付</a></span>';
+                            document.getElementById('rechargeQueryBtn').style.display = 'block';
+                        }
+                        // 如果是 expired 或其他状态，不处理，保持默认按钮
                     }
                 } catch (e) {
                     localStorage.removeItem('sdf1_last_recharge_no');
@@ -1186,10 +1197,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                     if (res.data.status === 'paid') {
                         st.innerHTML = '<span style="color:var(--green)">✅ 支付成功！游戏内债券发放中，请稍候刷新「余额查询」。</span>';
                         if (rechargePollTimer) { clearInterval(rechargePollTimer); rechargePollTimer = null; }
-                        // 支付成功后清除本地记录 + 恢复按钮
+                        // 支付成功后清除本地记录 + 锁定按钮
                         localStorage.removeItem('sdf1_last_recharge_no');
                         const btn = document.getElementById('rechargeBtn');
-                        if (btn) { btn.disabled = false; btn.textContent = '🅰️ 支付宝支付 ¥0.01'; btn.onclick = startRecharge; }
+                        if (btn) { btn.disabled = true; btn.textContent = '✅ 支付完成'; btn.onclick = null; }
                     } else {
                         st.innerHTML = '<span style="color:var(--dim)">⏳ 订单处理中（' + (res.message || '等待支付平台通知') + '）…</span>';
                     }
