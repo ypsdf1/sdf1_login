@@ -25,7 +25,7 @@ ob_end_clean();
 // 彩虹易支付 下单网关
 define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
 // 异步通知地址（平台服务器回调，必须公网可达）
-define('PAY_NOTIFY_URL', 'http://43.153.203.46/plugin/api/pay.php?action=notify');
+define('PAY_NOTIFY_URL', 'https://caoyuan.ypshidifu.cn/plugin/api/pay.php?action=notify');
 // 同步跳转地址（玩家付款后浏览器跳回）
 define('PAY_RETURN_URL', 'https://caoyuan.ypshidifu.cn/plugin/player.php?paid=1');
 define('PAY_SIGN_TYPE', 'MD5');   // 提交用 MD5（商户 MD5 密钥 pay_user.key，末尾无点）；用户新私钥数据损坏无法自验，暂用 MD5
