@@ -32,8 +32,9 @@ $PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'kH3C3LLinNwYdT
 $PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : 'sRhsdxrpHBhmSsp8';
 $GLOBALS['PLATFORM_DB_PREFIX'] = 'pay_'; $PLATFORM_DB_PREFIX = 'pay_';
 
-// SQLite 数据库路径（与 core.php 一致：/caoyuan.ypshidifu.cn/plugin/db/web.db）
-$SQLITE_DB_PATH = __DIR__ . '/../db/web.db';
+// SQLite 数据库路径
+$GLOBALS['SQLITE_DB_PATH'] = __DIR__ . '/../db/web.db';     // web_transactions (Java读写)
+$GLOBALS['ORDERS_DB_PATH'] = __DIR__ . '/../db/orders.db';  // pay_orders (PHP读写)
 
 if (!function_exists('debugLog')) {
 function debugLog($msg, $ctx = []) {
@@ -47,13 +48,39 @@ function debugLog($msg, $ctx = []) {
 } // end if (!function_exists('debugLog'))
 
 function getSQLite() {
+    // web.db — Java 高频读写（web_transactions 表）
     static $db = null;
     if ($db === null) {
         $db = new SQLite3($GLOBALS['SQLITE_DB_PATH']);
         $db->enableExceptions(true);
         $db->exec('PRAGMA journal_mode=WAL');
         $db->exec('PRAGMA busy_timeout=5000');
-        // 确保表存在（幂等兜底）
+        // web_transactions 表（Java 读取补单）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT,
+            type TEXT,
+            amount INTEGER,
+            operator TEXT,
+            reason TEXT,
+            detail TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER
+        )");
+        @$db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_web_tx_detail_type ON web_transactions(detail, type)");
+    }
+    return $db;
+}
+
+function getOrdersSQLite() {
+    // orders.db — PHP 订单库（pay_orders 表），独立于 Java 的 web.db
+    static $db = null;
+    if ($db === null) {
+        $db = new SQLite3($GLOBALS['ORDERS_DB_PATH']);
+        $db->enableExceptions(true);
+        $db->exec('PRAGMA journal_mode=WAL');
+        $db->exec('PRAGMA busy_timeout=5000');
+        // pay_orders 表
         $db->exec("CREATE TABLE IF NOT EXISTS pay_orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             out_trade_no TEXT UNIQUE,
@@ -69,19 +96,6 @@ function getSQLite() {
             created_at INTEGER,
             paid_at INTEGER
         )");
-        $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_name TEXT,
-            type TEXT,
-            amount INTEGER,
-            operator TEXT,
-            reason TEXT,
-            detail TEXT,
-            status TEXT DEFAULT 'pending',
-            created_at INTEGER
-        )");
-        // 唯一约束：同 detail+type 不允许重复（防 race condition/重复补单）
-        @$db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_web_tx_detail_type ON web_transactions(detail, type)");
     }
     return $db;
 }
@@ -160,7 +174,8 @@ function pollPaidOrders() {
         return;
     }
 
-    $sqlite = getSQLite();
+    $sqlite = getOrdersSQLite();      // orders.db（pay_orders）
+    $webSqlite = getSQLite();          // web.db（web_transactions）
 
     try {
         $pdo = getPlatformDB();
@@ -267,8 +282,8 @@ function pollPaidOrders() {
             $upd->execute();
         }
 
-        // 写 web_transactions（幂等：INSERT OR IGNORE 防止竞态条件重复插入）
-        $txIns = $sqlite->prepare("INSERT OR IGNORE INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(补单)', '在线充值(支付宝)', :d, 'pending', :t)");
+        // 写 web_transactions（幂等：INSERT OR IGNORE 防止竞态条件重复插入）→ web.db
+        $txIns = $webSqlite->prepare("INSERT OR IGNORE INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(补单)', '在线充值(支付宝)', :d, 'pending', :t)");
         $txIns->bindValue(':p', $playerName, SQLITE3_TEXT);
         $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
         $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
@@ -276,7 +291,7 @@ function pollPaidOrders() {
         $txIns->execute();
 
         // 检查是否是新插入的（affected_rows > 0 表示新插入，=0 表示已存在被忽略）
-        if ($sqlite->changes() > 0) {
+        if ($webSqlite->changes() > 0) {
             debugLog('[poller_online] 充值交易已写入 web_transactions', [
                 'player' => $playerName, 'bonds' => $bonds,
                 'out_trade_no' => $outTradeNo, 'money' => $money,

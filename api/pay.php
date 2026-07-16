@@ -270,7 +270,7 @@ function createOrder($token) {
     }
     $player = $info['player'];
 
-    $db = getDB();
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
 
     // ★ 防重复支付：检查玩家是否有未支付的已有订单（仅5分钟内有效）
@@ -391,9 +391,10 @@ function handleNotify() {
         exit;
     }
 
-    $db = getDB();
+    $db = getOrdersDB();          // orders.db — pay_orders
     ensurePayOrdersTable($db);
-    ensureWebTransactionsTable($db);
+    $webDb = getDB();             // web.db — web_transactions
+    ensureWebTransactionsTable($webDb);
 
     $stmt = $db->prepare("SELECT * FROM pay_orders WHERE out_trade_no = :no");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
@@ -416,8 +417,8 @@ function handleNotify() {
             $ins->bindValue(':t', $now, SQLITE3_INTEGER);
             $ins->execute();
 
-            // 写 web_transactions
-            $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(callback同步)', '在线充值(支付宝)', :d, 'pending', :t)");
+            // 写 web_transactions → web.db
+            $txIns = $webDb->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(callback同步)', '在线充值(支付宝)', :d, 'pending', :t)");
             $txIns->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
             $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
             $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
@@ -451,15 +452,15 @@ function handleNotify() {
         exit;
     }
 
-    // 5) 标记订单已支付
+    // 5) 标记订单已支付（orders.db）
     $stmt = $db->prepare("UPDATE pay_orders SET status='paid', trade_no=:tn, paid_at=:t WHERE out_trade_no=:no");
     $stmt->bindValue(':tn', $params['trade_no'] ?? '', SQLITE3_TEXT);
     $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
     $stmt->execute();
 
-    // 6) 写 web_transactions(recharge) 供 Java 高频定时器拉取 → addBonds 到账
-    $stmt = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台', '在线充值(支付宝)', :d, 'pending', :t)");
+    // 6) 写 web_transactions(recharge) 供 Java 高频定时器拉取 → addBonds 到账 → web.db
+    $stmt = $webDb->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台', '在线充值(支付宝)', :d, 'pending', :t)");
     $stmt->bindValue(':p', $row['player_name'], SQLITE3_TEXT);
     $stmt->bindValue(':a', (int)$row['bond_amount'], SQLITE3_INTEGER);
     $stmt->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
@@ -483,7 +484,7 @@ function handlePayRedirect() {
         echo '缺少订单号';
         exit;
     }
-    $db = getDB();
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
     $stmt = $db->prepare("SELECT submit_params, status, player_name FROM pay_orders WHERE out_trade_no = :no");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
@@ -555,7 +556,7 @@ function queryOrder($token) {
     if (!$outTradeNo) {
         error('缺少订单号');
     }
-    $db = getDB();
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
     $stmt = $db->prepare("SELECT * FROM pay_orders WHERE out_trade_no=:no AND player_name=:p");
     $stmt->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
@@ -607,12 +608,13 @@ function queryOrder($token) {
             $ins->bindValue(':t', $now, SQLITE3_INTEGER);
             $ins->execute();
 
-            // 写 web_transactions
-            $txCheck = $db->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
+            // 写 web_transactions → web.db
+            $webDb = getDB();
+            $txCheck = $webDb->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
             $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
             $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
             if (!$txRow) {
-                $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(查询同步)', '在线充值(支付宝)', :d, 'pending', :t)");
+                $txIns = $webDb->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(查询同步)', '在线充值(支付宝)', :d, 'pending', :t)");
                 $txIns->bindValue(':p', $platformPlayer, SQLITE3_TEXT);
                 $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
                 $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
@@ -662,12 +664,13 @@ function queryOrder($token) {
             $upd->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
             $upd->execute();
 
-            // 写 web_transactions（幂等）
-            $txCheck = $db->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
+            // 写 web_transactions（幂等）→ web.db
+            $webDb = getDB();
+            $txCheck = $webDb->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
             $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
             $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
             if (!$txRow) {
-                $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(直查)', '在线充值(支付宝)', :d, 'pending', :t)");
+                $txIns = $webDb->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(直查)', '在线充值(支付宝)', :d, 'pending', :t)");
                 $txIns->bindValue(':p', $info['player'], SQLITE3_TEXT);
                 $txIns->bindValue(':a', (int)$row['bond_amount'], SQLITE3_INTEGER);
                 $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
@@ -839,7 +842,7 @@ function findRecentOrder($token) {
     if (!$info || empty($info['player'])) {
         error('登录状态无效', 401);
     }
-    $db = getDB();
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
     // 查最近5分钟内的订单（优先created，再paid）
     $fiveMinAgo = time() - 300;

@@ -66,36 +66,32 @@ function handleOrderList() {
     $db = getOrdersDB();
     ensurePayOrdersTable($db);
 
-    // ★ 自动迁移：如果 orders.db 为空但 web.db 有 pay_orders 数据，从 web.db 迁移过来
+    // ★ 增量迁移：从 web.db 同步缺失的 pay_orders 到 orders.db（处理历史数据）
     try {
-        $countStmt = $db->query("SELECT COUNT(*) as cnt FROM pay_orders");
-        $cnt = $countStmt->fetchArray(SQLITE3_ASSOC)['cnt'] ?? 0;
-        if ($cnt == 0) {
-            $webDb = getDB();
-            // 检查 web.db 是否有 pay_orders 表
-            $tableCheck = $webDb->query("SELECT name FROM sqlite_master WHERE type='table' AND name='pay_orders'");
-            if ($tableCheck->fetchArray()) {
-                // 迁移数据
-                $migrateData = $webDb->query("SELECT * FROM pay_orders");
-                $ins = $db->prepare("INSERT OR IGNORE INTO pay_orders (out_trade_no, trade_no, player_name, tier_id, money, bond_amount, status, name, platform_sign, submit_params, created_at, paid_at) VALUES (:no, :tn, :p, :ti, :m, :b, :s, :n, :ps, :sp, :ca, :pa)");
-                $migrated = 0;
-                while ($row = $migrateData->fetchArray(SQLITE3_ASSOC)) {
-                    $ins->bindValue(':no', $row['out_trade_no'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':tn', $row['trade_no'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':p', $row['player_name'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':ti', $row['tier_id'] ?? 0, SQLITE3_INTEGER);
-                    $ins->bindValue(':m', $row['money'] ?? '0', SQLITE3_TEXT);
-                    $ins->bindValue(':b', $row['bond_amount'] ?? 0, SQLITE3_INTEGER);
-                    $ins->bindValue(':s', $row['status'] ?? 'created', SQLITE3_TEXT);
-                    $ins->bindValue(':n', $row['name'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':ps', $row['platform_sign'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':sp', $row['submit_params'] ?? '', SQLITE3_TEXT);
-                    $ins->bindValue(':ca', $row['created_at'] ?? 0, SQLITE3_INTEGER);
-                    $ins->bindValue(':pa', $row['paid_at'] ?? 0, SQLITE3_INTEGER);
-                    $ins->execute();
-                    $migrated++;
-                }
-                debugLog('[handleOrderList] 自动迁移web.db→orders.db', ['migrated' => $migrated]);
+        $webDb = getDB();
+        $tableCheck = $webDb->query("SELECT name FROM sqlite_master WHERE type='table' AND name='pay_orders'");
+        if ($tableCheck->fetchArray()) {
+            $migrateData = $webDb->query("SELECT * FROM pay_orders");
+            $ins = $db->prepare("INSERT OR IGNORE INTO pay_orders (out_trade_no, trade_no, player_name, tier_id, money, bond_amount, status, name, platform_sign, submit_params, created_at, paid_at) VALUES (:no, :tn, :p, :ti, :m, :b, :s, :n, :ps, :sp, :ca, :pa)");
+            $migrated = 0;
+            while ($row = $migrateData->fetchArray(SQLITE3_ASSOC)) {
+                $ins->bindValue(':no', $row['out_trade_no'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':tn', $row['trade_no'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':p', $row['player_name'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':ti', $row['tier_id'] ?? 0, SQLITE3_INTEGER);
+                $ins->bindValue(':m', $row['money'] ?? '0', SQLITE3_TEXT);
+                $ins->bindValue(':b', $row['bond_amount'] ?? 0, SQLITE3_INTEGER);
+                $ins->bindValue(':s', $row['status'] ?? 'created', SQLITE3_TEXT);
+                $ins->bindValue(':n', $row['name'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':ps', $row['platform_sign'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':sp', $row['submit_params'] ?? '', SQLITE3_TEXT);
+                $ins->bindValue(':ca', $row['created_at'] ?? 0, SQLITE3_INTEGER);
+                $ins->bindValue(':pa', $row['paid_at'] ?? 0, SQLITE3_INTEGER);
+                $ins->execute();
+                if ($db->changes() > 0) $migrated++;
+            }
+            if ($migrated > 0) {
+                debugLog('[handleOrderList] 增量迁移web.db→orders.db', ['migrated' => $migrated]);
             }
         }
     } catch (Exception $e) {
