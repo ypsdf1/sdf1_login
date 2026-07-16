@@ -3536,7 +3536,7 @@ async function loadShopConfig(el) {
                 <h2 id="shopConfigFormTitle">新增配置</h2>
                 <input type="hidden" id="scfId">
                 <div class="form-row"><label>商品名称</label><input id="scfName" placeholder="如：债券充值包"></div>
-                <div class="form-row"><label>库存</label><input id="scfStock" type="number" min="-1" value="-1" placeholder="-1=无限"></div>
+                <div class="form-row"><label>库存</label><input id="scfStock" type="text" inputmode="numeric" value="-1" placeholder="-1=无限, 0=售罄, ≥0=数量"></div>
                 <div class="form-row"><label>临时优惠</label><input id="scfOffer" placeholder="如：限时8折"></div>
                 <div class="form-row"><label>优惠有效期</label><input id="scfExpire" placeholder="yyyy-MM-dd 或 2026年7月16日"></div>
                 <div class="form-row"><label>售价(元)</label><input id="scfPrice" type="number" min="0.01" step="0.01" placeholder="0.01"></div>
@@ -3616,9 +3616,17 @@ async function editShopConfig(id) {
 async function saveShopConfig() {
     const id = document.getElementById('scfId').value;
     const name = document.getElementById('scfName').value.trim();
-    // ★ 修复：库存=0不能写成-1。空值才默认-1（无限），0是合法售罄值
-    const stockRaw = document.getElementById('scfStock').value;
-    const stock = stockRaw === '' ? -1 : parseInt(stockRaw, 10);
+    // ★ 库存严格校验：空=-1(无限)，0=售罄(合法)，≥0=数量；非法输入明确报错，绝不静默转-1
+    const stockRaw = document.getElementById('scfStock').value.trim();
+    let stock;
+    if (stockRaw === '') {
+        stock = -1;
+    } else if (/^-?\d+$/.test(stockRaw)) {
+        stock = parseInt(stockRaw, 10);
+        if (stock < -1) { glassAlert('库存不能小于 -1（-1=无限, 0=售罄）'); return; }
+    } else {
+        glassAlert('库存必须是数字：-1=无限, 0=售罄, ≥0=数量'); return;
+    }
     const offer = document.getElementById('scfOffer').value.trim();
     const expire = document.getElementById('scfExpire').value.trim();
     const price = parseFloat(document.getElementById('scfPrice').value) || 0;
