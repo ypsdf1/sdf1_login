@@ -712,7 +712,7 @@ function queryOrder($token) {
 function checkPlatformOrderStatus($outTradeNo) {
     try {
         $pdo = getPlatformDB();
-        $stmt = $pdo->prepare("SELECT status, trade_no, money, param, addtime FROM pay_order WHERE out_trade_no = ? LIMIT 1");
+        $stmt = $pdo->prepare("SELECT status, trade_no, money, param, addtime FROM `pay_order` WHERE out_trade_no = ? LIMIT 1");
         $stmt->execute([$outTradeNo]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row) return 'not_found';

@@ -229,7 +229,7 @@ function handleSyncFromPlatform() {
         $pdo = getAdminPlatformDB();
 
         // 查所有已支付订单
-        $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM pay_order WHERE status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
+        $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
         $platformOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $synced = 0;
