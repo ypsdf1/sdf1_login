@@ -1218,14 +1218,22 @@ if ($currentVersion !== $BUILD_VERSION) {
                     // ★ 盲盒随机语录
                     const quoteText = isBlindBox ? `<div style="font-size:12px;color:var(--accent);margin-top:6px;font-style:italic">${blindBoxQuotes[Math.floor(Math.random() * blindBoxQuotes.length)]}</div>` : '';
 
+                    // 计算显示价格（折扣价格优先）
+                    const displayPrice = product.discount_price > 0 ? product.discount_price : product.price;
+                    const hasDiscount = product.discount_price > 0 && product.discount_price < product.price;
+
                     html += `
-                        <div class="shop-product-card" data-product-id="${product.id}" data-price="${product.price}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" data-stock="${product.stock}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease;${isSoldOut ? 'opacity:0.72;' : ''}">
+                        <div class="shop-product-card" data-product-id="${product.id}" data-price="${displayPrice}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" data-stock="${product.stock}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease;${isSoldOut ? 'opacity:0.72;' : ''}">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                                 <span style="font-size:14px;color:var(--fg)">${product.item_name}</span>
                                 <span style="font-size:12px;color:${stockColor};border:1px solid ${stockColor};border-radius:999px;padding:2px 10px">${stockText}</span>
                             </div>
                             <div style="display:flex;justify-content:space-between;align-items:baseline">
-                                <div><div style="font-size:28px;font-weight:800;color:var(--accent)">¥${product.price}</div><div style="font-size:12px;color:var(--dim)">支付金额</div></div>
+                                <div>
+                                    <div style="font-size:28px;font-weight:800;color:var(--accent)">¥${displayPrice}</div>
+                                    ${hasDiscount ? `<div style="font-size:12px;color:var(--dim);text-decoration:line-through">原价 ¥${product.price}</div>` : ''}
+                                    <div style="font-size:12px;color:var(--dim)">支付金额</div>
+                                </div>
                                 <div style="font-size:22px;color:var(--green)">→ ${bondDisplay}</div>
                             </div>
                             ${offerText}

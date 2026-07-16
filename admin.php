@@ -3540,6 +3540,7 @@ async function loadShopConfig(el) {
                 <div class="form-row"><label>临时优惠</label><input id="scfOffer" placeholder="如：限时8折"></div>
                 <div class="form-row"><label>优惠有效期</label><input id="scfExpire" placeholder="yyyy-MM-dd 或 2026年7月16日"></div>
                 <div class="form-row"><label>售价(元)</label><input id="scfPrice" type="number" min="0.01" step="0.01" placeholder="0.01"></div>
+                <div class="form-row"><label>优惠后价格</label><input id="scfDiscountPrice" type="text" inputmode="decimal" placeholder="留空=无优惠, 0.9=9折, 1.5=直接价格"></div>
                 <div class="form-row"><label>到账债券</label><input id="scfBond" placeholder="如：1-10 或 100"></div>
                 <div class="form-row"><label>上下架</label><select id="scfActive"><option value="1">上架</option><option value="0">下架</option></select></div>
                 <div style="margin-top:14px;text-align:right">
@@ -3593,6 +3594,18 @@ function showShopConfigForm(config) {
     document.getElementById('scfOffer').value = config ? (config.temporary_offer||'') : '';
     document.getElementById('scfExpire').value = config ? (config.offer_expire||'') : '';
     document.getElementById('scfPrice').value = config ? config.price : '';
+    // 优惠后价格：如果原价<1认为是折扣，否则是直接价格
+    if (config && config.discount_price > 0) {
+        const ratio = config.discount_price / (config.price || 1);
+        // 如果是整数倍（如原价10，优惠价5），显示折扣形式
+        if (ratio < 1 && ratio > 0) {
+            document.getElementById('scfDiscountPrice').value = ratio;
+        } else {
+            document.getElementById('scfDiscountPrice').value = config.discount_price;
+        }
+    } else {
+        document.getElementById('scfDiscountPrice').value = '';
+    }
     document.getElementById('scfBond').value = config ? config.bond_reward : '1-1';
     document.getElementById('scfActive').value = config ? config.is_active : 1;
     document.getElementById('shopConfigFormOverlay').classList.add('show');
@@ -3630,6 +3643,7 @@ async function saveShopConfig() {
     const offer = document.getElementById('scfOffer').value.trim();
     const expire = document.getElementById('scfExpire').value.trim();
     const price = parseFloat(document.getElementById('scfPrice').value) || 0;
+    const discountPriceRaw = document.getElementById('scfDiscountPrice').value.trim();
     const bond = document.getElementById('scfBond').value.trim();
     const active = parseInt(document.getElementById('scfActive').value) || 1;
 
@@ -3651,6 +3665,7 @@ async function saveShopConfig() {
         temporary_offer: offer,
         offer_expire: expire,
         price: price,
+        discount_price: discountPriceRaw,
         bond_reward: bond,
         is_active: active
     });

@@ -45,11 +45,21 @@ function ensureShopConfigsTable($db) {
         temporary_offer TEXT NOT NULL DEFAULT '',
         offer_expire TEXT NOT NULL DEFAULT '',
         price REAL NOT NULL DEFAULT 0,
+        discount_price REAL NOT NULL DEFAULT 0,
         bond_reward TEXT NOT NULL DEFAULT '1-1',
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL DEFAULT 0
     )");
+    // 兼容旧表：检查并添加discount_price字段
+    $hasCol = false;
+    $cols = $db->query("PRAGMA table_info(shop_configs)");
+    while ($col = $cols->fetchArray(SQLITE3_ASSOC)) {
+        if ($col['name'] === 'discount_price') { $hasCol = true; break; }
+    }
+    if (!$hasCol) {
+        $db->exec("ALTER TABLE shop_configs ADD COLUMN discount_price REAL NOT NULL DEFAULT 0");
+    }
 }
 
 // 检查管理员登录
@@ -463,40 +473,63 @@ function handleShopConfigSave($db) {
     $temporaryOffer = getParam('temporary_offer', '');
     $offerExpire = getParam('offer_expire', '');
     $price = floatval(getParam('price', 0));
+    $discountPriceRaw = getParam('discount_price', '0');
     $bondReward = getParam('bond_reward', '1-1');
     $isActive = intval(getParam('is_active', 1));
-    
+
     // 验证库存
     if ($stock < -1) {
         error('库存不能小于-1');
     }
-    
+
     // 验证售价
     if ($price <= 0) {
         error('售价必须大于0');
     }
-    
+
+    // 解析优惠后价格
+    // 支持两种格式：
+    // 1. 直接价格（如 1、2、1.5）→ 直接使用
+    // 2. 折扣（如 0.9、0.8）→ 计算 原价 × 折扣
+    $discountPrice = 0;
+    $discountPriceRaw = trim($discountPriceRaw);
+    if ($discountPriceRaw !== '' && $discountPriceRaw !== '0') {
+        $discountValue = floatval($discountPriceRaw);
+        if ($discountValue <= 0) {
+            error('优惠后价格必须大于0');
+        }
+        // 判断是直接价格还是折扣（<1的数认为是折扣）
+        if ($discountValue < 1) {
+            // 折扣：原价 × 折扣
+            $discountPrice = round($price * $discountValue, 2);
+        } else {
+            // 直接价格
+            $discountPrice = round($discountValue, 2);
+        }
+    }
+
     // 验证债券范围格式（支持盲盒范围，如"1-10"）
     if (!preg_match('/^\d+(-\d+)?$/', $bondReward)) {
         error('债券范围格式错误，应为数字或范围如"1-10"');
     }
-    
+
     // 解析并验证有效期
     $expireInfo = parseExpireDate($offerExpire);
     if ($offerExpire && !$expireInfo['valid']) {
         error('有效期格式错误，请使用yyyy-MM-dd或中文格式如"2026年7月16日"');
     }
-    
+
     $now = time();
-    
+
     if ($id > 0) {
         // 编辑
-        $stmt = $db->prepare("UPDATE shop_configs SET 
+        $stmt = $db->prepare("UPDATE shop_configs SET
             item_name = :name,
             stock = :stock,
             temporary_offer = :offer,
             offer_expire = :expire,
             price = :price,
+            discount_price = :discount_price,
             bond_reward = :bond,
             is_active = :active,
             updated_at = :updated
@@ -504,25 +537,26 @@ function handleShopConfigSave($db) {
         $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
     } else {
         // 添加
-        $stmt = $db->prepare("INSERT INTO shop_configs 
-            (item_name, stock, temporary_offer, offer_expire, price, bond_reward, is_active, created_at, updated_at)
-            VALUES (:name, :stock, :offer, :expire, :price, :bond, :active, :created, :updated)");
+        $stmt = $db->prepare("INSERT INTO shop_configs
+            (item_name, stock, temporary_offer, offer_expire, price, discount_price, bond_reward, is_active, created_at, updated_at)
+            VALUES (:name, :stock, :offer, :expire, :price, :discount_price, :bond, :active, :created, :updated)");
         $stmt->bindValue(':created', $now, SQLITE3_INTEGER);
     }
-    
+
     $stmt->bindValue(':name', $itemName, SQLITE3_TEXT);
     $stmt->bindValue(':stock', $stock, SQLITE3_INTEGER);
     $stmt->bindValue(':offer', $temporaryOffer, SQLITE3_TEXT);
     $stmt->bindValue(':expire', $offerExpire, SQLITE3_TEXT);
     $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
+    $stmt->bindValue(':discount_price', $discountPrice, SQLITE3_FLOAT);
     $stmt->bindValue(':bond', $bondReward, SQLITE3_TEXT);
     $stmt->bindValue(':active', $isActive, SQLITE3_INTEGER);
     $stmt->bindValue(':updated', $now, SQLITE3_INTEGER);
-    
+
     $stmt->execute();
-    
+
     $savedId = $id > 0 ? $id : $db->lastInsertRowID();
-    success(['id' => $savedId], $id > 0 ? '配置已更新' : '配置已添加');
+    success(['id' => $savedId, 'discount_price' => $discountPrice], $id > 0 ? '配置已更新' : '配置已添加');
 }
 
 /**

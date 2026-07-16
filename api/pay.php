@@ -315,7 +315,12 @@ function createOrder($token, $productId = 0) {
                 error('商品已售罄');
             }
 
-            $money = number_format($product['price'], 2, '.', '');
+            // 使用折扣价格（如果有）
+            $actualPrice = $product['price'];
+            if (isset($product['discount_price']) && $product['discount_price'] > 0) {
+                $actualPrice = $product['discount_price'];
+            }
+            $money = number_format($actualPrice, 2, '.', '');
             $name = $product['item_name'];
 
             // 解析债券范围
@@ -952,10 +957,21 @@ function getShopProducts() {
         temporary_offer TEXT NOT NULL DEFAULT '',
         offer_expire TEXT NOT NULL DEFAULT '',
         price REAL NOT NULL DEFAULT 0,
+        discount_price REAL NOT NULL DEFAULT 0,
         bond_reward TEXT NOT NULL DEFAULT '1-1',
         is_active INTEGER NOT NULL DEFAULT 1,
-        created_at INTEGER NOT NULL DEFAULT 0
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
     )");
+    // 兼容旧表：检查并添加discount_price字段
+    $hasCol = false;
+    $cols = $db->query("PRAGMA table_info(shop_configs)");
+    while ($col = $cols->fetchArray(SQLITE3_ASSOC)) {
+        if ($col['name'] === 'discount_price') { $hasCol = true; break; }
+    }
+    if (!$hasCol) {
+        $db->exec("ALTER TABLE shop_configs ADD COLUMN discount_price REAL NOT NULL DEFAULT 0");
+    }
 
     // 查询上架商品（is_active=1）
     $stmt = $db->query("SELECT * FROM shop_configs WHERE is_active = 1 ORDER BY id ASC");
@@ -976,6 +992,12 @@ function getShopProducts() {
         // 解析有效期
         $expireInfo = parseExpireDate($row['offer_expire']);
 
+        // 计算实际显示价格（如果有折扣价格且折扣价格>0）
+        $displayPrice = $row['price'];
+        if (isset($row['discount_price']) && $row['discount_price'] > 0) {
+            $displayPrice = $row['discount_price'];
+        }
+
         $products[] = [
             'id' => $row['id'],
             'item_name' => $row['item_name'],
@@ -985,6 +1007,8 @@ function getShopProducts() {
             'expire_valid' => $expireInfo['valid'],
             'expire_display' => $expireInfo['display'],
             'price' => $row['price'],
+            'discount_price' => $row['discount_price'] ?? 0,
+            'display_price' => $displayPrice,
             'bond_reward' => $bondReward,
             'bond_min' => $bondMin,
             'bond_max' => $bondMax,
