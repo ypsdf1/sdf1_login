@@ -10,6 +10,29 @@ ob_start();
 require_once __DIR__ . '/../core.php';
 ob_end_clean();
 
+// 加载支付密钥（含MySQL凭据）
+$secretsFile = __DIR__ . '/pay_secrets.php';
+if (@is_file($secretsFile) && @is_readable($secretsFile)) {
+    @require_once $secretsFile;
+}
+
+/**
+ * 获取平台MySQL数据库连接（集中凭据管理）
+ */
+function getPlatformDB() {
+    $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
+    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
+    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'kH3C3LLinNwYdTF5';
+    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'sRhsdxrpHBhmSsp8';
+    $pdo = new PDO(
+        "mysql:host=$host;dbname=$dbname;charset=utf8mb4",
+        $user,
+        $pass,
+        [PDO::ATTR_TIMEOUT => 15, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    return $pdo;
+}
+
 // 检查管理员登录
 if (!isAdminLoggedIn()) {
     error('无权限访问', 403);
@@ -131,18 +154,44 @@ function handleReconcile() {
     // 直接包含 poller_online.php 并调用 pollPaidOrders
     define('POLLER_NO_AUTO_RUN', true);
     require_once __DIR__ . '/poller_online.php';
-    
+
+    // 记录对账开始
+    if (function_exists('debugLog')) {
+        debugLog('[reconcile] 开始对账', [
+            'admin'    => $_SESSION['admin_user'] ?? 'unknown',
+            'time'     => date('Y-m-d H:i:s'),
+        ]);
+    }
+
     // 开始对账
     ob_start();
     pollPaidOrders();
     $output = ob_get_clean();
-    
+
+    // 记录原始输出
+    if (function_exists('debugLog')) {
+        debugLog('[reconcile] pollPaidOrders输出', [
+            'output_len' => strlen($output),
+            'output'     => substr($output, 0, 500),
+        ]);
+    }
+
     // 解析结果
     $result = json_decode($output, true);
     if (!$result) {
-        error('对账脚本执行异常');
+        if (function_exists('debugLog')) {
+            debugLog('[reconcile] JSON解析失败', ['output' => substr($output, 0, 200)]);
+        }
+        error('对账脚本执行异常: ' . substr($output, 0, 100));
     }
-    
+
+    // 记录解析结果
+    if (function_exists('debugLog')) {
+        debugLog('[reconcile] 解析结果', [
+            'result' => $result,
+        ]);
+    }
+
     // 直接输出结果，不再用 success() 包装（避免双重 JSON）
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($result, JSON_UNESCAPED_UNICODE);
@@ -158,12 +207,7 @@ function handleSyncFromPlatform() {
     ensureWebTransactionsTable($db);
 
     try {
-        $pdo = new PDO(
-            "mysql:host=localhost;dbname=caihong;charset=utf8mb4",
-            'kH3C3LLinNwYdTF5',
-            'sRhsdxrpHBhmSsp8',
-            [PDO::ATTR_TIMEOUT => 10, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-        );
+        $pdo = getPlatformDB();
 
         // 查所有已支付订单
         $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM pay_order WHERE status IN (1, 2) ORDER BY addtime DESC LIMIT 200");

@@ -1089,7 +1089,30 @@ if ($currentVersion !== $BUILD_VERSION) {
                 document.getElementById('rechargeQueryBtn').style.display = 'block';
                 pollRechargeOrder(false);
             } else {
-                st.innerHTML = '<span style="color:var(--yellow)">已返回，但未找到本地订单记录。如已支付，请在「余额查询」确认或联系管理员。</span>';
+                // ★ 兜底：localStorage丢失时，从服务器查最近订单
+                st.innerHTML = '<span style="color:var(--accent)">已返回，正在从服务器查找订单…</span>';
+                document.getElementById('rechargeQueryBtn').style.display = 'block';
+                (async () => {
+                    try {
+                        const res = await api('pay.php', {action: 'find_recent_order'});
+                        if (res.success && res.data && res.data.orders && res.data.orders.length > 0) {
+                            const latest = res.data.orders[0];
+                            localStorage.setItem('sdf1_last_recharge_no', latest.out_trade_no);
+                            if (latest.status === 'paid') {
+                                st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成。</span>';
+                                const btn = document.getElementById('rechargeBtn');
+                                btn.disabled = true; btn.textContent = '✅ 支付完成'; btn.onclick = null;
+                            } else {
+                                st.innerHTML = '<span style="color:var(--accent)">检测到订单 ' + latest.out_trade_no + '，正在确认到账…</span>';
+                                pollRechargeOrder(false);
+                            }
+                        } else {
+                            st.innerHTML = '<span style="color:var(--yellow)">已返回，但未找到本地订单记录。如已支付，请在「余额查询」确认或联系管理员。</span>';
+                        }
+                    } catch (e) {
+                        st.innerHTML = '<span style="color:var(--yellow)">已返回，但未找到本地订单记录。如已支付，请在「余额查询」确认或联系管理员。</span>';
+                    }
+                })();
             }
             // 清除 URL 中的 paid 标记，避免刷新重复提示
             try {

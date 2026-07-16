@@ -21,11 +21,15 @@ if (!defined('POLLER_NO_AUTO_RUN')) {
     while (ob_get_level() > 0) { ob_end_clean(); }
 }
 
-// ===== 配置 =====
-$PLATFORM_DB_HOST = 'localhost';
-$PLATFORM_DB_NAME = 'caihong';
-$PLATFORM_DB_USER = 'kH3C3LLinNwYdTF5';
-$PLATFORM_DB_PASS = 'sRhsdxrpHBhmSsp8';
+// ===== 配置（从 pay_secrets.php 加载，集中管理） =====
+$secretsFile = __DIR__ . '/pay_secrets.php';
+if (@is_file($secretsFile) && @is_readable($secretsFile)) {
+    @require_once $secretsFile;
+}
+$PLATFORM_DB_HOST = defined('PAY_MYSQL_HOST') ? PAY_MYSQL_HOST : '127.0.0.1';
+$PLATFORM_DB_NAME = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
+$PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'kH3C3LLinNwYdTF5';
+$PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : 'sRhsdxrpHBhmSsp8';
 $PLATFORM_DB_PREFIX = 'pay_';
 
 // SQLite 数据库路径（与 core.php 一致：/caoyuan.ypshidifu.cn/plugin/db/web.db）
@@ -83,24 +87,35 @@ function getSQLite() {
 }
 
 function getPlatformDB() {
-    static $pdo = null;
-    if ($pdo === null) {
-        try {
-            debugLog('[poller] 正在连接平台MySQL...');
-            $start = microtime(true);
-            $dsn = "mysql:host={$GLOBALS['PLATFORM_DB_HOST']};dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
-            $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_TIMEOUT => 10,  // ★ 增加到10秒，确保连接成功
-            ]);
-            $elapsed = round((microtime(true) - $start) * 1000);
-            debugLog("[poller] MySQL连接成功", ['elapsed_ms' => $elapsed]);
-        } catch (Exception $e) {
-            debugLog("[poller] MySQL连接失败", ['error' => $e->getMessage(), 'elapsed_ms' => round((microtime(true) - $start) * 1000)]);
-            throw $e;
-        }
+    try {
+        debugLog('[poller] 正在连接平台MySQL...', [
+            'host' => $GLOBALS['PLATFORM_DB_HOST'],
+            'db'   => $GLOBALS['PLATFORM_DB_NAME'],
+            'user' => $GLOBALS['PLATFORM_DB_USER'],
+        ]);
+        $start = microtime(true);
+        // 使用127.0.0.1避免localhost解析问题
+        $dsn = "mysql:host=127.0.0.1;dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
+        debugLog('[poller] MySQL DSN: ' . $dsn);
+        $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_TIMEOUT => 15,  // 增加到15秒
+        ]);
+        $elapsed = round((microtime(true) - $start) * 1000);
+        debugLog("[poller] MySQL连接成功", ['elapsed_ms' => $elapsed]);
+        return $pdo;
+    } catch (Exception $e) {
+        $elapsed = round((microtime(true) - $start) * 1000);
+        debugLog("[poller] MySQL连接失败", [
+            'error'     => $e->getMessage(),
+            'code'      => $e->getCode(),
+            'file'      => $e->getFile(),
+            'line'      => $e->getLine(),
+            'elapsed_ms'=> $elapsed,
+            'dsn'       => $dsn ?? 'undefined',
+        ]);
+        throw $e;
     }
-    return $pdo;
 }
 
 /**
@@ -143,8 +158,20 @@ function pollPaidOrders() {
     try {
         $pdo = getPlatformDB();
     } catch (\Throwable $e) {
-        debugLog('[poller_online] 平台数据库连接失败: ' . $e->getMessage());
-        echo json_encode(['error' => 'platform_db_connect_failed', 'detail' => $e->getMessage()]);
+        debugLog('[poller_online] 平台数据库连接失败', [
+            'error'   => $e->getMessage(),
+            'code'    => $e->getCode(),
+            'file'    => $e->getFile(),
+            'line'    => $e->getLine(),
+            'context' => 'pollPaidOrders',
+        ]);
+        echo json_encode([
+            'error'   => 'platform_db_connect_failed',
+            'detail'  => $e->getMessage(),
+            'code'    => $e->getCode(),
+            'file'    => basename($e->getFile()),
+            'line'    => $e->getLine(),
+        ]);
         return;
     }
 
@@ -233,19 +260,16 @@ function pollPaidOrders() {
             $upd->execute();
         }
 
-        // 写 web_transactions（幂等：按 detail=out_trade_no + type=recharge 去重）
-        $txCheck = $sqlite->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
-        $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
-        $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
+        // 写 web_transactions（幂等：INSERT OR IGNORE 防止竞态条件重复插入）
+        $txIns = $sqlite->prepare("INSERT OR IGNORE INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(补单)', '在线充值(支付宝)', :d, 'pending', :t)");
+        $txIns->bindValue(':p', $playerName, SQLITE3_TEXT);
+        $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
+        $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+        $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
+        $txIns->execute();
 
-        if (!$txRow) {
-            $txIns = $sqlite->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '支付平台(补单)', '在线充值(支付宝)', :d, 'pending', :t)");
-            $txIns->bindValue(':p', $playerName, SQLITE3_TEXT);
-            $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
-            $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
-            $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
-            $txIns->execute();
-
+        // 检查是否是新插入的（affected_rows > 0 表示新插入，=0 表示已存在被忽略）
+        if ($sqlite->changes() > 0) {
             debugLog('[poller_online] 充值交易已写入 web_transactions', [
                 'player' => $playerName, 'bonds' => $bonds,
                 'out_trade_no' => $outTradeNo, 'money' => $money,

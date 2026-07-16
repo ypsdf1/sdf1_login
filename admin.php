@@ -3431,7 +3431,7 @@ async function _roLoad() {
         if (sts) p.append('status', sts);
         const r = await fetch('api/recharge_orders_api.php?'+p.toString());
         const d = await r.json();
-        if (d.error) { el.innerHTML = '<div class="ro-empty">加载失败: '+d.error.message+'</div>'; return; }
+        if (d.error || d.success === false) { el.innerHTML = '<div class="ro-empty">加载失败: '+(d.error?.message||d.message||'未知错误')+'</div>'; return; }
         _roOrders = d.orders || [];
         const st = d.stats || {};
         document.getElementById('roSt').textContent = st.total||0;
@@ -3474,13 +3474,24 @@ async function _roReconcile() {
     try {
         const r = await fetch('api/recharge_orders_api.php?action=reconcile');
         const d = await r.json();
-        if (d.error) { glassAlert('对账失败: '+d.error); return; }
-        if (d.result === 'already_running') { glassAlert('另一个对账进程正在运行，请稍后重试'); return; }
+        // poller_online.php返回格式：{result: 'ok', processed, skipped} 或 {result: 'already_running'} 或 {error: '...'}
+        if (d.error) {
+            glassAlert('对账失败: '+(d.detail||d.error));
+            return;
+        }
+        if (d.result === 'already_running') {
+            glassAlert('另一个对账进程正在运行，请稍后重试');
+            return;
+        }
         if (d.result === 'ok') {
-            glassAlert('对账完成！处理 '+d.processed+' 笔，跳过 '+d.skipped+' 笔');
+            glassAlert('对账完成！处理 '+(d.processed||0)+' 笔，跳过 '+(d.skipped||0)+' 笔');
             _roLoad();
+        } else if (d.result === 'no_paid_orders_on_platform') {
+            glassAlert('支付平台无已支付订单');
+        } else if (d.result === 'no_pending_orders') {
+            glassAlert('所有订单已处理，无需补单');
         } else {
-            glassAlert('对账结果: '+(d.detail||d.result));
+            glassAlert('对账结果: '+(d.detail||d.result||'未知'));
         }
     } catch(e) { glassAlert('对账请求失败: '+e.message); }
 }
@@ -3489,9 +3500,13 @@ async function _roSyncPlatform() {
     try {
         const r = await fetch('api/recharge_orders_api.php?action=sync_platform');
         const d = await r.json();
-        if (d.error) { glassAlert('同步失败: '+d.error); return; }
+        if (d.success === false) {
+            glassAlert('同步失败: '+(d.message||'未知错误'));
+            return;
+        }
         if (d.success) {
-            glassAlert('同步完成！平台共 '+d.data.platform_total+' 笔，新同步 '+d.data.synced+' 笔，已存在 '+d.data.already_paid+' 笔');
+            const info = d.data || {};
+            glassAlert('同步完成！平台共 '+(info.platform_total||0)+' 笔，新同步 '+(info.synced||0)+' 笔，已存在 '+(info.already_paid||0)+' 笔');
             _roLoad();
         } else {
             glassAlert('同步失败: '+(d.message||'未知错误'));

@@ -54,6 +54,24 @@ function loadPayKeys() {
     return ['pid' => '', 'private_key' => '', 'public_key' => '', 'md5_key' => ''];
 }
 
+/**
+ * 获取平台MySQL数据库连接（集中凭据管理）
+ * 凭据从 pay_secrets.php 读取，不再硬编码
+ */
+function getPlatformDB() {
+    $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
+    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
+    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'kH3C3LLinNwYdTF5';
+    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'sRhsdxrpHBhmSsp8';
+    $pdo = new PDO(
+        "mysql:host=$host;dbname=$dbname;charset=utf8mb4",
+        $user,
+        $pass,
+        [PDO::ATTR_TIMEOUT => 10, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+    );
+    return $pdo;
+}
+
 /** 将裸 base64 包装为 PEM。私钥自动探测 PKCS#1(RSA PRIVATE KEY) / PKCS#8(PRIVATE KEY)，公钥用 SubjectPublicKeyInfo(PUBLIC KEY) */
 function wrapPem($b64, $type) {
     $b64 = preg_replace('/\s+/', '', $b64);
@@ -544,11 +562,36 @@ function queryOrder($token) {
     $stmt->bindValue(':p', $info['player'], SQLITE3_TEXT);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
 
-    // ★ 本地订单不存在 → 直接查平台MySQL，如果平台已支付则同步到本地
+    // ★ 本地订单不存在 → 双路查询（MySQL + 官方API），如果平台已支付则同步到本地
     if (!$row) {
-        debugLog('[queryOrder] 本地订单不存在，尝试从平台同步', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+        debugLog('[queryOrder] 本地订单不存在，尝试双路查询同步', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+
+        // 路径1：平台MySQL直查
+        debugLog('[queryOrder] 路径1: 平台MySQL直查', ['out_trade_no' => $outTradeNo]);
         $platformResult = checkPlatformOrderStatus($outTradeNo);
-        if (is_array($platformResult) && $platformResult['status'] === 'paid') {
+        $isPaid = is_array($platformResult) && $platformResult['status'] === 'paid';
+        debugLog('[queryOrder] MySQL查询结果', [
+            'out_trade_no' => $outTradeNo,
+            'result'       => $platformResult,
+            'is_paid'      => $isPaid,
+        ]);
+
+        // 路径2：MySQL失败或未支付 → 官方API查询
+        if (!$isPaid) {
+            debugLog('[queryOrder] 路径2: MySQL未找到已支付记录，尝试官方API', ['out_trade_no' => $outTradeNo]);
+            $apiResult = queryPlatformAPI($outTradeNo);
+            debugLog('[queryOrder] 官方API查询结果', [
+                'out_trade_no' => $outTradeNo,
+                'result'       => $apiResult,
+            ]);
+            if (is_array($apiResult) && $apiResult['status'] === 'paid') {
+                $platformResult = $apiResult;
+                $isPaid = true;
+                debugLog('[queryOrder] 官方API查询到已支付', ['out_trade_no' => $outTradeNo]);
+            }
+        }
+
+        if ($isPaid) {
             // 平台已支付 → 创建本地订单并标记paid
             $now = time();
             $platformPlayer = $platformResult['player'] ?: $info['player'];
@@ -593,12 +636,24 @@ function queryOrder($token) {
         error('订单不存在，请确认订单号是否正确');
     }
 
-    // ★ 2026-07-15 核心修复：如果本地还是 created，直接查平台MySQL
+    // ★ 2026-07-15 核心修复：如果本地还是 created，双路查询（MySQL + 官方API）
     // 不依赖 poller 补单，确保支付成功后立即返回 paid 状态
     $status = $row['status'];
     if ($status !== 'paid') {
+        // 路径1：平台MySQL直查
         $platformResult = checkPlatformOrderStatus($outTradeNo);
         $platformPaid = is_array($platformResult) && $platformResult['status'] === 'paid';
+
+        // 路径2：MySQL失败或未支付 → 官方API查询
+        if (!$platformPaid) {
+            debugLog('[queryOrder] MySQL未支付，尝试官方API', ['out_trade_no' => $outTradeNo]);
+            $apiResult = queryPlatformAPI($outTradeNo);
+            if (is_array($apiResult) && $apiResult['status'] === 'paid') {
+                $platformResult = $apiResult;
+                $platformPaid = true;
+            }
+        }
+
         if ($platformPaid) {
             // 平台已支付，立即更新本地状态
             $now = time();
@@ -656,12 +711,7 @@ function queryOrder($token) {
  */
 function checkPlatformOrderStatus($outTradeNo) {
     try {
-        $pdo = new PDO(
-            "mysql:host=localhost;dbname=caihong;charset=utf8mb4",
-            'kH3C3LLinNwYdTF5',
-            'sRhsdxrpHBhmSsp8',
-            [PDO::ATTR_TIMEOUT => 10, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
-        );
+        $pdo = getPlatformDB();
         $stmt = $pdo->prepare("SELECT status, trade_no, money, param, addtime FROM pay_order WHERE out_trade_no = ? LIMIT 1");
         $stmt->execute([$outTradeNo]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -674,6 +724,146 @@ function checkPlatformOrderStatus($outTradeNo) {
         debugLog('[checkPlatformOrderStatus] 查询失败', ['error' => $e->getMessage(), 'out_trade_no' => $outTradeNo]);
         return 'error';
     }
+}
+
+/**
+ * 通过官方支付API查询订单状态（MD5签名）
+ * @param string $outTradeNo 商户订单号
+ * @return array|bool 成功返回 ['status'=>'paid', 'trade_no'=>..., 'money'=>..., 'player'=>...]，失败返回 false
+ */
+function queryPlatformAPI($outTradeNo) {
+    $keys = getPayKeys();
+    if (empty($keys['pid']) || empty($keys['md5_key'])) {
+        debugLog('[queryPlatformAPI] 缺少pid或md5_key', ['pid' => $keys['pid'] ?? '']);
+        return false;
+    }
+
+    try {
+        $params = [
+            'pid'          => $keys['pid'],
+            'out_trade_no' => $outTradeNo,
+            'timestamp'    => (string)time(),
+            'sign_type'    => 'MD5',
+        ];
+        $params['sign'] = buildSign($params, $keys);
+
+        debugLog('[queryPlatformAPI] 开始查询', [
+            'out_trade_no' => $outTradeNo,
+            'pid'          => $keys['pid'],
+            'timestamp'    => $params['timestamp'],
+            'sign_type'    => 'MD5',
+        ]);
+
+        $url = 'https://zf.ypshidifu.cn/api/pay/query';
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => http_build_query($params),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-www-form-urlencoded'],
+        ]);
+        $resp = curl_exec($ch);
+        $err  = curl_error($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $elapsed = curl_getinfo($ch, CURLINFO_TOTAL_TIME);
+        curl_close($ch);
+
+        debugLog('[queryPlatformAPI] curl完成', [
+            'http_code'  => $code,
+            'elapsed_s'  => round($elapsed, 3),
+            'error'      => $err ?: 'none',
+            'resp_len'   => strlen($resp ?? ''),
+        ]);
+
+        if ($err) {
+            debugLog('[queryPlatformAPI] curl失败', ['error' => $err, 'out_trade_no' => $outTradeNo]);
+            return false;
+        }
+
+        // 记录完整响应（前500字符）
+        debugLog('[queryPlatformAPI] 响应内容', [
+            'out_trade_no' => $outTradeNo,
+            'response'     => substr($resp ?? '', 0, 500),
+        ]);
+
+        $data = json_decode($resp, true);
+        if (!$data || ($data['code'] ?? -1) !== 0) {
+            debugLog('[queryPlatformAPI] 接口返回非成功', [
+                'code'         => $data['code'] ?? 'null',
+                'msg'          => $data['msg'] ?? '',
+                'out_trade_no' => $outTradeNo,
+            ]);
+            return false;
+        }
+
+        // status: 0=未支付, 1=已支付, 2=已退款, 3=已冻结, 4=预授权
+        $st = (int)($data['status'] ?? -1);
+        debugLog('[queryPlatformAPI] 订单状态', [
+            'status'       => $st,
+            'status_text'  => ['0'=>'未支付','1'=>'已支付','2'=>'已退款','3'=>'已冻结','4'=>'预授权'][$st] ?? '未知',
+            'out_trade_no' => $outTradeNo,
+            'trade_no'     => $data['trade_no'] ?? '',
+            'money'        => $data['money'] ?? '',
+            'param'        => $data['param'] ?? '',
+        ]);
+
+        if ($st === 1) {
+            return [
+                'status'   => 'paid',
+                'trade_no' => $data['trade_no'] ?? '',
+                'money'    => $data['money'] ?? '',
+                'player'   => $data['param'] ?? '',
+            ];
+        }
+        return false;
+
+    } catch (\Throwable $e) {
+        debugLog('[queryPlatformAPI] 异常', [
+            'error'        => $e->getMessage(),
+            'code'         => $e->getCode(),
+            'file'         => basename($e->getFile()),
+            'line'         => $e->getLine(),
+            'out_trade_no' => $outTradeNo,
+        ]);
+        return false;
+    }
+}
+
+// ====================================================================
+//  动作：find_recent_order（localStorage丢失时的兜底：查最近订单）
+// ====================================================================
+function findRecentOrder($token) {
+    $info = validateTokenSilent($token);
+    if (!$info || empty($info['player'])) {
+        error('登录状态无效', 401);
+    }
+    $db = getDB();
+    ensurePayOrdersTable($db);
+    // 查最近5分钟内的订单（优先created，再paid）
+    $fiveMinAgo = time() - 300;
+    $stmt = $db->prepare("SELECT out_trade_no, status, created_at, money, bond_amount, paid_at FROM pay_orders WHERE player_name=:p AND created_at > :t ORDER BY created_at DESC LIMIT 5");
+    $stmt->bindValue(':p', $info['player'], SQLITE3_TEXT);
+    $stmt->bindValue(':t', $fiveMinAgo, SQLITE3_INTEGER);
+    $rows = [];
+    $result = $stmt->execute();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    if (empty($rows)) {
+        // 本地没有 → 查平台MySQL
+        // 扩大到30分钟
+        $thirtyMinAgo = time() - 1800;
+        $stmt2 = $db->prepare("SELECT out_trade_no, status, created_at, money, bond_amount, paid_at FROM pay_orders WHERE player_name=:p AND created_at > :t ORDER BY created_at DESC LIMIT 5");
+        $stmt2->bindValue(':p', $info['player'], SQLITE3_TEXT);
+        $stmt2->bindValue(':t', $thirtyMinAgo, SQLITE3_INTEGER);
+        $result2 = $stmt2->execute();
+        while ($row = $result2->fetchArray(SQLITE3_ASSOC)) {
+            $rows[] = $row;
+        }
+    }
+    success(['orders' => $rows, 'player' => $info['player']]);
 }
 
 // ====================================================================
@@ -696,6 +886,9 @@ try {
             break;
         case 'query_order':
             queryOrder(getParam('token'));
+            break;
+        case 'find_recent_order':
+            findRecentOrder(getParam('token'));
             break;
         default:
             error('未知操作: ' . $action);
