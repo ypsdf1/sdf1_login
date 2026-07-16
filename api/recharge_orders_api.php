@@ -62,8 +62,45 @@ switch ($action) {
  * 获取订单列表
  */
 function handleOrderList() {
-    $db = getDB();
+    // ★ 使用独立订单库，不和Java共享web.db
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
+
+    // ★ 自动迁移：如果 orders.db 为空但 web.db 有 pay_orders 数据，从 web.db 迁移过来
+    try {
+        $countStmt = $db->query("SELECT COUNT(*) as cnt FROM pay_orders");
+        $cnt = $countStmt->fetchArray(SQLITE3_ASSOC)['cnt'] ?? 0;
+        if ($cnt == 0) {
+            $webDb = getDB();
+            // 检查 web.db 是否有 pay_orders 表
+            $tableCheck = $webDb->query("SELECT name FROM sqlite_master WHERE type='table' AND name='pay_orders'");
+            if ($tableCheck->fetchArray()) {
+                // 迁移数据
+                $migrateData = $webDb->query("SELECT * FROM pay_orders");
+                $ins = $db->prepare("INSERT OR IGNORE INTO pay_orders (out_trade_no, trade_no, player_name, tier_id, money, bond_amount, status, name, platform_sign, submit_params, created_at, paid_at) VALUES (:no, :tn, :p, :ti, :m, :b, :s, :n, :ps, :sp, :ca, :pa)");
+                $migrated = 0;
+                while ($row = $migrateData->fetchArray(SQLITE3_ASSOC)) {
+                    $ins->bindValue(':no', $row['out_trade_no'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':tn', $row['trade_no'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':p', $row['player_name'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':ti', $row['tier_id'] ?? 0, SQLITE3_INTEGER);
+                    $ins->bindValue(':m', $row['money'] ?? '0', SQLITE3_TEXT);
+                    $ins->bindValue(':b', $row['bond_amount'] ?? 0, SQLITE3_INTEGER);
+                    $ins->bindValue(':s', $row['status'] ?? 'created', SQLITE3_TEXT);
+                    $ins->bindValue(':n', $row['name'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':ps', $row['platform_sign'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':sp', $row['submit_params'] ?? '', SQLITE3_TEXT);
+                    $ins->bindValue(':ca', $row['created_at'] ?? 0, SQLITE3_INTEGER);
+                    $ins->bindValue(':pa', $row['paid_at'] ?? 0, SQLITE3_INTEGER);
+                    $ins->execute();
+                    $migrated++;
+                }
+                debugLog('[handleOrderList] 自动迁移web.db→orders.db', ['migrated' => $migrated]);
+            }
+        }
+    } catch (Exception $e) {
+        debugLog('[handleOrderList] 迁移失败', ['error' => $e->getMessage()]);
+    }
     
     $player = getParam('player', '');
     $orderNo = getParam('order_no', '');
@@ -133,8 +170,9 @@ function handleOrderDetail() {
     if (!$outTradeNo) {
         error('缺少订单号');
     }
-    
-    $db = getDB();
+
+    // ★ 使用独立订单库
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
     
     $stmt = $db->prepare("SELECT * FROM pay_orders WHERE out_trade_no = :no");
@@ -221,9 +259,10 @@ function handleReconcile() {
  * 从平台MySQL同步所有已支付订单到本地
  */
 function handleSyncFromPlatform() {
-    $db = getDB();
+    // ★ 使用独立订单库，不和Java共享web.db（Java高频写入会锁死SQLite）
+    $db = getOrdersDB();
     ensurePayOrdersTable($db);
-    ensureWebTransactionsTable($db);
+    // 注意：web_transactions 表只在 web.db 中（Java读取），不在 orders.db 中
 
     try {
         $pdo = getAdminPlatformDB();
@@ -274,17 +313,24 @@ function handleSyncFromPlatform() {
                 $ins->execute();
             }
 
-            // 写 web_transactions（幂等）
-            $txCheck = $db->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
-            $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
-            $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
-            if (!$txRow) {
-                $txIns = $db->prepare("INSERT INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '管理员同步', '在线充值(支付宝)', :d, 'pending', :t)");
-                $txIns->bindValue(':p', $player, SQLITE3_TEXT);
-                $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
-                $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
-                $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
-                $txIns->execute();
+            // 写 web_transactions（幂等）— 注意：web_transactions 在 web.db 中（Java读取），不在 orders.db
+            try {
+                $webDb = getDB(); // 获取 web.db 连接
+                ensureWebTransactionsTable($webDb);
+                $txCheck = $webDb->prepare("SELECT id FROM web_transactions WHERE detail = :d AND type = 'recharge' LIMIT 1");
+                $txCheck->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+                $txRow = $txCheck->execute()->fetchArray(SQLITE3_ASSOC);
+                if (!$txRow) {
+                    $txIns = $webDb->prepare("INSERT OR IGNORE INTO web_transactions (player_name, type, amount, operator, reason, detail, status, created_at) VALUES (:p, 'recharge', :a, '管理员同步', '在线充值(支付宝)', :d, 'pending', :t)");
+                    $txIns->bindValue(':p', $player, SQLITE3_TEXT);
+                    $txIns->bindValue(':a', $bonds, SQLITE3_INTEGER);
+                    $txIns->bindValue(':d', $outTradeNo, SQLITE3_TEXT);
+                    $txIns->bindValue(':t', $now, SQLITE3_INTEGER);
+                    $txIns->execute();
+                }
+            } catch (Exception $e) {
+                // web_transactions 写入失败不影响主流程（poller 会兜底）
+                debugLog('[sync_platform] web_transactions写入失败', ['out_trade_no' => $outTradeNo, 'error' => $e->getMessage()]);
             }
 
             $synced++;
