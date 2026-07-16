@@ -153,7 +153,12 @@ function handleOrderDetail() {
 function handleReconcile() {
     // 直接包含 poller_online.php 并调用 pollPaidOrders
     define('POLLER_NO_AUTO_RUN', true);
+
+    // ★ 在包含前就开启输出缓冲，捕获poller_online.php全局代码的任何输出
+    ob_start();
     require_once __DIR__ . '/poller_online.php';
+    // 清空包含阶段产生的任何非预期输出
+    ob_end_clean();
 
     // 记录对账开始
     if (function_exists('debugLog')) {
