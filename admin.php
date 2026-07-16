@@ -3616,7 +3616,9 @@ async function editShopConfig(id) {
 async function saveShopConfig() {
     const id = document.getElementById('scfId').value;
     const name = document.getElementById('scfName').value.trim();
-    const stock = parseInt(document.getElementById('scfStock').value) || -1;
+    // ★ 修复：库存=0不能写成-1。空值才默认-1（无限），0是合法售罄值
+    const stockRaw = document.getElementById('scfStock').value;
+    const stock = stockRaw === '' ? -1 : parseInt(stockRaw, 10);
     const offer = document.getElementById('scfOffer').value.trim();
     const expire = document.getElementById('scfExpire').value.trim();
     const price = parseFloat(document.getElementById('scfPrice').value) || 0;

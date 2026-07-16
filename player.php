@@ -1184,6 +1184,17 @@ if ($currentVersion !== $BUILD_VERSION) {
     // 加载商店商品列表
     async function loadShopProducts() {
         const container = document.getElementById('shopProductsContainer');
+        // ★ 盲盒随机语录（带动消费情绪）
+        const blindBoxQuotes = [
+            '🎲 手气未知，欧皇可能就是你！',
+            '✨ 下一发就是传说级债券！',
+            '🔥 盲盒刺激，开箱见惊喜！',
+            '💎 运气爆棚，开出大额债券不是梦！',
+            '🍀 天选之人，?? 藏着大宝藏！',
+            '🎁 未知才有趣，下单揭晓答案！',
+            '⚡ 搏一搏，债券多一摞！',
+            '🌟 你的专属幸运数字正在等你！'
+        ];
         try {
             const res = await api('pay.php', {action: 'get_shop_products'});
             if (res.success && res.data && res.data.products) {
@@ -1197,9 +1208,14 @@ if ($currentVersion !== $BUILD_VERSION) {
                 let html = '';
                 products.forEach((product, index) => {
                     const isSelected = index === 0; // 默认选中第一个
+                    const isBlindBox = product.bond_min !== product.bond_max; // 盲盒：范围格式
                     const offerText = product.temporary_offer ? `<div style="font-size:12px;color:var(--yellow);margin-top:4px">🎁 ${product.temporary_offer}${product.expire_display ? ' (有效期: ' + product.expire_display + ')' : ''}</div>` : '';
                     const stockText = product.stock === -1 ? '无限库存' : (product.stock > 0 ? `库存: ${product.stock}` : '售罄');
                     const stockColor = product.stock === -1 ? 'var(--green)' : (product.stock > 0 ? 'var(--dim)' : 'var(--red)');
+                    // ★ 盲盒不显示具体金额，用 ?? 代替
+                    const bondDisplay = isBlindBox ? '🎲 ?? 债券' : `${product.bond_min} 债券`;
+                    // ★ 盲盒随机语录
+                    const quoteText = isBlindBox ? `<div style="font-size:12px;color:var(--accent);margin-top:6px;font-style:italic">${blindBoxQuotes[Math.floor(Math.random() * blindBoxQuotes.length)]}</div>` : '';
 
                     html += `
                         <div class="shop-product-card" data-product-id="${product.id}" data-price="${product.price}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease">
@@ -1209,9 +1225,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                             </div>
                             <div style="display:flex;justify-content:space-between;align-items:baseline">
                                 <div><div style="font-size:28px;font-weight:800;color:var(--accent)">¥${product.price}</div><div style="font-size:12px;color:var(--dim)">支付金额</div></div>
-                                <div style="font-size:22px;color:var(--green)">→ ${product.bond_min === product.bond_max ? product.bond_min + ' 债券' : product.bond_min + '-' + product.bond_max + ' 债券'}</div>
+                                <div style="font-size:22px;color:var(--green)">→ ${bondDisplay}</div>
                             </div>
                             ${offerText}
+                            ${quoteText}
                         </div>
                     `;
                 });
@@ -1247,7 +1264,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         const price = el.dataset.price;
         const bondMin = el.dataset.bondMin;
         const bondMax = el.dataset.bondMax;
-        const bondText = bondMin === bondMax ? bondMin + ' 债券' : bondMin + '-' + bondMax + ' 债券';
+        // ★ 盲盒不显示具体金额，用 ?? 代替
+        const bondText = bondMin === bondMax ? bondMin + ' 债券' : '🎲 ?? 债券';
         btn.style.display = 'block';
         btn.textContent = `支付宝支付 ¥${price} → ${bondText}`;
         btn.dataset.productId = el.dataset.productId;
