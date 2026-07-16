@@ -457,14 +457,14 @@ function handleShopConfigList($db) {
  * 保存商店配置（添加或编辑）
  */
 function handleShopConfigSave($db) {
-    $id = getParam('id', 0);
+    $id = intval(getParam('id', 0));
     $itemName = getParam('item_name', '');
-    $stock = getParam('stock', -1, 'intval');
+    $stock = intval(getParam('stock', -1));
     $temporaryOffer = getParam('temporary_offer', '');
     $offerExpire = getParam('offer_expire', '');
-    $price = getParam('price', 0, 'floatval');
+    $price = floatval(getParam('price', 0));
     $bondReward = getParam('bond_reward', '1-1');
-    $isActive = getParam('is_active', 1, 'intval');
+    $isActive = intval(getParam('is_active', 1));
     
     // 验证库存
     if ($stock < -1) {
@@ -529,7 +529,7 @@ function handleShopConfigSave($db) {
  * 删除商店配置
  */
 function handleShopConfigDelete($db) {
-    $id = getParam('id', 0, 'intval');
+    $id = intval(getParam('id', 0));
     if ($id <= 0) {
         error('无效的配置ID');
     }
@@ -549,7 +549,7 @@ function handleShopConfigDelete($db) {
  * 切换商店配置上下架状态
  */
 function handleShopConfigToggle($db) {
-    $id = getParam('id', 0, 'intval');
+    $id = intval(getParam('id', 0));
     if ($id <= 0) {
         error('无效的配置ID');
     }

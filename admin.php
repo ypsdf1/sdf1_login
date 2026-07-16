@@ -3622,11 +3622,16 @@ async function saveShopConfig() {
     const price = parseFloat(document.getElementById('scfPrice').value) || 0;
     const bond = document.getElementById('scfBond').value.trim();
     const active = parseInt(document.getElementById('scfActive').value) || 1;
-    
+
     if (!name) { glassAlert('请输入商品名称'); return; }
     if (price <= 0) { glassAlert('售价必须大于0'); return; }
     if (!/^\d+(-\d+)?$/.test(bond)) { glassAlert('债券范围格式错误，应为数字或范围如"1-10"'); return; }
-    
+
+    // 防重复点击：获取按钮并禁用
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+
     const params = new URLSearchParams({
         action: 'shop_config',
         method: 'save',
@@ -3639,7 +3644,7 @@ async function saveShopConfig() {
         bond_reward: bond,
         is_active: active
     });
-    
+
     try {
         const r = await fetch('api/recharge_orders_api.php?'+params.toString());
         const d = await r.json();
@@ -3651,6 +3656,10 @@ async function saveShopConfig() {
             glassAlert('保存失败: '+(d.message||'未知错误'));
         }
     } catch(e) { glassAlert('请求失败: '+e.message); }
+    finally {
+        btn.disabled = false;
+        btn.textContent = '保存';
+    }
 }
 
 async function toggleShopConfig(id) {
