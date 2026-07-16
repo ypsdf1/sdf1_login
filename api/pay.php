@@ -258,7 +258,7 @@ function ensureWebTransactionsTable($db) {
 // ====================================================================
 //  动作：create_order
 // ====================================================================
-function createOrder($token) {
+function createOrder($token, $productId = 0) {
     $keys = loadPayKeys();
     if (empty($keys['pid']) || empty($keys['private_key']) || empty($keys['public_key'])) {
         error('支付密钥未配置，请联系管理员', 500);
@@ -298,10 +298,45 @@ function createOrder($token) {
     $cleanStmt->bindValue(':stale', $staleThreshold, SQLITE3_INTEGER);
     $cleanStmt->execute();
 
-    // ===== 0.01 元测试档位（固定映射：0.01 元 → 1 债券） =====
-    $money = PAY_TEST_MONEY;
-    $bonds = PAY_TEST_BONDS;
-    $name  = PAY_TEST_NAME;
+    // ===== 获取商品信息 =====
+    $money = PAY_TEST_MONEY;  // 默认测试价格
+    $bonds = PAY_TEST_BONDS;  // 默认测试债券
+    $name  = PAY_TEST_NAME;   // 默认测试名称
+
+    if ($productId > 0) {
+        // 从shop_configs表获取商品信息
+        $stmt = $db->prepare("SELECT * FROM shop_configs WHERE id = :id AND is_active = 1");
+        $stmt->bindValue(':id', $productId, SQLITE3_INTEGER);
+        $product = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+
+        if ($product) {
+            // 检查库存
+            if ($product['stock'] == 0) {
+                error('商品已售罄');
+            }
+
+            $money = number_format($product['price'], 2, '.', '');
+            $name = $product['item_name'];
+
+            // 解析债券范围
+            $bondReward = $product['bond_reward'];
+            if (preg_match('/^(\d+)-(\d+)$/', $bondReward, $m)) {
+                // 随机范围内的债券数量
+                $bondMin = intval($m[1]);
+                $bondMax = intval($m[2]);
+                $bonds = mt_rand($bondMin, $bondMax);
+            } else {
+                $bonds = intval($bondReward);
+            }
+
+            // 更新库存（如果不是无限库存）
+            if ($product['stock'] > 0) {
+                $updateStmt = $db->prepare("UPDATE shop_configs SET stock = stock - 1 WHERE id = :id AND stock > 0");
+                $updateStmt->bindValue(':id', $productId, SQLITE3_INTEGER);
+                $updateStmt->execute();
+            }
+        }
+    }
 
     $outTradeNo = 'RE' . date('YmdHis') . sprintf('%04d', mt_rand(0, 9999));
 
@@ -870,13 +905,72 @@ function findRecentOrder($token) {
 }
 
 // ====================================================================
+//  动作：get_shop_products — 获取上架商品列表（前端充值页面使用）
+// ====================================================================
+function getShopProducts() {
+    $db = getOrdersDB();
+
+    // 确保shop_configs表存在
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_name TEXT NOT NULL DEFAULT '',
+        stock INTEGER NOT NULL DEFAULT -1,
+        temporary_offer TEXT NOT NULL DEFAULT '',
+        offer_expire TEXT NOT NULL DEFAULT '',
+        price REAL NOT NULL DEFAULT 0,
+        bond_reward TEXT NOT NULL DEFAULT '1-1',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL DEFAULT 0
+    )");
+
+    // 查询上架商品（is_active=1）
+    $stmt = $db->query("SELECT * FROM shop_configs WHERE is_active = 1 ORDER BY id ASC");
+    $products = [];
+    while ($row = $stmt->fetchArray(SQLITE3_ASSOC)) {
+        // 检查库存：stock=0（售罄）的商品不返回
+        if ($row['stock'] == 0) {
+            continue;
+        }
+
+        // 解析债券范围（支持 "1-10" 格式）
+        $bondReward = $row['bond_reward'];
+        if (preg_match('/^(\d+)-(\d+)$/', $bondReward, $m)) {
+            $bondMin = intval($m[1]);
+            $bondMax = intval($m[2]);
+        } else {
+            $bondMin = $bondMax = intval($bondReward);
+        }
+
+        // 解析有效期
+        $expireInfo = parseExpireDate($row['offer_expire']);
+
+        $products[] = [
+            'id' => $row['id'],
+            'item_name' => $row['item_name'],
+            'stock' => $row['stock'],
+            'temporary_offer' => $row['temporary_offer'],
+            'offer_expire' => $row['offer_expire'],
+            'expire_valid' => $expireInfo['valid'],
+            'expire_display' => $expireInfo['display'],
+            'price' => $row['price'],
+            'bond_reward' => $bondReward,
+            'bond_min' => $bondMin,
+            'bond_max' => $bondMax,
+            'is_active' => $row['is_active']
+        ];
+    }
+
+    success(['products' => $products]);
+}
+
+// ====================================================================
 //  入口分发
 // ====================================================================
 $action = getParam('action', '');
 try {
     switch ($action) {
         case 'create_order':
-            createOrder(getParam('token'));
+            createOrder(getParam('token'), intval(getParam('product_id', 0)));
             break;
         case 'notify':
             handleNotify();   // 内部已 exit
@@ -892,6 +986,9 @@ try {
             break;
         case 'find_recent_order':
             findRecentOrder(getParam('token'));
+            break;
+        case 'get_shop_products':
+            getShopProducts();
             break;
         default:
             error('未知操作: ' . $action);

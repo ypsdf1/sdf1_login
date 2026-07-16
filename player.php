@@ -1054,30 +1054,25 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'recharge') renderRecharge(c);
     }
 
-    // ==================== 债券在线充值（测试：0.01元 → 1债券） ====================
+    // ==================== 债券在线充值（动态加载商品） ====================
     function renderRecharge(el) {
+        // 先显示加载状态
         el.innerHTML = `
             <div class="card" style="max-width:520px;margin:0 auto">
                 <h2 style="margin:0 0 6px">💳 债券在线充值</h2>
-                <p style="color:var(--dim);font-size:13px;margin:0 0 18px">测试阶段：¥0.01 = 1 债券（仅支付宝）。支付成功后游戏内即时到账。</p>
-
-                <div style="border:1px solid var(--border);border-radius:14px;padding:18px;margin-bottom:16px;background:linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                        <span style="font-size:14px;color:var(--fg)">测试充值档位</span>
-                        <span style="font-size:12px;color:var(--green);border:1px solid var(--green);border-radius:999px;padding:2px 10px">测试</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;align-items:baseline">
-                        <div><div style="font-size:28px;font-weight:800;color:var(--accent)">¥0.01</div><div style="font-size:12px;color:var(--dim)">支付金额</div></div>
-                        <div style="font-size:22px;color:var(--green)">→ 1 债券</div>
-                    </div>
+                <p style="color:var(--dim);font-size:13px;margin:0 0 18px">支付成功后游戏内即时到账。</p>
+                <div id="shopProductsContainer" style="margin-bottom:16px">
+                    <div style="text-align:center;padding:20px;color:var(--dim)">加载商品中...</div>
                 </div>
-
-                <button id="rechargeBtn" class="btn btn-primary" style="width:100%;font-size:15px;padding:12px" onclick="startRecharge()">🅰️ 支付宝支付 ¥0.01</button>
+                <button id="rechargeBtn" class="btn btn-primary" style="width:100%;font-size:15px;padding:12px;display:none" onclick="startRecharge()">支付</button>
                 <div id="rechargeStatus" style="margin-top:14px;font-size:13px;min-height:20px"></div>
-                <p style="color:var(--dim);font-size:12px;margin-top:14px;line-height:1.6">说明：点击后跳转至支付宝完成付款，浏览器会自动跳回本页并自动确认到账。若未自动到账，可点击下方按钮手动查询。</p>
+                <p style="color:var(--dim);font-size:12px;margin-top:14px;line-height:1.6">说明：点击后跳转至支付页面完成付款，浏览器会自动跳回本页并自动确认到账。若未自动到账，可点击下方按钮手动查询。</p>
                 <button id="rechargeQueryBtn" class="btn" style="width:100%;margin-top:8px;display:none" onclick="pollRechargeOrder(true)">🔄 查询到账状态</button>
             </div>
         `;
+
+        // 加载商品列表
+        loadShopProducts();
 
         // 处理支付回跳 ?paid=1
         const paid = new URLSearchParams(location.search).get('paid');
@@ -1102,7 +1097,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                                 st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成，可以发起新订单。</span>';
                                 localStorage.removeItem('sdf1_last_recharge_no');
                                 const btn = document.getElementById('rechargeBtn');
-                                btn.disabled = false; btn.textContent = '🅰️ 支付宝支付 ¥0.01'; btn.onclick = startRecharge;
+                                btn.disabled = false; btn.textContent = '支付'; btn.onclick = startRecharge;
                             } else {
                                 st.innerHTML = '<span style="color:var(--accent)">检测到订单 ' + latest.out_trade_no + '，正在确认到账…</span>';
                                 pollRechargeOrder(false);
@@ -1134,7 +1129,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                             localStorage.removeItem('sdf1_last_recharge_no');
                             st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成，可以发起新订单。</span>';
                             btn.disabled = false;
-                            btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                            btn.textContent = '支付';
                             btn.onclick = startRecharge;
                         } else if (res.data.status === 'created') {
                             // 检查订单是否已过期（5分钟）
@@ -1145,7 +1140,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                                 localStorage.removeItem('sdf1_last_recharge_no');
                                 st.innerHTML = '<span style="color:var(--yellow)">订单已过期（超过5分钟），请重新下单。</span>';
                                 btn.disabled = false;
-                                btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                                btn.textContent = '支付';
                                 btn.onclick = startRecharge;
                             } else {
                             // 未支付：显示继续支付
@@ -1186,6 +1181,86 @@ if ($currentVersion !== $BUILD_VERSION) {
         }
     }
 
+    // 加载商店商品列表
+    async function loadShopProducts() {
+        const container = document.getElementById('shopProductsContainer');
+        try {
+            const res = await api('pay.php', {action: 'get_shop_products'});
+            if (res.success && res.data && res.data.products) {
+                const products = res.data.products;
+                if (products.length === 0) {
+                    container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">暂无商品</div>';
+                    return;
+                }
+
+                // 渲染商品列表
+                let html = '';
+                products.forEach((product, index) => {
+                    const isSelected = index === 0; // 默认选中第一个
+                    const offerText = product.temporary_offer ? `<div style="font-size:12px;color:var(--yellow);margin-top:4px">🎁 ${product.temporary_offer}${product.expire_display ? ' (有效期: ' + product.expire_display + ')' : ''}</div>` : '';
+                    const stockText = product.stock === -1 ? '无限库存' : (product.stock > 0 ? `库存: ${product.stock}` : '售罄');
+                    const stockColor = product.stock === -1 ? 'var(--green)' : (product.stock > 0 ? 'var(--dim)' : 'var(--red)');
+
+                    html += `
+                        <div class="shop-product-card" data-product-id="${product.id}" data-price="${product.price}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                                <span style="font-size:14px;color:var(--fg)">${product.item_name}</span>
+                                <span style="font-size:12px;color:${stockColor};border:1px solid ${stockColor};border-radius:999px;padding:2px 10px">${stockText}</span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;align-items:baseline">
+                                <div><div style="font-size:28px;font-weight:800;color:var(--accent)">¥${product.price}</div><div style="font-size:12px;color:var(--dim)">支付金额</div></div>
+                                <div style="font-size:22px;color:var(--green)">→ ${product.bond_min === product.bond_max ? product.bond_min + ' 债券' : product.bond_min + '-' + product.bond_max + ' 债券'}</div>
+                            </div>
+                            ${offerText}
+                        </div>
+                    `;
+                });
+
+                container.innerHTML = html;
+
+                // 选中第一个商品
+                if (products.length > 0) {
+                    selectShopProduct(document.querySelector('.shop-product-card'));
+                }
+            } else {
+                container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--dim)">加载商品失败</div>';
+            }
+        } catch (e) {
+            container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--red)">加载商品失败: ' + e.message + '</div>';
+        }
+    }
+
+    // 选择商品
+    function selectShopProduct(el) {
+        // 取消所有选中
+        document.querySelectorAll('.shop-product-card').forEach(card => {
+            card.style.borderColor = 'var(--border)';
+            card.style.background = 'transparent';
+        });
+
+        // 选中当前
+        el.style.borderColor = 'var(--accent)';
+        el.style.background = 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))';
+
+        // 更新支付按钮
+        const btn = document.getElementById('rechargeBtn');
+        const price = el.dataset.price;
+        const bondMin = el.dataset.bondMin;
+        const bondMax = el.dataset.bondMax;
+        const bondText = bondMin === bondMax ? bondMin + ' 债券' : bondMin + '-' + bondMax + ' 债券';
+        btn.style.display = 'block';
+        btn.textContent = `支付宝支付 ¥${price} → ${bondText}`;
+        btn.dataset.productId = el.dataset.productId;
+
+        // 保存选中商品信息
+        window.selectedShopProduct = {
+            id: el.dataset.productId,
+            price: price,
+            bondMin: bondMin,
+            bondMax: bondMax
+        };
+    }
+
     async function startRecharge() {
         const btn = document.getElementById('rechargeBtn');
         const st = document.getElementById('rechargeStatus');
@@ -1194,16 +1269,18 @@ if ($currentVersion !== $BUILD_VERSION) {
         btn.textContent = '⏳ 正在创建订单…';
         st.innerHTML = '<span style="color:var(--dim)">正在请求支付订单…</span>';
         try {
-            const res = await api('pay.php', {action: 'create_order'});
+            // 获取选中的商品ID
+            const productId = window.selectedShopProduct ? window.selectedShopProduct.id : 0;
+            const res = await api('pay.php', {action: 'create_order', product_id: productId});
             if (!res.success) {
                 st.innerHTML = '<span style="color:var(--red)">创建订单失败：' + (res.message || '未知错误') + '</span>';
                 btn.disabled = false;
-                btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                btn.textContent = '支付';
                 return;
             }
             const { pay_url, out_trade_no, reused } = res.data;
             localStorage.setItem('sdf1_last_recharge_no', out_trade_no);
-            st.innerHTML = '<span style="color:var(--green)">' + (reused ? '恢复支付链接' : '订单已创建') + '，正在跳转支付宝…（如未弹出，请允许浏览器打开新窗口）</span>';
+            st.innerHTML = '<span style="color:var(--green)">' + (reused ? '恢复支付链接' : '订单已创建') + '，正在跳转支付…（如未弹出，请允许浏览器打开新窗口）</span>';
             document.getElementById('rechargeQueryBtn').style.display = 'block';
             const w = window.open(pay_url, '_blank');
             if (!w) {
@@ -1214,7 +1291,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         } catch (e) {
             st.innerHTML = '<span style="color:var(--red)">请求异常：' + e.message + '</span>';
             btn.disabled = false;
-            btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+            btn.textContent = '支付';
         }
     }
 
