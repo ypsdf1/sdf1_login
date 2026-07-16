@@ -1212,13 +1212,14 @@ if ($currentVersion !== $BUILD_VERSION) {
                     const offerText = product.temporary_offer ? `<div style="font-size:12px;color:var(--yellow);margin-top:4px">🎁 ${product.temporary_offer}${product.expire_display ? ' (有效期: ' + product.expire_display + ')' : ''}</div>` : '';
                     const stockText = product.stock === -1 ? '无限库存' : (product.stock > 0 ? `库存: ${product.stock}` : '售罄');
                     const stockColor = product.stock === -1 ? 'var(--green)' : (product.stock > 0 ? 'var(--dim)' : 'var(--red)');
+                    const isSoldOut = product.stock === 0; // 售罄：仍展示，但禁止购买
                     // ★ 盲盒不显示具体金额，用 ?? 代替
                     const bondDisplay = isBlindBox ? '🎲 ?? 债券' : `${product.bond_min} 债券`;
                     // ★ 盲盒随机语录
                     const quoteText = isBlindBox ? `<div style="font-size:12px;color:var(--accent);margin-top:6px;font-style:italic">${blindBoxQuotes[Math.floor(Math.random() * blindBoxQuotes.length)]}</div>` : '';
 
                     html += `
-                        <div class="shop-product-card" data-product-id="${product.id}" data-price="${product.price}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease">
+                        <div class="shop-product-card" data-product-id="${product.id}" data-price="${product.price}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" data-stock="${product.stock}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease;${isSoldOut ? 'opacity:0.72;' : ''}">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                                 <span style="font-size:14px;color:var(--fg)">${product.item_name}</span>
                                 <span style="font-size:12px;color:${stockColor};border:1px solid ${stockColor};border-radius:999px;padding:2px 10px">${stockText}</span>
@@ -1264,11 +1265,22 @@ if ($currentVersion !== $BUILD_VERSION) {
         const price = el.dataset.price;
         const bondMin = el.dataset.bondMin;
         const bondMax = el.dataset.bondMax;
+        const stock = parseInt(el.dataset.stock, 10) || 0;
         // ★ 盲盒不显示具体金额，用 ?? 代替
         const bondText = bondMin === bondMax ? bondMin + ' 债券' : '🎲 ?? 债券';
         btn.style.display = 'block';
-        btn.textContent = `支付宝支付 ¥${price} → ${bondText}`;
         btn.dataset.productId = el.dataset.productId;
+
+        // ★ 售罄(stock=0)：展示商品但禁止购买；只有下架(is_active=0)才不展示
+        if (stock === 0) {
+            btn.disabled = true;
+            btn.textContent = '😔 已售罄';
+            btn.onclick = null;
+        } else {
+            btn.disabled = false;
+            btn.textContent = `支付宝支付 ¥${price} → ${bondText}`;
+            btn.onclick = startRecharge;
+        }
 
         // 保存选中商品信息
         window.selectedShopProduct = {
@@ -1328,10 +1340,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                     if (res.data.status === 'paid') {
                         st.innerHTML = '<span style="color:var(--green)">✅ 支付成功！游戏内债券发放中，请稍候刷新「余额查询」。可以发起新订单。</span>';
                         if (rechargePollTimer) { clearInterval(rechargePollTimer); rechargePollTimer = null; }
-                        // 支付成功后清除本地记录 + 恢复按钮允许新订单
+                        // 支付成功后清除本地记录
                         localStorage.removeItem('sdf1_last_recharge_no');
-                        const btn = document.getElementById('rechargeBtn');
-                        if (btn) { btn.disabled = false; btn.textContent = '🅰️ 支付宝支付 ¥0.01'; btn.onclick = startRecharge; }
+                        // ★ 刷新商品列表：库存可能变化（如本次购买导致售罄），并正确重置按钮状态
+                        loadShopProducts();
                     } else {
                         st.innerHTML = '<span style="color:var(--dim)">⏳ 订单处理中（' + (res.message || '等待支付平台通知') + '）…</span>';
                     }

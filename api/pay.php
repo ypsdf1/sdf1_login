@@ -961,10 +961,8 @@ function getShopProducts() {
     $stmt = $db->query("SELECT * FROM shop_configs WHERE is_active = 1 ORDER BY id ASC");
     $products = [];
     while ($row = $stmt->fetchArray(SQLITE3_ASSOC)) {
-        // 检查库存：stock=0（售罄）的商品不返回
-        if ($row['stock'] == 0) {
-            continue;
-        }
+        // ★ 售罄(stock=0)不隐藏：仍返回给前端展示，仅禁止购买。
+        //   只有 is_active=0（下架）才不返回（见上方 WHERE 条件）。
 
         // 解析债券范围（支持 "1-10" 格式）
         $bondReward = $row['bond_reward'];
