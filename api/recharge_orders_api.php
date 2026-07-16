@@ -18,8 +18,9 @@ if (@is_file($secretsFile) && @is_readable($secretsFile)) {
 
 /**
  * 获取平台MySQL数据库连接（集中凭据管理）
+ * 注意：poller_online.php 也有同名函数，此处用不同名称避免 redeclare 冲突
  */
-function getPlatformDB() {
+function getAdminPlatformDB() {
     $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
     $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
     $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'kH3C3LLinNwYdTF5';
@@ -225,7 +226,7 @@ function handleSyncFromPlatform() {
     ensureWebTransactionsTable($db);
 
     try {
-        $pdo = getPlatformDB();
+        $pdo = getAdminPlatformDB();
 
         // 查所有已支付订单
         $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM pay_order WHERE status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
