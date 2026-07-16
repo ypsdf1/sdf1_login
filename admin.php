@@ -3432,8 +3432,9 @@ async function _roLoad() {
         const r = await fetch('api/recharge_orders_api.php?'+p.toString());
         const d = await r.json();
         if (d.error || d.success === false) { el.innerHTML = '<div class="ro-empty">加载失败: '+(d.error?.message||d.message||'未知错误')+'</div>'; return; }
-        _roOrders = d.orders || [];
-        const st = d.stats || {};
+        const payload = d.data || d;
+        _roOrders = payload.orders || [];
+        const st = payload.stats || {};
         document.getElementById('roSt').textContent = st.total||0;
         document.getElementById('roSp').textContent = st.paid||0;
         document.getElementById('roSc').textContent = st.created||0;
