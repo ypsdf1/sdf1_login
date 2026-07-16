@@ -30,7 +30,7 @@ $PLATFORM_DB_HOST = defined('PAY_MYSQL_HOST') ? PAY_MYSQL_HOST : '127.0.0.1';
 $PLATFORM_DB_NAME = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
 $PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'kH3C3LLinNwYdTF5';
 $PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : 'sRhsdxrpHBhmSsp8';
-$PLATFORM_DB_PREFIX = 'pay_';
+$GLOBALS['PLATFORM_DB_PREFIX'] = 'pay_'; $PLATFORM_DB_PREFIX = 'pay_';
 
 // SQLite 数据库路径（与 core.php 一致：/caoyuan.ypshidifu.cn/plugin/db/web.db）
 $SQLITE_DB_PATH = __DIR__ . '/../db/web.db';
@@ -91,8 +91,8 @@ function getPlatformDB() {
         // ★ 直接用常量（从 pay_secrets.php 加载），不依赖全局变量
         $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
         $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
-        $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : '';
-        $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '';
+        $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'kH3C3LLinNwYdTF5';
+        $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'sRhsdxrpHBhmSsp8';
 
         debugLog('[poller] 正在连接平台MySQL...', [
             'host' => $host,
