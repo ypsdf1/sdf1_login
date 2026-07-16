@@ -88,24 +88,29 @@ function getSQLite() {
 
 function getPlatformDB() {
     try {
+        // ★ 直接用常量（从 pay_secrets.php 加载），不依赖全局变量
+        $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
+        $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
+        $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : '';
+        $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '';
+
         debugLog('[poller] 正在连接平台MySQL...', [
-            'host' => $GLOBALS['PLATFORM_DB_HOST'],
-            'db'   => $GLOBALS['PLATFORM_DB_NAME'],
-            'user' => $GLOBALS['PLATFORM_DB_USER'],
+            'host' => $host,
+            'db'   => $dbname,
+            'user' => $user,
         ]);
         $start = microtime(true);
-        // 使用127.0.0.1避免localhost解析问题
-        $dsn = "mysql:host=127.0.0.1;dbname={$GLOBALS['PLATFORM_DB_NAME']};charset=utf8mb4";
+        $dsn = "mysql:host=$host;dbname=$dbname;charset=utf8mb4";
         debugLog('[poller] MySQL DSN: ' . $dsn);
-        $pdo = new PDO($dsn, $GLOBALS['PLATFORM_DB_USER'], $GLOBALS['PLATFORM_DB_PASS'], [
+        $pdo = new PDO($dsn, $user, $pass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_TIMEOUT => 15,  // 增加到15秒
+            PDO::ATTR_TIMEOUT => 15,
         ]);
         $elapsed = round((microtime(true) - $start) * 1000);
         debugLog("[poller] MySQL连接成功", ['elapsed_ms' => $elapsed]);
         return $pdo;
-    } catch (Exception $e) {
-        $elapsed = round((microtime(true) - $start) * 1000);
+    } catch (\Throwable $e) {
+        $elapsed = round((microtime(true) - ($start ?? microtime(true))) * 1000);
         debugLog("[poller] MySQL连接失败", [
             'error'     => $e->getMessage(),
             'code'      => $e->getCode(),
@@ -113,6 +118,7 @@ function getPlatformDB() {
             'line'      => $e->getLine(),
             'elapsed_ms'=> $elapsed,
             'dsn'       => $dsn ?? 'undefined',
+            'user'      => $user ?? 'undefined',
         ]);
         throw $e;
     }
