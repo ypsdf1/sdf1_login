@@ -1509,10 +1509,10 @@ public class WebManager {
                 if (pollerResp != null) {
                     if (pollerResp.contains("\"result\":\"ok\"")) {
                         plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
-                    } else if (pollerResp.contains("\"result\":\"already_running\"")) {
+               /*     } else if (pollerResp.contains("\"result\":\"already_running\"")) {
                         plugin.getLogger().info("[快速补单] 补单进程正在运行，跳过 (" + pollerElapsed + "ms)");
                     } else {
-                        plugin.getLogger().warning("[快速补单] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");
+                        plugin.getLogger().warning("[快速补单] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");*/
                     }
                 } else {
                     plugin.getLogger().warning("[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms");
