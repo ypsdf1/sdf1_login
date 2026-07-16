@@ -907,6 +907,40 @@ function findRecentOrder($token) {
 // ====================================================================
 //  动作：get_shop_products — 获取上架商品列表（前端充值页面使用）
 // ====================================================================
+/**
+ * 解析有效期日期（支持yyyy-MM-dd和中文格式如"2026年7月16日"）
+ */
+function parseExpireDate($expireStr) {
+    if (empty($expireStr)) {
+        return ['valid' => true, 'timestamp' => 0, 'display' => '长期有效'];
+    }
+    $expireStr = trim($expireStr);
+
+    // yyyy-MM-dd
+    if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $expireStr)) {
+        $time = strtotime($expireStr . ' 23:59:59');
+        if ($time !== false) {
+            return ['valid' => true, 'timestamp' => $time, 'display' => date('Y-m-d', $time) . ' 到期'];
+        }
+    }
+
+    // 中文格式（如"2026年7月16日"）
+    if (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $expireStr, $matches)) {
+        $time = mktime(23, 59, 59, intval($matches[2]), intval($matches[3]), intval($matches[1]));
+        if ($time !== false) {
+            $now = time();
+            return [
+                'valid'     => $time >= $now,
+                'timestamp' => $time,
+                'display'   => date('Y-m-d', $time) . ($time >= $now ? ' 到期' : ' 已过期')
+            ];
+        }
+    }
+
+    // 无法解析 → 视为无效
+    return ['valid' => false, 'timestamp' => 0, 'display' => '日期格式错误: ' . $expireStr];
+}
+
 function getShopProducts() {
     $db = getOrdersDB();
 
