@@ -150,6 +150,7 @@ function pollerAcquireLock() {
 }
 
 function pollPaidOrders() {
+    global $PLATFORM_DB_PREFIX;
     $startTime = microtime(true);
     debugLog('[poller] 补单开始');
 
@@ -184,7 +185,7 @@ function pollPaidOrders() {
     // 查所有已支付订单 (status=1 或 status=2)。不过滤 notify：
     // 平台可能已标记 notify=1 但本地的 DB 未更新（HTTP 回调被 CF WAF 拦截），
     // 必须靠本地 SQLite 的 status='created' 来判断是否需要补单。
-    $prefix = $GLOBALS['PLATFORM_DB_PREFIX'];
+    $prefix = $PLATFORM_DB_PREFIX;
     $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
     $allOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -299,8 +300,9 @@ function pollPaidOrders() {
 }
 
 function markNotified($pdo, $tradeNo) {
+    global $PLATFORM_DB_PREFIX;
     try {
-        $prefix = $GLOBALS['PLATFORM_DB_PREFIX'];
+        $prefix = $PLATFORM_DB_PREFIX;
         $stmt = $pdo->prepare("UPDATE {$prefix}order SET notify = 1 WHERE trade_no = ? AND notify = 0");
         $stmt->execute([$tradeNo]);
     } catch (\Throwable $e) {
