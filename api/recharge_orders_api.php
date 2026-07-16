@@ -491,13 +491,23 @@ function handleShopConfigSave($db) {
     // 支持两种格式：
     // 1. 直接价格（如 1、2、1.5）→ 直接使用
     // 2. 折扣（如 0.9、0.8）→ 计算 原价 × 折扣
+    // 硬锁规则：
+    // - 0.01元以下的商品不支持折扣
+    // - 优惠后价格必须小于原价
     $discountPrice = 0;
     $discountPriceRaw = trim($discountPriceRaw);
-    if ($discountPriceRaw !== '' && $discountPriceRaw !== '0') {
+    
+    // 0.01元以下的商品不支持折扣
+    if ($price < 0.01) {
+        if ($discountPriceRaw !== '' && $discountPriceRaw !== '0') {
+            error('售价低于0.01元的商品不支持折扣');
+        }
+    } elseif ($discountPriceRaw !== '' && $discountPriceRaw !== '0') {
         $discountValue = floatval($discountPriceRaw);
         if ($discountValue <= 0) {
             error('优惠后价格必须大于0');
         }
+        
         // 判断是直接价格还是折扣（<1的数认为是折扣）
         if ($discountValue < 1) {
             // 折扣：原价 × 折扣
@@ -505,6 +515,16 @@ function handleShopConfigSave($db) {
         } else {
             // 直接价格
             $discountPrice = round($discountValue, 2);
+        }
+        
+        // 硬锁：优惠后价格必须小于原价
+        if ($discountPrice >= $price) {
+            error('优惠后价格必须小于原价（当前原价: ' . number_format($price, 2) . '元）');
+        }
+        
+        // 硬锁：优惠后价格不能低于0.01元
+        if ($discountPrice < 0.01) {
+            error('优惠后价格不能低于0.01元');
         }
     }
 

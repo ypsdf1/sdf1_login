@@ -3541,6 +3541,7 @@ async function loadShopConfig(el) {
                 <div class="form-row"><label>优惠有效期</label><input id="scfExpire" placeholder="yyyy-MM-dd 或 2026年7月16日"></div>
                 <div class="form-row"><label>售价(元)</label><input id="scfPrice" type="number" min="0.01" step="0.01" placeholder="0.01"></div>
                 <div class="form-row"><label>优惠后价格</label><input id="scfDiscountPrice" type="text" inputmode="decimal" placeholder="留空=无优惠, 0.9=9折, 1.5=直接价格"></div>
+                <div style="font-size:11px;color:var(--dim);margin-top:4px">⚠️ 优惠后价格必须小于原价，且不低于0.01元。售价低于0.01元的商品不支持折扣。</div>
                 <div class="form-row"><label>到账债券</label><input id="scfBond" placeholder="如：1-10 或 100"></div>
                 <div class="form-row"><label>上下架</label><select id="scfActive"><option value="1">上架</option><option value="0">下架</option></select></div>
                 <div style="margin-top:14px;text-align:right">
@@ -3650,6 +3651,43 @@ async function saveShopConfig() {
     if (!name) { glassAlert('请输入商品名称'); return; }
     if (price <= 0) { glassAlert('售价必须大于0'); return; }
     if (!/^\d+(-\d+)?$/.test(bond)) { glassAlert('债券范围格式错误，应为数字或范围如"1-10"'); return; }
+    
+    // 折扣价格验证
+    if (discountPriceRaw && discountPriceRaw !== '0') {
+        // 0.01元以下的商品不支持折扣
+        if (price < 0.01) {
+            glassAlert('售价低于0.01元的商品不支持折扣');
+            return;
+        }
+        
+        const discountValue = parseFloat(discountPriceRaw);
+        if (isNaN(discountValue) || discountValue <= 0) {
+            glassAlert('优惠后价格必须是大于0的数字');
+            return;
+        }
+        
+        // 计算实际折扣价格
+        let actualDiscount;
+        if (discountValue < 1) {
+            // 折扣比例
+            actualDiscount = price * discountValue;
+        } else {
+            // 直接价格
+            actualDiscount = discountValue;
+        }
+        
+        // 硬锁：优惠后价格必须小于原价
+        if (actualDiscount >= price) {
+            glassAlert('优惠后价格必须小于原价（当前原价: ' + price.toFixed(2) + '元）');
+            return;
+        }
+        
+        // 硬锁：优惠后价格不能低于0.01元
+        if (actualDiscount < 0.01) {
+            glassAlert('优惠后价格不能低于0.01元');
+            return;
+        }
+    }
 
     // 防重复点击：获取按钮并禁用
     const btn = event.target;
