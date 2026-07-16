@@ -154,11 +154,11 @@ function handleReconcile() {
     // 直接包含 poller_online.php 并调用 pollPaidOrders
     define('POLLER_NO_AUTO_RUN', true);
 
-    // ★ 在包含前就开启输出缓冲，捕获poller_online.php全局代码的任何输出
-    ob_start();
+    // ★ 清空所有已有缓冲区（防止任何HTML/警告污染JSON）
+    while (ob_get_level() > 0) { ob_end_clean(); }
+
+    // 包含 poller_online.php（定义函数，不执行）
     require_once __DIR__ . '/poller_online.php';
-    // 清空包含阶段产生的任何非预期输出
-    ob_end_clean();
 
     // 记录对账开始
     if (function_exists('debugLog')) {
@@ -168,9 +168,17 @@ function handleReconcile() {
         ]);
     }
 
-    // 开始对账
+    // 开始对账 - 捕获所有输出
     ob_start();
-    pollPaidOrders();
+    try {
+        pollPaidOrders();
+    } catch (\Throwable $e) {
+        // 捕获异常，输出JSON错误
+        while (ob_get_level() > 0) { ob_end_clean(); }
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'poller_exception', 'detail' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
     $output = ob_get_clean();
 
     // 记录原始输出
@@ -183,11 +191,15 @@ function handleReconcile() {
 
     // 解析结果
     $result = json_decode($output, true);
-    if (!$result) {
+    if (!$result || !is_array($result)) {
         if (function_exists('debugLog')) {
             debugLog('[reconcile] JSON解析失败', ['output' => substr($output, 0, 200)]);
         }
-        error('对账脚本执行异常: ' . substr($output, 0, 100));
+        // 确保输出干净的JSON
+        while (ob_get_level() > 0) { ob_end_clean(); }
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['error' => 'poller_output_invalid', 'raw' => substr($output, 0, 100)], JSON_UNESCAPED_UNICODE);
+        exit;
     }
 
     // 记录解析结果
@@ -197,7 +209,8 @@ function handleReconcile() {
         ]);
     }
 
-    // 直接输出结果，不再用 success() 包装（避免双重 JSON）
+    // 直接输出结果
+    while (ob_get_level() > 0) { ob_end_clean(); }
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($result, JSON_UNESCAPED_UNICODE);
     exit;
