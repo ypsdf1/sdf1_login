@@ -2819,12 +2819,12 @@ public class AreaProtection implements Listener {
         // 如果ac为null（不在任何领地内），直接允许
         if (ac == null) return false;
 
-        // ★ denyPVP和denyAllDamage是全局安全设置，ADMIN/OWNER也不例外
+        // ★ denyPVP和denyAllDamage是全局安全设置，ADMIN/OWNER/VISITOR也不例外
         boolean isSecurityPerm = "denyPVP".equals(permName) || "denyAllDamage".equals(permName);
         if (!isSecurityPerm) {
-            // ADMIN/OWNER不检查per-player deny（安全权限除外）
+            // ADMIN/OWNER/VISITOR不检查per-player deny（安全权限除外）
             PermissionLevel level = getPermissionLevel(player, ac);
-            if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {
+            if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER || level == PermissionLevel.VISITOR) {
                 return false;
             }
         }
