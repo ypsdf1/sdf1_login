@@ -1099,9 +1099,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                             const latest = res.data.orders[0];
                             localStorage.setItem('sdf1_last_recharge_no', latest.out_trade_no);
                             if (latest.status === 'paid') {
-                                st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成。</span>';
+                                st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成，可以发起新订单。</span>';
+                                localStorage.removeItem('sdf1_last_recharge_no');
                                 const btn = document.getElementById('rechargeBtn');
-                                btn.disabled = true; btn.textContent = '✅ 支付完成'; btn.onclick = null;
+                                btn.disabled = false; btn.textContent = '🅰️ 支付宝支付 ¥0.01'; btn.onclick = startRecharge;
                             } else {
                                 st.innerHTML = '<span style="color:var(--accent)">检测到订单 ' + latest.out_trade_no + '，正在确认到账…</span>';
                                 pollRechargeOrder(false);
@@ -1129,12 +1130,12 @@ if ($currentVersion !== $BUILD_VERSION) {
                         const st = document.getElementById('rechargeStatus');
                         const btn = document.getElementById('rechargeBtn');
                         if (res.data.status === 'paid') {
-                            // 已支付：清除本地记录，锁定按钮
+                            // 已支付：清除本地记录，恢复按钮允许新订单
                             localStorage.removeItem('sdf1_last_recharge_no');
-                            st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成。</span>';
-                            btn.disabled = true;
-                            btn.textContent = '✅ 支付完成';
-                            btn.onclick = null;
+                            st.innerHTML = '<span style="color:var(--green)">✅ 此订单已支付完成，可以发起新订单。</span>';
+                            btn.disabled = false;
+                            btn.textContent = '🅰️ 支付宝支付 ¥0.01';
+                            btn.onclick = startRecharge;
                         } else if (res.data.status === 'created') {
                             // 检查订单是否已过期（5分钟）
                             const nowSec = Math.floor(Date.now() / 1000);
@@ -1230,12 +1231,12 @@ if ($currentVersion !== $BUILD_VERSION) {
                 const res = await api('pay.php', {action: 'query_order', out_trade_no: no});
                 if (res.success && res.data) {
                     if (res.data.status === 'paid') {
-                        st.innerHTML = '<span style="color:var(--green)">✅ 支付成功！游戏内债券发放中，请稍候刷新「余额查询」。</span>';
+                        st.innerHTML = '<span style="color:var(--green)">✅ 支付成功！游戏内债券发放中，请稍候刷新「余额查询」。可以发起新订单。</span>';
                         if (rechargePollTimer) { clearInterval(rechargePollTimer); rechargePollTimer = null; }
-                        // 支付成功后清除本地记录 + 锁定按钮
+                        // 支付成功后清除本地记录 + 恢复按钮允许新订单
                         localStorage.removeItem('sdf1_last_recharge_no');
                         const btn = document.getElementById('rechargeBtn');
-                        if (btn) { btn.disabled = true; btn.textContent = '✅ 支付完成'; btn.onclick = null; }
+                        if (btn) { btn.disabled = false; btn.textContent = '🅰️ 支付宝支付 ¥0.01'; btn.onclick = startRecharge; }
                     } else {
                         st.innerHTML = '<span style="color:var(--dim)">⏳ 订单处理中（' + (res.message || '等待支付平台通知') + '）…</span>';
                     }
