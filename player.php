@@ -277,6 +277,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
             <div class="sidebar-item" data-page="recharge" onclick="switchPage('recharge')">💳 在线充值</div>
+            <div class="sidebar-item" data-page="orders" onclick="switchPage('orders')">📋 我的订单</div>
             <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
         </div>
@@ -1052,6 +1053,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'account') renderAccount(c);
         else if (page === 'ticket') renderTicket(c);
         else if (page === 'recharge') renderRecharge(c);
+        else if (page === 'orders') renderMyOrders(c);
     }
 
     // ==================== 债券在线充值（动态加载商品） ====================
@@ -1470,6 +1472,93 @@ if ($currentVersion !== $BUILD_VERSION) {
         } catch(e) {
             // 静默失败，不影响用户体验
         }
+    }
+
+    // ==================== 我的订单 ====================
+    async function renderMyOrders(el) {
+        el.innerHTML = '<div class="card" style="max-width:680px;margin:0 auto"><div style="text-align:center;padding:20px;color:var(--dim)">加载订单中...</div></div>';
+
+        try {
+            const res = await api('pay.php', {action: 'my_orders'});
+            if (!res.success || !res.data || !res.data.orders) {
+                el.innerHTML = '<div class="card" style="max-width:680px;margin:0 auto"><div style="text-align:center;padding:20px;color:var(--red)">加载失败: ' + (res.message || '未知错误') + '</div></div>';
+                return;
+            }
+
+            const orders = res.data.orders;
+            if (orders.length === 0) {
+                el.innerHTML = `
+                    <div class="card" style="max-width:680px;margin:0 auto">
+                        <h2 style="margin:0 0 6px">📋 我的订单</h2>
+                        <p style="color:var(--dim);font-size:13px;margin:0 0 18px">查看您的在线充值订单记录。</p>
+                        <div style="text-align:center;padding:30px;color:var(--dim)">
+                            <div style="font-size:40px;margin-bottom:12px">📭</div>
+                            <div style="font-size:14px">暂无订单记录</div>
+                            <div style="font-size:12px;margin-top:8px;color:var(--dim)">前往「在线充值」发起第一笔订单</div>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            // 状态标签样式
+            const statusMap = {
+                'paid':    { text: '✅ 已支付', color: '#1a7f37', bg: '#dafbe1' },
+                'created': { text: '⏳ 待支付', color: '#9a6700', bg: '#fff8c5' },
+                'expired': { text: '❌ 已过期', color: '#656d76', bg: '#f6f8fa' },
+                'failed':  { text: '⚠️ 失败', color: '#cf222e', bg: '#ffebe9' },
+            };
+
+            let html = `
+                <div class="card" style="max-width:680px;margin:0 auto">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                        <div>
+                            <h2 style="margin:0 0 4px">📋 我的订单</h2>
+                            <p style="color:var(--dim);font-size:12px;margin:0">共 ${orders.length} 条记录</p>
+                        </div>
+                        <button class="btn" style="font-size:12px;padding:6px 14px" onclick="renderMyOrders(document.getElementById('content'))">🔄 刷新</button>
+                    </div>
+            `;
+
+            orders.forEach(order => {
+                const st = statusMap[order.status] || { text: order.status, color: '#656d76', bg: '#f6f8fa' };
+                const createdTime = order.created_at ? new Date(order.created_at * 1000).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '-';
+                const paidTime = order.paid_at ? new Date(order.paid_at * 1000).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '-';
+
+                html += `
+                    <div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:10px;transition:all 0.2s">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+                            <div>
+                                <div style="font-size:14px;font-weight:600;color:var(--text)">${escHtml(order.name)}</div>
+                                <div style="font-size:11px;color:var(--dim);margin-top:2px;font-family:monospace">${escHtml(order.out_trade_no)}</div>
+                            </div>
+                            <span style="font-size:12px;color:${st.color};background:${st.bg};border-radius:999px;padding:3px 10px;white-space:nowrap">${st.text}</span>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;align-items:baseline">
+                            <div style="font-size:13px;color:var(--dim)">
+                                <span>创建: ${createdTime}</span>
+                                ${order.paid_at ? '<span style="margin-left:12px">支付: ' + paidTime + '</span>' : ''}
+                            </div>
+                            <div style="text-align:right">
+                                <div style="font-size:16px;font-weight:700;color:var(--red)">¥${escHtml(order.money)}</div>
+                                <div style="font-size:12px;color:var(--green)">→ ${order.bond_amount} 债券</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            el.innerHTML = html;
+
+        } catch (e) {
+            el.innerHTML = '<div class="card" style="max-width:680px;margin:0 auto"><div style="text-align:center;padding:20px;color:var(--red)">加载失败: ' + e.message + '</div></div>';
+        }
+    }
+
+    function escHtml(s) {
+        if (!s) return '';
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
     // ===== 商城（分类标签页） =====

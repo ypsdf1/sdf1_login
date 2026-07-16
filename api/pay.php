@@ -466,6 +466,14 @@ function handleNotify() {
             $txIns->execute();
 
             debugLog('[pay notify] callback同步成功', ['out_trade_no' => $outTradeNo, 'player' => $platformPlayer]);
+
+            // 发送付款凭据邮件（异步静默）
+            try {
+                sendPaymentReceiptEmail($platformPlayer, $outTradeNo, $platformResult['money'] ?? '0.01', $bonds, '在线充值', $now);
+            } catch (\Throwable $e) {
+                debugLog('[pay notify] callback同步邮件发送失败', ['player' => $platformPlayer, 'error' => $e->getMessage()]);
+            }
+
             echo 'success';
             exit;
         }
@@ -508,6 +516,14 @@ function handleNotify() {
     $stmt->execute();
 
     debugLog('[pay notify] 充值交易已写入', ['player' => $row['player_name'], 'bonds' => $row['bond_amount'], 'out_trade_no' => $outTradeNo]);
+
+    // 7) 发送付款凭据邮件（异步静默，不影响主流程）
+    try {
+        sendPaymentReceiptEmail($row['player_name'], $outTradeNo, $row['money'], (int)$row['bond_amount'], $row['name'] ?? '在线充值', time());
+    } catch (\Throwable $e) {
+        debugLog('[pay notify] 邮件发送失败（不影响主流程）', ['player' => $row['player_name'], 'error' => $e->getMessage()]);
+    }
+
     echo 'success';
     exit;
 }
@@ -663,6 +679,14 @@ function queryOrder($token) {
             }
 
             debugLog('[queryOrder] 平台同步成功', ['out_trade_no' => $outTradeNo, 'player' => $platformPlayer]);
+
+            // 发送付款凭据邮件（异步静默）
+            try {
+                sendPaymentReceiptEmail($platformPlayer, $outTradeNo, $money, $bonds, '在线充值', $now);
+            } catch (\Throwable $e) {
+                debugLog('[queryOrder] 平台同步邮件发送失败', ['player' => $platformPlayer, 'error' => $e->getMessage()]);
+            }
+
             success([
                 'out_trade_no' => $outTradeNo,
                 'status'       => 'paid',
@@ -720,6 +744,13 @@ function queryOrder($token) {
 
             $status = 'paid';
             debugLog('[queryOrder] 直查平台补单成功', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+
+            // 发送付款凭据邮件（异步静默）
+            try {
+                sendPaymentReceiptEmail($info['player'], $outTradeNo, $row['money'] ?? '0.01', (int)$row['bond_amount'], $row['name'] ?? '在线充值', $now);
+            } catch (\Throwable $e) {
+                debugLog('[queryOrder] 邮件发送失败（不影响主流程）', ['player' => $info['player'], 'error' => $e->getMessage()]);
+            }
         } else {
             // 检查是否已过期（5分钟）
             $nowSec = time();
@@ -946,6 +977,88 @@ function parseExpireDate($expireStr) {
     return ['valid' => false, 'timestamp' => 0, 'display' => '日期格式错误: ' . $expireStr];
 }
 
+// ====================================================================
+//  邮件：支付成功后发送付款凭据邮件
+// ====================================================================
+
+/**
+ * 发送付款凭据邮件给玩家（仅在玩家绑定了邮箱时发送）
+ * @param string $playerName   玩家名
+ * @param string $outTradeNo   订单号
+ * @param string $money        付款金额
+ * @param int    $bondAmount   到账债券
+ * @param string $productName  商品名称
+ * @param int    $paidAt       支付时间（Unix时间戳）
+ */
+function sendPaymentReceiptEmail($playerName, $outTradeNo, $money, $bondAmount, $productName, $paidAt) {
+    // 1) 查询玩家邮箱
+    $db = getDB();
+    try {
+        $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
+        $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
+        $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    } catch (\Throwable $e) {
+        debugLog('[sendPaymentReceiptEmail] 查询邮箱失败', ['player' => $playerName, 'error' => $e->getMessage()]);
+        return;
+    }
+
+    if (!$row || empty($row['email'])) {
+        debugLog('[sendPaymentReceiptEmail] 玩家未绑定邮箱，跳过', ['player' => $playerName]);
+        return;
+    }
+
+    $email = trim($row['email']);
+    // 简单邮箱格式校验
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        debugLog('[sendPaymentReceiptEmail] 邮箱格式无效', ['player' => $playerName, 'email' => $email]);
+        return;
+    }
+
+    // 2) 构建邮件内容
+    $paidTimeStr = date('Y-m-d H:i:s', $paidAt);
+    $baseUrl = getBaseUrl();
+    $orderLink = $baseUrl . '/player.php?page=orders';
+
+    $subject = '[Sdf1] 付款凭据 - 订单 ' . $outTradeNo;
+
+    $html = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+        . '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        . '<title>付款凭据</title></head><body style="margin:0;padding:0;background:#f4f6f9;font-family:Segoe UI,Tahoma,sans-serif;">'
+        . '<div style="max-width:560px;margin:0 auto;padding:24px;">'
+        . '<div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,0.08);">'
+        // 头部
+        . '<div style="background:linear-gradient(135deg,#1a7f37,#156d2e);padding:28px 32px;color:#fff;">'
+        . '<h1 style="margin:0;font-size:22px;">✅ 付款成功</h1>'
+        . '<p style="margin:8px 0 0;opacity:.9;font-size:14px;">Sdf1 Minecraft 充值中心</p></div>'
+        // 正文
+        . '<div style="padding:32px;">'
+        . '<p style="margin:0 0 16px;font-size:15px;color:#333;">亲爱的 <b>' . htmlspecialchars($playerName) . '</b>：</p>'
+        . '<p style="margin:0 0 20px;font-size:15px;color:#555;line-height:1.7;">您的充值订单已支付成功，以下是您的付款凭据：</p>'
+        // 订单信息卡片
+        . '<div style="background:#f6f8fa;border:1px solid #d0d7de;border-radius:8px;padding:20px;margin:0 0 24px;">'
+        . '<table style="width:100%;border-collapse:collapse;font-size:14px;">'
+        . '<tr><td style="padding:8px 0;color:#656d76;width:100px;">订单号</td><td style="padding:8px 0;color:#1f2328;font-weight:600;">' . htmlspecialchars($outTradeNo) . '</td></tr>'
+        . '<tr><td style="padding:8px 0;color:#656d76;border-top:1px solid #eee;">商品</td><td style="padding:8px 0;color:#1f2328;border-top:1px solid #eee;">' . htmlspecialchars($productName) . '</td></tr>'
+        . '<tr><td style="padding:8px 0;color:#656d76;border-top:1px solid #eee;">付款金额</td><td style="padding:8px 0;color:#cf222e;font-weight:600;border-top:1px solid #eee;">¥' . htmlspecialchars($money) . '</td></tr>'
+        . '<tr><td style="padding:8px 0;color:#656d76;border-top:1px solid #eee;">到账债券</td><td style="padding:8px 0;color:#1a7f37;font-weight:600;border-top:1px solid #eee;">' . intval($bondAmount) . ' 债券</td></tr>'
+        . '<tr><td style="padding:8px 0;color:#656d76;border-top:1px solid #eee;">支付时间</td><td style="padding:8px 0;color:#1f2328;border-top:1px solid #eee;">' . $paidTimeStr . '</td></tr>'
+        . '</table></div>'
+        // 提示
+        . '<p style="margin:0 0 12px;font-size:14px;color:#555;line-height:1.7;">债券将在游戏内自动发放，如未到账请稍候或联系管理员。</p>'
+        . '<div style="text-align:center;margin:0 0 8px;"><a href="' . htmlspecialchars($orderLink) . '" style="display:inline-block;background:#1a7f37;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600;">查看我的订单</a></div>'
+        . '<p style="margin:24px 0 0;font-size:12px;color:#999;border-top:1px solid #eee;padding-top:16px;">本邮件由系统自动发送，请勿直接回复。如有疑问请联系管理员。</p>'
+        . '</div></div></div></body></html>';
+
+    // 3) 发送邮件
+    $headers = "From: " . SMTP_SENDER_NAME . " <" . SMTP_USER . ">\r\n"
+        . "Reply-To: " . SMTP_USER . "\r\n"
+        . "MIME-Version: 1.0\r\n"
+        . "Content-Type: text/html; charset=UTF-8\r\n";
+
+    smtpSendEmail(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, $email, $subject, $html, $headers, SMTP_USE_SSL);
+    debugLog('[sendPaymentReceiptEmail] 邮件发送成功', ['player' => $playerName, 'email' => $email, 'out_trade_no' => $outTradeNo]);
+}
+
 function getShopProducts() {
     $db = getOrdersDB();
 
@@ -1020,6 +1133,42 @@ function getShopProducts() {
 }
 
 // ====================================================================
+//  玩家订单查询
+// ====================================================================
+
+function getPlayerOrders($token) {
+    $info = validateTokenSilent($token);
+    if (!$info || empty($info['player'])) {
+        error('登录状态无效', 401);
+    }
+    $player = $info['player'];
+
+    $db = getOrdersDB();
+    ensurePayOrdersTable($db);
+
+    // 查询该玩家的所有订单（最近50条）
+    $stmt = $db->prepare("SELECT out_trade_no, trade_no, player_name, money, bond_amount, status, name, created_at, paid_at FROM pay_orders WHERE player_name = :p ORDER BY created_at DESC LIMIT 50");
+    $stmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $result = $stmt->execute();
+
+    $orders = [];
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $orders[] = [
+            'out_trade_no' => $row['out_trade_no'],
+            'trade_no'     => $row['trade_no'] ?? '',
+            'money'        => $row['money'],
+            'bond_amount'  => (int)$row['bond_amount'],
+            'status'       => $row['status'],
+            'name'         => $row['name'] ?? '在线充值',
+            'created_at'   => (int)$row['created_at'],
+            'paid_at'      => $row['paid_at'] ? (int)$row['paid_at'] : null,
+        ];
+    }
+
+    success(['orders' => $orders, 'player' => $player]);
+}
+
+// ====================================================================
 //  入口分发
 // ====================================================================
 $action = getParam('action', '');
@@ -1045,6 +1194,9 @@ try {
             break;
         case 'get_shop_products':
             getShopProducts();
+            break;
+        case 'my_orders':
+            getPlayerOrders(getParam('token'));
             break;
         default:
             error('未知操作: ' . $action);
