@@ -169,6 +169,7 @@
         <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
         <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
         <div class="si" data-p="recharge_orders" onclick="go('recharge_orders')">💳 充值对账</div>
+        <div class="si" data-p="shop_config" onclick="go('shop_config')">🛒 充值商店配置</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -239,6 +240,7 @@ function go(p) {
     else if (p==='cashier') loadCashier(c);
     else if (p==='cashier_manage') loadCashierManage(c);
     else if (p==='recharge_orders') loadRechargeOrders(c);
+    else if (p==='shop_config') loadShopConfig(c);
 }
 
 // 检查登录状态
@@ -3515,6 +3517,168 @@ async function _roSyncPlatform() {
     } catch(e) { glassAlert('同步请求失败: '+e.message); }
 }
 document.addEventListener('keydown', function(e) { if (e.key==='Escape') _roCloseDtl(); });
+
+// ===== 充值商店配置 =====
+async function loadShopConfig(el) {
+    el.innerHTML = `
+        <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h2>🛒 充值商店配置</h2>
+                <div>
+                    <button class="btn btn-green" onclick="showShopConfigForm()">➕ 新增配置</button>
+                    <button class="btn btn-blue" onclick="loadShopConfigData()" style="margin-left:4px">🔄 刷新</button>
+                </div>
+            </div>
+            <div id="shopConfigList"><div class="ro-empty">加载中...</div></div>
+        </div>
+        <div id="shopConfigFormOverlay" class="ro-dtl-ol" onclick="if(event.target===this)closeShopConfigForm()">
+            <div class="ro-dtl-cd" onclick="event.stopPropagation()" style="max-width:500px">
+                <h2 id="shopConfigFormTitle">新增配置</h2>
+                <input type="hidden" id="scfId">
+                <div class="form-row"><label>商品名称</label><input id="scfName" placeholder="如：债券充值包"></div>
+                <div class="form-row"><label>库存</label><input id="scfStock" type="number" min="-1" value="-1" placeholder="-1=无限"></div>
+                <div class="form-row"><label>临时优惠</label><input id="scfOffer" placeholder="如：限时8折"></div>
+                <div class="form-row"><label>优惠有效期</label><input id="scfExpire" placeholder="yyyy-MM-dd 或 2026年7月16日"></div>
+                <div class="form-row"><label>售价(元)</label><input id="scfPrice" type="number" min="0.01" step="0.01" placeholder="0.01"></div>
+                <div class="form-row"><label>到账债券</label><input id="scfBond" placeholder="如：1-10 或 100"></div>
+                <div class="form-row"><label>上下架</label><select id="scfActive"><option value="1">上架</option><option value="0">下架</option></select></div>
+                <div style="margin-top:14px;text-align:right">
+                    <button class="btn btn-ghost" onclick="closeShopConfigForm()">取消</button>
+                    <button class="btn btn-green" onclick="saveShopConfig()" style="margin-left:4px">保存</button>
+                </div>
+            </div>
+        </div>`;
+    loadShopConfigData();
+}
+
+async function loadShopConfigData() {
+    const el = document.getElementById('shopConfigList');
+    if (!el) return;
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=shop_config&method=list');
+        const d = await r.json();
+        if (d.error || d.success === false) { el.innerHTML = '<div class="ro-empty">加载失败: '+(d.error?.message||d.message||'未知错误')+'</div>'; return; }
+        const configs = d.data || [];
+        if (!configs.length) { el.innerHTML = '<div class="ro-empty">暂无配置，点击"新增配置"添加</div>'; return; }
+        el.innerHTML = `<table class="table"><tr><th>ID</th><th>商品名称</th><th>库存</th><th>售价</th><th>债券范围</th><th>临时优惠</th><th>有效期</th><th>状态</th><th>操作</th></tr>
+        ${configs.map(c => {
+            const stockText = c.stock === -1 ? '∞无限' : (c.stock === 0 ? '<span style="color:var(--red)">售罄</span>' : c.stock);
+            const activeTag = c.is_active ? '<span style="color:var(--green)">上架</span>' : '<span style="color:var(--red)">下架</span>';
+            const offerText = c.temporary_offer ? `${c.temporary_offer} (${c.expire_display})` : '-';
+            return `<tr>
+                <td>${c.id}</td>
+                <td>${c.item_name||'-'}</td>
+                <td>${stockText}</td>
+                <td>¥${c.price}</td>
+                <td>${c.bond_reward}</td>
+                <td>${offerText}</td>
+                <td>${c.expire_display}</td>
+                <td>${activeTag}</td>
+                <td>
+                    <button class="btn btn-blue" style="padding:4px 10px;font-size:11px" onclick="editShopConfig(${c.id})">编辑</button>
+                    <button class="btn btn-yellow" style="padding:4px 10px;font-size:11px" onclick="toggleShopConfig(${c.id})">${c.is_active?'下架':'上架'}</button>
+                    <button class="btn btn-red" style="padding:4px 10px;font-size:11px" onclick="deleteShopConfig(${c.id})">删除</button>
+                </td>
+            </tr>`;
+        }).join('')}
+        </table>`;
+    } catch(e) { el.innerHTML = '<div class="ro-empty">请求失败: '+e.message+'</div>'; }
+}
+
+function showShopConfigForm(config) {
+    document.getElementById('shopConfigFormTitle').textContent = config ? '编辑配置' : '新增配置';
+    document.getElementById('scfId').value = config ? config.id : '';
+    document.getElementById('scfName').value = config ? (config.item_name||'') : '';
+    document.getElementById('scfStock').value = config ? config.stock : -1;
+    document.getElementById('scfOffer').value = config ? (config.temporary_offer||'') : '';
+    document.getElementById('scfExpire').value = config ? (config.offer_expire||'') : '';
+    document.getElementById('scfPrice').value = config ? config.price : '';
+    document.getElementById('scfBond').value = config ? config.bond_reward : '1-1';
+    document.getElementById('scfActive').value = config ? config.is_active : 1;
+    document.getElementById('shopConfigFormOverlay').classList.add('show');
+}
+
+function closeShopConfigForm() {
+    document.getElementById('shopConfigFormOverlay').classList.remove('show');
+}
+
+async function editShopConfig(id) {
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=shop_config&method=list');
+        const d = await r.json();
+        const configs = d.data || [];
+        const config = configs.find(c => c.id === id);
+        if (config) showShopConfigForm(config);
+        else glassAlert('配置不存在');
+    } catch(e) { glassAlert('加载配置失败: '+e.message); }
+}
+
+async function saveShopConfig() {
+    const id = document.getElementById('scfId').value;
+    const name = document.getElementById('scfName').value.trim();
+    const stock = parseInt(document.getElementById('scfStock').value) || -1;
+    const offer = document.getElementById('scfOffer').value.trim();
+    const expire = document.getElementById('scfExpire').value.trim();
+    const price = parseFloat(document.getElementById('scfPrice').value) || 0;
+    const bond = document.getElementById('scfBond').value.trim();
+    const active = parseInt(document.getElementById('scfActive').value) || 1;
+    
+    if (!name) { glassAlert('请输入商品名称'); return; }
+    if (price <= 0) { glassAlert('售价必须大于0'); return; }
+    if (!/^\d+(-\d+)?$/.test(bond)) { glassAlert('债券范围格式错误，应为数字或范围如"1-10"'); return; }
+    
+    const params = new URLSearchParams({
+        action: 'shop_config',
+        method: 'save',
+        id: id,
+        item_name: name,
+        stock: stock,
+        temporary_offer: offer,
+        offer_expire: expire,
+        price: price,
+        bond_reward: bond,
+        is_active: active
+    });
+    
+    try {
+        const r = await fetch('api/recharge_orders_api.php?'+params.toString());
+        const d = await r.json();
+        if (d.success) {
+            glassAlert(id ? '配置已更新' : '配置已添加');
+            closeShopConfigForm();
+            loadShopConfigData();
+        } else {
+            glassAlert('保存失败: '+(d.message||'未知错误'));
+        }
+    } catch(e) { glassAlert('请求失败: '+e.message); }
+}
+
+async function toggleShopConfig(id) {
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=shop_config&method=toggle&id='+id);
+        const d = await r.json();
+        if (d.success) {
+            glassAlert(d.message||'状态已切换');
+            loadShopConfigData();
+        } else {
+            glassAlert('操作失败: '+(d.message||'未知错误'));
+        }
+    } catch(e) { glassAlert('请求失败: '+e.message); }
+}
+
+async function deleteShopConfig(id) {
+    if (!await glassConfirm('确定删除此配置？')) return;
+    try {
+        const r = await fetch('api/recharge_orders_api.php?action=shop_config&method=delete&id='+id);
+        const d = await r.json();
+        if (d.success) {
+            glassAlert('配置已删除');
+            loadShopConfigData();
+        } else {
+            glassAlert('删除失败: '+(d.message||'未知错误'));
+        }
+    } catch(e) { glassAlert('请求失败: '+e.message); }
+}
 
 async function loadCashierManage(el) {
     el.innerHTML = `<div class="card">

@@ -34,6 +34,24 @@ function getAdminPlatformDB() {
     return $pdo;
 }
 
+/**
+ * 确保充值商店配置表存在
+ */
+function ensureShopConfigsTable($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_configs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_name TEXT NOT NULL DEFAULT '',
+        stock INTEGER NOT NULL DEFAULT -1,
+        temporary_offer TEXT NOT NULL DEFAULT '',
+        offer_expire TEXT NOT NULL DEFAULT '',
+        price REAL NOT NULL DEFAULT 0,
+        bond_reward TEXT NOT NULL DEFAULT '1-1',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    )");
+}
+
 // 检查管理员登录
 if (!isAdminLoggedIn()) {
     error('无权限访问', 403);
@@ -47,6 +65,9 @@ switch ($action) {
         break;
     case 'detail':
         handleOrderDetail();
+        break;
+    case 'shop_config':
+        handleShopConfig();
         break;
     case 'reconcile':
         handleReconcile();
@@ -386,4 +407,216 @@ function ensurePayOrdersTable($db) {
     if (!$hasCol) {
         $db->exec("ALTER TABLE pay_orders ADD COLUMN submit_params TEXT");
     }
+}
+
+/**
+ * 处理充值商店配置
+ */
+function handleShopConfig() {
+    $db = getOrdersDB();
+    ensureShopConfigsTable($db);
+    
+    $method = getParam('method', 'list');
+    
+    switch ($method) {
+        case 'list':
+            handleShopConfigList($db);
+            break;
+        case 'save':
+            handleShopConfigSave($db);
+            break;
+        case 'delete':
+            handleShopConfigDelete($db);
+            break;
+        case 'toggle':
+            handleShopConfigToggle($db);
+            break;
+        default:
+            error('未知操作');
+    }
+}
+
+/**
+ * 获取商店配置列表
+ */
+function handleShopConfigList($db) {
+    $stmt = $db->query("SELECT * FROM shop_configs ORDER BY id DESC");
+    $configs = [];
+    while ($row = $stmt->fetchArray(SQLITE3_ASSOC)) {
+        // 解析有效期
+        $expireInfo = parseExpireDate($row['offer_expire']);
+        $row['expire_valid'] = $expireInfo['valid'];
+        $row['expire_timestamp'] = $expireInfo['timestamp'];
+        $row['expire_display'] = $expireInfo['display'];
+        $configs[] = $row;
+    }
+    success($configs);
+}
+
+/**
+ * 保存商店配置（添加或编辑）
+ */
+function handleShopConfigSave($db) {
+    $id = getParam('id', 0);
+    $itemName = getParam('item_name', '');
+    $stock = getParam('stock', -1, 'intval');
+    $temporaryOffer = getParam('temporary_offer', '');
+    $offerExpire = getParam('offer_expire', '');
+    $price = getParam('price', 0, 'floatval');
+    $bondReward = getParam('bond_reward', '1-1');
+    $isActive = getParam('is_active', 1, 'intval');
+    
+    // 验证库存
+    if ($stock < -1) {
+        error('库存不能小于-1');
+    }
+    
+    // 验证售价
+    if ($price <= 0) {
+        error('售价必须大于0');
+    }
+    
+    // 验证债券范围格式（支持盲盒范围，如"1-10"）
+    if (!preg_match('/^\d+(-\d+)?$/', $bondReward)) {
+        error('债券范围格式错误，应为数字或范围如"1-10"');
+    }
+    
+    // 解析并验证有效期
+    $expireInfo = parseExpireDate($offerExpire);
+    if ($offerExpire && !$expireInfo['valid']) {
+        error('有效期格式错误，请使用yyyy-MM-dd或中文格式如"2026年7月16日"');
+    }
+    
+    $now = time();
+    
+    if ($id > 0) {
+        // 编辑
+        $stmt = $db->prepare("UPDATE shop_configs SET 
+            item_name = :name,
+            stock = :stock,
+            temporary_offer = :offer,
+            offer_expire = :expire,
+            price = :price,
+            bond_reward = :bond,
+            is_active = :active,
+            updated_at = :updated
+            WHERE id = :id");
+        $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    } else {
+        // 添加
+        $stmt = $db->prepare("INSERT INTO shop_configs 
+            (item_name, stock, temporary_offer, offer_expire, price, bond_reward, is_active, created_at, updated_at)
+            VALUES (:name, :stock, :offer, :expire, :price, :bond, :active, :created, :updated)");
+        $stmt->bindValue(':created', $now, SQLITE3_INTEGER);
+    }
+    
+    $stmt->bindValue(':name', $itemName, SQLITE3_TEXT);
+    $stmt->bindValue(':stock', $stock, SQLITE3_INTEGER);
+    $stmt->bindValue(':offer', $temporaryOffer, SQLITE3_TEXT);
+    $stmt->bindValue(':expire', $offerExpire, SQLITE3_TEXT);
+    $stmt->bindValue(':price', $price, SQLITE3_FLOAT);
+    $stmt->bindValue(':bond', $bondReward, SQLITE3_TEXT);
+    $stmt->bindValue(':active', $isActive, SQLITE3_INTEGER);
+    $stmt->bindValue(':updated', $now, SQLITE3_INTEGER);
+    
+    $stmt->execute();
+    
+    $savedId = $id > 0 ? $id : $db->lastInsertRowID();
+    success(['id' => $savedId], $id > 0 ? '配置已更新' : '配置已添加');
+}
+
+/**
+ * 删除商店配置
+ */
+function handleShopConfigDelete($db) {
+    $id = getParam('id', 0, 'intval');
+    if ($id <= 0) {
+        error('无效的配置ID');
+    }
+    
+    $stmt = $db->prepare("DELETE FROM shop_configs WHERE id = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->execute();
+    
+    if ($db->changes() > 0) {
+        success([], '配置已删除');
+    } else {
+        error('配置不存在');
+    }
+}
+
+/**
+ * 切换商店配置上下架状态
+ */
+function handleShopConfigToggle($db) {
+    $id = getParam('id', 0, 'intval');
+    if ($id <= 0) {
+        error('无效的配置ID');
+    }
+    
+    $stmt = $db->prepare("UPDATE shop_configs SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END, updated_at = :updated WHERE id = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $stmt->bindValue(':updated', time(), SQLITE3_INTEGER);
+    $stmt->execute();
+    
+    if ($db->changes() > 0) {
+        // 获取新状态
+        $check = $db->prepare("SELECT is_active FROM shop_configs WHERE id = :id");
+        $check->bindValue(':id', $id, SQLITE3_INTEGER);
+        $row = $check->execute()->fetchArray(SQLITE3_ASSOC);
+        $newStatus = $row ? $row['is_active'] : 0;
+        success(['is_active' => $newStatus], $newStatus ? '已上架' : '已下架');
+    } else {
+        error('配置不存在');
+    }
+}
+
+/**
+ * 解析有效期日期（支持yyyy-MM-dd和中文格式如"2026年7月16日"）
+ */
+function parseExpireDate($expireStr) {
+    if (empty($expireStr)) {
+        return ['valid' => true, 'timestamp' => 0, 'display' => '长期有效'];
+    }
+    
+    $expireStr = trim($expireStr);
+    
+    // 尝试解析yyyy-MM-dd格式
+    if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $expireStr)) {
+        $time = strtotime($expireStr . ' 23:59:59');
+        if ($time !== false) {
+            return [
+                'valid' => true,
+                'timestamp' => $time,
+                'display' => date('Y-m-d', $time) . ' 到期'
+            ];
+        }
+    }
+    
+    // 尝试解析中文格式（如"2026年7月16日"）
+    if (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $expireStr, $matches)) {
+        $year = $matches[1];
+        $month = $matches[2];
+        $day = $matches[3];
+        $time = mktime(23, 59, 59, $month, $day, $year);
+        if ($time !== false) {
+            return [
+                'valid' => true,
+                'timestamp' => $time,
+                'display' => "{$year}-{$month}-{$day} 到期"
+            ];
+        }
+    }
+    
+    // 尝试使用strtotime解析其他格式
+    $time = strtotime($expireStr);
+    if ($time !== false && $time > time()) {
+        return [
+            'valid' => true,
+            'timestamp' => $time,
+            'display' => date('Y-m-d', $time) . ' 到期'
+        ];
+    }
+    
+    return ['valid' => false, 'timestamp' => 0, 'display' => '无效日期'];
 }
