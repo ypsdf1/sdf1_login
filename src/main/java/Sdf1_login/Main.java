@@ -2385,21 +2385,21 @@ public class Main extends JavaPlugin
                                     else
                                         p.sendMessage(config.msg(
                                                 "not_logged_in"));
+
+                                    // ★ 验证完成后延时5秒自动触发正版验证
+                                    final Player autoAuthPlayer = p;
+                                    final String autoAuthName = name;
+                                    Bukkit.getScheduler().runTaskLater(this, () -> {
+                                        if (autoAuthPlayer.isOnline()
+                                                && !loggedIn.contains(autoAuthName)
+                                                && (webManager == null || !webManager.isMinecraftAuthPending(autoAuthName))) {
+                                            // 玩家5秒内未完成登录 → 自动发起正版验证
+                                            handleMinecraftAuth(autoAuthPlayer);
+                                        }
+                                    }, 100L); // 100 tick = 5秒
                                 });
                     }
                 });
-
-        // ★ 延时5秒自动触发正版验证：如果玩家仍未登录，提供OAuth验证链接
-        final Player autoAuthPlayer = p;
-        final String autoAuthName = name;
-        Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (autoAuthPlayer.isOnline()
-                    && !loggedIn.contains(autoAuthName)
-                    && (webManager == null || !webManager.isMinecraftAuthPending(autoAuthName))) {
-                // 玩家5秒内未完成登录 → 自动发起正版验证
-                handleMinecraftAuth(autoAuthPlayer);
-            }
-        }, 100L); // 100 tick = 5秒
     }
 
     @EventHandler
