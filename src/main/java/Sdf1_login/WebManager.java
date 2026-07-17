@@ -4955,29 +4955,48 @@ public class WebManager {
                 com.google.gson.JsonObject data = json.getAsJsonObject("data");
                 String sessionId = data.get("session_id").getAsString();
                 String authUrl = data.get("auth_url").getAsString();
+                String pasteUrl = data.has("paste_url") ? data.get("paste_url").getAsString() : null;
 
                 // 记录会话
                 minecraftAuthSessions.put(playerName, new String[]{sessionId, String.valueOf(System.currentTimeMillis())});
 
                 // 在主线程发送消息
+                final String finalPasteUrl = pasteUrl;
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (player.isOnline()) {
                         player.sendMessage("§6§l===== 正版验证 =====");
-                        player.sendMessage("§7请点击下方链接完成Microsoft账号验证:");
-                        player.sendMessage("§b" + authUrl);
+                        player.sendMessage("§7方式一: 点击链接完成验证后，复制授权码粘贴到聊天:");
+                        player.sendMessage("§b/mscode <授权码>");
+                        player.sendMessage("§7方式二: 在浏览器中打开验证页面:");
+                        if (finalPasteUrl != null) {
+                            player.sendMessage("§b" + finalPasteUrl);
+                        }
+                        player.sendMessage("§7步骤: 打开链接 → 登录Microsoft → 复制授权码 → /mscode粘贴");
                         player.sendMessage("§7链接10分钟内有效");
-                        player.sendMessage("§7验证完成后将自动登录服务器");
                         player.sendMessage("§6§l====================");
-                        // 尝试发送可点击的URL
+                        // 尝试发送可点击的URL（授权链接）
                         try {
                             net.kyori.adventure.text.Component msg = net.kyori.adventure.text.Component.text()
-                                    .content("§7[§b点击打开验证页面§7]")
+                                    .content("§7[§b点击打开Microsoft登录页面§7]")
                                     .clickEvent(net.kyori.adventure.text.event.ClickEvent.openUrl(authUrl))
-                                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(net.kyori.adventure.text.Component.text("§e点击在浏览器中打开验证页面")))
+                                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(net.kyori.adventure.text.Component.text("§e点击在浏览器中打开Microsoft登录")))
                                     .build();
                             player.sendMessage(msg);
                         } catch (Exception e) {
                             // 低版本不支持Adventure API，忽略
+                        }
+                        // 可点击的粘贴页面
+                        if (finalPasteUrl != null) {
+                            try {
+                                net.kyori.adventure.text.Component pasteMsg = net.kyori.adventure.text.Component.text()
+                                        .content("§7[§b点击打开粘贴授权码页面§7]")
+                                        .clickEvent(net.kyori.adventure.text.event.ClickEvent.openUrl(finalPasteUrl))
+                                        .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(net.kyori.adventure.text.Component.text("§e点击打开粘贴授权码页面")))
+                                        .build();
+                                player.sendMessage(pasteMsg);
+                            } catch (Exception e) {
+                                // 低版本不支持Adventure API，忽略
+                            }
                         }
                     }
                 });
@@ -5113,6 +5132,70 @@ public class WebManager {
             poller.cancel();
         }
         minecraftAuthSessions.remove(playerName);
+    }
+
+    /**
+     * 验证玩家粘贴的Microsoft OAuth授权码（/mscode命令调用）
+     * 将授权码发送给PHP后端的verify_code端点
+     */
+    public void verifyMinecraftAuthCode(Player player, String code) {
+        String playerName = player.getName();
+        String[] sessionData = minecraftAuthSessions.get(playerName);
+        if (sessionData == null) {
+            player.sendMessage("§c没有找到您的验证会话，请先执行 /mslogin");
+            return;
+        }
+
+        String sessionId = sessionData[0];
+        String secret = java.net.URLEncoder.encode(secretKey, StandardCharsets.UTF_8);
+
+        webExecutor.submit(() -> {
+            try {
+                String url = webBaseUrl + "/api/minecraft_auth.php?action=verify_code";
+
+                // POST参数
+                String postData = "session_id=" + java.net.URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
+                        + "&code=" + java.net.URLEncoder.encode(code, StandardCharsets.UTF_8)
+                        + "&secret=" + secret;
+
+                String response = doPost(url, postData);
+                if (response == null) {
+                    player.sendMessage("§c无法连接Web后端");
+                    return;
+                }
+
+                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                if (json.get("success").getAsBoolean()) {
+                    com.google.gson.JsonObject data = json.getAsJsonObject("data");
+                    String mcUuid = data.get("mc_uuid").getAsString();
+                    String mcUsername = data.get("mc_username").getAsString();
+
+                    plugin.getLogger().info("[正版验证] 粘贴码验证成功: " + playerName + " -> " + mcUsername + " (" + mcUuid + ")");
+
+                    // 记录为已验证正版玩家
+                    plugin.addVerifiedPremiumPlayer(playerName, mcUuid, mcUsername);
+
+                    // 清理会话
+                    minecraftAuthSessions.remove(playerName);
+                    BukkitRunnable poller = minecraftAuthPollers.remove(playerName);
+                    if (poller != null) poller.cancel();
+
+                    // 在主线程执行自动登录
+                    Bukkit.getScheduler().runTask(plugin, () -> {
+                        if (player.isOnline() && !plugin.getLoggedIn().contains(playerName)) {
+                            player.sendMessage("§a§l正版验证成功！欢迎 " + mcUsername + "！");
+                            plugin.autoLogin(player, "premium");
+                        }
+                    });
+                } else {
+                    String error = json.has("error") ? json.get("error").getAsString() : "验证失败";
+                    player.sendMessage("§c" + error);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[正版验证] 粘贴码验证异常: " + e.getMessage());
+                player.sendMessage("§c验证请求失败，请稍后重试");
+            }
+        });
     }
 
     /**

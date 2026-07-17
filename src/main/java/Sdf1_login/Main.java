@@ -456,6 +456,8 @@ public class Main extends JavaPlugin
             getCommand("mslogin").setExecutor(this);
         if (getCommand("正版") != null)
             getCommand("正版").setExecutor(this);
+        if (getCommand("mscode") != null)
+            getCommand("mscode").setExecutor(this);
         if (getCommand("签到") != null)
             getCommand("签到")
                     .setExecutor(this);
@@ -5993,6 +5995,37 @@ public class Main extends JavaPlugin
             }
             // 发起Microsoft OAuth验证
             handleMinecraftAuth(p);
+            return true;
+        }
+
+        // ===== /mscode <授权码>：粘贴Microsoft OAuth授权码 =====
+        if (cmdName.equals("mscode")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (loggedIn.contains(p.getName())) {
+                p.sendMessage("§c您已登录，无需重复验证");
+                return true;
+            }
+            if (args.length < 1) {
+                p.sendMessage("§c用法: /mscode <授权码>");
+                p.sendMessage("§7从Microsoft登录页面复制授权码后粘贴到这里");
+                return true;
+            }
+            String code = args[0].trim();
+            if (code.length() < 10) {
+                p.sendMessage("§c授权码格式不正确，请复制完整的授权码");
+                return true;
+            }
+            // 检查是否有进行中的会话
+            if (webManager == null || !webManager.isMinecraftAuthPending(p.getName())) {
+                p.sendMessage("§c您没有进行中的验证会话，请先执行 /mslogin 发起验证");
+                return true;
+            }
+            p.sendMessage("§e正在提交授权码验证...");
+            webManager.verifyMinecraftAuthCode(p, code);
             return true;
         }
 
