@@ -4903,6 +4903,218 @@ public class WebManager {
         javaLoginRecords.remove(playerName);
     }
 
+    // ===== Microsoft OAuth正版验证 =====
+
+    // 玩家名 -> [sessionId, createdAt] - 进行中的验证会话
+    private final ConcurrentHashMap<String, String[]> minecraftAuthSessions = new ConcurrentHashMap<>();
+    // 玩家名 -> pollingTask - 轮询定时器
+    private final ConcurrentHashMap<String, BukkitRunnable> minecraftAuthPollers = new ConcurrentHashMap<>();
+
+    /**
+     * 检查玩家是否有进行中的Minecraft验证会话
+     */
+    public boolean isMinecraftAuthPending(String playerName) {
+        return minecraftAuthSessions.containsKey(playerName);
+    }
+
+    /**
+     * 启动Microsoft OAuth验证流程
+     * 1. 调用PHP创建会话
+     * 2. 返回授权URL给玩家
+     * 3. 启动轮询检查验证状态
+     */
+    public void startMinecraftAuth(Player player) {
+        if (!enabled) {
+            player.sendMessage("§cWeb后端未启用");
+            return;
+        }
+
+        String playerName = player.getName();
+        String secret = java.net.URLEncoder.encode(secretKey, StandardCharsets.UTF_8);
+
+        // 异步调用PHP
+        webExecutor.submit(() -> {
+            try {
+                String url = webBaseUrl + "/api/minecraft_auth.php?action=create_session&player="
+                        + java.net.URLEncoder.encode(playerName, StandardCharsets.UTF_8)
+                        + "&secret=" + secret;
+
+                String response = doGet(url);
+                if (response == null) {
+                    player.sendMessage("§c无法连接Web后端");
+                    return;
+                }
+
+                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                if (!json.get("success").getAsBoolean()) {
+                    String error = json.has("error") ? json.get("error").getAsString() : "未知错误";
+                    player.sendMessage("§c验证失败: " + error);
+                    return;
+                }
+
+                com.google.gson.JsonObject data = json.getAsJsonObject("data");
+                String sessionId = data.get("session_id").getAsString();
+                String authUrl = data.get("auth_url").getAsString();
+
+                // 记录会话
+                minecraftAuthSessions.put(playerName, new String[]{sessionId, String.valueOf(System.currentTimeMillis())});
+
+                // 在主线程发送消息
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (player.isOnline()) {
+                        player.sendMessage("§6§l===== 正版验证 =====");
+                        player.sendMessage("§7请点击下方链接完成Microsoft账号验证:");
+                        player.sendMessage("§b" + authUrl);
+                        player.sendMessage("§7链接10分钟内有效");
+                        player.sendMessage("§7验证完成后将自动登录服务器");
+                        player.sendMessage("§6§l====================");
+                        // 尝试发送可点击的URL
+                        try {
+                            net.kyori.adventure.text.Component msg = net.kyori.adventure.text.Component.text()
+                                    .content("§7[§b点击打开验证页面§7]")
+                                    .clickEvent(net.kyori.adventure.text.event.ClickEvent.openUrl(authUrl))
+                                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(net.kyori.adventure.text.Component.text("§e点击在浏览器中打开验证页面")))
+                                    .build();
+                            player.sendMessage(msg);
+                        } catch (Exception e) {
+                            // 低版本不支持Adventure API，忽略
+                        }
+                    }
+                });
+
+                // 启动轮询
+                startMinecraftAuthPoller(playerName, sessionId, player);
+
+            } catch (Exception e) {
+                plugin.getLogger().warning("[正版验证] 创建会话失败: " + e.getMessage());
+                player.sendMessage("§c验证请求失败，请稍后重试");
+            }
+        });
+    }
+
+    /**
+     * 启动轮询器：定期检查PHP端验证状态
+     */
+    private void startMinecraftAuthPoller(String playerName, String sessionId, Player player) {
+        // 取消已有的轮询器
+        BukkitRunnable existing = minecraftAuthPollers.remove(playerName);
+        if (existing != null) {
+            existing.cancel();
+        }
+
+        final String[] pollData = {sessionId};
+        final long startTime = System.currentTimeMillis();
+        final long maxPollTime = 660000; // 11分钟（比会话过期多1分钟）
+
+        BukkitRunnable poller = new BukkitRunnable() {
+            @Override
+            public void run() {
+                // 超时检查
+                if (System.currentTimeMillis() - startTime > maxPollTime) {
+                    plugin.getLogger().info("[正版验证] 轮询超时: " + playerName);
+                    minecraftAuthSessions.remove(playerName);
+                    minecraftAuthPollers.remove(playerName);
+                    if (player.isOnline()) {
+                        player.sendMessage("§c验证超时，请重新发起验证");
+                    }
+                    this.cancel();
+                    return;
+                }
+
+                // 玩家已下线
+                if (!player.isOnline()) {
+                    plugin.getLogger().info("[正版验证] 玩家下线，停止轮询: " + playerName);
+                    minecraftAuthSessions.remove(playerName);
+                    minecraftAuthPollers.remove(playerName);
+                    this.cancel();
+                    return;
+                }
+
+                // 玩家已登录（可能通过其他方式）
+                if (plugin.getLoggedIn().contains(playerName)) {
+                    plugin.getLogger().info("[正版验证] 玩家已登录，停止轮询: " + playerName);
+                    minecraftAuthSessions.remove(playerName);
+                    minecraftAuthPollers.remove(playerName);
+                    this.cancel();
+                    return;
+                }
+
+                // 异步查询PHP
+                webExecutor.submit(() -> {
+                    try {
+                        String secret = java.net.URLEncoder.encode(secretKey, StandardCharsets.UTF_8);
+                        String url = webBaseUrl + "/api/minecraft_auth.php?action=check_session&session_id="
+                                + java.net.URLEncoder.encode(pollData[0], StandardCharsets.UTF_8)
+                                + "&secret=" + secret;
+
+                        String response = doGet(url);
+                        if (response == null) return;
+
+                        com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                        if (!json.get("success").getAsBoolean()) return;
+
+                        com.google.gson.JsonObject data = json.getAsJsonObject("data");
+                        String status = data.get("status").getAsString();
+
+                        if ("verified".equals(status)) {
+                            // 验证成功！
+                            String mcUuid = data.get("mc_uuid").getAsString();
+                            String mcUsername = data.get("mc_username").getAsString();
+
+                            plugin.getLogger().info("[正版验证] 验证成功: " + playerName + " -> " + mcUsername + " (" + mcUuid + ")");
+
+                            // 记录为已验证正版玩家
+                            plugin.addVerifiedPremiumPlayer(playerName, mcUuid, mcUsername);
+
+                            // 在主线程执行自动登录
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                if (player.isOnline() && !plugin.getLoggedIn().contains(playerName)) {
+                                    player.sendMessage("§a§l正版验证成功！欢迎 " + mcUsername + "！");
+                                    plugin.autoLogin(player, "premium");
+                                }
+                            });
+
+                            // 清理会话
+                            minecraftAuthSessions.remove(playerName);
+                            minecraftAuthPollers.remove(playerName);
+                            this.cancel();
+
+                        } else if ("failed".equals(status) || "expired".equals(status)) {
+                            plugin.getLogger().info("[正版验证] 验证失败/过期: " + playerName + " -> " + status);
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                if (player.isOnline()) {
+                                    player.sendMessage("§c验证" + ("expired".equals(status) ? "已过期" : "失败") + "，请重新发起验证");
+                                }
+                            });
+                            minecraftAuthSessions.remove(playerName);
+                            minecraftAuthPollers.remove(playerName);
+                            this.cancel();
+                        }
+                        // status == "pending" → 继续轮询
+
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[正版验证] 轮询查询异常: " + e.getMessage());
+                    }
+                });
+            }
+        };
+
+        // 每2秒轮询一次
+        poller.runTaskTimerAsynchronously(plugin, 40L, 40L); // 40 ticks = 2 seconds
+        minecraftAuthPollers.put(playerName, poller);
+    }
+
+    /**
+     * 停止玩家的验证轮询（玩家下线时调用）
+     */
+    public void stopMinecraftAuthPoller(String playerName) {
+        BukkitRunnable poller = minecraftAuthPollers.remove(playerName);
+        if (poller != null) {
+            poller.cancel();
+        }
+        minecraftAuthSessions.remove(playerName);
+    }
+
     /**
      * 同步在线玩家列表到PHP端（用于Web登录状态检查）
      * 注意：推送所有在线玩家（包括未登录的），PHP端通过 web_login_verified 判断是否已认证

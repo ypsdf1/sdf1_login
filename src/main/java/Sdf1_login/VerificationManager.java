@@ -50,6 +50,16 @@ public class VerificationManager {
                 "[Sdf1_login] 当前UUID: " + uuid);
 
         try {
+            // ★ 检查1：是否已通过Microsoft OAuth验证
+            if (plugin.isVerifiedPremiumPlayer(name)) {
+                plugin.getLogger().info(
+                        "[Sdf1_login] 结论: 已通过OAuth验证的正版玩家");
+                plugin.getLogger().info(
+                        "[Sdf1_login] ====== 验证结束 ======");
+                callback.accept(true);
+                return;
+            }
+
             UUID offlineUuid = UUID.nameUUIDFromBytes(
                     ("OfflinePlayer:" + name)
                             .getBytes(StandardCharsets.UTF_8));
@@ -74,9 +84,23 @@ public class VerificationManager {
                 return;
             }
 
+            // ★ 检查2：通过PHP后端验证（优先）
             plugin.getLogger().info(
-                    "[Sdf1_login] UUID为离线格式，"
-                            + "查询Mojang API...");
+                    "[Sdf1_login] UUID为离线格式，通过PHP后端验证...");
+            Boolean phpResult = verifyViaPhpBackend(name);
+            if (phpResult != null) {
+                plugin.getLogger().info(
+                        "[Sdf1_login] PHP后端验证结果: "
+                                + (phpResult ? "正版" : "非正版"));
+                plugin.getLogger().info(
+                        "[Sdf1_login] ====== 验证结束 ======");
+                callback.accept(phpResult);
+                return;
+            }
+
+            // ★ 检查3：PHP不可用，直接查询Mojang API（降级）
+            plugin.getLogger().info(
+                    "[Sdf1_login] PHP后端不可用，降级到Mojang API...");
             UUID mojangUuid = fetchMojangUuid(name);
 
             if (mojangUuid != null) {
@@ -103,6 +127,53 @@ public class VerificationManager {
                             + e.getMessage());
             callback.accept(false);
         }
+    }
+
+    /**
+     * 通过PHP后端验证玩家是否正版
+     * @return true=正版, false=非正版, null=PHP不可用
+     */
+    private Boolean verifyViaPhpBackend(String playerName) {
+        try {
+            WebManager webMgr = plugin.webManager;
+            if (webMgr == null) return null;
+
+            String webBaseUrl = webMgr.getWebBaseUrl();
+            if (webBaseUrl == null || webBaseUrl.isEmpty()) return null;
+
+            String secret = java.net.URLEncoder.encode(
+                    webMgr.getSecretKey(), StandardCharsets.UTF_8);
+            String url = webBaseUrl + "/api/minecraft_auth.php?action=verify_premium&player="
+                    + java.net.URLEncoder.encode(playerName, StandardCharsets.UTF_8)
+                    + "&secret=" + secret;
+
+            // 使用WebManager的HTTP客户端
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(5))
+                    .build();
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(url))
+                    .timeout(java.time.Duration.ofSeconds(10))
+                    .header("User-Agent", "Sdf1_login/2.7")
+                    .header("Accept", "application/json")
+                    .GET()
+                    .build();
+            java.net.http.HttpResponse<String> resp = client.send(req,
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                com.google.gson.JsonObject json = com.google.gson.JsonParser
+                        .parseString(resp.body()).getAsJsonObject();
+                if (json.get("success").getAsBoolean()) {
+                    com.google.gson.JsonObject data = json.getAsJsonObject("data");
+                    return data.get("is_premium").getAsBoolean();
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning(
+                    "[Sdf1_login] PHP验证异常: " + e.getMessage());
+        }
+        return null; // PHP不可用
     }
 
     private UUID fetchMojangUuid(String name) {

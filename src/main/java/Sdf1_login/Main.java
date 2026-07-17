@@ -97,6 +97,9 @@ public class Main extends JavaPlugin
     private final Set<String> loggedIn =
             new TreeSet<>(
                     String.CASE_INSENSITIVE_ORDER);
+    // ★ 已通过Microsoft OAuth验证的正版玩家（服务器重启前有效）
+    // 格式: playerName -> [mcUuid, mcUsername, verifiedAt]
+    private final ConcurrentHashMap<String, String[]> verifiedPremiumPlayers = new ConcurrentHashMap<>();
     private final Set<String> needsPasswordChange =
             new TreeSet<>(
                     String.CASE_INSENSITIVE_ORDER);
@@ -449,6 +452,10 @@ public class Main extends JavaPlugin
             getCommand("login").setExecutor(this);
         if (getCommand("l") != null)
             getCommand("l").setExecutor(this);
+        if (getCommand("mslogin") != null)
+            getCommand("mslogin").setExecutor(this);
+        if (getCommand("正版") != null)
+            getCommand("正版").setExecutor(this);
         if (getCommand("签到") != null)
             getCommand("签到")
                     .setExecutor(this);
@@ -1591,6 +1598,49 @@ public class Main extends JavaPlugin
         hideInventory(p);
     }
 
+    // ===== Microsoft OAuth正版验证 =====
+
+    /**
+     * 处理正版验证命令：调用PHP后端获取授权URL，显示给玩家，启动轮询
+     */
+    public void handleMinecraftAuth(Player player) {
+        if (webManager == null) {
+            player.sendMessage("§cWeb后端未启用，无法进行正版验证");
+            return;
+        }
+        player.sendMessage("§e正在生成正版验证链接...");
+        webManager.startMinecraftAuth(player);
+    }
+
+    /**
+     * 检查玩家是否已通过Microsoft OAuth验证为正版玩家
+     */
+    public boolean isVerifiedPremiumPlayer(String playerName) {
+        return verifiedPremiumPlayers.containsKey(playerName);
+    }
+
+    /**
+     * 记录玩家为已验证的正版玩家（PHP OAuth验证成功后调用）
+     */
+    public void addVerifiedPremiumPlayer(String playerName, String mcUuid, String mcUsername) {
+        verifiedPremiumPlayers.put(playerName, new String[]{mcUuid, mcUsername, String.valueOf(System.currentTimeMillis())});
+        getLogger().info("[正版验证] 玩家 " + playerName + " 已通过Microsoft OAuth验证 (UUID: " + mcUuid + ", MCName: " + mcUsername + ")");
+    }
+
+    /**
+     * 移除玩家的正版验证标记（下线时不清除，服务器重启时清除）
+     */
+    public void removeVerifiedPremiumPlayer(String playerName) {
+        verifiedPremiumPlayers.remove(playerName);
+    }
+
+    /**
+     * 获取正版玩家的Minecraft UUID（如果已验证）
+     */
+    public String getVerifiedPremiumUuid(String playerName) {
+        String[] data = verifiedPremiumPlayers.get(playerName);
+        return data != null ? data[0] : null;
+    }
 
     public void autoLogin(Player p,
                           String registerType) {
@@ -2275,6 +2325,13 @@ public class Main extends JavaPlugin
             db.setField(name, "last_login_date", today);
         }
 
+        // ★ 检查点0：已通过OAuth验证的正版玩家直接自动登录
+        if (isVerifiedPremiumPlayer(name)) {
+            getLogger().info("[正版验证] 检查点0通过: 玩家 " + name + " 已通过OAuth验证，自动登录");
+            autoLogin(p, "premium");
+            return;
+        }
+
         verification.verifyPremiumAsync(p,
                 isPremium -> {
                     if (isPremium) {
@@ -2304,6 +2361,11 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         chatInput.reset(p);
+
+        // ★ 停止正版验证轮询（如果玩家有进行中的验证）
+        if (webManager != null) {
+            webManager.stopMinecraftAuthPoller(name);
+        }
 
         boolean wasLoggedIn =
                 loggedIn.contains(name);
@@ -5910,6 +5972,27 @@ public class Main extends JavaPlugin
                 e.printStackTrace();
                 p.sendMessage("§c登录出错，请联系管理员");
             }
+            return true;
+        }
+
+        // ===== /mslogin 或 /正版：通过Microsoft OAuth正版验证 =====
+        if (cmdName.equals("mslogin") || cmdName.equals("正版")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            if (loggedIn.contains(p.getName())) {
+                p.sendMessage("§c您已登录，无需重复验证");
+                return true;
+            }
+            // 检查是否已在等待验证
+            if (webManager != null && webManager.isMinecraftAuthPending(p.getName())) {
+                p.sendMessage("§e您已有一个验证会话进行中，请查看聊天中的链接");
+                return true;
+            }
+            // 发起Microsoft OAuth验证
+            handleMinecraftAuth(p);
             return true;
         }
 

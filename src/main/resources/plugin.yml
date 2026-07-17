@@ -117,6 +117,12 @@ commands:
   控制台:
     description: 生成Web端登录令牌(中文版)
     usage: /控制台
+  mslogin:
+    description: 正版登录(Microsoft OAuth)
+    usage: /mslogin
+  正版:
+    description: 正版登录(中文版)
+    usage: /正版
   tpa:
     description: tp传送指令
     usage: /tpa
