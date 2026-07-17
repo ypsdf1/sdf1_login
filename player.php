@@ -1211,7 +1211,18 @@ if ($currentVersion !== $BUILD_VERSION) {
                 products.forEach((product, index) => {
                     const isSelected = index === 0; // 默认选中第一个
                     const isBlindBox = product.bond_min !== product.bond_max; // 盲盒：范围格式
-                    const offerText = product.temporary_offer ? `<div style="font-size:12px;color:var(--yellow);margin-top:4px">🎁 ${product.temporary_offer}${product.expire_display ? ' (有效期: ' + product.expire_display + ')' : ''}</div>` : '';
+                    // 活动信息显示（根据是否过期显示不同样式）
+                    let offerText = '';
+                    if (product.temporary_offer) {
+                        const isExpired = product.expire_valid === false || product.expire_valid === 'false';
+                        if (isExpired) {
+                            // 活动已过期：显示灰色+删除线
+                            offerText = `<div style="font-size:12px;color:var(--dim);margin-top:4px;text-decoration:line-through">🎁 ${product.temporary_offer} (已过期)</div>`;
+                        } else {
+                            // 活动有效：显示黄色
+                            offerText = `<div style="font-size:12px;color:var(--yellow);margin-top:4px">🎁 ${product.temporary_offer}${product.expire_display ? ' (有效期: ' + product.expire_display + ')' : ''}</div>`;
+                        }
+                    }
                     const stockText = product.stock === -1 ? '无限库存' : (product.stock > 0 ? `库存: ${product.stock}` : '售罄');
                     const stockColor = product.stock === -1 ? 'var(--green)' : (product.stock > 0 ? 'var(--dim)' : 'var(--red)');
                     const isSoldOut = product.stock === 0; // 售罄：仍展示，但禁止购买
@@ -1220,9 +1231,10 @@ if ($currentVersion !== $BUILD_VERSION) {
                     // ★ 盲盒随机语录
                     const quoteText = isBlindBox ? `<div style="font-size:12px;color:var(--accent);margin-top:6px;font-style:italic">${blindBoxQuotes[Math.floor(Math.random() * blindBoxQuotes.length)]}</div>` : '';
 
-                    // 计算显示价格（折扣价格优先）
-                    const displayPrice = product.discount_price > 0 ? product.discount_price : product.price;
-                    const hasDiscount = product.discount_price > 0 && product.discount_price < product.price;
+                    // 计算显示价格（折扣价格优先，但必须折扣有效且未过期）
+                    const discountValid = product.discount_active === true || product.discount_active === 'true';
+                    const displayPrice = (discountValid && product.discount_price > 0) ? product.discount_price : product.price;
+                    const hasDiscount = discountValid && product.discount_price > 0 && product.discount_price < product.price;
 
                     html += `
                         <div class="shop-product-card" data-product-id="${product.id}" data-price="${displayPrice}" data-bond-min="${product.bond_min}" data-bond-max="${product.bond_max}" data-stock="${product.stock}" onclick="selectShopProduct(this)" style="border:1px solid ${isSelected ? 'var(--accent)' : 'var(--border)'};border-radius:14px;padding:16px;margin-bottom:12px;background:${isSelected ? 'linear-gradient(135deg,rgba(63,185,80,0.08),rgba(88,166,255,0.06))' : 'transparent'};cursor:pointer;transition:all 0.2s ease;${isSoldOut ? 'opacity:0.72;' : ''}">
