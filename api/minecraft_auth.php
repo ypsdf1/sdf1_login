@@ -160,7 +160,9 @@ function msGet($url, $headers = []) {
 function getAuthUrl($sessionId) {
     $clientId = MS_CLIENT_ID;
     $redirectUri = MS_REDIRECT_URI;
-    $scope = 'XboxLive.signin';
+    // ★ 使用Microsoft Graph的User.Read scope（不依赖Xbox Live API权限）
+    // Xbox Live token交换会在后端用此token完成
+    $scope = 'User.Read offline_access';
 
     $params = http_build_query([
         'client_id' => $clientId,
