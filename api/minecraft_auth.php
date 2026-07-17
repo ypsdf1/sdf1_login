@@ -103,6 +103,20 @@ function generateSessionId() {
  * 向Microsoft发送POST请求
  */
 function msPost($url, $data, $headers = []) {
+    // 检查调用者是否已指定Content-Type
+    $hasContentType = false;
+    foreach ($headers as $h) {
+        if (stripos($h, 'Content-Type:') === 0) {
+            $hasContentType = true;
+            break;
+        }
+    }
+
+    $defaultHeaders = ['Accept: application/json'];
+    if (!$hasContentType) {
+        $defaultHeaders[] = 'Content-Type: application/x-www-form-urlencoded';
+    }
+
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
@@ -110,15 +124,26 @@ function msPost($url, $data, $headers = []) {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 30,
         CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_HTTPHEADER => array_merge([
-            'Content-Type: application/x-www-form-urlencoded',
-            'Accept: application/json',
-        ], $headers),
+        CURLOPT_HTTPHEADER => array_merge($defaultHeaders, $headers),
     ]);
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $error = curl_error($ch);
     curl_close($ch);
+
+    // 详细日志记录
+    $log = date('Y-m-d H:i:s') . "\n";
+    $log .= "URL: $url\n";
+    if (is_array($data)) {
+        $log .= "Data: " . http_build_query($data) . "\n";
+    } else {
+        $log .= "Data: $data\n";
+    }
+    $log .= "HTTP Code: $httpCode\n";
+    $log .= "cURL Error: " . ($error ?: 'none') . "\n";
+    $log .= "Response: " . substr($response, 0, 500) . "\n";
+    $log .= str_repeat('-', 80) . "\n";
+    @file_put_contents(__DIR__ . '/debug_minecraft.log', $log, FILE_APPEND);
 
     if ($error) {
         return ['error' => "cURL error: $error"];
@@ -144,6 +169,15 @@ function msGet($url, $headers = []) {
     $error = curl_error($ch);
     curl_close($ch);
 
+    // 详细日志记录
+    $log = date('Y-m-d H:i:s') . "\n";
+    $log .= "GET URL: $url\n";
+    $log .= "HTTP Code: $httpCode\n";
+    $log .= "cURL Error: " . ($error ?: 'none') . "\n";
+    $log .= "Response: " . substr($response, 0, 500) . "\n";
+    $log .= str_repeat('-', 80) . "\n";
+    @file_put_contents(__DIR__ . '/debug_minecraft.log', $log, FILE_APPEND);
+
     if ($error) {
         return ['error' => "cURL error: $error"];
     }
@@ -156,13 +190,15 @@ function msGet($url, $headers = []) {
 
 /**
  * 步骤1: 生成Microsoft授权URL
+ * ★ 使用Minecraft官方启动器的公共Client ID（00000000402b5328）
+ *   此Client ID自带Xbox Live和Minecraft API权限，无需申请
+ *   缺点：redirect_uri必须是login.live.com的桌面端页面，玩家需手动复制授权码
  */
 function getAuthUrl($sessionId) {
-    $clientId = MS_CLIENT_ID;
-    $redirectUri = MS_REDIRECT_URI;
-    // ★ 使用Microsoft Graph的User.Read scope（不依赖Xbox Live API权限）
-    // Xbox Live token交换会在后端用此token完成
-    $scope = 'User.Read offline_access';
+    $clientId = '00000000402b5328'; // Minecraft官方启动器公共客户端ID
+    // 桌面端专用redirect_uri（Microsoft展示授权码的页面）
+    $redirectUri = 'https://login.live.com/oauth20_desktop.srf';
+    $scope = 'XboxLive.signin offline_access';
 
     $params = http_build_query([
         'client_id' => $clientId,
@@ -170,6 +206,7 @@ function getAuthUrl($sessionId) {
         'scope' => $scope,
         'redirect_uri' => $redirectUri,
         'state' => $sessionId,
+        'prompt' => 'select_account',
     ]);
 
     return "https://login.live.com/oauth20_authorize.srf?$params";
@@ -177,14 +214,20 @@ function getAuthUrl($sessionId) {
 
 /**
  * 步骤2: 用授权码交换Access Token
+ * ★ 公共客户端（00000000402b5328）不需要client_secret
+ *   redirect_uri必须与授权时一致
  */
 function exchangeToken($code) {
+    $clientId = '00000000402b5328'; // Minecraft公共客户端ID
+    // 桌面端redirect_uri（与getAuthUrl一致）
+    $redirectUri = 'https://login.live.com/oauth20_desktop.srf';
+
     $result = msPost('https://login.live.com/oauth20_token.srf', [
-        'client_id' => MS_CLIENT_ID,
-        'client_secret' => MS_CLIENT_SECRET,
+        'client_id' => $clientId,
         'code' => $code,
         'grant_type' => 'authorization_code',
-        'redirect_uri' => MS_REDIRECT_URI,
+        'redirect_uri' => $redirectUri,
+        'scope' => 'XboxLive.signin offline_access',
     ]);
 
     if (isset($result['error'])) {
@@ -207,13 +250,19 @@ function exchangeToken($code) {
 
 /**
  * 步骤3: 获取Xbox Live Token
+ * ★ RpsTicket格式确认：必须用 "d= {token}" 前缀（来自日志验证）
  */
 function getXboxToken($msAccessToken) {
+    $rpsTicket = 'd=' . $msAccessToken;
+
+    $log = date('Y-m-d H:i:s') . "\n";
+    $log .= "=== Xbox Token (d=前缀) ===\n";
+
     $result = msPost('https://user.auth.xboxlive.com/user/authenticate', json_encode([
         'Properties' => [
             'AuthMethod' => 'RPS',
             'SiteName' => 'user.auth.xboxlive.com',
-            'RpsTicket' => $msAccessToken,
+            'RpsTicket' => $rpsTicket,
         ],
         'RelyingParty' => 'http://auth.xboxlive.com',
         'TokenType' => 'JWT',
@@ -222,21 +271,26 @@ function getXboxToken($msAccessToken) {
         'Accept: application/json',
     ]);
 
+    $log .= "HTTP Code: " . ($result['code'] ?? 'N/A') . "\n";
+    $log .= "Response: " . json_encode($result['body'] ?? $result['error'] ?? 'N/A') . "\n";
+    $log .= str_repeat('-', 80) . "\n";
+    @file_put_contents(__DIR__ . '/debug_minecraft.log', $log, FILE_APPEND);
+
     if (isset($result['error'])) {
         return ['error' => 'Xbox auth failed: ' . $result['error']];
     }
     if ($result['code'] !== 200) {
-        return ['error' => 'Xbox auth HTTP ' . $result['code']];
+        return ['error' => "Xbox auth HTTP {$result['code']}: " . json_encode($result['body'] ?? [])];
     }
 
     $body = $result['body'];
     if (!isset($body['Token'])) {
-        return ['error' => 'No Xbox token', 'response' => $body];
+        return ['error' => 'No Token in response: ' . json_encode($body)];
     }
 
     return [
         'token' => $body['Token'],
-        'uhs' => $body['IssueClaims']['uhs'] ?? '',
+        'uhs' => $body['IssueClaims']['uhs'] ?? ($body['DisplayClaims']['xui'][0]['uhs'] ?? ''),
     ];
 }
 
@@ -403,9 +457,9 @@ switch ($action) {
         if (empty($player)) error('缺少player参数');
         if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
 
-        // 检查MS_CLIENT_SECRET是否配置
-        if (empty(MS_CLIENT_SECRET)) {
-            error('Microsoft OAuth未配置：缺少MS_CLIENT_SECRET，请在pay_secrets.php中设置');
+        // 检查MS_CLIENT_ID是否配置（公共客户端不需要secret）
+        if (empty(MS_CLIENT_ID)) {
+            error('Microsoft OAuth未配置：缺少MS_CLIENT_ID，请在pay_secrets.php中设置');
         }
 
         // 清理该玩家的旧会话
@@ -426,6 +480,7 @@ switch ($action) {
         success([
             'session_id' => $sessionId,
             'auth_url' => $authUrl,
+            'paste_url' => 'https://caoyuan.ypshidifu.cn/plugin/api/minecraft_auth.php?action=paste_code_page&session_id=' . $sessionId,
             'expires_in' => 600,
         ]);
         break;
@@ -556,6 +611,56 @@ switch ($action) {
         exit;
     }
 
+    // ===== 玩家手动粘贴授权码（公共客户端流程） =====
+    case 'verify_code': {
+        // 兼容JSON和表单两种POST方式
+        $json = json_decode(file_get_contents('php://input'), true);
+        $sessionId = postParam('session_id') ?: ($json['session_id'] ?? '');
+        $code = postParam('code') ?: ($json['code'] ?? '');
+        $secret = postParam('secret') ?: ($json['secret'] ?? '');
+
+        if (empty($sessionId)) error('缺少session_id参数');
+        if (empty($code)) error('缺少code参数（授权码）');
+
+        // 密钥验证：Java调用需要secret，浏览器表单用session_id自身认证
+        if (!empty($secret)) {
+            if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
+        }
+
+        // 查询会话
+        $stmt = $db->prepare("SELECT * FROM mc_auth_sessions WHERE session_id = ?");
+        $stmt->execute([$sessionId]);
+        $session = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$session) error('会话不存在或已过期');
+        if ($session['status'] !== 'pending') error('会话状态异常: ' . $session['status']);
+        if (time() > $session['expires_at']) {
+            $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'expired' WHERE session_id = ?");
+            $stmt->execute([$sessionId]);
+            error('会话已过期，请重新发起验证');
+        }
+
+        // 执行完整OAuth流程
+        $result = completeAuthFlow($code);
+
+        if (isset($result['error'])) {
+            $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'failed' WHERE session_id = ?");
+            $stmt->execute([$sessionId]);
+            error('验证失败: ' . $result['error']);
+        }
+
+        // 验证成功
+        $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'verified', mc_uuid = ?, mc_username = ?, mc_access_token = ?, verified_at = ? WHERE session_id = ?");
+        $stmt->execute([$result['uuid'], $result['name'], $result['access_token'], time(), $sessionId]);
+
+        success([
+            'status' => 'verified',
+            'mc_uuid' => $result['uuid'],
+            'mc_username' => $result['name'],
+        ]);
+        break;
+    }
+
     // ===== Java调用：直接验证（用于验证Minecraft账号是否正版） =====
     case 'verify_premium': {
         $player = getParam('player');
@@ -593,6 +698,93 @@ switch ($action) {
             ]);
         }
         break;
+    }
+
+    // ===== 网页粘贴授权码页面（公共客户端流程） =====
+    case 'paste_code_page': {
+        $sessionId = getParam('session_id');
+        if (empty($sessionId)) {
+            echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>参数错误</title></head><body><h1>缺少session_id参数</h1></body></html>";
+            exit;
+        }
+
+        // 验证session存在
+        $stmt = $db->prepare("SELECT * FROM mc_auth_sessions WHERE session_id = ?");
+        $stmt->execute([$sessionId]);
+        $session = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$session) {
+            echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>会话不存在</title></head><body><h1>会话不存在或已过期</h1></body></html>";
+            exit;
+        }
+
+        $playerName = htmlspecialchars($session['player_name']);
+        echo <<<HTML
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Minecraft正版验证 - 粘贴授权码</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;background:#0f0f23;color:#e0e0e0}
+.card{background:#1a1a3e;padding:40px;border-radius:16px;text-align:center;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4)}
+h2{margin-bottom:8px;color:#4ade80}
+.player{color:#888;font-size:14px;margin-bottom:24px}
+.steps{text-align:left;background:#0f0f23;border-radius:8px;padding:16px;margin-bottom:24px;font-size:14px;line-height:1.8}
+.steps li{margin-left:20px;color:#bbb}
+.steps li b{color:#e0e0e0}
+.input-group{margin-bottom:16px}
+input[type=text]{width:100%;padding:14px 16px;font-size:16px;font-family:monospace;background:#0f0f23;border:2px solid #333;border-radius:8px;color:#4ade80;text-align:center;letter-spacing:2px;outline:none;transition:border-color 0.2s}
+input[type=text]:focus{border-color:#4ade80}
+button{width:100%;padding:14px;font-size:16px;font-weight:bold;background:#4ade80;color:#0f0f23;border:none;border-radius:8px;cursor:pointer;transition:all 0.2s}
+button:hover{background:#22c55e;transform:translateY(-1px)}
+button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.msg{margin-top:16px;font-size:14px;min-height:20px}
+.msg.ok{color:#4ade80}
+.msg.err{color:#f87171}
+</style>
+</head>
+<body>
+<div class="card">
+<h2>🎮 正版验证</h2>
+<p class="player">玩家: <b>$playerName</b></p>
+<ol class="steps">
+<li>在上方Microsoft页面<b>复制授权码</b></li>
+<li>将授权码<b>粘贴</b>到下方输入框</li>
+<li>点击"提交验证"</li>
+</ol>
+<div class="input-group">
+<input type="text" id="codeInput" placeholder="粘贴授权码到这里" autofocus autocomplete="off">
+</div>
+<button id="submitBtn" onclick="submitCode()">提交验证</button>
+<div class="msg" id="msg"></div>
+</div>
+<script>
+var sessionId="{$sessionId}";
+function submitCode(){
+var code=document.getElementById('codeInput').value.trim();
+if(!code){showMsg('请输入授权码','err');return}
+var btn=document.getElementById('submitBtn');
+btn.disabled=true;btn.textContent='验证中...';
+var xhr=new XMLHttpRequest();
+xhr.open('POST','minecraft_auth.php?action=verify_code',true);
+xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+xhr.onreadystatechange=function(){
+if(xhr.readyState===4){
+try{var d=JSON.parse(xhr.responseText);
+if(d.success){showMsg('✅ 验证成功！请关闭此页面返回游戏','ok');}
+else{showMsg('❌ '+(d.error||'验证失败'),'err');btn.disabled=false;btn.textContent='提交验证';}
+}catch(e){showMsg('❌ 服务器响应异常','err');btn.disabled=false;btn.textContent='提交验证';}
+}};
+xhr.send('session_id='+encodeURIComponent(sessionId)+'&code='+encodeURIComponent(code));
+}
+function showMsg(t,c){var m=document.getElementById('msg');m.textContent=t;m.className='msg '+c;}
+</script>
+</body>
+</html>
+HTML;
+        exit;
     }
 
     default:
