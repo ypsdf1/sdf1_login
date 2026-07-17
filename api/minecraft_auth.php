@@ -373,7 +373,16 @@ function completeAuthFlow($code) {
 //  Action处理
 // ====================================================================
 
-$action = getParam('action');
+// ★ 检测Microsoft OAuth回调（带code+state，没有action参数）
+$code = getParam('code');
+$state = getParam('state');
+if (!empty($code) && !empty($state)) {
+    // 自动路由到callback处理
+    $action = 'callback';
+} else {
+    $action = getParam('action');
+}
+
 $db = getDb();
 ensureTable($db);
 
