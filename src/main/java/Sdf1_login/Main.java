@@ -13,6 +13,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import java.nio.charset.StandardCharsets;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -1601,6 +1602,37 @@ public class Main extends JavaPlugin
     }
 
     // ===== Microsoft OAuth正版验证 =====
+
+    /**
+     * 从用户输入中提取Microsoft OAuth授权码
+     * 支持：纯授权码、完整URL（含code=参数）
+     */
+    private String extractCodeFromInput(String input) {
+        if (input == null || input.isEmpty()) return null;
+        input = input.trim();
+
+        // 如果包含code=参数，从中提取
+        if (input.contains("code=") || input.startsWith("http")) {
+            try {
+                // 尝试解析URL中的query参数
+                int qIdx = input.indexOf('?');
+                if (qIdx >= 0) {
+                    String query = input.substring(qIdx + 1);
+                    for (String param : query.split("&")) {
+                        String[] kv = param.split("=", 2);
+                        if (kv.length == 2 && kv[0].equals("code")) {
+                            return java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // 解析失败，继续尝试其他方式
+            }
+        }
+
+        // 直接作为授权码返回
+        return input;
+    }
 
     /**
      * 处理正版验证命令：调用PHP后端获取授权URL，显示给玩家，启动轮询
@@ -5998,7 +6030,7 @@ public class Main extends JavaPlugin
             return true;
         }
 
-        // ===== /mscode <授权码>：粘贴Microsoft OAuth授权码 =====
+        // ===== /mscode <授权码或URL>：粘贴Microsoft OAuth授权码或完整URL =====
         if (cmdName.equals("mscode")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
@@ -6010,13 +6042,16 @@ public class Main extends JavaPlugin
                 return true;
             }
             if (args.length < 1) {
-                p.sendMessage("§c用法: /mscode <授权码>");
-                p.sendMessage("§7从Microsoft登录页面复制授权码后粘贴到这里");
+                p.sendMessage("§c用法: /mscode <授权码或完整URL>");
+                p.sendMessage("§7粘贴Microsoft登录后的授权码，或粘贴包含code=的完整URL");
                 return true;
             }
-            String code = args[0].trim();
-            if (code.length() < 10) {
-                p.sendMessage("§c授权码格式不正确，请复制完整的授权码");
+            String rawInput = String.join(" ", args).trim();
+            // 自动从URL中提取code参数
+            String code = extractCodeFromInput(rawInput);
+            if (code == null || code.length() < 10) {
+                p.sendMessage("§c无法从输入中提取有效的授权码");
+                p.sendMessage("§7请粘贴授权码或包含code=的完整URL");
                 return true;
             }
             // 检查是否有进行中的会话

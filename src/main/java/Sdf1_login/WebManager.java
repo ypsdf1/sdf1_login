@@ -555,11 +555,15 @@ public class WebManager {
                 detectPhpBusy(body);  // ★ 锁库检测
                 return body;
             }
-            // ★ 500时记录响应体（PHP错误信息在body里）
+            // ★ 4xx/5xx也返回body（PHP的error()返回有用的JSON错误信息）
             String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            // 返回body让调用方可以解析PHP错误信息
+            if (body != null && !body.isEmpty()) {
+                return body;
+            }
             return null;
         } catch (Exception e) {
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
@@ -633,11 +637,14 @@ public class WebManager {
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 return resp.body();
             }
-            // ★ 非2xx记录响应体
+            // ★ 非2xx也返回body（PHP的error()返回有用的JSON错误信息）
             String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            if (body != null && !body.isEmpty()) {
+                return body;
+            }
             return null;
         } catch (Exception e) {
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
@@ -674,11 +681,14 @@ public class WebManager {
                 sslDowngraded = false;  // 恢复正常HTTPS
                 return resp.body();
             }
-            // ★ 非2xx记录响应体
+            // ★ 非2xx也返回body（PHP的error()返回有用的JSON错误信息）
             String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            if (body != null && !body.isEmpty()) {
+                return body;
+            }
             return null;
         } catch (Exception e) {
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
@@ -4945,7 +4955,16 @@ public class WebManager {
                     return;
                 }
 
-                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                com.google.gson.JsonObject json;
+                try {
+                    json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                } catch (Exception parseEx) {
+                    // PHP返回了非JSON（如500错误页面），显示截断内容
+                    String preview = response.length() > 150 ? response.substring(0, 150) + "..." : response;
+                    player.sendMessage("§c后端返回异常: " + preview);
+                    plugin.getLogger().warning("[正版验证] PHP返回非JSON: " + preview);
+                    return;
+                }
                 if (!json.get("success").getAsBoolean()) {
                     String error = json.has("error") ? json.get("error").getAsString() : "未知错误";
                     player.sendMessage("§c验证失败: " + error);
@@ -4965,13 +4984,9 @@ public class WebManager {
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (player.isOnline()) {
                         player.sendMessage("§6§l===== 正版验证 =====");
-                        player.sendMessage("§7方式一: 点击链接完成验证后，复制授权码粘贴到聊天:");
-                        player.sendMessage("§b/mscode <授权码>");
-                        player.sendMessage("§7方式二: 在浏览器中打开验证页面:");
-                        if (finalPasteUrl != null) {
-                            player.sendMessage("§b" + finalPasteUrl);
-                        }
-                        player.sendMessage("§7步骤: 打开链接 → 登录Microsoft → 复制授权码 → /mscode粘贴");
+                        player.sendMessage("§7方式一: 点击下方链接打开粘贴页面");
+                        player.sendMessage("§7方式二: /mscode <粘贴完整URL或授权码>");
+                        player.sendMessage("§7步骤: 打开链接 → 登录 → 复制地址栏URL → 粘贴");
                         player.sendMessage("§7链接10分钟内有效");
                         player.sendMessage("§6§l====================");
                         // 尝试发送可点击的URL（授权链接）
@@ -5153,18 +5168,27 @@ public class WebManager {
             try {
                 String url = webBaseUrl + "/api/minecraft_auth.php?action=verify_code";
 
-                // POST参数
-                String postData = "session_id=" + java.net.URLEncoder.encode(sessionId, StandardCharsets.UTF_8)
-                        + "&code=" + java.net.URLEncoder.encode(code, StandardCharsets.UTF_8)
-                        + "&secret=" + secret;
+                // POST参数（JSON格式，与doPost的Content-Type一致）
+                com.google.gson.JsonObject postData = new com.google.gson.JsonObject();
+                postData.addProperty("session_id", sessionId);
+                postData.addProperty("code", code);
+                postData.addProperty("secret", secret);
 
-                String response = doPost(url, postData);
+                String response = doPost(url, postData.toString());
                 if (response == null) {
                     player.sendMessage("§c无法连接Web后端");
                     return;
                 }
 
-                com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                com.google.gson.JsonObject json;
+                try {
+                    json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                } catch (Exception parseEx) {
+                    String preview = response.length() > 150 ? response.substring(0, 150) + "..." : response;
+                    player.sendMessage("§c后端返回异常: " + preview);
+                    plugin.getLogger().warning("[正版验证] verify_code返回非JSON: " + preview);
+                    return;
+                }
                 if (json.get("success").getAsBoolean()) {
                     com.google.gson.JsonObject data = json.getAsJsonObject("data");
                     String mcUuid = data.get("mc_uuid").getAsString();
