@@ -123,9 +123,6 @@ commands:
   正版:
     description: 正版登录(中文版)
     usage: /正版
-  mscode:
-    description: 粘贴Microsoft OAuth授权码
-    usage: /mscode <授权码>
   tpa:
     description: tp传送指令
     usage: /tpa

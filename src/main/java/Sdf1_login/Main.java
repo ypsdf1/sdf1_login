@@ -457,8 +457,6 @@ public class Main extends JavaPlugin
             getCommand("mslogin").setExecutor(this);
         if (getCommand("正版") != null)
             getCommand("正版").setExecutor(this);
-        if (getCommand("mscode") != null)
-            getCommand("mscode").setExecutor(this);
         if (getCommand("签到") != null)
             getCommand("签到")
                     .setExecutor(this);
@@ -1601,52 +1599,7 @@ public class Main extends JavaPlugin
         hideInventory(p);
     }
 
-    // ===== Microsoft OAuth正版验证 =====
-
-    /**
-     * 从用户输入中提取Microsoft OAuth授权码
-     * 支持：纯授权码、完整URL（含code=参数）
-     */
-    private String extractCodeFromInput(String input) {
-        if (input == null || input.isEmpty()) return null;
-        input = input.trim();
-
-        // 如果包含code=参数，从中提取
-        if (input.contains("code=") || input.startsWith("http") || input.contains("#")) {
-            try {
-                // ★ 优先处理 #code= fragment形式（Microsoft公共客户端OAuth返回格式）
-                //   URL如: https://login.live.com/oauth20_desktop.srf#code=M.C512_BAY.2_xxx
-                if (input.contains("#code=")) {
-                    int hashIdx = input.indexOf("#code=");
-                    String afterHash = input.substring(hashIdx + 6); // "#code=" 之后的内容
-                    // code到下一个&或字符串结尾
-                    int ampIdx = afterHash.indexOf('&');
-                    String rawCode = ampIdx >= 0 ? afterHash.substring(0, ampIdx) : afterHash;
-                    return java.net.URLDecoder.decode(rawCode, StandardCharsets.UTF_8);
-                }
-
-                // 尝试解析URL中的query参数 (?code=xxx)
-                int qIdx = input.indexOf('?');
-                if (qIdx >= 0) {
-                    String query = input.substring(qIdx + 1);
-                    // 去掉fragment部分
-                    int hashQIdx = query.indexOf('#');
-                    if (hashQIdx >= 0) query = query.substring(0, hashQIdx);
-                    for (String param : query.split("&")) {
-                        String[] kv = param.split("=", 2);
-                        if (kv.length == 2 && kv[0].equals("code")) {
-                            return java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                getLogger().warning("[正版验证] extractCodeFromInput解析异常: " + e.getMessage());
-            }
-        }
-
-        // 直接作为授权码返回（纯code）
-        return input;
-    }
+    // ===== Microsoft OAuth正版验证（Java仅开session+轮询，所有输入交web后端） =====
 
     /**
      * 处理正版验证命令：调用PHP后端获取授权URL，显示给玩家，启动轮询
@@ -6053,40 +6006,6 @@ public class Main extends JavaPlugin
             }
             // 发起Microsoft OAuth验证
             handleMinecraftAuth(p);
-            return true;
-        }
-
-        // ===== /mscode <授权码或URL>：粘贴Microsoft OAuth授权码或完整URL =====
-        if (cmdName.equals("mscode")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage("§c仅玩家可用");
-                return true;
-            }
-            Player p = (Player) sender;
-            if (loggedIn.contains(p.getName())) {
-                p.sendMessage("§c您已登录，无需重复验证");
-                return true;
-            }
-            if (args.length < 1) {
-                p.sendMessage("§c用法: /mscode <授权码或完整URL>");
-                p.sendMessage("§7粘贴Microsoft登录后的授权码，或粘贴包含code=的完整URL");
-                return true;
-            }
-            String rawInput = String.join(" ", args).trim();
-            // 自动从URL中提取code参数
-            String code = extractCodeFromInput(rawInput);
-            if (code == null || code.length() < 10) {
-                p.sendMessage("§c无法从输入中提取有效的授权码");
-                p.sendMessage("§7请粘贴授权码或包含code=的完整URL");
-                return true;
-            }
-            // 检查是否有进行中的会话
-            if (webManager == null || !webManager.isMinecraftAuthPending(p.getName())) {
-                p.sendMessage("§c您没有进行中的验证会话，请先执行 /mslogin 发起验证");
-                return true;
-            }
-            p.sendMessage("§e正在提交授权码验证...");
-            webManager.verifyMinecraftAuthCode(p, code);
             return true;
         }
 

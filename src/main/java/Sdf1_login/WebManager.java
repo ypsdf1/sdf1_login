@@ -4984,9 +4984,9 @@ public class WebManager {
                 Bukkit.getScheduler().runTask(plugin, () -> {
                     if (player.isOnline()) {
                         player.sendMessage("§6§l===== 正版验证 =====");
-                        player.sendMessage("§7方式一: 点击下方链接打开粘贴页面");
-                        player.sendMessage("§7方式二: /mscode <粘贴完整URL或授权码>");
-                        player.sendMessage("§7步骤: 打开链接 → 登录 → 复制地址栏URL → 粘贴");
+                        player.sendMessage("§7点击下方链接打开粘贴页面");
+                        player.sendMessage("§7步骤: 点击登录 → 登录微软 → 复制地址栏URL → 粘贴到页面");
+                        player.sendMessage("§7粘贴URL后会自动提交验证");
                         player.sendMessage("§7链接10分钟内有效");
                         player.sendMessage("§6§l====================");
                         // 尝试发送可点击的URL（授权链接）
@@ -5147,89 +5147,6 @@ public class WebManager {
             poller.cancel();
         }
         minecraftAuthSessions.remove(playerName);
-    }
-
-    /**
-     * 验证玩家粘贴的Microsoft OAuth授权码（/mscode命令调用）
-     * 将授权码发送给PHP后端的verify_code端点
-     */
-    public void verifyMinecraftAuthCode(Player player, String code) {
-        String playerName = player.getName();
-        String[] sessionData = minecraftAuthSessions.get(playerName);
-        if (sessionData == null) {
-            player.sendMessage("§c没有找到您的验证会话，请先执行 /mslogin");
-            return;
-        }
-
-        String sessionId = sessionData[0];
-        String secret = secretKey; // ★ 不再URLEncoder.encode，直接发送原始密钥
-
-        // ★ 调试日志：记录code提取结果
-        plugin.getLogger().info("[正版验证] /mscode 提交 - 玩家: " + playerName);
-        plugin.getLogger().info("[正版验证]   sessionId: " + sessionId);
-        plugin.getLogger().info("[正版验证]   code(前80字符): " + code.substring(0, Math.min(80, code.length())));
-        plugin.getLogger().info("[正版验证]   code长度: " + code.length());
-        plugin.getLogger().info("[正版验证]   secret: " + secret);
-
-        webExecutor.submit(() -> {
-            try {
-                String url = webBaseUrl + "/api/minecraft_auth.php?action=verify_code";
-
-                // POST参数（JSON格式，与doPost的Content-Type一致）
-                com.google.gson.JsonObject postData = new com.google.gson.JsonObject();
-                postData.addProperty("session_id", sessionId);
-                postData.addProperty("code", code);
-                postData.addProperty("secret", secret);
-
-                String postBody = postData.toString();
-                plugin.getLogger().info("[正版验证]   POST body(前200字符): " + postBody.substring(0, Math.min(200, postBody.length())));
-
-                String response = doPost(url, postBody);
-                if (response == null) {
-                    player.sendMessage("§c无法连接Web后端");
-                    return;
-                }
-
-                com.google.gson.JsonObject json;
-                try {
-                    json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
-                } catch (Exception parseEx) {
-                    String preview = response.length() > 150 ? response.substring(0, 150) + "..." : response;
-                    player.sendMessage("§c后端返回异常: " + preview);
-                    plugin.getLogger().warning("[正版验证] verify_code返回非JSON: " + preview);
-                    return;
-                }
-                if (json.get("success").getAsBoolean()) {
-                    com.google.gson.JsonObject data = json.getAsJsonObject("data");
-                    String mcUuid = data.get("mc_uuid").getAsString();
-                    String mcUsername = data.get("mc_username").getAsString();
-
-                    plugin.getLogger().info("[正版验证] 粘贴码验证成功: " + playerName + " -> " + mcUsername + " (" + mcUuid + ")");
-
-                    // 记录为已验证正版玩家
-                    plugin.addVerifiedPremiumPlayer(playerName, mcUuid, mcUsername);
-
-                    // 清理会话
-                    minecraftAuthSessions.remove(playerName);
-                    BukkitRunnable poller = minecraftAuthPollers.remove(playerName);
-                    if (poller != null) poller.cancel();
-
-                    // 在主线程执行自动登录
-                    Bukkit.getScheduler().runTask(plugin, () -> {
-                        if (player.isOnline() && !plugin.getLoggedIn().contains(playerName)) {
-                            player.sendMessage("§a§l正版验证成功！欢迎 " + mcUsername + "！");
-                            plugin.autoLogin(player, "premium");
-                        }
-                    });
-                } else {
-                    String error = json.has("error") ? json.get("error").getAsString() : "验证失败";
-                    player.sendMessage("§c" + error);
-                }
-            } catch (Exception e) {
-                plugin.getLogger().warning("[正版验证] 粘贴码验证异常: " + e.getMessage());
-                player.sendMessage("§c验证请求失败，请稍后重试");
-            }
-        });
     }
 
     /**
