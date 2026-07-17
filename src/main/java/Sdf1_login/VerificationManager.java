@@ -3,14 +3,18 @@ package Sdf1_login;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.UUID;
 import java.util.function.Consumer;
 
+/**
+ * 玩家正版/离线身份验证管理器
+ *
+ * 核心逻辑：在离线模式(online-mode=false)服务器中，所有玩家UUID都是离线格式，
+ * 无法通过UUID区分正版/盗版。因此：
+ * - UUID非离线格式 → 服务器在线模式，正版玩家 → autoLogin
+ * - UUID离线格式 → 一律视为非正版，需手动登录或OAuth验证
+ * - 正版玩家通过 /mslogin OAuth验证后，由Main.addVerifiedPremiumPlayer()标记，
+ *   在onJoin检查点0直接autoLogin，不经过此验证器
+ */
 public class VerificationManager {
 
     private final Main plugin;
@@ -29,6 +33,11 @@ public class VerificationManager {
         return Bukkit.getServer().getOnlineMode();
     }
 
+    /**
+     * 异步验证玩家身份
+     * 注意：此方法仅用于判断UUID格式，不执行自动登录
+     * 自动登录由onJoin中的检查点0/1/2控制
+     */
     public void verifyPremiumAsync(Player player,
                                    Consumer<Boolean> callback) {
         Thread t = new Thread(() -> doVerify(player, callback),
@@ -50,73 +59,35 @@ public class VerificationManager {
                 "[Sdf1_login] 当前UUID: " + uuid);
 
         try {
-            // ★ 检查1：是否已通过Microsoft OAuth验证
-            if (plugin.isVerifiedPremiumPlayer(name)) {
-                plugin.getLogger().info(
-                        "[Sdf1_login] 结论: 已通过OAuth验证的正版玩家");
-                plugin.getLogger().info(
-                        "[Sdf1_login] ====== 验证结束 ======");
-                callback.accept(true);
-                return;
-            }
-
-            UUID offlineUuid = UUID.nameUUIDFromBytes(
+            java.util.UUID offlineUuid = java.util.UUID.nameUUIDFromBytes(
                     ("OfflinePlayer:" + name)
-                            .getBytes(StandardCharsets.UTF_8));
-            String offlineStr = offlineUuid.toString();
-
-            plugin.getLogger().info(
-                    "[Sdf1_login] 离线UUID: " + offlineStr);
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
             boolean isOfflineUuid =
                     player.getUniqueId().equals(offlineUuid);
 
             plugin.getLogger().info(
+                    "[Sdf1_login] 离线UUID: " + offlineUuid);
+            plugin.getLogger().info(
                     "[Sdf1_login] UUID匹配离线格式: "
                             + isOfflineUuid);
 
             if (!isOfflineUuid) {
+                // UUID不是离线格式 → 服务器在线模式的正版玩家
                 plugin.getLogger().info(
-                        "[Sdf1_login] 结论: 正版玩家");
+                        "[Sdf1_login] 结论: 正版玩家（非离线UUID）");
                 plugin.getLogger().info(
                         "[Sdf1_login] ====== 验证结束 ======");
                 callback.accept(true);
                 return;
             }
 
-            // ★ 检查2：通过PHP后端验证（优先）
+            // ★ 离线UUID → 无法通过UUID区分正版/盗版，一律视为非正版
+            //   正版玩家需通过 /mslogin OAuth验证 或 /login 手动登录
             plugin.getLogger().info(
-                    "[Sdf1_login] UUID为离线格式，通过PHP后端验证...");
-            Boolean phpResult = verifyViaPhpBackend(name);
-            if (phpResult != null) {
-                plugin.getLogger().info(
-                        "[Sdf1_login] PHP后端验证结果: "
-                                + (phpResult ? "正版" : "非正版"));
-                plugin.getLogger().info(
-                        "[Sdf1_login] ====== 验证结束 ======");
-                callback.accept(phpResult);
-                return;
-            }
-
-            // ★ 检查3：PHP不可用，直接查询Mojang API（降级）
+                    "[Sdf1_login] 结论: 离线UUID玩家，需手动登录");
             plugin.getLogger().info(
-                    "[Sdf1_login] PHP后端不可用，降级到Mojang API...");
-            UUID mojangUuid = fetchMojangUuid(name);
-
-            if (mojangUuid != null) {
-                plugin.getLogger().info(
-                        "[Sdf1_login] Mojang返回UUID: "
-                                + mojangUuid);
-                plugin.getLogger().info(
-                        "[Sdf1_login] 结论: 盗版客户端"
-                                + "使用了正版名字");
-            } else {
-                plugin.getLogger().info(
-                        "[Sdf1_login] Mojang无此名字");
-                plugin.getLogger().info(
-                        "[Sdf1_login] 结论: 纯离线玩家");
-            }
-
+                    "[Sdf1_login] （正版玩家请使用 /mslogin 或 /正版 命令验证）");
             plugin.getLogger().info(
                     "[Sdf1_login] ====== 验证结束 ======");
             callback.accept(false);
@@ -127,103 +98,5 @@ public class VerificationManager {
                             + e.getMessage());
             callback.accept(false);
         }
-    }
-
-    /**
-     * 通过PHP后端验证玩家是否正版
-     * @return true=正版, false=非正版, null=PHP不可用
-     */
-    private Boolean verifyViaPhpBackend(String playerName) {
-        try {
-            WebManager webMgr = plugin.webManager;
-            if (webMgr == null) return null;
-
-            String webBaseUrl = webMgr.getWebBaseUrl();
-            if (webBaseUrl == null || webBaseUrl.isEmpty()) return null;
-
-            String secret = java.net.URLEncoder.encode(
-                    webMgr.getSecretKey(), StandardCharsets.UTF_8);
-            String url = webBaseUrl + "/api/minecraft_auth.php?action=verify_premium&player="
-                    + java.net.URLEncoder.encode(playerName, StandardCharsets.UTF_8)
-                    + "&secret=" + secret;
-
-            // 使用WebManager的HTTP客户端
-            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
-                    .connectTimeout(java.time.Duration.ofSeconds(5))
-                    .build();
-            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(url))
-                    .timeout(java.time.Duration.ofSeconds(10))
-                    .header("User-Agent", "Sdf1_login/2.7")
-                    .header("Accept", "application/json")
-                    .GET()
-                    .build();
-            java.net.http.HttpResponse<String> resp = client.send(req,
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
-
-            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
-                com.google.gson.JsonObject json = com.google.gson.JsonParser
-                        .parseString(resp.body()).getAsJsonObject();
-                if (json.get("success").getAsBoolean()) {
-                    com.google.gson.JsonObject data = json.getAsJsonObject("data");
-                    return data.get("is_premium").getAsBoolean();
-                }
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning(
-                    "[Sdf1_login] PHP验证异常: " + e.getMessage());
-        }
-        return null; // PHP不可用
-    }
-
-    private UUID fetchMojangUuid(String name) {
-        HttpURLConnection conn = null;
-        try {
-            URL url = new URL(
-                    "https://api.mojang.com/users/profiles/minecraft/"
-                            + name);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
-            conn.setRequestMethod("GET");
-
-            int code = conn.getResponseCode();
-            plugin.getLogger().info(
-                    "[Sdf1_login] Mojang API响应: " + code);
-
-            if (code == 200) {
-                BufferedReader reader =
-                        new BufferedReader(
-                                new InputStreamReader(
-                                        conn.getInputStream(),
-                                        StandardCharsets.UTF_8));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
-                }
-                reader.close();
-
-                String json = sb.toString();
-                String uuidStr = json.replaceAll(
-                        ".*\"id\"\\s*:\\s*\"([^\"]+)\".*",
-                        "$1");
-                plugin.getLogger().info(
-                        "[Sdf1_login] Mojang原始UUID: "
-                                + uuidStr);
-
-                String formatted = uuidStr.replaceFirst(
-                        "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})",
-                        "$1-$2-$3-$4-$5");
-                return UUID.fromString(formatted);
-            }
-        } catch (Exception e) {
-            plugin.getLogger().warning(
-                    "[Sdf1_login] Mojang查询异常: "
-                            + e.getMessage());
-        } finally {
-            if (conn != null) conn.disconnect();
-        }
-        return null;
     }
 }
