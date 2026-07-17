@@ -376,8 +376,12 @@ function completeAuthFlow($code) {
 // ★ 检测Microsoft OAuth回调（带code+state，没有action参数）
 $code = getParam('code');
 $state = getParam('state');
+$msError = getParam('error');
 if (!empty($code) && !empty($state)) {
     // 自动路由到callback处理
+    $action = 'callback';
+} elseif (!empty($msError)) {
+    // Microsoft返回错误（如invalid_scope）→ 路由到callback显示错误
     $action = 'callback';
 } else {
     $action = getParam('action');
