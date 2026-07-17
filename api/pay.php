@@ -315,9 +315,19 @@ function createOrder($token, $productId = 0) {
                 error('商品已售罄');
             }
 
-            // 使用折扣价格（如果有）
+            // ★ 检查限时折扣是否已过期
             $actualPrice = $product['price'];
-            if (isset($product['discount_price']) && $product['discount_price'] > 0) {
+            $offerExpired = false;
+            if (!empty($product['temporary_offer']) && !empty($product['offer_expire'])) {
+                $expireInfo = parseExpireDate($product['offer_expire']);
+                if (!$expireInfo['valid']) {
+                    // 折扣已过期 → 使用原价，不使用折扣价
+                    $offerExpired = true;
+                }
+            }
+
+            // 使用折扣价格（如果折扣未过期）
+            if (!$offerExpired && isset($product['discount_price']) && $product['discount_price'] > 0) {
                 $actualPrice = $product['discount_price'];
             }
             $money = number_format($actualPrice, 2, '.', '');
@@ -956,7 +966,12 @@ function parseExpireDate($expireStr) {
     if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $expireStr)) {
         $time = strtotime($expireStr . ' 23:59:59');
         if ($time !== false) {
-            return ['valid' => true, 'timestamp' => $time, 'display' => date('Y-m-d', $time) . ' 到期'];
+            $now = time();
+            return [
+                'valid'     => $time >= $now,
+                'timestamp' => $time,
+                'display'   => date('Y-m-d', $time) . ($time >= $now ? ' 到期' : ' 已过期')
+            ];
         }
     }
 
@@ -1105,9 +1120,13 @@ function getShopProducts() {
         // 解析有效期
         $expireInfo = parseExpireDate($row['offer_expire']);
 
-        // 计算实际显示价格（如果有折扣价格且折扣价格>0）
+        // 计算实际显示价格（如果有折扣价格且折扣未过期且折扣价格>0）
         $displayPrice = $row['price'];
-        if (isset($row['discount_price']) && $row['discount_price'] > 0) {
+        $discountActive = false;
+        if (!empty($row['temporary_offer']) && !empty($row['offer_expire'])) {
+            $discountActive = $expireInfo['valid'];
+        }
+        if ($discountActive && isset($row['discount_price']) && $row['discount_price'] > 0) {
             $displayPrice = $row['discount_price'];
         }
 
@@ -1121,6 +1140,7 @@ function getShopProducts() {
             'expire_display' => $expireInfo['display'],
             'price' => $row['price'],
             'discount_price' => $row['discount_price'] ?? 0,
+            'discount_active' => $discountActive,
             'display_price' => $displayPrice,
             'bond_reward' => $bondReward,
             'bond_min' => $bondMin,

@@ -535,6 +535,7 @@ switch ($action) {
 
         // Microsoft返回错误
         if ($msError) {
+            header('Content-Type: text/html; charset=utf-8');
             $errorDesc = getParam('error_description', 'Microsoft登录被拒绝');
             if ($state) {
                 $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'failed' WHERE session_id = ?");
@@ -550,6 +551,7 @@ switch ($action) {
         }
 
         if (empty($code) || empty($state)) {
+            header('Content-Type: text/html; charset=utf-8');
             echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>参数错误</title></head><body><h1>参数错误</h1></body></html>";
             exit;
         }
@@ -560,6 +562,7 @@ switch ($action) {
         $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$session) {
+            header('Content-Type: text/html; charset=utf-8');
             echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>会话不存在</title></head><body><h1>会话不存在或已过期</h1></body></html>";
             exit;
         }
@@ -567,6 +570,7 @@ switch ($action) {
         if (time() > $session['expires_at']) {
             $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'expired' WHERE session_id = ?");
             $stmt->execute([$state]);
+            header('Content-Type: text/html; charset=utf-8');
             echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>会话过期</title></head><body><h1>会话已过期，请返回游戏重新发起验证</h1></body></html>";
             exit;
         }
@@ -578,6 +582,7 @@ switch ($action) {
             // 验证失败
             $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'failed' WHERE session_id = ?");
             $stmt->execute([$state]);
+            header('Content-Type: text/html; charset=utf-8');
             echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>验证失败</title>
             <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#fff;}
             .card{background:#16213e;padding:40px;border-radius:16px;text-align:center;max-width:400px;}
@@ -594,6 +599,7 @@ switch ($action) {
         // 显示成功页面
         $mcName = htmlspecialchars($result['name']);
         $mcUuid = htmlspecialchars($result['uuid']);
+        header('Content-Type: text/html; charset=utf-8');
         echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>验证成功</title>
         <style>body{font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#1a1a2e;color:#fff;}
         .card{background:#16213e;padding:40px;border-radius:16px;text-align:center;max-width:400px;}
@@ -621,6 +627,13 @@ switch ($action) {
 
         if (empty($sessionId)) error('缺少session_id参数');
         if (empty($code)) error('缺少code参数（授权码）');
+
+        // 自动从URL中提取code参数
+        if (strpos($code, 'code=') !== false || strpos($code, 'http') === 0) {
+            if (preg_match('/[?&]code=([^&]+)/', $code, $m)) {
+                $code = urldecode($m[1]);
+            }
+        }
 
         // 密钥验证：Java调用需要secret，浏览器表单用session_id自身认证
         if (!empty($secret)) {
@@ -702,6 +715,7 @@ switch ($action) {
 
     // ===== 网页粘贴授权码页面（公共客户端流程） =====
     case 'paste_code_page': {
+        header('Content-Type: text/html; charset=utf-8');
         $sessionId = getParam('session_id');
         if (empty($sessionId)) {
             echo "<!DOCTYPE html><html><head><meta charset='utf-8'><title>参数错误</title></head><body><h1>缺少session_id参数</h1></body></html>";
@@ -718,6 +732,7 @@ switch ($action) {
         }
 
         $playerName = htmlspecialchars($session['player_name']);
+        $authUrl = htmlspecialchars(getAuthUrl($sessionId));
         echo <<<HTML
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -749,22 +764,40 @@ button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
 <div class="card">
 <h2>🎮 正版验证</h2>
 <p class="player">玩家: <b>$playerName</b></p>
+<div style="margin-bottom:20px">
+<a href="$authUrl" target="_blank" style="display:inline-block;padding:12px 24px;background:#4ade80;color:#0f0f23;text-decoration:none;border-radius:8px;font-weight:bold;font-size:16px">点击打开Microsoft登录</a>
+</div>
 <ol class="steps">
-<li>在上方Microsoft页面<b>复制授权码</b></li>
-<li>将授权码<b>粘贴</b>到下方输入框</li>
+<li>点击上方<b>"打开Microsoft登录"</b>按钮</li>
+<li>登录Microsoft账号</li>
+<li>登录成功后，<b>复制浏览器地址栏的完整URL</b></li>
+<li>将URL<b>粘贴</b>到下方输入框（会自动提取授权码）</li>
 <li>点击"提交验证"</li>
 </ol>
 <div class="input-group">
-<input type="text" id="codeInput" placeholder="粘贴授权码到这里" autofocus autocomplete="off">
+<input type="text" id="codeInput" placeholder="粘贴完整URL或授权码" autofocus autocomplete="off">
 </div>
 <button id="submitBtn" onclick="submitCode()">提交验证</button>
 <div class="msg" id="msg"></div>
 </div>
 <script>
 var sessionId="{$sessionId}";
+function extractCode(input){
+input=input.trim();
+// 如果包含code=参数，从中提取
+var m=input.match(/[?&]code=([^&]+)/);
+if(m) return decodeURIComponent(m[1]);
+// 如果不包含http/https，当作原始code
+if(input.indexOf('http')===-1 && input.indexOf('code=')===-1) return input;
+// 尝试解析URL
+try{var u=new URL(input);var p=new URLSearchParams(u.search);if(p.has('code'))return p.get('code');}catch(e){}
+return input;
+}
 function submitCode(){
-var code=document.getElementById('codeInput').value.trim();
-if(!code){showMsg('请输入授权码','err');return}
+var raw=document.getElementById('codeInput').value.trim();
+if(!raw){showMsg('请输入授权码或URL','err');return}
+var code=extractCode(raw);
+if(!code){showMsg('无法从输入中提取授权码','err');return}
 var btn=document.getElementById('submitBtn');
 btn.disabled=true;btn.textContent='验证中...';
 var xhr=new XMLHttpRequest();
