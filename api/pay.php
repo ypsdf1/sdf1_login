@@ -962,28 +962,28 @@ function parseExpireDate($expireStr) {
     }
     $expireStr = trim($expireStr);
 
-    // yyyy-MM-dd
+    // yyyy-MM-dd：当天0:00:00即过期（如2026-07-17则17号0点就过期）
     if (preg_match('/^\d{4}-\d{1,2}-\d{1,2}$/', $expireStr)) {
-        $time = strtotime($expireStr . ' 23:59:59');
+        $time = strtotime($expireStr); // 当天0:00:00
         if ($time !== false) {
             $now = time();
             return [
-                'valid'     => $time >= $now,
+                'valid'     => $time > $now, // 严格大于，当天0点即过期
                 'timestamp' => $time,
-                'display'   => date('Y-m-d', $time) . ($time >= $now ? ' 到期' : ' 已过期')
+                'display'   => date('Y-m-d', $time) . ($time > $now ? ' 到期' : ' 已过期')
             ];
         }
     }
 
-    // 中文格式（如"2026年7月16日"）
+    // 中文格式（如"2026年7月16日"）：同样当天0:00:00即过期
     if (preg_match('/(\d{4})年(\d{1,2})月(\d{1,2})日/', $expireStr, $matches)) {
-        $time = mktime(23, 59, 59, intval($matches[2]), intval($matches[3]), intval($matches[1]));
+        $time = mktime(0, 0, 0, intval($matches[2]), intval($matches[3]), intval($matches[1])); // 当天0:00:00
         if ($time !== false) {
             $now = time();
             return [
-                'valid'     => $time >= $now,
+                'valid'     => $time > $now, // 严格大于，当天0点即过期
                 'timestamp' => $time,
-                'display'   => date('Y-m-d', $time) . ($time >= $now ? ' 到期' : ' 已过期')
+                'display'   => date('Y-m-d', $time) . ($time > $now ? ' 到期' : ' 已过期')
             ];
         }
     }
