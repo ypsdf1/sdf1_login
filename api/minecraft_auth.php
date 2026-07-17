@@ -160,7 +160,7 @@ function msGet($url, $headers = []) {
 function getAuthUrl($sessionId) {
     $clientId = MS_CLIENT_ID;
     $redirectUri = MS_REDIRECT_URI;
-    $scope = 'service::user.auth.xboxlive.com::MBI_SSL';
+    $scope = 'XboxLive.signin';
 
     $params = http_build_query([
         'client_id' => $clientId,
