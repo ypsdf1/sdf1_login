@@ -1337,15 +1337,16 @@ public class AreaGUIManager implements Listener {
                         String groupName = names.get(raw);
                         if (p.hasPermission("sdf1.admin")) {
                             ugm.deleteGroupConfig(groupName);
-                            // ★ 通知PHP同步
+                            // ★ 通知PHP同步（从插件配置读取地址和密钥，不写死）
                             try {
-                                java.net.URL url = new java.net.URL("https://caoyuan.ypshidifu.cn/plugin/api/land_api.php");
+                                String landApiUrl = plugin.webManager.getWebBaseUrl() + "/api/land_api.php";
+                                java.net.URL url = new java.net.URL(landApiUrl);
                                 java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
                                 conn.setRequestMethod("POST");
                                 conn.setDoOutput(true);
                                 conn.setConnectTimeout(5000);
                                 conn.setReadTimeout(5000);
-                                String body = "action=delete_user_group&name=" + groupName + "&secret=sdf1_web_comm_2026_ypshidifu";
+                                String body = "action=delete_user_group&name=" + groupName + "&secret=" + java.net.URLEncoder.encode(plugin.webManager.getSecretKey(), "UTF-8");
                                 java.io.OutputStream os = conn.getOutputStream();
                                 os.write(body.getBytes());
                                 os.flush();

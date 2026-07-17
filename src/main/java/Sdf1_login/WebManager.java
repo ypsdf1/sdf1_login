@@ -5162,7 +5162,14 @@ public class WebManager {
         }
 
         String sessionId = sessionData[0];
-        String secret = java.net.URLEncoder.encode(secretKey, StandardCharsets.UTF_8);
+        String secret = secretKey; // ★ 不再URLEncoder.encode，直接发送原始密钥
+
+        // ★ 调试日志：记录code提取结果
+        plugin.getLogger().info("[正版验证] /mscode 提交 - 玩家: " + playerName);
+        plugin.getLogger().info("[正版验证]   sessionId: " + sessionId);
+        plugin.getLogger().info("[正版验证]   code(前80字符): " + code.substring(0, Math.min(80, code.length())));
+        plugin.getLogger().info("[正版验证]   code长度: " + code.length());
+        plugin.getLogger().info("[正版验证]   secret: " + secret);
 
         webExecutor.submit(() -> {
             try {
@@ -5174,7 +5181,10 @@ public class WebManager {
                 postData.addProperty("code", code);
                 postData.addProperty("secret", secret);
 
-                String response = doPost(url, postData.toString());
+                String postBody = postData.toString();
+                plugin.getLogger().info("[正版验证]   POST body(前200字符): " + postBody.substring(0, Math.min(200, postBody.length())));
+
+                String response = doPost(url, postBody);
                 if (response == null) {
                     player.sendMessage("§c无法连接Web后端");
                     return;

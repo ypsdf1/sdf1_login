@@ -1612,12 +1612,26 @@ public class Main extends JavaPlugin
         input = input.trim();
 
         // 如果包含code=参数，从中提取
-        if (input.contains("code=") || input.startsWith("http")) {
+        if (input.contains("code=") || input.startsWith("http") || input.contains("#")) {
             try {
-                // 尝试解析URL中的query参数
+                // ★ 优先处理 #code= fragment形式（Microsoft公共客户端OAuth返回格式）
+                //   URL如: https://login.live.com/oauth20_desktop.srf#code=M.C512_BAY.2_xxx
+                if (input.contains("#code=")) {
+                    int hashIdx = input.indexOf("#code=");
+                    String afterHash = input.substring(hashIdx + 6); // "#code=" 之后的内容
+                    // code到下一个&或字符串结尾
+                    int ampIdx = afterHash.indexOf('&');
+                    String rawCode = ampIdx >= 0 ? afterHash.substring(0, ampIdx) : afterHash;
+                    return java.net.URLDecoder.decode(rawCode, StandardCharsets.UTF_8);
+                }
+
+                // 尝试解析URL中的query参数 (?code=xxx)
                 int qIdx = input.indexOf('?');
                 if (qIdx >= 0) {
                     String query = input.substring(qIdx + 1);
+                    // 去掉fragment部分
+                    int hashQIdx = query.indexOf('#');
+                    if (hashQIdx >= 0) query = query.substring(0, hashQIdx);
                     for (String param : query.split("&")) {
                         String[] kv = param.split("=", 2);
                         if (kv.length == 2 && kv[0].equals("code")) {
@@ -1626,11 +1640,11 @@ public class Main extends JavaPlugin
                     }
                 }
             } catch (Exception e) {
-                // 解析失败，继续尝试其他方式
+                getLogger().warning("[正版验证] extractCodeFromInput解析异常: " + e.getMessage());
             }
         }
 
-        // 直接作为授权码返回
+        // 直接作为授权码返回（纯code）
         return input;
     }
 
