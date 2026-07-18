@@ -32,15 +32,35 @@ jobs:
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          TAG="build-${{ gitea.run_number }}"
+          # 从 plugin.yml 提取版本号作为标签
+          VERSION=$(grep '^version:' src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
+          TAG="v${VERSION}"
           BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
+          echo "Version: ${VERSION}, Tag: ${TAG}"
 
+          # 如果同版本标签已存在，先删除旧 release（允许重新发布同版本）
+          OLD_ID=$(curl -s \
+            -H "Authorization: token $GITEA_TOKEN" \
+            "${BASE}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          if [ -n "$OLD_ID" ]; then
+            echo "Tag ${TAG} already exists (release #${OLD_ID}), deleting..."
+            curl -s -X DELETE \
+              -H "Authorization: token $GITEA_TOKEN" \
+              "${BASE}/releases/${OLD_ID}"
+            curl -s -X DELETE \
+              -H "Authorization: token $GITEA_TOKEN" \
+              "${BASE}/tags/${TAG}"
+            sleep 1
+          fi
+
+          # 创建新 release
           curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Build ${{ gitea.run_number }}\",\"body\":\"Commit: ${{ gitea.sha }}\nBranch: ${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Sdf1_login ${TAG}\",\"body\":\"Version: ${VERSION}\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
             "${BASE}/releases"
 
+          # 上传 JAR 资产
           RELEASE_ID=$(curl -s \
             -H "Authorization: token $GITEA_TOKEN" \
             "${BASE}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
