@@ -16,48 +16,32 @@ jobs:
           set -e
           echo "=== Setting up build environment ==="
           
-          # 1) 定位服务器已安装的最高版本 JDK —— 绝不安装新 JDK，避免版本冲突
-          # 优先检查 sdkman 管理的 JDK
-          SDKMAN_JAVA_HOME=""
-          if [ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
-            echo "Found sdkman, initializing..."
-            source "$HOME/.sdkman/bin/sdkman-init.sh"
-            # 获取sdkman当前使用的Java版本路径
-            SDKMAN_JAVA_HOME=$(sdk current java 2>/dev/null | grep -oP 'java-home:\s*\K.*' || true)
-            echo "sdkman JAVA_HOME: $SDKMAN_JAVA_HOME"
-          fi
-
-          # 检查 /usr/lib/jvm 下的 JDK
-          SYS_JAVA_HOME=""
-          if [ -d "/usr/lib/jvm" ]; then
-            # 尝试找 Java 25
-            SYS_JAVA_HOME=$(find /usr/lib/jvm -name "java-*25*" -type d -print 2>/dev/null | head -1)
-            # 如果没有 Java 25，找最高版本
-            if [ -z "$SYS_JAVA_HOME" ]; then
-              SYS_JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
-            fi
-            echo "System /usr/lib/jvm JAVA_HOME: $SYS_JAVA_HOME"
-          fi
-
-          # 如果还没找到，用 which java 定位
-          WHICH_JAVA_HOME=""
-          if command -v java >/dev/null 2>&1; then
-            WHICH_JAVA_HOME=$(dirname $(dirname $(command -v java)))
-            echo "which java JAVA_HOME: $WHICH_JAVA_HOME"
-          fi
-
-          # 选择最佳的JAVA_HOME：优先sdkman > 系统 > which
+          # 彻底绕开 sdkman —— 它会注入低版本JDK导致冲突
+          # 直接在 /usr/lib/jvm 中找最高版本的JDK
+          
           JAVA_HOME=""
-          if [ -n "$SDKMAN_JAVA_HOME" ] && [ -d "$SDKMAN_JAVA_HOME" ] && [ -x "$SDKMAN_JAVA_HOME/bin/java" ]; then
-            JAVA_HOME="$SDKMAN_JAVA_HOME"
-            echo "Using sdkman JAVA_HOME: $JAVA_HOME"
-          elif [ -n "$SYS_JAVA_HOME" ] && [ -d "$SYS_JAVA_HOME" ] && [ -x "$SYS_JAVA_HOME/bin/java" ]; then
-            JAVA_HOME="$SYS_JAVA_HOME"
-            echo "Using system JAVA_HOME: $JAVA_HOME"
-          elif [ -n "$WHICH_JAVA_HOME" ] && [ -d "$WHICH_JAVA_HOME" ] && [ -x "$WHICH_JAVA_HOME/bin/java" ]; then
-            JAVA_HOME="$WHICH_JAVA_HOME"
-            echo "Using which java JAVA_HOME: $JAVA_HOME"
-          else
+          
+          if [ -d "/usr/lib/jvm" ]; then
+            # 列出所有JDK，按版本排序，取最高
+            echo "Available JDKs in /usr/lib/jvm:"
+            ls -d /usr/lib/jvm/java-* 2>/dev/null || true
+            
+            # 优先找 Java 25+
+            JAVA_HOME=$(find /usr/lib/jvm -name "java-25*" -type d 2>/dev/null | sort -V | tail -1)
+            if [ -z "$JAVA_HOME" ]; then
+              # 找最高版本
+              JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
+            fi
+          fi
+
+          # 如果没找到，用 which java
+          if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+            if command -v java >/dev/null 2>&1; then
+              JAVA_HOME=$(dirname $(dirname $(command -v java)))
+            fi
+          fi
+
+          if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
             echo "ERROR: No valid JDK found!"
             exit 1
           fi
@@ -66,9 +50,16 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           export JAVA_HOME
           echo "=== Final JAVA_HOME: $JAVA_HOME ==="
-          java -version
+          "$JAVA_HOME/bin/java" -version
+          
+          # 验证：确保是 JDK 25+
+          JAVA_VER=$("$JAVA_HOME/bin/java" -version 2>&1 | head -1)
+          echo "Java version string: $JAVA_VER"
+          if echo "$JAVA_VER" | grep -qE '"17\.|"11\.|"1\.'; then
+            echo "WARNING: JAVA_HOME points to JDK < 25, compilation may fail!"
+          fi
 
-          # 2) 确保 Maven 可用 —— 优先用系统已安装的（sdkman/dnf），没有才下载二进制
+          # 确保 Maven 可用 —— 优先用 system PATH 中的 mvn
           MVN_BIN=""
           if command -v mvn >/dev/null 2>&1; then
             MVN_BIN=$(command -v mvn)
@@ -94,7 +85,7 @@ jobs:
             MVN_BIN=/opt/maven/bin/mvn
           fi
 
-          # 把 Maven 所在目录加入 PATH
+          # 把 Maven 和 JAVA_HOME 的 bin 目录加入 PATH
           MVN_DIR=$(dirname "$MVN_BIN")
           echo "PATH=$MVN_DIR:$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
           echo "=== Maven version ==="
@@ -102,9 +93,11 @@ jobs:
 
       - name: Build with Maven
         run: |
-          # 显式设置JAVA_HOME环境变量（从GITHUB_ENV读取）
+          # 强制使用 JAVA_HOME 中的 java，完全绕开 PATH 和 sdkman
           export JAVA_HOME="${{ env.JAVA_HOME }}"
-          echo "Using JAVA_HOME for Maven build: $JAVA_HOME"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "java binary: $(which java)"
           java -version
           mvn -B clean package -DskipTests
 
