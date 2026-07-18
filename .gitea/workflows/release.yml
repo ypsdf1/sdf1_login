@@ -51,7 +51,7 @@ jobs:
       - name: Create Release
         uses: gitea.com/actions/release-action@v4
         with:
-          token: ${{ secrets.GITEA_TOKEN }}
+          token: d84d235dfd3c3447cc9be12666639f7bb44df293
           tag_name: build-${{ gitea.run_number }}
           name: Release build-${{ gitea.run_number }}
           draft: false
