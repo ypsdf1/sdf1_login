@@ -280,9 +280,27 @@ public class ConfigManager {
         } else {
             L.add("邮箱验证模式=默认");
         }
-        // 保存邮箱后缀列表
-        if (smtpSettings.containsKey("邮箱后缀列表")) {
-            L.add("邮箱后缀列表=" + smtpSettings.get("邮箱后缀列表"));
+        // 保存邮箱后缀列表（支持多行格式：每行一个后缀）
+        L.add("# 邮箱后缀列表（每行一个，不含@）");
+        String suffixVal = smtpSettings.getOrDefault("邮箱后缀列表", "");
+        if (suffixVal != null && !suffixVal.trim().isEmpty()) {
+            // 用逗号或换行分割，每行保存一个
+            String[] parts = suffixVal.split("[,\\n]+");
+            boolean firstSuffix = true;
+            for (String s : parts) {
+                String trimmed = s.trim();
+                if (!trimmed.isEmpty()) {
+                    if (firstSuffix) {
+                        L.add("邮箱后缀列表=" + trimmed);
+                        firstSuffix = false;
+                    } else {
+                        L.add(trimmed);
+                    }
+                }
+            }
+            if (firstSuffix) {
+                L.add("邮箱后缀列表=");
+            }
         } else {
             L.add("邮箱后缀列表=");
         }
@@ -638,6 +656,7 @@ public class ConfigManager {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
             boolean firstLine = true;
+            String lastKey = null; // 跟踪上一个key，用于续行
             while ((line = r.readLine()) != null) {
                 // 处理UTF-8 BOM头
                 if (firstLine) {
@@ -647,9 +666,25 @@ public class ConfigManager {
                     }
                 }
                 line = line.trim();
-                if (line.isEmpty() || line.startsWith("#")) continue;
+                if (line.isEmpty() || line.startsWith("#")) {
+                    lastKey = null; // 空行/注释行中断续行
+                    continue;
+                }
                 int eq = line.indexOf('=');
-                if (eq > 0) map.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+                if (eq > 0) {
+                    // key=value 标准行
+                    String key = line.substring(0, eq).trim();
+                    String val = line.substring(eq + 1).trim();
+                    map.put(key, val);
+                    lastKey = key; // 记录key，后续裸行可续行
+                } else if (lastKey != null && !map.getOrDefault(lastKey, "").isEmpty()) {
+                    // 裸行 + 上一个key有值 → 续行，用\n连接
+                    String existing = map.get(lastKey);
+                    map.put(lastKey, existing + "\n" + line);
+                } else if (lastKey != null) {
+                    // 裸行 + 上一个key值为空 → 直接赋值
+                    map.put(lastKey, line);
+                }
             }
         } catch (IOException ignored) {}
     }
