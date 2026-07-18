@@ -1783,7 +1783,7 @@ function queryLoginIpLocation($ip) {
 function getBaseUrl() {
     $host = $_SERVER['HTTP_HOST'] ?? '';
     if ($host === '' || $host === '127.0.0.1' || $host === 'localhost') {
-        $host = 'caoyuan.ypshidifu.cn';
+        $host = defined('DEFAULT_HOST') ? DEFAULT_HOST : 'your-domain.com';
     }
     // 站点统一使用 HTTPS
     $base = 'https://' . $host;

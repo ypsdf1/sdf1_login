@@ -600,7 +600,7 @@ function handlePayRedirect() {
 // ====================================================================
 function triggerPollerAsync() {
     // ★ 2026-07-15 改用 poller_online.php 补单（绕过 HTTP 回调，CF WAF 拦截 notify）
-    $url = 'https://caoyuan.ypshidifu.cn/plugin/api/poller_online.php';
+    $url = defined('POLLER_URL') ? POLLER_URL : 'https://your-domain.com/plugin/api/poller_online.php';
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 3);
