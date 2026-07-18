@@ -259,13 +259,17 @@ public class ConfigManager {
     public void saveSmtp() {
         File file = new File(dataFolder, "SMTP设置.txt");
         List<String> L = new ArrayList<>();
+        // 记录已写入的key，最后追加未写入的未知key
+        java.util.Set<String> writtenKeys = new java.util.LinkedHashSet<>();
+
         L.add("# ===== 邮件配置 =====");
         L.add("# --- SMTP 信息 ---");
-        // 保存SMTP相关配置
+        // 保存SMTP相关配置（按固定顺序）
         String[] smtpKeys = {"smtp地址", "smtp端口", "smtp账号", "smtp密码", "发件人名称", "smtp加密"};
         for (String key : smtpKeys) {
             if (smtpSettings.containsKey(key)) {
                 L.add(key + "=" + smtpSettings.get(key));
+                writtenKeys.add(key);
             }
         }
         L.add("");
@@ -280,11 +284,11 @@ public class ConfigManager {
         } else {
             L.add("邮箱验证模式=默认");
         }
+        writtenKeys.add("邮箱验证模式");
         // 保存邮箱后缀列表（支持多行格式：每行一个后缀）
         L.add("# 邮箱后缀列表（每行一个，不含@）");
         String suffixVal = smtpSettings.getOrDefault("邮箱后缀列表", "");
         if (suffixVal != null && !suffixVal.trim().isEmpty()) {
-            // 用逗号或换行分割，每行保存一个
             String[] parts = suffixVal.split("[,\\n]+");
             boolean firstSuffix = true;
             for (String s : parts) {
@@ -304,6 +308,19 @@ public class ConfigManager {
         } else {
             L.add("邮箱后缀列表=");
         }
+        writtenKeys.add("邮箱后缀列表");
+
+        // ★ 追加所有未写入的未知key（防止丢失用户自定义配置项）
+        java.util.Set<String> allKeys = new java.util.LinkedHashSet<>(smtpSettings.keySet());
+        allKeys.removeAll(writtenKeys);
+        if (!allKeys.isEmpty()) {
+            L.add("");
+            L.add("# --- 其他配置 ---");
+            for (String key : allKeys) {
+                L.add(key + "=" + smtpSettings.get(key));
+            }
+        }
+
         writeLines(file, L);
     }
 
@@ -697,13 +714,19 @@ public class ConfigManager {
             w.flush(); // 强制刷盘
             w.close(); // 确保关闭
             // ★ 原子替换：将.tmp文件重命名为目标文件
-            // 不能反过来(file→tmp)，否则Linux上file.renameTo(tmp)会成功覆盖.tmp→丢失新内容+原文件被删
             if (!tmp.renameTo(file)) {
-                // 替换失败，删除临时文件
-                tmp.delete();
+                // renameTo在Windows上可能失败（文件锁定等），fallback到copy+delete
+                try {
+                    java.nio.file.Files.copy(tmp.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    tmp.delete();
+                } catch (IOException e) {
+                    logger.warning("[Sdf1_login] 配置文件保存失败: " + e.getMessage());
+                    tmp.delete();
+                }
             }
-        } catch (IOException ignored) {
-            // 写入失败时删除临时文件，保留原文件不变
+        } catch (IOException e) {
+            logger.warning("[Sdf1_login] 配置文件写入失败: " + e.getMessage());
             tmp.delete();
         }
     }

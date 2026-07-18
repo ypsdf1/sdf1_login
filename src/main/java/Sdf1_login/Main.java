@@ -6137,6 +6137,89 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ===== /email /绑定 独立命令 =====
+        if (cmdName.equals("email") || cmdName.equals("绑定")) {
+            // /email reload —— 控制台/玩家均可执行
+            if (args.length >= 1
+                    && args[0].equalsIgnoreCase("reload")) {
+                if (!isAdmin(sender)) {
+                    sender.sendMessage("§c权限不足，仅管理员可用");
+                    return true;
+                }
+                config.reloadSmtp();
+                sender.sendMessage("§a邮件配置已重载");
+                sender.sendMessage("§7SMTP地址: "
+                        + config.getSmtp("smtp地址"));
+                sender.sendMessage("§7验证模式: "
+                        + config.getEmailValidationMode());
+                return true;
+            }
+            // 以下为玩家专属操作
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p2 = (Player) sender;
+            if (args.length >= 1) {
+                String emailAddr = args[0];
+                if (!emailAddr.contains("@")
+                        || !emailAddr.contains(".")) {
+                    p2.sendMessage("§c邮箱格式不正确");
+                    return true;
+                }
+                // 邮箱后缀黑白名单校验
+                if (!config.isEmailSuffixAllowed(emailAddr)) {
+                    String mode = config.getEmailValidationMode();
+                    if ("白名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀不在允许列表中");
+                    } else if ("黑名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀被禁止使用");
+                    }
+                    return true;
+                }
+                String oldEmail = (String) db.getField(
+                        p2.getName(), "email");
+                if (oldEmail != null && !oldEmail.isEmpty()) {
+                    chatInput.getState(p2).type =
+                            ChatInputManager.InputType.SET_EMAIL_VERIFY;
+                    chatInput.getState(p2).targetPlayer = emailAddr;
+                    chatInput.getState(p2).ticketTitle = "need_pwd";
+                    p2.sendMessage("§e您已绑定邮箱: " + oldEmail);
+                    p2.sendMessage("§e请输入登录密码以确认修改:");
+                } else {
+                    String code = String.valueOf(
+                            (int) (Math.random() * 900000 + 100000));
+                    chatInput.getState(p2).type =
+                            ChatInputManager.InputType.SET_EMAIL_VERIFY;
+                    chatInput.getState(p2).targetPlayer = emailAddr;
+                    chatInput.getState(p2).ticketTitle = code;
+                    final String to = emailAddr;
+                    final String c = code;
+                    final Player fp = p2;
+                    Bukkit.getScheduler()
+                            .runTaskAsynchronously(this,
+                                    () -> {
+                                        boolean sent =
+                                                email.sendVerifyCode(to, c);
+                                        Bukkit.getScheduler()
+                                                .runTask(this, () -> {
+                                                    if (sent) {
+                                                        fp.sendMessage("§a验证码已发送到 " + to);
+                                                        fp.sendMessage("§e输入6位验证码(0取消):");
+                                                    } else {
+                                                        fp.sendMessage("§c发送失败");
+                                                    }
+                                                });
+                                    });
+                }
+            } else {
+                chatInput.getState(p2).type =
+                        ChatInputManager.InputType.SET_EMAIL;
+                p2.sendMessage("§e请输入邮箱:");
+            }
+            return true;
+        }
+
         // ===== /sdf1_login =====
         if (!cmdName.equals("sdf1_login"))
             return false;
