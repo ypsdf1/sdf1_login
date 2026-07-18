@@ -256,6 +256,33 @@ public class ConfigManager {
         return true;
     }
 
+    /**
+     * 获取允许的邮箱后缀提示信息
+     * @return 如 "允许的后缀: @qq.com, @163.com" 或空字符串
+     */
+    public String getAllowedSuffixHint() {
+        String mode = getEmailValidationMode();
+        if ("默认".equals(mode)) return "";
+        String suffixList = getEmailSuffixList();
+        if (suffixList == null || suffixList.trim().isEmpty()) return "";
+        String[] suffixes = suffixList.split("[,;\\n]+");
+        StringBuilder sb = new StringBuilder();
+        for (String s : suffixes) {
+            String t = s.trim();
+            if (!t.isEmpty()) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append("@").append(t);
+            }
+        }
+        if (sb.length() == 0) return "";
+        if ("白名单".equals(mode)) {
+            return "§7允许的后缀: " + sb.toString();
+        } else if ("黑名单".equals(mode)) {
+            return "§7以下后缀被禁止: " + sb.toString();
+        }
+        return "";
+    }
+
     public void saveSmtp() {
         File file = new File(dataFolder, "SMTP设置.txt");
         List<String> L = new ArrayList<>();

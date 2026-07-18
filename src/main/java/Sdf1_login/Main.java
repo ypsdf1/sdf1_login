@@ -6055,6 +6055,8 @@ public class Main extends JavaPlugin
                     } else if ("黑名单".equals(mode)) {
                         p2.sendMessage("§c该邮箱后缀被禁止使用");
                     }
+                    String hint = config.getAllowedSuffixHint();
+                    if (!hint.isEmpty()) p2.sendMessage(hint);
                     return true;
                 }
                 String oldEmail = (String) db.getField(
@@ -6175,6 +6177,8 @@ public class Main extends JavaPlugin
                     } else if ("黑名单".equals(mode)) {
                         p2.sendMessage("§c该邮箱后缀被禁止使用");
                     }
+                    String hint = config.getAllowedSuffixHint();
+                    if (!hint.isEmpty()) p2.sendMessage(hint);
                     return true;
                 }
                 String oldEmail = (String) db.getField(
@@ -6814,6 +6818,8 @@ public class Main extends JavaPlugin
                     } else if ("黑名单".equals(mode)) {
                         p2.sendMessage("§c该邮箱后缀被禁止使用");
                     }
+                    String hint = config.getAllowedSuffixHint();
+                    if (!hint.isEmpty()) p2.sendMessage(hint);
                     return true;
                 }
                 String oldEmail = (String) db.getField(
