@@ -50,14 +50,14 @@ jobs:
 
           # 创建 tag
           curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${{ gitea.sha }}\"}" \
             "${BASE}/tags" || true
 
           # 创建 release
           curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{
               \"tag_name\": \"${TAG}\",
@@ -70,12 +70,12 @@ jobs:
 
           # 上传 JAR 资产
           RELEASE_ID=$(curl -s \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
             "${BASE}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
 
           if [ -n "$RELEASE_ID" ]; then
             curl -s -X POST \
-              -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+              -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
               -F "attachment=@target/Sdf1_login.jar" \
               "${BASE}/releases/${RELEASE_ID}/assets"
             echo "Release created: ${TAG}"
