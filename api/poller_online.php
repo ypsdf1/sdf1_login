@@ -27,9 +27,9 @@ if (@is_file($secretsFile) && @is_readable($secretsFile)) {
     @require_once $secretsFile;
 }
 $PLATFORM_DB_HOST = defined('PAY_MYSQL_HOST') ? PAY_MYSQL_HOST : '127.0.0.1';
-$PLATFORM_DB_NAME = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
-$PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'hbye3AezRNk4r7YA';
-$PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : '5HtD7Rn3seRAn2BE';
+$PLATFORM_DB_NAME = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'your_database';
+$PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'your_username';
+$PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : 'your_password';
 $GLOBALS['PLATFORM_DB_PREFIX'] = 'pay_'; $PLATFORM_DB_PREFIX = 'pay_';
 
 // SQLite 数据库路径
@@ -104,9 +104,9 @@ function getPlatformDB() {
     try {
         // ★ 直接用常量（从 pay_secrets.php 加载），不依赖全局变量
         $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
-        $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
-        $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'hbye3AezRNk4r7YA';
-        $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '5HtD7Rn3seRAn2BE';
+        $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'your_database';
+        $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'your_username';
+        $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'your_password';
 
         debugLog('[poller] 正在连接平台MySQL...', [
             'host' => $host,

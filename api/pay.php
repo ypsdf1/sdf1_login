@@ -21,13 +21,14 @@ ob_start();
 require_once __DIR__ . '/../core.php';
 ob_end_clean();
 
-// ===== 非机密常量（可安全提交） =====
+// ===== 支付配置（需在 pay_secrets.php 中定义） =====
+// 以下常量应在 pay_secrets.php 中定义，此处为占位符
 // 彩虹易支付 下单网关
-define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
+define('PAY_GATEWAY', defined('PAY_GATEWAY') ? PAY_GATEWAY : 'https://your-payment-gateway.com/api/pay/submit');
 // 异步通知地址（平台服务器回调，必须公网可达）
-define('PAY_NOTIFY_URL', 'https://caoyuan.ypshidifu.cn/plugin/api/pay.php?action=notify');
+define('PAY_NOTIFY_URL', defined('PAY_NOTIFY_URL') ? PAY_NOTIFY_URL : 'https://your-domain.com/plugin/api/pay.php?action=notify');
 // 同步跳转地址（玩家付款后浏览器跳回）
-define('PAY_RETURN_URL', 'https://caoyuan.ypshidifu.cn/plugin/player.php?paid=1');
+define('PAY_RETURN_URL', defined('PAY_RETURN_URL') ? PAY_RETURN_URL : 'https://your-domain.com/plugin/player.php?paid=1');
 define('PAY_SIGN_TYPE', 'MD5');   // 提交用 MD5（商户 MD5 密钥 pay_user.key，末尾无点）；用户新私钥数据损坏无法自验，暂用 MD5
 
 // ===== 0.01 元测试配置（先跑通全链路，后续替换为 recharge_tiers 档位） =====
@@ -60,9 +61,9 @@ function loadPayKeys() {
  */
 function getPlatformDB() {
     $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
-    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
-    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'hbye3AezRNk4r7YA';
-    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '5HtD7Rn3seRAn2BE';
+    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'your_database';
+    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'your_username';
+    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'your_password';
     $pdo = new PDO(
         "mysql:host=$host;dbname=$dbname;charset=utf8mb4",
         $user,
@@ -838,7 +839,7 @@ function queryPlatformAPI($outTradeNo) {
             'sign_type'    => 'MD5',
         ]);
 
-        $url = 'https://zf.ypshidifu.cn/api/pay/query';
+        $url = defined('PAY_QUERY_URL') ? PAY_QUERY_URL : 'https://your-payment-gateway.com/api/pay/query';
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,

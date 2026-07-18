@@ -217,10 +217,34 @@ function getAuthUrl($sessionId) {
  * ★ 公共客户端（00000000402b5328）不需要client_secret
  *   redirect_uri必须与授权时一致
  */
+/**
+ * 将Microsoft返回的OAuth错误映射为中文友好提示
+ */
+function mapMsTokenError($msErr, $msDesc = '') {
+    $msDesc = trim($msDesc);
+    if ($msErr === 'invalid_grant') {
+        return '授权码已失效（可能已过期，或已被使用过一次）。请重新点击"打开Microsoft登录"获取新的授权码，并在短时间内完成粘贴提交，不要重复使用旧授权码。';
+    }
+    if ($msErr === 'invalid_client') {
+        return 'OAuth客户端验证失败，请联系管理员检查 MS_CLIENT_ID 配置。';
+    }
+    if ($msErr === 'invalid_request') {
+        return '请求参数有误（' . ($msDesc ?: 'invalid_request') . '），请联系管理员。';
+    }
+    return 'Token兑换失败: ' . $msErr . ($msDesc ? '（' . $msDesc . '）' : '');
+}
+
 function exchangeToken($code) {
     $clientId = '00000000402b5328'; // Minecraft公共客户端ID
     // 桌面端redirect_uri（与getAuthUrl一致）
     $redirectUri = 'https://login.live.com/oauth20_desktop.srf';
+
+    // ★ 关键修复：对code做一次urldecode归一化。
+    //   前端JS提取code后会encodeURIComponent（! → %21），
+    //   若此处不解码直接交给http_build_query，PHP会再次编码成 %2521（双重编码），
+    //   导致Microsoft收到失真的授权码 → invalid_grant 400。
+    //   做一次urldecode保证最终只编码一次。urldecode对已是明文的内容是幂等的，安全。
+    $code = urldecode($code);
 
     $result = msPost('https://login.live.com/oauth20_token.srf', [
         'client_id' => $clientId,
@@ -234,7 +258,10 @@ function exchangeToken($code) {
         return ['error' => 'Token exchange failed: ' . $result['error']];
     }
     if ($result['code'] !== 200) {
-        return ['error' => 'Token exchange HTTP ' . $result['code']];
+        $body = $result['body'] ?? [];
+        $msErr = $body['error'] ?? 'unknown';
+        $msDesc = $body['error_description'] ?? '';
+        return ['error' => mapMsTokenError($msErr, $msDesc), 'ms_error' => $msErr];
     }
 
     $body = $result['body'];
@@ -477,10 +504,16 @@ switch ($action) {
         // 生成授权URL
         $authUrl = getAuthUrl($sessionId);
 
+        // ★ 动态构建paste_url：基于当前请求的域名和脚本路径，不硬编码
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
+        $scriptPath = $_SERVER['SCRIPT_NAME'] ?? '/api/minecraft_auth.php';
+        $pasteUrl = $scheme . '://' . $host . $scriptPath . '?action=paste_code_page&session_id=' . $sessionId;
+
         success([
             'session_id' => $sessionId,
             'auth_url' => $authUrl,
-            'paste_url' => 'https://caoyuan.ypshidifu.cn/plugin/api/minecraft_auth.php?action=paste_code_page&session_id=' . $sessionId,
+            'paste_url' => $pasteUrl,
             'expires_in' => 600,
         ]);
         break;
@@ -620,24 +653,41 @@ switch ($action) {
     // ===== 玩家手动粘贴授权码（公共客户端流程） =====
     case 'verify_code': {
         // 兼容JSON和表单两种POST方式
-        $json = json_decode(file_get_contents('php://input'), true);
+        $rawInput = file_get_contents('php://input');
+        $json = json_decode($rawInput, true);
         $sessionId = postParam('session_id') ?: ($json['session_id'] ?? '');
         $code = postParam('code') ?: ($json['code'] ?? '');
         $secret = postParam('secret') ?: ($json['secret'] ?? '');
 
+        // ★ 详细调试日志
+        $debugLine = date('Y-m-d H:i:s') . " [verify_code] 来源: " . (postParam('code') !== '' ? 'POST表单' : 'JSON体') . "\n";
+        $debugLine .= "  Raw input(前300): " . substr($rawInput, 0, 300) . "\n";
+        $debugLine .= "  Session: $sessionId\n";
+        $debugLine .= "  Code(pre-extract,前200): " . substr($code, 0, 200) . " (len=" . strlen($code) . ")\n";
+        $debugLine .= "  Secret: " . substr($secret, 0, 30) . "\n";
+        @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine, FILE_APPEND);
+
         if (empty($sessionId)) error('缺少session_id参数');
         if (empty($code)) error('缺少code参数（授权码）');
 
-        // 自动从URL中提取code参数
-        if (strpos($code, 'code=') !== false || strpos($code, 'http') === 0) {
-            if (preg_match('/[?&]code=([^&]+)/', $code, $m)) {
+        // 自动从URL中提取code参数（兼容 ?code= & #code= & 直接粘贴code）
+        if (strpos($code, 'code=') !== false || strpos($code, 'http') === 0 || strpos($code, '#') !== false) {
+            if (preg_match('/[#?&]code=([^&]+)/', $code, $m)) {
                 $code = urldecode($m[1]);
             }
         }
 
+        // ★ 提取后日志
+        $debugLine2 = "  Code(post-extract,前200): " . substr($code, 0, 200) . " (len=" . strlen($code) . ")\n";
+        @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine2, FILE_APPEND);
+
         // 密钥验证：Java调用需要secret，浏览器表单用session_id自身认证
         if (!empty($secret)) {
-            if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
+            if ($secret !== MC_AUTH_SECRET) {
+                $debugLine3 = "  ★ 密钥不匹配! 收到: " . substr($secret, 0, 30) . " 期望: " . substr(MC_AUTH_SECRET, 0, 30) . "\n";
+                @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine3, FILE_APPEND);
+                error('密钥错误', 403);
+            }
         }
 
         // 查询会话
@@ -645,8 +695,16 @@ switch ($action) {
         $stmt->execute([$sessionId]);
         $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!$session) error('会话不存在或已过期');
-        if ($session['status'] !== 'pending') error('会话状态异常: ' . $session['status']);
+        if (!$session) {
+            $debugLine4 = "  ★ 会话不存在! sessionId=$sessionId\n";
+            @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine4, FILE_APPEND);
+            error('会话不存在或已过期');
+        }
+        if ($session['status'] !== 'pending') {
+            $debugLine4 = "  ★ 会话状态异常: " . $session['status'] . " (期望pending)\n";
+            @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine4, FILE_APPEND);
+            error('会话状态异常: ' . $session['status']);
+        }
         if (time() > $session['expires_at']) {
             $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'expired' WHERE session_id = ?");
             $stmt->execute([$sessionId]);
@@ -654,7 +712,12 @@ switch ($action) {
         }
 
         // 执行完整OAuth流程
+        $debugLine5 = "  → 调用 completeAuthFlow, code前50: " . substr($code, 0, 50) . "\n";
+        @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine5, FILE_APPEND);
         $result = completeAuthFlow($code);
+        $debugLine6 = "  ← completeAuthFlow返回: " . (isset($result['error']) ? 'ERROR: ' . $result['error'] : 'SUCCESS uuid=' . ($result['uuid'] ?? '?') . ' name=' . ($result['name'] ?? '?')) . "\n";
+        $debugLine6 .= str_repeat('-', 80) . "\n";
+        @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine6, FILE_APPEND);
 
         if (isset($result['error'])) {
             $stmt = $db->prepare("UPDATE mc_auth_sessions SET status = 'failed' WHERE session_id = ?");
@@ -782,22 +845,24 @@ button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
 </div>
 <script>
 var sessionId="{$sessionId}";
+var submitting=false;
 function extractCode(input){
 input=input.trim();
-// 如果包含code=参数，从中提取
-var m=input.match(/[?&]code=([^&]+)/);
+var m=input.match(/[#?&]code=([^&]+)/);
 if(m) return decodeURIComponent(m[1]);
-// 如果不包含http/https，当作原始code
 if(input.indexOf('http')===-1 && input.indexOf('code=')===-1) return input;
-// 尝试解析URL
-try{var u=new URL(input);var p=new URLSearchParams(u.search);if(p.has('code'))return p.get('code');}catch(e){}
+try{
+var u=new URL(input);
+var p=new URLSearchParams(u.search);
+if(p.has('code'))return p.get('code');
+var ph=new URLSearchParams(u.hash.replace(/^#/,''));
+if(ph.has('code'))return p.get('code');
+}catch(e){}
 return input;
 }
-function submitCode(){
-var raw=document.getElementById('codeInput').value.trim();
-if(!raw){showMsg('请输入授权码或URL','err');return}
-var code=extractCode(raw);
-if(!code){showMsg('无法从输入中提取授权码','err');return}
+function doSubmit(code){
+if(submitting)return;
+submitting=true;
 var btn=document.getElementById('submitBtn');
 btn.disabled=true;btn.textContent='验证中...';
 var xhr=new XMLHttpRequest();
@@ -805,6 +870,7 @@ xhr.open('POST','minecraft_auth.php?action=verify_code',true);
 xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
 xhr.onreadystatechange=function(){
 if(xhr.readyState===4){
+submitting=false;
 try{var d=JSON.parse(xhr.responseText);
 if(d.success){showMsg('✅ 验证成功！请关闭此页面返回游戏','ok');}
 else{showMsg('❌ '+(d.error||'验证失败'),'err');btn.disabled=false;btn.textContent='提交验证';}
@@ -812,6 +878,23 @@ else{showMsg('❌ '+(d.error||'验证失败'),'err');btn.disabled=false;btn.text
 }};
 xhr.send('session_id='+encodeURIComponent(sessionId)+'&code='+encodeURIComponent(code));
 }
+function submitCode(){
+var raw=document.getElementById('codeInput').value.trim();
+if(!raw){showMsg('请输入授权码或URL','err');return}
+var code=extractCode(raw);
+if(!code){showMsg('无法从输入中提取授权码','err');return}
+doSubmit(code);
+}
+document.getElementById('codeInput').addEventListener('paste',function(){
+var el=this;
+setTimeout(function(){
+var raw=el.value.trim();
+if(raw.indexOf('login.live.com')!==-1||raw.indexOf('login.microsoftonline.com')!==-1){
+var code=extractCode(raw);
+if(code&&code.length>10){doSubmit(code);}
+}
+},100);
+});
 function showMsg(t,c){var m=document.getElementById('msg');m.textContent=t;m.className='msg '+c;}
 </script>
 </body>

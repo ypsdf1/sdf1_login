@@ -4,7 +4,7 @@
  */
 
 // ===== 安全密钥（插件和Web端必须一致） =====
-define('SECRET_KEY', 'sdf1_web_comm_2026_ypshidifu');
+define('SECRET_KEY', 'YOUR_SECRET_KEY');
 
 // ===== Token配置 =====
 define('TOKEN_EXPIRE_SECONDS', 86400);  // 24小时
@@ -17,12 +17,12 @@ define('ORDERS_DB_PATH', __DIR__ . '/db/orders.db');
 
 // ===== 管理员认证 =====
 define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', 'ypshidifu2026');  // 管理员密码
+define('ADMIN_PASS', 'YOUR_ADMIN_PASSWORD');  // 管理员密码
 
-// ===== 游戏数据库路径（用于同步） =====
-define('GAME_BOND_DB', 'D:/服务器/插件/bond.db');
-define('GAME_LOGIN_DB', 'D:/服务器/插件/login.db');
-define('GAME_SHOP_DIR', 'D:/服务器/插件/shop/');
+// ===== 游戏数据库路径（用于同步，需在本地配置文件中定义） =====
+define('GAME_BOND_DB', defined('GAME_BOND_DB') ? GAME_BOND_DB : '/path/to/bond.db');
+define('GAME_LOGIN_DB', defined('GAME_LOGIN_DB') ? GAME_LOGIN_DB : '/path/to/login.db');
+define('GAME_SHOP_DIR', defined('GAME_SHOP_DIR') ? GAME_SHOP_DIR : '/path/to/shop/');
 
 // ===== Web子目录路径（如 /plugin 或 /test1，根目录则留空） =====
 define('WEBSUB_DIR', '/plugin');
@@ -38,10 +38,10 @@ function webPath($path = '') {
     return trim(WEBSUB_DIR, '/') . ($path ? '/' . trim($path, '/') : '');
 }
 
-// ===== SMTP邮件配置 =====
-define('SMTP_HOST', 'hwsmtp.exmail.qq.com');
-define('SMTP_PORT', '465');
-define('SMTP_USER', 'mcserver@ypshidifu.cn');
-define('SMTP_PASS', 'sQ2ZiCZGq96xi9Sv');
-define('SMTP_SENDER_NAME', 'Sdf1_login');
-define('SMTP_USE_SSL', true);
+// ===== SMTP邮件配置（需在本地配置文件中定义） =====
+define('SMTP_HOST', defined('SMTP_HOST') ? SMTP_HOST : 'smtp.example.com');
+define('SMTP_PORT', defined('SMTP_PORT') ? SMTP_PORT : '465');
+define('SMTP_USER', defined('SMTP_USER') ? SMTP_USER : 'your-email@example.com');
+define('SMTP_PASS', defined('SMTP_PASS') ? SMTP_PASS : 'your-email-password');
+define('SMTP_SENDER_NAME', defined('SMTP_SENDER_NAME') ? SMTP_SENDER_NAME : 'YourApp');
+define('SMTP_USE_SSL', defined('SMTP_USE_SSL') ? SMTP_USE_SSL : true);

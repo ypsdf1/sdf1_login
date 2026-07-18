@@ -22,9 +22,9 @@ if (@is_file($secretsFile) && @is_readable($secretsFile)) {
  */
 function getAdminPlatformDB() {
     $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
-    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
-    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'hbye3AezRNk4r7YA';
-    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '5HtD7Rn3seRAn2BE';
+    $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'your_database';
+    $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'your_username';
+    $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : 'your_password';
     $pdo = new PDO(
         "mysql:host=$host;dbname=$dbname;charset=utf8mb4",
         $user,
