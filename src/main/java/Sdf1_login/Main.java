@@ -6701,6 +6701,18 @@ public class Main extends JavaPlugin
             }
             Player p2 = (Player) sender;
             if (args.length >= 2) {
+                // 检查是否为reload子命令（仅管理员可用）
+                if (args[1].equalsIgnoreCase("reload")) {
+                    if (!p2.hasPermission("sdf1_login.admin")) {
+                        p2.sendMessage("§c权限不足，仅管理员可用");
+                        return true;
+                    }
+                    config.reloadSmtp();
+                    p2.sendMessage("§a邮件配置已重载");
+                    p2.sendMessage("§7SMTP地址: " + config.getSmtp("smtp地址"));
+                    p2.sendMessage("§7验证模式: " + config.getEmailValidationMode());
+                    return true;
+                }
                 String emailAddr = args[1];
                 if (!emailAddr.contains("@")
                         || !emailAddr.contains(".")) {

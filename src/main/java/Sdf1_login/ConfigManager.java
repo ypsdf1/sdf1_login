@@ -119,8 +119,64 @@ public class ConfigManager {
     public void loadSmtp() {
         smtpSettings.clear();
         File file = new File(dataFolder, "SMTP设置.txt");
-        if (!file.exists()) createDefaultSmtp(file);
+        if (!file.exists()) {
+            createDefaultSmtp(file);
+        } else {
+            // 文件存在，先加载现有配置
+            loadMap(file, smtpSettings);
+            // 检查并补全缺失的配置项
+            ensureSmtpConfigComplete(file);
+        }
         loadMap(file, smtpSettings);
+    }
+
+    /**
+     * 重新加载邮件配置文件（热更新）
+     */
+    public void reloadSmtp() {
+        loadSmtp();
+    }
+
+    /**
+     * 确保SMTP配置文件包含所有必要的配置项
+     * 如果缺少配置项，自动补充默认值并保存
+     */
+    private void ensureSmtpConfigComplete(File file) {
+        boolean changed = false;
+
+        // 检查必要的SMTP配置项
+        String[] requiredSmtpKeys = {"smtp地址", "smtp端口", "smtp账号", "smtp密码", "发件人名称", "smtp加密"};
+        for (String key : requiredSmtpKeys) {
+            if (!smtpSettings.containsKey(key)) {
+                // 根据key提供默认值
+                String defaultValue = "";
+                switch (key) {
+                    case "smtp地址": defaultValue = "smtp.example.com"; break;
+                    case "smtp端口": defaultValue = "465"; break;
+                    case "发件人名称": defaultValue = "Sdf1_login"; break;
+                    case "smtp加密": defaultValue = "true"; break;
+                }
+                smtpSettings.put(key, defaultValue);
+                changed = true;
+            }
+        }
+
+        // 检查邮箱验证模式配置项
+        if (!smtpSettings.containsKey("邮箱验证模式")) {
+            smtpSettings.put("邮箱验证模式", "默认");
+            changed = true;
+        }
+
+        // 检查邮箱后缀列表配置项
+        if (!smtpSettings.containsKey("邮箱后缀列表")) {
+            smtpSettings.put("邮箱后缀列表", "");
+            changed = true;
+        }
+
+        // 如果有变更，保存配置文件
+        if (changed) {
+            saveSmtp();
+        }
     }
 
     public String getSmtp(String key) {
@@ -571,7 +627,15 @@ public class ConfigManager {
     private void loadMap(File file, Map<String, String> map) {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
             String line;
+            boolean firstLine = true;
             while ((line = r.readLine()) != null) {
+                // 处理UTF-8 BOM头
+                if (firstLine) {
+                    firstLine = false;
+                    if (line.startsWith("\uFEFF")) {
+                        line = line.substring(1);
+                    }
+                }
                 line = line.trim();
                 if (line.isEmpty() || line.startsWith("#")) continue;
                 int eq = line.indexOf('=');
