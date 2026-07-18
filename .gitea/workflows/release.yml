@@ -6,28 +6,54 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout code
-        run: |
-          git init
-          git remote add origin ${{ gitea.server_url }}/${{ gitea.repository }}.git
-          git fetch --depth 1 origin ${{ gitea.sha }}
-          git checkout FETCH_HEAD
+        uses: actions/checkout@v4
 
-      - name: Setup Java 21
+      - name: Setup Java
         run: |
-          apt-get update && apt-get install -y openjdk-21-jdk
-          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-          export PATH=$JAVA_HOME/bin:$PATH
-          java -version
+          # 检查系统已安装的 Java
+          if command -v java &> /dev/null; then
+            java -version
+          elif [ -d "/usr/lib/jvm" ]; then
+            # 尝试找到已安装的 JDK
+            JAVA_DIR=$(find /usr/lib/jvm -name "java" -type f 2>/dev/null | head -1)
+            if [ -n "$JAVA_DIR" ]; then
+              export JAVA_HOME=$(dirname $(dirname "$JAVA_DIR"))
+              export PATH=$JAVA_HOME/bin:$PATH
+              java -version
+            fi
+          fi
+          
+          # 如果没有 Java，尝试安装
+          if ! command -v java &> /dev/null; then
+            echo "Java not found, attempting to install..."
+            if command -v apt-get &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y openjdk-21-jdk
+            elif command -v yum &> /dev/null; then
+              sudo yum install -y java-21-openjdk-devel
+            elif command -v dnf &> /dev/null; then
+              sudo dnf install -y java-21-openjdk-devel
+            fi
+            export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+            export PATH=$JAVA_HOME/bin:$PATH
+            java -version
+          fi
 
       - name: Build with Maven
         run: |
-          chmod +x mvnw 2>/dev/null || true
-          if [ -f "mvnw" ]; then
-            ./mvnw -B clean package -DskipTests
+          if command -v mvn &> /dev/null; then
+            mvn -B clean package -DskipTests
           else
+            echo "Maven not found, attempting to install..."
+            if command -v apt-get &> /dev/null; then
+              sudo apt-get update && sudo apt-get install -y maven
+            elif command -v yum &> /dev/null; then
+              sudo yum install -y maven
+            elif command -v dnf &> /dev/null; then
+              sudo dnf install -y maven
+            fi
             mvn -B clean package -DskipTests
           fi
 
@@ -36,8 +62,7 @@ jobs:
 
       - name: Create Release via API
         run: |
-          TAG="build-${GITHUB_RUN_NUMBER:-${{ gitea.run_number }}}"
-          VERSION="v1.0.${{ gitea.run_number }}"
+          TAG="build-${{ gitea.run_number }}"
           
           # Create tag
           curl -s -X POST \
@@ -53,13 +78,13 @@ jobs:
             -d "{
               \"tag_name\": \"${TAG}\",
               \"name\": \"Build ${{ gitea.run_number }}\",
-              \"body\": \"Auto release from GitHub Actions\\n\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",
+              \"body\": \"Auto release from Gitea Actions\\n\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",
               \"draft\": false,
               \"prerelease\": false
             }" \
             "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases"
           
-          # Upload JAR asset (if release created)
+          # Upload JAR asset
           RELEASE_ID=$(curl -s \
             -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
             "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
@@ -69,4 +94,7 @@ jobs:
               -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
               -F "attachment=@target/Sdf1_login.jar" \
               "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/${RELEASE_ID}/assets"
+            echo "Release created: ${TAG}"
+          else
+            echo "Warning: Release creation may have failed"
           fi
