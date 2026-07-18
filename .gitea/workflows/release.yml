@@ -22,23 +22,11 @@ jobs:
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
 
-      - name: Get version info
-        id: version
-        run: |
-          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          TIMESTAMP=$(date -u '+%Y%m%d-%H%M%S')
-          echo "tag=build-${TIMESTAMP}-${SHORT_SHA}" >> $GITHUB_OUTPUT
-          echo "name=Build ${TIMESTAMP} (${SHORT_SHA})" >> $GITHUB_OUTPUT
-
-      - name: Delete old build tag if exists
-        continue-on-error: true
-        run: git push --delete origin ${{ steps.version.outputs.tag }} 2>/dev/null || true
-
       - name: Create Release with JAR
-        uses: softprops/action-gh-release@v2
+        uses: gitea.com/actions/release-action@main
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.name }}
-          files: target/Sdf1_login.jar
-          generate_release_notes: true
-          make_latest: true
+          tag_name: build-${{ gitea.run_number }}
+          name: Build #${{ gitea.run_number }}
+          files: |
+            target/Sdf1_login.jar
+          token: ${{ secrets.GITEA_TOKEN }}
