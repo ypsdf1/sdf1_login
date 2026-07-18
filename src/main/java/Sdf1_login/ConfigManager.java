@@ -3,11 +3,13 @@ package Sdf1_login;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.logging.Logger;
 
 import org.bukkit.Bukkit;
 
 public class ConfigManager {
 
+    private static final Logger logger = Logger.getLogger("Sdf1_login");
     private final File dataFolder;
     private final Map<String, String> messages
             = new LinkedHashMap<>();
@@ -121,13 +123,15 @@ public class ConfigManager {
         File file = new File(dataFolder, "SMTP设置.txt");
         if (!file.exists()) {
             createDefaultSmtp(file);
-        } else {
-            // 文件存在，先加载现有配置
-            loadMap(file, smtpSettings);
-            // 检查并补全缺失的配置项
-            ensureSmtpConfigComplete(file);
         }
+        // 加载配置文件
         loadMap(file, smtpSettings);
+        // 检查并补全缺失的配置项
+        ensureSmtpConfigComplete(file);
+        logger.info("[Sdf1_login] 加载邮件配置: 已加载 " + smtpSettings.size() + " 个配置项");
+        for (String key : smtpSettings.keySet()) {
+            logger.info("[Sdf1_login]   " + key + " = " + smtpSettings.get(key));
+        }
     }
 
     /**
@@ -148,6 +152,7 @@ public class ConfigManager {
         String[] requiredSmtpKeys = {"smtp地址", "smtp端口", "smtp账号", "smtp密码", "发件人名称", "smtp加密"};
         for (String key : requiredSmtpKeys) {
             if (!smtpSettings.containsKey(key)) {
+                logger.info("[Sdf1_login] 邮件配置缺失: " + key + "，自动补全");
                 // 根据key提供默认值
                 String defaultValue = "";
                 switch (key) {
@@ -163,19 +168,24 @@ public class ConfigManager {
 
         // 检查邮箱验证模式配置项
         if (!smtpSettings.containsKey("邮箱验证模式")) {
+            logger.info("[Sdf1_login] 邮件配置缺失: 邮箱验证模式，自动补全");
             smtpSettings.put("邮箱验证模式", "默认");
             changed = true;
         }
 
         // 检查邮箱后缀列表配置项
         if (!smtpSettings.containsKey("邮箱后缀列表")) {
+            logger.info("[Sdf1_login] 邮件配置缺失: 邮箱后缀列表，自动补全");
             smtpSettings.put("邮箱后缀列表", "");
             changed = true;
         }
 
         // 如果有变更，保存配置文件
         if (changed) {
+            logger.info("[Sdf1_login] 邮件配置有变更，保存配置文件");
             saveSmtp();
+        } else {
+            logger.info("[Sdf1_login] 邮件配置完整，无需补全");
         }
     }
 
