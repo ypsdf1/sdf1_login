@@ -276,9 +276,9 @@ public class ConfigManager {
         }
         if (sb.length() == 0) return "";
         if ("白名单".equals(mode)) {
-            return "§7允许的后缀: " + sb.toString();
+            return "§b§l允许的后缀: " + sb.toString();
         } else if ("黑名单".equals(mode)) {
-            return "§7以下后缀被禁止: " + sb.toString();
+            return "§c§l以下后缀被禁止: " + sb.toString();
         }
         return "";
     }
