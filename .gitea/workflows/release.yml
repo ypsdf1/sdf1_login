@@ -11,51 +11,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Build Tools
         run: |
-          # 检查系统已安装的 Java
-          if command -v java &> /dev/null; then
-            java -version
-          elif [ -d "/usr/lib/jvm" ]; then
-            # 尝试找到已安装的 JDK
-            JAVA_DIR=$(find /usr/lib/jvm -name "java" -type f 2>/dev/null | head -1)
-            if [ -n "$JAVA_DIR" ]; then
-              export JAVA_HOME=$(dirname $(dirname "$JAVA_DIR"))
-              export PATH=$JAVA_HOME/bin:$PATH
-              java -version
-            fi
+          set -e
+          # 1) 定位服务器已安装的最高版本 JDK —— 绝不安装新 JDK，避免版本冲突
+          JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+            JAVA_HOME=$(dirname $(dirname $(command -v java)))
           fi
-          
-          # 如果没有 Java，尝试安装
-          if ! command -v java &> /dev/null; then
-            echo "Java not found, attempting to install..."
-            if command -v apt-get &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y openjdk-21-jdk
-            elif command -v yum &> /dev/null; then
-              sudo yum install -y java-21-openjdk-devel
-            elif command -v dnf &> /dev/null; then
-              sudo dnf install -y java-21-openjdk-devel
-            fi
-            export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-            export PATH=$JAVA_HOME/bin:$PATH
-            java -version
+          export JAVA_HOME
+          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
+          echo "PATH=/opt/maven/bin:$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
+          echo "Using JAVA_HOME=$JAVA_HOME"
+          java -version
+
+          # 2) 确保 Maven 可用 —— 用官方二进制包安装，绕开 dnf 拉 java-17 与已装 JDK 的冲突
+          if [ ! -x /opt/maven/bin/mvn ]; then
+            echo "Maven not found, downloading official binary..."
+            MAVEN_VER=3.9.9
+            cd /tmp
+            curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VER}/binaries/apache-maven-${MAVEN_VER}-bin.tar.gz" -o maven.tgz
+            tar -xzf maven.tgz -C /opt
+            ln -sfn /opt/apache-maven-${MAVEN_VER} /opt/maven
+            rm -f maven.tgz
           fi
+          /opt/maven/bin/mvn -version
 
       - name: Build with Maven
-        run: |
-          if command -v mvn &> /dev/null; then
-            mvn -B clean package -DskipTests
-          else
-            echo "Maven not found, attempting to install..."
-            if command -v apt-get &> /dev/null; then
-              sudo apt-get update && sudo apt-get install -y maven
-            elif command -v yum &> /dev/null; then
-              sudo yum install -y maven
-            elif command -v dnf &> /dev/null; then
-              sudo dnf install -y maven
-            fi
-            mvn -B clean package -DskipTests
-          fi
+        run: mvn -B clean package -DskipTests
 
       - name: Verify JAR
         run: ls -la target/*.jar
@@ -63,15 +46,16 @@ jobs:
       - name: Create Release via API
         run: |
           TAG="build-${{ gitea.run_number }}"
-          
-          # Create tag
+          BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
+
+          # 创建 tag
           curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${{ gitea.sha }}\"}" \
-            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/tags" || true
-          
-          # Create release
+            "${BASE}/tags" || true
+
+          # 创建 release
           curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
             -H "Content-Type: application/json" \
@@ -82,18 +66,18 @@ jobs:
               \"draft\": false,
               \"prerelease\": false
             }" \
-            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases"
-          
-          # Upload JAR asset
+            "${BASE}/releases"
+
+          # 上传 JAR 资产
           RELEASE_ID=$(curl -s \
             -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
-            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-          
+            "${BASE}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
           if [ -n "$RELEASE_ID" ]; then
             curl -s -X POST \
               -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
               -F "attachment=@target/Sdf1_login.jar" \
-              "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/${RELEASE_ID}/assets"
+              "${BASE}/releases/${RELEASE_ID}/assets"
             echo "Release created: ${TAG}"
           else
             echo "Warning: Release creation may have failed"
