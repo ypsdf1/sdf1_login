@@ -5,10 +5,8 @@ on:
     branches: [main]
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,11 +20,5 @@ jobs:
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
 
-      - name: Create Release with JAR
-        uses: gitea.com/actions/release-action@main
-        with:
-          tag_name: build-${{ gitea.run_number }}
-          name: Build #${{ gitea.run_number }}
-          files: |
-            target/Sdf1_login.jar
-          token: ${{ secrets.GITEA_TOKEN }}
+      - name: Verify JAR exists
+        run: ls -la target/Sdf1_login.jar
