@@ -82,3 +82,5 @@ lpt6
 lpt7
 lpt8
 lpt9hs_err_pid*.log
+hs_err_pid*.log
+replay_pid*.log
