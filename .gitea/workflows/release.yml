@@ -15,10 +15,28 @@ jobs:
         run: |
           set -e
           # 1) 定位服务器已安装的最高版本 JDK —— 绝不安装新 JDK，避免版本冲突
-          JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
+          # 优先检查 sdkman 管理的 JDK
+          if [ -f "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
+            source "$HOME/.sdkman/bin/sdkman-init.sh"
+            sdk list java 2>/dev/null | grep installed | tail -1 | awk '{print $NF}' | xargs sdk use java 2>/dev/null || true
+          fi
+
+          # 检查 /usr/lib/jvm 下的 JDK
+          JAVA_HOME=""
+          if [ -d "/usr/lib/jvm" ]; then
+            # 尝试找 Java 25
+            JAVA_HOME=$(find /usr/lib/jvm -name "java-*25*" -type d -print 2>/dev/null | head -1)
+            # 如果没有 Java 25，找最高版本
+            if [ -z "$JAVA_HOME" ]; then
+              JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
+            fi
+          fi
+
+          # 如果还没找到，用 which java 定位
           if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
             JAVA_HOME=$(dirname $(dirname $(command -v java)))
           fi
+
           export JAVA_HOME
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "JAVA_HOME=$JAVA_HOME"
@@ -52,6 +70,9 @@ jobs:
           # 把 Maven 所在目录加入 PATH
           MVN_DIR=$(dirname "$MVN_BIN")
           echo "PATH=$MVN_DIR:$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
+          echo "Java version:"
+          java -version
+          echo "Maven version:"
           "$MVN_BIN" -version
 
       - name: Build with Maven
