@@ -160,10 +160,21 @@ public class ChatInputManager {
                     reset(p);
                     return;
                 }
+                String emailAddr = msg.trim();
+                // 邮箱后缀黑白名单校验
+                if (!config.isEmailSuffixAllowed(emailAddr)) {
+                    String mode = config.getEmailValidationMode();
+                    if ("白名单".equals(mode)) {
+                        p.sendMessage("§c该邮箱后缀不在允许列表中");
+                    } else if ("黑名单".equals(mode)) {
+                        p.sendMessage("§c该邮箱后缀被禁止使用");
+                    }
+                    reset(p);
+                    return;
+                }
                 String oldEmail = (String)
                         db.getField(p.getName(),
                                 "email");
-                String emailAddr = msg.trim();
                 // 已绑定邮箱：验证登录密码
                 if (oldEmail != null
                         && !oldEmail.isEmpty()) {

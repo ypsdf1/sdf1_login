@@ -131,26 +131,119 @@ public class ConfigManager {
         smtpSettings.put(key, value);
     }
 
+    /**
+     * 获取邮箱验证模式
+     * @return "默认" / "白名单" / "黑名单"
+     */
+    public String getEmailValidationMode() {
+        return smtpSettings.getOrDefault("邮箱验证模式", "默认");
+    }
+
+    /**
+     * 获取邮箱后缀列表
+     * @return 后缀列表（每行一个，不含@）
+     */
+    public String getEmailSuffixList() {
+        return smtpSettings.getOrDefault("邮箱后缀列表", "");
+    }
+
+    /**
+     * 检查邮箱后缀是否允许
+     * @param email 邮箱地址
+     * @return true=允许, false=禁止
+     */
+    public boolean isEmailSuffixAllowed(String email) {
+        String mode = getEmailValidationMode();
+        if ("默认".equals(mode)) {
+            return true; // 默认模式不校验
+        }
+
+        String suffixList = getEmailSuffixList();
+        if (suffixList == null || suffixList.trim().isEmpty()) {
+            return true; // 列表为空，不校验
+        }
+
+        // 提取邮箱后缀
+        String suffix = "";
+        int atIndex = email.indexOf('@');
+        if (atIndex >= 0 && atIndex < email.length() - 1) {
+            suffix = email.substring(atIndex + 1).toLowerCase().trim();
+        }
+
+        // 解析后缀列表
+        String[] suffixes = suffixList.split("[,;\\n]+");
+        boolean found = false;
+        for (String s : suffixes) {
+            String trimmed = s.trim().toLowerCase();
+            if (!trimmed.isEmpty() && trimmed.equals(suffix)) {
+                found = true;
+                break;
+            }
+        }
+
+        if ("白名单".equals(mode)) {
+            return found; // 白名单模式：必须在列表中
+        } else if ("黑名单".equals(mode)) {
+            return !found; // 黑名单模式：不能在列表中
+        }
+
+        return true;
+    }
+
     public void saveSmtp() {
         File file = new File(dataFolder, "SMTP设置.txt");
         List<String> L = new ArrayList<>();
-        L.add("# ===== SMTP 配置 =====");
-        for (Map.Entry<String, String> e
-                : smtpSettings.entrySet()) {
-            L.add(e.getKey() + "=" + e.getValue());
+        L.add("# ===== 邮件配置 =====");
+        L.add("# --- SMTP 信息 ---");
+        // 保存SMTP相关配置
+        String[] smtpKeys = {"smtp地址", "smtp端口", "smtp账号", "smtp密码", "发件人名称", "smtp加密"};
+        for (String key : smtpKeys) {
+            if (smtpSettings.containsKey(key)) {
+                L.add(key + "=" + smtpSettings.get(key));
+            }
+        }
+        L.add("");
+        L.add("# --- 邮箱验证模式 ---");
+        L.add("# 模式: 默认 / 白名单 / 黑名单");
+        L.add("# 默认: 不校验邮箱后缀");
+        L.add("# 白名单: 只允许列表中的后缀");
+        L.add("# 黑名单: 禁止列表中的后缀");
+        // 保存邮箱验证模式
+        if (smtpSettings.containsKey("邮箱验证模式")) {
+            L.add("邮箱验证模式=" + smtpSettings.get("邮箱验证模式"));
+        } else {
+            L.add("邮箱验证模式=默认");
+        }
+        // 保存邮箱后缀列表
+        if (smtpSettings.containsKey("邮箱后缀列表")) {
+            L.add("邮箱后缀列表=" + smtpSettings.get("邮箱后缀列表"));
+        } else {
+            L.add("邮箱后缀列表=");
         }
         writeLines(file, L);
     }
 
     private void createDefaultSmtp(File f) {
         List<String> L = new ArrayList<>();
-        L.add("# ===== SMTP 配置 =====");
+        L.add("# ===== 邮件配置 =====");
+        L.add("# --- SMTP 信息 ---");
         L.add("smtp地址=smtp.example.com");
         L.add("smtp端口=465");
         L.add("smtp账号=");
         L.add("smtp密码=");
         L.add("发件人名称=Sdf1_login");
         L.add("smtp加密=true");
+        L.add("");
+        L.add("# --- 邮箱验证模式 ---");
+        L.add("# 模式: 默认 / 白名单 / 黑名单");
+        L.add("# 默认: 不校验邮箱后缀");
+        L.add("# 白名单: 只允许列表中的后缀");
+        L.add("# 黑名单: 禁止列表中的后缀");
+        L.add("邮箱验证模式=默认");
+        L.add("# 邮箱后缀列表（每行一个，不含@）");
+        L.add("# 示例: qq.com");
+        L.add("# 示例: gmail.com");
+        L.add("邮箱后缀列表=");
         writeLines(f, L);
     }
 

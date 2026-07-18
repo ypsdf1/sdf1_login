@@ -6047,6 +6047,16 @@ public class Main extends JavaPlugin
                     p2.sendMessage("§c邮箱格式不正确");
                     return true;
                 }
+                // 邮箱后缀黑白名单校验
+                if (!config.isEmailSuffixAllowed(emailAddr)) {
+                    String mode = config.getEmailValidationMode();
+                    if ("白名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀不在允许列表中");
+                    } else if ("黑名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀被禁止使用");
+                    }
+                    return true;
+                }
                 String oldEmail = (String) db.getField(
                         p2.getName(), "email");
                 if (oldEmail != null
@@ -6697,6 +6707,16 @@ public class Main extends JavaPlugin
                     p2.sendMessage("§c邮箱格式不正确");
                     return true;
                 }
+                // 邮箱后缀黑白名单校验
+                if (!config.isEmailSuffixAllowed(emailAddr)) {
+                    String mode = config.getEmailValidationMode();
+                    if ("白名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀不在允许列表中");
+                    } else if ("黑名单".equals(mode)) {
+                        p2.sendMessage("§c该邮箱后缀被禁止使用");
+                    }
+                    return true;
+                }
                 String oldEmail = (String) db.getField(
                         p2.getName(), "email");
                 if (oldEmail != null && !oldEmail.isEmpty()) {
@@ -6991,6 +7011,16 @@ public class Main extends JavaPlugin
                     if (!emailAddr.contains("@")
                             || !emailAddr.contains(".")) {
                         p2.sendMessage("§c邮箱格式不正确");
+                        return true;
+                    }
+                    // 邮箱后缀黑白名单校验
+                    if (!config.isEmailSuffixAllowed(emailAddr)) {
+                        String mode = config.getEmailValidationMode();
+                        if ("白名单".equals(mode)) {
+                            p2.sendMessage("§c该邮箱后缀不在允许列表中");
+                        } else if ("黑名单".equals(mode)) {
+                            p2.sendMessage("§c该邮箱后缀被禁止使用");
+                        }
                         return true;
                     }
                     String oldEmail = (String) db.getField(
