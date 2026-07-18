@@ -11,135 +11,46 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Build Tools
+      - name: Setup JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Verify Java
         run: |
-          set -e
-          echo "=== Setting up build environment ==="
-          
-          # 彻底绕开 sdkman —— 它会注入低版本JDK导致冲突
-          # 直接在 /usr/lib/jvm 中找最高版本的JDK
-          
-          JAVA_HOME=""
-          
-          if [ -d "/usr/lib/jvm" ]; then
-            # 列出所有JDK，按版本排序，取最高
-            echo "Available JDKs in /usr/lib/jvm:"
-            ls -d /usr/lib/jvm/java-* 2>/dev/null || true
-            
-            # 优先找 Java 25+
-            JAVA_HOME=$(find /usr/lib/jvm -name "java-25*" -type d 2>/dev/null | sort -V | tail -1)
-            if [ -z "$JAVA_HOME" ]; then
-              # 找最高版本
-              JAVA_HOME=$(ls -d /usr/lib/jvm/java-* 2>/dev/null | sort -V | tail -1)
-            fi
-          fi
-
-          # 如果没找到，用 which java
-          if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
-            if command -v java >/dev/null 2>&1; then
-              JAVA_HOME=$(dirname $(dirname $(command -v java)))
-            fi
-          fi
-
-          if [ -z "$JAVA_HOME" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
-            echo "ERROR: No valid JDK found!"
-            exit 1
-          fi
-
-          # 导出JAVA_HOME到GITHUB_ENV（后续步骤可用）
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          export JAVA_HOME
-          echo "=== Final JAVA_HOME: $JAVA_HOME ==="
-          "$JAVA_HOME/bin/java" -version
-          
-          # 验证：确保是 JDK 25+
-          JAVA_VER=$("$JAVA_HOME/bin/java" -version 2>&1 | head -1)
-          echo "Java version string: $JAVA_VER"
-          if echo "$JAVA_VER" | grep -qE '"17\.|"11\.|"1\.'; then
-            echo "WARNING: JAVA_HOME points to JDK < 25, compilation may fail!"
-          fi
-
-          # 确保 Maven 可用 —— 优先用 system PATH 中的 mvn
-          MVN_BIN=""
-          if command -v mvn >/dev/null 2>&1; then
-            MVN_BIN=$(command -v mvn)
-            echo "Maven found in PATH: $MVN_BIN"
-          elif [ -x /opt/maven/bin/mvn ]; then
-            MVN_BIN=/opt/maven/bin/mvn
-            echo "Maven found at /opt/maven"
-          fi
-
-          if [ -z "$MVN_BIN" ]; then
-            echo "Maven not found, downloading binary (aliyun mirror)..."
-            MAVEN_VER=3.9.9
-            cd /tmp
-            curl -fsSL --connect-timeout 15 --max-time 120 \
-              "https://mirrors.aliyun.com/apache/maven/maven-3/${MAVEN_VER}/binaries/apache-maven-${MAVEN_VER}-bin.tar.gz" \
-              -o maven.tgz || \
-            curl -fsSL --connect-timeout 15 --max-time 120 \
-              "https://dlcdn.apache.org/maven/maven-3/${MAVEN_VER}/binaries/apache-maven-${MAVEN_VER}-bin.tar.gz" \
-              -o maven.tgz
-            tar -xzf maven.tgz -C /opt
-            ln -sfn /opt/apache-maven-${MAVEN_VER} /opt/maven
-            rm -f maven.tgz
-            MVN_BIN=/opt/maven/bin/mvn
-          fi
-
-          # 把 Maven 和 JAVA_HOME 的 bin 目录加入 PATH
-          MVN_DIR=$(dirname "$MVN_BIN")
-          echo "PATH=$MVN_DIR:$JAVA_HOME/bin:$PATH" >> $GITHUB_ENV
-          echo "=== Maven version ==="
-          "$MVN_BIN" -version
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
 
       - name: Build with Maven
-        run: |
-          # 强制使用 JAVA_HOME 中的 java，完全绕开 PATH 和 sdkman
-          export JAVA_HOME="${{ env.JAVA_HOME }}"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "java binary: $(which java)"
-          java -version
-          mvn -B clean package -DskipTests
+        run: mvn -B clean package -DskipTests
 
       - name: Verify JAR
         run: ls -la target/*.jar
 
-      - name: Create Release via API
+      - name: Create Release
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           TAG="build-${{ gitea.run_number }}"
           BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
 
-          # 创建 tag
           curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${{ gitea.sha }}\"}" \
-            "${BASE}/tags" || true
-
-          # 创建 release
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"tag_name\": \"${TAG}\",
-              \"name\": \"Build ${{ gitea.run_number }}\",
-              \"body\": \"Auto release from Gitea Actions\\n\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",
-              \"draft\": false,
-              \"prerelease\": false
-            }" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Build ${{ gitea.run_number }}\",\"body\":\"Commit: ${{ gitea.sha }}\nBranch: ${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
             "${BASE}/releases"
 
-          # 上传 JAR 资产
           RELEASE_ID=$(curl -s \
-            -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: token $GITEA_TOKEN" \
             "${BASE}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
 
           if [ -n "$RELEASE_ID" ]; then
             curl -s -X POST \
-              -H "Authorization: token ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}" \
+              -H "Authorization: token $GITEA_TOKEN" \
               -F "attachment=@target/Sdf1_login.jar" \
               "${BASE}/releases/${RELEASE_ID}/assets"
-            echo "Release created: ${TAG}"
+            echo "Release ${TAG} created with JAR"
           else
-            echo "Warning: Release creation may have failed"
+            echo "Release tag ${TAG} created (JAR attach may need manual check)"
           fi
