@@ -5,34 +5,68 @@ on:
     branches: [main]
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        run: |
+          git init
+          git remote add origin ${{ gitea.server_url }}/${{ gitea.repository }}.git
+          git fetch --depth 1 origin ${{ gitea.sha }}
+          git checkout FETCH_HEAD
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
+      - name: Setup Java 21
+        run: |
+          apt-get update && apt-get install -y openjdk-21-jdk
+          export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+          export PATH=$JAVA_HOME/bin:$PATH
+          java -version
 
       - name: Build with Maven
-        run: mvn -B clean package -DskipTests
+        run: |
+          chmod +x mvnw 2>/dev/null || true
+          if [ -f "mvnw" ]; then
+            ./mvnw -B clean package -DskipTests
+          else
+            mvn -B clean package -DskipTests
+          fi
 
       - name: Verify JAR
-        run: ls -la target/Sdf1_login.jar
+        run: ls -la target/*.jar
 
-      - name: Create Release
-        uses: gitea.com/actions/release-action@v4
-        with:
-          token: d84d235dfd3c3447cc9be12666639f7bb44df293
-          tag_name: build-${{ gitea.run_number }}
-          name: Build ${{ gitea.run_number }}
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          files: target/Sdf1_login.jar
-          body: |
-            Commit: ${{ gitea.sha }}
-            Branch: ${{ gitea.ref_name }}
+      - name: Create Release via API
+        run: |
+          TAG="build-${GITHUB_RUN_NUMBER:-${{ gitea.run_number }}}"
+          VERSION="v1.0.${{ gitea.run_number }}"
+          
+          # Create tag
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"ref\":\"refs/tags/${TAG}\",\"sha\":\"${{ gitea.sha }}\"}" \
+            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/tags" || true
+          
+          # Create release
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"tag_name\": \"${TAG}\",
+              \"name\": \"Build ${{ gitea.run_number }}\",
+              \"body\": \"Auto release from GitHub Actions\\n\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",
+              \"draft\": false,
+              \"prerelease\": false
+            }" \
+            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases"
+          
+          # Upload JAR asset (if release created)
+          RELEASE_ID=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+            "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/tags/${TAG}" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          
+          if [ -n "$RELEASE_ID" ]; then
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GITEA_TOKEN }}" \
+              -F "attachment=@target/Sdf1_login.jar" \
+              "${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}/releases/${RELEASE_ID}/assets"
+          fi
