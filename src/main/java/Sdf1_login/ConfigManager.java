@@ -49,6 +49,10 @@ public class ConfigManager {
     public double providerEconomyPerScore = 50.0;
     public int requesterPointsReward = 10;
 
+    // ===== 密码错误封禁配置 =====
+    public int passwordFailThreshold = 5;   // 密码错误阈值（达到后封禁）
+    public int passwordBanDuration = 300;   // 封禁时长（秒），默认5分钟
+
     public boolean garbageEnabled = true;
     public int garbageInterval = 300;
     public int garbageMaxRounds = 1;
@@ -395,6 +399,8 @@ public class ConfigManager {
             {"区域防护_最大领地数", String.valueOf(areaProtectMaxLands)},
             {"传送_请求有效秒", String.valueOf(tpRequestValidSeconds)},
             {"传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds)},
+            {"密码错误封禁阈值", String.valueOf(passwordFailThreshold)},
+            {"密码错误封禁时长秒", String.valueOf(passwordBanDuration)},
         };
         for (String[] nk : newKeys) {
             if (!m.containsKey(nk[0])) { hasNewKey = true; }
@@ -434,6 +440,10 @@ public class ConfigManager {
         baseEconomyReward = parseInt(m.getOrDefault("基础经济奖励", "100"), 100);
         providerEconomyPerScore = parseDouble(m.getOrDefault("经济奖励每评分", "50.0"), 50.0);
         requesterPointsReward = parseInt(m.getOrDefault("报单人积分奖励", "10"), 10);
+
+        // 密码错误封禁配置
+        passwordFailThreshold = parseInt(m.getOrDefault("密码错误封禁阈值", "5"), 5);
+        passwordBanDuration = parseInt(m.getOrDefault("密码错误封禁时长秒", "300"), 300);
 
         garbageEnabled = Boolean.parseBoolean(m.getOrDefault("垃圾站_启用", "true"));
         garbageInterval = parseInt(m.getOrDefault("垃圾站_清理间隔秒", "300"), 300);
@@ -542,6 +552,8 @@ public class ConfigManager {
         managed.put("奖励发放方式", "债券");
         managed.put("传送_请求有效秒", String.valueOf(tpRequestValidSeconds));
         managed.put("传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds));
+        managed.put("密码错误封禁阈值", String.valueOf(passwordFailThreshold));
+        managed.put("密码错误封禁时长秒", String.valueOf(passwordBanDuration));
 
         // ★ 保留非ConfigManager管理的配置行（如web通信-*等）
         // ★ 同时保留连续的注释块（如 "# ===== Web通信配置 ====="）
@@ -632,6 +644,9 @@ public class ConfigManager {
         L.add("区域防护_最大领地数=3");
         L.add("传送_请求有效秒=90");
         L.add("传送_发送间隔秒=10");
+        // 密码错误封禁
+        L.add("密码错误封禁阈值=5");
+        L.add("密码错误封禁时长秒=300");
         // Web通信配置（默认禁用，需手动开启）
         L.add("");
         L.add("# ===== Web通信配置 =====");

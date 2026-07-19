@@ -57,6 +57,7 @@ public class Main extends JavaPlugin
     public GUIManager gui;
     private ChatInputManager chatInput;
     private VerificationManager verification;
+    private RiskControlManager riskControl;
     private IPGroupManager ipGroup;
     private AccountRequestManager accountRequest;
     private TicketManager ticket;
@@ -278,6 +279,10 @@ public class Main extends JavaPlugin
         return verification;
     }
 
+    public RiskControlManager getRiskControl() {
+        return riskControl;
+    }
+
     public IPGroupManager getIPGroup() {
         return ipGroup;
     }
@@ -384,6 +389,7 @@ public class Main extends JavaPlugin
         points = new PointsManager(this);
         chatInput = new ChatInputManager();
         verification = new VerificationManager(this);
+        riskControl = new RiskControlManager(this);
         ipGroup = new IPGroupManager(this,
                 config.maxAccountsPerIP);
         accountRequest =
@@ -440,6 +446,11 @@ public class Main extends JavaPlugin
                 chatFilter.cleanupExpiredVerifications();
             }, 5000L, 5000L);
         }
+
+        // 每30秒清理一次过期的风控封禁记录
+        getServer().getScheduler().runTaskTimer(this, () -> {
+            if (riskControl != null) riskControl.cleanup();
+        }, 600L, 600L);
         
         if (getCommand("sdf1_login") != null) {
             getCommand("sdf1_login")
@@ -2140,6 +2151,18 @@ public class Main extends JavaPlugin
         String name = p.getName();
         String ip = getPlayerIP(p);
 
+        // ===== 风控封禁检查：密码错误阈值封禁期间拒绝加入 =====
+        if (riskControl != null && riskControl.isBanned(name)) {
+            int remaining = riskControl.getBanRemainingSeconds(name);
+            e.setJoinMessage(null);
+            p.kickPlayer(
+                    "§c§l[安全风控] §f密码错误次数过多，"
+                            + "账号已被临时封禁 §e" + remaining
+                            + " §f秒\n"
+                            + "§7请等待封禁到期后重试");
+            return;
+        }
+
         // ===== 非法URL/非法域名用户名拦截（最高优先级） =====
         if (chatFilter != null && chatFilter.isEnabled()) {
             // 每次玩家加入时热重载非法域名后缀（支持热更新）
@@ -2328,9 +2351,30 @@ public class Main extends JavaPlugin
 
         // ★ 检查点0：已通过OAuth验证的正版玩家直接自动登录
         if (isVerifiedPremiumPlayer(name)) {
-            getLogger().info("[正版验证] 检查点0通过: 玩家 " + name + " 已通过OAuth验证，自动登录");
-            autoLogin(p, "premium");
-            return;
+            String currentIP = getPlayerIP(p);
+            String lastOAuthIP = (String) db.getField(name, "last_oauth_ip");
+
+            if (lastOAuthIP != null && !lastOAuthIP.isEmpty()
+                    && currentIP != null && !currentIP.equals(lastOAuthIP)) {
+                // ★ 异地登录风控：IP不一致 → 拒绝自动登录
+                getLogger().warning("[正版验证] 检查点0风控拦截: 玩家 " + name
+                        + " OAuth IP不一致 (上次: " + lastOAuthIP
+                        + ", 当前: " + currentIP + ")，要求手动登录");
+                p.sendMessage("§c§l[安全风控] §f检测到登录IP与上次不同");
+                p.sendMessage("§7上次IP: §e" + lastOAuthIP);
+                p.sendMessage("§7当前IP: §e" + currentIP);
+                p.sendMessage("§c请使用 /login <密码> 手动登录，或重新完成 /mslogin 验证");
+                // 不return，继续往下走触发正常登录流程
+            } else {
+                // IP一致或首次登录 → 记录IP并放行
+                if (currentIP != null && !currentIP.isEmpty()) {
+                    db.setField(name, "last_oauth_ip", currentIP);
+                }
+                getLogger().info("[正版验证] 检查点0通过: 玩家 " + name
+                        + " 已通过OAuth验证，自动登录");
+                autoLogin(p, "premium");
+                return;
+            }
         }
 
         verification.verifyPremiumAsync(p,

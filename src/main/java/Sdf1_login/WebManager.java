@@ -5100,6 +5100,12 @@ public class WebManager {
                             // 记录为已验证正版玩家
                             plugin.addVerifiedPremiumPlayer(playerName, mcUuid, mcUsername);
 
+                            // ★ 记录OAuth登录IP（用于异地登录风控）
+                            String oauthIP = plugin.getPlayerIP(player);
+                            if (oauthIP != null && !oauthIP.isEmpty()) {
+                                plugin.getDb().setField(playerName, "last_oauth_ip", oauthIP);
+                            }
+
                             // 在主线程执行自动登录
                             Bukkit.getScheduler().runTask(plugin, () -> {
                                 if (player.isOnline() && !plugin.getLoggedIn().contains(playerName)) {

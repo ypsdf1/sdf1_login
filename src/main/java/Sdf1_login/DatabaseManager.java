@@ -107,6 +107,9 @@ public class DatabaseManager {
             // 禁言理由
             safeAdd(st, "mute_reason",
                     "TEXT DEFAULT ''");
+            // ★ 正版OAuth登录IP（用于异地登录风控）
+            safeAdd(st, "last_oauth_ip",
+                    "TEXT DEFAULT ''");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）

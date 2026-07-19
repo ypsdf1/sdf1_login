@@ -154,6 +154,16 @@ public class LoginManager {
                         .msg("not_registered"));
                 return true;
             }
+
+            // ★ 风控检查：封禁期内拒绝登录
+            if (plugin.getRiskControl().isBanned(name)) {
+                int remaining = plugin.getRiskControl()
+                        .getBanRemainingSeconds(name);
+                p.sendMessage("§c§l[安全风控] §f账号因密码错误过多已被封禁，"
+                        + "剩余 §e" + remaining + " §f秒");
+                return true;
+            }
+
             if (args.length < 1) {
                 p.sendMessage("§c用法: /login <密码>");
                 return true;
@@ -176,6 +186,8 @@ public class LoginManager {
                     plugin.getDb().checkPassword(
                             name, hash);
             if (matchMain) {
+                // ★ 登录成功，重置风控
+                plugin.getRiskControl().onLoginSuccess(name);
                 plugin.getLoggedIn().add(name);
                 // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
                 if (plugin.webManager != null) {
@@ -225,6 +237,8 @@ public class LoginManager {
                             .checkPasswordWithFallback(
                                     name, hash);
             if (pwdResult != null) {
+                // ★ 临时密码登录成功，也重置风控
+                plugin.getRiskControl().onLoginSuccess(name);
                 plugin.getLoggedIn().add(name);
                 // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
                 if (plugin.webManager != null) {
@@ -256,8 +270,19 @@ public class LoginManager {
             }
 
 
+            // ★ 密码错误，记录风控
+            int remaining = plugin.getRiskControl()
+                    .recordFailAttempt(p);
+            if (remaining < 0) {
+                // 已被封禁（triggerBan内部已踢出）
+                return true;
+            }
             p.sendMessage(plugin.getConfig2()
                     .msg("login_failed"));
+            if (remaining > 0) {
+                p.sendMessage("§c§l[风控] §f剩余 §e"
+                        + remaining + " §f次尝试机会");
+            }
         } catch (Exception e) {
             plugin.getLogger().severe(
                     "[Sdf1_login] handleLogin异常: "
