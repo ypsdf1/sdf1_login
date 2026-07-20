@@ -902,7 +902,7 @@ public class WebManager {
 
         // 已经在缓冲模式中，不做任何推送
         if (buf.buffering && now < buf.bufferEnd) {
-            plugin.getLogger().info("[Web交易即时] 高频商品缓冲中(" + itemId + ")，第" + buf.count + "笔，不推送");
+          //  plugin.getLogger().info("[Web交易即时] 高频商品缓冲中(" + itemId + ")，第" + buf.count + "笔，不推送");
             return;
         }
 
