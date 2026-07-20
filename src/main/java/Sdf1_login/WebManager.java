@@ -873,11 +873,15 @@ public class WebManager {
     public void registerTransactionListener(BondManager bondMgr) {
         if (bondMgr == null) return;
         bondMgr.addTransactionListener((playerName, type, amount, targetPlayer) -> {
+            plugin.getLogger().info("[Web监听] 触发交易监听器: player=" + playerName
+                    + ", type=" + type + ", amount=" + amount
+                    + ", targetPlayer=" + targetPlayer
+                    + ", targetPlayer_isEmpty=" + (targetPlayer == null || targetPlayer.isEmpty()));
             // 高频出售商品缓冲逻辑：shop_sell类型商品在1分钟内≥10次时暂缓推送
             if ("shop_sell".equals(type) && targetPlayer != null && !targetPlayer.isEmpty()) {
                 handleHighFreqSell(playerName, targetPlayer, amount);
             } else {
-                plugin.getLogger().info("[Web交易即时] 检测到交易: " + playerName + " " + type + " " + amount + "，立即推送");
+                plugin.getLogger().info("[Web交易即时] 非高频交易类型，立即推送: " + playerName + " " + type + " " + amount + " targetPlayer=" + targetPlayer);
                 requestImmediateTransactionSync();
             }
         });
@@ -892,8 +896,13 @@ public class WebManager {
         long now = System.currentTimeMillis();
         SellItemBuffer buf = sellBuffers.computeIfAbsent(itemId, k -> new SellItemBuffer(itemId));
 
+        plugin.getLogger().info("[Web高频] 调用: player=" + playerName + ", itemId=" + itemId + ", amount=" + amount
+                + ", 当前count=" + buf.count + ", windowStart=" + buf.windowStart
+                + ", windowAge=" + (now - buf.windowStart) + "ms, buffering=" + buf.buffering);
+
         // 如果窗口已过期（>60秒），重置计数器
         if (now - buf.windowStart > 60000) {
+            plugin.getLogger().info("[Web高频] 窗口过期，重置count: " + buf.count + " -> 0");
             buf.count = 0;
             buf.windowStart = now;
         }
@@ -902,8 +911,13 @@ public class WebManager {
 
         // 已经在缓冲模式中，不做任何推送
         if (buf.buffering && now < buf.bufferEnd) {
-          //  plugin.getLogger().info("[Web交易即时] 高频商品缓冲中(" + itemId + ")，第" + buf.count + "笔，不推送");
+            plugin.getLogger().info("[Web高频] 缓冲中(" + itemId + ")，第" + buf.count + "笔，跳过推送，还剩" + (buf.bufferEnd - now) + "ms");
             return;
+        }
+
+        // 缓冲结束但count还没清零
+        if (buf.buffering && now >= buf.bufferEnd) {
+            plugin.getLogger().info("[Web高频] 缓冲已结束但未清理: " + itemId + ", count=" + buf.count);
         }
 
         // 达到阈值，进入缓冲模式
@@ -912,13 +926,15 @@ public class WebManager {
             buf.bufferEnd = now + HIGH_FREQ_BUFFER_MS;
             inHighFreqBufferMode = true;
             bufferModeEndTime = Math.max(bufferModeEndTime, buf.bufferEnd);
-         //   plugin.getLogger().info("[Web交易即时] ★ 高频商品触发缓冲: " + itemId + " 1分钟内" + buf.count + "次，暂缓推送60秒");
+            plugin.getLogger().info("[Web高频] ★ 触发缓冲! itemId=" + itemId + ", count=" + buf.count
+                    + " (阈值=" + HIGH_FREQ_SELL_THRESHOLD + "), 缓冲60秒, bufferEnd=" + buf.bufferEnd);
 
             // 调度60秒后的批量推送
             new BukkitRunnable() {
                 @Override
                 public void run() {
-                    plugin.getLogger().info("[Web交易即时] 高频缓冲到期(" + itemId + ")，批量推送交易");
+                    plugin.getLogger().info("[Web高频] 缓冲到期回调触发: itemId=" + itemId
+                            + ", buffering=" + buf.buffering + ", count=" + buf.count);
                     buf.buffering = false;
                     buf.count = 0;
                     buf.windowStart = System.currentTimeMillis();
@@ -930,14 +946,15 @@ public class WebManager {
                     }
                     if (!anyBuffering) inHighFreqBufferMode = false;
 
+                    plugin.getLogger().info("[Web高频] 批量推送交易，inHighFreqBufferMode=" + inHighFreqBufferMode);
                     requestImmediateTransactionSync();
                 }
             }.runTaskLater(plugin, 20L * 60); // 60秒
             return;
         }
 
-        // 普通交易（未达阈值），立即推送
-        plugin.getLogger().info("[Web交易即时] 检测到出售: " + playerName + " " + itemId + " " + amount + "，立即推送");
+        // 未达阈值，立即推送
+        plugin.getLogger().info("[Web交易即时] 未达阈值(" + buf.count + "/" + HIGH_FREQ_SELL_THRESHOLD + "), 立即推送: " + playerName + " " + itemId + " " + amount);
         requestImmediateTransactionSync();
     }
 
