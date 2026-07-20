@@ -4773,6 +4773,12 @@ public class WebManager {
     public void syncBondTransactions() {
         if (!enabled) return;
 
+        // ★ 高频出售缓冲模式：跳过周期推送，等待缓冲期满后由监听器统一推送
+        if (inHighFreqBufferMode) {
+            plugin.getLogger().info("[Web高频] syncBondTransactions被跳过: inHighFreqBufferMode=true, bufferModeEnd=" + bufferModeEndTime + ", 剩余" + (bufferModeEndTime - System.currentTimeMillis()) + "ms");
+            return;
+        }
+
         try {
             BondManager bondMgr = plugin.getBonds();
             if (bondMgr == null) return;
