@@ -872,11 +872,73 @@ public class WebManager {
     // ★ 注册交易监听器（需在BondManager初始化后调用）
     public void registerTransactionListener(BondManager bondMgr) {
         if (bondMgr == null) return;
-        bondMgr.addTransactionListener((playerName, type, amount) -> {
-            plugin.getLogger().info("[Web交易即时] 检测到交易: " + playerName + " " + type + " " + amount + "，立即推送");
-            requestImmediateTransactionSync();
+        bondMgr.addTransactionListener((playerName, type, amount, targetPlayer) -> {
+            // 高频出售商品缓冲逻辑：shop_sell类型商品在1分钟内≥10次时暂缓推送
+            if ("shop_sell".equals(type) && targetPlayer != null && !targetPlayer.isEmpty()) {
+                handleHighFreqSell(playerName, targetPlayer, amount);
+            } else {
+                plugin.getLogger().info("[Web交易即时] 检测到交易: " + playerName + " " + type + " " + amount + "，立即推送");
+                requestImmediateTransactionSync();
+            }
         });
         plugin.getLogger().info("[Web通信] 交易即时推送监听器已注册");
+    }
+
+    /**
+     * 高频出售缓冲处理：追踪每种商品的出售频率
+     * 1分钟内单种商品售卖≥10次时进入缓冲模式，暂缓推送到PHP，60秒后批量推送
+     */
+    private void handleHighFreqSell(String playerName, String itemId, int amount) {
+        long now = System.currentTimeMillis();
+        SellItemBuffer buf = sellBuffers.computeIfAbsent(itemId, k -> new SellItemBuffer(itemId));
+
+        // 如果窗口已过期（>60秒），重置计数器
+        if (now - buf.windowStart > 60000) {
+            buf.count = 0;
+            buf.windowStart = now;
+        }
+
+        buf.count++;
+
+        // 已经在缓冲模式中，不做任何推送
+        if (buf.buffering && now < buf.bufferEnd) {
+            plugin.getLogger().info("[Web交易即时] 高频商品缓冲中(" + itemId + ")，第" + buf.count + "笔，不推送");
+            return;
+        }
+
+        // 达到阈值，进入缓冲模式
+        if (buf.count >= HIGH_FREQ_SELL_THRESHOLD && !buf.buffering) {
+            buf.buffering = true;
+            buf.bufferEnd = now + HIGH_FREQ_BUFFER_MS;
+            inHighFreqBufferMode = true;
+            bufferModeEndTime = Math.max(bufferModeEndTime, buf.bufferEnd);
+            plugin.getLogger().info("[Web交易即时] ★ 高频商品触发缓冲: " + itemId + " 1分钟内" + buf.count + "次，暂缓推送60秒");
+
+            // 调度60秒后的批量推送
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    plugin.getLogger().info("[Web交易即时] 高频缓冲到期(" + itemId + ")，批量推送交易");
+                    buf.buffering = false;
+                    buf.count = 0;
+                    buf.windowStart = System.currentTimeMillis();
+
+                    // 检查是否所有缓冲都结束了
+                    boolean anyBuffering = false;
+                    for (SellItemBuffer b : sellBuffers.values()) {
+                        if (b.buffering) { anyBuffering = true; break; }
+                    }
+                    if (!anyBuffering) inHighFreqBufferMode = false;
+
+                    requestImmediateTransactionSync();
+                }
+            }.runTaskLater(plugin, 20L * 60); // 60秒
+            return;
+        }
+
+        // 普通交易（未达阈值），立即推送
+        plugin.getLogger().info("[Web交易即时] 检测到出售: " + playerName + " " + itemId + " " + amount + "，立即推送");
+        requestImmediateTransactionSync();
     }
 
     public void start() {
@@ -1317,6 +1379,26 @@ public class WebManager {
     private volatile long lastImmediateTxSyncTime = 0;
     private static final long MIN_IMMEDIATE_TX_SYNC_MS = 3000; // 最小间隔3秒，防止频繁推送
     private volatile boolean pendingImmediateTxSync = false;
+
+    // ★ 高频出售商品缓冲机制：1分钟内单种商品售卖≥10次时暂缓推送
+    private final ConcurrentHashMap<String, SellItemBuffer> sellBuffers = new ConcurrentHashMap<>();
+    private static final int HIGH_FREQ_SELL_THRESHOLD = 10;  // 10次触发缓冲
+    private static final long HIGH_FREQ_BUFFER_MS = 60000;   // 缓冲60秒
+    private volatile boolean inHighFreqBufferMode = false;    // 全局缓冲模式标志
+    private volatile long bufferModeEndTime = 0;              // 缓冲模式结束时间
+
+    private static class SellItemBuffer {
+        final String itemId;
+        volatile int count = 0;
+        volatile long windowStart = 0;
+        volatile boolean buffering = false;
+        volatile long bufferEnd = 0;
+
+        SellItemBuffer(String itemId) {
+            this.itemId = itemId;
+            this.windowStart = System.currentTimeMillis();
+        }
+    }
 
     private void requestImmediateTransactionSync() {
         long now = System.currentTimeMillis();

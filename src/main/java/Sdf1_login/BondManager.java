@@ -13,7 +13,7 @@ public class BondManager {
 
     // ===== 交易监听器 =====
     public interface TransactionListener {
-        void onTransaction(String playerName, String type, int amount);
+        void onTransaction(String playerName, String type, int amount, String targetPlayer);
     }
     private final List<TransactionListener> transactionListeners = new ArrayList<>();
 
@@ -21,10 +21,10 @@ public class BondManager {
         transactionListeners.add(listener);
     }
 
-    private void fireTransactionEvent(String playerName, String type, int amount) {
+    private void fireTransactionEvent(String playerName, String type, int amount, String targetPlayer) {
         for (TransactionListener listener : transactionListeners) {
             try {
-                listener.onTransaction(playerName, type, amount);
+                listener.onTransaction(playerName, type, amount, targetPlayer);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -382,7 +382,7 @@ public class BondManager {
             ps.executeUpdate();
             ps.close();
             // 触发交易监听器
-            fireTransactionEvent(player, type, amount);
+            fireTransactionEvent(player, type, amount, targetPlayer);
         } catch (SQLException e) {
             e.printStackTrace();
         }
