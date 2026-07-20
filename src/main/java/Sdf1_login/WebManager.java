@@ -912,7 +912,7 @@ public class WebManager {
             buf.bufferEnd = now + HIGH_FREQ_BUFFER_MS;
             inHighFreqBufferMode = true;
             bufferModeEndTime = Math.max(bufferModeEndTime, buf.bufferEnd);
-            plugin.getLogger().info("[Web交易即时] ★ 高频商品触发缓冲: " + itemId + " 1分钟内" + buf.count + "次，暂缓推送60秒");
+         //   plugin.getLogger().info("[Web交易即时] ★ 高频商品触发缓冲: " + itemId + " 1分钟内" + buf.count + "次，暂缓推送60秒");
 
             // 调度60秒后的批量推送
             new BukkitRunnable() {
