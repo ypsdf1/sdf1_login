@@ -8,6 +8,9 @@
 upload_debug.php
 upload_via_http.php
 upload_debug.ps1
+deploy_*.py
+deploy_*.ps1
+deploy_*.sh
 # 密钥文件
 密钥.md
 pay_secrets.php
