@@ -15,6 +15,8 @@ function ensureSnapshotTable() {
             online_count INTEGER NOT NULL DEFAULT 0
         )");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_snap_time ON online_snapshots(snapshot_time)");
+        // 清理24小时前的旧快照（保留24小时数据）
+        $db->exec("DELETE FROM online_snapshots WHERE snapshot_time < " . (time() - 86400));
     } catch (\Throwable $e) {
         debugLog('[online_curve] 建表异常: ' . $e->getMessage());
     }
@@ -74,7 +76,9 @@ function getHourlyData() {
         $stmt->bindValue(':since', $since, SQLITE3_INTEGER);
         $res = $stmt->execute();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $h = (int)date('G', (int)$row['snapshot_time']); // 0-23 无前导零
+            $snapshotTime = (int)$row['snapshot_time'];
+            // 使用本地时区获取小时（0-23）
+            $h = (int)date('G', $snapshotTime);
             $buckets[$h]['count'] += (int)$row['online_count'];
             $buckets[$h]['samples']++;
         }

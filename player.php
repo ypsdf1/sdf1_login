@@ -2291,7 +2291,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         const g = window._availGroupsMap?.[groupName];
         const price = g ? g.join_price + ' 张债券' : '（价格未知）';
         const dur = g ? (g.duration_minutes == 0 ? '永久' : (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时')) : '未知';
-        if (!showConfirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`)) return;
+        if (!(await showConfirm(`确认付费加入用户组「${g ? (g.display_name || groupName) : groupName}」？\n价格: ${price}\n有效期: ${dur}\n将从债券余额扣费。`))) return;
         try {
             const res = await api('land_api.php', {action: 'buy_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {
@@ -2310,7 +2310,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         const g = window._availGroupsMap?.[groupName];
         const price = g ? (parseInt(g.renew_price) > 0 ? g.renew_price + ' 张债券' : '免费') : '未知';
         const dur = g && g.duration_minutes ? (g.duration_minutes >= 1440 ? Math.floor(g.duration_minutes/1440) + '天' : Math.floor(g.duration_minutes/60) + '小时') : '由用户组配置决定';
-        if (!showConfirm(`确认续费用户组「${g ? (g.display_name || groupName) : groupName}」？\n续费价格: ${price}\n延长有效期: ${dur}\n将从债券余额扣费。`)) return;
+        if (!(await showConfirm(`确认续费用户组「${g ? (g.display_name || groupName) : groupName}」？\n续费价格: ${price}\n延长有效期: ${dur}\n将从债券余额扣费。`))) return;
         try {
             const res = await api('land_api.php', {action: 'renew_group', group: groupName, player: currentPlayer, token: TOKEN});
             if (res.success) {

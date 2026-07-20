@@ -10,14 +10,26 @@ function getActivePlayers() {
     try {
         $db = getDB();
         // 确保表存在
+        $db->exec("CREATE TABLE IF NOT EXISTS hourly_active_players (player_name TEXT PRIMARY KEY, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, hour_key TEXT NOT NULL)");
         $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
-        $res = $db->query("SELECT player_name, login_time FROM online_players ORDER BY login_time ASC");
+        $currentHourKey = date('Y-m-d H');
+        // ★ 查询本小时活跃过的所有玩家（包括已离线但本小时曾上线的）
+        $res = $db->query("SELECT player_name, first_seen, last_seen FROM hourly_active_players WHERE hour_key = '" . SQLite3::escapeString($currentHourKey) . "' ORDER BY first_seen ASC");
+        $now = time();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            // 检查玩家当前是否在线（从online_players表判断）
+            $checkStmt = $db->prepare("SELECT 1 FROM online_players WHERE player_name = :name");
+            $checkStmt->bindValue(':name', $row['player_name'], SQLITE3_TEXT);
+            $checkRes = $checkStmt->execute();
+            $isOnline = $checkRes->fetchArray() !== false;
+
             $online[] = [
                 'name' => $row['player_name'],
-                'login_time' => (int)$row['login_time'],
-                'login_time_fmt' => $row['login_time'] > 0 ? date('H:i:s', (int)$row['login_time']) : '-',
-                'duration' => $row['login_time'] > 0 ? time() - (int)$row['login_time'] : 0,
+                'login_time' => (int)$row['first_seen'],
+                'login_time_fmt' => $row['first_seen'] > 0 ? date('H:i:s', (int)$row['first_seen']) : '-',
+                'duration' => $row['first_seen'] > 0 ? $now - (int)$row['first_seen'] : 0,
+                'is_online' => $isOnline,
+                'last_seen' => (int)$row['last_seen'],
             ];
         }
         $count = count($online);
@@ -58,9 +70,14 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 .player-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; }
 .player-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; transition:border-color .2s; }
 .player-card:hover { border-color:var(--accent); }
-.player-card .name { font-size:15px; font-weight:700; color:var(--text); margin-bottom:4px; }
+.player-card.offline { opacity:0.55; border-style:dashed; }
+.player-card .name { font-size:15px; font-weight:700; color:var(--text); margin-bottom:4px; display:flex; align-items:center; gap:6px; }
+.player-card .name .status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.player-card .name .status-dot.on { background:var(--green); box-shadow:0 0 6px var(--green); }
+.player-card .name .status-dot.off { background:var(--dim); }
 .player-card .meta { font-size:12px; color:var(--dim); display:flex; justify-content:space-between; }
 .player-card .meta .online-tag { color:var(--green); }
+.player-card .meta .offline-tag { color:var(--yellow); }
 .player-card .time-bar { margin-top:8px; height:4px; background:var(--bg); border-radius:4px; overflow:hidden; }
 .player-card .time-bar .fill { height:100%; background:var(--green); border-radius:4px; transition:width 1s; }
 .empty { grid-column:1/-1; text-align:center; padding:40px; color:var(--dim); }
@@ -100,12 +117,19 @@ function render(data) {
     document.getElementById('countBadge').textContent = data.online_count + ' 人';
     const grid = document.getElementById('playerGrid');
     if (data.online_list.length === 0) {
-        grid.innerHTML = '<div class="empty">当前没有玩家在线</div>';
+        grid.innerHTML = '<div class="empty">本小时暂无玩家活跃</div>';
     } else {
-        grid.innerHTML = data.online_list.map(p => {
-            const mx = 6 * 3600; // 最长6小时占满
+        // 在线玩家排前面，离线玩家排后面
+        const sorted = [...data.online_list].sort((a, b) => (b.is_online ? 1 : 0) - (a.is_online ? 1 : 0));
+        grid.innerHTML = sorted.map(p => {
+            const mx = 6 * 3600;
             const pct = Math.min(100, Math.round(p.duration / mx * 100));
-            return `<div class="player-card"><div class="name">${esc(p.name)}</div><div class="meta"><span>登录：${p.login_time_fmt}</span><span class="online-tag">已在线 ${fmtDuration(p.duration)}</span></div><div class="time-bar"><div class="fill" style="width:${pct}%"></div></div></div>`;
+            const cls = p.is_online ? 'player-card' : 'player-card offline';
+            const dot = p.is_online ? '<span class="status-dot on"></span>' : '<span class="status-dot off"></span>';
+            const tag = p.is_online
+                ? `<span class="online-tag">在线 ${fmtDuration(p.duration)}</span>`
+                : `<span class="offline-tag">已离线</span>`;
+            return `<div class="${cls}"><div class="name">${dot}${esc(p.name)}</div><div class="meta"><span>首次：${p.login_time_fmt}</span>${tag}</div><div class="time-bar"><div class="fill" style="width:${pct}%;background:${p.is_online ? 'var(--green)' : 'var(--dim)'}"></div></div></div>`;
         }).join('');
     }
     document.getElementById('refreshHint').textContent = '更新：' + new Date().toLocaleTimeString('zh-CN', {hour12:false});

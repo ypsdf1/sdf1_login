@@ -1433,6 +1433,13 @@ function syncOnlinePlayers() {
     $db->exec('PRAGMA busy_timeout=10000');
     $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER NOT NULL)");
     $db->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+    // ★ 每小时活跃玩家表：记录本小时内所有曾上线的玩家（离线不清空，跨小时清理）
+    $db->exec("CREATE TABLE IF NOT EXISTS hourly_active_players (
+        player_name TEXT PRIMARY KEY,
+        first_seen INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL,
+        hour_key TEXT NOT NULL
+    )");
     // ★ 迁移：修复旧表结构（旧行无主键导致INSERT OR REPLACE失效）
     try {
         $colCheck = $db->query("PRAGMA table_info(online_player_hb)");
@@ -1510,6 +1517,25 @@ function syncOnlinePlayers() {
                 @error_log("[syncOnlinePlayers] FAIL insert $name: " . $e->getMessage());
             }
 
+            // ★ 每小时活跃玩家追踪：记录曾上线的玩家（离线不清空，跨小时清理）
+            try {
+                $hourKey = date('Y-m-d H', $now);
+                $haStmt = $db->prepare("INSERT INTO hourly_active_players (player_name, first_seen, last_seen, hour_key)
+                    VALUES (:name, :now, :now, :hk)
+                    ON CONFLICT(player_name) DO UPDATE SET
+                        last_seen = :now2,
+                        hour_key = CASE WHEN excluded.hour_key > hourly_active_players.hour_key THEN excluded.hour_key ELSE hourly_active_players.hour_key END,
+                        first_seen = CASE WHEN excluded.hour_key > hourly_active_players.hour_key THEN :now3 ELSE hourly_active_players.first_seen END");
+                $haStmt->bindValue(':name', $name, SQLITE3_TEXT);
+                $haStmt->bindValue(':now', $now, SQLITE3_INTEGER);
+                $haStmt->bindValue(':now2', $now, SQLITE3_INTEGER);
+                $haStmt->bindValue(':now3', $now, SQLITE3_INTEGER);
+                $haStmt->bindValue(':hk', $hourKey, SQLITE3_TEXT);
+                $haStmt->execute();
+            } catch (\Throwable $e) {
+                @error_log("[syncOnlinePlayers] hourly_active记录失败 {$name}: " . $e->getMessage());
+            }
+
             // ★ 如果Java推送了IP，同步更新 player_ip_changes（实时IP来源）
             $ip = $player['ip'] ?? '';
             if (!empty($ip)) {
@@ -1544,6 +1570,26 @@ function syncOnlinePlayers() {
             $hbSql->execute();
         } catch (\Throwable $e) {
             @error_log("[syncOnlinePlayers] heartbeat update error: " . $e->getMessage());
+        }
+
+        // ★ 每小时清理：跨小时时，删除上一个小时不再在线的玩家
+        try {
+            $currentHourKey = date('Y-m-d H', $now);
+            $prevHourKey = date('Y-m-d H', $now - 3600);
+            // 只在刚进入新小时的前5分钟执行清理（避免每次推送都扫表）
+            $minuteOfHour = (int)date('i', $now);
+            if ($minuteOfHour < 5) {
+                // 删除上一个小时及更早的玩家（他们已不在本小时内）
+                $delStmt = $db->prepare("DELETE FROM hourly_active_players WHERE hour_key < :hk");
+                $delStmt->bindValue(':hk', $currentHourKey, SQLITE3_TEXT);
+                $delStmt->execute();
+                $deleted = $db->changes();
+                if ($deleted > 0) {
+                    @error_log("[syncOnlinePlayers] ★ 跨小时清理：删除" . $deleted . "条上一个小时的活跃记录");
+                }
+            }
+        } catch (\Throwable $e) {
+            @error_log("[syncOnlinePlayers] hourly_active清理失败: " . $e->getMessage());
         }
 
         $db->exec("COMMIT");
