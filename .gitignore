@@ -46,6 +46,9 @@ backup/
 新建*.txt
 群戏归类.txt
 upload_sftp.py
+deploy_*.py
+deploy_*.ps1
+deploy_*.sh
 
 # PHP Web 后端
 web/Web.db
@@ -58,6 +61,11 @@ web/self_update.php
 web/version_check.php
 web/debug_*.php
 web/db/debug_*.php
+# 支付密钥 - 严禁提交 (double insurance，配合 Web/.gitignore)
+Web/密钥文件_git拉黑.txt
+web/密钥文件_git拉黑.txt
+Web/pay_secrets.php
+web/pay_secrets.php
 
 # Windows 保留设备名（无法用普通 rm 删除）
 nul
