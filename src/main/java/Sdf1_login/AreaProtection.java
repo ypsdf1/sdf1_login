@@ -5459,24 +5459,14 @@ public class AreaProtection implements Listener {
         // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（跳过禁止检查）
         if (ac.isPublicBuilding) return;
 
-        // ★ 漏洞封堵：完全无该领地权限的外部玩家（getPermissionLevel 返回 null），
-        // 无论容器管理(denyContainer)开关如何，一律禁止访问领地内容器。
-        // 否则 denyContainer=false 时所有玩家（含未授权）开箱无任何限制。
-        if (getPermissionLevel(p, ac) == null) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f你没有该领地的访问权限，无法使用容器");
-            return;
-        }
-
-        // ★ 容器管理权限：denyContainer=true时非领主/管理员不能访问容器
+        // ★ 容器管理权限：denyContainer控制访客能否访问容器
+        //    getEffectiveDeny 已内置 ADMIN/OWNER/VISITOR 豁免，
+        //    对无权限玩家则走领地默认 denyContainer 配置
         if (getEffectiveDeny(p, ac, "denyContainer")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
             return;
         }
-
-        // ★ 容器交互已启用时，无权限级别的玩家也允许访问（访客权限）
-        // 只有denyContainer=true时才检查权限级别
     }
 
     public void loadWhitelists() {
