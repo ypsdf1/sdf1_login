@@ -3229,6 +3229,18 @@ public class AreaProtection implements Listener {
             if (newArea != null) {
                 AreaConfig ac = areas.get(newArea);
                 if (ac != null) {
+                    // ★ 未授权玩家检查：无任何权限级别则踢出
+                    if (getPermissionLevel(p, ac) == null) {
+                        Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
+                        if (safeLoc != null) {
+                            p.teleport(safeLoc);
+                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限，已被传送出去");
+                        } else {
+                            p.teleport(p.getWorld().getSpawnLocation());
+                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限");
+                        }
+                        return;
+                    }
                     // ★ denyMove检查：支持per-player独立权限
                     if (getEffectiveDeny(p, ac, "denyMove")) {
                         Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
@@ -3389,6 +3401,18 @@ public class AreaProtection implements Listener {
 
             AreaConfig newAc = areas.get(newArea);
             if (newAc != null) {
+                // ★ 未授权玩家检查：无任何权限级别则踢出
+                if (getPermissionLevel(p, newAc) == null) {
+                    Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
+                    if (safeLoc != null) {
+                        p.teleport(safeLoc);
+                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限，已被传送出去");
+                    } else {
+                        p.teleport(p.getWorld().getSpawnLocation());
+                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限");
+                    }
+                    return;
+                }
                 // ★ denyMove检查：支持per-player独立权限
                 if (getEffectiveDeny(p, newAc, "denyMove")) {
                     Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
@@ -7495,13 +7519,6 @@ public class AreaProtection implements Listener {
                         Player online = Bukkit.getPlayer(uid);
                         if (online != null && online.isOnline()) {
                             online.sendMessage("§a§l[防护] §f领地 §e" + finalAreaName + " §f等待期结束，已自动删除");
-                        }
-                        // 通知所有在线管理员
-                        for (Player admin : Bukkit.getOnlinePlayers()) {
-                            if (admin.getUniqueId().equals(uid)) continue;
-                            if (isAreaAdmin(admin)) {
-                                admin.sendMessage("§7[防护] 领地 §e" + finalAreaName + " §7等待期结束，已自动删除");
-                            }
                         }
                     }
                 }
