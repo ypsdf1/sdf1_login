@@ -223,7 +223,12 @@ function shopBuy($token) {
         $stmt->bindValue(':player', $player, SQLITE3_TEXT);
         $stmt->bindValue(':amount', $totalPrice, SQLITE3_INTEGER);
         $stmt->bindValue(':reason', "购买: {$item['display_name']} x{$amount}", SQLITE3_TEXT);
-        $stmt->bindValue(':detail', json_encode(['item_id' => $itemId, 'amount' => $amount, 'unit_price' => $item['buy_price']], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+        $stmt->bindValue(':detail', json_encode([
+            'item_id' => $itemId,
+            'amount' => $amount,
+            'unit_price' => $item['buy_price'],
+            'tx_id' => bin2hex(random_bytes(8))
+        ], JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
         $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
         $stmt->execute();
 
@@ -559,7 +564,8 @@ function shopBuyCart($token) {
             'discount_percent' => (int)$discountPercent,
             'discount_amount' => (int)$discountAmount,
             'pay_mode' => $payMode,
-            'items' => $lines
+            'items' => $lines,
+            'tx_id' => bin2hex(random_bytes(8))
         ];
         if ($settlement === 'shulker') {
             $detailData['shulker_color'] = $shulkerColor;
