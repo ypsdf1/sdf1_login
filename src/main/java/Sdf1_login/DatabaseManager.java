@@ -2355,19 +2355,53 @@ public class DatabaseManager {
     /** 查询某坐标最近的容器记录（按时间倒序） */
     public List<Map<String, Object>> getLandContainerLogAt(
             String world, int x, int y, int z, int limit) {
+        return getLandContainerLogAt(world, x, y, z, limit, -1);
+    }
+
+    /** 查询某坐标指定天数前的容器记录（daysAgo=0今天，1昨天，-1所有） */
+    public List<Map<String, Object>> getLandContainerLogAt(
+            String world, int x, int y, int z, int limit, int daysAgo) {
         List<Map<String, Object>> list = new ArrayList<>();
         try {
-            PreparedStatement ps = db.prepareStatement(
+            StringBuilder sql = new StringBuilder(
                     "SELECT time, player_name, action, container_type,"
-                            + " detail, amount"
-                            + " FROM land_container_log"
-                            + " WHERE world=? AND x=? AND y=? AND z=?"
-                            + " ORDER BY time DESC LIMIT ?");
+                    + " detail, amount"
+                    + " FROM land_container_log"
+                    + " WHERE world=? AND x=? AND y=? AND z=?");
+            if (daysAgo >= 0) {
+                // 计算当天起始和结束毫秒时间戳
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0);
+                cal.set(java.util.Calendar.MINUTE, 0);
+                cal.set(java.util.Calendar.SECOND, 0);
+                cal.set(java.util.Calendar.MILLISECOND, 0);
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -daysAgo);
+                long dayStart = cal.getTimeInMillis();
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
+                long dayEnd = cal.getTimeInMillis();
+                sql.append(" AND time >= ? AND time < ?");
+            }
+            sql.append(" ORDER BY time DESC LIMIT ?");
+            PreparedStatement ps = db.prepareStatement(sql.toString());
             ps.setString(1, world);
             ps.setInt(2, x);
             ps.setInt(3, y);
             ps.setInt(4, z);
-            ps.setInt(5, limit > 0 ? limit : 20);
+            int idx = 5;
+            if (daysAgo >= 0) {
+                java.util.Calendar cal = java.util.Calendar.getInstance();
+                cal.set(java.util.Calendar.HOUR_OF_DAY, 0);
+                cal.set(java.util.Calendar.MINUTE, 0);
+                cal.set(java.util.Calendar.SECOND, 0);
+                cal.set(java.util.Calendar.MILLISECOND, 0);
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -daysAgo);
+                long dayStart = cal.getTimeInMillis();
+                cal.add(java.util.Calendar.DAY_OF_YEAR, 1);
+                long dayEnd = cal.getTimeInMillis();
+                ps.setLong(idx++, dayStart);
+                ps.setLong(idx++, dayEnd);
+            }
+            ps.setInt(idx, limit > 0 ? limit : 20);
             ResultSet rs = ps.executeQuery();
             while (rs.next()) {
                 Map<String, Object> row =

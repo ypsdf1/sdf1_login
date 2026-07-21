@@ -293,6 +293,10 @@ public class LandRecordManager implements Listener {
     }
 
     private void queryAndPrint(Player p, Location loc) {
+        queryAndPrint(p, loc, 0);
+    }
+
+    private void queryAndPrint(Player p, Location loc, int page) {
         String world = loc.getWorld().getName();
         int x = loc.getBlockX(), y = loc.getBlockY(),
                 z = loc.getBlockZ();
@@ -300,13 +304,19 @@ public class LandRecordManager implements Listener {
         List<Map<String, Object>> blocks =
                 plugin.getDb().getLandBlockLogAt(
                         world, x, y, z, QUERY_LIMIT);
+        // 按天分页：page=0今日，1昨日，2前日...
         List<Map<String, Object>> containers =
                 plugin.getDb().getLandContainerLogAt(
-                        world, x, y, z, QUERY_LIMIT);
+                        world, x, y, z, QUERY_LIMIT, page);
 
         if (blocks.isEmpty() && containers.isEmpty()) {
-            p.sendMessage("§6§l[回声碎片] §f坐标 ("
-                    + x + "," + y + "," + z + ") 暂无领地记录");
+            if (page > 0) {
+                p.sendMessage("§6§l[回声碎片] §e坐标 ("
+                        + x + "," + y + "," + z + ") 第" + (page + 1) + "页无记录");
+            } else {
+                p.sendMessage("§6§l[回声碎片] §f坐标 ("
+                        + x + "," + y + "," + z + ") 暂无领地记录");
+            }
             return;
         }
 
@@ -319,19 +329,18 @@ public class LandRecordManager implements Listener {
             if ("take".equals(r.get("action")) || "put".equals(r.get("action"))) {
                 materials.add((String) r.get("detail"));
             }
-            // 容器类型（如 CHEST）也要翻译
             String ct = (String) r.get("container_type");
             if (ct != null && !ct.isEmpty()) {
                 materials.add(ct);
             }
         }
 
+        final int currentPage = page;
         // 异步批量翻译
         MaterialTranslator.translateBatch(materials)
                 .thenAccept(translations -> {
-                    // 回到主线程发送消息
                     plugin.getServer().getScheduler().runTask(plugin, () -> {
-                        printResults(p, x, y, z, blocks, containers, translations);
+                        printResults(p, x, y, z, blocks, containers, translations, currentPage);
                     });
                 });
     }
@@ -340,6 +349,15 @@ public class LandRecordManager implements Listener {
                               List<Map<String, Object>> blocks,
                               List<Map<String, Object>> containers,
                               Map<String, String> translations) {
+        printResults(p, x, y, z, blocks, containers, translations, 0);
+    }
+
+    private void printResults(Player p, int x, int y, int z,
+                              List<Map<String, Object>> blocks,
+                              List<Map<String, Object>> containers,
+                              Map<String, String> translations,
+                              int page) {
+        String pageLabel = page == 0 ? "今日" : (page == 1 ? "昨日" : (page + 1) + "日前");
         p.sendMessage("§6§l[回声碎片] §e坐标 ("
                 + x + "," + y + "," + z + ") 的记录：");
 
@@ -368,7 +386,6 @@ public class LandRecordManager implements Listener {
                    .append(" §f").append(r.get("player_name"))
                    .append(" ").append(act)
                    .append(" §e").append(mat).append(" §a").append(zh);
-                // ★ 告示牌内容显示
                 String detail = (String) r.get("detail");
                 if (detail != null && !detail.isEmpty()
                         && ("sign_place".equals(action) || "sign_edit".equals(action))) {
@@ -379,7 +396,7 @@ public class LandRecordManager implements Listener {
         }
 
         if (!containers.isEmpty()) {
-            p.sendMessage("§b— 容器记录 —");
+            p.sendMessage("§b— 容器记录 §7（" + pageLabel + "）—");
             for (Map<String, Object> r : containers) {
                 String act = (String) r.get("action");
                 if ("open".equals(act)) {
@@ -404,6 +421,8 @@ public class LandRecordManager implements Listener {
                             + " §7x" + r.get("amount"));
                 }
             }
+            // 分页提示
+            p.sendMessage(" §7使用 §e/landrec log " + (page + 2) + " §7查看前一日记录");
         }
     }
 
@@ -421,7 +440,7 @@ public class LandRecordManager implements Listener {
         }
         String sub = args[0];
         if (sub.equalsIgnoreCase("give")) {
-            // 发放权限：给自己（self）任意玩家可发；发给他人需 OP 或领地管理员
+            // 发放权限...
             boolean isOp = sender.isOp();
             boolean isAreaAdmin = (sender instanceof Player)
                     && plugin.areaProtection.isAreaAdmin((Player) sender);
@@ -448,6 +467,30 @@ public class LandRecordManager implements Listener {
                 sender.sendMessage("§a§l[回声碎片] §f已发放回声碎片给 " + target.getName());
             return true;
         }
+        if (sub.equalsIgnoreCase("log")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c§l[回声碎片] §f此命令仅限玩家使用");
+                return true;
+            }
+            Player p = (Player) sender;
+            int page = 0; // 默认今日
+            if (args.length >= 2) {
+                try {
+                    page = Math.max(0, Integer.parseInt(args[1]) - 1);
+                } catch (NumberFormatException ignored) {
+                    sender.sendMessage("§c§l[回声碎片] §f页码格式错误");
+                    return true;
+                }
+            }
+            // 取玩家准心对准的方块
+            Block target = p.getTargetBlockExact(6);
+            if (target == null || target.getType() == Material.AIR) {
+                sender.sendMessage("§c§l[回声碎片] §f你面前没有可查询的方块或容器");
+                return true;
+            }
+            queryAndPrint(p, target.getLocation(), page);
+            return true;
+        }
         sendHelp(sender);
         return true;
     }
@@ -456,6 +499,8 @@ public class LandRecordManager implements Listener {
         sender.sendMessage("§6§l[回声碎片] §e指令：");
         sender.sendMessage(" §7/landrec give §f- 给自己发放一枚回声碎片");
         sender.sendMessage(" §7/landrec give <玩家> §f- 向他人发放（需 OP/领地管理员）");
-        sender.sendMessage(" §7手持回声碎片右键/左键方块或容器 §f- 查看该处记录");
+        sender.sendMessage(" §7/landrec log §f- 查看当前方块今日容器记录");
+        sender.sendMessage(" §7/landrec log <页码> §f- 查看指定日期的容器记录（1=今日 2=昨日 ...）");
+        sender.sendMessage(" §7手持回声碎片右键/左键方块或容器 §f- 查看该处今日记录");
     }
 }

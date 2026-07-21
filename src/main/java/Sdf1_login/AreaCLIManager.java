@@ -565,6 +565,8 @@ public class AreaCLIManager {
             case "audio": oldState = land.denyNoteblockJukebox; land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "lead": oldState = land.denyLead; land.denyLead = !land.denyLead; break;
             case "crop_harvest": oldState = land.denyCropHarvest; land.denyCropHarvest = !land.denyCropHarvest; break;
+            case "farmland_trample": oldState = land.denyFarmlandTrample; land.denyFarmlandTrample = !land.denyFarmlandTrample; break;
+            case "ender_teleport": oldState = land.denyEnderTeleport; land.denyEnderTeleport = !land.denyEnderTeleport; break;
             case "wool_shear": oldState = land.denyWoolShear; land.denyWoolShear = !land.denyWoolShear; break;
             case "animal_feed": oldState = land.denyAnimalFeeding; land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "mob_attack": oldState = land.denyMobAttack; land.denyMobAttack = !land.denyMobAttack; break;
@@ -622,6 +624,8 @@ public class AreaCLIManager {
             case "audio": return "denyNoteblockJukebox";
             case "lead": return "denyLead";
             case "crop_harvest": return "denyCropHarvest";
+            case "farmland_trample": return "denyFarmlandTrample";
+            case "ender_teleport": return "denyEnderTeleport";
             case "wool_shear": return "denyWoolShear";
             case "animal_feed": return "denyAnimalFeeding";
             case "mob_attack": return "denyMobAttack";
@@ -682,6 +686,8 @@ public class AreaCLIManager {
         perms.add(new PermItem("audio", "音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
         perms.add(new PermItem("crop_harvest", land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
+        perms.add(new PermItem("farmland_trample", land.denyFarmlandTrample ? "禁用耕地破坏" : "启用耕地破坏", !land.denyFarmlandTrample));
+        perms.add(new PermItem("ender_teleport", land.denyEnderTeleport ? "禁止末影人传送" : "允许末影人传送", !land.denyEnderTeleport));
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
@@ -721,6 +727,8 @@ public class AreaCLIManager {
             case "audio": return "音频";
             case "lead": return "拴绳使用";
             case "crop_harvest": return "农作物收获";
+            case "farmland_trample": return "耕地破坏";
+            case "ender_teleport": return "末影人传送";
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
             case "mob_attack": return "攻击生物";
@@ -1135,6 +1143,8 @@ public class AreaCLIManager {
                 {"audio", "音频(音符盒/唱片机)", "denyNoteblockJukebox"},
                 {"lead", "拴绳使用", "denyLead"},
                 {"crop_harvest", "农作物收获", "denyCropHarvest"},
+                {"farmland_trample", "耕地破坏", "denyFarmlandTrample"},
+                {"ender_teleport", "末影人传送", "denyEnderTeleport"},
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"mob_attack", "攻击生物", "denyMobAttack"},
@@ -1172,6 +1182,14 @@ public class AreaCLIManager {
             // ★ denySignEdit显示名称
             if (field.equals("denySignEdit")) {
                 name = landDefault ? "禁止编辑告示牌" : "允许编辑告示牌";
+            }
+            // ★ denyFarmlandTrample显示名称
+            if (field.equals("denyFarmlandTrample")) {
+                name = landDefault ? "禁用耕地破坏" : "启用耕地破坏";
+            }
+            // ★ denyEnderTeleport显示名称
+            if (field.equals("denyEnderTeleport")) {
+                name = landDefault ? "禁止末影人传送" : "允许末影人传送";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
@@ -1220,6 +1238,8 @@ public class AreaCLIManager {
             case "denyNoteblockJukebox": return land.denyNoteblockJukebox;
             case "denyLead": return land.denyLead;
             case "denyCropHarvest": return land.denyCropHarvest;
+            case "denyFarmlandTrample": return land.denyFarmlandTrample;
+            case "denyEnderTeleport": return land.denyEnderTeleport;
             case "denyWoolShear": return land.denyWoolShear;
             case "denyAnimalFeeding": return land.denyAnimalFeeding;
             case "denyGlowing": return land.denyGlowing;

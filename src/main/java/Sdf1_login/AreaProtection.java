@@ -1220,6 +1220,8 @@ public class AreaProtection implements Listener {
                 try { ac.denyNoteblockJukebox = rs.getInt("deny_noteblock_jukebox") == 1; } catch (Exception ignored) {}
                 try { ac.denyLead = rs.getInt("deny_lead") == 1; } catch (Exception ignored) {}
                 try { ac.denyCropHarvest = rs.getInt("deny_crop_harvest") == 1; } catch (Exception ignored) {}
+                try { ac.denyFarmlandTrample = rs.getInt("deny_farmland_trample") == 1; } catch (Exception ignored) {}
+                try { ac.denyEnderTeleport = rs.getInt("deny_ender_teleport") == 1; } catch (Exception ignored) {}
                 try { ac.denyWoolShear = rs.getInt("deny_wool_shear") == 1; } catch (Exception ignored) {}
                 try { ac.denyAnimalFeeding = rs.getInt("deny_animal_feeding") == 1; } catch (Exception ignored) {}
                 try { ac.denyContainer = rs.getInt("deny_container") == 1; } catch (Exception ignored) {}
@@ -1496,6 +1498,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_noteblock_jukebox INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_lead INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_crop_harvest INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_farmland_trample INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_ender_teleport INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_wool_shear INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_animal_feeding INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 传送点列
@@ -2882,6 +2886,8 @@ public class AreaProtection implements Listener {
             case "denyNoteblockJukebox": return ac.denyNoteblockJukebox;
             case "denyLead": return ac.denyLead;
             case "denyCropHarvest": return ac.denyCropHarvest;
+            case "denyFarmlandTrample": return ac.denyFarmlandTrample;
+            case "denyEnderTeleport": return ac.denyEnderTeleport;
             case "denyWoolShear": return ac.denyWoolShear;
             case "denyAnimalFeeding": return ac.denyAnimalFeeding;
             case "denyMobAttack": return ac.denyMobAttack;
@@ -5681,6 +5687,47 @@ public class AreaProtection implements Listener {
                 loc.getBlockZ());
         if (ac != null && ac.denyCropHarvest) {
             e.setCancelled(true);
+        }
+    }
+
+    // ★ 耕地破坏（玩家在耕地上跳跃/掉落时触发）
+    @EventHandler
+    public void onFarmlandTrample(PlayerInteractEvent e) {
+        if (e.getAction() != Action.PHYSICAL) return;
+        Block block = e.getClickedBlock();
+        if (block == null || block.getType() != Material.FARMLAND) return;
+        Player p = e.getPlayer();
+        AreaConfig ac = getArea(
+                p.getWorld().getName(),
+                block.getX(), block.getY(), block.getZ());
+        if (ac != null && getEffectiveDeny(p, ac, "denyFarmlandTrample")) {
+            e.setCancelled(true);
+        }
+    }
+
+    // ★ 末影人传送控制（禁止末影人传送到领地内或从领地内传送走）
+    @EventHandler
+    public void onEnderTeleport(EntityTeleportEvent e) {
+        if (!e.getEntityType().name().equals("ENDERMAN")) return;
+        Location from = e.getFrom();
+        Location to = e.getTo();
+        // 检查起点是否在禁止末影人传送的领地内
+        if (from != null) {
+            AreaConfig fromAc = getArea(from.getWorld().getName(),
+                    from.getBlockX(), from.getBlockY(), from.getBlockZ());
+            if (fromAc != null && fromAc.denyEnderTeleport) {
+                e.setCancelled(true);
+                return;
+            }
+        }
+        // 检查终点是否在禁止末影人传送的领地内
+        if (to != null) {
+            AreaConfig toAc = getArea(to.getWorld().getName(),
+                    to.getBlockX(), to.getBlockY(), to.getBlockZ());
+            if (toAc != null && toAc.denyEnderTeleport) {
+                e.setCancelled(true);
+                return;
+            }
         }
     }
 
@@ -8752,8 +8799,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -8766,7 +8813,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -8835,6 +8882,8 @@ public class AreaProtection implements Listener {
             stmt.setInt(65, ac.denySignEdit ? 1 : 0);
             stmt.setInt(66, ac.isPublicBuilding ? 1 : 0);
             stmt.setInt(67, ac.allowVisitorTeleport ? 1 : 0);
+            stmt.setInt(68, ac.denyFarmlandTrample ? 1 : 0);
+            stmt.setInt(69, ac.denyEnderTeleport ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -11434,6 +11483,10 @@ public class AreaProtection implements Listener {
         public boolean denyLead = false;
         // ★ 农作物状态检测（播种&收获）
         public boolean denyCropHarvest = false;
+        // ★ 耕地破坏（玩家跳跃踩踏耕地 → 变为泥土）
+        public boolean denyFarmlandTrample = false;
+        // ★ 末影人传送控制
+        public boolean denyEnderTeleport = false;
         // ★ 采集羊毛和乐魂挽具
         public boolean denyWoolShear = false;
         // ★ 投喂动物
