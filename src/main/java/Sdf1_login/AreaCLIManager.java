@@ -687,7 +687,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
         perms.add(new PermItem("crop_harvest", land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
         perms.add(new PermItem("farmland_trample", land.denyFarmlandTrample ? "禁用耕地破坏" : "启用耕地破坏", !land.denyFarmlandTrample));
-        perms.add(new PermItem("ender_teleport", land.denyEnderTeleport ? "禁止末影人传送" : "允许末影人传送", !land.denyEnderTeleport));
+        perms.add(new PermItem("ender_teleport", land.denyEnderTeleport ? "禁用末影人行为" : "启用末影人行为", !land.denyEnderTeleport));
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
@@ -1144,7 +1144,7 @@ public class AreaCLIManager {
                 {"lead", "拴绳使用", "denyLead"},
                 {"crop_harvest", "农作物收获", "denyCropHarvest"},
                 {"farmland_trample", "耕地破坏", "denyFarmlandTrample"},
-                {"ender_teleport", "末影人传送", "denyEnderTeleport"},
+                {"ender_teleport", "末影人行为", "denyEnderTeleport"},
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"mob_attack", "攻击生物", "denyMobAttack"},
@@ -1187,9 +1187,9 @@ public class AreaCLIManager {
             if (field.equals("denyFarmlandTrample")) {
                 name = landDefault ? "禁用耕地破坏" : "启用耕地破坏";
             }
-            // ★ denyEnderTeleport显示名称
+            // ★ denyEnderTeleport显示名称（末影人行为）
             if (field.equals("denyEnderTeleport")) {
-                name = landDefault ? "禁止末影人传送" : "允许末影人传送";
+                name = landDefault ? "禁用末影人行为" : "启用末影人行为";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认

@@ -16,6 +16,10 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.event.HoverEvent;
+
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -301,9 +305,10 @@ public class LandRecordManager implements Listener {
         int x = loc.getBlockX(), y = loc.getBlockY(),
                 z = loc.getBlockZ();
 
+        // 按天分页：page=0今日，1昨日，2前日...
         List<Map<String, Object>> blocks =
                 plugin.getDb().getLandBlockLogAt(
-                        world, x, y, z, QUERY_LIMIT);
+                        world, x, y, z, QUERY_LIMIT, page);
         // 按天分页：page=0今日，1昨日，2前日...
         List<Map<String, Object>> containers =
                 plugin.getDb().getLandContainerLogAt(
@@ -359,7 +364,7 @@ public class LandRecordManager implements Listener {
                               int page) {
         String pageLabel = page == 0 ? "今日" : (page == 1 ? "昨日" : (page + 1) + "日前");
         p.sendMessage("§6§l[回声碎片] §e坐标 ("
-                + x + "," + y + "," + z + ") 的记录：");
+                + x + "," + y + "," + z + ") 的记录§7（" + pageLabel + "）：");
 
         if (!blocks.isEmpty()) {
             p.sendMessage("§b— 方块记录 —");
@@ -421,9 +426,23 @@ public class LandRecordManager implements Listener {
                             + " §7x" + r.get("amount"));
                 }
             }
-            // 分页提示
-            p.sendMessage(" §7使用 §e/landrec log " + (page + 2) + " §7查看前一日记录");
         }
+
+        // ★ 可点击翻页导航
+        Component nav = Component.text(" §7[ ");
+        if (page > 0) {
+            nav = nav.append(Component.text("§e← 上一页")
+                    .clickEvent(ClickEvent.runCommand("/landrec log " + page))
+                    .hoverEvent(HoverEvent.showText(Component.text("§7点击查看前一日记录"))));
+            nav = nav.append(Component.text(" §7| "));
+        }
+        nav = nav.append(Component.text("§f第" + (page + 1) + "页"));
+        nav = nav.append(Component.text(" §7| ")
+                .append(Component.text("§e下一页 →")
+                        .clickEvent(ClickEvent.runCommand("/landrec log " + (page + 2)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§7点击查看后一日记录")))));
+        nav = nav.append(Component.text(" §7]"));
+        p.sendMessage(nav);
     }
 
     private String fmt(long ms) {
@@ -499,8 +518,8 @@ public class LandRecordManager implements Listener {
         sender.sendMessage("§6§l[回声碎片] §e指令：");
         sender.sendMessage(" §7/landrec give §f- 给自己发放一枚回声碎片");
         sender.sendMessage(" §7/landrec give <玩家> §f- 向他人发放（需 OP/领地管理员）");
-        sender.sendMessage(" §7/landrec log §f- 查看当前方块今日容器记录");
-        sender.sendMessage(" §7/landrec log <页码> §f- 查看指定日期的容器记录（1=今日 2=昨日 ...）");
+        sender.sendMessage(" §7/landrec log §f- 查看当前方块今日记录");
+        sender.sendMessage(" §7/landrec log <页码> §f- 查看指定日期的记录（1=今日 2=昨日 ...）");
         sender.sendMessage(" §7手持回声碎片右键/左键方块或容器 §f- 查看该处今日记录");
     }
 }

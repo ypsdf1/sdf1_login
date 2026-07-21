@@ -5351,6 +5351,14 @@ public class AreaProtection implements Listener {
                     e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
             if (ac != null && ac.denyFire) e.setCancelled(true);
         }
+        // ★ 禁止末影人抱走耕地
+        if (e.getEntityType().name().equals("ENDERMAN") && e.getBlock().getType() == Material.FARMLAND) {
+            AreaConfig ac = getArea(e.getBlock().getWorld().getName(),
+                    e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
+            if (ac != null && ac.denyFarmlandTrample) {
+                e.setCancelled(true);
+            }
+        }
     }
 
     // ===== BlockIgniteEvent: 处理火把放置、打火石打地面等非玩家直接使用物品的场景 =====
@@ -5700,12 +5708,12 @@ public class AreaProtection implements Listener {
         AreaConfig ac = getArea(
                 p.getWorld().getName(),
                 block.getX(), block.getY(), block.getZ());
-        if (ac != null && getEffectiveDeny(p, ac, "denyFarmlandTrample")) {
+        if (ac != null && ac.denyFarmlandTrample) {
             e.setCancelled(true);
         }
     }
 
-    // ★ 末影人传送控制（禁止末影人传送到领地内或从领地内传送走）
+    // ★ 末影人行为控制（禁止末影人传送进入领地、在领地内传送、自然进入领地）
     @EventHandler
     public void onEnderTeleport(EntityTeleportEvent e) {
         if (!e.getEntityType().name().equals("ENDERMAN")) return;
@@ -5728,6 +5736,19 @@ public class AreaProtection implements Listener {
                 e.setCancelled(true);
                 return;
             }
+        }
+    }
+
+    // ★ 末影人生成控制（自然生成时禁止进入领地）
+    @EventHandler
+    public void onEndermanSpawn(CreatureSpawnEvent e) {
+        if (!e.getEntityType().name().equals("ENDERMAN")) return;
+        if (e.getSpawnReason() != CreatureSpawnEvent.SpawnReason.NATURAL) return;
+        Location loc = e.getLocation();
+        AreaConfig ac = getArea(loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        if (ac != null && ac.denyEnderTeleport) {
+            e.setCancelled(true);
         }
     }
 

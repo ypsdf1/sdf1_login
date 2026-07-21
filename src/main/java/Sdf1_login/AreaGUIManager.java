@@ -499,7 +499,7 @@ public class AreaGUIManager implements Listener {
                 {"攻击生物", "denyMobAttack"},
                 {"禁止编辑告示牌", "denySignEdit"},
                 {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"},
-                {"耕地破坏", "denyFarmlandTrample"}, {"末影人传送", "denyEnderTeleport"}
+                {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"}
         };
 
         for (String[] def : permDefs) {
@@ -534,7 +534,7 @@ public class AreaGUIManager implements Listener {
                 name = landDefault ? "禁用耕地破坏" : "启用耕地破坏";
             }
             if (field.equals("denyEnderTeleport")) {
-                name = landDefault ? "禁止末影人传送" : "允许末影人传送";
+                name = landDefault ? "禁用末影人行为" : "启用末影人行为";
             }
 
             // ★ 对于 allowPickup/allowDrop，enabled=true 表示"允许操作"（即 allow=true）
@@ -699,7 +699,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry(land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
         perms.add(new PermEntry(land.denyFarmlandTrample ? "禁用耕地破坏" : "启用耕地破坏", !land.denyFarmlandTrample));
-        perms.add(new PermEntry(land.denyEnderTeleport ? "禁止末影人传送" : "允许末影人传送", !land.denyEnderTeleport));
+        perms.add(new PermEntry(land.denyEnderTeleport ? "禁用末影人行为" : "启用末影人行为", !land.denyEnderTeleport));
         perms.add(new PermEntry("传送", land.allowVisitorTeleport));
         perms.add(new PermEntry("和平模式", land.peaceMode));
         perms.add(new PermEntry("公共建筑设施", land.isPublicBuilding));
@@ -762,7 +762,7 @@ public class AreaGUIManager implements Listener {
             case "禁止编辑告示牌": case "允许编辑告示牌": land.denySignEdit = !land.denySignEdit; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
             case "禁用耕地破坏": case "启用耕地破坏": land.denyFarmlandTrample = !land.denyFarmlandTrample; break;
-            case "禁止末影人传送": case "允许末影人传送": land.denyEnderTeleport = !land.denyEnderTeleport; break;
+            case "禁用末影人行为": case "启用末影人行为": land.denyEnderTeleport = !land.denyEnderTeleport; break;
             case "传送": land.allowVisitorTeleport = !land.allowVisitorTeleport; break;
             case "和平模式": land.peaceMode = !land.peaceMode; break;
             case "公共建筑设施": land.isPublicBuilding = !land.isPublicBuilding; break;
