@@ -3229,23 +3229,9 @@ public class AreaProtection implements Listener {
             if (newArea != null) {
                 AreaConfig ac = areas.get(newArea);
                 if (ac != null) {
-                    // ★ 未授权玩家检查：无任何权限级别则踢出
-                    PermissionLevel level = getPermissionLevel(p, ac);
-                    plugin.getLogger().info("[防护-移动-权限] ★★★ 玩家=" + p.getName()
-                            + " 区域=" + newArea + " 权限级别=" + level
-                            + " denyMove=" + getEffectiveDeny(p, ac, "denyMove"));
-                    if (level == null) {
-                        Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
-                        if (safeLoc != null) {
-                            p.teleport(safeLoc);
-                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限，已被传送出去");
-                        } else {
-                            p.teleport(p.getWorld().getSpawnLocation());
-                            p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限");
-                        }
-                        return;
-                    }
                     // ★ denyMove检查：支持per-player独立权限
+                    //    getEffectiveDeny 已内置 ADMIN/OWNER/VISITOR 豁免，
+                    //    对无权限玩家则走领地默认 denyMove 配置
                     if (getEffectiveDeny(p, ac, "denyMove")) {
                         Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
                         if (safeLoc != null) {
@@ -3405,19 +3391,8 @@ public class AreaProtection implements Listener {
 
             AreaConfig newAc = areas.get(newArea);
             if (newAc != null) {
-                // ★ 未授权玩家检查：无任何权限级别则踢出
-                if (getPermissionLevel(p, newAc) == null) {
-                    Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
-                    if (safeLoc != null) {
-                        p.teleport(safeLoc);
-                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限，已被传送出去");
-                    } else {
-                        p.teleport(p.getWorld().getSpawnLocation());
-                        p.sendMessage("§c§l[区域防护] §f你不具备此领地的权限");
-                    }
-                    return;
-                }
                 // ★ denyMove检查：支持per-player独立权限
+                //    getEffectiveDeny 已内置 ADMIN/OWNER/VISITOR 豁免
                 if (getEffectiveDeny(p, newAc, "denyMove")) {
                     Location safeLoc = findSafeExitLocation(event.getFrom(), newAc);
                     if (safeLoc != null) {
