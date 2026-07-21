@@ -3230,7 +3230,11 @@ public class AreaProtection implements Listener {
                 AreaConfig ac = areas.get(newArea);
                 if (ac != null) {
                     // ★ 未授权玩家检查：无任何权限级别则踢出
-                    if (getPermissionLevel(p, ac) == null) {
+                    PermissionLevel level = getPermissionLevel(p, ac);
+                    plugin.getLogger().info("[防护-移动-权限] ★★★ 玩家=" + p.getName()
+                            + " 区域=" + newArea + " 权限级别=" + level
+                            + " denyMove=" + getEffectiveDeny(p, ac, "denyMove"));
+                    if (level == null) {
                         Location safeLoc = findSafeExitLocation(p.getLocation(), ac);
                         if (safeLoc != null) {
                             p.teleport(safeLoc);
@@ -8594,6 +8598,8 @@ public class AreaProtection implements Listener {
                 int cx = (Math.min(ac.x1, ac.x2) + Math.max(ac.x1, ac.x2)) / 2;
                 int cz = (Math.min(ac.z1, ac.z2) + Math.max(ac.z1, ac.z2)) / 2;
                 World w = Bukkit.getWorld(ac.world);
+                plugin.getLogger().info("[防护-TP] ★★★ 无传送点，传送到领地中心: 区域=" + ac.name
+                        + " 世界=" + ac.world + " 中心=(" + cx + "," + cz + ") worldObj=" + (w != null ? "OK" : "NULL"));
                 if (w == null) {
                     sender.sendMessage("§c世界不存在: " + ac.world);
                     return true;
@@ -8618,8 +8624,35 @@ public class AreaProtection implements Listener {
                 }
             } else {
                 World w = Bukkit.getWorld(ac.warpWorld);
+                plugin.getLogger().info("[防护-TP] ★★★ 有传送点: 区域=" + ac.name
+                        + " warpWorld=" + ac.warpWorld + " warpPos=(" + ac.warpX + "," + ac.warpY + "," + ac.warpZ + ")"
+                        + " worldObj=" + (w != null ? "OK" : "NULL"));
                 if (w == null) {
-                    sender.sendMessage("§c传送点所在世界不存在");
+                    // 传送点世界不存在，回退到领地中心传送
+                    plugin.getLogger().warning("[防护-TP] 传送点世界不存在，回退到领地中心: " + ac.warpWorld);
+                    int cx = (Math.min(ac.x1, ac.x2) + Math.max(ac.x1, ac.x2)) / 2;
+                    int cz = (Math.min(ac.z1, ac.z2) + Math.max(ac.z1, ac.z2)) / 2;
+                    World fallback = Bukkit.getWorld(ac.world);
+                    if (fallback == null) {
+                        sender.sendMessage("§c世界不存在: " + ac.world);
+                        return true;
+                    }
+                    // 找到安全位置
+                    Location safeLoc = null;
+                    for (int y = fallback.getMaxHeight(); y >= fallback.getMinHeight(); y--) {
+                        Location check = new Location(fallback, cx, y, cz);
+                        if (!check.getBlock().getType().isSolid()) continue;
+                        if (check.clone().add(0, 1, 0).getBlock().getType().isSolid()) continue;
+                        if (check.clone().add(0, 2, 0).getBlock().getType().isSolid()) continue;
+                        safeLoc = check.clone().add(0, 1, 0);
+                        break;
+                    }
+                    if (safeLoc != null) {
+                        p.teleport(safeLoc);
+                        sender.sendMessage("§a§l[防护] §f已传送到 §e" + ac.name + " §f安全位置（传送点世界不存在）");
+                    } else {
+                        sender.sendMessage("§c§l[防护] §f无法找到安全传送位置，请为该领地设置传送点 (/protect settp)");
+                    }
                     return true;
                 }
                 Location warp = new Location(w, ac.warpX, ac.warpY, ac.warpZ, ac.warpYaw, ac.warpPitch);
