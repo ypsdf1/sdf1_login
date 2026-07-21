@@ -340,12 +340,18 @@ public class LandRecordManager implements Listener {
             }
         }
 
+        // 检查下一页是否有数据（决定是否显示"下一页"链接）
+        boolean hasNext = false;
+        if (!plugin.getDb().getLandBlockLogAt(world, x, y, z, 1, page + 1).isEmpty()) hasNext = true;
+        if (!plugin.getDb().getLandContainerLogAt(world, x, y, z, 1, page + 1).isEmpty()) hasNext = true;
+
         final int currentPage = page;
+        final boolean hasNextPage = hasNext;
         // 异步批量翻译
         MaterialTranslator.translateBatch(materials)
                 .thenAccept(translations -> {
                     plugin.getServer().getScheduler().runTask(plugin, () -> {
-                        printResults(p, x, y, z, blocks, containers, translations, currentPage);
+                        printResults(p, x, y, z, blocks, containers, translations, currentPage, hasNextPage);
                     });
                 });
     }
@@ -354,14 +360,14 @@ public class LandRecordManager implements Listener {
                               List<Map<String, Object>> blocks,
                               List<Map<String, Object>> containers,
                               Map<String, String> translations) {
-        printResults(p, x, y, z, blocks, containers, translations, 0);
+        printResults(p, x, y, z, blocks, containers, translations, 0, false);
     }
 
     private void printResults(Player p, int x, int y, int z,
                               List<Map<String, Object>> blocks,
                               List<Map<String, Object>> containers,
                               Map<String, String> translations,
-                              int page) {
+                              int page, boolean hasNext) {
         String pageLabel = page == 0 ? "今日" : (page == 1 ? "昨日" : (page + 1) + "日前");
         p.sendMessage("§6§l[回声碎片] §e坐标 ("
                 + x + "," + y + "," + z + ") 的记录§7（" + pageLabel + "）：");
@@ -437,10 +443,12 @@ public class LandRecordManager implements Listener {
             nav = nav.append(Component.text(" §7| "));
         }
         nav = nav.append(Component.text("§f第" + (page + 1) + "页"));
-        nav = nav.append(Component.text(" §7| ")
-                .append(Component.text("§e下一页 →")
-                        .clickEvent(ClickEvent.runCommand("/landrec log " + (page + 2)))
-                        .hoverEvent(HoverEvent.showText(Component.text("§7点击查看后一日记录")))));
+        if (hasNext) {
+            nav = nav.append(Component.text(" §7| ")
+                    .append(Component.text("§e下一页 →")
+                            .clickEvent(ClickEvent.runCommand("/landrec log " + (page + 2)))
+                            .hoverEvent(HoverEvent.showText(Component.text("§7点击查看后一日记录")))));
+        }
         nav = nav.append(Component.text(" §7]"));
         p.sendMessage(nav);
     }
