@@ -61,6 +61,27 @@ public class ChatFilterManager {
     // ★ 敏感词列表
     private final List<String> sensitiveWords = new ArrayList<>();
     
+    /** 默认预设敏感词（writeDefaultFile / 配置补全用） */
+    private static final List<String> DEFAULT_SENSITIVE_WORDS = Arrays.asList(
+            // 英文粗口
+            "fuck", "shit", "bitch", "asshole", "damn", "bastard",
+            "suck", "dick", "piss", "crap", "screw",
+            // 拼音/缩写粗口
+            "sb", "tmd", "nmb", "mdzz", "qnmb", "wqnmlgb", "cnm", "nmsl", "wcnm",
+            "cao", "caonima", "草", "艹", "操",
+            // 中文粗口
+            "你妈", "他妈", "你娘", "他娘", "你妹", "他爹",
+            "傻逼", "傻b", "煞笔", "沙比",
+            "草泥马", "操你", "干你", "去你",
+            "垃圾", "废物", "废柴", "蠢货", "智障", "脑残", "白痴",
+            "王八蛋", "狗屎", "放屁", "滚", "死全家",
+            "变态", "色狼", "恶心", "不要脸",
+            // 常见拼音变体
+            "nima", "wocao", "wokao", "woqu", "fuck", "fuc", "fck",
+            "caonim", "caoma", "qnm", "qnmd",
+            // 广告/推广
+            "加群", "qq群", "q群", "加我q", "加qq");
+    
     // ============================================================
     // ★ 新玩家验证码系统
     // ============================================================
@@ -589,10 +610,12 @@ public class ChatFilterManager {
         punishmentRules.clear();
         punishmentDurations.clear();
         messages.clear();
+        sensitiveWords.clear(); // 重新加载前先清空
 
         File f = new File(
                 plugin.getDataFolder(), "chat.txt");
         if (!f.exists()) writeDefaultFile(f);
+        boolean hasSensitiveSection = false; // 记录文件是否已有敏感词列表节
         try (BufferedReader r =
                      new BufferedReader(
                              new InputStreamReader(
@@ -626,6 +649,7 @@ public class ChatFilterManager {
                 if (t.equals("敏感词列表")
                         || t.equals("敏感词列表:")) {
                     section = "sensitive";
+                    hasSensitiveSection = true;
                     continue;
                 }
                 if (t.contains(":")) {
@@ -699,8 +723,36 @@ public class ChatFilterManager {
                             + e.getMessage());
         }
 
+        // ★ 配置补全：敏感词列表节缺失时追加预设值
+        appendMissingConfigSections(f, hasSensitiveSection);
+
         // 从消息.txt读取chat_开头的消息
         loadMessages();
+    }
+
+    /**
+     * 检测 chat.txt 是否缺少配置节，缺失则在文件末尾追加预设内容。
+     * 已有该节则跳过补全（不覆盖用户已有配置）。
+     */
+    private void appendMissingConfigSections(File f, boolean hasSensitiveSection) {
+        if (hasSensitiveSection) return; // 已有敏感词列表节，跳过
+        // 追加敏感词列表节到文件末尾
+        try (PrintWriter pw = new PrintWriter(
+                new OutputStreamWriter(
+                        new FileOutputStream(f, true),
+                        StandardCharsets.UTF_8))) {
+            pw.println();
+            pw.println("敏感词列表:");
+            pw.println("# ★ 以下为自动补全的预设敏感词，可自行增删");
+            for (String sw : DEFAULT_SENSITIVE_WORDS) {
+                pw.println(sw);
+            }
+            // 同步到内存
+            sensitiveWords.addAll(DEFAULT_SENSITIVE_WORDS.stream().map(String::toLowerCase).toList());
+            plugin.getLogger().info("[Sdf1_chat] 配置文件缺少敏感词列表节，已在末尾追加" + DEFAULT_SENSITIVE_WORDS.size() + "条预设");
+        } catch (IOException e) {
+            plugin.getLogger().warning("[Sdf1_chat] 配置补全写入失败: " + e.getMessage());
+        }
     }
 
     private void loadMessages() {
@@ -774,6 +826,9 @@ public class ChatFilterManager {
             pw.println("敏感词列表:");
             pw.println("# 每行一个敏感词，触发后消息仅发送者可见，计数器+1");
             pw.println("# 达到处罚规则中次数后自动处罚并归零计数器");
+            for (String sw : DEFAULT_SENSITIVE_WORDS) {
+                pw.println(sw);
+            }
         } catch (IOException ignored) {
         }
     }

@@ -3377,9 +3377,13 @@ public class Main extends JavaPlugin
             List<String> ms = chatFilter.checkSensitiveWords(msg);
             if (!ms.isEmpty()) {
                 e.setCancelled(true);
-                String fmt = e.getFormat();
-                if (fmt == null) fmt = "<%1$s> %2$s";
-                p.sendMessage(String.format(fmt, p.getDisplayName(), msg));
+                try {
+                    String fmt = e.getFormat();
+                    if (fmt == null) fmt = "<%1$s> %2$s";
+                    p.sendMessage(String.format(fmt, p.getDisplayName(), msg));
+                } catch (Exception ignored) {
+                    // 格式渲染失败 → 静默丢弃（玩家不看到消息但也不广播）
+                }
                 chatFilter.incrementViolation(p.getName());
                 int sc = chatFilter.getViolationCount(p.getName());
                 String ptype = chatFilter.applyPunishment(p, sc);
