@@ -1076,8 +1076,15 @@ public class PVPManager implements Listener {
     public boolean onCommand(Player p,
                              String[] args) {
         if (args.length == 0) {
-            return showStats(p,
-                    p.getName());
+            showStats(p, p.getName());
+            // ★ 同时展示竞技场总战绩
+            showArenaTotalStats(p, p.getName());
+            return true;
+        }
+        // ★ 数字参数 → 查询指定会话编号的竞技场战绩
+        if (args.length == 1 && args[0].matches("\\d+")) {
+            showArenaSessionStats(p, p.getName(), Integer.parseInt(args[0]));
+            return true;
         }
         switch (args[0].toLowerCase()) {
             case "create":
@@ -1425,5 +1432,44 @@ public class PVPManager implements Listener {
                             "%.2f", kd));
         }
         return true;
+    }
+
+    // ★ 展示PVP竞技场总战绩
+    private void showArenaTotalStats(Player p, String target) {
+        org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(target);
+        String uuid = off.getUniqueId().toString();
+        Map<String, Object> stats = plugin.getPVPArenaManager().getTotalArenaStats(uuid);
+        int kills = (int) stats.get("kills");
+        int deaths = (int) stats.get("deaths");
+        if (kills == 0 && deaths == 0) return;
+        double kd = deaths > 0 ? (double) kills / deaths : kills;
+        p.sendMessage("§6§l[PVP竞技场] " + target);
+        p.sendMessage(" §a击杀: " + kills + "  §c死亡: " + deaths + "  §eKD: " + String.format("%.2f", kd));
+    }
+
+    // ★ 展示指定会话编号的竞技场战绩
+    private void showArenaSessionStats(Player p, String target, int sessionNumber) {
+        org.bukkit.OfflinePlayer off = Bukkit.getOfflinePlayer(target);
+        String uuid = off.getUniqueId().toString();
+        // 先查会话信息（含3天有效期检查）
+        Map<String, Object> session = plugin.getPVPArenaManager().getArenaSessionByNumber(sessionNumber);
+        if (session == null) {
+            p.sendMessage("§c未找到编号 " + sessionNumber + " 的竞技场记录，或已超出3天查询范围");
+            return;
+        }
+        long createdAt = (Long) session.get("created_at");
+        long threeDaysMs = 3L * 24 * 60 * 60 * 1000;
+        if (System.currentTimeMillis() - createdAt > threeDaysMs) {
+            p.sendMessage("§c该记录已超出3天查询范围，不再支持查询");
+            return;
+        }
+        int dbSessionId = (int) session.get("id");
+        Map<String, Object> stats = plugin.getPVPArenaManager().getArenaSessionStats(uuid, dbSessionId);
+        int kills = (int) stats.get("kills");
+        int deaths = (int) stats.get("deaths");
+        String worldName = (String) session.get("world_name");
+        String dateStr = new java.text.SimpleDateFormat("yyyy-MM-dd").format(new java.util.Date(createdAt));
+        p.sendMessage("§6§l[PVP竞技场#" + sessionNumber + "] " + target + " §7(" + dateStr + " " + worldName + ")");
+        p.sendMessage(" §a击杀: " + kills + "  §c死亡: " + deaths + "  §eKD: " + String.format("%.2f", deaths > 0 ? (double) kills / deaths : kills));
     }
 }

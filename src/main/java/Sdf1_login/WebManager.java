@@ -310,6 +310,7 @@ public class WebManager {
         dbTaskQueue.offer(task);
         if (dbTaskQueue.size() > 50) {
             plugin.getLogger().warning("[DB队列] 队列积压: " + dbTaskQueue.size() + " 任务等待");
+            discardOldestIfOverflow();
         }
     }
 
@@ -321,6 +322,50 @@ public class WebManager {
         if (dbWorkerThread != null) {
             dbWorkerThread.interrupt();
         }
+    }
+
+    /**
+     * ★ 清空DB队列中所有未回应的web同步任务
+     *   （清空队列/cleartake 命令调用）
+     */
+    public void clearQueue() {
+        int count = 0;
+        Iterator<DbTask> it = dbTaskQueue.iterator();
+        while (it.hasNext()) {
+            DbTask t = it.next();
+            // 只保留登录/商店等关键任务，丢弃所有同步类web任务
+            if (t.name.contains("TimerA") || t.name.contains("首次")
+                    || t.name.contains("周期") || t.name.contains("sync")
+                    || t.name.contains("poll") || t.name.contains("push")
+                    || t.name.contains("pull") || t.name.contains("cdk")) {
+                it.remove();
+                count++;
+            }
+        }
+        plugin.getLogger().info("[DB队列] 清空队列: 丢弃 " + count + " 个未回应web任务");
+    }
+
+    /**
+     * ★ 队列积压时丢弃最早的任务（优先丢弃同步类低优先级任务）
+     */
+    public void discardOldestIfOverflow() {
+        if (dbTaskQueue.size() <= 50) return;
+        int before = dbTaskQueue.size();
+        // 收集所有普通同步任务（priority >= NORMAL_PRIORITY），按创建时间排序
+        List<DbTask> syncTasks = new ArrayList<>();
+        for (DbTask t : dbTaskQueue) {
+            if (t != null && t.priority >= NORMAL_PRIORITY) {
+                syncTasks.add(t);
+            }
+        }
+        syncTasks.sort(Comparator.comparingLong(t -> t.createdAt));
+        // 丢弃最早的一半同步任务（至少丢弃1个）
+        int toDrop = Math.max(1, syncTasks.size() / 2);
+        for (int i = 0; i < toDrop && i < syncTasks.size(); i++) {
+            dbTaskQueue.remove(syncTasks.get(i));
+        }
+        int after = dbTaskQueue.size();
+        plugin.getLogger().warning("[DB队列] 队列积压(" + before + ")，自动丢弃" + (before - after) + "个最早的同步请求");
     }
 
     // ==================== SSL断路器 + 降级HTTP ====================

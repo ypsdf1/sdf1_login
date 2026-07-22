@@ -228,6 +228,25 @@ public class DatabaseManager {
                     + "PRIMARY KEY(player_name, region_name)"
                     + ")");
 
+            // PVP竞技场会话表（每局PVP世界）
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "pvp_arena_sessions ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "session_number INTEGER NOT NULL UNIQUE,"
+                    + "world_name TEXT NOT NULL,"
+                    + "created_at INTEGER NOT NULL"
+                    + ")");
+            // PVP竞技场战绩表（按会话+玩家）
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "pvp_arena_stats ("
+                    + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    + "session_id INTEGER NOT NULL,"
+                    + "player_uuid TEXT NOT NULL,"
+                    + "player_name TEXT NOT NULL,"
+                    + "kills INTEGER DEFAULT 0,"
+                    + "deaths INTEGER DEFAULT 0,"
+                    + "UNIQUE(session_id, player_uuid)"
+                    + ")");
 
 // 菜单图标表
             st.execute("CREATE TABLE IF NOT EXISTS "
@@ -1480,6 +1499,177 @@ public class DatabaseManager {
         return list;
     }
 
+    // ==================== PVP竞技场会话 & 战绩持久化 ====================
+
+    /** 创建新PVP竞技场会话，返回生成的id */
+    public int createArenaSession(String worldName) {
+        try {
+            // 先查最大session_number
+            int maxNum = 0;
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery("SELECT COALESCE(MAX(session_number),0) FROM pvp_arena_sessions");
+            if (rs.next()) maxNum = rs.getInt(1);
+            rs.close();
+            st.close();
+            int newNum = maxNum + 1;
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT INTO pvp_arena_sessions (session_number, world_name, created_at) VALUES (?,?,?)",
+                    PreparedStatement.RETURN_GENERATED_KEYS);
+            ps.setInt(1, newNum);
+            ps.setString(2, worldName);
+            ps.setLong(3, System.currentTimeMillis());
+            ps.executeUpdate();
+            ResultSet keys = ps.getGeneratedKeys();
+            int id = keys.next() ? keys.getInt(1) : 1;
+            keys.close();
+            ps.close();
+            return id;
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    /** 获取指定会话编号的信息（超过3天返回null） */
+    public Map<String, Object> getArenaSessionByNumber(int number) {
+        long threeDaysMs = 3L * 24 * 60 * 60 * 1000;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT id, session_number, world_name, created_at FROM pvp_arena_sessions WHERE session_number=? AND ? - created_at <= ?");
+            long now = System.currentTimeMillis();
+            ps.setInt(1, number);
+            ps.setLong(2, now);
+            ps.setLong(3, threeDaysMs);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getInt("id"));
+                row.put("session_number", rs.getInt("session_number"));
+                row.put("world_name", rs.getString("world_name"));
+                row.put("created_at", rs.getLong("created_at"));
+                rs.close();
+                ps.close();
+                return row;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    /** 获取所有竞技场会话列表（按编号降序） */
+    public List<Map<String, Object>> getAllArenaSessions() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery(
+                    "SELECT id, session_number, world_name, created_at FROM pvp_arena_sessions ORDER BY session_number DESC");
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getInt("id"));
+                row.put("session_number", rs.getInt("session_number"));
+                row.put("world_name", rs.getString("world_name"));
+                row.put("created_at", rs.getLong("created_at"));
+                list.add(row);
+            }
+            rs.close();
+            st.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /** 记录竞技场击杀（INSERT OR IGNORE + UPDATE） */
+    public void recordArenaKill(int sessionId, String uuid, String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR IGNORE INTO pvp_arena_stats (session_id, player_uuid, player_name, kills, deaths) VALUES (?,?,?,0,0)");
+            ps.setInt(1, sessionId);
+            ps.setString(2, uuid);
+            ps.setString(3, name);
+            ps.executeUpdate();
+            ps.close();
+            ps = db.prepareStatement(
+                    "UPDATE pvp_arena_stats SET kills = kills + 1, player_name=? WHERE session_id=? AND player_uuid=?");
+            ps.setString(1, name);
+            ps.setInt(2, sessionId);
+            ps.setString(3, uuid);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 记录竞技场死亡 */
+    public void recordArenaDeath(int sessionId, String uuid, String name) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR IGNORE INTO pvp_arena_stats (session_id, player_uuid, player_name, kills, deaths) VALUES (?,?,?,0,0)");
+            ps.setInt(1, sessionId);
+            ps.setString(2, uuid);
+            ps.setString(3, name);
+            ps.executeUpdate();
+            ps.close();
+            ps = db.prepareStatement(
+                    "UPDATE pvp_arena_stats SET deaths = deaths + 1, player_name=? WHERE session_id=? AND player_uuid=?");
+            ps.setString(1, name);
+            ps.setInt(2, sessionId);
+            ps.setString(3, uuid);
+            ps.executeUpdate();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /** 获取某玩家所有竞技场会话的总战绩 */
+    public Map<String, Object> getArenaTotalStats(String uuid) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("kills", 0);
+        result.put("deaths", 0);
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT COALESCE(SUM(kills),0) AS total_kills, COALESCE(SUM(deaths),0) AS total_deaths FROM pvp_arena_stats WHERE player_uuid=?");
+            ps.setString(1, uuid);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                result.put("kills", rs.getInt("total_kills"));
+                result.put("deaths", rs.getInt("total_deaths"));
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return result;
+    }
+
+    /** 获取某玩家在指定会话编号中的战绩 */
+    public Map<String, Object> getArenaSessionStats(String uuid, int sessionId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("kills", 0);
+        result.put("deaths", 0);
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT kills, deaths FROM pvp_arena_stats WHERE session_id=? AND player_uuid=?");
+            ps.setInt(1, sessionId);
+            ps.setString(2, uuid);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                result.put("kills", rs.getInt("kills"));
+                result.put("deaths", rs.getInt("deaths"));
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return result;
+    }
 
     // ==================== 安全报警 ====================
 

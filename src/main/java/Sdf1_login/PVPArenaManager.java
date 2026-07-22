@@ -110,6 +110,9 @@ public class PVPArenaManager implements Listener {
     private final Map<String, Integer> pvpKills = new ConcurrentHashMap<>();
     private final Map<String, Integer> pvpDeaths = new ConcurrentHashMap<>();
 
+    // ★ 当前竞技场会话ID（持久化到DB）
+    private int currentSessionId = -1;
+
     // 连杀播报（移植自 PVPManager，全服播报）
     private final Map<String, PVPManager.KillSession>
             arenaKillSessions =
@@ -332,6 +335,11 @@ public class PVPArenaManager implements Listener {
         // 同步分批预生成出生点周边区块（半径2=5×5=25个，每 tick 一行，均摊不冻服）
         preGenerateSpawnChunksAsync(pvpWorld, 2);
         reapplyWorldRules(pvpWorld);
+        // ★ 创建DB会话记录（持久化战绩）
+        currentSessionId = db.createArenaSession(pvpWorldName);
+        if (currentSessionId > 0) {
+            plugin.getLogger().info("[PVP] 创建竞技场会话 #" + currentSessionId + " (world=" + pvpWorldName + ")");
+        }
 
         plugin.getLogger().info("[PVP] PVP竞技场世界就绪 种子=" + seed + " 耗时=" + dt + "ms（NORMAL真实自然地形, 出生点已固化）");
         return pvpWorld;
@@ -738,7 +746,7 @@ public class PVPArenaManager implements Listener {
         // 兜底：确保世界内无玩家（理论上冷却结束时已无人）
         for (Player p : new ArrayList<>(world.getPlayers())) {
             World main = Bukkit.getWorlds().get(0);
-            p.teleport(main.getSpawnLocation());
+            p.teleport(getBedOrSpawnLocation(p));
             p.sendMessage("§e[PVP] 竞技场已关闭，你被传回主世界");
         }
         Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
@@ -916,8 +924,7 @@ public class PVPArenaManager implements Listener {
         // 延迟一帧传回主世界（避免与关闭事件冲突）
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (player.isOnline()) {
-                World main = Bukkit.getWorlds().get(0);
-                player.teleport(main.getSpawnLocation());
+                player.teleport(getBedOrSpawnLocation(player));
                 player.sendMessage("§c§l[PVP] §c你未确认装备选择，已被遣返回主世界");
                 player.sendMessage("§7提示：进入PVP后必须选择并确认装备才能开始战斗");
                 player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
@@ -1027,8 +1034,7 @@ public class PVPArenaManager implements Listener {
                 equipInteracted.remove(playerName);
                 if (p != null && p.isOnline()) {
                     p.closeInventory();
-                    World main = Bukkit.getWorlds().get(0);
-                    p.teleport(main.getSpawnLocation());
+                    p.teleport(getBedOrSpawnLocation(p));
                     p.sendMessage("§c§l[PVP] §c装备选择超时（" + EQUIPMENT_SELECT_TIMEOUT_SECONDS + "秒），已被自动遣返");
                     p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
                 }
@@ -1156,6 +1162,12 @@ public class PVPArenaManager implements Listener {
             // 总榜击杀数
             pvpKills.put(kName, pvpKills.getOrDefault(kName, 0) + 1);
 
+            // ★ 持久化到DB
+            if (currentSessionId > 0) {
+                db.recordArenaKill(currentSessionId, ((Player) killer).getUniqueId().toString(), kName);
+                db.recordArenaDeath(currentSessionId, player.getUniqueId().toString(), vName);
+            }
+
             // ★ 击杀奖励：PVP世界每完成2次杀敌，发放16个牛排用于补血（背包满则只发能放下的）
             int newKills = pvpKills.get(kName);
             if (newKills % 2 == 0) {
@@ -1238,6 +1250,10 @@ public class PVPArenaManager implements Listener {
             ((Player) killer).sendMessage("\u00a7a\u00a7l击杀 " + vName + "\u00a7a 当前击杀: " + pvpKills.get(kName));
         }
         pvpDeaths.put(player.getName(), pvpDeaths.getOrDefault(player.getName(), 0) + 1);
+        // ★ 非击杀死亡也持久化（如摔死/溺水）
+        if (currentSessionId > 0) {
+            db.recordArenaDeath(currentSessionId, player.getUniqueId().toString(), player.getName());
+        }
         refreshPVPScoreboard();
 
         // 死亡时保留经验（避免丢失）
@@ -1254,8 +1270,13 @@ public class PVPArenaManager implements Listener {
         Player player = event.getPlayer();
         if (!inPVPArena.contains(player.getName())) return;
 
-        World main = Bukkit.getWorlds().get(0);
-        event.setRespawnLocation(main.getSpawnLocation());
+        // ★ 优先床/重生点，兜底主世界出生点
+        Location bed = player.getRespawnLocation();
+        if (bed != null && !bed.getWorld().getName().equals(pvpWorldName)) {
+            event.setRespawnLocation(bed);
+        } else {
+            event.setRespawnLocation(Bukkit.getWorlds().get(0).getSpawnLocation());
+        }
 
         if (!equipmentConfirmed.contains(player.getName())) {
             // 未确认装备：身上仍是原背包，只需清状态
@@ -1345,8 +1366,7 @@ public class PVPArenaManager implements Listener {
 
                 // 若仍在竞技场世界，送回主世界
                 if (player.getWorld().getName().equals(pvpWorldName)) {
-                    World main = Bukkit.getWorlds().get(0);
-                    player.teleport(main.getSpawnLocation());
+                    player.teleport(getBedOrSpawnLocation(player));
                     cleanupPlayerStats(player);
                     inPVPArena.remove(player.getName());
                     player.sendMessage("§e[PVP] 已送你回主世界");
@@ -1359,8 +1379,7 @@ public class PVPArenaManager implements Listener {
         if (player.getWorld().getName().equals(pvpWorldName)) {
             plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                 if (!player.isOnline()) return;
-                World main = Bukkit.getWorlds().get(0);
-                player.teleport(main.getSpawnLocation());
+                player.teleport(getBedOrSpawnLocation(player));
                 cleanupPlayerStats(player);
                 inPVPArena.remove(player.getName());
                 player.sendMessage("§e[PVP] 检测到你在竞技场非正常断线，已送你回主世界");
@@ -2117,9 +2136,8 @@ public class PVPArenaManager implements Listener {
             player.sendMessage("§e你不在PVP竞技场中");
             return;
         }
-        // 传回主世界（触发 PlayerChangedWorldEvent → forceLeaveArena）
-        World main = Bukkit.getWorlds().get(0);
-        player.teleport(main.getSpawnLocation());
+        // 传回主世界（触发 PlayerChangedWorldEvent → forceLeaveArena），优先床
+        player.teleport(getBedOrSpawnLocation(player));
         player.sendMessage("§a§l正在离开PVP竞技场...");
     }
 
@@ -2150,6 +2168,33 @@ public class PVPArenaManager implements Listener {
     public void addPVPEquipment(ItemStack item) {
         pvpEquipment.add(item);
         saveConfig();
+    }
+
+    /** 获取当前会话ID */
+    public int getCurrentSessionId() {
+        return currentSessionId;
+    }
+
+    /** 获取某玩家所有会话的总战绩（从DB） */
+    public Map<String, Object> getTotalArenaStats(String uuid) {
+        return db.getArenaTotalStats(uuid);
+    }
+
+    /** 获取指定会话编号的信息 */
+    public Map<String, Object> getArenaSessionByNumber(int number) {
+        return db.getArenaSessionByNumber(number);
+    }
+
+    /** 获取某玩家在指定会话中的战绩 */
+    public Map<String, Object> getArenaSessionStats(String uuid, int sessionId) {
+        return db.getArenaSessionStats(uuid, sessionId);
+    }
+
+    /** 优先传送玩家到床/重生点，兜底世界出生点 */
+    public Location getBedOrSpawnLocation(Player player) {
+        Location bed = player.getRespawnLocation();
+        if (bed != null) return bed;
+        return Bukkit.getWorlds().get(0).getSpawnLocation();
     }
 
     /** 重置本局公平锁定状态（世界销毁/全量重置时调用，下一局首位玩家重新定死装备） */

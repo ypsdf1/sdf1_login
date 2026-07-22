@@ -5929,6 +5929,20 @@ public class Main extends JavaPlugin
                     + count + " 个掉落物");
             return true;
         }
+        // ===== 清空队列 / cleartake — 清空DB队列中未回应的web任务 =====
+        if (cmdName.equals("清空队列") || cmdName.equals("cleartake")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (webManager == null) {
+                sender.sendMessage("§cWeb通信管理器未初始化");
+                return true;
+            }
+            webManager.clearQueue();
+            sender.sendMessage("§a已清空DB队列中未回应的web同步任务");
+            return true;
+        }
         // /menu 开关雪球菜单
         if (cmdName.equals("menu")) {
             if (!(sender instanceof Player)) {
