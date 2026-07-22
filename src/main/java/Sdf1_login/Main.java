@@ -3428,32 +3428,6 @@ public class Main extends JavaPlugin
                 "chat_url_violation",
                 "count", String.valueOf(count)));
 
-        // 通知管理员
-        if (chatFilter.isNotifyAdmin()) {
-            String notify = chatFilter.msg(
-                    "chat_url_admin_notify",
-                    "player", p.getName(),
-                    "url", blocked.get(0),
-                    "count", String.valueOf(count));
-            for (Player op :
-                    Bukkit.getOnlinePlayers()) {
-                if (op.hasPermission(
-                        "sdf1.admin")
-                        || op.isOp()) {
-                    op.sendMessage(notify);
-                }
-            }
-        }
-
-        // 通报
-        if (chatFilter.isNotifyAll()) {
-            Bukkit.broadcastMessage(
-                    chatFilter.msg(
-                            "chat_url_broadcast",
-                            "player",
-                            p.getName()));
-        }
-
         // 处罚
         chatFilter.applyPunishment(p, count,
                 "发送违规链接", "系统");

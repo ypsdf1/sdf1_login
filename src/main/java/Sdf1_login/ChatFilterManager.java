@@ -1092,32 +1092,32 @@ public class ChatFilterManager {
                             }
                             break;
                     }
-                    // 非 warn → 通知在线管理员
+                    // 非 warn → 按配置通知
                     if (!"warn".equals(fType)) {
-                        String adminMsg = "§c[聊天监控] §f玩家 "
-                                + fName + " 因" + fReason
+                        String punishInfo = "玩家 " + fName
+                                + " 因" + fReason
                                 + "被" + fIssuer + "处罚："
                                 + fType;
                         if ("mute".equals(fType))
-                            adminMsg += " " + durStr;
-                        for (Player op :
-                                Bukkit.getOnlinePlayers()) {
-                            if (op.hasPermission(
-                                    "sdf1.admin")
-                                    || op.isOp()) {
-                                op.sendMessage(adminMsg);
+                            punishInfo += " " + durStr;
+                        // 通知管理员（插件 tag 管理员/OP）
+                        if (notifyAdmin) {
+                            String adminMsg = "§c[聊天监控] §f"
+                                    + punishInfo;
+                            for (Player op :
+                                    Bukkit.getOnlinePlayers()) {
+                                if (op.hasPermission(
+                                        "sdf1.admin")
+                                        || op.isOp()) {
+                                    op.sendMessage(adminMsg);
+                                }
                             }
                         }
-                    }
-                    // kick/ban/banip → 全服公告
-                    if (fType.equals("kick")
-                            || fType.equals("ban")
-                            || fType.equals("banip")) {
-                        Bukkit.broadcastMessage(
-                                "§c[公告] §f玩家 " + fName
-                                        + " 因" + fReason
-                                        + "被" + fIssuer
-                                        + "处罚");
+                        // 全服公告
+                        if (notifyAll) {
+                            Bukkit.broadcastMessage(
+                                    "§c[公告] §f" + punishInfo);
+                        }
                     }
                 });
         return type;
