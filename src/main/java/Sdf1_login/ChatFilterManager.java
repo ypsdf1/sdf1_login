@@ -11,6 +11,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
@@ -996,6 +997,18 @@ public class ChatFilterManager {
      */
     public String applyPunishment(Player player,
                                 int violation) {
+        return applyPunishment(player, violation,
+                "触发敏感词", "系统");
+    }
+
+    /**
+     * 应用处罚规则（可指定原因和执行人）。
+     * 自动通知管理员，kick/ban/banip 全服广播，mute 给详细消息。
+     */
+    public String applyPunishment(Player player,
+                                int violation,
+                                String reason,
+                                String issuer) {
         String type = "warn";
         int duration = muteDuration;
         int maxRule = 0;
@@ -1014,36 +1027,56 @@ public class ChatFilterManager {
         if (type.equals("mute")) {
             if (isMuted(player.getName()))
                 return "already_muted";
+            long expireMs = System.currentTimeMillis()
+                    + (long) duration * 1000L;
             mutedPlayers.put(player.getName(),
-                    System.currentTimeMillis()
-                            + (long) duration
-                            * 1000L);
+                    expireMs);
+            if (reason != null && !reason.isEmpty())
+                muteReasons.put(player.getName(),
+                        reason);
         }
         final String fType = type;
         final int fDur = duration;
-        final int fV = violation;
         final String fName = player.getName();
+        final String fReason = reason != null
+                ? reason : "触发敏感词";
+        final String fIssuer = issuer != null
+                ? issuer : "系统";
         Bukkit.getScheduler().runTask(plugin,
                 () -> {
                     Player p = Bukkit.getPlayer(fName);
                     if (p == null) return;
+                    long now = System.currentTimeMillis();
+                    long endMs = now
+                            + (long) fDur * 1000L;
+                    String startStr = new SimpleDateFormat(
+                            "yyyy年M月d日 HH点mm分")
+                            .format(new Date(now));
+                    String endStr = new SimpleDateFormat(
+                            "yyyy年M月d日 HH点mm分")
+                            .format(new Date(endMs));
+                    String durStr = fmtDuration(fDur);
                     switch (fType) {
                         case "warn":
-                            // 警告不处罚，只提示
                             break;
                         case "mute":
-                            p.sendMessage(
-                                    msg("chat_muted"));
+                            p.sendMessage("§c§l你因为" + fReason
+                                    + "被" + fIssuer
+                                    + "执行禁言" + durStr
+                                    + "，处罚开始时间："
+                                    + startStr
+                                    + " 处罚到期时间："
+                                    + endStr);
                             break;
                         case "kick":
-                            p.kickPlayer(
-                                    msg("chat_muted"));
+                            p.kickPlayer("§c你因" + fReason
+                                    + "被踢出服务器");
                             break;
                         case "ban":
                             Bukkit.dispatchCommand(
                                     Bukkit.getConsoleSender(),
                                     "ban " + fName
-                                            + " §c多次发送违规链接");
+                                            + " §c" + fReason);
                             break;
                         case "banip":
                             InetSocketAddress addr =
@@ -1055,9 +1088,36 @@ public class ChatFilterManager {
                                 Bukkit.dispatchCommand(
                                         Bukkit.getConsoleSender(),
                                         "ban-ip " + ip
-                                                + " §c发送违规链接");
+                                                + " §c" + fReason);
                             }
                             break;
+                    }
+                    // 非 warn → 通知在线管理员
+                    if (!"warn".equals(fType)) {
+                        String adminMsg = "§c[聊天监控] §f玩家 "
+                                + fName + " 因" + fReason
+                                + "被" + fIssuer + "处罚："
+                                + fType;
+                        if ("mute".equals(fType))
+                            adminMsg += " " + durStr;
+                        for (Player op :
+                                Bukkit.getOnlinePlayers()) {
+                            if (op.hasPermission(
+                                    "sdf1.admin")
+                                    || op.isOp()) {
+                                op.sendMessage(adminMsg);
+                            }
+                        }
+                    }
+                    // kick/ban/banip → 全服公告
+                    if (fType.equals("kick")
+                            || fType.equals("ban")
+                            || fType.equals("banip")) {
+                        Bukkit.broadcastMessage(
+                                "§c[公告] §f玩家 " + fName
+                                        + " 因" + fReason
+                                        + "被" + fIssuer
+                                        + "处罚");
                     }
                 });
         return type;

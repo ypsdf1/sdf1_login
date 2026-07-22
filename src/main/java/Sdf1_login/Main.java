@@ -3386,7 +3386,10 @@ public class Main extends JavaPlugin
                 }
                 chatFilter.incrementViolation(p.getName());
                 int sc = chatFilter.getViolationCount(p.getName());
-                String ptype = chatFilter.applyPunishment(p, sc);
+                String swReason = "说出敏感词("
+                        + ms.get(0) + ")";
+                String ptype = chatFilter.applyPunishment(
+                        p, sc, swReason, "系统");
                 if (!"warn".equals(ptype)) {
                     chatFilter.resetViolationCount(p.getName());
                 }
@@ -3452,7 +3455,8 @@ public class Main extends JavaPlugin
         }
 
         // 处罚
-        chatFilter.applyPunishment(p, count);
+        chatFilter.applyPunishment(p, count,
+                "发送违规链接", "系统");
         
         // ===== 广告机检测（独立于URL过滤） =====
         if (chatFilter.checkAdBotBehavior(p.getName(), msg)) {
