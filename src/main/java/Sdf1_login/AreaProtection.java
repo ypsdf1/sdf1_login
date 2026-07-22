@@ -323,18 +323,19 @@ public class AreaProtection implements Listener {
     private boolean isExemptFromGameMode(
             Player p, String areaName) {
         String name = p.getName();
+        String lower = name.toLowerCase();
 
         // 管理员豁免
         if (isAreaAdmin(p)) {
             return true;
         }
 
-        if (globalPlayerWhitelist.contains(name)) {
+        if (globalPlayerWhitelist.contains(lower)) {
             return true;
         }
         Set<String> aw =
                 areaPlayerWhitelist.get(areaName);
-        if (aw != null && aw.contains(name)) {
+        if (aw != null && aw.contains(lower)) {
             return true;
         }
         AreaConfig ac = areas.get(areaName);
@@ -7695,7 +7696,7 @@ public class AreaProtection implements Listener {
                             + " 已在全局白名单中");
                     return true;
                 }
-                globalPlayerWhitelist.add(name);
+                globalPlayerWhitelist.add(name.toLowerCase());
                 saveWhitelists();
                 sender.sendMessage("§a已全局加白: " + name);
                 return true;
@@ -7710,7 +7711,7 @@ public class AreaProtection implements Listener {
                 String areaName = parsed[0];
                 String playerName = parsed[1];
                 if (areaName.equalsIgnoreCase("global")) {
-                    globalPlayerWhitelist.add(playerName);
+                    globalPlayerWhitelist.add(playerName.toLowerCase());
                     saveWhitelists();
                     sender.sendMessage("§a已全局加白: "
                             + playerName);
@@ -7719,7 +7720,7 @@ public class AreaProtection implements Listener {
                             .computeIfAbsent(areaName,
                                     k -> ConcurrentHashMap
                                             .newKeySet());
-                    wl.add(playerName);
+                    wl.add(playerName.toLowerCase());
                     saveWhitelists();
                     sender.sendMessage("§a已加白: "
                             + playerName + " → " + areaName);
@@ -10527,7 +10528,7 @@ public class AreaProtection implements Listener {
 
     public boolean addPlayerToGlobalWhitelist(
             String playerName) {
-        boolean ok = globalPlayerWhitelist.add(playerName);
+        boolean ok = globalPlayerWhitelist.add(playerName.toLowerCase());
         if (ok) saveWhitelists();
         return ok;
     }
@@ -10535,6 +10536,7 @@ public class AreaProtection implements Listener {
     public boolean removePlayerFromGlobalWhitelist(
             String playerName) {
         boolean ok = globalPlayerWhitelist.remove(playerName);
+        if (!ok) ok = globalPlayerWhitelist.remove(playerName.toLowerCase());
         if (ok) saveWhitelists();
         return ok;
     }
@@ -10543,7 +10545,7 @@ public class AreaProtection implements Listener {
             String areaName, String playerName) {
         Set<String> wl =
                 areaPlayerWhitelist.get(areaName);
-        return wl != null && wl.contains(playerName);
+        return wl != null && wl.contains(playerName.toLowerCase());
     }
 
     public boolean addPlayerToAreaWhitelist(
@@ -10551,7 +10553,7 @@ public class AreaProtection implements Listener {
         Set<String> set = areaPlayerWhitelist
                 .computeIfAbsent(areaName,
                         k -> ConcurrentHashMap.newKeySet());
-        boolean ok = set.add(playerName);
+        boolean ok = set.add(playerName.toLowerCase());
         if (ok) saveWhitelists();
         return ok;
     }
