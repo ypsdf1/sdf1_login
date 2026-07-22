@@ -46,6 +46,7 @@ import java.util.HashSet;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.event.entity.EntitySpawnEvent;
+import com.destroystokyo.paper.event.entity.EntityPathfindEvent;
 import org.bukkit.entity.Item;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 
@@ -5351,11 +5352,11 @@ public class AreaProtection implements Listener {
                     e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
             if (ac != null && ac.denyFire) e.setCancelled(true);
         }
-        // ★ 禁止末影人抱走耕地
-        if (e.getEntityType().name().equals("ENDERMAN") && e.getBlock().getType() == Material.FARMLAND) {
+        // ★ 末影人行为控制：禁止末影人抱走方块
+        if (e.getEntityType().name().equals("ENDERMAN")) {
             AreaConfig ac = getArea(e.getBlock().getWorld().getName(),
                     e.getBlock().getX(), e.getBlock().getY(), e.getBlock().getZ());
-            if (ac != null && ac.denyFarmlandTrample) {
+            if (ac != null && ac.denyEnderTeleport) {
                 e.setCancelled(true);
             }
         }
@@ -5740,6 +5741,19 @@ public class AreaProtection implements Listener {
         // 如果起点和终点都不在禁止传送的领地内，不干预（让MC自身逻辑处理）
         // 注意：如果起点在允许传送的领地内，终点在禁止传送的领地内，已在上面处理
         // 如果起点在禁止传送的领地内，终点在允许传送的领地内，已在上面处理
+    }
+
+    // ★ 末影人行为控制（禁止末影人AI寻路进入领地）
+    @EventHandler
+    public void onEndermanPathfind(EntityPathfindEvent e) {
+        if (!e.getEntity().getType().name().equals("ENDERMAN")) return;
+        Location loc = e.getLoc();
+        if (loc == null) return;
+        AreaConfig ac = getArea(loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        if (ac != null && ac.denyEnderTeleport) {
+            e.setCancelled(true);
+        }
     }
 
     // ★ 末影人生成控制（自然生成时禁止进入领地）
