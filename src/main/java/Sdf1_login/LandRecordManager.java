@@ -44,6 +44,9 @@ public class LandRecordManager implements Listener {
     /** 回声碎片物品材质（1.19+ 存在） */
     public static final Material ECHO_SHARD_MATERIAL = Material.ECHO_SHARD;
 
+    /** 玩家最后一次查询的坐标缓存，翻页导航时复用，避免 getTargetBlockExact 不准 */
+    private final Map<UUID, Location> lastQueryLocations = new ConcurrentHashMap<>();
+
     /** 记录查询默认条数 */
     private static final int QUERY_LIMIT = 20;
     /** 记录保留天数 */
@@ -293,7 +296,9 @@ public class LandRecordManager implements Listener {
             p.sendMessage("§c§l[回声碎片] §f你面前没有可查询的方块或容器");
             return;
         }
-        queryAndPrint(p, target.getLocation());
+        Location loc = target.getLocation();
+        lastQueryLocations.put(p.getUniqueId(), loc);
+        queryAndPrint(p, loc);
     }
 
     private void queryAndPrint(Player p, Location loc) {
@@ -501,21 +506,33 @@ public class LandRecordManager implements Listener {
             }
             Player p = (Player) sender;
             int page = 0; // 默认今日
+            boolean isNav = false; // true=从翻页链接跳转，复用 lastQueryLocations
             if (args.length >= 2) {
                 try {
                     page = Math.max(0, Integer.parseInt(args[1]) - 1);
+                    isNav = true;
                 } catch (NumberFormatException ignored) {
                     sender.sendMessage("§c§l[回声碎片] §f页码格式错误");
                     return true;
                 }
             }
-            // 取玩家准心对准的方块
+            // 翻页时复用上次查询坐标，避免 getTargetBlockExact 玩家未对准
+            Location navLoc = isNav ? lastQueryLocations.get(p.getUniqueId()) : null;
+            if (navLoc != null) {
+                queryAndPrint(p, navLoc, page);
+                return true;
+            }
+            // 首次查询或缓存过期，取准心方块
             Block target = p.getTargetBlockExact(6);
             if (target == null || target.getType() == Material.AIR) {
                 sender.sendMessage("§c§l[回声碎片] §f你面前没有可查询的方块或容器");
                 return true;
             }
-            queryAndPrint(p, target.getLocation(), page);
+            Location loc = target.getLocation();
+            if (!isNav) {
+                lastQueryLocations.put(p.getUniqueId(), loc);
+            }
+            queryAndPrint(p, loc, page);
             return true;
         }
         sendHelp(sender);
