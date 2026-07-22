@@ -41,6 +41,14 @@ public class ChatFilterManager {
     private final Map<String, String>
             muteReasons =
             new ConcurrentHashMap<>();
+    // ★ 禁言执行人
+    private final Map<String, String>
+            muteIssuers =
+            new ConcurrentHashMap<>();
+    // ★ 禁言开始时间戳(ms)
+    private final Map<String, Long>
+            muteStarts =
+            new ConcurrentHashMap<>();
     private final Map<String, String> messages =
             new LinkedHashMap<>();
     // ★ 广告机检测：记录每个玩家发送链接的频率
@@ -969,6 +977,8 @@ public class ChatFilterManager {
                 >= expiry) {
             mutedPlayers.remove(name);
             muteReasons.remove(name);
+            muteIssuers.remove(name);
+            muteStarts.remove(name);
             clearMuteDb(name);
             return false;
         }
@@ -990,6 +1000,17 @@ public class ChatFilterManager {
         if (sec > 0 || sb.length() == 0)
             sb.append(sec).append("秒");
         return sb.toString();
+    }
+
+    /** 处罚类型英文→中文 */
+    private String switchPunishType(String type) {
+        return switch (type) {
+            case "mute" -> "禁言";
+            case "kick" -> "踢出服务器";
+            case "ban"  -> "封禁";
+            case "banip" -> "IP封禁";
+            default -> "警告";
+        };
     }
 
     /**
@@ -1031,9 +1052,14 @@ public class ChatFilterManager {
                     + (long) duration * 1000L;
             mutedPlayers.put(player.getName(),
                     expireMs);
+            muteStarts.put(player.getName(),
+                    System.currentTimeMillis());
             if (reason != null && !reason.isEmpty())
                 muteReasons.put(player.getName(),
                         reason);
+            if (issuer != null && !issuer.isEmpty())
+                muteIssuers.put(player.getName(),
+                        issuer);
         }
         final String fType = type;
         final int fDur = duration;
@@ -1094,16 +1120,16 @@ public class ChatFilterManager {
                     }
                     // 非 warn → 按配置通知
                     if (!"warn".equals(fType)) {
-                        String punishInfo = "玩家 " + fName
-                                + " 因" + fReason
-                                + "被" + fIssuer + "处罚："
-                                + fType;
-                        if ("mute".equals(fType))
-                            punishInfo += " " + durStr;
-                        // 通知管理员（插件 tag 管理员/OP）
+                        String typeCn = switchPunishType(fType);
+                        // 管理员通知：含具体原因
                         if (notifyAdmin) {
                             String adminMsg = "§c[聊天监控] §f"
-                                    + punishInfo;
+                                    + "玩家 " + fName
+                                    + " 因" + fReason
+                                    + "被" + fIssuer
+                                    + "处罚：" + typeCn;
+                            if ("mute".equals(fType))
+                                adminMsg += " " + durStr;
                             for (Player op :
                                     Bukkit.getOnlinePlayers()) {
                                 if (op.hasPermission(
@@ -1113,10 +1139,17 @@ public class ChatFilterManager {
                                 }
                             }
                         }
-                        // 全服公告
+                        // 全服公告：只说"违规发言"，不暴露具体违禁词
                         if (notifyAll) {
                             Bukkit.broadcastMessage(
-                                    "§c[公告] §f" + punishInfo);
+                                    "§c[公告] §f"
+                                    + "玩家 " + fName
+                                    + " 因违规发言被"
+                                    + fIssuer
+                                    + "处罚：" + typeCn
+                                    + ("mute".equals(fType)
+                                            ? " " + durStr
+                                            : ""));
                         }
                     }
                 });
@@ -1126,6 +1159,8 @@ public class ChatFilterManager {
     public void unmutePlayer(String name) {
         mutedPlayers.remove(name);
         muteReasons.remove(name);
+        muteIssuers.remove(name);
+        muteStarts.remove(name);
         clearMuteDb(name);
     }
 
@@ -1195,6 +1230,16 @@ public class ChatFilterManager {
 
     public String getMuteReason(String name) {
         return muteReasons.get(name);
+    }
+
+    public String getMuteIssuer(String name) {
+        return muteIssuers.get(name);
+    }
+
+    /** 返回禁言开始时间戳(ms)，未禁言返回 0 */
+    public long getMuteStart(String name) {
+        Long s = muteStarts.get(name);
+        return s != null ? s : 0;
     }
 
     /** 返回当前仍有效的禁言到期时间戳(ms)，已过期或未禁言返回 0 */

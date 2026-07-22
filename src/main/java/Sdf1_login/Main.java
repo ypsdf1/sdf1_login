@@ -14,6 +14,8 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
@@ -3352,8 +3354,24 @@ public class Main extends JavaPlugin
         // ===== 禁言检查 =====
         if (chatFilter.isMuted(p.getName())) {
             e.setCancelled(true);
-            p.sendMessage(chatFilter.msg(
-                    "chat_muted"));
+            String r = chatFilter.getMuteReason(p.getName());
+            String issuer = chatFilter.getMuteIssuer(p.getName());
+            long start = chatFilter.getMuteStart(p.getName());
+            long expire = chatFilter.getMuteExpire(p.getName());
+            if (r == null) r = "未填写";
+            if (issuer == null) issuer = "系统";
+            StringBuilder sb = new StringBuilder("§c§l你已被禁言");
+            sb.append("\n§7原因: §f").append(r);
+            sb.append("\n§7执行人: §f").append(issuer);
+            if (start > 0)
+                sb.append("\n§7处罚开始: §f")
+                  .append(new SimpleDateFormat("yyyy年M月d日 HH点mm分")
+                          .format(new Date(start)));
+            if (expire > 0)
+                sb.append("\n§7处罚到期: §f")
+                  .append(new SimpleDateFormat("yyyy年M月d日 HH点mm分")
+                          .format(new Date(expire)));
+            p.sendMessage(sb.toString());
             return;
         }
 
