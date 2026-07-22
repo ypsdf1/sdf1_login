@@ -389,20 +389,17 @@ public class PVPArenaManager implements Listener {
 
         // 用数组持有任务引用，供 lambda 内部自取消（Bukkit 无 getCurrentTask）
         final BukkitTask[] taskHolder = new BukkitTask[1];
-        taskHolder[0] = Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
-            @Override
-            public void run() {
-                int r = row.getAndIncrement();
-                if (r > radius) {
-                    taskHolder[0].cancel();
-                    return;
-                }
-                for (int dz = -radius; dz <= radius; dz++) {
-                    try {
-                        world.loadChunk(cx + r, cz + dz, true);
-                    } catch (Exception e) {
-                        // 单个 chunk 失败不阻断整体
-                    }
+        taskHolder[0] = Bukkit.getScheduler().runTaskTimer(plugin, (Runnable) () -> {
+            int r = row.getAndIncrement();
+            if (r > radius) {
+                taskHolder[0].cancel();
+                return;
+            }
+            for (int dz = -radius; dz <= radius; dz++) {
+                try {
+                    world.loadChunk(cx + r, cz + dz, true);
+                } catch (Exception e) {
+                    // 单个 chunk 失败不阻断整体
                 }
             }
         }, 1L, 1L); // 延迟 1tick 启动（给世界加载留缓冲），每 1tick 一行
@@ -497,6 +494,8 @@ public class PVPArenaManager implements Listener {
 
     private void reapplyWorldRules(World w) {
         w.setPVP(true);
+        // ★ 和平模式：排除敌对生物干扰PVP
+        w.setDifficulty(Difficulty.PEACEFUL);
         w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
         w.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
         w.setTime(6000);
