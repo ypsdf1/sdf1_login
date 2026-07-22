@@ -3371,7 +3371,25 @@ public class Main extends JavaPlugin
             );
             return;
         }
-        
+
+        // ===== 敏感词过滤（静默本地模式） =====
+        {
+            List<String> ms = chatFilter.checkSensitiveWords(msg);
+            if (!ms.isEmpty()) {
+                e.setCancelled(true);
+                String fmt = e.getFormat();
+                if (fmt == null) fmt = "<%1$s> %2$s";
+                p.sendMessage(String.format(fmt, p.getDisplayName(), msg));
+                chatFilter.incrementViolation(p.getName());
+                int sc = chatFilter.getViolationCount(p.getName());
+                String ptype = chatFilter.applyPunishment(p, sc);
+                if (!"warn".equals(ptype)) {
+                    chatFilter.resetViolationCount(p.getName());
+                }
+                return;
+            }
+        }
+
         // ===== URL检测 =====
         List<String> urls =
                 chatFilter.extractUrls(msg);
@@ -5747,7 +5765,7 @@ public class Main extends JavaPlugin
             }
             if (args.length < 1) {
                 sender.sendMessage(
-                        "§e/chat <reload|开|关|add|remove|addplayer|takeplayer|unmute|reset>");
+                        "§e/chat <reload|开|关|add|remove|addplayer|takeplayer|addsw|removesw|unmute|reset>");
                 return true;
             }
             String cs = args[0].toLowerCase();
@@ -5854,6 +5872,26 @@ public class Main extends JavaPlugin
                 }
                 if (chatFilter.removeWhitelistPlayer(args[1]))
                     sender.sendMessage("§c已移除白名单: " + args[1]);
+                else
+                    sender.sendMessage("§c未找到: " + args[1]);
+                return true;
+            }
+            if (cs.equals("addsw")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat addsw <敏感词>");
+                    return true;
+                }
+                chatFilter.addSensitiveWord(args[1]);
+                sender.sendMessage("§a已添加敏感词: " + args[1]);
+                return true;
+            }
+            if (cs.equals("removesw")) {
+                if (args.length < 2) {
+                    sender.sendMessage("§e/chat removesw <敏感词>");
+                    return true;
+                }
+                if (chatFilter.removeSensitiveWord(args[1]))
+                    sender.sendMessage("§c已移除敏感词: " + args[1]);
                 else
                     sender.sendMessage("§c未找到: " + args[1]);
                 return true;
@@ -7482,6 +7520,8 @@ public class Main extends JavaPlugin
         p.sendMessage("§e/chat takeplayer <玩家> §7- 移除白名单玩家");
         p.sendMessage("§e/chat unmute <玩家> §7- 解禁玩家");
         p.sendMessage("§e/chat reset <玩家> §7- 重置违规记录");
+        p.sendMessage("§e/chat addsw <敏感词> §7- 添加敏感词");
+        p.sendMessage("§e/chat removesw <敏感词> §7- 移除敏感词");
         p.sendMessage(
                 "§e§l==================================");
     }

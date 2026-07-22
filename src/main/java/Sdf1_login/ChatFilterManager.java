@@ -58,6 +58,9 @@ public class ChatFilterManager {
     // ★ 非法域名后缀列表（热更新）
     private final Set<String> illegalDomainSuffixes = new HashSet<>();
     
+    // ★ 敏感词列表
+    private final List<String> sensitiveWords = new ArrayList<>();
+    
     // ============================================================
     // ★ 新玩家验证码系统
     // ============================================================
@@ -620,6 +623,11 @@ public class ChatFilterManager {
                     section = "players";
                     continue;
                 }
+                if (t.equals("敏感词列表")
+                        || t.equals("敏感词列表:")) {
+                    section = "sensitive";
+                    continue;
+                }
                 if (t.contains(":")) {
                     String[] kv = t.split(":", 2);
                     String k = kv[0].trim();
@@ -679,6 +687,9 @@ public class ChatFilterManager {
                         break;
                     case "players":
                         whitelistPlayers.add(t);
+                        break;
+                    case "sensitive":
+                        sensitiveWords.add(t.toLowerCase());
                         break;
                 }
             }
@@ -759,6 +770,10 @@ public class ChatFilterManager {
             pw.println("10:ban:0");
             pw.println();
             pw.println("白名单玩家:");
+            pw.println();
+            pw.println("敏感词列表:");
+            pw.println("# 每行一个敏感词，触发后消息仅发送者可见，计数器+1");
+            pw.println("# 达到处罚规则中次数后自动处罚并归零计数器");
         } catch (IOException ignored) {
         }
     }
@@ -793,6 +808,10 @@ public class ChatFilterManager {
             pw.println("白名单玩家:");
             for (String p : whitelistPlayers)
                 pw.println(p);
+            pw.println();
+            pw.println("敏感词列表:");
+            for (String s : sensitiveWords)
+                pw.println(s);
         } catch (IOException e) {
             plugin.getLogger().severe(
                     "[Sdf1_chat] 保存失败: "
@@ -917,7 +936,10 @@ public class ChatFilterManager {
         return sb.toString();
     }
 
-    public void applyPunishment(Player player,
+    /**
+     * 应用处罚规则。返回应用的处罚类型: "warn"/"mute"/"kick"/"ban"/"banip"
+     */
+    public String applyPunishment(Player player,
                                 int violation) {
         String type = "warn";
         int duration = muteDuration;
@@ -936,7 +958,7 @@ public class ChatFilterManager {
         }
         if (type.equals("mute")) {
             if (isMuted(player.getName()))
-                return;
+                return "already_muted";
             mutedPlayers.put(player.getName(),
                     System.currentTimeMillis()
                             + (long) duration
@@ -983,6 +1005,7 @@ public class ChatFilterManager {
                             break;
                     }
                 });
+        return type;
     }
 
     public void unmutePlayer(String name) {
@@ -1100,6 +1123,10 @@ public class ChatFilterManager {
         return whitelistUrls;
     }
 
+    public List<String> getSensitiveWords() {
+        return sensitiveWords;
+    }
+
     public Set<String> getWhitelistPlayers() {
         return whitelistPlayers;
     }
@@ -1140,6 +1167,17 @@ public class ChatFilterManager {
     public boolean removeUrl(String url) {
         boolean r = whitelistUrls.remove(
                 url.toLowerCase().trim());
+        saveConfig();
+        return r;
+    }
+
+    public void addSensitiveWord(String word) {
+        sensitiveWords.add(word.toLowerCase().trim());
+        saveConfig();
+    }
+
+    public boolean removeSensitiveWord(String word) {
+        boolean r = sensitiveWords.remove(word.toLowerCase().trim());
         saveConfig();
         return r;
     }
@@ -1334,6 +1372,28 @@ public class ChatFilterManager {
         }
         
         return false;
+    }
+
+    /**
+     * 检查消息是否包含敏感词
+     * @return 匹配到的敏感词列表（空列表表示无匹配）
+     */
+    public List<String> checkSensitiveWords(String msg) {
+        if (msg == null || msg.isEmpty() || sensitiveWords.isEmpty())
+            return Collections.emptyList();
+        String lower = msg.toLowerCase();
+        List<String> matched = new ArrayList<>();
+        for (String sw : sensitiveWords) {
+            if (lower.contains(sw)) {
+                matched.add(sw);
+            }
+        }
+        return matched;
+    }
+
+    /** 重置玩家违规计数 */
+    public void resetViolationCount(String name) {
+        violationCount.remove(name);
     }
 
     /**
