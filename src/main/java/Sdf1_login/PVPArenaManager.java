@@ -1201,12 +1201,12 @@ public class PVPArenaManager implements Listener {
                 return;
             }
             int skip = bridgeEggSkipTicks.merge(eid, 1, Integer::sum);
+            // 前2tick只记录位置不放置（蛋在玩家体内/附近），保证 skip=3 起桥位已就绪
             if (skip <= 2) {
-                // 前2tick只记录位置，不放置（让蛋飞离玩家身体）
-                if (skip == 1) bridgeLastLoc.put(eid, egg.getLocation().clone());
+                bridgeLastLoc.put(eid, egg.getLocation().clone());
                 return;
             }
-            // 方块放在蛋的上一tick位置（蛋已离开，不会撞上自己放的方块）
+            // 方块放在蛋的上一tick位置（蛋已离开，不会撞自己放的桥）
             Location prevLoc = bridgeLastLoc.get(eid);
             if (prevLoc != null) {
                 Block b = prevLoc.getBlock();
@@ -1214,7 +1214,7 @@ public class PVPArenaManager implements Listener {
                     b.setType(BRIDGE_BLOCK);
                 }
             }
-            // 更新上一tick位置
+            // 记录当前位置供下一tick使用
             bridgeLastLoc.put(eid, egg.getLocation().clone());
         }, 1L, 1L).getTaskId();
 
