@@ -958,6 +958,21 @@ public class ChatFilterManager {
         return false;
     }
 
+    /**
+     * 判断URL是否应被拦截
+     * 下划线分隔的字符串（如 player_name），必须命中非法域名后缀才拦截
+     * 点分隔或标准URL正常拦截
+     */
+    public boolean shouldBlockUrl(String url) {
+        if (isWhitelisted(url)) return false;
+        // 下划线分隔 → 检查是否非法域名，不在列表则跳过（合法玩家名下划线误匹配）
+        if (url.contains("_")) {
+            return containsIllegalDomain(url);
+        }
+        // 点分隔或标准URL正常拦截
+        return true;
+    }
+
     public boolean isLikelyDomain(String url) {
         int lastDot = url.lastIndexOf('.');
         if (lastDot < 0

@@ -3437,10 +3437,10 @@ public class Main extends JavaPlugin
                 chatFilter.extractUrls(msg);
         if (urls.isEmpty()) return;
 
-        // 过滤白名单
+        // 过滤白名单 + 下划线误匹配（player_name 不在非法域名列表则跳过）
         List<String> blocked = new ArrayList<>();
         for (String url : urls) {
-            if (!chatFilter.isWhitelisted(url)) {
+            if (chatFilter.shouldBlockUrl(url)) {
                 blocked.add(url);
             }
         }
@@ -3538,7 +3538,7 @@ public class Main extends JavaPlugin
         
         List<String> blocked = new ArrayList<>();
         for (String url : urls) {
-            if (!chatFilter.isWhitelisted(url)) {
+            if (chatFilter.shouldBlockUrl(url)) {
                 blocked.add(url);
             }
         }
