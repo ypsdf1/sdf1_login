@@ -7107,115 +7107,8 @@ public class Main extends JavaPlugin
             }
 
 
-            // pw / password
-            if (sub.equals("pw")
-                    || sub.equals("password")) {
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("§c仅玩家可用");
-                    return true;
-                }
-                Player p2 = (Player) sender;
+        }
 
-                if (args.length >= 3) {
-                    // /sdf1_login pw 旧密码 新密码
-                    String oldPwd = args[1];
-                    String newPwd = args[2];
-                    if (!PasswordUtils.validate(
-                            newPwd)) {
-                        p2.sendMessage(config.msg(
-                                "password_format_error"));
-                        return true;
-                    }
-                    String salt = (String) db.getField(
-                            p2.getName(),
-                            "password_salt");
-                    String hash =
-                            PasswordUtils.hash(
-                                    oldPwd, salt);
-                    String pwdResult =
-                            db.checkPasswordWithFallback(
-                                    p2.getName(), hash);
-                    if (pwdResult == null) {
-                        p2.sendMessage(config.msg(
-                                "password_wrong"));
-                        return true;
-                    }
-                    boolean isTemp = "temp".equals(pwdResult);
-                    String oldHash =
-                            (String) db.getField(
-                                    p2.getName(),
-                                    "password_hash");
-                    String newSalt =
-                            PasswordUtils.generateSalt();
-                    String newHash =
-                            PasswordUtils.hash(
-                                    newPwd, newSalt);
-                    if (newHash.equals(oldHash)) {
-                        p2.sendMessage(config.msg(
-                                "password_same"));
-                        return true;
-                    }
-                recordPasswordChange(
-                        p2.getName(),
-                        oldHash, salt);
-                db.setField(p2.getName(),
-                        "password_hash", newHash);
-                db.setField(p2.getName(),
-                        "password_salt", newSalt);
-                // ★ 同步密码到Web端（异步推送，不阻塞主线程）
-                final Main self2 = this;
-                Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
-                    self2.webManager.pushWebLoginCredentials();
-                });
-                    if (!isTemp) {
-                        db.clearTempPassword(
-                                p2.getName());
-                    }
-                    needsPasswordChange.remove(
-                            p2.getName());
-                    p2.sendMessage(config.msg(
-                            "password_changed"));
-                    return true;
-                }
-
-                if (args.length == 2) {
-                    // /sdf1_login pw 旧密码
-                    // 验证旧密码，然后聊天输入新密码
-                    String oldPwd = args[1];
-                    String salt = (String) db.getField(
-                            p2.getName(),
-                            "password_salt");
-                    String hash =
-                            PasswordUtils.hash(
-                                    oldPwd, salt);
-                    String pwdResult =
-                            db.checkPasswordWithFallback(
-                                    p2.getName(), hash);
-                    if (pwdResult == null) {
-                        p2.sendMessage(config.msg(
-                                "password_wrong"));
-                        return true;
-                    }
-                    boolean isTemp = "temp".equals(pwdResult);
-                    chatInput.getState(p2).type =
-                            ChatInputManager.InputType
-                                    .CHANGE_PWD_STEP2;
-                    chatInput.getState(p2)
-                            .ticketTitle =
-                            pwdResult;
-                    p2.sendMessage(
-                            "§e请输入新密码:");
-                    return true;
-                }
-
-                // /sdf1_login pw (无参数)
-                chatInput.getState(p2).type =
-                        ChatInputManager.InputType
-                                .CHANGE_PWD_STEP1;
-                p2.sendMessage(
-                        "§e请输入当前密码:");
-                return true;
-            }
 
 
             // sign
@@ -7519,9 +7412,6 @@ public class Main extends JavaPlugin
 
             sender.sendMessage("§c未知参数");
             return true;
-        }
-
-        return true;
     }
     /**
      * 供SDF1反射调用的CDK兑换
