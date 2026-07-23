@@ -1172,11 +1172,11 @@ public class PVPArenaManager implements Listener {
             player.getInventory().setItemInMainHand(null);
         }
 
-        // 发射火焰弹（不破坏地形、不引火）
+        // 发射火焰弹（落点爆炸 + 点燃方块）
         Vector dir = player.getLocation().getDirection().normalize().multiply(2.0);
         SmallFireball fb = player.launchProjectile(SmallFireball.class, dir);
-        fb.setYield(0);
-        fb.setIsIncendiary(false);
+        fb.setYield(1.5f);       // 爆炸威力约1.5格半径
+        fb.setIsIncendiary(true); // 点燃爆炸范围内方块
         player.playSound(player.getLocation(), Sound.ENTITY_BLAZE_SHOOT, 0.5f, 1.2f);
     }
 
