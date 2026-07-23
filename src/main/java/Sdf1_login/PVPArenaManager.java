@@ -18,8 +18,16 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.PotionMeta;
 import org.bukkit.scoreboard.*;
 import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.Vector;
 import org.bukkit.util.io.BukkitObjectInputStream;
 import org.bukkit.util.io.BukkitObjectOutputStream;
+
+import org.bukkit.entity.Egg;
+import org.bukkit.entity.SmallFireball;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.ProjectileHitEvent;
+import org.bukkit.event.entity.ProjectileLaunchEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -120,6 +128,14 @@ public class PVPArenaManager implements Listener {
     private final Set<String> arenaTripleAnnounced =
             ConcurrentHashMap.newKeySet();
     private static final String ARENA_LABEL = "PVP竞技场";
+
+    // ★ PVP特殊道具常量
+    private static final String FIRE_CHARGE_NAME = "§c§lPVP火球";
+    private static final String BRIDGE_EGG_NAME = "§a§lPVP搭桥蛋";
+    private static final Material BRIDGE_BLOCK = Material.SMOOTH_STONE;
+
+    // 搭桥蛋追踪：egg实体ID -> 跟随任务的ID
+    private final Map<Integer, Integer> bridgeEggTrackers = new ConcurrentHashMap<>();
 
     // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
     private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
@@ -1134,6 +1150,74 @@ public class PVPArenaManager implements Listener {
     // ==================== 事件处理器 ====================
 
     /**
+     * PVP火球 — 右键火焰弹发射SmallFireball，造成伤害
+     */
+    @EventHandler
+    public void onFireBallUse(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        Player player = event.getPlayer();
+        if (!inPVPArena.contains(player.getName()) || !equipmentConfirmed.contains(player.getName())) return;
+
+        ItemStack item = player.getInventory().getItemInMainHand();
+        if (item.getType() != Material.FIRE_CHARGE) return;
+
+        event.setCancelled(true);
+
+        // 消耗1个火焰弹
+        if (item.getAmount() > 1) {
+            item.setAmount(item.getAmount() - 1);
+        } else {
+            player.getInventory().setItemInMainHand(null);
+        }
+
+        // 发射火焰弹（不破坏地形、不引火）
+        Vector dir = player.getLocation().getDirection().normalize().multiply(2.0);
+        SmallFireball fb = player.launchProjectile(SmallFireball.class, dir);
+        fb.setYield(0);
+        fb.setIsIncendiary(false);
+        player.playSound(player.getLocation(), Sound.ENTITY_BLAZE_SHOOT, 0.5f, 1.2f);
+    }
+
+    /**
+     * 搭桥蛋 — 右键扔出蛋后，每隔1tick在蛋当前位置放置方块，形成桥梁
+     */
+    @EventHandler
+    public void onBridgeEggLaunch(ProjectileLaunchEvent event) {
+        if (!(event.getEntity() instanceof Egg egg)) return;
+        if (!(egg.getShooter() instanceof Player player)) return;
+        if (!inPVPArena.contains(player.getName())) return;
+
+        int eid = egg.getEntityId();
+        int taskId = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (egg.isDead() || !egg.isValid()) {
+                Integer tid = bridgeEggTrackers.remove(eid);
+                if (tid != null) Bukkit.getScheduler().cancelTask(tid);
+                return;
+            }
+            // 在蛋当前位置放置方块
+            Block b = egg.getLocation().getBlock();
+            if (b.getType().isAir()) {
+                b.setType(BRIDGE_BLOCK);
+            }
+        }, 1L, 1L).getTaskId();
+
+        bridgeEggTrackers.put(eid, taskId);
+    }
+
+    /**
+     * 搭桥蛋命中 — 停止方块追踪
+     */
+    @EventHandler
+    public void onBridgeEggHit(ProjectileHitEvent event) {
+        if (!(event.getEntity() instanceof Egg)) return;
+        int eid = event.getEntity().getEntityId();
+        Integer taskId = bridgeEggTrackers.remove(eid);
+        if (taskId != null) {
+            Bukkit.getScheduler().cancelTask(taskId);
+        }
+    }
+
+    /**
      * ★ 选装前无敌：玩家在PVP世界中未完成装备选择时，免疫一切伤害
      */
     @EventHandler
@@ -1168,41 +1252,83 @@ public class PVPArenaManager implements Listener {
                 db.recordArenaDeath(currentSessionId, player.getUniqueId().toString(), vName);
             }
 
-            // ★ 击杀奖励：PVP世界每完成2次杀敌，发放16个牛排用于补血（背包满则只发能放下的）
+            // ★ 击杀奖励：5杀一个轮回
+            //   2杀：16熟食补血 + 1火焰弹
+            //   5杀：16箭 + 1搭桥蛋 + 1火焰弹 + 替换全身装备(头盔胸甲裤子靴子)
             int newKills = pvpKills.get(kName);
-            if (newKills % 2 == 0) {
+            int cyclePos = newKills % 5;
+
+            if (cyclePos == 2 && newKills > 0) {
+                // ▼ 2杀奖励 ▼
                 Player killerP = (Player) killer;
-                Map<Integer, ItemStack> leftover = killerP.getInventory().addItem(new ItemStack(Material.COOKED_BEEF, 16));
-                int given = 16;
-                for (ItemStack rem : leftover.values()) given -= rem.getAmount();
-                if (given > 0) {
-                    killerP.sendMessage("§a§l[PVP] §f完成 2 次杀敌！获得 §6" + given + " 个牛排 §7(补血)");
+                // 16熟食
+                ItemStack food = new ItemStack(Material.COOKED_BEEF, 16);
+                ItemMeta foodMeta = food.getItemMeta();
+                if (foodMeta != null) {
+                    foodMeta.setDisplayName("§c§lPVP熟食补血");
+                    food.setItemMeta(foodMeta);
+                }
+                Map<Integer, ItemStack> leftover = killerP.getInventory().addItem(food);
+                int givenFood = 16;
+                for (ItemStack rem : leftover.values()) givenFood -= rem.getAmount();
+
+                // 1火焰弹
+                ItemStack fc = new ItemStack(Material.FIRE_CHARGE, 1);
+                ItemMeta fcMeta = fc.getItemMeta();
+                if (fcMeta != null) {
+                    fcMeta.setDisplayName(FIRE_CHARGE_NAME);
+                    fc.setItemMeta(fcMeta);
+                }
+                killerP.getInventory().addItem(fc);
+
+                if (givenFood > 0) {
+                    killerP.sendMessage("§a§l[PVP] §f击杀达 §e2 §f次！获得 §6" + givenFood + " 个熟食§7(补血) §c+ 火焰弹§7×1");
                     killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.6f, 1.4f);
                 }
             }
 
-            // ★ 击杀≥10奖励：替换完整铁甲 + 喷溅瞬间治疗2 ×1（一次性）
-            if (newKills >= 10) {
+            if (cyclePos == 0 && newKills > 0) {
+                // ▼ 5杀奖励 ▼
                 Player killerP = (Player) killer;
-                if (!killerP.hasPermission("sdf1.kit.pvp.reward10")) {
-                    // 替换完整铁甲
-                    killerP.getInventory().setHelmet(new ItemStack(Material.IRON_HELMET));
-                    killerP.getInventory().setChestplate(new ItemStack(Material.IRON_CHESTPLATE));
-                    killerP.getInventory().setLeggings(new ItemStack(Material.IRON_LEGGINGS));
-                    killerP.getInventory().setBoots(new ItemStack(Material.IRON_BOOTS));
-                    // 喷溅瞬间治疗2 ×1（正确NBT）
-                    ItemStack potion = new ItemStack(Material.SPLASH_POTION, 1);
-                    PotionMeta potionMeta = (PotionMeta) potion.getItemMeta();
-                    potionMeta.setBasePotionType(org.bukkit.potion.PotionType.HEALING);
-                    potionMeta.addCustomEffect(new org.bukkit.potion.PotionEffect(
-                            org.bukkit.potion.PotionEffectType.INSTANT_HEALTH, 1, 1, false, false), true);
-                    potion.setItemMeta(potionMeta);
-                    killerP.getInventory().addItem(potion);
-                    // 授予临时权限标记（本次重启内有效，防止重复发放）
-                    killerP.addAttachment(plugin, "sdf1.kit.pvp.reward10", true);
-                    killerP.sendMessage("§a§l[PVP] §f击杀达 §610 §f次！获得 §b铁甲套装 §f+ §c喷溅瞬间治疗II ×1");
-                    killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
+
+                // 16箭
+                ItemStack arrows = new ItemStack(Material.ARROW, 16);
+                ItemMeta aMeta = arrows.getItemMeta();
+                if (aMeta != null) {
+                    aMeta.setDisplayName("§b§lPVP箭矢");
+                    arrows.setItemMeta(aMeta);
                 }
+                killerP.getInventory().addItem(arrows);
+
+                // 1搭桥蛋
+                ItemStack bridgeEgg = new ItemStack(Material.EGG, 1);
+                ItemMeta eMeta = bridgeEgg.getItemMeta();
+                if (eMeta != null) {
+                    eMeta.setDisplayName(BRIDGE_EGG_NAME);
+                    eMeta.setLore(Arrays.asList("§7右键发射，沿抛物线生成放置方块"));
+                    bridgeEgg.setItemMeta(eMeta);
+                }
+                killerP.getInventory().addItem(bridgeEgg);
+
+                // 1火焰弹
+                ItemStack fc5 = new ItemStack(Material.FIRE_CHARGE, 1);
+                ItemMeta fc5Meta = fc5.getItemMeta();
+                if (fc5Meta != null) {
+                    fc5Meta.setDisplayName(FIRE_CHARGE_NAME);
+                    fc5.setItemMeta(fc5Meta);
+                }
+                killerP.getInventory().addItem(fc5);
+
+                // 替换全身装备（用玩家当前选中的护甲档位，无选中默认铁）
+                int tier = selArmorTier.getOrDefault(killerP.getName(), 0);
+                Material[] armorSet = ARMOR_SETS[tier];
+                killerP.getInventory().setHelmet(new ItemStack(armorSet[0]));
+                killerP.getInventory().setChestplate(new ItemStack(armorSet[1]));
+                killerP.getInventory().setLeggings(new ItemStack(armorSet[2]));
+                killerP.getInventory().setBoots(new ItemStack(armorSet[3]));
+
+                killerP.sendMessage("§a§l[PVP] §f击杀达 §e5 §f次！获得 §b箭矢×16 §a+ 搭桥蛋 §c+ 火焰弹 §f+ 全新" + ARMOR_TIER_NAMES[tier] + "护甲");
+                killerP.playSound(killerP.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1.0f, 1.0f);
             }
 
             // 击杀者连杀会话
