@@ -138,6 +138,8 @@ public class PVPArenaManager implements Listener {
     private final Map<Integer, Integer> bridgeEggTrackers = new ConcurrentHashMap<>();
     // 搭桥蛋已跳过的tick数（前2tick跳过，避免生成在玩家身上）
     private final Map<Integer, Integer> bridgeEggSkipTicks = new ConcurrentHashMap<>();
+    // 搭桥蛋上一tick的位置（方块放这里，避免蛋撞自己刚放的方块）
+    private final Map<Integer, Location> bridgeLastLoc = new ConcurrentHashMap<>();
 
     // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
     private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
@@ -1195,16 +1197,25 @@ public class PVPArenaManager implements Listener {
                 Integer tid = bridgeEggTrackers.remove(eid);
                 if (tid != null) Bukkit.getScheduler().cancelTask(tid);
                 bridgeEggSkipTicks.remove(eid);
+                bridgeLastLoc.remove(eid);
                 return;
             }
-            // 前2tick跳过，让蛋飞离玩家身体后再开始铺路
             int skip = bridgeEggSkipTicks.merge(eid, 1, Integer::sum);
-            if (skip <= 2) return;
-            // 在蛋当前位置放置方块
-            Block b = egg.getLocation().getBlock();
-            if (b.getType().isAir()) {
-                b.setType(BRIDGE_BLOCK);
+            if (skip <= 2) {
+                // 前2tick只记录位置，不放置（让蛋飞离玩家身体）
+                if (skip == 1) bridgeLastLoc.put(eid, egg.getLocation().clone());
+                return;
             }
+            // 方块放在蛋的上一tick位置（蛋已离开，不会撞上自己放的方块）
+            Location prevLoc = bridgeLastLoc.get(eid);
+            if (prevLoc != null) {
+                Block b = prevLoc.getBlock();
+                if (b.getType().isAir()) {
+                    b.setType(BRIDGE_BLOCK);
+                }
+            }
+            // 更新上一tick位置
+            bridgeLastLoc.put(eid, egg.getLocation().clone());
         }, 1L, 1L).getTaskId();
 
         bridgeEggTrackers.put(eid, taskId);
@@ -1222,6 +1233,7 @@ public class PVPArenaManager implements Listener {
             Bukkit.getScheduler().cancelTask(taskId);
         }
         bridgeEggSkipTicks.remove(eid);
+        bridgeLastLoc.remove(eid);
     }
 
     /**
