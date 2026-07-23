@@ -29,6 +29,10 @@ public class IPGroupManager {
         return can;
     }
 
+    public int getMaxAccounts() {
+        return maxAccounts;
+    }
+
     public int getAccountCount(String ip) {
         if (ip == null || ip.isEmpty()) return 0;
         return queryAccountsByIP(ip).size();

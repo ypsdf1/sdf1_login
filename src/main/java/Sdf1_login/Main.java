@@ -2182,6 +2182,23 @@ public class Main extends JavaPlugin
             }
         }
 
+        // ===== 注册封顶限制：IP已达上限且当前玩家非已注册账号，拒绝加入 =====
+        if (ipGroup != null) {
+            String playerIp = getPlayerIP(p);
+            if (playerIp != null && !playerIp.isEmpty()) {
+                if (!ipGroup.canRegister(playerIp)) {
+                    List<String> accounts = ipGroup.getAccounts(playerIp);
+                    if (!accounts.contains(name)) {
+                        e.setJoinMessage(null);
+                        p.kickPlayer("§c§l[注册限制] §f该IP下注册的账号数量已达上限"
+                                + " §e" + ipGroup.getMaxAccounts() + " §f个\n"
+                                + "§7请联系管理员或使用已有账号登录");
+                        return;
+                    }
+                }
+            }
+        }
+
         // ===== 竞技场/测试场断线重进防绕过：上线若仍在竞技场/测试场，强制离场遣返出生点 =====
         // 防止玩家在竞技场退出重进，让系统回收公平装备、发放自己背包装备从而绕过公平限制
         if (pvPArenaManager != null) {
@@ -7356,33 +7373,67 @@ public class Main extends JavaPlugin
 
             // get
             if (sub.equals("get")) {
-                if (!isAdmin(sender)) {
-                    sender.sendMessage("§c权限不足");
-                    return true;
+                String target;
+                boolean isSelf = false;
+                if (sender instanceof Player) {
+                    Player p = (Player) sender;
+                    if (args.length < 2) {
+                        target = p.getName();
+                        isSelf = true;
+                    } else {
+                        if (!isAdmin(sender)) {
+                            sender.sendMessage("§c权限不足");
+                            return true;
+                        }
+                        target = args[1];
+                    }
+                } else {
+                    // 控制台必须携带玩家名
+                    if (args.length < 2) {
+                        sender.sendMessage("§e用法: /sdf1_login get <玩家>");
+                        return true;
+                    }
+                    target = args[1];
                 }
-                if (args.length < 2) {
-                    sender.sendMessage(
-                            "§e用法: /sdf1_login get <玩家>");
-                    return true;
-                }
-                Map<String, Object> user =
-                        db.getUser(args[1]);
+                Map<String, Object> user = db.getUser(target);
                 if (user.isEmpty()) {
-                    sender.sendMessage("§c玩家不存在");
+                    sender.sendMessage("§c玩家 " + target + " 不存在");
                     return true;
                 }
-                sender.sendMessage(
-                        "§e=== " + args[1] + " ===");
-                sender.sendMessage("§7积分: §e"
-                        + user.getOrDefault("points", 0));
-                sender.sendMessage("§7邮箱: §e"
-                        + user.getOrDefault("email", "无"));
-                sender.sendMessage("§7签到天数: §e"
-                        + user.getOrDefault(
-                        "total_checkin_days", 0));
-                sender.sendMessage("§7邀请码: §e"
-                        + user.getOrDefault(
-                        "invite_code", "无"));
+                if (isSelf)
+                    sender.sendMessage("§e=== 我的账号 ===");
+                else
+                    sender.sendMessage("§e=== " + target + " 的账号 ===");
+                sender.sendMessage("§7玩家名: §e" + target);
+                sender.sendMessage("§7邮箱: §e" + user.getOrDefault("email", "无"));
+                Object regTime = user.get("register_time");
+                if (regTime instanceof Number) {
+                    long rt = ((Number) regTime).longValue();
+                    if (rt > 0) {
+                        String date = new java.text.SimpleDateFormat(
+                                "yyyy-MM-dd HH:mm")
+                                .format(new java.util.Date(rt));
+                        sender.sendMessage("§7注册时间: §e" + date);
+                    }
+                }
+                sender.sendMessage("§7积分: §e" + user.getOrDefault("points", 0));
+                sender.sendMessage("§7签到天数: §e" + user.getOrDefault("total_checkin_days", 0));
+                sender.sendMessage("§7邀请码: §e" + user.getOrDefault("invite_code", "无"));
+                // 同IP账号列表（仅管理员可见）
+                if (!isSelf && isAdmin(sender)) {
+                    String ip = (String) user.get("ip_address");
+                    if (ip != null && !ip.isEmpty() && ipGroup != null) {
+                        List<String> sameIpAccounts = ipGroup.getAccounts(ip);
+                        if (sameIpAccounts.size() > 1) {
+                            StringBuilder sb = new StringBuilder("§7同IP下账号: §e");
+                            for (String a : sameIpAccounts) {
+                                if (!a.equals(target))
+                                    sb.append(a).append(" ");
+                            }
+                            sender.sendMessage(sb.toString());
+                        }
+                    }
+                }
                 return true;
             }
 
