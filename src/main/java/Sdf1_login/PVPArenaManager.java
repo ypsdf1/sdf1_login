@@ -132,10 +132,12 @@ public class PVPArenaManager implements Listener {
     // ★ PVP特殊道具常量
     private static final String FIRE_CHARGE_NAME = "§c§lPVP火球";
     private static final String BRIDGE_EGG_NAME = "§a§lPVP搭桥蛋";
-    private static final Material BRIDGE_BLOCK = Material.SMOOTH_STONE;
+    private static final Material BRIDGE_BLOCK = Material.GLASS;
 
     // 搭桥蛋追踪：egg实体ID -> 跟随任务的ID
     private final Map<Integer, Integer> bridgeEggTrackers = new ConcurrentHashMap<>();
+    // 搭桥蛋已跳过的tick数（前2tick跳过，避免生成在玩家身上）
+    private final Map<Integer, Integer> bridgeEggSkipTicks = new ConcurrentHashMap<>();
 
     // 记分板条目缓存：玩家名 -> 侧边栏条目字符串（用于精确清除）
     private final Map<String, String> scoreEntries = new ConcurrentHashMap<>();
@@ -1192,8 +1194,12 @@ public class PVPArenaManager implements Listener {
             if (egg.isDead() || !egg.isValid()) {
                 Integer tid = bridgeEggTrackers.remove(eid);
                 if (tid != null) Bukkit.getScheduler().cancelTask(tid);
+                bridgeEggSkipTicks.remove(eid);
                 return;
             }
+            // 前2tick跳过，让蛋飞离玩家身体后再开始铺路
+            int skip = bridgeEggSkipTicks.merge(eid, 1, Integer::sum);
+            if (skip <= 2) return;
             // 在蛋当前位置放置方块
             Block b = egg.getLocation().getBlock();
             if (b.getType().isAir()) {
@@ -1215,6 +1221,7 @@ public class PVPArenaManager implements Listener {
         if (taskId != null) {
             Bukkit.getScheduler().cancelTask(taskId);
         }
+        bridgeEggSkipTicks.remove(eid);
     }
 
     /**
