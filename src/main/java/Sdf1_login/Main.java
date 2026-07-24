@@ -1413,6 +1413,55 @@ public class Main extends JavaPlugin
             sender.sendMessage("§7禁言到期: §f"
                     + (muteExpire > 0 ? DurationParser.formatExpire(muteExpire) : "未知"));
         }
+
+        // ---- 封禁状态（Bukkit BanList） ----
+        boolean nameBanned = false;
+        boolean ipBanned = false;
+        org.bukkit.BanEntry nameBan = null;
+        org.bukkit.BanEntry ipBan = null;
+        try {
+            nameBan = Bukkit.getBanList(org.bukkit.BanList.Type.NAME).getBanEntry(target);
+            nameBanned = (nameBan != null);
+        } catch (Exception ignored) {}
+        if (!lastIp.equals("未知") && !lastIp.equals("127.0.0.1") && !lastIp.equals("localhost")) {
+            try {
+                ipBan = Bukkit.getBanList(org.bukkit.BanList.Type.IP).getBanEntry(lastIp);
+                ipBanned = (ipBan != null);
+            } catch (Exception ignored) {}
+        }
+        if (nameBanned || ipBanned) {
+            StringBuilder banInfo = new StringBuilder("§7封禁状态: §c已封禁");
+            // 名称封禁优先展示
+            if (nameBanned && nameBan != null) {
+                String r = nameBan.getReason();
+                Date exp = nameBan.getExpiration();
+                banInfo.append(" §7[名称封禁]");
+                if (r != null && !r.trim().isEmpty()) {
+                    sender.sendMessage("§7封禁理由: §f" + r);
+                }
+                if (exp != null) {
+                    sender.sendMessage("§7封禁到期: §f" + DurationParser.formatExpire(exp.getTime()));
+                } else {
+                    sender.sendMessage("§7封禁到期: §c永久");
+                }
+            }
+            if (ipBanned && ipBan != null) {
+                String r = ipBan.getReason();
+                Date exp = ipBan.getExpiration();
+                banInfo.append(" §7[IP封禁]");
+                if (r != null && !r.trim().isEmpty()) {
+                    sender.sendMessage("§7封禁理由: §f" + r);
+                }
+                if (exp != null) {
+                    sender.sendMessage("§7封禁到期: §f" + DurationParser.formatExpire(exp.getTime()));
+                } else {
+                    sender.sendMessage("§7封禁到期: §c永久");
+                }
+            }
+            sender.sendMessage(banInfo.toString());
+        } else {
+            sender.sendMessage("§7封禁状态: §a正常");
+        }
     }
 
     /** 在线玩家列表，仅限大后台/OP/插件管理员 */
