@@ -1694,11 +1694,17 @@ public class PVPArenaManager implements Listener {
      * 打开装备选择GUI
      */
     public void openEquipmentSelection(Player player) {
-        // ★ 记录GUI打开时间（宽限期机制：此后短时间内内的关闭事件不触发遣返）
-        guiOpenedMillis.put(player.getName(), System.currentTimeMillis());
-        graceReopenCount.put(player.getName(), 0);
-
         String name = player.getName();
+
+        // ★ 已确认装备的玩家 → 打开调整GUI（仅食物/盾牌/弓弩，其他锁定）
+        if (equipmentConfirmed.contains(name)) {
+            openAdjustmentGUI(player);
+            return;
+        }
+
+        // ★ 记录GUI打开时间（宽限期机制：此后短时间内内的关闭事件不触发遣返）
+        guiOpenedMillis.put(name, System.currentTimeMillis());
+        graceReopenCount.put(name, 0);
 
         // ★ 公平锁定：本局首位进入PVP世界的玩家定死"武器材质/护甲材质/附魔"三档，后续加入者不可更改
         boolean isFirst = (lockedWeaponOwner == null);
@@ -1855,6 +1861,146 @@ public class PVPArenaManager implements Listener {
         player.openInventory(gui);
     }
 
+    /**
+     * 已确认装备玩家的调整GUI：武器/护甲/附魔只读锁定，仅可调食物/盾牌/弓弩
+     */
+    private void openAdjustmentGUI(Player player) {
+        String name = player.getName();
+
+        int myWeapon = selWeaponTier.getOrDefault(name, 0);
+        int myArmor = selArmorTier.getOrDefault(name, 0);
+        boolean myEnchant = selEnchant.getOrDefault(name, false);
+        boolean myShield = selShield.getOrDefault(name, true);
+        int myFood = selFood.getOrDefault(name, FOOD_DEFAULT);
+        int myRanged = selRangedWeapon.getOrDefault(name, 0);
+
+        Inventory gui = Bukkit.createInventory(null, 54, EQUIPMENT_GUI_TITLE);
+
+        // 顶部预览（0-7）：锁定状态的装备显示
+        gui.setItem(0, previewItem(SWORD_TIERS[myWeapon], "§7§l" + WEAPON_TIER_NAMES[myWeapon] + "§l剑 §c🔒", "§7已锁定·不可更改"));
+        gui.setItem(1, previewItem(AXE_TIERS[myWeapon], "§7§l" + WEAPON_TIER_NAMES[myWeapon] + "§l斧 §c🔒", "§7已锁定·不可更改"));
+        gui.setItem(2, previewItem(ARMOR_SETS[myArmor][0], "§7§l" + ARMOR_TIER_NAMES[myArmor] + "§l盔 §c🔒", "§7已锁定·不可更改"));
+        gui.setItem(3, previewItem(ARMOR_SETS[myArmor][1], "§7§l" + ARMOR_TIER_NAMES[myArmor] + "§l胸甲 §c🔒", "§7已锁定·不可更改"));
+        gui.setItem(4, previewItem(ARMOR_SETS[myArmor][2], "§7§l" + ARMOR_TIER_NAMES[myArmor] + "§l腿甲 §c🔒", "§7已锁定·不可更改"));
+        gui.setItem(5, previewItem(ARMOR_SETS[myArmor][3], "§7§l" + ARMOR_TIER_NAMES[myArmor] + "§l靴 §c🔒", "§7已锁定·不可更改"));
+        if (myShield) gui.setItem(6, previewItem(Material.SHIELD, "§a§l盾牌 ✓", "§7已选·点击可停用"));
+        else gui.setItem(6, grayPreview("§7盾牌 ✗", "§7未选·点击可启用"));
+        gui.setItem(7, previewItem(Material.COOKED_BEEF, "§c§l熟牛肉 x" + myFood, "§7可调整数量"));
+
+        // 信息面板（8）
+        ItemStack info = new ItemStack(Material.PAPER);
+        ItemMeta infoM = info.getItemMeta();
+        if (infoM != null) {
+            infoM.setDisplayName("§6§lPVP装备调整");
+            List<String> lore = new ArrayList<>();
+            lore.add("§7装备已锁定，仅可调整以下选项：");
+            lore.add("");
+            lore.add("§e⚡ 当前装备状态");
+            lore.add("§7  主武器: " + WEAPON_TIER_NAMES[myWeapon] + "§7剑 + " + WEAPON_TIER_NAMES[myWeapon] + "§7斧");
+            lore.add("§7  护甲: " + ARMOR_TIER_NAMES[myArmor] + "§7全套4件");
+            lore.add("§7  附魔: " + (myEnchant ? "§a已开启" : "§c未开启"));
+            lore.add("");
+            lore.add("§a↕ 可调整项:");
+            lore.add("§7  - 食物补给数量");
+            lore.add("§7  - 盾牌启用/停用");
+            lore.add("§7  - 弓/弩切换");
+            infoM.setLore(lore);
+            info.setItemMeta(infoM);
+        }
+        gui.setItem(8, info);
+
+        // 分隔线（36-44，跳过40）
+        for (int i = 36; i < 45; i++) {
+            if (i == 40) continue;
+            gui.setItem(i, new ItemStack(Material.GRAY_STAINED_GLASS_PANE));
+        }
+
+        // 分组标签：武器/护甲标为已锁定
+        gui.setItem(9, labelItem("§7§l主武器材质 §c(已锁定)", "§7首次选装后不可更改"));
+        gui.setItem(18, labelItem("§7§l护甲材质 §c(已锁定)", "§7首次选装后不可更改"));
+        gui.setItem(27, labelItem("§6§l可调整选项", "§7点击直接切换/选择"));
+
+        // 武器材质（10-13）：全部只读灰显
+        for (int t = 0; t < 4; t++) {
+            ItemStack btn;
+            if (t == myWeapon) {
+                btn = new ItemStack(SWORD_TIERS[t]);
+                ItemMeta bm = btn.getItemMeta();
+                if (bm != null) {
+                    bm.setDisplayName("§7" + WEAPON_TIER_NAMES[t] + "剑 §a✔");
+                    bm.setLore(Arrays.asList("§7已锁定"));
+                    btn.setItemMeta(bm);
+                }
+            } else {
+                btn = grayPreview("§7" + WEAPON_TIER_NAMES[t] + "剑", "§7已锁定");
+            }
+            gui.setItem(10 + t, btn);
+        }
+
+        // 护甲材质（19-22）：全部只读灰显
+        for (int t = 0; t < 4; t++) {
+            ItemStack btn;
+            if (t == myArmor) {
+                btn = new ItemStack(ARMOR_SETS[t][0]);
+                ItemMeta bm = btn.getItemMeta();
+                if (bm != null) {
+                    bm.setDisplayName("§7" + ARMOR_TIER_NAMES[t] + "盔 §a✔");
+                    bm.setLore(Arrays.asList("§7已锁定"));
+                    btn.setItemMeta(bm);
+                }
+            } else {
+                btn = grayPreview("§7" + ARMOR_TIER_NAMES[t] + "盔", "§7已锁定");
+            }
+            gui.setItem(19 + t, btn);
+        }
+
+        // 附魔（28）：只读灰显
+        ItemStack enchBtn = grayPreview(
+                myEnchant ? "§7附魔: 开 §c(已锁定)" : "§7附魔: 关 §c(已锁定)",
+                "§7首次选装后不可更改");
+        gui.setItem(28, enchBtn);
+
+        // 盾牌开关（30）— 可调整
+        ItemStack shBtn = new ItemStack(myShield ? Material.LIME_STAINED_GLASS_PANE : Material.RED_STAINED_GLASS_PANE);
+        ItemMeta sm = shBtn.getItemMeta();
+        if (sm != null) {
+            sm.setDisplayName(myShield ? "§a§l盾牌: 装备" : "§c§l盾牌: 不装备");
+            sm.setLore(Arrays.asList("§7副手装备", myShield ? "§a点击取消" : "§a点击装备"));
+            shBtn.setItemMeta(sm);
+        }
+        gui.setItem(30, shBtn);
+
+        // 远程武器切换（29）— 可调整
+        ItemStack rwBtn = new ItemStack(myRanged == 1 ? Material.CROSSBOW : Material.BOW);
+        ItemMeta rwm = rwBtn.getItemMeta();
+        if (rwm != null) {
+            rwm.setDisplayName(myRanged == 1 ? "§b§l远程武器: 弩" : "§a§l远程武器: 弓");
+            rwm.setLore(Arrays.asList("§7点击在 弓 / 弩 之间切换",
+                    "§e当前: " + (myRanged == 1 ? "弩" : "弓"),
+                    "§7调整后立即生效"));
+            rwBtn.setItemMeta(rwm);
+        }
+        gui.setItem(29, rwBtn);
+
+        // 熟牛肉快捷数量（32-35 = 8/16/32/64）
+        int[] foodOpts = {8, 16, 32, 64};
+        for (int i = 0; i < 4; i++) {
+            gui.setItem(32 + i, makeFoodButton(foodOpts[i], myFood));
+        }
+
+        // 关闭按钮（49）
+        ItemStack close = new ItemStack(Material.BARRIER);
+        ItemMeta cm = close.getItemMeta();
+        if (cm != null) {
+            cm.setDisplayName("§c§l关闭");
+            cm.setLore(Arrays.asList("§7关闭装备调整界面"));
+            close.setItemMeta(cm);
+        }
+        gui.setItem(49, close);
+
+        player.openInventory(gui);
+    }
+
     private ItemStack previewItem(Material mat, String name, String desc) {
         ItemStack it = new ItemStack(mat);
         ItemMeta m = it.getItemMeta();
@@ -1925,6 +2071,20 @@ public class PVPArenaManager implements Listener {
     // ★ 旧5档护甲系统已废弃（2026-07-09 改版为铁剑+铁斧+可选盾牌+可选附魔+可调熟牛肉）
     //   原 buildTierEquipment(EquipmentTier) 与 makePotion 整体移除，装备由 equipFullSet 按新模型直接构建。
 
+    /**
+     * 创建带PVP标记的箭矢堆
+     */
+    private ItemStack makeArrowStack(int amount) {
+        ItemStack arrows = new ItemStack(Material.ARROW, amount);
+        ItemMeta m = arrows.getItemMeta();
+        if (m != null) {
+            m.setDisplayName("§b§lPVP箭矢");
+            m.setLore(Arrays.asList("§7远程武器弹药", PVP_ITEM_MARKER));
+            arrows.setItemMeta(m);
+        }
+        return arrows;
+    }
+
     private ItemStack makeWeapon(Material mat, String name, boolean enchant) {
         ItemStack item = new ItemStack(mat);
         ItemMeta meta = item.getItemMeta();
@@ -1960,6 +2120,75 @@ public class PVPArenaManager implements Listener {
         }
 
         String name = player.getName();
+
+        // ★ 已确认装备 → 调整模式：仅允许调整食物/盾牌/弓弩，其余全部锁定
+        boolean confirmed = equipmentConfirmed.contains(name);
+        if (confirmed) {
+            // 武器材质（10-13）— 锁定
+            if (slot >= 10 && slot <= 13) {
+                player.sendMessage("§e[PVP] §7装备已锁定，不可更改武器材质");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                return true;
+            }
+            // 护甲材质（19-22）— 锁定
+            if (slot >= 19 && slot <= 22) {
+                player.sendMessage("§e[PVP] §7装备已锁定，不可更改护甲材质");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                return true;
+            }
+            // 附魔（28）— 锁定
+            if (slot == 28) {
+                player.sendMessage("§e[PVP] §7附魔已锁定，不可更改");
+                player.playSound(player.getLocation(), Sound.ENTITY_VILLAGER_NO, 1.0f, 1.0f);
+                return true;
+            }
+            // 盾牌（30）— 可调整
+            if (slot == 30) {
+                boolean cur = selShield.getOrDefault(name, true);
+                selShield.put(name, !cur);
+                reEquipAdjustments(player);
+                guiReopening.add(name);
+                openAdjustmentGUI(player);
+                player.sendMessage("§a[PVP] 盾牌已" + (!cur ? "§a装备" : "§c取消"));
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+                return true;
+            }
+            // 远程武器（29）— 可调整
+            if (slot == 29) {
+                int cur = selRangedWeapon.getOrDefault(name, 0);
+                selRangedWeapon.put(name, cur == 0 ? 1 : 0);
+                reEquipAdjustments(player);
+                guiReopening.add(name);
+                openAdjustmentGUI(player);
+                player.sendMessage("§a[PVP] 远程武器已切换为 " + (cur == 0 ? "§b弩" : "§b弓"));
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.7f, 1.2f);
+                return true;
+            }
+            // 食物数量（32-35）— 可调整
+            if (slot >= 32 && slot <= 35) {
+                int[] foodOpts = {8, 16, 32, 64};
+                int food = foodOpts[slot - 32];
+                selFood.put(name, food);
+                reEquipAdjustments(player);
+                guiReopening.add(name);
+                openAdjustmentGUI(player);
+                player.sendMessage("§a[PVP] 熟牛肉数量已设为 " + food);
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
+                return true;
+            }
+            // 关闭（49）
+            if (slot == 49) {
+                player.closeInventory();
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
+                return true;
+            }
+            // 预览区/标签（0-8, 9, 18, 27）：仅音效
+            if ((slot >= 0 && slot <= 8) || slot == 9 || slot == 18 || slot == 27) {
+                player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.5f, 1.0f);
+                return true;
+            }
+            return false;
+        }
 
         boolean weaponLocked = (lockedWeaponOwner != null && !lockedWeaponOwner.equals(name));
         boolean armorLocked = (lockedArmorOwner != null && !lockedArmorOwner.equals(name));
@@ -2139,7 +2368,7 @@ public class PVPArenaManager implements Listener {
                 crossbow.setItemMeta(cm);
             }
             player.getInventory().addItem(crossbow);
-            player.getInventory().addItem(new ItemStack(Material.ARROW, 64));
+            player.getInventory().addItem(makeArrowStack(64));
         } else {
             ItemStack bow = new ItemStack(Material.BOW);
             ItemMeta bm = bow.getItemMeta();
@@ -2149,7 +2378,7 @@ public class PVPArenaManager implements Listener {
                 bow.setItemMeta(bm);
             }
             player.getInventory().addItem(bow);
-            player.getInventory().addItem(new ItemStack(Material.ARROW, 64));
+            player.getInventory().addItem(makeArrowStack(64));
         }
 
         // 补血普通食物：熟牛肉（数量可调）
@@ -2168,6 +2397,94 @@ public class PVPArenaManager implements Listener {
                 + WEAPON_TIER_NAMES[wTier] + "剑+斧 / " + ARMOR_TIER_NAMES[aTier] + "护甲"
                 + (enchant ? "(附魔)" : "(未附魔)") + (shield ? " +盾牌" : "")
                 + " 远程:" + (rw == 1 ? "弩" : "弓") + " 熟牛肉x" + food);
+    }
+
+    /**
+     * 移除可调整类的PVP物品（食物/弓/弩/箭/盾牌），保留武器+护甲不动
+     */
+    private void removePVPAdjustables(Player player) {
+        // 副手盾牌
+        ItemStack off = player.getInventory().getItemInOffHand();
+        if (off != null && off.getType() == Material.SHIELD) {
+            player.getInventory().setItemInOffHand(null);
+        }
+        // 背包中带PVP标记的食物/弓/弩/箭
+        for (int i = 0; i < player.getInventory().getSize(); i++) {
+            ItemStack item = player.getInventory().getItem(i);
+            if (item == null || !item.hasItemMeta()) continue;
+            ItemMeta m = item.getItemMeta();
+            if (m == null || !m.hasLore()) continue;
+            List<String> lore = m.getLore();
+            if (lore == null || !lore.contains(PVP_ITEM_MARKER)) continue;
+            Material t = item.getType();
+            if (t == Material.COOKED_BEEF || t == Material.BOW || t == Material.CROSSBOW || t == Material.ARROW) {
+                player.getInventory().setItem(i, null);
+            }
+        }
+    }
+
+    /**
+     * 为已确认装备的玩家重新应用食物/盾牌/远程武器调整
+     * （武器材质/护甲材质/附魔已锁定，不做变动）
+     */
+    private void reEquipAdjustments(Player player) {
+        String name = player.getName();
+        if (!equipmentConfirmed.contains(name)) return;
+
+        removePVPAdjustables(player);
+
+        boolean shield = selShield.getOrDefault(name, true);
+        int food = selFood.getOrDefault(name, FOOD_DEFAULT);
+        int rw = selRangedWeapon.getOrDefault(name, 0);
+
+        // 盾牌（副手）
+        if (shield) {
+            ItemStack sh = new ItemStack(Material.SHIELD);
+            ItemMeta sm = sh.getItemMeta();
+            if (sm != null) {
+                sm.setDisplayName("§a§lPVP盾牌");
+                sm.setLore(Arrays.asList("§7格挡近战攻击", PVP_ITEM_MARKER));
+                sh.setItemMeta(sm);
+            }
+            player.getInventory().setItemInOffHand(sh);
+        }
+
+        // 远程武器 + 箭矢
+        if (rw == 1) {
+            ItemStack crossbow = new ItemStack(Material.CROSSBOW);
+            ItemMeta cm = crossbow.getItemMeta();
+            if (cm != null) {
+                cm.setDisplayName("§b§lPVP弩");
+                cm.setLore(Arrays.asList("§7远程武器（默认装备）", PVP_ITEM_MARKER));
+                crossbow.setItemMeta(cm);
+            }
+            player.getInventory().addItem(crossbow);
+        } else {
+            ItemStack bow = new ItemStack(Material.BOW);
+            ItemMeta bm = bow.getItemMeta();
+            if (bm != null) {
+                bm.setDisplayName("§b§lPVP弓");
+                bm.setLore(Arrays.asList("§7远程武器（默认装备）", PVP_ITEM_MARKER));
+                bow.setItemMeta(bm);
+            }
+            player.getInventory().addItem(bow);
+        }
+        player.getInventory().addItem(makeArrowStack(64));
+
+        // 食物
+        if (food > 0) {
+            ItemStack beef = new ItemStack(Material.COOKED_BEEF, food);
+            ItemMeta bm = beef.getItemMeta();
+            if (bm != null) {
+                bm.setDisplayName("§c§lPVP熟牛肉");
+                bm.setLore(Arrays.asList("§7补血普通食物 x" + food, PVP_ITEM_MARKER));
+                beef.setItemMeta(bm);
+            }
+            player.getInventory().addItem(beef);
+        }
+
+        player.sendMessage("§a§l[PVP] §7装备调整已应用");
+        player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.6f, 1.2f);
     }
 
     // ==================== 命令入口 ====================

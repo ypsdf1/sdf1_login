@@ -1125,6 +1125,14 @@ public class PVPManager implements Listener {
             case "arena":
                 plugin.getPVPArenaManager().joinArena(p);
                 return true;
+            case "equip":
+            case "adjust":
+                if (!plugin.getPVPArenaManager().isInPVPArena(p.getName())) {
+                    p.sendMessage("§c你不在PVP竞技场中");
+                    return true;
+                }
+                plugin.getPVPArenaManager().openEquipmentSelection(p);
+                return true;
             case "leave":
             case "exit":
                 plugin.leavePVP(p);
@@ -1133,6 +1141,7 @@ public class PVPManager implements Listener {
                 showStats(p, p.getName());
                 p.sendMessage("§7——— PVP指令 ———");
                 p.sendMessage("§e/pvp join §7进入PVP竞技场");
+                p.sendMessage("§e/pvp equip §7调整装备（食物/盾牌/弓弩）");
                 p.sendMessage("§e/pvp leave §7离开PVP竞技场");
                 p.sendMessage("§e/pvp stats [玩家] §7查看战绩");
                 p.sendMessage("§e/pvp list §7查看PVP区域列表");

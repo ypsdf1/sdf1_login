@@ -768,7 +768,8 @@ public class Main extends JavaPlugin
                                             "tool", "on", "off",
                                             "tempban", "arena",
                                             "join", "leave",
-                                            "exit", "test"};
+                                            "exit", "test",
+                                            "equip", "adjust"};
                                     for (String s : sub) {
                                         if (s.startsWith(
                                                 args[0]
