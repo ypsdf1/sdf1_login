@@ -37,7 +37,11 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
+import java.net.URL;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -1264,7 +1268,14 @@ public class Main extends JavaPlugin
         sender.sendMessage("§a已封禁 " + target
                 + " 至 " + DurationParser.formatExpire(expireMs)
                 + (isIpTarget(target) ? " §7(IP)" : ""));
-        if (!isIpTarget(target)) {
+        if (isIpTarget(target)) {
+            for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+                try {
+                    String ip = p.getAddress().getAddress().getHostAddress();
+                    if (ip.equals(target)) p.kickPlayer("§c§l" + r);
+                } catch (Exception ignored) {}
+            }
+        } else {
             org.bukkit.entity.Player tp =
                     Bukkit.getPlayerExact(target);
             if (tp != null) tp.kickPlayer("§c§l" + r);
@@ -1300,7 +1311,14 @@ public class Main extends JavaPlugin
         applyBan(sender, target, r, null);
         sender.sendMessage("§a已永久封禁 " + target
                 + (isIpTarget(target) ? " §7(IP)" : ""));
-        if (!isIpTarget(target)) {
+        if (isIpTarget(target)) {
+            for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+                try {
+                    String ip = p.getAddress().getAddress().getHostAddress();
+                    if (ip.equals(target)) p.kickPlayer("§c§l" + r);
+                } catch (Exception ignored) {}
+            }
+        } else {
             org.bukkit.entity.Player tp =
                     Bukkit.getPlayerExact(target);
             if (tp != null) tp.kickPlayer("§c§l" + r);
@@ -1355,6 +1373,37 @@ public class Main extends JavaPlugin
         sender.sendMessage("§7最近登录: §f"
                 + (lastLogin > 0 ? DurationParser.formatExpire(lastLogin) : "未知"));
         sender.sendMessage("§7登录IP: §f" + lastIp);
+        if (!lastIp.equals("未知") && !lastIp.equals("127.0.0.1") && !lastIp.equals("localhost")) {
+            String ip = lastIp;
+            CommandSender fs = sender;
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    URL url = new URL("https://ip9.com.cn/get?ip=" + ip);
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setConnectTimeout(5000);
+                    conn.setReadTimeout(5000);
+                    conn.setRequestProperty("User-Agent", "Sdf1_login/1.0");
+                    try (BufferedReader br = new BufferedReader(
+                            new InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) sb.append(line);
+                        String json = sb.toString();
+                        com.google.gson.JsonObject obj = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+                        if (obj.get("ret").getAsInt() == 200) {
+                            com.google.gson.JsonObject d = obj.getAsJsonObject("data");
+                            String loc = d.get("country").getAsString();
+                            if (d.has("prov") && !d.get("prov").getAsString().isEmpty()) loc += " " + d.get("prov").getAsString();
+                            if (d.has("city") && !d.get("city").getAsString().isEmpty()) loc += " " + d.get("city").getAsString();
+                            if (d.has("isp") && !d.get("isp").getAsString().isEmpty()) loc += " " + d.get("isp").getAsString();
+                            String finalLoc = loc;
+                            Bukkit.getScheduler().runTask(this, () ->
+                                    fs.sendMessage("§7IP归属: §f" + finalLoc));
+                        }
+                    }
+                } catch (Exception ignored) {}
+            });
+        }
         sender.sendMessage("§7禁言状态: "
                 + (muted ? "§c已禁言" : "§a正常"));
         if (muted) {
