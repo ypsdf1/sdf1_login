@@ -81,6 +81,17 @@ public class PVPArenaManager implements Listener {
     // 已完成装备选择的玩家（备份+清空+发装备已执行完毕）
     private final Set<String> equipmentConfirmed = ConcurrentHashMap.newKeySet();
 
+    // ★ 永久确认玩家（选装一次即锁定，退出再进入也不能重新选装，仅调整食物/盾牌/弓弩）
+    private final Set<String> permanentlyConfirmed = ConcurrentHashMap.newKeySet();
+
+    // ★ 永久确认玩家的选装结果（跨次保留，供调整GUI使用）
+    private static class SavedSelection {
+        int weaponTier, armorTier, rangedWeapon;
+        boolean enchant;
+        SavedSelection(int w, int a, int r, boolean e) { weaponTier=w; armorTier=a; rangedWeapon=r; enchant=e; }
+    }
+    private final Map<String, SavedSelection> savedSelections = new ConcurrentHashMap<>();
+
     // 程序内重开装备GUI（如切换档位）时，旧GUI关闭事件需忽略，避免误触发遣返
     private final Set<String> guiReopening = ConcurrentHashMap.newKeySet();
 
@@ -1008,6 +1019,15 @@ public class PVPArenaManager implements Listener {
         equipmentConfirmed.add(playerName);
         cancelKickTimeout(playerName);
 
+        // ★ 永久锁定：记录确认状态和选装结果，退出再进入也不能重新选装
+        permanentlyConfirmed.add(playerName);
+        savedSelections.put(playerName, new SavedSelection(
+                selWeaponTier.getOrDefault(playerName, 0),
+                selArmorTier.getOrDefault(playerName, 0),
+                selRangedWeapon.getOrDefault(playerName, 0),
+                selEnchant.getOrDefault(playerName, false)
+        ));
+
         player.sendMessage("§a§l装备已就绪，开始战斗!");
         player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP] 玩家 " + playerName + " 装备确认完毕");
@@ -1696,7 +1716,23 @@ public class PVPArenaManager implements Listener {
     public void openEquipmentSelection(Player player) {
         String name = player.getName();
 
-        // ★ 已确认装备的玩家 → 打开调整GUI（仅食物/盾牌/弓弩，其他锁定）
+        // ★ 永久确认：选装一次即锁定，退出再进入也不能重新选装
+        if (permanentlyConfirmed.contains(name)) {
+            // 恢复之前保存的选装状态到临时map（供 openAdjustmentGUI 读取）
+            SavedSelection saved = savedSelections.get(name);
+            if (saved != null) {
+                selWeaponTier.put(name, saved.weaponTier);
+                selArmorTier.put(name, saved.armorTier);
+                selRangedWeapon.put(name, saved.rangedWeapon);
+                selEnchant.put(name, saved.enchant);
+            }
+            // 标记本次进入已确认（超时遣返不触发）
+            equipmentConfirmed.add(name);
+            openAdjustmentGUI(player);
+            return;
+        }
+
+        // ★ 已确认装备的玩家（同一次进入内）→ 打开调整GUI（仅食物/盾牌/弓弩，其他锁定）
         if (equipmentConfirmed.contains(name)) {
             openAdjustmentGUI(player);
             return;
@@ -2674,6 +2710,8 @@ public class PVPArenaManager implements Listener {
         selRangedWeapon.clear();
         selArmorTier.clear();
         equipInteracted.clear();
+        permanentlyConfirmed.clear();
+        savedSelections.clear();
     }
 
     public void clearAllPVPArenaStates() {
