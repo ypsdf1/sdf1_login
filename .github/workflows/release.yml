@@ -15,7 +15,8 @@ jobs:
 
       - name: Extract version from plugin.yml
         id: version
-        run: echo "version=$(grep '^version: ' src/main/resources/plugin.yml | sed 's/version: //')" >> $GITHUB_OUTPUT
+        run: |
+          echo "version=$(grep '^version: ' src/main/resources/plugin.yml | sed 's/version: //')" >> $GITHUB_OUTPUT
 
       - name: Set up JDK 26
         uses: actions/setup-java@v4
