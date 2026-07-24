@@ -86,9 +86,11 @@ public class PVPArenaManager implements Listener {
 
     // ★ 永久确认玩家的选装结果（跨次保留，供调整GUI使用）
     private static class SavedSelection {
-        int weaponTier, armorTier, rangedWeapon;
-        boolean enchant;
-        SavedSelection(int w, int a, int r, boolean e) { weaponTier=w; armorTier=a; rangedWeapon=r; enchant=e; }
+        int weaponTier, armorTier, rangedWeapon, food;
+        boolean enchant, shield;
+        SavedSelection(int w, int a, int r, boolean e, boolean sh, int f) {
+            weaponTier=w; armorTier=a; rangedWeapon=r; enchant=e; shield=sh; food=f;
+        }
     }
     private final Map<String, SavedSelection> savedSelections = new ConcurrentHashMap<>();
 
@@ -1025,7 +1027,9 @@ public class PVPArenaManager implements Listener {
                 selWeaponTier.getOrDefault(playerName, 0),
                 selArmorTier.getOrDefault(playerName, 0),
                 selRangedWeapon.getOrDefault(playerName, 0),
-                selEnchant.getOrDefault(playerName, false)
+                selEnchant.getOrDefault(playerName, false),
+                selShield.getOrDefault(playerName, true),
+                selFood.getOrDefault(playerName, FOOD_DEFAULT)
         ));
 
         player.sendMessage("§a§l装备已就绪，开始战斗!");
@@ -1718,17 +1722,23 @@ public class PVPArenaManager implements Listener {
 
         // ★ 永久确认：选装一次即锁定，退出再进入也不能重新选装
         if (permanentlyConfirmed.contains(name)) {
-            // 恢复之前保存的选装状态到临时map（供 openAdjustmentGUI 读取）
+            // 恢复之前保存的选装状态到临时map（供 equipFullSet 和 openAdjustmentGUI 读取）
             SavedSelection saved = savedSelections.get(name);
             if (saved != null) {
                 selWeaponTier.put(name, saved.weaponTier);
                 selArmorTier.put(name, saved.armorTier);
                 selRangedWeapon.put(name, saved.rangedWeapon);
                 selEnchant.put(name, saved.enchant);
+                selShield.put(name, saved.shield);
+                selFood.put(name, saved.food);
             }
+            // ★ 关键：背包已在 onPlayerEnterPVPWorld 中清空，必须重新发放锁定装备
+            equipFullSet(player);
             // 标记本次进入已确认（超时遣返不触发）
             equipmentConfirmed.add(name);
+            cancelKickTimeout(name);
             openAdjustmentGUI(player);
+            player.sendMessage("§a§l装备已就绪（沿用上次选择）");
             return;
         }
 
