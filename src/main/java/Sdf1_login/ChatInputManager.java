@@ -90,7 +90,8 @@ public class ChatInputManager {
                         name, "password_salt");
                 String hash =
                         PasswordUtils.hash(msg, salt);
-                String result = db.checkPasswordWithFallback(name, hash);
+                // ★ 同时校验真实密码 + 临时密码（改密不受临时密码5分钟有效期限制）
+                String result = db.checkPasswordForChange(name, hash);
                 if ("main".equals(result)) {
                     state.type =
                             InputType.CHANGE_PWD_STEP2;
@@ -143,11 +144,23 @@ public class ChatInputManager {
                         "password_hash", newHash);
                 db.setField(name,
                         "password_salt", newSalt);
+                // ★ 改密成功：作废旧的临时密码
+                db.clearTempPassword(name);
+                // ★ 同步新密码到Web端（异步，不阻塞主线程）
+                final Main self = mainPlugin;
+                Bukkit.getScheduler().runTaskAsynchronously(self, () -> {
+                    if (self.webManager != null) {
+                        self.webManager.pushWebLoginCredentials();
+                    }
+                });
                 mainPlugin
                         .getNeedsPasswordChange()
                         .remove(name);
                 p.sendMessage(config.msg(
                         "password_changed"));
+                if ("temp".equals(state.ticketTitle)) {
+                    p.sendMessage("§7(本次是用临时密码改的，临时密码已作废)");
+                }
                 reset(p);
                 return;
             }

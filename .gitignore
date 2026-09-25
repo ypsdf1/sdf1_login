@@ -39,6 +39,7 @@ build/
 .DS_Store
 
 # 开发辅助文件（本地保留，不推送到仓库）
+/代码关联关系.md
 txt/
 *.xlsx
 *.patch
@@ -92,3 +93,8 @@ lpt8
 lpt9hs_err_pid*.log
 hs_err_pid*.log
 replay_pid*.log
+
+# 屏蔽patch文件
+*.patch
+# 屏蔽wb产生的文件
+.workbuddy/

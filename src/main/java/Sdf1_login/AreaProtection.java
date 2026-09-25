@@ -5167,12 +5167,12 @@ public class AreaProtection implements Listener {
                                 BondManager bnd = plugin.getBonds();
                                 int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
                                 p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
-                                // ★ 一键创建超链接：自动用玩家名，冲突则加数字
+                                // ★ 一键创建超链接：自动用玩家名，冲突则加数字（重名不区分大小写）
                                 String autoName = p.getName();
-                                if (areas.containsKey(autoName)) {
+                                if (areaNameExists(autoName)) {
                                     for (int i = 0; i <= 99; i++) {
                                         String candidate = autoName + i;
-                                        if (!areas.containsKey(candidate)) { autoName = candidate; break; }
+                                        if (!areaNameExists(candidate)) { autoName = candidate; break; }
                                     }
                                 }
                                 String finalAutoName = autoName;
@@ -5949,6 +5949,87 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 严格解析领地名（写操作/权限敏感操作专用）
+     * 只做"完全一致"匹配：先区分大小写，再忽略大小写；
+     * 不做包含匹配，不做编辑距离模糊匹配。
+     * 目的：防止攻击者用大小写变体、部分字符串或特殊字符
+     * 把输入"归一化"成他人领地名后越权操作。
+     */
+    public String resolveAreaNameStrict(String input) {
+        if (input == null || input.isEmpty()) return null;
+        if (input.equalsIgnoreCase("global")) return "global";
+        if (areas.containsKey(input)) return input;
+        for (String name : areas.keySet()) {
+            if (name.equalsIgnoreCase(input)) return name;
+        }
+        return null;
+    }
+
+    /**
+     * ★ 大小写不敏感的领地重名检查（创建/改名防重）
+     */
+    public boolean areaNameExists(String name) {
+        if (name == null || name.isEmpty()) return false;
+        for (String k : areas.keySet()) {
+            if (k.equalsIgnoreCase(name)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * ★ 领地名格式校验（创建/改名）
+     * 只允许中英文、数字、下划线、连字符，1-20 字符。
+     * 拒绝空格、颜色代码、斜杠、点号等特殊字符——领地名会被
+     * 直接当作白名单/配置文件名落盘，特殊字符会造成文件互相
+     * 覆盖或路径穿越（Windows 下文件名不区分大小写，A/a 会互覆盖）。
+     * @return null=合法，非 null=错误提示
+     */
+    public static String validateAreaName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return "名字不能为空";
+        }
+        String n = name.trim();
+        if (n.length() > 20) return "名字不能超过20个字符";
+        if (!n.matches("^[A-Za-z0-9\u4e00-\u9fa5_-]{1,20}$")) {
+            return "名字只能包含中英文、数字、下划线和连字符";
+        }
+        if (n.equalsIgnoreCase("global")) {
+            return "global 是保留名，请换一个";
+        }
+        return null;
+    }
+
+    /**
+     * ★ 写操作权限闸门：领地所有者 / 领地管理员 / 插件管理员 / 控制台
+     * 凡是"解析出领地名后直接改数据"的子命令，都必须先过这道闸。
+     */
+    private boolean requireLandOwnership(CommandSender sender, String areaName) {
+        if (areaName == null || areaName.equalsIgnoreCase("global")) {
+            return requireGlobalAdmin(sender, "全服级(global)操作");
+        }
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null) {
+            sender.sendMessage("§c区域不存在: " + areaName);
+            return false;
+        }
+        if (!(sender instanceof Player)) return true; // 控制台=管理员
+        if (!hasPermission((Player) sender, ac, PermissionLevel.OWNER)) {
+            sender.sendMessage("§c需要领地所有者或管理员权限: " + areaName);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * ★ 全服级(global)写操作闸门：仅插件管理员 / 控制台
+     */
+    private boolean requireGlobalAdmin(CommandSender sender, String what) {
+        if (isAreaAdmin(sender)) return true;
+        sender.sendMessage("§c" + what + " 仅管理员可用");
+        return false;
+    }
+
+    /**
      * 判断字符串是否是区域名（精准或模糊）
      */
     private boolean isAreaName(String name) {
@@ -6549,10 +6630,10 @@ public class AreaProtection implements Listener {
                 } else {
                     // 有选点但没有名字：用默认名创建
                     String autoName = p.getName();
-                    if (areas.containsKey(autoName)) {
+                    if (areaNameExists(autoName)) {
                         for (int i = 0; i <= 999; i++) {
                             String c = autoName + i;
-                            if (!areas.containsKey(c)) { autoName = c; break; }
+                            if (!areaNameExists(c)) { autoName = c; break; }
                         }
                     }
                     p.sendMessage("§e用法: /protect 创建 <自定义名>");
@@ -6563,10 +6644,16 @@ public class AreaProtection implements Listener {
                 return true;
             }
 
-            String areaName = args[1];
-            // 检查重名（数据库+txt）
-            if (areas.containsKey(areaName)) {
-                p.sendMessage("§c区域已存在");
+            String areaName = args[1].trim();
+            // ★ 领地名格式校验：特殊字符会污染按名字落盘的白名单/配置文件
+            String nameErr = validateAreaName(areaName);
+            if (nameErr != null) {
+                p.sendMessage("§c§l[防护] §f领地名无效: " + nameErr);
+                return true;
+            }
+            // 检查重名（不区分大小写：Windows 文件名大小写不敏感会互相覆盖）
+            if (areaNameExists(areaName)) {
+                p.sendMessage("§c区域已存在（大小写不同也算重复）");
                 return true;
             }
             // ★ 检查每人领地数量上限（用户组专属上限）— 同时查内存和DB兜底
@@ -6636,13 +6723,19 @@ public class AreaProtection implements Listener {
             if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
             if (args.length < 2) { sender.sendMessage("§c用法: /protect confirm_create <领地名>"); return true; }
             Player cp = (Player) sender;
-            String confirmName = args[1];
+            String confirmName = args[1].trim();
+            // ★ 领地名格式校验（交互链接可被直接拼装，必须在这里再校验一次）
+            String cnErr = validateAreaName(confirmName);
+            if (cnErr != null) {
+                cp.sendMessage("§c§l[防护] §f领地名无效: " + cnErr);
+                return true;
+            }
             // 检查选点
             if (!pos1.containsKey(cp.getUniqueId()) || !pos2.containsKey(cp.getUniqueId())) {
                 cp.sendMessage("§c请先用工具选点"); return true;
             }
-            // 检查重名
-            if (areas.containsKey(confirmName)) { cp.sendMessage("§c区域已存在"); return true; }
+            // 检查重名（不区分大小写）
+            if (areaNameExists(confirmName)) { cp.sendMessage("§c区域已存在（大小写不同也算重复）"); return true; }
             // ★ 检查上限（含DB兜底）
             UserGroupManager cugm = plugin.getUserGroup();
             int cMaxLands = (cugm != null) ? cugm.getPlayerMaxLands(cp.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
@@ -6701,6 +6794,8 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c区域不存在");
                     return true;
                 }
+                // ★ 权限闸门：只有领地主/领地管理员才能改和平白名单
+                if (!requireLandOwnership(sender, parsed[0])) return true;
                 ac.peaceWhitelist.add(parsed[1]);
                 saveAreaToDb(ac);
                 sender.sendMessage("§a已添加: "
@@ -6725,6 +6820,8 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c区域不存在");
                     return true;
                 }
+                // ★ 权限闸门：只有领地主/领地管理员才能改和平白名单
+                if (!requireLandOwnership(sender, parsed[0])) return true;
                 ac.peaceWhitelist.remove(parsed[1]);
                 saveAreaToDb(ac);
                 sender.sendMessage("§a已移除: "
@@ -6772,6 +6869,8 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c区域不存在");
                     return true;
                 }
+                // ★ 权限闸门：只有领地主/领地管理员才能改模式排除名单
+                if (!requireLandOwnership(sender, parsed[0])) return true;
                 ac.modeExempt.add(parsed[1]);
                 saveAreaToDb(ac);
                 sender.sendMessage("§a已添加: "
@@ -6796,6 +6895,8 @@ public class AreaProtection implements Listener {
                     sender.sendMessage("§c区域不存在");
                     return true;
                 }
+                // ★ 权限闸门：只有领地主/领地管理员才能改模式排除名单
+                if (!requireLandOwnership(sender, parsed[0])) return true;
                 ac.modeExempt.remove(parsed[1]);
                 saveAreaToDb(ac);
                 sender.sendMessage("§a已移除: "
@@ -7301,6 +7402,8 @@ public class AreaProtection implements Listener {
         // ===== 物品黑名单 =====
         if (sub.equals("additem")) {
             if (args.length == 2) {
+                // ★ 全服级物品黑名单，必须管理员
+                if (!requireGlobalAdmin(sender, "全局物品黑名单操作")) return true;
                 String itemName = args[1].toUpperCase();
                 if (Material.matchMaterial(itemName)
                         == null) {
@@ -7314,8 +7417,8 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String r1 = resolveAreaName(args[1]);
-                String r2 = resolveAreaName(args[2]);
+                String r1 = resolveAreaNameStrict(args[1]);
+                String r2 = resolveAreaNameStrict(args[2]);
                 String areaName;
                 String itemName;
                 if (r1 != null) {
@@ -7328,6 +7431,8 @@ public class AreaProtection implements Listener {
                     areaName = "global";
                     itemName = args[1].toUpperCase();
                 }
+                // ★ 权限闸门：领地黑名单须领地主/领地管理员，global 须插件管理员
+                if (!requireLandOwnership(sender, areaName)) return true;
                 if (Material.matchMaterial(itemName)
                         == null) {
                     sender.sendMessage(
@@ -7355,6 +7460,8 @@ public class AreaProtection implements Listener {
         }
         if (sub.equals("removeitem")) {
             if (args.length == 2) {
+                // ★ 全服级物品黑名单，必须管理员
+                if (!requireGlobalAdmin(sender, "全局物品黑名单操作")) return true;
                 String itemName = args[1].toUpperCase();
                 if (!globalItemBlacklist
                         .contains(itemName)) {
@@ -7368,8 +7475,8 @@ public class AreaProtection implements Listener {
                 return true;
             }
             if (args.length == 3) {
-                String r1 = resolveAreaName(args[1]);
-                String r2 = resolveAreaName(args[2]);
+                String r1 = resolveAreaNameStrict(args[1]);
+                String r2 = resolveAreaNameStrict(args[2]);
                 String areaName;
                 String itemName;
                 if (r1 != null) {
@@ -7382,6 +7489,8 @@ public class AreaProtection implements Listener {
                     areaName = "global";
                     itemName = args[1].toUpperCase();
                 }
+                // ★ 权限闸门：领地黑名单须领地主/领地管理员，global 须插件管理员
+                if (!requireLandOwnership(sender, areaName)) return true;
                 if (areaName.equalsIgnoreCase("global")) {
                     globalItemBlacklist.remove(itemName);
                 } else {
@@ -7443,6 +7552,11 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c你不在任何防护区域内");
                 return true;
             }
+            // ★ 权限闸门：改边界必须是领地主/领地管理员
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                p.sendMessage("§c需要领地所有者或管理员权限");
+                return true;
+            }
             int amount = 5;
             if (args.length >= 2) {
                 try {
@@ -7485,6 +7599,11 @@ public class AreaProtection implements Listener {
                     p.getLocation().getBlockZ());
             if (ac == null) {
                 p.sendMessage("§c你不在任何防护区域内");
+                return true;
+            }
+            // ★ 权限闸门：改边界必须是领地主/领地管理员
+            if (!hasPermission(p, ac, PermissionLevel.OWNER)) {
+                p.sendMessage("§c需要领地所有者或管理员权限");
                 return true;
             }
             int amount = 5;
@@ -7530,8 +7649,8 @@ public class AreaProtection implements Listener {
                 return true;
             }
             String areaName = args[1];
-            // 精确匹配
-            String resolved = resolveAreaName(areaName);
+            // 严格匹配（写操作不做模糊归一化）
+            String resolved = resolveAreaNameStrict(areaName);
             if (resolved != null) areaName = resolved;
             if (!areas.containsKey(areaName)) {
                 sender.sendMessage("§c领地不存在: " + areaName);
@@ -7594,8 +7713,10 @@ public class AreaProtection implements Listener {
                 return true;
             }
             String areaName = args[1];
-            String resolved = resolveAreaName(areaName);
+            String resolved = resolveAreaNameStrict(areaName);
             if (resolved != null) areaName = resolved;
+            // ★ 权限闸门：只有领地主/领地管理员能取消删除
+            if (!requireLandOwnership(sender, areaName)) return true;
             PendingDelete pd = pendingDeletes.remove(areaName);
             if (pd == null) {
                 sender.sendMessage("§c没有待删除的领地: " + areaName);
@@ -7690,13 +7811,15 @@ public class AreaProtection implements Listener {
         // ===== add 加白名单 =====
         if (sub.equals("add")) {
             if (args.length == 2) {
-                String name = args[1];
+                // ★ 全服级白名单（等于全服免检），必须管理员
+                if (!requireGlobalAdmin(sender, "全局白名单操作")) return true;
+                String name = args[1].toLowerCase();
                 if (globalPlayerWhitelist.contains(name)) {
                     sender.sendMessage("§e" + name
                             + " 已在全局白名单中");
                     return true;
                 }
-                globalPlayerWhitelist.add(name.toLowerCase());
+                globalPlayerWhitelist.add(name);
                 saveWhitelists();
                 sender.sendMessage("§a已全局加白: " + name);
                 return true;
@@ -7709,9 +7832,11 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 String areaName = parsed[0];
-                String playerName = parsed[1];
+                String playerName = parsed[1].toLowerCase();
+                // ★ 权限闸门：领地白名单须领地主/领地管理员，global 须插件管理员
+                if (!requireLandOwnership(sender, areaName)) return true;
                 if (areaName.equalsIgnoreCase("global")) {
-                    globalPlayerWhitelist.add(playerName.toLowerCase());
+                    globalPlayerWhitelist.add(playerName);
                     saveWhitelists();
                     sender.sendMessage("§a已全局加白: "
                             + playerName);
@@ -7720,7 +7845,7 @@ public class AreaProtection implements Listener {
                             .computeIfAbsent(areaName,
                                     k -> ConcurrentHashMap
                                             .newKeySet());
-                    wl.add(playerName.toLowerCase());
+                    wl.add(playerName);
                     saveWhitelists();
                     sender.sendMessage("§a已加白: "
                             + playerName + " → " + areaName);
@@ -7735,7 +7860,9 @@ public class AreaProtection implements Listener {
         // ===== remove 移除白名单 =====
         if (sub.equals("remove")) {
             if (args.length == 2) {
-                String name = args[1];
+                // ★ 全服级白名单，必须管理员
+                if (!requireGlobalAdmin(sender, "全局白名单操作")) return true;
+                String name = args[1].toLowerCase();
                 if (!globalPlayerWhitelist.contains(name)) {
                     sender.sendMessage("§e" + name
                             + " 不在全局白名单中");
@@ -7755,7 +7882,9 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 String areaName = parsed[0];
-                String playerName = parsed[1];
+                String playerName = parsed[1].toLowerCase();
+                // ★ 权限闸门：领地白名单须领地主/领地管理员，global 须插件管理员
+                if (!requireLandOwnership(sender, areaName)) return true;
                 if (areaName.equalsIgnoreCase("global")) {
                     globalPlayerWhitelist.remove(playerName);
                     saveWhitelists();
@@ -8734,11 +8863,12 @@ public class AreaProtection implements Listener {
 
 
     private String[] parseAreaAndTarget(String arg1, String arg2) {
-        String r1 = resolveAreaName(arg1);
+        // ★ 严格匹配：写操作绝不做模糊归一化，避免部分/大小写/特殊字符输入命中他人领地
+        String r1 = resolveAreaNameStrict(arg1);
         if (r1 != null) {
             return new String[]{r1, arg2};
         }
-        String r2 = resolveAreaName(arg2);
+        String r2 = resolveAreaNameStrict(arg2);
         if (r2 != null) {
             return new String[]{r2, arg1};
         }
@@ -9174,15 +9304,22 @@ public class AreaProtection implements Listener {
      * @return null=成功, 非null=错误/冷却信息
      */
     public String renameLand(Player p, String oldName, String newName) {
-        // 1. 基本校验
+        // 0. 权限校验：只有领地主/领地管理员可改名（纵深防御）
+        AreaConfig ownerAc = areas.get(oldName);
+        if (ownerAc != null
+                && !isAreaAdmin(p)
+                && !p.getName().equalsIgnoreCase(ownerAc.owner)) {
+            return "需要领地所有者或管理员权限";
+        }
+        // 1. 基本校验（格式 + 特殊字符，防止按名字落盘的文件被覆盖或路径穿越）
         if (newName == null || newName.trim().isEmpty()) return "新名字不能为空";
         newName = newName.trim();
-        if (newName.length() > 20) return "名字不能超过20个字符";
-        if (newName.contains(" ") || newName.contains("§")) return "名字不能包含空格或颜色代码";
+        String fmtErr = validateAreaName(newName);
+        if (fmtErr != null) return fmtErr;
         if (newName.equalsIgnoreCase(oldName)) return "新名字和旧名字相同";
 
-        // 2. 重名检查
-        if (getLand(newName) != null) return "已存在同名领地: " + newName;
+        // 2. 重名检查（不区分大小写：大小写变体会指向同一份文件）
+        if (areaNameExists(newName)) return "已存在同名领地: " + newName;
 
         // 3. 冷却检查
         long now = System.currentTimeMillis();
@@ -11741,13 +11878,13 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // ★ 自动命名：玩家名，冲突加数字0~999
+        // ★ 自动命名：玩家名，冲突加数字0~999（重名判定不区分大小写）
         String autoName = p.getName();
-        if (areas.containsKey(autoName)) {
+        if (areaNameExists(autoName)) {
             boolean found = false;
             for (int i = 0; i <= 999; i++) {
                 String candidate = p.getName() + i;
-                if (!areas.containsKey(candidate)) { autoName = candidate; found = true; break; }
+                if (!areaNameExists(candidate)) { autoName = candidate; found = true; break; }
             }
             if (!found) {
                 p.sendMessage("§c§l[防护] §f无法找到可用的领地名（已用尽0~999后缀）");

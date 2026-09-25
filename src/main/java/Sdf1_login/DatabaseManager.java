@@ -728,6 +728,55 @@ public class DatabaseManager {
         }
         return null;
     }
+
+    /**
+     * ★ 修改密码专用校验：同时校验【真实密码】与【临时密码】。
+     *
+     * 与登录校验 (checkPasswordWithFallback) 的区别：
+     * 临时密码的有效期只对"登录"生效，对"改密"不生效。
+     * 原因：玩家用临时密码登录成功后，若忘记真实密码，
+     * 一旦临时密码 5 分钟过期，就再也没有任何途径改密，
+     * 账号被永久锁死。改密本身就是"持有旧凭据即可换新凭据"，
+     * 因此这里只要求临时密码【存在且未被使用过】，
+     * 不再要求它仍在登录有效期内。
+     *
+     * @return "main" = 匹配真实密码 | "temp" = 匹配临时密码 | null = 都不匹配
+     */
+    public String checkPasswordForChange(String name, String hash) {
+        // 1. 先校验真实密码
+        if (checkPassword(name, hash)) {
+            return "main";
+        }
+        // 2. 再校验临时密码（不要求未过期，但必须未被消耗）
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT temp_password, "
+                            + "temp_pw_used "
+                            + "FROM users "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String tempHash = rs.getString("temp_password");
+                int used = rs.getInt("temp_pw_used");
+                rs.close();
+                ps.close();
+                if (tempHash != null
+                        && !tempHash.isEmpty()
+                        && hash.equals(tempHash)
+                        && used != 1) {
+                    return "temp";
+                }
+            } else {
+                rs.close();
+                ps.close();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     public Map<String, Object> getUser(String name) {
         Map<String, Object> r =
                 new LinkedHashMap<>();

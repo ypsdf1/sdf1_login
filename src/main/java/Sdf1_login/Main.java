@@ -6937,7 +6937,8 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                String pwdResult = db.checkPasswordWithFallback(
+                // ★ 同时校验真实密码 + 临时密码（临时密码不再受5分钟有效期限制）
+                String pwdResult = db.checkPasswordForChange(
                         p2.getName(), hash);
                 if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));
@@ -6960,9 +6961,13 @@ public class Main extends JavaPlugin
                 Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                     webManager.pushWebLoginCredentials();
                 });
-                if (isTemp)
-                    db.clearTempPassword(p2.getName());
+                // ★ 无论用真实密码还是临时密码改密成功，都作废旧的临时密码
+                db.clearTempPassword(p2.getName());
                 needsPasswordChange.remove(p2.getName());
+                p2.sendMessage(config.msg("password_changed"));
+                if (isTemp) {
+                    p2.sendMessage("§7(本次是用临时密码改的，临时密码已作废)");
+                }
 
                 return true;
             }
@@ -6972,7 +6977,8 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                String pwdResult = db.checkPasswordWithFallback(
+                // ★ 同时校验真实密码 + 临时密码（临时密码不再受5分钟有效期限制）
+                String pwdResult = db.checkPasswordForChange(
                         p2.getName(), hash);
                 if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));
