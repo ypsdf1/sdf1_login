@@ -7,20 +7,17 @@ on:
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup JDK 25
-        run: |
-          export JAVA_HOME=/.sdkman/candidates/java/25.0.3-tem
-          echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
-          echo "$JAVA_HOME/bin" >> $GITHUB_PATH
-
-      - name: Verify Java
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
+      - name: Setup JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: "25"
+          distribution: "temurin"
 
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
@@ -89,7 +86,7 @@ jobs:
               -H "Authorization: token $GITEA_TOKEN" \
               -F "attachment=@target/Sdf1_login.jar" \
               "${BASE}/releases/${RELEASE_ID}/assets"
-            echo "✅ Release ${TAG} created with JAR"
+            echo "Release ${TAG} created with JAR"
           else
-            echo "⚠️ Release created but could not get release ID for JAR upload"
+            echo "Release created but could not get release ID for JAR upload"
           fi
