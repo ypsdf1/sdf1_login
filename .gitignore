@@ -100,3 +100,8 @@ replay_pid*.log
 .workbuddy/
 # 屏蔽备份文件
 backup/
+# 屏蔽垃圾文件
+*.idx
+*.pack
+*.rar
+test.*
