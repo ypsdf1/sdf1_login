@@ -162,6 +162,8 @@ public class AreaProtection implements Listener {
             = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastMoveProcess
             = new ConcurrentHashMap<>();
+    // ★ denyMove 豁免诊断日志节流（每玩家10秒）
+    private final Map<UUID, Long> denyExemptLogTs = new ConcurrentHashMap<>();
     // 防止传送时重复处理
     private final Set<UUID> teleporting
             = ConcurrentHashMap.newKeySet();
@@ -2601,25 +2603,61 @@ public class AreaProtection implements Listener {
      * 空字符串或null表示没有自定义权限（使用领地默认）
      */
     public String getPlayerPermJson(int landId, String playerName) {
-        if (dbConnection == null) return "";
+        PermRow row = findPermRow(landId, playerName);
+        if (row == null || row.permissions == null) return "";
+        return row.permissions;
+    }
+
+    /** area_land_permissions 行（Java 端匹配用） */
+    private static final class PermRow {
+        int id;
+        String playerName;
+        String role;
+        String permissions;
+        long expiresAt;
+    }
+
+    /**
+     * 按 land_id 取出该领地全部权限行，在 Java 端做玩家名匹配：
+     * 精确匹配优先，其次 NFKC+ROOT 规范化匹配（normName）。
+     * 替代 SQL COLLATE NOCASE —— 后者只折叠 ASCII，İ/ẞ/K 等变种字符不生效，
+     * 且命中多条大小写重复行时返回顺序不确定（跨平台易读到错误记录）。
+     */
+    private List<PermRow> findPermRows(int landId, String playerName) {
+        List<PermRow> exact = new ArrayList<>();
+        if (dbConnection == null || landId <= 0 || playerName == null || playerName.isEmpty())
+            return exact;
+        String want = normName(playerName);
+        List<PermRow> fuzzy = new ArrayList<>();
         try {
             PreparedStatement stmt = dbConnection.prepareStatement(
-                    "SELECT permissions FROM area_land_permissions "
-                            + "WHERE land_id = ? AND player_name = ? COLLATE NOCASE");
+                    "SELECT id, player_name, role, permissions, expires_at "
+                            + "FROM area_land_permissions WHERE land_id = ?");
             stmt.setInt(1, landId);
-            stmt.setString(2, playerName);
             ResultSet rs = stmt.executeQuery();
-            String result = "";
-            if (rs.next()) {
-                result = rs.getString("permissions");
-                if (result == null) result = "";
+            while (rs.next()) {
+                PermRow r = new PermRow();
+                r.id = rs.getInt("id");
+                r.playerName = rs.getString("player_name");
+                r.role = rs.getString("role");
+                r.permissions = rs.getString("permissions");
+                r.expiresAt = rs.getLong("expires_at");
+                if (playerName.equals(r.playerName)) exact.add(r);
+                else if (want.equals(normName(r.playerName))) fuzzy.add(r);
             }
             rs.close();
             stmt.close();
-            return result;
         } catch (SQLException e) {
-            return "";
+            return exact;
         }
+        exact.addAll(fuzzy);
+        return exact;
+    }
+
+    /** 取匹配度最高的一行（精确匹配优先） */
+    private PermRow findPermRow(int landId, String playerName) {
+        List<PermRow> rows = findPermRows(landId, playerName);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     /**
@@ -2627,21 +2665,32 @@ public class AreaProtection implements Listener {
      */
     public void setPlayerPermJson(int landId, String playerName, String permJson) {
         if (dbConnection == null) return;
+        String json = permJson != null ? permJson : "";
         try {
-            // ★ 用 ON CONFLICT 替代 INSERT+UPDATE 两步操作：
-            //   - 已有行：只更新 permissions 字段，保留原有 role（admin/member/visitor）
+            // ★ 先按“精确优先 + normName 规范化”定位已有行，再决定 UPDATE / INSERT：
+            //   - 已有行：只更新 permissions，保留原 role（admin/member/visitor）
             //   - 无行：插入新记录，role 默认 visitor（非 member，防止误降级管理员）
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
-                            + "VALUES (?, ?, 'visitor', ?, ?) "
-                            + "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = ?");
-            stmt.setInt(1, landId);
-            stmt.setString(2, playerName);
-            stmt.setString(3, permJson != null ? permJson : "");
-            stmt.setLong(4, System.currentTimeMillis() / 1000);
-            stmt.setString(5, permJson != null ? permJson : "");
-            stmt.executeUpdate();
-            stmt.close();
+            //   注意：UNIQUE(land_id, player_name) 是 BINARY，直接 INSERT ON CONFLICT
+            //   在大小写/变种字符不一致时会新增重复行，导致后续读到错误记录。
+            PermRow existing = findPermRow(landId, playerName);
+            if (existing != null) {
+                PreparedStatement stmt = dbConnection.prepareStatement(
+                        "UPDATE area_land_permissions SET permissions = ? WHERE id = ?");
+                stmt.setString(1, json);
+                stmt.setInt(2, existing.id);
+                stmt.executeUpdate();
+                stmt.close();
+            } else {
+                PreparedStatement stmt = dbConnection.prepareStatement(
+                        "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
+                                + "VALUES (?, ?, 'visitor', ?, ?)");
+                stmt.setInt(1, landId);
+                stmt.setString(2, playerName);
+                stmt.setString(3, json);
+                stmt.setLong(4, System.currentTimeMillis() / 1000);
+                stmt.executeUpdate();
+                stmt.close();
+            }
         } catch (SQLException e) {
             plugin.getLogger().warning("[防护] 设置玩家权限失败: " + e.getMessage());
         }
@@ -2748,23 +2797,8 @@ public class AreaProtection implements Listener {
     public boolean isLandAdmin(String landName, String playerName) {
         int landId = getLandIdFromDb(landName);
         if (landId <= 0) return false;
-        if (dbConnection == null) return false;
-        try {
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                    "SELECT role FROM area_land_permissions WHERE land_id = ? AND player_name = ? COLLATE NOCASE");
-            stmt.setInt(1, landId);
-            stmt.setString(2, playerName);
-            ResultSet rs = stmt.executeQuery();
-            boolean isAdmin = false;
-            if (rs.next()) {
-                isAdmin = "admin".equalsIgnoreCase(rs.getString("role"));
-            }
-            rs.close();
-            stmt.close();
-            return isAdmin;
-        } catch (SQLException e) {
-            return false;
-        }
+        PermRow row = findPermRow(landId, playerName);
+        return row != null && "admin".equalsIgnoreCase(row.role);
     }
 
     /**
@@ -2776,17 +2810,26 @@ public class AreaProtection implements Listener {
         if (dbConnection == null) return;
         try {
             String role = admin ? "admin" : "member";
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
-                            + "VALUES (?, ?, ?, '', ?) "
-                            + "ON CONFLICT(land_id, player_name) DO UPDATE SET role = ?");
-            stmt.setInt(1, landId);
-            stmt.setString(2, playerName);
-            stmt.setString(3, role);
-            stmt.setLong(4, System.currentTimeMillis() / 1000);
-            stmt.setString(5, role);
-            stmt.executeUpdate();
-            stmt.close();
+            PermRow existing = findPermRow(landId, playerName);
+            if (existing != null) {
+                // 已有行：只改 role，保留 permissions
+                PreparedStatement stmt = dbConnection.prepareStatement(
+                        "UPDATE area_land_permissions SET role = ? WHERE id = ?");
+                stmt.setString(1, role);
+                stmt.setInt(2, existing.id);
+                stmt.executeUpdate();
+                stmt.close();
+            } else {
+                PreparedStatement stmt = dbConnection.prepareStatement(
+                        "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) "
+                                + "VALUES (?, ?, ?, '', ?)");
+                stmt.setInt(1, landId);
+                stmt.setString(2, playerName);
+                stmt.setString(3, role);
+                stmt.setLong(4, System.currentTimeMillis() / 1000);
+                stmt.executeUpdate();
+                stmt.close();
+            }
         } catch (SQLException e) {
             // 忽略
         }
@@ -2800,8 +2843,10 @@ public class AreaProtection implements Listener {
         int landId = getLandIdFromDb(landName);
         if (landId <= 0 || dbConnection == null) return;
         try {
+            // 已有任意大小写/变种形式的行则跳过，避免产生重复记录
+            if (findPermRow(landId, playerName) != null) return;
             PreparedStatement stmt = dbConnection.prepareStatement(
-                    "INSERT OR IGNORE INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
+                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
                     "VALUES (?, ?, ?, '', ?)");
             stmt.setInt(1, landId);
             stmt.setString(2, playerName);
@@ -2826,15 +2871,16 @@ public class AreaProtection implements Listener {
 
         // ★ denyPVP和denyAllDamage是全局安全设置，ADMIN/OWNER/VISITOR也不例外
         boolean isSecurityPerm = "denyPVP".equals(permName) || "denyAllDamage".equals(permName);
-        if (!isSecurityPerm) {
-            // ADMIN/OWNER/VISITOR不检查per-player deny（安全权限除外）
-            PermissionLevel level = getPermissionLevel(player, ac);
-            if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER || level == PermissionLevel.VISITOR) {
-                return false;
-            }
+        PermissionLevel level = isSecurityPerm ? null : getPermissionLevel(player, ac);
+
+        // 1) ADMIN/OWNER 永远豁免
+        if (level == PermissionLevel.ADMIN || level == PermissionLevel.OWNER) {
+            return false;
         }
 
-        // 尝试读取per-player权限
+        // 2) per-player 显式权限【必须先于 VISITOR 豁免】：
+        //    setPlayerPermJson 建行时 role 写死 'visitor'、expires_at 默认 0，
+        //    旧顺序会把"刚被关停权限的玩家"变成永久访客而直接豁免，关停形同虚设。
         int landId = getLandIdFromDb(ac.name);
         if (landId > 0) {
             Map<String, Boolean> playerPerms = getPlayerPermMap(landId, player.getName());
@@ -2850,7 +2896,12 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // 回退到领地默认权限
+        // 3) 访客豁免（该玩家没有任何 per-player 显式配置时才生效）
+        if (level == PermissionLevel.VISITOR) {
+            return false;
+        }
+
+        // 4) 回退到领地默认权限
         return getLandDefaultDeny(ac, permName);
     }
 
@@ -2928,20 +2979,40 @@ public class AreaProtection implements Listener {
      * 检查玩家是否在任意白名单中（全局白名单 + 区域白名单）
      * 这是所有白名单判断的唯一入口
      */
+    // ===== 统一玩家名规范化（修复大小写变种字符在 Windows/Linux 下比对结果不一致） =====
+
+    /**
+     * 统一玩家名规范化：NFKC 兼容归一 + Locale.ROOT 小写。
+     * 规则固定，不受操作系统默认 Locale / JDK Unicode 版本影响，
+     * 保证同一玩家名在 Windows 开发环境与 Linux 面板服上归一结果完全相同。
+     * 例：İ→i、ẞ→ß、K(Kelvin)→k、全角→半角。
+     */
+    public static String normName(String s) {
+        if (s == null || s.isEmpty()) return "";
+        return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKC)
+                .toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * 白名单集合兼容查询：
+     * 新写入用 normName，历史数据用默认 Locale 小写，两种格式都能命中。
+     */
+    private static boolean whiteContains(Set<String> set, String name) {
+        if (set == null || name == null || name.isEmpty()) return false;
+        String n = normName(name);
+        if (set.contains(n)) return true;
+        String legacy = name.toLowerCase(); // 旧版本写入格式
+        return !legacy.equals(n) && set.contains(legacy);
+    }
+
     private boolean isPlayerWhitelisted(String player,
                                         AreaConfig ac) {
-        String lowerName = player.toLowerCase();
         // 1. 全局白名单
-        if (globalPlayerWhitelist.contains(lowerName))
+        if (whiteContains(globalPlayerWhitelist, player))
             return true;
         // 2. 区域白名单
-        if (ac != null) {
-            Set<String> areaList =
-                    areaPlayerWhitelist.get(ac.name);
-            if (areaList != null
-                    && areaList.contains(lowerName))
-                return true;
-        }
+        if (ac != null && whiteContains(areaPlayerWhitelist.get(ac.name), player))
+            return true;
         return false;
     }
 
@@ -2949,17 +3020,14 @@ public class AreaProtection implements Listener {
      * 快速检查：仅全局白名单（不带 AreaConfig）
      */
     private boolean isGlobalWhite(String player) {
-        return globalPlayerWhitelist.contains(player.toLowerCase());
+        return whiteContains(globalPlayerWhitelist, player);
     }
 
     /**
      * 快速检查：仅区域白名单
      */
     private boolean isAreaWhite(String player, String areaName) {
-        Set<String> areaList =
-                areaPlayerWhitelist.get(areaName);
-        return areaList != null
-                && areaList.contains(player.toLowerCase());
+        return whiteContains(areaPlayerWhitelist.get(areaName), player);
     }
 
     /**
@@ -3255,6 +3323,9 @@ public class AreaProtection implements Listener {
                             p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限");
                         }
                         return;
+                    } else if (ac.denyMove) {
+                        // 领地已开启移动限制但该玩家未被拦下 → 记录命中原因（10秒节流）
+                        logDenyExempt(p, ac, "原地停留");
                     }
 
                     // ★ 每次移动都清除指定效果
@@ -3416,6 +3487,9 @@ public class AreaProtection implements Listener {
                         p.sendMessage("§c§l[区域防护] §f你不具备此领地的移动权限");
                     }
                     return;
+                } else if (newAc.denyMove) {
+                    // 领地已开启移动限制但该玩家未被拦下 → 记录命中原因（10秒节流）
+                    logDenyExempt(p, newAc, "进入区域");
                 }
 
                 // 进入提示（默认消息：欢迎(玩家)来到(领地)）
@@ -3470,6 +3544,38 @@ public class AreaProtection implements Listener {
             playerCurrentArea.put(uid, newArea);
         } else {
             playerCurrentArea.remove(uid);
+        }
+    }
+
+    /**
+     * 诊断日志：领地已开启 denyMove，但该玩家判定为"允许移动"时，
+     * 打印命中的权限级别、白名单状态与权限行内容（每玩家10秒节流）。
+     * 用于 Linux 面板服现场定位"关停权限后仍可移动"到底命中了哪条豁免分支。
+     */
+    private void logDenyExempt(Player p, AreaConfig ac, String scene) {
+        try {
+            long now = System.currentTimeMillis();
+            Long last = denyExemptLogTs.get(p.getUniqueId());
+            if (last != null && now - last < 10000L) return;
+            denyExemptLogTs.put(p.getUniqueId(), now);
+
+            PermissionLevel lvl = getPermissionLevel(p, ac);
+            int landId = getLandIdFromDb(ac.name);
+            PermRow row = landId > 0 ? findPermRow(landId, p.getName()) : null;
+            String name = p.getName();
+            plugin.getLogger().info("[防护][移动豁免诊断] 场景=" + scene
+                    + " 领地=" + ac.name
+                    + " 玩家=" + name
+                    + " 码点=" + java.util.Arrays.toString(name.codePoints().toArray())
+                    + " normName=" + normName(name)
+                    + " level=" + lvl
+                    + " 全局管理员=" + isAreaAdmin(p)
+                    + " 领地主=" + (ac.owner != null && name.equalsIgnoreCase(ac.owner))
+                    + " 白名单=" + isPlayerWhitelisted(name, ac)
+                    + " 访客行=" + (row == null ? "无"
+                        : (row.playerName + "/" + row.role + "/exp=" + row.expiresAt + "/" + row.permissions))
+                    + " 领地默认denyMove=" + ac.denyMove);
+        } catch (Exception ignored) {
         }
     }
 
@@ -4779,7 +4885,7 @@ public class AreaProtection implements Listener {
         }
         Set<String> members = areaPlayerWhitelist.computeIfAbsent(
                 landName, k -> ConcurrentHashMap.newKeySet());
-        members.add(playerName.toLowerCase());
+        members.add(normName(playerName));
         saveWhitelists();
         return true;
     }
@@ -4790,10 +4896,10 @@ public class AreaProtection implements Listener {
     public void removeLandMember(String landName, String playerName) {
         Set<String> members = areaPlayerWhitelist.get(landName);
         if (members != null) {
-            // ★ 尝试精确匹配 + 小写匹配
-            if (!members.remove(playerName)) {
-                members.remove(playerName.toLowerCase());
-            }
+            // ★ 精确 / 旧版默认Locale小写 / normName 三种格式全部尝试移除
+            members.remove(playerName);
+            members.remove(playerName.toLowerCase());
+            members.remove(normName(playerName));
             saveWhitelists();
         }
         // ★ 同步删除 area_land_permissions 记录（确保 admin 身份一并清除）
@@ -8169,15 +8275,28 @@ public class AreaProtection implements Listener {
 
                     // 写入访客权限（带过期时间）
                     long expiresAt = System.currentTimeMillis() + (long) duration * 1000;
-                    PreparedStatement permStmt = dbConnection.prepareStatement(
-                            "INSERT OR REPLACE INTO area_land_permissions (land_id, player_name, role, permissions, granted_at, expires_at) "
-                                    + "VALUES (?, ?, 'visitor', 'shop_purchase', ?, ?)");
-                    permStmt.setInt(1, landId);
-                    permStmt.setString(2, p.getName());
-                    permStmt.setLong(3, System.currentTimeMillis());
-                    permStmt.setLong(4, expiresAt);
-                    permStmt.executeUpdate();
-                    permStmt.close();
+                    PermRow existingPerm = findPermRow(landId, p.getName());
+                    if (existingPerm != null) {
+                        // 已有行（含大小写/变种变体）→ 原地更新，杜绝 BINARY 唯一约束产生的重复行
+                        PreparedStatement permStmt = dbConnection.prepareStatement(
+                                "UPDATE area_land_permissions SET role = 'visitor', permissions = 'shop_purchase', "
+                                        + "granted_at = ?, expires_at = ? WHERE id = ?");
+                        permStmt.setLong(1, System.currentTimeMillis());
+                        permStmt.setLong(2, expiresAt);
+                        permStmt.setInt(3, existingPerm.id);
+                        permStmt.executeUpdate();
+                        permStmt.close();
+                    } else {
+                        PreparedStatement permStmt = dbConnection.prepareStatement(
+                                "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at, expires_at) "
+                                        + "VALUES (?, ?, 'visitor', 'shop_purchase', ?, ?)");
+                        permStmt.setInt(1, landId);
+                        permStmt.setString(2, p.getName());
+                        permStmt.setLong(3, System.currentTimeMillis());
+                        permStmt.setLong(4, expiresAt);
+                        permStmt.executeUpdate();
+                        permStmt.close();
+                    }
 
                     sender.sendMessage("§a§l[权限商店] §f购买成功!");
                     sender.sendMessage("§f领地: §e" + landName + " §f时长: §e" + formatDuration(duration));
@@ -9232,13 +9351,14 @@ public class AreaProtection implements Listener {
             int landId = getLandIdFromDb(landName);
             if (landId < 0) return;
 
-            // 清除数据库中的自定义权限
-            PreparedStatement ps = dbConnection.prepareStatement(
-                "UPDATE area_land_permissions SET permissions = '' WHERE land_id = ? AND player_name = ? COLLATE NOCASE");
-            ps.setInt(1, landId);
-            ps.setString(2, playerName);
-            ps.executeUpdate();
-            ps.close();
+            // 清除数据库中的自定义权限（按 normName 匹配到的所有行，避免大小写变种残留）
+            for (PermRow row : findPermRows(landId, playerName)) {
+                PreparedStatement ps = dbConnection.prepareStatement(
+                    "UPDATE area_land_permissions SET permissions = '' WHERE id = ?");
+                ps.setInt(1, row.id);
+                ps.executeUpdate();
+                ps.close();
+            }
 
             plugin.getLogger().info("[防护] PHP端清除成员权限: " + playerName + " @ " + landName);
         } catch (SQLException e) {
@@ -9568,17 +9688,30 @@ public class AreaProtection implements Listener {
                         + (role != null && !role.isEmpty() ? " (PHP显式携带role)" : " (沿用本地)"));
 
                 // 更新数据库中的自定义权限（同时写回 effectiveRole，确保新记录角色正确）
-                PreparedStatement ps = dbConnection.prepareStatement(
-                    "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
-                    "VALUES (?, ?, ?, ?, ?) " +
-                    "ON CONFLICT(land_id, player_name) DO UPDATE SET permissions = excluded.permissions, role = excluded.role");
-                ps.setInt(1, landId);
-                ps.setString(2, playerName);
-                ps.setString(3, effectiveRole);
-                ps.setString(4, permsJson);
-                ps.setLong(5, System.currentTimeMillis() / 1000);
-                ps.executeUpdate();
-                ps.close();
+                // ★ 先按 normName 定位已有行再 UPDATE/INSERT，避免大小写/变种字符
+                //   与 UNIQUE(land_id, player_name) 的 BINARY 约束不一致而产生重复行
+                PermRow existing = findPermRow(landId, playerName);
+                if (existing != null) {
+                    PreparedStatement ps = dbConnection.prepareStatement(
+                        "UPDATE area_land_permissions SET permissions = ?, role = ?, granted_at = ? WHERE id = ?");
+                    ps.setString(1, permsJson);
+                    ps.setString(2, effectiveRole);
+                    ps.setLong(3, System.currentTimeMillis() / 1000);
+                    ps.setInt(4, existing.id);
+                    ps.executeUpdate();
+                    ps.close();
+                } else {
+                    PreparedStatement ps = dbConnection.prepareStatement(
+                        "INSERT INTO area_land_permissions (land_id, player_name, role, permissions, granted_at) " +
+                        "VALUES (?, ?, ?, ?, ?)");
+                    ps.setInt(1, landId);
+                    ps.setString(2, playerName);
+                    ps.setString(3, effectiveRole);
+                    ps.setString(4, permsJson);
+                    ps.setLong(5, System.currentTimeMillis() / 1000);
+                    ps.executeUpdate();
+                    ps.close();
+                }
             }
 
             plugin.getLogger().info("[防护] PHP端更新权限: " + playerName + " @ " + Arrays.toString(landNames));
@@ -9591,23 +9724,8 @@ public class AreaProtection implements Listener {
      * 查询本地 area_land_permissions 表中指定玩家在当前领地的角色
      */
     private String getLocalRole(int landId, String playerName) {
-        if (dbConnection == null) return null;
-        try {
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                    "SELECT role FROM area_land_permissions WHERE land_id = ? AND player_name = ? COLLATE NOCASE");
-            stmt.setInt(1, landId);
-            stmt.setString(2, playerName);
-            ResultSet rs = stmt.executeQuery();
-            String role = null;
-            if (rs.next()) {
-                role = rs.getString("role");
-            }
-            rs.close();
-            stmt.close();
-            return role;
-        } catch (SQLException e) {
-            return null;
-        }
+        PermRow row = findPermRow(landId, playerName);
+        return row == null ? null : row.role;
     }
 
     /**
@@ -10443,29 +10561,13 @@ public class AreaProtection implements Listener {
      */
     public boolean hasValidVisitorPermission(Player player, AreaConfig ac) {
         if (dbConnection == null || ac == null) return false;
-        try {
-            int landId = getLandIdFromDb(ac.name);
-            if (landId <= 0) return false;
-            PreparedStatement stmt = dbConnection.prepareStatement(
-                    "SELECT expires_at FROM area_land_permissions "
-                            + "WHERE land_id = ? AND player_name = ? AND role = 'visitor'");
-            stmt.setInt(1, landId);
-            stmt.setString(2, player.getName());
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                long expiresAt = rs.getLong("expires_at");
-                if (expiresAt == 0 || expiresAt > System.currentTimeMillis()) {
-                    rs.close();
-                    stmt.close();
-                    return true;
-                }
-            }
-            rs.close();
-            stmt.close();
-        } catch (SQLException e) {
-            // 忽略
-        }
-        return false;
+        int landId = getLandIdFromDb(ac.name);
+        if (landId <= 0) return false;
+        // 精确优先 + normName 规范化匹配（旧版为 SQL 精确匹配，与读 per-player 权限的
+        // NOCASE 口径不一致，大小写变种玩家会出现"读到权限行却查不到访客身份"的错位）
+        PermRow row = findPermRow(landId, player.getName());
+        if (row == null || !"visitor".equalsIgnoreCase(row.role)) return false;
+        return row.expiresAt == 0 || row.expiresAt > System.currentTimeMillis();
     }
 
     /** 显示用户组管理面板（CLI可点击交互） */
@@ -10656,12 +10758,12 @@ public class AreaProtection implements Listener {
 
     public boolean isPlayerGlobalWhitelisted(
             String playerName) {
-        return globalPlayerWhitelist.contains(playerName);
+        return whiteContains(globalPlayerWhitelist, playerName);
     }
 
     public boolean addPlayerToGlobalWhitelist(
             String playerName) {
-        boolean ok = globalPlayerWhitelist.add(playerName.toLowerCase());
+        boolean ok = globalPlayerWhitelist.add(normName(playerName));
         if (ok) saveWhitelists();
         return ok;
     }
@@ -10670,15 +10772,14 @@ public class AreaProtection implements Listener {
             String playerName) {
         boolean ok = globalPlayerWhitelist.remove(playerName);
         if (!ok) ok = globalPlayerWhitelist.remove(playerName.toLowerCase());
+        if (!ok) ok = globalPlayerWhitelist.remove(normName(playerName));
         if (ok) saveWhitelists();
         return ok;
     }
 
     public boolean isPlayerAreaWhitelisted(
             String areaName, String playerName) {
-        Set<String> wl =
-                areaPlayerWhitelist.get(areaName);
-        return wl != null && wl.contains(playerName.toLowerCase());
+        return whiteContains(areaPlayerWhitelist.get(areaName), playerName);
     }
 
     public boolean addPlayerToAreaWhitelist(
@@ -10686,7 +10787,7 @@ public class AreaProtection implements Listener {
         Set<String> set = areaPlayerWhitelist
                 .computeIfAbsent(areaName,
                         k -> ConcurrentHashMap.newKeySet());
-        boolean ok = set.add(playerName.toLowerCase());
+        boolean ok = set.add(normName(playerName));
         if (ok) saveWhitelists();
         return ok;
     }
@@ -10695,31 +10796,30 @@ public class AreaProtection implements Listener {
             String areaName, String playerName) {
         Set<String> wl =
                 areaPlayerWhitelist.get(areaName);
-        if (wl == null) return false;
-        // ★ 精确匹配 + 小写匹配
-        boolean ok = wl.remove(playerName);
-        if (!ok) ok = wl.remove(playerName.toLowerCase());
-        if (ok) saveWhitelists();
+        boolean ok = false;
+        if (wl != null) {
+            // ★ 精确 / 旧版默认Locale小写 / normName 三种格式全部尝试移除
+            ok = wl.remove(playerName);
+            if (!ok) ok = wl.remove(playerName.toLowerCase());
+            if (!ok) ok = wl.remove(normName(playerName));
+            if (ok) saveWhitelists();
+        }
 
-        // ★ 移除成员时，同步删除 area_land_permissions 记录
-        //   确保 admin 身份一并清除，不再继承
+        // ★ 无论内存白名单是否有该区域条目，都同步删除 area_land_permissions 记录：
+        //   旧版在 wl == null 时直接返回，DB 中残留的 admin/visitor 行会让玩家
+        //   继续被 getPermissionLevel 判为 ADMIN/VISITOR，从而绕过 denyMove。
         if (dbConnection != null) {
             try {
                 int landId = getLandIdFromDb(areaName);
                 if (landId > 0) {
-                    PreparedStatement ps = dbConnection.prepareStatement(
-                        "DELETE FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
-                    ps.setInt(1, landId);
-                    ps.setString(2, playerName);
-                    ps.executeUpdate();
-                    ps.close();
-                    // 同时删小写
-                    PreparedStatement ps2 = dbConnection.prepareStatement(
-                        "DELETE FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
-                    ps2.setInt(1, landId);
-                    ps2.setString(2, playerName.toLowerCase());
-                    ps2.executeUpdate();
-                    ps2.close();
+                    // 按 normName 匹配删除所有大小写/变种变体行，确保身份一并清除
+                    for (PermRow row : findPermRows(landId, playerName)) {
+                        PreparedStatement ps = dbConnection.prepareStatement(
+                            "DELETE FROM area_land_permissions WHERE id = ?");
+                        ps.setInt(1, row.id);
+                        ps.executeUpdate();
+                        ps.close();
+                    }
                 }
             } catch (SQLException e) {
                 plugin.getLogger().warning("[防护] 移除成员时清理权限失败: " + e.getMessage());

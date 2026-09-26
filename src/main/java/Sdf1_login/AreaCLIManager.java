@@ -1017,9 +1017,11 @@ public class AreaCLIManager {
             return;
         }
 
-        // 检查目标是否为成员（成员名存为小写）
+        // 检查目标是否为成员（新数据存 normName，历史数据存默认Locale小写）
         Set<String> members = areaProtect.getLandMembers(landName);
-        if (!members.contains(targetPlayer) && !members.contains(targetPlayer.toLowerCase())) {
+        if (!members.contains(targetPlayer)
+                && !members.contains(targetPlayer.toLowerCase())
+                && !members.contains(AreaProtection.normName(targetPlayer))) {
             p.sendMessage(Component.text("§c" + targetPlayer + " 不是该领地的成员"));
             return;
         }
