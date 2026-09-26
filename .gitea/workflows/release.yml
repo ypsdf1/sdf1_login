@@ -13,13 +13,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup JDK 25 (Temurin)
-        uses: actions/setup-java@v4
-        with:
-          java-version: "25"
-          distribution: "temurin"
-
       - name: Build with Maven
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-25-openjdk
+          PATH: "${JAVA_HOME}/bin:${PATH}"
         run: mvn -B clean package -DskipTests
 
       - name: Verify JAR
@@ -28,6 +25,7 @@ jobs:
       - name: Create Release
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
+          JAVA_HOME: /usr/lib/jvm/java-25-openjdk
         run: |
           set -e
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk "{print \$2}" | tr -d "\r\n ")
@@ -59,34 +57,23 @@ jobs:
               "${BASE}/tags/${TAG}"
             sleep 1
           elif [ "$HTTP_CODE" = "404" ]; then
-            echo "Tag ${TAG} not found, will create new"
-          else
-            echo "Warning: unexpected response checking tag"
+            echo "Tag ${TAG} does not exist, continuing..."
           fi
 
-          echo "=== Creating release ${TAG} ==="
-          RELEASE_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
+          echo "=== Creating release ==="
+          curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Sdf1_login ${TAG}\",\"body\":\"Version: ${VERSION}\\\\nCommit: \${{ gitea.sha }}\\\\nBranch: \${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
-            "${BASE}/releases")
-          RELEASE_HTTP=$(echo "$RELEASE_RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
-          echo "Create release HTTP: ${RELEASE_HTTP}"
+            "${BASE}/releases" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"Auto release by Gitea Actions\"}"
 
-          if [ "$RELEASE_HTTP" != "201" ]; then
-            echo "=== Release creation failed! ==="
-            echo "$RELEASE_RESP" | head -1
-            exit 1
-          fi
+          echo "=== Uploading artifact ==="
+          JAR=$(ls target/*.jar | head -1)
+          echo "Uploading ${JAR}"
+          curl -s -X POST \
+            -H "Authorization: token $GITEA_TOKEN" \
+            -H "Content-Type: application/jar" \
+            "$(curl -s -H "Authorization: token $GITEA_TOKEN" \"${BASE}/releases/tags/${TAG}" | grep -o \"upload_url[^}]*\" | cut -d'"' -f4)" \
+            --data-binary @"${JAR}"
 
-          RELEASE_ID=$(echo "$RELEASE_RESP" | head -1 | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)
-          if [ -n "$RELEASE_ID" ]; then
-            echo "=== Uploading JAR to release #${RELEASE_ID} ==="
-            curl -s -X POST \
-              -H "Authorization: token $GITEA_TOKEN" \
-              -F "attachment=@target/Sdf1_login.jar" \
-              "${BASE}/releases/${RELEASE_ID}/assets"
-            echo "Release ${TAG} created with JAR"
-          else
-            echo "Release created but could not get release ID for JAR upload"
-          fi
+          echo "=== Release ${TAG} created successfully ==="
