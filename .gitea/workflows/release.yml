@@ -25,18 +25,15 @@ jobs:
       - name: Create Release
         env:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
-          JAVA_HOME: /usr/lib/jvm/java-25-openjdk
         run: |
           set -e
-          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '
- ')
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v${VERSION}"
           BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
           echo "Version: ${VERSION}, Tag: ${TAG}"
 
           echo "=== Checking existing tag ${TAG} ==="
-          RESP=$(curl -s -w '
-HTTP_CODE:%{http_code}'             -H "Authorization: token $GITEA_TOKEN"             "${BASE}/releases/tags/${TAG}")
+          RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/tags/${TAG}")
           HTTP_CODE=$(echo "$RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Check tag HTTP: ${HTTP_CODE}"
 
@@ -49,13 +46,19 @@ HTTP_CODE:%{http_code}'             -H "Authorization: token $GITEA_TOKEN"      
           fi
 
           echo "=== Creating release ==="
-          curl -s -X POST             -H "Authorization: token $GITEA_TOKEN"             -H "Content-Type: application/json"             "${BASE}/releases"             -d "{"tag_name":"\","name":"\","body":"Auto release by Gitea Actions"}"
+          curl -s -X POST \
+            -H "Authorization: token $GITEA_TOKEN" \
+            -H "Content-Type: application/json" \
+            "${BASE}/releases" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"Auto release by Gitea Actions\"}"
 
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
-          UPLOAD_URL=$(curl -s -H "Authorization: token $GITEA_TOKEN"             "${BASE}/releases/tags/${TAG}" | grep -o '"upload_url":[^,]*' | cut -d'"' -f4)
-          curl -s -X POST             -H "Authorization: token $GITEA_TOKEN"             -H "Content-Type: application/jar"             "${UPLOAD_URL}?name=$(basename ${JAR})"             --data-binary @"${JAR}"
+          UPLOAD_URL=$(curl -s -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/tags/${TAG}" | grep -o '"upload_url":[^,]*' | cut -d'"' -f4)
+          curl -s -X POST \
+            -H "Authorization: token $GITEA_TOKEN" \
+            -H "Content-Type: application/jar" \
+            "${UPLOAD_URL}?name=$(basename ${JAR})" \
+            --data-binary "@${JAR}"
 
           echo "=== Release ${TAG} created successfully ==="
-
-# Auto-triggered fix for system JDK
