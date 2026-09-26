@@ -105,3 +105,4 @@ backup/
 *.pack
 *.rar
 test.*
+/*.rev
