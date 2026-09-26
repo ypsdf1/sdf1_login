@@ -90,6 +90,8 @@ public class LoginManager {
         p.sendMessage(plugin.getConfig2()
                 .msg("reg_success"));
         playRegisterSound(p);
+        // ★ 注册成功：actionbar 提示1分钟保存刚才的账号和密码
+        plugin.showCredentialSaveReminder(p, name, pwd);
 
         try {
             org.bukkit.plugin.Plugin cy =

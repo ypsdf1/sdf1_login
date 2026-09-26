@@ -158,6 +158,9 @@ public class ChatInputManager {
                         .remove(name);
                 p.sendMessage(config.msg(
                         "password_changed"));
+                // ★ 改密成功：actionbar 提示1分钟保存账号密码
+                mainPlugin.showCredentialSaveReminder(
+                        p, name, msg);
                 if ("temp".equals(state.ticketTitle)) {
                     p.sendMessage("§7(本次是用临时密码改的，临时密码已作废)");
                 }
