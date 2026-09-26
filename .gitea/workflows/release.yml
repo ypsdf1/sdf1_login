@@ -57,3 +57,5 @@ HTTP_CODE:%{http_code}'             -H "Authorization: token $GITEA_TOKEN"      
           curl -s -X POST             -H "Authorization: token $GITEA_TOKEN"             -H "Content-Type: application/jar"             "${UPLOAD_URL}?name=$(basename ${JAR})"             --data-binary @"${JAR}"
 
           echo "=== Release ${TAG} created successfully ==="
+
+# Auto-triggered fix for system JDK
