@@ -305,19 +305,71 @@ public class LandRecordManager implements Listener {
         queryAndPrint(p, loc, 0);
     }
 
+    /**
+     * ★ 收集查询坐标组：大箱子（double chest）由两个方块组成，
+     * 记录写入时用"被点击的那一半"坐标，查询时用"准心对准的那一半"坐标，
+     * 两边坐标不一致就会查不到记录。这里沿同层同类型箱子扩展，
+     * 把整只大箱子的所有坐标一起查出来再合并。
+     */
+    private List<Location> collectQueryLocations(Location loc) {
+        List<Location> result = new ArrayList<>();
+        result.add(loc);
+        Block start;
+        try {
+            start = loc.getBlock();
+        } catch (Exception ex) {
+            return result; // 世界未加载等异常，退回单点查询
+        }
+        Material type = start.getType();
+        // 只有能拼成大箱子的类型才需要扩展
+        if (type != Material.CHEST && type != Material.TRAPPED_CHEST) {
+            return result;
+        }
+        Set<String> seen = new LinkedHashSet<>();
+        seen.add(keyOf(start));
+        Deque<Block> queue = new ArrayDeque<>();
+        queue.add(start);
+        int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        while (!queue.isEmpty()) {
+            Block cur = queue.poll();
+            for (int[] d : dirs) {
+                Block n = cur.getRelative(d[0], 0, d[1]);
+                if (n.getType() != type) continue;
+                if (seen.add(keyOf(n))) {
+                    result.add(n.getLocation());
+                    queue.add(n);
+                }
+            }
+        }
+        return result;
+    }
+
+    private String keyOf(Block b) {
+        return b.getX() + "," + b.getY() + "," + b.getZ();
+    }
+
     private void queryAndPrint(Player p, Location loc, int page) {
         String world = loc.getWorld().getName();
         int x = loc.getBlockX(), y = loc.getBlockY(),
                 z = loc.getBlockZ();
 
+        // ★ 大箱子：把整只箱子的所有半边坐标都查一遍
+        List<Location> group = collectQueryLocations(loc);
+
         // 按天分页：page=0今日，1昨日，2前日...
-        List<Map<String, Object>> blocks =
-                plugin.getDb().getLandBlockLogAt(
-                        world, x, y, z, QUERY_LIMIT, page);
-        // 按天分页：page=0今日，1昨日，2前日...
-        List<Map<String, Object>> containers =
-                plugin.getDb().getLandContainerLogAt(
-                        world, x, y, z, QUERY_LIMIT, page);
+        List<Map<String, Object>> rawBlocks = new ArrayList<>();
+        List<Map<String, Object>> rawContainers = new ArrayList<>();
+        for (Location g : group) {
+            int gx = g.getBlockX(), gy = g.getBlockY(), gz = g.getBlockZ();
+            rawBlocks.addAll(plugin.getDb().getLandBlockLogAt(
+                    world, gx, gy, gz, QUERY_LIMIT, page));
+            rawContainers.addAll(plugin.getDb().getLandContainerLogAt(
+                    world, gx, gy, gz, QUERY_LIMIT, page));
+        }
+        sortByTimeDesc(rawBlocks);
+        sortByTimeDesc(rawContainers);
+        List<Map<String, Object>> blocks = truncate(rawBlocks);
+        List<Map<String, Object>> containers = truncate(rawContainers);
 
         if (blocks.isEmpty() && containers.isEmpty()) {
             if (page > 0) {
@@ -347,8 +399,17 @@ public class LandRecordManager implements Listener {
 
         // 检查下一页是否有数据（决定是否显示"下一页"链接）
         boolean hasNext = false;
-        if (!plugin.getDb().getLandBlockLogAt(world, x, y, z, 1, page + 1).isEmpty()) hasNext = true;
-        if (!plugin.getDb().getLandContainerLogAt(world, x, y, z, 1, page + 1).isEmpty()) hasNext = true;
+        for (Location g : group) {
+            int gx = g.getBlockX(), gy = g.getBlockY(), gz = g.getBlockZ();
+            if (!plugin.getDb().getLandBlockLogAt(world, gx, gy, gz, 1, page + 1).isEmpty()) {
+                hasNext = true;
+                break;
+            }
+            if (!plugin.getDb().getLandContainerLogAt(world, gx, gy, gz, 1, page + 1).isEmpty()) {
+                hasNext = true;
+                break;
+            }
+        }
 
         final int currentPage = page;
         final boolean hasNextPage = hasNext;
@@ -359,6 +420,22 @@ public class LandRecordManager implements Listener {
                         printResults(p, x, y, z, blocks, containers, translations, currentPage, hasNextPage);
                     });
                 });
+    }
+
+    /** 按 time 倒序（新→旧），兼容 Long/Number 两种取值 */
+    private void sortByTimeDesc(List<Map<String, Object>> list) {
+        list.sort((a, b) -> Long.compare(timeOf(b), timeOf(a)));
+    }
+
+    private long timeOf(Map<String, Object> r) {
+        Object v = r.get("time");
+        return v instanceof Number ? ((Number) v).longValue() : 0L;
+    }
+
+    /** 截断到 QUERY_LIMIT 条，返回新列表 */
+    private List<Map<String, Object>> truncate(List<Map<String, Object>> list) {
+        if (list.size() <= QUERY_LIMIT) return list;
+        return new ArrayList<>(list.subList(0, QUERY_LIMIT));
     }
 
     private void printResults(Player p, int x, int y, int z,

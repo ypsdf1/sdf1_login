@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: self-hosted
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -14,13 +16,8 @@ jobs:
       - name: Setup JDK 25 (Temurin)
         uses: actions/setup-java@v4
         with:
-          java-version: '25'
-          distribution: 'temurin'
-
-      - name: Verify Java
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
+          java-version: "25"
+          distribution: "temurin"
 
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
@@ -33,29 +30,26 @@ jobs:
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          # 从 plugin.yml 提取版本号作为标签
-          VERSION=$(grep '^version:' src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk "{print \$2}" | tr -d "\r\n ")
           TAG="v${VERSION}"
           BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
           echo "Version: ${VERSION}, Tag: ${TAG}"
           echo "Token prefix: ${GITEA_TOKEN:0:8}..."
 
-          # 测试 token 权限
           echo "=== Testing API access ==="
           curl -s -w "\nHTTP_CODE:%{http_code}\n" \
             -H "Authorization: token $GITEA_TOKEN" \
             "${BASE}" | tail -5
 
-          # 如果同版本标签已存在，先删除旧 release
           echo "=== Checking existing tag ${TAG} ==="
           RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
             -H "Authorization: token $GITEA_TOKEN" \
             "${BASE}/releases/tags/${TAG}")
-          HTTP_CODE=$(echo "$RESP" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+          HTTP_CODE=$(echo "$RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Check tag HTTP: ${HTTP_CODE}"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            OLD_ID=$(echo "$RESP" | head -1 | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+            OLD_ID=$(echo "$RESP" | head -1 | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)
             echo "Tag ${TAG} exists (release #${OLD_ID}), deleting..."
             curl -s -X DELETE \
               -H "Authorization: token $GITEA_TOKEN" \
@@ -70,14 +64,13 @@ jobs:
             echo "Warning: unexpected response checking tag"
           fi
 
-          # 创建新 release
           echo "=== Creating release ${TAG} ==="
           RELEASE_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Sdf1_login ${TAG}\",\"body\":\"Version: ${VERSION}\\nCommit: ${{ gitea.sha }}\\nBranch: ${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"Sdf1_login ${TAG}\",\"body\":\"Version: ${VERSION}\\\\nCommit: \${{ gitea.sha }}\\\\nBranch: \${{ gitea.ref_name }}\",\"draft\":false,\"prerelease\":false}" \
             "${BASE}/releases")
-          RELEASE_HTTP=$(echo "$RELEASE_RESP" | grep -o 'HTTP_CODE:[0-9]*' | cut -d: -f2)
+          RELEASE_HTTP=$(echo "$RELEASE_RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Create release HTTP: ${RELEASE_HTTP}"
 
           if [ "$RELEASE_HTTP" != "201" ]; then
@@ -86,15 +79,14 @@ jobs:
             exit 1
           fi
 
-          # 上传 JAR 资产
-          RELEASE_ID=$(echo "$RELEASE_RESP" | head -1 | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+          RELEASE_ID=$(echo "$RELEASE_RESP" | head -1 | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)
           if [ -n "$RELEASE_ID" ]; then
             echo "=== Uploading JAR to release #${RELEASE_ID} ==="
             curl -s -X POST \
               -H "Authorization: token $GITEA_TOKEN" \
               -F "attachment=@target/Sdf1_login.jar" \
               "${BASE}/releases/${RELEASE_ID}/assets"
-            echo "✅ Release ${TAG} created with JAR"
+            echo "Release ${TAG} created with JAR"
           else
-            echo "⚠️ Release created but could not get release ID for JAR upload"
+            echo "Release created but could not get release ID for JAR upload"
           fi

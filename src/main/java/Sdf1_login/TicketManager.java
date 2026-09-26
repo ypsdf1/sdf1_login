@@ -1411,7 +1411,7 @@ public class TicketManager {
         plugin.getDb().updateTicketField(tid,
                 "admin_confirmed", 1);
         Player target =
-                Bukkit.getPlayer(requester);
+                Bukkit.getPlayerExact(requester);
         if (target != null && target.isOnline()) {
             plugin.backupInventory(target);
             target.sendMessage(
@@ -1431,10 +1431,17 @@ public class TicketManager {
         final String name = requester;
         Bukkit.getScheduler().runTaskLater(
                 plugin, () -> {
-                    plugin.getDb().deleteUser(name);
-                    plugin.getLogger().info(
-                            "[Sdf1_login] " + name
-                                    + " 删号工单已执行");
+                    int deleted =
+                            plugin.getDb().deleteUser(name);
+                    if (deleted > 0) {
+                        plugin.getLogger().info(
+                                "[Sdf1_login] " + name
+                                        + " 删号工单已执行");
+                    } else {
+                        plugin.getLogger().warning(
+                                "[Sdf1_login] " + name
+                                        + " 删号工单未执行（精准匹配下账号不存在，未误删）");
+                    }
                 }, 100L);
     }
 

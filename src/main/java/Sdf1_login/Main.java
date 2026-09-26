@@ -102,15 +102,18 @@ public class Main extends JavaPlugin
     // ★ 自身发起的封禁标记（防止PlayerBanEvent双重广播）
     private final Set<String> selfInitiatedBans = ConcurrentHashMap.newKeySet();
 
-    private final Set<String> loggedIn =
-            new TreeSet<>(
-                    String.CASE_INSENSITIVE_ORDER);
+    // ★ 登录态按"精确玩家名"记录（大小写敏感）：
+    //   登录必须绑定到当前会话的玩家名。原先用大小写不敏感集合，
+    //   会导致大小写变体的两个会话共享登录态——一人登录另一人免登录，
+    //   且一方下线会把另一方"突然冻结"（现象B根因之一）。
+    private final Set<String> loggedIn = new HashSet<>();
     // ★ 已通过Microsoft OAuth验证的正版玩家（服务器重启前有效）
     // 格式: playerName -> [mcUuid, mcUsername, verifiedAt]
     private final ConcurrentHashMap<String, String[]> verifiedPremiumPlayers = new ConcurrentHashMap<>();
-    private final Set<String> needsPasswordChange =
-            new TreeSet<>(
-                    String.CASE_INSENSITIVE_ORDER);
+    // ★ 强制改密标记：同样按精确玩家名记录，避免跨大小写会话串扰
+    private final Set<String> needsPasswordChange = new HashSet<>();
+    // ★ 冻结态"请先登录"提示节流（玩家UUID -> 上次提示时间）
+    private final ConcurrentHashMap<UUID, Long> lastFrozenHint = new ConcurrentHashMap<>();
     private final Map<UUID, Long> joinTime =
             new ConcurrentHashMap<>();
     private final Map<UUID, Location> joinLoc =
@@ -1072,6 +1075,62 @@ public class Main extends JavaPlugin
                     (int) s.charAt(i)));
         }
         return sb.toString();
+    }
+
+    // ==================== 注册/改密后的"保存账号密码"actionbar 提示 ====================
+    /** 玩家当前正在播放的提示任务（重复触发先取消旧的） */
+    private final java.util.Map<java.util.UUID, org.bukkit.scheduler.BukkitTask>
+            credentialSaveTasks = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 提示持续时长：1 分钟 */
+    private static final long CREDENTIAL_SAVE_MS = 60_000L;
+
+    /**
+     * 注册 / 改密码成功后调用：actionbar 连续显示 60 秒
+     * "请尽快保存刚才的账号和密码"，1 分钟后自动清除提示。
+     *
+     * @param account  刚注册/刚改密的账号名
+     * @param password 刚设置的明文密码（仅本次会话内存中使用）
+     */
+    public void showCredentialSaveReminder(Player p,
+                                           String account,
+                                           String password) {
+        if (p == null || !p.isOnline() || account == null) return;
+        java.util.UUID uid = p.getUniqueId();
+
+        // 同一玩家重复触发：先掐掉上一个提示任务
+        org.bukkit.scheduler.BukkitTask old =
+                credentialSaveTasks.remove(uid);
+        if (old != null) old.cancel();
+
+        final String line = "§e§l[账号安全] §f请尽快保存 §e"
+                + account + " §7/ §e" + password
+                + " §7· §860秒后自动消失";
+        final long endAt = System.currentTimeMillis() + CREDENTIAL_SAVE_MS;
+
+        org.bukkit.scheduler.BukkitTask task =
+                getServer().getScheduler().runTaskTimer(this, () -> {
+                    Player pl = Bukkit.getPlayer(uid);
+                    boolean expired =
+                            System.currentTimeMillis() >= endAt;
+                    if (pl == null || !pl.isOnline() || expired) {
+                        if (pl != null && pl.isOnline()) {
+                            // 1 分钟到：清空 actionbar 小标题
+                            pl.spigot().sendMessage(
+                                    net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                                    net.md_5.bungee.api.chat.TextComponent
+                                            .fromLegacyText(""));
+                        }
+                        org.bukkit.scheduler.BukkitTask cur =
+                                credentialSaveTasks.remove(uid);
+                        if (cur != null) cur.cancel();
+                        return;
+                    }
+                    pl.spigot().sendMessage(
+                            net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                            net.md_5.bungee.api.chat.TextComponent
+                                    .fromLegacyText(line));
+                }, 0L, 20L);
+        credentialSaveTasks.put(uid, task);
     }
 
     private boolean isAdmin(CommandSender sender) {
@@ -2870,6 +2929,14 @@ public class Main extends JavaPlugin
             }
             e.setCancelled(true);
             p.setAllowFlight(true);
+            // ★ 提示冻结原因（5秒节流）：让未登录玩家立刻知道自己为什么不能动，
+            //   避免"莫名其妙被冻结"的体感（现象B）
+            long hintNow = System.currentTimeMillis();
+            Long hintLast = lastFrozenHint.get(p.getUniqueId());
+            if (hintLast == null || hintNow - hintLast > 5000L) {
+                lastFrozenHint.put(p.getUniqueId(), hintNow);
+                p.sendMessage("§c§l[登录] §f你还未登录，无法移动。请使用 §e/l <密码> §f登录（新玩家请先 §e/reg <密码> 注册）");
+            }
         }
         
         // PVP竞技场世界检测
@@ -3027,6 +3094,32 @@ public class Main extends JavaPlugin
             e.setCancelled(true);
             return;
         }
+    }
+
+    // ★ 未登录(冻结)玩家只允许登录相关命令：
+    //   1) 堵住"没登录却能跑 /protect 等管理命令"的越权口子；
+    //   2) 让未登录的管理员立刻收到"请先登录"反馈，而不是等下线/换人才莫名被冻结（现象B）
+    private static final Set<String> FROZEN_ALLOWED_CMDS = new HashSet<>(java.util.Arrays.asList(
+            "l", "login", "reg", "sdf1_login",
+            "注册", "登录", "改密码", "找回密码",
+            "mslogin", "正版", "email", "绑定", "绑定邮箱",
+            "删除账号", "通过", "拒绝", "web", "控制台",
+            "help"));
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onFrozenCommandGuard(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
+        if (e.isCancelled()) return;
+        Player p = e.getPlayer();
+        if (!isFrozen(p)) return;
+        String msg = e.getMessage().trim();
+        if (msg.isEmpty() || msg.charAt(0) != '/') return;
+        String body = msg.substring(1).trim().toLowerCase();
+        if (body.isEmpty()) return;
+        String cmd = body.split(" ", 2)[0];
+        if (FROZEN_ALLOWED_CMDS.contains(cmd)
+                || body.startsWith("minecraft:help")) return;
+        e.setCancelled(true);
+        p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
     }
 
     // ★ 拦截原版 /ban、/ban-ip 命令，补充广播封禁警告（覆盖永久/临时封禁）
@@ -6477,8 +6570,12 @@ public class Main extends JavaPlugin
             }
             String target = args[1];
             if (!db.userExists(target)) {
+                String twin = db.findSimilarUserNameIgnoreCase(target);
                 sender.sendMessage(
-                        "§c玩家 " + target + " 不存在");
+                        "§c玩家 " + target + " 不存在"
+                                + (twin != null
+                                ? "（仅存在大小写不同的账号 §e" + twin
+                                + "§c，精准匹配下不可删）" : ""));
                 return true;
             }
             if (pendingDeleteTask != null) {
@@ -6497,13 +6594,23 @@ public class Main extends JavaPlugin
                     pendingDeleteName = null;
                     pendingDeleteTask = null;
                     if (name == null) return;
-                    db.deleteUser(name);
-                    if (webManager != null) {
+                    // ★ 精准匹配：TEST 与 test 是两个人，只删完全相等的那条
+                    int deleted = db.deleteUser(name);
+                    if (webManager != null && deleted > 0) {
                         webManager.deleteWebUser(name);
+                    }
+                    if (deleted <= 0) {
+                        String twin = db.findSimilarUserNameIgnoreCase(name);
+                        getLogger().warning(
+                                "[Sdf1_login] 未删除（精准匹配）: " + name
+                                        + (twin != null
+                                        ? "，仅存在大小写不同的账号 " + twin : "，账号不存在"));
+                        return;
                     }
                     getLogger().info(
                             "[Sdf1_login] 已删除: " + name);
-                    Player tp = Bukkit.getPlayer(name);
+                    // ★ 只踢名字完全相同的在线玩家，避免误伤大小写不同的账号
+                    Player tp = Bukkit.getPlayerExact(name);
                     if (tp != null && tp.isOnline())
                         tp.kickPlayer(
                                 "§c账号已被管理员删除");
@@ -6535,12 +6642,21 @@ public class Main extends JavaPlugin
             String name = pendingDeleteName;
             pendingDeleteName = null;
             pendingDeleteTask = null;
-            db.deleteUser(name);
-            if (webManager != null) {
+            int deleted = db.deleteUser(name);
+            if (webManager != null && deleted > 0) {
                 webManager.deleteWebUser(name);
             }
+            if (deleted <= 0) {
+                String twin = db.findSimilarUserNameIgnoreCase(name);
+                sender.sendMessage("§c未删除：账号 " + name + " 不存在"
+                        + (twin != null
+                        ? "（仅存在大小写不同的账号 §e" + twin
+                        + "§c，已按精准匹配跳过）" : ""));
+                return true;
+            }
             sender.sendMessage("§a已立即删除: " + name);
-            Player tp = Bukkit.getPlayer(name);
+            // ★ 只踢名字完全相同的在线玩家，避免误伤大小写不同的账号
+            Player tp = Bukkit.getPlayerExact(name);
             if (tp != null && tp.isOnline())
                 tp.kickPlayer("§c账号已被管理员删除");
             return true;
@@ -6937,7 +7053,8 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                String pwdResult = db.checkPasswordWithFallback(
+                // ★ 同时校验真实密码 + 临时密码（临时密码不再受5分钟有效期限制）
+                String pwdResult = db.checkPasswordForChange(
                         p2.getName(), hash);
                 if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));
@@ -6960,9 +7077,15 @@ public class Main extends JavaPlugin
                 Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                     webManager.pushWebLoginCredentials();
                 });
-                if (isTemp)
-                    db.clearTempPassword(p2.getName());
+                // ★ 无论用真实密码还是临时密码改密成功，都作废旧的临时密码
+                db.clearTempPassword(p2.getName());
                 needsPasswordChange.remove(p2.getName());
+                p2.sendMessage(config.msg("password_changed"));
+                // ★ 改密成功：actionbar 提示1分钟保存账号密码
+                showCredentialSaveReminder(p2, p2.getName(), newPwd);
+                if (isTemp) {
+                    p2.sendMessage("§7(本次是用临时密码改的，临时密码已作废)");
+                }
 
                 return true;
             }
@@ -6972,7 +7095,8 @@ public class Main extends JavaPlugin
                 String salt = (String) db.getField(
                         p2.getName(), "password_salt");
                 String hash = PasswordUtils.hash(oldPwd, salt);
-                String pwdResult = db.checkPasswordWithFallback(
+                // ★ 同时校验真实密码 + 临时密码（临时密码不再受5分钟有效期限制）
+                String pwdResult = db.checkPasswordForChange(
                         p2.getName(), hash);
                 if (pwdResult == null) {
                     p2.sendMessage(config.msg("password_wrong"));

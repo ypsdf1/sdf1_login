@@ -95,11 +95,24 @@ public class AccountRequestManager {
     public boolean approveRequest(int id) {
         Request req = requests.get(id);
         if (req == null || !"PENDING".equals(req.status)) return false;
+        // ★ 精准匹配：TEST 与 test 是两个人，名字必须完全相等才删
+        if (plugin.getDb().findExactUserName(req.target) == null) {
+            String twin = plugin.getDb()
+                    .findSimilarUserNameIgnoreCase(req.target);
+            System.out.println("[Sdf1_login] 删号申请 #"+ id
+                    + " 未执行：账号 " + req.target
+                    + (twin != null ? " 不存在，仅存在大小写不同的账号 " + twin : " 不存在")
+                    + "（精准匹配，未误删）");
+            return false;
+        }
+        int deleted = plugin.getDb().deleteUser(req.target);
+        if (deleted <= 0) {
+            return false;
+        }
         req.status = "APPROVED";
-        plugin.getDb().deleteUser(req.target);
         pendingByPlayer.remove(req.requester);
-        // 清背包+传送出生点+踢出
-        Player target = Bukkit.getPlayer(req.target);
+        // 清背包+传送出生点+踢出（★ getPlayerExact：避免误伤大小写不同的在线玩家）
+        Player target = Bukkit.getPlayerExact(req.target);
         if (target != null && target.isOnline()) {
             target.getInventory().clear();
             target.getInventory().setArmorContents(new org.bukkit.inventory.ItemStack[4]);

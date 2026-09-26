@@ -728,6 +728,55 @@ public class DatabaseManager {
         }
         return null;
     }
+
+    /**
+     * ★ 修改密码专用校验：同时校验【真实密码】与【临时密码】。
+     *
+     * 与登录校验 (checkPasswordWithFallback) 的区别：
+     * 临时密码的有效期只对"登录"生效，对"改密"不生效。
+     * 原因：玩家用临时密码登录成功后，若忘记真实密码，
+     * 一旦临时密码 5 分钟过期，就再也没有任何途径改密，
+     * 账号被永久锁死。改密本身就是"持有旧凭据即可换新凭据"，
+     * 因此这里只要求临时密码【存在且未被使用过】，
+     * 不再要求它仍在登录有效期内。
+     *
+     * @return "main" = 匹配真实密码 | "temp" = 匹配临时密码 | null = 都不匹配
+     */
+    public String checkPasswordForChange(String name, String hash) {
+        // 1. 先校验真实密码
+        if (checkPassword(name, hash)) {
+            return "main";
+        }
+        // 2. 再校验临时密码（不要求未过期，但必须未被消耗）
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT temp_password, "
+                            + "temp_pw_used "
+                            + "FROM users "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String tempHash = rs.getString("temp_password");
+                int used = rs.getInt("temp_pw_used");
+                rs.close();
+                ps.close();
+                if (tempHash != null
+                        && !tempHash.isEmpty()
+                        && hash.equals(tempHash)
+                        && used != 1) {
+                    return "temp";
+                }
+            } else {
+                rs.close();
+                ps.close();
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     public Map<String, Object> getUser(String name) {
         Map<String, Object> r =
                 new LinkedHashMap<>();
@@ -911,17 +960,94 @@ public class DatabaseManager {
         return list;
     }
 
-    public void deleteUser(String name) {
+    /**
+     * ★ 精准大小写匹配：TEST 与 test 是两个独立账号，
+     * 所有"按名字查/删"的入口都必须区分大小写。
+     * @return 完全相等（区分大小写）时返回该玩家名，否则返回 null
+     */
+    public String findExactUserName(String name) {
+        if (name == null || name.isEmpty()) return null;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name FROM users "
+                            + "WHERE player_name=?");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            String found = null;
+            while (rs.next()) {
+                String row = rs.getString(1);
+                if (name.equals(row)) { // 精准匹配，拒绝大小写兜底
+                    found = row;
+                    break;
+                }
+            }
+            rs.close();
+            ps.close();
+            return found;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 查找"只差大小写"的同名账号（仅用于提示/告警，绝不用于删除）。
+     * @return 找到则返回库里的真实玩家名，否则返回 null
+     */
+    public String findSimilarUserNameIgnoreCase(String name) {
+        if (name == null || name.isEmpty()) return null;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT player_name FROM users "
+                            + "WHERE LOWER(player_name)=LOWER(?)");
+            ps.setString(1, name);
+            ResultSet rs = ps.executeQuery();
+            String found = null;
+            while (rs.next()) {
+                String row = rs.getString(1);
+                if (!name.equals(row)) { // 只要大小写不同
+                    found = row;
+                    break;
+                }
+            }
+            rs.close();
+            ps.close();
+            return found;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 精准删除账号（区分大小写）。
+     * <p>
+     * TEST 与 test 是两个人：只删 player_name 完全相等的那一条；
+     * 若只有大小写不同的账号存在，则拒绝删除并记录告警。
+     *
+     * @return 实际删除的行数（0 = 未删除）
+     */
+    public int deleteUser(String name) {
+        if (name == null || name.isEmpty()) return 0;
+        if (findExactUserName(name) == null) {
+            String twin = findSimilarUserNameIgnoreCase(name);
+            if (twin != null) {
+                System.out.println("[Sdf1_login] 删除账号拒绝："
+                        + name + " 不存在，但存在大小写不同的账号 "
+                        + twin + "（已按精准匹配跳过，未误删）");
+            }
+            return 0;
+        }
+        int deleted = 0;
         try {
             PreparedStatement ps = db.prepareStatement(
                     "DELETE FROM users "
                             + "WHERE player_name=?");
             ps.setString(1, name);
-            ps.executeUpdate();
+            deleted = ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
             e.printStackTrace();
         }
+        return deleted;
     }
 
     public void recordIP(String name, String ip) {

@@ -90,7 +90,8 @@ public class ChatInputManager {
                         name, "password_salt");
                 String hash =
                         PasswordUtils.hash(msg, salt);
-                String result = db.checkPasswordWithFallback(name, hash);
+                // ★ 同时校验真实密码 + 临时密码（改密不受临时密码5分钟有效期限制）
+                String result = db.checkPasswordForChange(name, hash);
                 if ("main".equals(result)) {
                     state.type =
                             InputType.CHANGE_PWD_STEP2;
@@ -143,11 +144,23 @@ public class ChatInputManager {
                         "password_hash", newHash);
                 db.setField(name,
                         "password_salt", newSalt);
+                // ★ 改密成功：作废旧的临时密码
+                db.clearTempPassword(name);
+                // ★ 同步新密码到Web端（异步，不阻塞主线程）
+                final Main self = mainPlugin;
+                Bukkit.getScheduler().runTaskAsynchronously(self, () -> {
+                    if (self.webManager != null) {
+                        self.webManager.pushWebLoginCredentials();
+                    }
+                });
                 mainPlugin
                         .getNeedsPasswordChange()
                         .remove(name);
                 p.sendMessage(config.msg(
                         "password_changed"));
+                if ("temp".equals(state.ticketTitle)) {
+                    p.sendMessage("§7(本次是用临时密码改的，临时密码已作废)");
+                }
                 reset(p);
                 return;
             }
@@ -361,17 +374,33 @@ public class ChatInputManager {
             case ADMIN_DELETE_CONFIRM: {
                 if (msg.equals(
                         state.targetPlayer)) {
-                    db.deleteUser(
+                    // ★ 精准匹配：TEST 与 test 是两个人，只有名字完全相等才删
+                    if (db.findExactUserName(state.targetPlayer) == null) {
+                        String twin = db.findSimilarUserNameIgnoreCase(
+                                state.targetPlayer);
+                        p.sendMessage("§c账号 " + state.targetPlayer
+                                + " 不存在"
+                                + (twin != null
+                                ? "（仅存在大小写不同的账号 §e" + twin
+                                + "§c，已按精准匹配跳过）" : "")
+                                + "，未执行删除");
+                        reset(p);
+                        return;
+                    }
+                    int deleted = db.deleteUser(
                             state.targetPlayer);
-                    if (plugin.webManager != null) {
+                    if (plugin.webManager != null && deleted > 0) {
                         plugin.webManager.deleteWebUser(state.targetPlayer);
                     }
-                    p.sendMessage("§a已删除 "
-                            + state.targetPlayer);
-                    Player tgt =
-                            Bukkit.getPlayer(
-                                    state.targetPlayer);
-                    if (tgt != null
+                    p.sendMessage(deleted > 0
+                            ? "§a已删除 " + state.targetPlayer
+                            : "§c删除失败：账号 "
+                            + state.targetPlayer + " 不存在");
+                    // ★ getPlayerExact：只踢名字完全相同的在线玩家，
+                    //   避免把 TEST 误当成 test 踢下线
+                    Player tgt = Bukkit.getPlayerExact(
+                            state.targetPlayer);
+                    if (deleted > 0 && tgt != null
                             && tgt.isOnline())
                         tgt.kickPlayer(
                                 "§c账号已被删除");
