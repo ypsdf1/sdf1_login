@@ -28,52 +28,32 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-25-openjdk
         run: |
           set -e
-          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk "{print \$2}" | tr -d "\r\n ")
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '
+ ')
           TAG="v${VERSION}"
           BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
           echo "Version: ${VERSION}, Tag: ${TAG}"
-          echo "Token prefix: ${GITEA_TOKEN:0:8}..."
-
-          echo "=== Testing API access ==="
-          curl -s -w "\nHTTP_CODE:%{http_code}\n" \
-            -H "Authorization: token $GITEA_TOKEN" \
-            "${BASE}" | tail -5
 
           echo "=== Checking existing tag ${TAG} ==="
-          RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" \
-            -H "Authorization: token $GITEA_TOKEN" \
-            "${BASE}/releases/tags/${TAG}")
+          RESP=$(curl -s -w '
+HTTP_CODE:%{http_code}'             -H "Authorization: token $GITEA_TOKEN"             "${BASE}/releases/tags/${TAG}")
           HTTP_CODE=$(echo "$RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Check tag HTTP: ${HTTP_CODE}"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            OLD_ID=$(echo "$RESP" | head -1 | grep -o "\"id\":[0-9]*" | head -1 | cut -d: -f2)
+            OLD_ID=$(echo "$RESP" | head -1 | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
             echo "Tag ${TAG} exists (release #${OLD_ID}), deleting..."
-            curl -s -X DELETE \
-              -H "Authorization: token $GITEA_TOKEN" \
-              "${BASE}/releases/${OLD_ID}"
-            curl -s -X DELETE \
-              -H "Authorization: token $GITEA_TOKEN" \
-              "${BASE}/tags/${TAG}"
+            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/${OLD_ID}"
+            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "${BASE}/tags/${TAG}"
             sleep 1
-          elif [ "$HTTP_CODE" = "404" ]; then
-            echo "Tag ${TAG} does not exist, continuing..."
           fi
 
           echo "=== Creating release ==="
-          curl -s -X POST \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H "Content-Type: application/json" \
-            "${BASE}/releases" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"Auto release by Gitea Actions\"}"
+          curl -s -X POST             -H "Authorization: token $GITEA_TOKEN"             -H "Content-Type: application/json"             "${BASE}/releases"             -d "{"tag_name":"\","name":"\","body":"Auto release by Gitea Actions"}"
 
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
-          echo "Uploading ${JAR}"
-          curl -s -X POST \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H "Content-Type: application/jar" \
-            "$(curl -s -H "Authorization: token $GITEA_TOKEN" \"${BASE}/releases/tags/${TAG}" | grep -o \"upload_url[^}]*\" | cut -d'"' -f4)" \
-            --data-binary @"${JAR}"
+          UPLOAD_URL=$(curl -s -H "Authorization: token $GITEA_TOKEN"             "${BASE}/releases/tags/${TAG}" | grep -o '"upload_url":[^,]*' | cut -d'"' -f4)
+          curl -s -X POST             -H "Authorization: token $GITEA_TOKEN"             -H "Content-Type: application/jar"             "${UPLOAD_URL}?name=$(basename ${JAR})"             --data-binary @"${JAR}"
 
           echo "=== Release ${TAG} created successfully ==="
