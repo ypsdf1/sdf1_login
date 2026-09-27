@@ -2777,8 +2777,6 @@ public class PVPArenaManager implements Listener {
 
     // ==================== PVP 观赛（/pvp see 观察者模式）====================
 
-    /** 观赛雪球 lore 标记（与菜单雪球标签 sdf1_menu 区分，避免被误判为菜单物品） */
-    private static final String SPECTATE_TAG = "PVP观赛|";
 
     /** 玩家名 → 进入观察者前的游戏模式（离场/重连时还原，避免把观察者模式带到主世界） */
     private final Map<String, GameMode> spectatorBackups = new ConcurrentHashMap<>();
@@ -2791,40 +2789,74 @@ public class PVPArenaManager implements Listener {
 
     /**
      * /pvp see —— PVP 观赛模式（仅 PVP 世界生效）
-     * ① 已在观察者 → 切回普通生存模式
-     * ② 否则：回收 PVP 装备（★ 不发还玩家自己的装备，自己的装备仍在备份里、离场时统一还原）
-     *          → 发放 2 个不同的雪球 → 自动进入 MC 原版观察者模式
+     *
+     * 三种调用形式：
+     *   /pvp see       → 切换（在观察者⇄普通模式之间来回切，mode=null）
+     *   /pvp join see  → 强制进入观察者（mode="enter"）
+     *   /pvp leave see → 强制退出观察者（mode="exit"）
+     *
+     * ★ v2 设计变更：原版【观察者模式下物品栏会被客户端自动隐藏替换】，
+     *   雪球发了也看不见、无法右键，故已彻底移除雪球方案，只保留命令切换。
+     *   观察者不能伤害玩家，玩家也不能伤害观察者（见 onSpectatorCombat）。
      */
     public void handleSeeCommand(Player p) {
+        handleSeeCommand(p, null);
+    }
+
+    /**
+     * @param mode null=切换  "enter"=强制进观察者  "exit"=强制退观察者
+     */
+    public void handleSeeCommand(Player p, String mode) {
+        boolean already = p.getGameMode() == GameMode.SPECTATOR;
+
+        // ★ 退出观察者在任何世界都放行（防止玩家被带离PVP世界后卡在观察者回不来）
+        if ("exit".equals(mode)) {
+            if (!already) {
+                p.sendMessage("§e§l[PVP观赛] §f你当前不在观察者模式");
+                return;
+            }
+            exitSpectator(p);
+            return;
+        }
+
         if (!isPVPWorld(p.getWorld())) {
             p.sendMessage("§c§l[PVP观赛] §f仅在PVP世界可用（/pvp join 进入竞技场后再使用）");
             return;
         }
-        if (p.getGameMode() == GameMode.SPECTATOR) {
-            exitSpectator(p);
+
+        if ("enter".equals(mode)) {
+            if (already) {
+                p.sendMessage("§e§l[PVP观赛] §f你已经在观察者模式了");
+                return;
+            }
+            enterSpectator(p);
             return;
         }
-        enterSpectator(p);
+
+        // mode == null → 切换
+        if (already) {
+            exitSpectator(p);
+        } else {
+            enterSpectator(p);
+        }
     }
 
-    /** 进入观察者观赛：回收PVP装备(不退自己装备) → 发2个雪球 → 进入原版观察者 */
+    /** 进入观察者观赛：回收PVP装备(不退自己装备) → 记录原模式 → 进入原版观察者 */
     private void enterSpectator(Player p) {
         if (p.getGameMode() == GameMode.SPECTATOR) return;
 
         // 1) 回收PVP专属装备；★ 玩家自己的装备【不发还】，仍留在备份中，离场时统一还原
         回收PVPEquipment(p);
 
-        // 2) 发放2个不同的雪球（必须在进入观察者之前发放：观察者收不到 /give，会掉在地上）
-        giveSpectatorSnowballs(p);
-
-        // 3) 记录原模式并进入 MC 原版观察者
+        // 2) 记录原模式并进入 MC 原版观察者
+        //    ★ 必须【先记再切】：观察者模式下 addItem 会掉地上，故不再发放任何物品
         spectatorBackups.put(p.getName(), p.getGameMode());
         p.setGameMode(GameMode.SPECTATOR);
 
         p.sendMessage("§a§l[PVP观赛] §f已进入观察者模式，可穿墙自由观赛");
-        p.sendMessage("§7  §b右键「观赛·观察者视角」§7→ 原版观察者（穿墙飞行）");
-        p.sendMessage("§7  §a右键「观赛·生存视角」§7→ 普通生存（落到地面观赛）");
-        p.sendMessage("§7  也可再次输入 §f/pvp see §7在两种模式间切换");
+        p.sendMessage("§7  §f/pvp see §7→ 切换回普通模式");
+        p.sendMessage("§7  §f/pvp leave see §7→ 退出观察者");
+        p.sendMessage("§7  旁观状态下你与他人互不伤害，可放心观战");
         p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 进入观赛观察者模式");
     }
@@ -2874,81 +2906,54 @@ public class PVPArenaManager implements Listener {
         }
     }
 
-    /** 发放2个不同的雪球：观察者视角 / 生存视角（右键触发切换） */
-    private void giveSpectatorSnowballs(Player p) {
-        ItemStack spec = makeSpectateSnowball("§b观赛·观察者视角",
-                "§7右键 → 切换到 MC 原版观察者模式", "观察者");
-        ItemStack surv = makeSpectateSnowball("§a观赛·生存视角",
-                "§7右键 → 切换到普通生存模式（落地观赛）", "生存");
-        Map<Integer, ItemStack> left = p.getInventory().addItem(spec, surv);
-        if (left != null && !left.isEmpty()) {
-            for (ItemStack it : left.values()) {
-                p.getWorld().dropItemNaturally(p.getLocation(), it);
-            }
-        }
-    }
-
-    private ItemStack makeSpectateSnowball(String name, String desc, String key) {
-        ItemStack it = new ItemStack(Material.SNOWBALL);
-        ItemMeta im = it.getItemMeta();
-        if (im != null) {
-            im.setDisplayName(name);
-            im.setLore(Arrays.asList(desc, "§8[" + SPECTATE_TAG + key + "]"));
-            it.setItemMeta(im);
-        }
-        return it;
-    }
-
-    /** 判定雪球类型：0=非观赛雪球 1=观察者视角 2=生存视角 */
-    private int spectateSnowballType(ItemStack item) {
-        if (item == null || item.getType() != Material.SNOWBALL) return 0;
-        ItemMeta im = item.getItemMeta();
-        if (im == null || !im.hasLore()) return 0;
-        List<String> lore = im.getLore();
-        if (lore == null) return 0;
-        for (String line : lore) {
-            if (line == null || !line.contains(SPECTATE_TAG)) continue;
-            if (line.contains("观察者")) return 1;
-            if (line.contains("生存")) return 2;
-        }
-        return 0;
-    }
-
     /**
-     * 观赛雪球：右键切换 观察者 ⇄ 生存（仅PVP世界生效）。
-     * ★ 必须 setCancelled(true)，否则雪球会被当成投掷物消耗掉。
-     * ★ 原版限制：观察者模式下客户端只在【对着方块右键】时才发包，对空气右键不发包；
-     *   若当时视线没对准方块，可改用 /pvp see 切换（两种方式等价）。
+     * ★ 观察者战斗保护（仅 PVP 世界）：
+     *   ① 观察者不能伤害任何人（旁观状态下客户端本不发攻击包，此处兜底拦截投掷物/残留判定）
+     *   ② 任何人不能伤害观察者（含玩家、生物、箭、TNT、摔落等一切伤害来源）
+     *   观察者视角进入的EntityDamageByEntityEvent中 damager 为观察者本人；
+     *   保护观察者则需同时拦掉 e.getEntity() 是观察者的情形。
      */
-    @EventHandler
-    public void onSpectateSnowball(PlayerInteractEvent e) {
-        Action a = e.getAction();
-        if (a != Action.RIGHT_CLICK_AIR && a != Action.RIGHT_CLICK_BLOCK) return;
-        if (e.getHand() == org.bukkit.inventory.EquipmentSlot.OFF_HAND) return;
-        Player p = e.getPlayer();
-        if (!isPVPWorld(p.getWorld())) return;
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectatorCombat(org.bukkit.event.entity.EntityDamageByEntityEvent e) {
+        if (!(e.getEntity() instanceof Player)) return;
+        Player victim = (Player) e.getEntity();
 
-        int type = spectateSnowballType(e.getItem());
-        if (type == 0) return;
-
-        e.setCancelled(true); // 阻止雪球被投掷消耗
-
-        if (type == 1) { // 观察者视角
-            if (p.getGameMode() == GameMode.SPECTATOR) {
-                p.sendMessage("§e[PVP观赛] 你已经在观察者模式了");
-                return;
+        // ② 别人打观察者 → 直接取消
+        if (victim.getGameMode() == GameMode.SPECTATOR) {
+            if (isPVPWorld(victim.getWorld())) {
+                e.setCancelled(true);
             }
-            enterSpectator(p);
-        } else { // 生存视角
-            if (p.getGameMode() != GameMode.SPECTATOR) {
-                p.sendMessage("§e[PVP观赛] 你已经在生存模式了");
-                return;
-            }
-            exitSpectator(p);
+            return;
+        }
+
+        // ① 观察者打别人 → 取消（观察者投出的雪球/药水等弹射物伤害）
+        org.bukkit.entity.Entity damager = e.getDamager();
+        Player attacker = null;
+        if (damager instanceof Player) {
+            attacker = (Player) damager;
+        } else if (damager instanceof org.bukkit.entity.Projectile) {
+            org.bukkit.projectiles.ProjectileSource src =
+                    ((org.bukkit.entity.Projectile) damager).getShooter();
+            if (src instanceof Player) attacker = (Player) src;
+        }
+        if (attacker != null
+                && attacker.getGameMode() == GameMode.SPECTATOR
+                && isPVPWorld(attacker.getWorld())) {
+            e.setCancelled(true);
         }
     }
 
-    // ==================== 公共查询 ====================
+    /** 观察者被其他实体（非EntityDamageByEntity路径）直接伤害时的兜底：取消 PVP 世界内对观察者的伤害 */
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onSpectatorHurt(org.bukkit.event.entity.EntityDamageEvent e) {
+        if (!(e.getEntity() instanceof Player)) return;
+        Player victim = (Player) e.getEntity();
+        if (victim.getGameMode() != GameMode.SPECTATOR) return;
+        if (!isPVPWorld(victim.getWorld())) return;
+        e.setCancelled(true);
+    }
+
+// ==================== 公共查询 ====================
 
     public boolean isInPVPArena(String playerName) {
         return inPVPArena.contains(playerName);

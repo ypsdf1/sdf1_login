@@ -1123,6 +1123,11 @@ public class PVPManager implements Listener {
                         p, args);
             case "join":
             case "arena":
+                // ★ /pvp join see → 直接进入观察者观赛模式
+                if (args.length >= 2 && args[1].equalsIgnoreCase("see")) {
+                    plugin.getPVPArenaManager().handleSeeCommand(p, "enter");
+                    return true;
+                }
                 plugin.getPVPArenaManager().joinArena(p);
                 return true;
             case "equip":
@@ -1134,11 +1139,16 @@ public class PVPManager implements Listener {
                 plugin.getPVPArenaManager().openEquipmentSelection(p);
                 return true;
             case "see":
-                // PVP观赛：进入/退出观察者模式（仅PVP世界生效，右键雪球可随时切换）
+                // PVP观赛：/pvp see=切换观察者⇄普通（仅PVP世界，权限对所有人开放）
                 plugin.getPVPArenaManager().handleSeeCommand(p);
                 return true;
             case "leave":
             case "exit":
+                // ★ /pvp leave see → 退出观察者模式
+                if (args.length >= 2 && args[1].equalsIgnoreCase("see")) {
+                    plugin.getPVPArenaManager().handleSeeCommand(p, "exit");
+                    return true;
+                }
                 plugin.leavePVP(p);
                 return true;
             default:
@@ -1146,7 +1156,9 @@ public class PVPManager implements Listener {
                 p.sendMessage("§7——— PVP指令 ———");
                 p.sendMessage("§e/pvp join §7进入PVP竞技场");
                 p.sendMessage("§e/pvp equip §7调整装备（食物/盾牌/弓弩）");
-                p.sendMessage("§e/pvp see §7观赛：进入/退出观察者模式（仅PVP世界）");
+                p.sendMessage("§e/pvp see §7观赛：切换观察者⇄普通模式（仅PVP世界）");
+                p.sendMessage("§e/pvp join see §7加入观赛：进入观察者模式");
+                p.sendMessage("§e/pvp leave see §7退出观赛：离开观察者模式");
                 p.sendMessage("§e/pvp leave §7离开PVP竞技场");
                 p.sendMessage("§e/pvp stats [玩家] §7查看战绩");
                 p.sendMessage("§e/pvp list §7查看PVP区域列表");

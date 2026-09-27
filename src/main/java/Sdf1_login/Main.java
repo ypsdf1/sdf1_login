@@ -780,7 +780,8 @@ public class Main extends JavaPlugin
                                             "tempban", "arena",
                                             "join", "leave",
                                             "exit", "test",
-                                            "equip", "adjust"};
+                                            "equip", "adjust",
+                                            "see"};
                                     for (String s : sub) {
                                         if (s.startsWith(
                                                 args[0]
@@ -813,6 +814,16 @@ public class Main extends JavaPlugin
                                                             .toLowerCase())) {
                                                 list.add(rn);
                                             }
+                                        }
+                                    } else if (sub.equals("join")
+                                            || sub.equals("arena")
+                                            || sub.equals("leave")
+                                            || sub.equals("exit")) {
+                                        // ★ /pvp join see、/pvp leave see —— 观赛模式
+                                        if ("see".startsWith(
+                                                args[1]
+                                                        .toLowerCase())) {
+                                            list.add("see");
                                         }
                                     }
                                 }
@@ -6205,8 +6216,8 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§cWeb通信管理器未初始化");
                 return true;
             }
-            webManager.clearQueue();
-            sender.sendMessage("§a已清空DB队列中未回应的web同步任务");
+            String clearSummary = webManager.clearQueue();
+            sender.sendMessage("§a已清空DB队列: §f" + clearSummary);
             return true;
         }
         // /menu 开关雪球菜单

@@ -327,8 +327,14 @@ public class WebManager {
     /**
      * ★ 清空DB队列中所有未回应的web同步任务
      *   （清空队列/cleartake 命令调用）
+     *
+     *   v2：以前只清 Java 内存队列，PHP 侧 web_login_requests 表里的 pending 记录
+     *       原封不动 → 下一轮轮询又原样取回来，看起来"打了几十次都没清掉"。
+     *       现在增加两件事：
+     *         ① 复位本地"已处理"标记与TimerA在途计数（避免清完后仍被跳过/卡死）
+     *         ② 异步调用 PHP clear_pending_web_logins，把服务端 pending 一并清理
      */
-    public void clearQueue() {
+    public String clearQueue() {
         int count = 0;
         Iterator<DbTask> it = dbTaskQueue.iterator();
         while (it.hasNext()) {
@@ -342,7 +348,33 @@ public class WebManager {
                 count++;
             }
         }
-        plugin.getLogger().info("[DB队列] 清空队列: 丢弃 " + count + " 个未回应web任务");
+        // ★ 复位轮询在途标记：队列里的任务被丢弃后，finally不会执行，必须手工复位
+        processedWebLoginRequests.clear();
+        plugin.getLogger().info("[DB队列] 清空队列: 丢弃 " + count + " 个未回应web任务，联动清理PHP待处理请求...");
+
+        // ★ 联动清理 PHP 侧 pending（异步，不阻塞命令线程）
+        purgePhpPendingWebLogins(count);
+        return "丢弃 " + count + " 个未回应web任务 + 联动清理PHP待处理登录请求";
+    }
+
+    /**
+     * ★ 联动清理 PHP 的 web_login_requests pending 记录
+     * 必须使用 lambda 而非匿名内部类：jar 热替换后匿名内部类会抛
+     * NoClassDefFoundError（WebManager$N 找不到），导致回写/清理永远失败。
+     */
+    private void purgePhpPendingWebLogins(final int localDropped) {
+        if (!enabled) return;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                String urlStr = webBaseUrl + "/api/sync.php?action=clear_pending_web_logins&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                String resp = doGet(urlStr);
+                plugin.getLogger().info("[DB队列] 清空队列联动: 本地丢弃=" + localDropped
+                        + " PHP响应=" + (resp == null ? "null" : resp.substring(0, Math.min(200, resp.length()))));
+            } catch (Throwable t) {
+                plugin.getLogger().warning("[DB队列] 联动清理PHP待处理登录请求失败: " + t);
+            }
+        });
     }
 
     /**
@@ -1847,38 +1879,34 @@ public class WebManager {
 
                 // ★ CDK离线兑付：Timer A永不暂停，定期拉取CDK交易
                 // 解决全员下线时Timer B暂停导致CDK兑换不到账的bug
+                //
+                // ★★★ 队列保护（v2.93）：原来这一轮会一口气投出【5个】子任务，
+                //      而 db-worker 是单线程、每个任务又含10~30秒级HTTP请求，
+                //      Timer A 却每3~5秒就再投一轮 → 队列越堆越长
+                //      （日志表现为「等待过久 10s+」「清空队列丢弃17个」依然慢）。
+                //      现在合并为【1个】队列任务串行执行：执行顺序与原来一致
+                //      （单线程本来就是串行），但队列条目数降为 1/5。
                 if (timerACycleCount % 5 == 0) { // 每5轮(~15-25秒)检查一次
-                    submitNormalDbTask("TimerA-cdkPull", () -> {
+                    submitNormalDbTask("TimerA-周期批处理", () -> {
+                        // 本地CDK（web_transactions pending）
                         try {
-                            // 本地CDK（web_transactions pending）
                             doTransactionPollCheck();
                         } catch (Exception e) { /* 静默 */ }
-                    });
-                    // 远程CDK（cdk_validate_requests，sdf1计分板CDK验证）
-                    if (initialSyncComplete) {
-                        submitNormalDbTask("TimerA-cdkRemotePull", () -> {
-                            try {
-                                pullWebCdkRequestsAndValidate();
-                                pullSdf1PendingAndValidateWeb();
-                            } catch (Exception e) { /* 静默 */ }
-                        });
-                    }
-                    // ★ PHP→Java变更轮询（管理员在PHP改了配置/领地，Java及时拉取）
-                    if (initialSyncComplete) {
-                        submitNormalDbTask("TimerA-pollAdminChanges", () -> {
-                            try { pollAdminChanges(); } catch (Exception e) { /* 静默 */ }
-                        });
+                        if (!initialSyncComplete) return;
+
+                        // 远程CDK（cdk_validate_requests，sdf1计分板CDK验证）
+                        try {
+                            pullWebCdkRequestsAndValidate();
+                            pullSdf1PendingAndValidateWeb();
+                        } catch (Exception e) { /* 静默 */ }
+
+                        // ★ PHP→Java变更轮询（管理员在PHP改了配置/领地，Java及时拉取）
+                        try { pollAdminChanges(); } catch (Exception e) { /* 静默 */ }
                         // ★ 过户cooldown检测：权限变更则取消过户
-                        submitNormalDbTask("TimerA-transferCancellations", () -> {
-                            try { handlePendingTransferCancellations(); } catch (Exception e) { /* 静默 */ }
-                        });
-                    }
-                    // ★ 异步玩家验证轮询：拉取PHP的pending_player_validations，验证后推回结果
-                    if (initialSyncComplete) {
-                        submitNormalDbTask("TimerA-pollPlayerValidations", () -> {
-                            try { pullPendingPlayerValidations(); } catch (Exception e) { /* 静默 */ }
-                        });
-                    }
+                        try { handlePendingTransferCancellations(); } catch (Exception e) { /* 静默 */ }
+                        // ★ 异步玩家验证轮询：拉取PHP的pending_player_validations，验证后推回结果
+                        try { pullPendingPlayerValidations(); } catch (Exception e) { /* 静默 */ }
+                    });
                 }
 
                 // 自调度下一轮（3~5秒，快速响应登录请求，错峰避免锁库）
@@ -3722,12 +3750,31 @@ public class WebManager {
             }
             lastBansHash = currentHash;
 
+            // ★ 封禁IP → 顺手推给Web黑名单（web_ip_blacklist）
+            //   Web端据此拦截被封IP的访问，除非该IP持有游戏内 /web 签发的token
+            StringBuilder ipsb = new StringBuilder("[");
+            boolean ipFirst = true;
+            @SuppressWarnings("unchecked")
+            Set<org.bukkit.BanEntry<?>> ipOnlyEntries = (Set<org.bukkit.BanEntry<?>>)(Set<?>) ipBanList.getEntries();
+            for (org.bukkit.BanEntry<?> entry : ipOnlyEntries) {
+                if (!ipFirst) ipsb.append(",");
+                ipFirst = false;
+                long expireDate = entry.getExpiration() != null ? entry.getExpiration().getTime() : 0;
+                ipsb.append("{\"ip\":\"").append(escapeJson(entry.getTarget()))
+                    .append("\",\"reason\":\"").append(escapeJson(entry.getReason() != null ? entry.getReason() : ""))
+                    .append("\",\"source\":\"").append(escapeJson(entry.getSource() != null ? entry.getSource() : ""))
+                    .append("\",\"expire\":").append(expireDate).append("}");
+            }
+            ipsb.append("]");
+
             // ★ 改用POST避免GET URL过长（55条封禁URL可达数KB）
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("secret", secretKey);
             body.put("bans", sb.toString());
+            body.put("ips", ipsb.toString());
             String resp = httpPost("api/sync.php?action=sync_bans", mapToJson(body));
-            plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size()) + "条 → " + resp);
+            plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size())
+                    + "条(IP黑名单 " + ipOnlyEntries.size() + "个) → " + resp);
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 封禁名单同步异常: " + e.getMessage());
         }
@@ -6328,7 +6375,9 @@ public class WebManager {
             if (arrStr.trim().equals("[]")) {
                 return;
             }
-            plugin.getLogger().info("[Web密码验证轮询] ★ 发现待处理请求，数组长度=" + arrStr.length());
+            int pendingCount = countTopLevelJsonObjects(arrStr);
+            plugin.getLogger().info("[Web密码验证轮询] ★ 发现待处理请求，条数=" + pendingCount
+                    + "（JSON长度=" + arrStr.length() + "）");
             int idx = 0;
             while (true) {
                 int objStart = arrStr.indexOf("{", idx);
@@ -6376,7 +6425,15 @@ public class WebManager {
                         }
 
                         // 异步将结果写回PHP（供Web端查询）
-                        sendWebLoginResult(fReqId, fName, result);
+                        try {
+                            sendWebLoginResult(fReqId, fName, result);
+                        } catch (Throwable t) {
+                            // ★ 热替换jar后类加载器可能找不到匿名/内部类（Error不是Exception，
+                            //   外层catch接不住）→ 复位处理标记，下一轮重新验证重试
+                            plugin.getLogger().warning("[Web密码验证] 回写调度失败: " + t
+                                    + " → 已复位处理标记，稍后重试");
+                            processedWebLoginRequests.remove(fReqId);
+                        }
                     } catch (Exception e) {
                         plugin.getLogger().warning("[Web密码验证] 处理异常: player=" + fName + " error=" + e.getMessage());
                     }
@@ -6394,62 +6451,67 @@ public class WebManager {
     /**
      * 将密码验证结果写回PHP后端
      * 使用GET请求传所有参数（避免POST body解析问题），同时增加重试机制
+     *
+     * ★ 用 lambda 而非匿名内部类（原 WebManager$15）：
+     *   jar 被热替换后 PluginClassLoader 找不到旧的匿名内部类，
+     *   抛 NoClassDefFoundError → 回写永远失败 → PHP pending 永不清空。
+     *   lambda 编译为 WebManager 自身的合成方法，类已加载，不受热替换影响。
      */
     private void sendWebLoginResult(String reqId, String playerName, String result) {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                // 将result转换为JSON对象格式 {"success": true/false, "status": "..."}
-                String resultJson;
-                if ("\"success\"".equals(result)) {
-                    resultJson = "{\"success\":true,\"status\":\"success\"}";
-                } else if ("\"not_registered\"".equals(result)) {
-                    resultJson = "{\"success\":false,\"status\":\"not_registered\"}";
-                } else {
-                    resultJson = "{\"success\":false,\"status\":\"failed\"}";
-                }
-
-                plugin.getLogger().info("[Web密码验证回写] ★ 开始回写PHP player=" + playerName
-                        + " reqId=" + reqId + " result=" + result);
-
-                // 使用GET请求，所有参数通过URL传递，避免POST body解析问题
-                // 最多重试3次，每次间隔2秒
-                boolean sent = false;
-                for (int attempt = 0; attempt < 3; attempt++) {
-                    try {
-                        String resultEncoded = java.net.URLEncoder.encode(resultJson, "UTF-8");
-                        String urlStr = webBaseUrl + "/api/sync.php?action=complete_web_login_request"
-                                + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
-                                + "&request_id=" + reqId
-                                + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
-                                + "&result=" + resultEncoded;
-
-                        String resp = doGet(urlStr);
-
-                        if (resp != null) {
-                            sent = true;
-                            plugin.getLogger().info("[Web密码验证回写] ✓ 成功: player=" + playerName
-                                    + " reqId=" + reqId + " result=" + result
-                                    + " PHP响应=" + resp.substring(0, Math.min(200, resp.length()))
-                                    + " (第" + (attempt + 1) + "次)");
-                            break;
-                        } else {
-                            plugin.getLogger().warning("[Web密码验证回写] ✗ GET失败: player=" + playerName
-                                    + " reqId=" + reqId + " (第" + (attempt + 1) + "次)");
-                        }
-                    } catch (Exception e) {
-                        plugin.getLogger().warning("[Web密码验证回写] ✗ 异常: player=" + playerName
-                                + " reqId=" + reqId + " (第" + (attempt + 1) + "次) " + e.getMessage());
-                    }
-                    // 重试前等待
-                    try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
-                }
-
-                if (!sent) {
-                    plugin.getLogger().warning("[Web密码验证回写] ✗ 最终失败，已重试3次: player=" + playerName + " reqId=" + reqId);
-                }
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            // 将result转换为JSON对象格式 {"success": true/false, "status": "..."}
+            String resultJson;
+            if ("\"success\"".equals(result)) {
+                resultJson = "{\"success\":true,\"status\":\"success\"}";
+            } else if ("\"not_registered\"".equals(result)) {
+                resultJson = "{\"success\":false,\"status\":\"not_registered\"}";
+            } else {
+                resultJson = "{\"success\":false,\"status\":\"failed\"}";
             }
-        }.runTaskAsynchronously(plugin);
+
+            plugin.getLogger().info("[Web密码验证回写] ★ 开始回写PHP player=" + playerName
+                    + " reqId=" + reqId + " result=" + result);
+
+            // 使用GET请求，所有参数通过URL传递，避免POST body解析问题
+            // 最多重试3次，每次间隔2秒
+            boolean sent = false;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                try {
+                    String resultEncoded = java.net.URLEncoder.encode(resultJson, "UTF-8");
+                    String urlStr = webBaseUrl + "/api/sync.php?action=complete_web_login_request"
+                            + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                            + "&request_id=" + reqId
+                            + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                            + "&result=" + resultEncoded;
+
+                    String resp = doGet(urlStr);
+
+                    if (resp != null) {
+                        sent = true;
+                        plugin.getLogger().info("[Web密码验证回写] ✓ 成功: player=" + playerName
+                                + " reqId=" + reqId + " result=" + result
+                                + " PHP响应=" + resp.substring(0, Math.min(200, resp.length()))
+                                + " (第" + (attempt + 1) + "次)");
+                        break;
+                    } else {
+                        plugin.getLogger().warning("[Web密码验证回写] ✗ GET失败: player=" + playerName
+                                + " reqId=" + reqId + " (第" + (attempt + 1) + "次)");
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web密码验证回写] ✗ 异常: player=" + playerName
+                            + " reqId=" + reqId + " (第" + (attempt + 1) + "次) " + e.getMessage());
+                }
+                // 重试前等待
+                try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
+            }
+
+            if (!sent) {
+                plugin.getLogger().warning("[Web密码验证回写] ✗ 最终失败，已重试3次: player=" + playerName + " reqId=" + reqId);
+                // ★ 回写失败 → 复位"已处理"标记，下一轮轮询重新验证并重试写回，
+                //   否则该请求会在PHP里挂满10分钟过期，Web端一直转圈
+                processedWebLoginRequests.remove(reqId);
+            }
+        });
     }
 
     /**
@@ -6489,6 +6551,28 @@ public class WebManager {
             }
         }
         return -1;
+    }
+
+    /**
+     * 统计JSON数组中顶层对象 {…} 的个数（用于日志显示真实待处理条数，
+     * 以前打印的是字符串长度，容易被误读成条数）
+     */
+    private static int countTopLevelJsonObjects(String arr) {
+        if (arr == null || arr.isEmpty()) return 0;
+        int count = 0, depth = 0;
+        boolean inString = false;
+        for (int i = 0; i < arr.length(); i++) {
+            char c = arr.charAt(i);
+            if (inString) {
+                if (c == '\\' && i + 1 < arr.length()) { i++; continue; }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; continue; }
+            if (c == '{') { if (depth == 0) count++; depth++; }
+            else if (c == '}') { if (depth > 0) depth--; }
+        }
+        return count;
     }
 
     // ==================== 新增功能 ====================
