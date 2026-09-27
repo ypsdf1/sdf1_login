@@ -236,7 +236,7 @@ public class AreaCLIManager {
 
         for (int i = start; i < end; i++) {
             AreaProtection.AreaConfig land = allLands.get(i);
-            boolean isOwner = playerName.equalsIgnoreCase(land.owner);
+            boolean isOwner = AreaProtection.samePlayer(playerName, land.owner);
 
             Component line = Component.empty();
             line = line.append(Component.text("§a" + (i + 1) + ". §e" + land.name + " "));
@@ -310,7 +310,7 @@ public class AreaCLIManager {
             return;
         }
 
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -386,7 +386,7 @@ public class AreaCLIManager {
             int end = Math.min(start + PAGE_SIZE, memberList.size());
             for (int i = start; i < end; i++) {
                 String member = memberList.get(i);
-                boolean isMemberOwner = member.equalsIgnoreCase(land.owner);
+                boolean isMemberOwner = AreaProtection.samePlayer(member, land.owner);
                 boolean isMemberAdmin = areaProtect.isLandAdmin(land.name, member);
                 Component line = Component.empty();
                 line = line.append(Component.text("§f" + member));
@@ -521,7 +521,7 @@ public class AreaCLIManager {
             return;
         }
 
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -756,7 +756,7 @@ public class AreaCLIManager {
         }
 
         // ★ 权限检查：只有所有者或管理员能编辑成员权限
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -786,7 +786,7 @@ public class AreaCLIManager {
 
         for (int i = start; i < end; i++) {
             String member = memberList.get(i);
-            boolean isMemberOwner = member.equalsIgnoreCase(land.owner);
+            boolean isMemberOwner = AreaProtection.samePlayer(member, land.owner);
 
             String roleTag = isMemberOwner ? " §c[所有者]" : "";
             Component line = Component.empty();
@@ -839,7 +839,7 @@ public class AreaCLIManager {
         }
 
         // ★ 权限检查：只有所有者或管理员能编辑成员权限
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -865,7 +865,7 @@ public class AreaCLIManager {
             p.sendMessage(Component.text(""));
 
             // ★ 领地主或插件管理员：可切换管理员身份（撤职）
-            if ((isOwner || isAdmin) && !targetPlayer.equalsIgnoreCase(land.owner)) {
+            if ((isOwner || isAdmin) && !AreaProtection.samePlayer(targetPlayer, land.owner)) {
                 Component adminLine = Component.empty();
                 adminLine = adminLine.append(Component.text("§6✔ §f身份: §6管理员"));
                 adminLine = adminLine.append(Component.text(" "));
@@ -966,7 +966,7 @@ public class AreaCLIManager {
         }
 
         // ★ 设为管理员按钮（全局置顶，打印在最后=聊天窗口最底部）
-        if ((isOwner || isAdmin) && !targetPlayer.equalsIgnoreCase(land.owner)) {
+        if ((isOwner || isAdmin) && !AreaProtection.samePlayer(targetPlayer, land.owner)) {
             Component adminLine = Component.empty();
             adminLine = adminLine.append(Component.text("§7✘ §f身份: §7普通成员"));
             adminLine = adminLine.append(Component.text(" "));
@@ -1004,7 +1004,7 @@ public class AreaCLIManager {
             return;
         }
 
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c只有领地所有者或插件管理员才能操作管理员身份"));
@@ -1012,7 +1012,7 @@ public class AreaCLIManager {
         }
 
         // 不能操作自己
-        if (targetPlayer.equalsIgnoreCase(land.owner)) {
+        if (AreaProtection.samePlayer(targetPlayer, land.owner)) {
             p.sendMessage(Component.text("§c不能修改自己的管理员身份"));
             return;
         }
@@ -1051,7 +1051,7 @@ public class AreaCLIManager {
         }
 
         // 权限检查
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -1091,7 +1091,7 @@ public class AreaCLIManager {
             return;
         }
 
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -1267,7 +1267,7 @@ public class AreaCLIManager {
         }
 
         // 权限检查
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
@@ -1661,7 +1661,7 @@ public class AreaCLIManager {
         }
 
         // 权限检查
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isAdmin = areaProtect.isAreaAdmin(p);
         if (!isOwner && !isAdmin) {
             p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));

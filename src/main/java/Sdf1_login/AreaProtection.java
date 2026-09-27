@@ -2528,7 +2528,7 @@ public class AreaProtection implements Listener {
 
         // 2. 领地所有者权限
         if (ac != null && ac.owner != null && !ac.owner.isEmpty()) {
-            if (player.getName().equalsIgnoreCase(ac.owner)) {
+            if (samePlayer(player.getName(), ac.owner)) {
                 return PermissionLevel.OWNER;
             }
         }
@@ -2583,7 +2583,7 @@ public class AreaProtection implements Listener {
     public boolean canTeleportToLand(Player p, AreaConfig ac) {
         if (ac == null || p == null) return false;
         if (isAreaAdmin(p)) return true;
-        if (p.getName().equalsIgnoreCase(ac.owner)) return true;
+        if (samePlayer(p.getName(), ac.owner)) return true;
         if (isLandAdmin(ac.name, p.getName())) return true;
         // ★ 公共设施连控：公共设施启用时，所有访客自动获得传送权限（优先于 per-player 检查）
         if (ac.isPublicBuilding) return true;
@@ -2991,6 +2991,23 @@ public class AreaProtection implements Listener {
         if (s == null || s.isEmpty()) return "";
         return java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKC)
                 .toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * 玩家身份比对（领地主 / 成员 / 上架人等“是不是同一个人”的判定）：
+     * 精确匹配、区分大小写，禁止归一化。
+     *
+     * 背景：本服为离线模式，名字大小写不同 => UUID 不同 => 是不同玩家。
+     * 旧代码用 equalsIgnoreCase（相当于按小写归一化）比对领地主，
+     * 导致 YoUpaishidIfu 被判成领地主 youpaishidifu，
+     * 进而在 getPermissionLevel 里拿到 OWNER 豁免、直接跳过 denyMove 等限制（越权绕过）。
+     * 与 8069070「取消归一化，按人头配置权限」保持一致。
+     *
+     * 注意：normName 仍用于**定位数据库里那条权限行**（历史数据大小写不一致），
+     * 但**是否授予身份/豁免**必须走这里的精确比对，两者不可混用。
+     */
+    public static boolean samePlayer(String a, String b) {
+        return a != null && b != null && a.equals(b);
     }
 
     /**
@@ -3499,7 +3516,7 @@ public class AreaProtection implements Listener {
                 // ★ 进入领地时展示边框粒子（3秒）
                 showBorderBrief(p, newAc);
                 // ★ 公共建筑设施：访客自动获得传送、免疫伤害、攻击敌对生物权限
-                if (newAc.isPublicBuilding && !p.getName().equalsIgnoreCase(newAc.owner) && !isAreaAdmin(p)) {
+                if (newAc.isPublicBuilding && !samePlayer(p.getName(), newAc.owner) && !isAreaAdmin(p)) {
                     p.sendMessage("§a§l[公共建筑] §f欢迎来到公共设施: §e" + newAc.name);
                     p.sendMessage("§7你在此区域享有: 传送、免疫伤害、攻击敌对生物权限");
                     // 暂时移除伤害限制：给玩家5秒免疫效果
@@ -3570,7 +3587,7 @@ public class AreaProtection implements Listener {
                     + " normName=" + normName(name)
                     + " level=" + lvl
                     + " 全局管理员=" + isAreaAdmin(p)
-                    + " 领地主=" + (ac.owner != null && name.equalsIgnoreCase(ac.owner))
+                    + " 领地主=" + (ac.owner != null && samePlayer(name, ac.owner))
                     + " 白名单=" + isPlayerWhitelisted(name, ac)
                     + " 访客行=" + (row == null ? "无"
                         : (row.playerName + "/" + row.role + "/exp=" + row.expiresAt + "/" + row.permissions))
@@ -4841,7 +4858,7 @@ public class AreaProtection implements Listener {
     public List<AreaConfig> getLandsByOwner(String ownerName) {
         List<AreaConfig> result = new ArrayList<>();
         for (AreaConfig ac : areas.values()) {
-            if (ac.owner.equalsIgnoreCase(ownerName)) {
+            if (samePlayer(ac.owner, ownerName)) {
                 result.add(ac);
             }
         }
@@ -4880,7 +4897,7 @@ public class AreaProtection implements Listener {
      */
     public boolean addLandMember(String landName, String playerName) {
         AreaConfig ac = getLand(landName);
-        if (ac != null && ac.owner != null && ac.owner.equalsIgnoreCase(playerName)) {
+        if (ac != null && ac.owner != null && samePlayer(ac.owner, playerName)) {
             return false; // 领地主不能作为成员添加
         }
         Set<String> members = areaPlayerWhitelist.computeIfAbsent(
@@ -5135,7 +5152,7 @@ public class AreaProtection implements Listener {
         }, 1L);
 
         if (p.hasPermission("sdf1.admin")) return; // 管理员跳过
-        if (p.getName().equalsIgnoreCase(ac.owner)) return; // 领地主免检
+        if (samePlayer(p.getName(), ac.owner)) return; // 领地主免检
         if (isAreaAdmin(p)) return; // 插件管理员免检
         // ★ 授权成员（白名单内玩家）也豁免denySignEdit
         if (isPlayerWhitelisted(p.getName(), ac)) return;
@@ -6679,7 +6696,7 @@ public class AreaProtection implements Listener {
                             p.sendMessage("§c领地不存在: " + rnLandName);
                             break;
                         }
-                        boolean rnOwner = p.getName().equalsIgnoreCase(rnAc.owner);
+                        boolean rnOwner = samePlayer(p.getName(), rnAc.owner);
                         boolean rnAdmin = isAreaAdmin(p);
                         if (!rnOwner && !rnAdmin) {
                             p.sendMessage("§c需要领地所有者或管理员权限");
@@ -6762,13 +6779,13 @@ public class AreaProtection implements Listener {
             UserGroupManager ugm = plugin.getUserGroup();
             int playerMaxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
             long playerLandCount = areas.values().stream()
-                    .filter(a -> p.getName().equalsIgnoreCase(a.owner))
+                    .filter(a -> samePlayer(p.getName(), a.owner))
                     .count();
             // ★ DB兜底：如果内存计数<上限但DB实际已有更多领地（内存可能过期）
             if (playerLandCount < playerMaxLands && dbConnection != null) {
                 try {
                     java.sql.PreparedStatement cntStmt = dbConnection.prepareStatement(
-                            "SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                            "SELECT COUNT(*) as cnt FROM area_lands WHERE owner = ?");
                     cntStmt.setString(1, p.getName());
                     java.sql.ResultSet cntRs = cntStmt.executeQuery();
                     if (cntRs.next()) {
@@ -6841,10 +6858,10 @@ public class AreaProtection implements Listener {
             // ★ 检查上限（含DB兜底）
             UserGroupManager cugm = plugin.getUserGroup();
             int cMaxLands = (cugm != null) ? cugm.getPlayerMaxLands(cp.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
-            long cLandCount = areas.values().stream().filter(a -> cp.getName().equalsIgnoreCase(a.owner)).count();
+            long cLandCount = areas.values().stream().filter(a -> samePlayer(cp.getName(), a.owner)).count();
             if (cLandCount < cMaxLands && dbConnection != null) {
                 try {
-                    java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                    java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE owner = ?");
                     cs.setString(1, cp.getName());
                     java.sql.ResultSet cr = cs.executeQuery();
                     if (cr.next()) { long dbc = cr.getLong("cnt"); if (dbc > cLandCount) cLandCount = dbc; }
@@ -7154,7 +7171,7 @@ public class AreaProtection implements Listener {
             AreaConfig ac = areas.get(landName);
             if (ac == null) { sender.sendMessage("§c领地不存在: " + landName); return true; }
             // 检查权限
-            if (!p.getName().equalsIgnoreCase(ac.owner) && !isAreaAdmin(sender)) {
+            if (!samePlayer(p.getName(), ac.owner) && !isAreaAdmin(sender)) {
                 sender.sendMessage("§c需要领地所有者或管理员权限");
                 return true;
             }
@@ -7760,7 +7777,7 @@ public class AreaProtection implements Listener {
             }
             // ★ 领主或管理员均可删除
             AreaProtection.AreaConfig delAc = areas.get(areaName);
-            boolean isOwner = delAc != null && p.getName().equalsIgnoreCase(delAc.owner);
+            boolean isOwner = delAc != null && samePlayer(p.getName(), delAc.owner);
             if (!isAreaAdmin(sender) && !isOwner) {
                 sender.sendMessage("§c需要管理员权限或领地所有权");
                 return true;
@@ -7852,7 +7869,7 @@ public class AreaProtection implements Listener {
             }
 
             // 检查是否是原主人
-            if (!p.getName().equalsIgnoreCase(ac.owner)) {
+            if (!samePlayer(p.getName(), ac.owner)) {
                 sender.sendMessage("§c只有原主人才能撤回改主");
                 return true;
             }
@@ -7875,7 +7892,7 @@ public class AreaProtection implements Listener {
                     String oldOwner = (String) changeData.get("old_owner");
 
                     // 验证当前owner是否是newOwner（即已经被改主了）
-                    if (!p.getName().equalsIgnoreCase(newOwner)) {
+                    if (!samePlayer(p.getName(), newOwner)) {
                         sender.sendMessage("§c当前所有者不是你，无法撤回");
                         rs.close();
                         ps.close();
@@ -8238,8 +8255,8 @@ public class AreaProtection implements Listener {
                     rs.close();
                     stmt.close();
 
-                    // 不能买自己的
-                    if (seller.equalsIgnoreCase(p.getName())) {
+                    // 不能买自己的（精确匹配：离线服里大小写不同的名字是不同玩家）
+                    if (samePlayer(seller, p.getName())) {
                         sender.sendMessage("§c不能购买自己上架的权限");
                         return true;
                     }
@@ -8545,7 +8562,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 // ★ 领地主不能作为成员添加
-                if (args[1].equalsIgnoreCase(ac.owner)) {
+                if (samePlayer(args[1], ac.owner)) {
                     sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
                     return true;
                 }
@@ -8570,7 +8587,7 @@ public class AreaProtection implements Listener {
                 return true;
             }
             // ★ 领地主不能作为成员添加
-            if (playerName.equalsIgnoreCase(ac.owner)) {
+            if (samePlayer(playerName, ac.owner)) {
                 sender.sendMessage("§c领地所有者本身就是领地主，无需添加为成员");
                 return true;
             }
@@ -8720,7 +8737,7 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§c玩家名格式无效：仅允许英文字母、数字和下划线（3-16位）");
                 return true;
             }
-            if (newOwner.equalsIgnoreCase(oldOwner)) {
+            if (samePlayer(newOwner, oldOwner)) {
                 sender.sendMessage("§c不能转让给自己");
                 return true;
             }
@@ -9320,7 +9337,7 @@ public class AreaProtection implements Listener {
         try {
             // ★ 幂等检查：如果所有者已相同则跳过，避免ack失败后重复打印
             AreaConfig ac = getLand(landName);
-            if (ac != null && newOwner.equalsIgnoreCase(ac.owner)) {
+            if (ac != null && samePlayer(newOwner, ac.owner)) {
                 return;
             }
 
@@ -9424,7 +9441,7 @@ public class AreaProtection implements Listener {
         AreaConfig ownerAc = areas.get(oldName);
         if (ownerAc != null
                 && !isAreaAdmin(p)
-                && !p.getName().equalsIgnoreCase(ownerAc.owner)) {
+                && !samePlayer(p.getName(), ownerAc.owner)) {
             return "需要领地所有者或管理员权限";
         }
         // 1. 基本校验（格式 + 特殊字符，防止按名字落盘的文件被覆盖或路径穿越）
@@ -9934,7 +9951,7 @@ public class AreaProtection implements Listener {
 
         // 检查是否是领地主
         AreaConfig ac = getLand(landName);
-        if (ac != null && ac.owner != null && ac.owner.equalsIgnoreCase(playerName)) {
+        if (ac != null && ac.owner != null && samePlayer(ac.owner, playerName)) {
             p.sendMessage("§c§l[添加成员] §f领地主不能作为成员添加");
             return true;
         }
@@ -10183,7 +10200,7 @@ public class AreaProtection implements Listener {
             p.sendMessage("§c需要领地所有者或管理员权限");
             return true;
         }
-        if (newOwner.equalsIgnoreCase(ac.owner)) {
+        if (samePlayer(newOwner, ac.owner)) {
             p.sendMessage("§c不能转让给自己");
             return true;
         }
@@ -10986,7 +11003,7 @@ public class AreaProtection implements Listener {
                     mobAttacker.getLocation().getBlockZ());
             if (acMob != null && getEffectiveDeny(mobAttacker, acMob, "denyMobAttack")) {
                 // ★ 公共建筑设施：访客允许攻击敌对生物
-                if (!acMob.isPublicBuilding || mobAttacker.getName().equalsIgnoreCase(acMob.owner) || isAreaAdmin(mobAttacker)) {
+                if (!acMob.isPublicBuilding || samePlayer(mobAttacker.getName(), acMob.owner) || isAreaAdmin(mobAttacker)) {
                     e.setCancelled(true);
                     mobAttacker.sendMessage("§c§l[区域防护] §f此区域禁止攻击生物");
                     return;
@@ -11926,11 +11943,11 @@ public class AreaProtection implements Listener {
         // ★ 检查领地上限
         UserGroupManager ugm = plugin.getUserGroup();
         int maxLands = (ugm != null) ? ugm.getPlayerMaxLands(p.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
-        long landCount = areas.values().stream().filter(a -> p.getName().equalsIgnoreCase(a.owner)).count();
+        long landCount = areas.values().stream().filter(a -> samePlayer(p.getName(), a.owner)).count();
         // DB兜底
         if (landCount < maxLands) {
             try {
-                java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE LOWER(owner) = LOWER(?)");
+                java.sql.PreparedStatement cs = dbConnection.prepareStatement("SELECT COUNT(*) as cnt FROM area_lands WHERE owner = ?");
                 cs.setString(1, p.getName());
                 java.sql.ResultSet cr = cs.executeQuery();
                 if (cr.next()) { long dbc = cr.getLong("cnt"); if (dbc > landCount) landCount = dbc; }

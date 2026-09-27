@@ -395,7 +395,7 @@ public class AreaGUIManager implements Listener {
         for (String member : memberList) {
             if (slot >= 45) break;
 
-            boolean isOwner = member.equalsIgnoreCase(land.owner);
+            boolean isOwner = AreaProtection.samePlayer(member, land.owner);
             String roleTag = isOwner ? " §c[所有者]" : "";
 
             // 检查是否有自定义权限
@@ -457,7 +457,7 @@ public class AreaGUIManager implements Listener {
         int slot = 0;
 
         // ★ 权限检查：只有所有者、全局tag管理员、或领地管理员能编辑成员权限
-        boolean isOwner = p.getName().equalsIgnoreCase(land.owner);
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
         boolean isGlobalAdmin = areaProtect.isAreaAdmin(p);
 
         // ★ 管理员状态检测（领地级管理员，非全局tag）
@@ -635,7 +635,7 @@ public class AreaGUIManager implements Listener {
         for (Player target : onlinePlayers) {
             if (slot >= 45) break;
             if (target.getUniqueId().equals(p.getUniqueId())) continue; // ★ 排除自身
-            if (target.getName().equalsIgnoreCase(ownerName)) continue; // ★ 排除领地主人
+            if (AreaProtection.samePlayer(target.getName(), ownerName)) continue; // ★ 排除领地主人
             if (existingMembers.contains(target.getName())) continue;
 
             ItemStack playerItem = createItem(Material.PLAYER_HEAD, "§a§l" + target.getName(),
