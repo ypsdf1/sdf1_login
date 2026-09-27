@@ -5215,6 +5215,8 @@ public class WebManager {
         }
 
         final String[] pollData = {sessionId};
+        // ★ 连续无效响应（非JSON/结构不符）计数：只用于日志与提示，任何情况下都不会据此放行
+        final int[] invalidPolls = {0};
         final long startTime = System.currentTimeMillis();
         final long maxPollTime = 660000; // 11分钟（比会话过期多1分钟）
 
@@ -5262,16 +5264,69 @@ public class WebManager {
                         String response = doGet(url);
                         if (response == null) return;
 
-                        com.google.gson.JsonObject json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
-                        if (!json.get("success").getAsBoolean()) return;
-
+                        // ★ fail-closed：非JSON / 结构不符 一律视为"无效响应"，绝不判为通过
+                        com.google.gson.JsonObject json;
+                        try {
+                            json = com.google.gson.JsonParser.parseString(response).getAsJsonObject();
+                        } catch (Exception parseEx) {
+                            invalidPolls[0]++;
+                            if (invalidPolls[0] == 1 || invalidPolls[0] % 15 == 0) {
+                                String preview = response.length() > 200 ? response.substring(0, 200) + "..." : response;
+                                plugin.getLogger().warning("[正版验证] 响应非JSON，忽略(第" + invalidPolls[0] + "次): " + preview);
+                            }
+                            if (invalidPolls[0] == 5) {
+                                Bukkit.getScheduler().runTask(plugin, () -> {
+                                    if (player.isOnline()) {
+                                        player.sendMessage("§c验证服务响应异常，正在自动重试…");
+                                    }
+                                });
+                            }
+                            return;
+                        }
+                        if (!json.has("success") || !json.get("success").isJsonPrimitive()
+                                || !json.get("success").getAsBoolean()) {
+                            // PHP明确返回失败（会话不存在/密钥错误等结构性错误）→ 终止轮询，不放行
+                            String err = (json.has("error") && json.get("error").isJsonPrimitive())
+                                    ? json.get("error").getAsString() : "未知错误";
+                            plugin.getLogger().warning("[正版验证] PHP返回失败，终止轮询: " + err);
+                            minecraftAuthSessions.remove(playerName);
+                            minecraftAuthPollers.remove(playerName);
+                            Bukkit.getScheduler().runTask(plugin, () -> {
+                                if (player.isOnline()) {
+                                    player.sendMessage("§c验证失败: " + err);
+                                }
+                            });
+                            this.cancel();
+                            return;
+                        }
+                        if (!json.has("data") || !json.get("data").isJsonObject()) {
+                            invalidPolls[0]++;
+                            plugin.getLogger().warning("[正版验证] 响应缺少data，忽略(第" + invalidPolls[0] + "次)");
+                            return;
+                        }
                         com.google.gson.JsonObject data = json.getAsJsonObject("data");
+                        if (!data.has("status") || !data.get("status").isJsonPrimitive()) {
+                            invalidPolls[0]++;
+                            plugin.getLogger().warning("[正版验证] 响应缺少status，忽略(第" + invalidPolls[0] + "次)");
+                            return;
+                        }
                         String status = data.get("status").getAsString();
+                        invalidPolls[0] = 0; // 收到有效响应 → 重置无效计数
 
                         if ("verified".equals(status)) {
                             // 验证成功！
-                            String mcUuid = data.get("mc_uuid").getAsString();
-                            String mcUsername = data.get("mc_username").getAsString();
+                            String mcUuid = data.has("mc_uuid") ? data.get("mc_uuid").getAsString() : "";
+                            String mcUsername = data.has("mc_username") ? data.get("mc_username").getAsString() : "";
+                            String sessionPlayer = data.has("player_name") ? data.get("player_name").getAsString() : "";
+
+                            // ★ fail-closed：凭证不全 / 会话归属玩家不符 → 一律不放行（继续轮询直到超时）
+                            if (mcUuid.isEmpty() || mcUsername.isEmpty()
+                                    || (sessionPlayer != null && !sessionPlayer.isEmpty()
+                                    && !sessionPlayer.equalsIgnoreCase(playerName))) {
+                                plugin.getLogger().warning("[正版验证] verified但校验不通过，拒绝放行: session.player="
+                                        + sessionPlayer + ", uuid=" + mcUuid + ", name=" + mcUsername);
+                                return;
+                            }
 
                             plugin.getLogger().info("[正版验证] 验证成功: " + playerName + " -> " + mcUsername + " (" + mcUuid + ")");
 

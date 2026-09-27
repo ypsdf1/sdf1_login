@@ -109,7 +109,7 @@ public class ChatFilterManager {
     
     static class VerificationData {
         long createTime;
-        int a, b, op; // 0=加法, 1=减法, 2=乘法(九九表), 3=除法(九九表)
+        int a, b, op; // 0=加法, 1=减法, 2=乘法, 3=除法（均为99以内小学运算）
         String guiTargets; // GUI模式下需要选择的物品名列表（"|"分隔）
         VerificationType type; // 验证码类型
         boolean completed;
@@ -188,7 +188,7 @@ public class ChatFilterManager {
     
     /**
      * 生成随机验证码：加 / 减 / 乘 / 除 / GUI 五种每次随机抽一种。
-     * 乘法与除法严格取自九九乘法表。
+     * ★ 算术题统一为小学水平「99以内加减乘除」（和/积≤99、减法不为负、除法整除）。
      *
      * ★ 出题前必须先关掉可能还开着的旧验证码GUI：旧GUI 的 InventoryCloseEvent
      *   会清 verificationData，让它先跑完，否则刚生成的新题会被清掉（点哪儿都没用）。
@@ -237,26 +237,30 @@ public class ChatFilterManager {
         }
     }
     
-    /** 生成数学题验证码（op: 0加 1减 2乘 3除；乘/除每次从九九乘法表随机抽一题） */
+    /**
+     * 生成数学题验证码（op: 0加 1减 2乘 3除）
+     * ★ 小学水平「99以内加减乘除」：加法和≤99、减法不出现负数、乘法积≤99、除法整除且被除数≤99
+     */
     private void generateMathChallenge(String playerName, int op, Random rand) {
         int a, b;
 
         switch (op) {
-            case 0: // 两位数加法
-                a = 10 + rand.nextInt(90);
-                b = 10 + rand.nextInt(90);
+            case 0: // 加法：两数之和不超过99
+                a = 1 + rand.nextInt(98);            // a ∈ [1, 98]
+                b = 1 + rand.nextInt(99 - a);        // b ∈ [1, 99-a] → a+b ≤ 99
                 break;
-            case 1: // 两位数减法（保证结果仍是两位数，不出现负数）
-                a = 20 + rand.nextInt(80);
-                b = 10 + rand.nextInt(a - 19); // b ∈ [10, a-10]，结果 ≥ 10
+            case 1: // 减法：被减数不超过99，结果≥1（小学不出现负数/零）
+                a = 2 + rand.nextInt(98);            // a ∈ [2, 99]
+                b = 1 + rand.nextInt(a - 1);         // b ∈ [1, a-1] → 结果 ∈ [1, a-1]
                 break;
-            case 2: // 九九乘法表：1×1 ~ 9×9
-                a = 1 + rand.nextInt(9);
-                b = 1 + rand.nextInt(9);
+            case 2: // 乘法：积不超过99（如 12×7=84、11×9=99）
+                b = 2 + rand.nextInt(8);             // b ∈ [2, 9]
+                a = 2 + rand.nextInt((99 / b) - 1);  // a ∈ [2, floor(99/b)] → a*b ≤ 99
                 break;
-            default: // 九九乘法表除法（整除）：(i×j) ÷ j = i
-                b = 1 + rand.nextInt(9);
-                a = (1 + rand.nextInt(9)) * b;
+            default: // 除法：整除且被除数不超过99（如 96÷8=12、99÷9=11）
+                b = 2 + rand.nextInt(8);             // b ∈ [2, 9]
+                int q = 2 + rand.nextInt((99 / b) - 1); // 商 ∈ [2, floor(99/b)]
+                a = b * q;                           // a ≤ 99
                 break;
         }
 
@@ -484,7 +488,7 @@ public class ChatFilterManager {
                     case 0 -> expected = vd.a + vd.b;
                     case 1 -> expected = vd.a - vd.b;
                     case 2 -> expected = vd.a * vd.b;
-                    default -> expected = vd.a / vd.b; // 九九表整除
+                    default -> expected = vd.a / vd.b; // 生成时保证整除（a % b == 0）
                 }
                 
                 if (ans == expected) {

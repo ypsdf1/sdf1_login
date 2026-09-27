@@ -1235,7 +1235,10 @@ public class PVPArenaManager implements Listener {
         GameMode backMode = spectatorBackups.remove(playerName);
         if (backMode != null && !isDisconnect && player.isOnline()
                 && player.getGameMode() == GameMode.SPECTATOR) {
-            player.setGameMode(backMode == GameMode.SPECTATOR ? GameMode.SURVIVAL : backMode);
+            // ★ 兜底：还原目标为观察者或创造时一律回生存（退出观赛绝不回创造，防止作弊）
+            GameMode restore = (backMode == GameMode.SPECTATOR
+                    || backMode == GameMode.CREATIVE) ? GameMode.SURVIVAL : backMode;
+            player.setGameMode(restore);
         }
 
         // 清理所有状态（含取消超时定时器）
@@ -2850,7 +2853,12 @@ public class PVPArenaManager implements Listener {
 
         // 2) 记录原模式并进入 MC 原版观察者
         //    ★ 必须【先记再切】：观察者模式下 addItem 会掉地上，故不再发放任何物品
-        spectatorBackups.put(p.getName(), p.getGameMode());
+        //    ★ 绝不把【创造模式】当作还原目标：以创造进入观赛的，退出一律回生存（防止退出观赛变成创造作弊）
+        GameMode before = p.getGameMode();
+        if (before == GameMode.CREATIVE || before == GameMode.SPECTATOR) {
+            before = GameMode.SURVIVAL;
+        }
+        spectatorBackups.put(p.getName(), before);
         p.setGameMode(GameMode.SPECTATOR);
 
         p.sendMessage("§a§l[PVP观赛] §f已进入观察者模式，可穿墙自由观赛");
@@ -2866,7 +2874,10 @@ public class PVPArenaManager implements Listener {
         if (p.getGameMode() != GameMode.SPECTATOR) return;
 
         GameMode back = spectatorBackups.remove(p.getName());
-        if (back == null || back == GameMode.SPECTATOR) back = GameMode.SURVIVAL;
+        // ★ 兜底：备份缺失/观察者/创造 一律还原为生存（退出观赛绝不回创造，防止作弊）
+        if (back == null || back == GameMode.SPECTATOR || back == GameMode.CREATIVE) {
+            back = GameMode.SURVIVAL;
+        }
 
         // 观察者常悬在高空或钻进方块里 → 切回可玩模式前先挪到可站立的空气格
         safeRecoverPosition(p);
