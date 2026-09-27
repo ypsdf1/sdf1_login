@@ -22,9 +22,11 @@ jobs:
       - name: Checkout code
         run: |
           echo "Checking out code..."
+          GIT_HOST=${GITHUB_SERVER_URL#http://}
+          GIT_HOST=${GIT_HOST#https://}
           rm -rf /workspace/youpaishidifu/Sdf1_login/*
           rm -rf /workspace/youpaishidifu/Sdf1_login/.[!.]*
-          git clone "https://x-access-token:${ACTIONS_RUNTIME_TOKEN}@${GITHUB_SERVER_URL}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" .
+          git clone "https://x-access-token:${ACTIONS_RUNTIME_TOKEN}@${GIT_HOST}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" .
           echo "Checkout completed"
 
       - name: Build with Maven
@@ -68,7 +70,7 @@ jobs:
             -H "Authorization: token ${RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             "${BASE}/releases" \
-            -d "{\"tag_name\":\"${TAG}",\"name\":\"${TAG}",\"body\":\"Auto release by Gitea Actions\",\"draft\":false,\"prerelease\":false}"
+            -d "{"tag_name":"${TAG}","name":"${TAG}","body":"Auto release by Gitea Actions","draft":false,"prerelease":false}"
 
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
