@@ -2001,6 +2001,12 @@ function apiValidateWebloginToken() {
             error('登录Token已过期');
         }
 
+        // ★ 封禁拦截：被封禁玩家禁止登录Web后台（永久封禁/未过期封禁均拦截）
+        $banReason = playerWebBanReason($row['player_name'], $db);
+        if ($banReason !== null) {
+            error('账号已被封禁：' . $banReason);
+        }
+
         success(['player' => $row['player_name']], 'Token有效');
     } catch (\Throwable $e) {
         error('Token验证失败: ' . $e->getMessage());
@@ -2378,6 +2384,12 @@ function webLoginRequest() {
     }
 
     $db = getDB();
+
+    // ★ 封禁拦截：被封禁玩家禁止走密码登录
+    $banReason = playerWebBanReason($player, $db);
+    if ($banReason !== null) {
+        error('账号已被封禁：' . $banReason);
+    }
 
     // 检查玩家是否已注册
     if (!isPlayerRegistered($player)) {
@@ -3421,6 +3433,12 @@ function sendEmailCode() {
         error('玩家未在游戏中注册，请先在游戏中使用 /register 注册账号');
     }
 
+    // ★ 封禁拦截：被封禁玩家禁止发送登录验证码
+    $banReason = playerWebBanReason($player);
+    if ($banReason !== null) {
+        error('账号已被封禁：' . $banReason);
+    }
+
     // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
     $db = getDB();
     $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
@@ -3526,8 +3544,14 @@ function verifyEmailCode() {
     $tokenInfo = validateTokenSilent($webToken);
     if (!$tokenInfo) error('无效的登录token');
     
-    // 验证玩家名是否匹配
+    // ★ 验证玩家名是否匹配
     if ($tokenInfo['player'] !== $player) error('玩家名不匹配');
+
+    // ★ 封禁拦截：被封禁玩家禁止走邮箱验证码登录
+    $banReason = playerWebBanReason($player);
+    if ($banReason !== null) {
+        error('账号已被封禁：' . $banReason);
+    }
 
     // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
     $db = getDB();

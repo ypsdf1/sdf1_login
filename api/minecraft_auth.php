@@ -64,11 +64,15 @@ if (mcAuthIpBlacklisted()) {
 // ====================================================================
 
 function success($data = null) {
+    // ★ 清空所有输出缓冲，保证响应体是纯JSON（否则前端 JSON.parse 失败会误报"服务器响应异常"）
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     echo json_encode(['success' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 function error($msg, $code = 400) {
+    // ★ 清空所有输出缓冲，保证响应体是纯JSON
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     http_response_code($code);
     echo json_encode(['success' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
     exit;
@@ -599,6 +603,29 @@ switch ($action) {
         break;
     }
 
+    // ===== 粘贴页/前端轮询：查询会话真实状态（仅凭session_id）=====
+    // 用途：前端提交响应异常（非JSON/网关错误）时回查真实结果，避免"已验证通过却提示响应异常"的误导
+    case 'status': {
+        $sessionId = getParam('session_id');
+        if (empty($sessionId)) error('缺少session_id参数');
+
+        $stmt = $db->prepare("SELECT * FROM mc_auth_sessions WHERE session_id = ?");
+        $stmt->execute([$sessionId]);
+        $session = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$session) error('会话不存在或已过期');
+
+        $result = [
+            'status' => $session['status'],
+            'player_name' => $session['player_name'],
+        ];
+        if ($session['status'] === 'verified') {
+            $result['mc_uuid'] = $session['mc_uuid'];
+            $result['mc_username'] = $session['mc_username'];
+        }
+        success($result);
+        break;
+    }
+
     // ===== 浏览器回调：处理Microsoft OAuth =====
     case 'callback': {
         $code = getParam('code');
@@ -899,6 +926,24 @@ if(ph.has('code'))return p.get('code');
 }catch(e){}
 return input;
 }
+function enableBtn(){var btn=document.getElementById('submitBtn');btn.disabled=false;btn.textContent='提交验证';}
+function showRealStatus(httpStatus,raw){
+// ★ 提交响应异常时回查会话真实状态：已验证就如实告知"已通过"，不再误导为"服务器响应异常"
+var x2=new XMLHttpRequest();
+x2.open('GET','minecraft_auth.php?action=status&session_id='+encodeURIComponent(sessionId),true);
+x2.onreadystatechange=function(){
+if(x2.readyState!==4)return;
+var st=null;
+try{var d2=JSON.parse(x2.responseText); if(d2.success&&d2.data)st=d2.data.status;}catch(e){}
+var rawPrev=String(raw||'').replace(/\s+/g,' ').substring(0,160);
+if(st==='verified'){showMsg('✅ 服务器已验证通过（提交时响应异常已自动忽略），请关闭此页面返回游戏','ok');}
+else if(st==='failed'){showMsg('❌ 验证失败，请重新提交 (HTTP '+httpStatus+')','err');enableBtn();}
+else if(st==='expired'){showMsg('❌ 会话已过期，请回游戏重新发起验证','err');enableBtn();}
+else if(st==='pending'){showMsg('⚠️ 响应异常(HTTP '+httpStatus+')，服务器仍在验证中，请稍后再次点击提交…','err');enableBtn();}
+else{showMsg('❌ 服务器响应异常(HTTP '+httpStatus+'): '+rawPrev,'err');enableBtn();}
+};
+x2.send();
+}
 function doSubmit(code){
 if(submitting)return;
 submitting=true;
@@ -910,10 +955,12 @@ xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
 xhr.onreadystatechange=function(){
 if(xhr.readyState===4){
 submitting=false;
-try{var d=JSON.parse(xhr.responseText);
+var body='';
+try{body=xhr.responseText||'';}catch(e){}
+try{var d=JSON.parse(body);
 if(d.success){showMsg('✅ 验证成功！请关闭此页面返回游戏','ok');}
-else{showMsg('❌ '+(d.error||'验证失败'),'err');btn.disabled=false;btn.textContent='提交验证';}
-}catch(e){showMsg('❌ 服务器响应异常','err');btn.disabled=false;btn.textContent='提交验证';}
+else{showMsg('❌ '+(d.error||d.message||'验证失败'),'err');enableBtn();}
+}catch(e){showRealStatus(xhr.status,body);}
 }};
 xhr.send('session_id='+encodeURIComponent(sessionId)+'&code='+encodeURIComponent(code));
 }

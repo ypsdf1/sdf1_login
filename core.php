@@ -1431,6 +1431,39 @@ function isPlayerRegistered($playerName) {
  * @param string $password  用户输入的密码（关键操作时需要）
  * @param string $ipAddress 客户端IP
  */
+/**
+ * ★ 封禁拦截：查询玩家是否处于【名字封禁】生效期（Java /ban 通过 sync_bans 同步的 web_player_bans）
+ * 返回 null = 未封禁（或数据不可用时放行）；否则返回封禁原因字符串（供前端提示）。
+ * expire_time 单位兼容：Java 推送的是毫秒（BanEntry.getExpiration().getTime()），0 = 永久。
+ * 覆盖范围：token登录 / 密码登录 / 邮箱验证码登录 / 商城·CDK·余额等 validateWebAccess 入口。
+ */
+function playerWebBanReason($player, $db = null) {
+    if ($player === null || $player === '') return null;
+    try {
+        if ($db === null) $db = getDB();
+        // 表不存在 = 从未同步过封禁名单 → 直接放行（避免读路径执行DDL）
+        $exists = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_bans'");
+        if (!$exists) return null;
+        $stmt = $db->prepare("SELECT reason, expire_time FROM web_player_bans WHERE ban_type = 'name' AND LOWER(target) = LOWER(:p)");
+        if (!$stmt) return null;
+        $stmt->bindValue(':p', $player, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        if (!$res) return null;
+        $now = time();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $exp = (int)$row['expire_time'];
+            if ($exp > 100000000000) $exp = intdiv($exp, 1000); // 毫秒 → 秒
+            if ($exp === 0 || $exp > $now) {
+                $reason = trim((string)($row['reason'] ?? ''));
+                return $reason !== '' ? $reason : '违反服务器规则';
+            }
+        }
+    } catch (\Throwable $e) {
+        @error_log('[playerWebBanReason] ' . $e->getMessage());
+    }
+    return null;
+}
+
 function validateWebAccess($webToken, $action = 'view', $password = null, $ipAddress = null) {
     if (!$ipAddress) $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
@@ -1458,6 +1491,13 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
     }
 
     $playerName = $row['player_name'];
+
+    // ★ 封禁拦截：被封禁玩家禁止使用Web端（商城/CDK/余额/登录校验一律拒绝）
+    $banReason = playerWebBanReason($playerName, $db);
+    if ($banReason !== null) {
+        @error_log("[validateWebAccess] DENIED: player banned. player=$playerName");
+        return ['ok' => false, 'mode' => 'denied', 'message' => '账号已被封禁：' . $banReason];
+    }
 
     // 在线玩家表（Java插件同步，这里确保表存在）
     try {
