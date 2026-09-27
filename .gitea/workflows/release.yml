@@ -101,18 +101,21 @@ jobs:
           print(json.dumps(data))
           " > /tmp/release_payload.json
           
-          curl -s -X POST \
+          RESP=$(curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d @/tmp/release_payload.json
+            -d @/tmp/release_payload.json)
+          
+          RELEASE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+          echo "Created release #$RELEASE_ID"
           
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
           UPLOAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/jar" \
-            "$BASE/releases/tags/$TAG/assets?name=$(basename $JAR)" \
+            "$BASE/releases/$RELEASE_ID/assets?name=$(basename $JAR)" \
             --data-binary "@$JAR")
           echo "Upload HTTP: $UPLOAD_CODE"
           
