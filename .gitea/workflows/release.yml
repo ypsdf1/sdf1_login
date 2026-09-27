@@ -26,10 +26,8 @@ jobs:
 
       - name: Checkout code
         run: |
-          GIT_HOST=${GITHUB_SERVER_URL#http://}
-          GIT_HOST=${GIT_HOST#https://}
           rm -rf /workspace/youpaishidifu/Sdf1_login/*
-          git clone "http://${GIT_HOST}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" .
+          git clone "http://$GITHUB_SERVER_URL/$(echo $GITHUB_REPOSITORY | tr '[:upper:]' '[:lower:]').git" .
 
       - name: Build with Maven
         run: mvn -B clean package -DskipTests
@@ -37,15 +35,13 @@ jobs:
       - name: Create Release
         env:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
-          GITHUB_API_URL: http://gitea_final:3000/api/v1
-          GITHUB_REPOSITORY: youpaishidifu/Sdf1_login
         run: |
           set -e
           # Read version from plugin.yml
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
-          TAG="v${VERSION}"
-          BASE="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
-          echo "Version: $VERSION, Tag: $TAG"
+          TAG="v$VERSION"
+          BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
+          echo "Version: $VERSION Tag: $TAG"
           
           # Generate release notes
           echo "## Changes in $TAG" > /tmp/body.md
@@ -74,11 +70,12 @@ jobs:
           fi
           
           # Create new release
+          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/body.md').read()))")
           RESP=$(curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$(python3 -c "import json; print(json.dumps(open('/tmp/body.md').read()))"),"draft":false,"prerelease":false}")
+            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}")
           
           RELEASE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
           echo "Created release #$RELEASE_ID"
