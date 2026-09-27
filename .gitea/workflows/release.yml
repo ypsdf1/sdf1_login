@@ -80,6 +80,8 @@ jobs:
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
           echo "Version: $VERSION, Tag: $TAG"
           
+          # Read release notes from file
+          BODY=$(cat /tmp/release_body.md)
           echo "=== Checking existing tag $TAG ==="
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG")
           echo "Check tag HTTP: $HTTP_CODE"
@@ -93,12 +95,13 @@ jobs:
           fi
           
           echo "=== Creating release ==="
-          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
+          # Escape body for JSON
+          BODY_ESCAPED=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
           curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}"
+            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_ESCAPED,"draft":false,"prerelease":false}"
           
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
