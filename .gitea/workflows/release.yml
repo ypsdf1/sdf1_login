@@ -55,10 +55,11 @@ jobs:
       - name: Generate Release Notes
         run: |
           echo "Generating release notes..."
+          cat << 'EOF' > /tmp/gen_notes.sh
+          #!/bin/bash
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v$VERSION"
           
-          # Generate release notes from last 10 commits
           echo "## Changes in $TAG" > /tmp/release_body.md
           echo "" >> /tmp/release_body.md
           git log --format="- **%h** %s (%an, %ad)" --date=short -10 >> /tmp/release_body.md
@@ -67,21 +68,23 @@ jobs:
           echo "" >> /tmp/release_body.md
           echo "[View all commits](/youpaishidifu/Sdf1_login/commits/main)" >> /tmp/release_body.md
           
-          echo "Release notes generated:"
-          cat /tmp/release_body.md
+          echo "Release notes generated for $TAG"
+          EOF
+          chmod +x /tmp/gen_notes.sh
+          /tmp/gen_notes.sh
 
       - name: Create Release
         env:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
         run: |
           set -e
+          cat << 'EOF' > /tmp/create_release.sh
+          #!/bin/bash
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v$VERSION"
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
           echo "Version: $VERSION, Tag: $TAG"
           
-          # Read release notes from file
-          BODY=$(cat /tmp/release_body.md)
           echo "=== Checking existing tag $TAG ==="
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG")
           echo "Check tag HTTP: $HTTP_CODE"
@@ -95,13 +98,12 @@ jobs:
           fi
           
           echo "=== Creating release ==="
-          # Escape body for JSON
-          BODY_ESCAPED=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
+          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
           curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_ESCAPED,"draft":false,"prerelease":false}"
+            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}"
           
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
@@ -113,3 +115,6 @@ jobs:
           echo "Upload HTTP: $UPLOAD_CODE"
           
           echo "=== Release $TAG created successfully ==="
+          EOF
+          chmod +x /tmp/create_release.sh
+          /tmp/create_release.sh
