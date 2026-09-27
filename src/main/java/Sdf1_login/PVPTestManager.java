@@ -159,8 +159,9 @@ public class PVPTestManager implements Listener {
      * FLAT 世界生成极快，不会卡服。
      */
     public void ensurePVPTestWorldExists() {
-        File folder = new File(Bukkit.getWorldContainer(), PVP_TEST_WORLD_NAME);
-        boolean fresh = !folder.exists();
+        // ★ 兼容 1.20.4+ 新存储布局（world/dimensions/minecraft/<名字>），旧的根目录拼接会恒定 exists()==false
+        File folder = PVPArenaManager.resolveWorldFolder(PVP_TEST_WORLD_NAME);
+        boolean fresh = folder == null || !folder.exists();
 
         World w = Bukkit.getWorld(PVP_TEST_WORLD_NAME);
         if (w == null) {

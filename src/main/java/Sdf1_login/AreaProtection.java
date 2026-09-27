@@ -2883,8 +2883,10 @@ public class AreaProtection implements Listener {
         // 如果ac为null（不在任何领地内），直接允许
         if (ac == null) return false;
 
-        // ★ denyPVP和denyAllDamage是全局安全设置，ADMIN/OWNER/VISITOR也不例外
-        boolean isSecurityPerm = "denyPVP".equals(permName) || "denyAllDamage".equals(permName);
+        // ★ denyPVP / denyAllDamage / denyWax 是全局安全设置，ADMIN/OWNER/VISITOR 也不例外
+        boolean isSecurityPerm = "denyPVP".equals(permName)
+                || "denyAllDamage".equals(permName)
+                || "denyWax".equals(permName);
         PermissionLevel level = isSecurityPerm ? null : getPermissionLevel(player, ac);
 
         // 1) ADMIN/OWNER 永远豁免
@@ -2926,14 +2928,14 @@ public class AreaProtection implements Listener {
 
     /**
      * ★ 涂蜡/刮蜡权限是否生效：
-     *   本权限为二级权限，上级权限=破坏方块/放置方块，
-     *   上级两项都未开启时，单独开启本项不生效。
+     *   2026-09-27 起改为【独立一级权限】：不再受"破坏方块/放置方块"上级开关约束，
+     *   也不做所有者/管理员/白名单豁免（按 denyPVP 同款"安全权限"处理）——
+     *   原因：此前"上级权限 + 角色豁免"双重条件导致领地开了开关却完全拦不住，
+     *   与"开启即禁止"的预期不符。需要放行特定玩家时，走 per-player 权限单独放行。
      */
     private boolean isWaxDenied(Player player, AreaConfig ac) {
         if (ac == null) return false;
-        if (!getEffectiveDeny(player, ac, "denyWax")) return false;
-        return getEffectiveDeny(player, ac, "denyBlockBreak")
-                || getEffectiveDeny(player, ac, "denyBlockPlace");
+        return getEffectiveDeny(player, ac, "denyWax");
     }
 
     /** ★ 可涂蜡/刮蜡的方块（铜质方块、避雷针、告示牌） */
@@ -5288,6 +5290,72 @@ public class AreaProtection implements Listener {
         }
     }
 
+    // ===== 涂蜡/刮蜡权限（denyWax）—— 独立处理器 =====
+    // 为什么单独开一个方法：
+    //   ① onInteract 开头有选区工具等分支会提前 return，合并写会被短路跳过；
+    //   ② 用 e.getItem()/e.getHand() 取"实际使用的那只手"，副手蜜脾/副手斧同样拦截；
+    //   ③ 同时 DENY useInteractedBlock + useItemInHand，确保原版"刮蜡/涂蜡"流程（1.20.5+ 在
+    //      ServerPlayerGameMode.useItemOn 中先查 useItemInHand 再继续 item.useOn）被彻底切断；
+    //   ④ HIGHEST 优先级，避免被其它监听器的默认处理覆盖。
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onWaxInteract(PlayerInteractEvent e) {
+        Action act = e.getAction();
+        if (act != Action.RIGHT_CLICK_BLOCK && act != Action.RIGHT_CLICK_AIR) return;
+        // 副手事件会与主手重复触发一次，只处理主手
+        if (e.getHand() == org.bukkit.inventory.EquipmentSlot.OFF_HAND) return;
+
+        Player p = e.getPlayer();
+        ItemStack used = e.getItem();
+        if (used == null || used.getType().isAir()) {
+            used = p.getInventory().getItemInMainHand();
+        }
+        Material mat = used.getType();
+        boolean waxOn = mat == Material.HONEYCOMB;
+        boolean waxOff = mat.name().endsWith("_AXE"); // 木/石/铜/铁/金/钻/下界合金斧全部匹配
+        if (!waxOn && !waxOff) return;
+
+        Block waxBlock = e.getClickedBlock();
+        if (waxBlock == null) {
+            try { waxBlock = p.getTargetBlockExact(6); } catch (Exception ignored) {}
+        }
+        if (waxBlock == null || !isWaxableBlock(waxBlock)) return;
+
+        AreaConfig waxAc = getArea(waxBlock.getWorld().getName(),
+                waxBlock.getX(), waxBlock.getY(), waxBlock.getZ());
+        if (waxAc == null) return; // 不在任何领地内 → 不干预
+
+        if (isWaxDenied(p, waxAc)) {
+            e.setUseInteractedBlock(org.bukkit.event.Event.Result.DENY);
+            e.setUseItemInHand(org.bukkit.event.Event.Result.DENY);
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止" + (waxOn ? "涂蜡" : "刮蜡"));
+            return;
+        }
+
+        // ★ 诊断日志：领地已开启 denyWax 却放行时，把放行原因打进控制台，
+        //   方便定位"为什么没拦住"（所有者/管理员/白名单访客豁免是最常见原因）。
+        if (waxAc.denyWax) {
+            plugin.getLogger().info("[防护] 放行" + (waxOn ? "涂蜡" : "刮蜡")
+                    + ": 玩家=" + p.getName() + " 领地=" + waxAc.name
+                    + " 原因=" + waxAllowReason(p, waxAc));
+        }
+    }
+
+    /** 诊断用：denyWax 已开却放行的原因（改为安全权限后，只剩 per-player 单独放行一条路径） */
+    private String waxAllowReason(Player p, AreaConfig ac) {
+        try {
+            int landId = getLandIdFromDb(ac.name);
+            if (landId > 0) {
+                Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
+                if (perms != null && perms.containsKey("denyWax")
+                        && !Boolean.TRUE.equals(perms.get("denyWax"))) {
+                    return "该玩家被单独放行(denyWax=false)";
+                }
+            }
+        } catch (Exception ignored) {}
+        return "未知(请反馈该日志)";
+    }
+
     // 替换整个 onInteract 方法
     @EventHandler
     public void onInteract(PlayerInteractEvent e) {
@@ -5370,24 +5438,9 @@ public class AreaProtection implements Listener {
         }
 
         // ===== 涂蜡/刮蜡权限（denyWax）=====
-        // 上级权限=破坏方块/放置方块：两者都未开启时，单独开启本项不生效
-        if (e.getAction() == Action.RIGHT_CLICK_BLOCK) {
-            Block waxBlock = e.getClickedBlock();
-            if (waxBlock != null) {
-                Material waxMat = hand.getType();
-                boolean waxOn = waxMat == Material.HONEYCOMB && isWaxableBlock(waxBlock);
-                boolean waxOff = waxMat.name().endsWith("_AXE") && isWaxableBlock(waxBlock);
-                if (waxOn || waxOff) {
-                    AreaConfig waxAc = getArea(waxBlock.getWorld().getName(),
-                            waxBlock.getX(), waxBlock.getY(), waxBlock.getZ());
-                    if (isWaxDenied(p, waxAc)) {
-                        e.setCancelled(true);
-                        p.sendMessage("§c§l[区域防护] §f禁止" + (waxOn ? "涂蜡" : "刮蜡"));
-                        return;
-                    }
-                }
-            }
-        }
+        // ★ 已拆成独立处理器 onWaxInteract（见本类 onInteract 方法之前）：
+        //   ① 本方法开头有多处提前 return（选区工具分支等），合并写会被短路跳过；
+        //   ② 独立处理器改用 e.getItem()/e.getHand() 取"实际使用的手"，副手蜜脾/斧同样拦截。
 
         // ===== 生物蛋权限（denySpawnEgg）=====
         // 上级权限=放置方块：放置未开启时，单独开启本项不生效
@@ -6168,7 +6221,7 @@ public class AreaProtection implements Listener {
         Player p = e.getPlayer();
         Entity entity = e.getRightClicked();
 
-        // ★ 蜜脾涂蜡实体（铜傀儡等）：受涂蜡权限管控（上级=破坏方块/放置方块）
+        // ★ 蜜脾涂蜡实体（铜傀儡等）：受涂蜡权限管控（独立安全权限，开启即禁止）
         ItemStack waxHand = p.getInventory().getItemInMainHand();
         if (waxHand != null && waxHand.getType() == Material.HONEYCOMB) {
             Location waxLoc = entity.getLocation();
@@ -12181,7 +12234,7 @@ public class AreaProtection implements Listener {
         public boolean denyAnimalFeeding = false;
         // ★ 生物蛋（右键刷怪蛋生成实体）——上级权限：放置方块（放置未开启时单独开启本项不生效）
         public boolean denySpawnEgg = false;
-        // ★ 涂蜡/刮蜡（蜜脾涂蜡、斧头刮蜡）——上级权限：破坏方块/放置方块（两者都未开启时单独开启本项不生效）
+        // ★ 涂蜡/刮蜡（蜜脾涂蜡、斧头刮蜡）——独立安全权限：开启即对所有人（含所有者/管理员/访客）禁止
         public boolean denyWax = false;
         // ★ 玩家攻击生物
         public boolean denyMobAttack = false;

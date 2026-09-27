@@ -305,6 +305,8 @@ public class PVPArenaManager implements Listener {
         cancelPendingDeletion();
         // ★ 启动时顺手清理历史回收站目录，避免磁盘无限增长
         cleanupOldTrashWorlds();
+        // ★ 启动时清理历史残留的 pvp_arena* 世界目录（新布局 world/dimensions/minecraft/ 下的也一并清）
+        cleanupStalePVPArenaWorlds();
         World w = Bukkit.getWorld(pvpWorldName);
         if (w != null && !w.getPlayers().isEmpty()) {
             plugin.getLogger().info("[PVP] 检查：PVP世界已有玩家在场，保持现状");
@@ -686,6 +688,85 @@ public class PVPArenaManager implements Listener {
     /**
      * 递归删除世界目录
      */
+    // ==================== 世界目录解析（兼容 1.20.4+ / 26.x 新存储布局） ====================
+    //
+    // MC 1.20.4 起多世界不再存放在 Bukkit.getWorldContainer()（服务器根目录），
+    // 而是存放在 <主世界目录>/dimensions/<命名空间>/<世界名>/（本服即 world/dimensions/minecraft/pvp_arena_xxx）。
+    // 旧实现一律 new File(Bukkit.getWorldContainer(), name) → exists() 恒 false →
+    // 删除/回收站/残留清理全部静默 no-op，磁盘上因此堆出 20+ 个 pvp_arena_* 残留目录。
+    // 以下方法统一按"已加载世界 → 根目录老布局 → 新布局 dimensions/<ns>/<名字>"兜底解析。
+
+    /** 世界根目录候选：服务器根目录 + 其下每个一级子目录（主世界目录） */
+    private static File[] worldRootCandidates() {
+        List<File> roots = new ArrayList<>();
+        File container = Bukkit.getWorldContainer();
+        if (container == null) return roots.toArray(new File[0]);
+        roots.add(container);
+        File[] kids = container.listFiles();
+        if (kids != null) {
+            for (File k : kids) {
+                if (k.isDirectory()) roots.add(k);
+            }
+        }
+        return roots.toArray(new File[0]);
+    }
+
+    /**
+     * 按世界名解析其磁盘目录。
+     * 找不到时返回"老布局"路径（<根目录>/<世界名>），由调用方用 exists() 判断。
+     */
+    public static File resolveWorldFolder(String worldName) {
+        if (worldName == null || worldName.isEmpty()) return null;
+        World loaded = Bukkit.getWorld(worldName);
+        if (loaded != null) {
+            File f = loaded.getWorldFolder();
+            if (f != null && f.exists()) return f;
+        }
+        File container = Bukkit.getWorldContainer();
+        if (container == null) return null;
+        File direct = new File(container, worldName);
+        if (direct.exists()) return direct;
+        for (File root : worldRootCandidates()) {
+            File dims = new File(root, "dimensions");
+            File[] namespaces = dims.listFiles();
+            if (namespaces == null) continue;
+            for (File ns : namespaces) {
+                if (!ns.isDirectory()) continue;
+                File cand = new File(ns, worldName);
+                if (cand.exists()) return cand;
+            }
+        }
+        return direct;
+    }
+
+    /**
+     * 列出所有名字以 prefix 开头的世界目录（新旧布局都扫，按绝对路径去重）。
+     * 供清理类逻辑使用——旧实现只扫根目录，新布局下的残留永远扫不到。
+     */
+    public static List<File> listWorldFolders(String prefix) {
+        Map<String, File> found = new LinkedHashMap<>();
+        for (File root : worldRootCandidates()) {
+            collectByPrefix(root, prefix, found);
+            File dims = new File(root, "dimensions");
+            File[] namespaces = dims.listFiles();
+            if (namespaces == null) continue;
+            for (File ns : namespaces) {
+                if (ns.isDirectory()) collectByPrefix(ns, prefix, found);
+            }
+        }
+        return new ArrayList<>(found.values());
+    }
+
+    private static void collectByPrefix(File dir, String prefix, Map<String, File> out) {
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File k : kids) {
+            if (k.isDirectory() && k.getName().startsWith(prefix)) {
+                out.put(k.getAbsolutePath(), k);
+            }
+        }
+    }
+
     private void deleteWorldFolder(File folder) {
         if (folder == null || !folder.exists()) return;
         File[] children = folder.listFiles();
@@ -727,14 +808,34 @@ public class PVPArenaManager implements Listener {
      * best-effort，失败不阻断主流程。
      */
     private void cleanupOldTrashWorlds() {
-        File container = Bukkit.getWorldContainer();
-        if (container == null || !container.isDirectory()) return;
-        File[] list = container.listFiles();
-        if (list == null) return;
-        for (File f : list) {
-            if (f.isDirectory() && f.getName().startsWith(PVP_WORLD_NAME + "_") && f.getName().contains("_trash_")) {
+        for (File f : listWorldFolders(PVP_WORLD_NAME + "_")) {
+            if (f.getName().contains("_trash_")) {
                 deleteWorldFolder(f);
             }
+        }
+    }
+
+    /**
+     * ★ 启动时清理历史残留的 PVP 世界目录（含新布局 world/dimensions/minecraft/ 下的）。
+     * 旧实现只扫服务器根目录，1.20.4+ 新布局根本扫不到 → 磁盘上堆出 20+ 个 pvp_arena_* 目录。
+     * 规则：凡是【未被加载】的 pvp_arena* 目录都视为残留 → 移入回收站（Windows 删除锁友好）。
+     * world/dimensions/minecraft/ 下的 pvp_arena_* 全部属于一次性随机命名世界，删掉不影响任何在局对局。
+     */
+    private void cleanupStalePVPArenaWorlds() {
+        int n = 0;
+        for (File f : listWorldFolders(PVP_WORLD_NAME)) {
+            String name = f.getName();
+            if (name.contains("_trash_")) continue;   // 回收站交给 cleanupOldTrashWorlds()
+            if (Bukkit.getWorld(name) != null) continue; // 世界已加载 → 正在使用，跳过
+            plugin.getLogger().info("[PVP] 清理残留PVP世界目录: " + f.getAbsolutePath());
+            // 启动阶段这些世界都未加载（上面已跳过已加载的），直接递归删除即可立即释放磁盘；
+            // 若个别文件被占用删不掉，退回重命名移入回收站
+            deleteWorldFolder(f);
+            if (f.exists()) moveWorldToTrash(f);
+            n++;
+        }
+        if (n > 0) {
+            plugin.getLogger().info("[PVP] 共清理 " + n + " 个残留PVP世界目录（历史清理失效遗留）");
         }
     }
 
@@ -782,9 +883,15 @@ public class PVPArenaManager implements Listener {
             p.teleport(getBedOrSpawnLocation(p));
             p.sendMessage("§e[PVP] 竞技场已关闭，你被传回主世界");
         }
+        // ★ 卸载前先取真实世界目录：unload 后 Bukkit.getWorld() 返回 null，
+        //   而新布局下根目录根本不存在该文件夹（旧实现取根目录路径 → exists() 恒 false → 从不删除）
+        File worldFolder = world.getWorldFolder();
         Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
         // ★ 同样用重命名移走，避免 Windows 删除锁导致旧世界残留
-        moveWorldToTrash(new File(Bukkit.getWorldContainer(), pvpWorldName));
+        if (worldFolder == null || !worldFolder.exists()) {
+            worldFolder = resolveWorldFolder(pvpWorldName);
+        }
+        moveWorldToTrash(worldFolder);
         // ★ 世界销毁 → 重置本局公平锁定，下一局首位玩家重新定死附魔
         resetMatchLock();
         plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
@@ -803,9 +910,10 @@ public class PVPArenaManager implements Listener {
      */
     private void deleteWorldFolderIfExists(String name) {
         if (name == null) return;
-        File folder = new File(Bukkit.getWorldContainer(), name);
-        if (!folder.exists()) return;
-        plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: " + name);
+        File folder = resolveWorldFolder(name);
+        if (folder == null || !folder.exists()) return;
+        plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: "
+                + folder.getAbsolutePath());
         moveWorldToTrash(folder);
     }
 
@@ -1121,6 +1229,13 @@ public class PVPArenaManager implements Listener {
         } else if (isDisconnect) {
             // 断线时确保备份已在DB中（下次onPlayerJoin时还原）
             plugin.getLogger().info("[PVP] 玩家 " + playerName + " 在PVP中断线，备份已存DB待还原");
+        }
+
+        // ★ 还原观赛前的游戏模式（避免把观察者模式一路带到主世界）
+        GameMode backMode = spectatorBackups.remove(playerName);
+        if (backMode != null && !isDisconnect && player.isOnline()
+                && player.getGameMode() == GameMode.SPECTATOR) {
+            player.setGameMode(backMode == GameMode.SPECTATOR ? GameMode.SURVIVAL : backMode);
         }
 
         // 清理所有状态（含取消超时定时器）
@@ -1533,6 +1648,12 @@ public class PVPArenaManager implements Listener {
                 db.deletePvpInventoryBackup(player.getName());
                 player.sendMessage("§a§l检测到你上次在PVP中断线，背包已自动恢复");
 
+                // ★ 上次以观赛观察者身份断线 → 重连强制恢复为生存（避免在主世界仍是观察者）
+                if (player.getGameMode() == GameMode.SPECTATOR) {
+                    player.setGameMode(GameMode.SURVIVAL);
+                    player.sendMessage("§a§l[PVP观赛] §f已退出观赛观察者模式");
+                }
+
                 // 若仍在竞技场世界，送回主世界
                 if (player.getWorld().getName().equals(pvpWorldName)) {
                     player.teleport(getBedOrSpawnLocation(player));
@@ -1551,6 +1672,10 @@ public class PVPArenaManager implements Listener {
                 player.teleport(getBedOrSpawnLocation(player));
                 cleanupPlayerStats(player);
                 inPVPArena.remove(player.getName());
+                // ★ 观赛观察者断线残留 → 强制恢复为生存
+                if (player.getGameMode() == GameMode.SPECTATOR) {
+                    player.setGameMode(GameMode.SURVIVAL);
+                }
                 player.sendMessage("§e[PVP] 检测到你在竞技场非正常断线，已送你回主世界");
             }, 5L);
         }
@@ -2564,9 +2689,10 @@ public class PVPArenaManager implements Listener {
             plugin.getLogger().info("[PVP] PVP世界当前无人，主线程卸载旧世界并重新生成全新主世界");
             deletePVPWorld(pvpWorld);
         } else {
-            File folder = new File(Bukkit.getWorldContainer(), pvpWorldName);
-            if (folder.exists()) {
-                plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录（无人在场），移入回收站后重新生成");
+            File folder = resolveWorldFolder(pvpWorldName);
+            if (folder != null && folder.exists()) {
+                plugin.getLogger().info("[PVP] 检测到磁盘残留PVP世界目录（无人在场），移入回收站后重新生成: "
+                        + folder.getAbsolutePath());
                 moveWorldToTrash(folder);
             }
         }
@@ -2649,6 +2775,179 @@ public class PVPArenaManager implements Listener {
         player.sendMessage("§a§l正在离开PVP竞技场...");
     }
 
+    // ==================== PVP 观赛（/pvp see 观察者模式）====================
+
+    /** 观赛雪球 lore 标记（与菜单雪球标签 sdf1_menu 区分，避免被误判为菜单物品） */
+    private static final String SPECTATE_TAG = "PVP观赛|";
+
+    /** 玩家名 → 进入观察者前的游戏模式（离场/重连时还原，避免把观察者模式带到主世界） */
+    private final Map<String, GameMode> spectatorBackups = new ConcurrentHashMap<>();
+
+    /** 是否 PVP 世界（pvp_arena* 竞技场 / pvp_test 测试场）——观赛功能仅在这些世界生效 */
+    public boolean isPVPWorld(World w) {
+        if (w == null) return false;
+        return w.getName().startsWith("pvp_");
+    }
+
+    /**
+     * /pvp see —— PVP 观赛模式（仅 PVP 世界生效）
+     * ① 已在观察者 → 切回普通生存模式
+     * ② 否则：回收 PVP 装备（★ 不发还玩家自己的装备，自己的装备仍在备份里、离场时统一还原）
+     *          → 发放 2 个不同的雪球 → 自动进入 MC 原版观察者模式
+     */
+    public void handleSeeCommand(Player p) {
+        if (!isPVPWorld(p.getWorld())) {
+            p.sendMessage("§c§l[PVP观赛] §f仅在PVP世界可用（/pvp join 进入竞技场后再使用）");
+            return;
+        }
+        if (p.getGameMode() == GameMode.SPECTATOR) {
+            exitSpectator(p);
+            return;
+        }
+        enterSpectator(p);
+    }
+
+    /** 进入观察者观赛：回收PVP装备(不退自己装备) → 发2个雪球 → 进入原版观察者 */
+    private void enterSpectator(Player p) {
+        if (p.getGameMode() == GameMode.SPECTATOR) return;
+
+        // 1) 回收PVP专属装备；★ 玩家自己的装备【不发还】，仍留在备份中，离场时统一还原
+        回收PVPEquipment(p);
+
+        // 2) 发放2个不同的雪球（必须在进入观察者之前发放：观察者收不到 /give，会掉在地上）
+        giveSpectatorSnowballs(p);
+
+        // 3) 记录原模式并进入 MC 原版观察者
+        spectatorBackups.put(p.getName(), p.getGameMode());
+        p.setGameMode(GameMode.SPECTATOR);
+
+        p.sendMessage("§a§l[PVP观赛] §f已进入观察者模式，可穿墙自由观赛");
+        p.sendMessage("§7  §b右键「观赛·观察者视角」§7→ 原版观察者（穿墙飞行）");
+        p.sendMessage("§7  §a右键「观赛·生存视角」§7→ 普通生存（落到地面观赛）");
+        p.sendMessage("§7  也可再次输入 §f/pvp see §7在两种模式间切换");
+        p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 进入观赛观察者模式");
+    }
+
+    /** 退出观察者 → 还原进入前的游戏模式（默认生存），含安全落点与缓降保护 */
+    private void exitSpectator(Player p) {
+        if (p.getGameMode() != GameMode.SPECTATOR) return;
+
+        GameMode back = spectatorBackups.remove(p.getName());
+        if (back == null || back == GameMode.SPECTATOR) back = GameMode.SURVIVAL;
+
+        // 观察者常悬在高空或钻进方块里 → 切回可玩模式前先挪到可站立的空气格
+        safeRecoverPosition(p);
+        // 先给缓降再切模式，落地不摔死
+        p.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                org.bukkit.potion.PotionEffectType.SLOW_FALLING, 20 * 8, 0, false, true));
+        p.setGameMode(back);
+
+        p.sendMessage("§a§l[PVP观赛] §f已退出观察者，恢复为" + gameModeName(back)
+                + "模式（8秒缓降，地面观赛可能被战斗波及）");
+        p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 退出观赛观察者模式 → " + back.name());
+    }
+
+    /** 观察者常卡在方块内部/高空 → 切回可玩模式前，把玩家挪到最近的可站立空气格 */
+    private void safeRecoverPosition(Player p) {
+        Location loc = p.getLocation();
+        World w = loc.getWorld();
+        if (w == null) return;
+        int x = loc.getBlockX(), y = loc.getBlockY(), z = loc.getBlockZ();
+        if (w.getBlockAt(x, y, z).isPassable()) return;
+        for (int dy = 1; dy <= 8; dy++) {
+            Block up = w.getBlockAt(x, y + dy, z);
+            if (up.isPassable()) {
+                p.teleport(new Location(w, x + 0.5, y + dy, z + 0.5, loc.getYaw(), loc.getPitch()));
+                return;
+            }
+        }
+    }
+
+    private String gameModeName(GameMode gm) {
+        switch (gm) {
+            case CREATIVE: return "创造";
+            case ADVENTURE: return "冒险";
+            case SPECTATOR: return "观察者";
+            default: return "生存";
+        }
+    }
+
+    /** 发放2个不同的雪球：观察者视角 / 生存视角（右键触发切换） */
+    private void giveSpectatorSnowballs(Player p) {
+        ItemStack spec = makeSpectateSnowball("§b观赛·观察者视角",
+                "§7右键 → 切换到 MC 原版观察者模式", "观察者");
+        ItemStack surv = makeSpectateSnowball("§a观赛·生存视角",
+                "§7右键 → 切换到普通生存模式（落地观赛）", "生存");
+        Map<Integer, ItemStack> left = p.getInventory().addItem(spec, surv);
+        if (left != null && !left.isEmpty()) {
+            for (ItemStack it : left.values()) {
+                p.getWorld().dropItemNaturally(p.getLocation(), it);
+            }
+        }
+    }
+
+    private ItemStack makeSpectateSnowball(String name, String desc, String key) {
+        ItemStack it = new ItemStack(Material.SNOWBALL);
+        ItemMeta im = it.getItemMeta();
+        if (im != null) {
+            im.setDisplayName(name);
+            im.setLore(Arrays.asList(desc, "§8[" + SPECTATE_TAG + key + "]"));
+            it.setItemMeta(im);
+        }
+        return it;
+    }
+
+    /** 判定雪球类型：0=非观赛雪球 1=观察者视角 2=生存视角 */
+    private int spectateSnowballType(ItemStack item) {
+        if (item == null || item.getType() != Material.SNOWBALL) return 0;
+        ItemMeta im = item.getItemMeta();
+        if (im == null || !im.hasLore()) return 0;
+        List<String> lore = im.getLore();
+        if (lore == null) return 0;
+        for (String line : lore) {
+            if (line == null || !line.contains(SPECTATE_TAG)) continue;
+            if (line.contains("观察者")) return 1;
+            if (line.contains("生存")) return 2;
+        }
+        return 0;
+    }
+
+    /**
+     * 观赛雪球：右键切换 观察者 ⇄ 生存（仅PVP世界生效）。
+     * ★ 必须 setCancelled(true)，否则雪球会被当成投掷物消耗掉。
+     * ★ 原版限制：观察者模式下客户端只在【对着方块右键】时才发包，对空气右键不发包；
+     *   若当时视线没对准方块，可改用 /pvp see 切换（两种方式等价）。
+     */
+    @EventHandler
+    public void onSpectateSnowball(PlayerInteractEvent e) {
+        Action a = e.getAction();
+        if (a != Action.RIGHT_CLICK_AIR && a != Action.RIGHT_CLICK_BLOCK) return;
+        if (e.getHand() == org.bukkit.inventory.EquipmentSlot.OFF_HAND) return;
+        Player p = e.getPlayer();
+        if (!isPVPWorld(p.getWorld())) return;
+
+        int type = spectateSnowballType(e.getItem());
+        if (type == 0) return;
+
+        e.setCancelled(true); // 阻止雪球被投掷消耗
+
+        if (type == 1) { // 观察者视角
+            if (p.getGameMode() == GameMode.SPECTATOR) {
+                p.sendMessage("§e[PVP观赛] 你已经在观察者模式了");
+                return;
+            }
+            enterSpectator(p);
+        } else { // 生存视角
+            if (p.getGameMode() != GameMode.SPECTATOR) {
+                p.sendMessage("§e[PVP观赛] 你已经在生存模式了");
+                return;
+            }
+            exitSpectator(p);
+        }
+    }
+
     // ==================== 公共查询 ====================
 
     public boolean isInPVPArena(String playerName) {
@@ -2728,6 +3027,7 @@ public class PVPArenaManager implements Listener {
         inPVPArena.clear();
         equipmentConfirmed.clear();
         inventoryBackups.clear();
+        spectatorBackups.clear();
         guiReopening.clear();
         guiOpenedMillis.clear();
         resetMatchLock();
