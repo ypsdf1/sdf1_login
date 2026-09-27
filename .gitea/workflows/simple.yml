@@ -1,0 +1,12 @@
+name: Simple Test
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hello
+        run: echo "Hello from Gitea Actions!"
