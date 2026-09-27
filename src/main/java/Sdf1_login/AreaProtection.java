@@ -3580,7 +3580,7 @@ public class AreaProtection implements Listener {
             int landId = getLandIdFromDb(ac.name);
             PermRow row = landId > 0 ? findPermRow(landId, p.getName()) : null;
             String name = p.getName();
-            plugin.getLogger().info("[防护][移动豁免诊断] 场景=" + scene
+         /*   plugin.getLogger().info("[防护][移动豁免诊断] 场景=" + scene
                     + " 领地=" + ac.name
                     + " 玩家=" + name
                     + " 码点=" + java.util.Arrays.toString(name.codePoints().toArray())
@@ -3591,7 +3591,7 @@ public class AreaProtection implements Listener {
                     + " 白名单=" + isPlayerWhitelisted(name, ac)
                     + " 访客行=" + (row == null ? "无"
                         : (row.playerName + "/" + row.role + "/exp=" + row.expiresAt + "/" + row.permissions))
-                    + " 领地默认denyMove=" + ac.denyMove);
+                    + " 领地默认denyMove=" + ac.denyMove);*/
         } catch (Exception ignored) {
         }
     }
@@ -5376,6 +5376,38 @@ public class AreaProtection implements Listener {
         }
 
 
+        // ===== 容器/UI方块交互：以【被点击方块】定位领地 =====
+        // 玩家站在领地外右键领地内容器/UI方块同样受控（旧逻辑用玩家脚下定位，
+        // 站领地外 ac==null 直接放行）；双箱被点侧在领地外时补查相邻同材质半边
+        if (e.getAction() == Action.RIGHT_CLICK_BLOCK) {
+            Block clicked = e.getClickedBlock();
+            if (clicked != null && isUIBlock(clicked.getType())) {
+                AreaConfig cac = getArea(clicked.getWorld().getName(),
+                        clicked.getX(), clicked.getY(), clicked.getZ());
+                if (cac == null && (clicked.getType() == Material.CHEST
+                        || clicked.getType() == Material.TRAPPED_CHEST)) {
+                    org.bukkit.block.BlockFace[] horiz = {
+                            org.bukkit.block.BlockFace.EAST, org.bukkit.block.BlockFace.WEST,
+                            org.bukkit.block.BlockFace.NORTH, org.bukkit.block.BlockFace.SOUTH};
+                    for (org.bukkit.block.BlockFace bf : horiz) {
+                        Block nb = clicked.getRelative(bf);
+                        if (nb.getType() == clicked.getType()) {
+                            cac = getArea(nb.getWorld().getName(),
+                                    nb.getX(), nb.getY(), nb.getZ());
+                            if (cac != null) break;
+                        }
+                    }
+                }
+                // 公共设施连控：公共设施启用时访客自动获得容器交互权限
+                if (cac != null && !cac.isPublicBuilding
+                        && getEffectiveDeny(p, cac, "denyContainer")) {
+                    e.setCancelled(true);
+                    p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
+                    return;
+                }
+            }
+        }
+
         // ===== 区域规则检查 =====
         AreaConfig ac = getArea(
                 p.getWorld().getName(),
@@ -5532,88 +5564,106 @@ public class AreaProtection implements Listener {
         Player p = (Player) e.getPlayer();
 
         InventoryHolder holder = e.getInventory().getHolder();
-        Location loc = null;
+        java.util.List<Location> locs = new java.util.ArrayList<>();
 
-        // ★ 双箱特殊处理：DoubleChest的holder不是BlockState，需要从left/right获取
-        if (holder != null && holder.getClass().getSimpleName().contains("DoubleChest")) {
-            try {
-                // DoubleChest通过反射获取left/right
-                Object dc = holder;
-                java.lang.reflect.Method getLeft = dc.getClass().getMethod("getLeft");
-                Object left = getLeft.invoke(dc);
-                if (left instanceof org.bukkit.block.BlockState) {
-                    loc = ((org.bukkit.block.BlockState) left).getLocation();
-                } else if (left != null) {
-                    java.lang.reflect.Method getBlock = left.getClass().getMethod("getBlock");
-                    Object block = getBlock.invoke(left);
-                    if (block instanceof org.bukkit.block.Block) {
-                        loc = ((org.bukkit.block.Block) block).getLocation();
-                    }
-                }
-            } catch (Exception ignored) {}
+        // ★ 双箱特殊处理：DoubleChest 的 holder 不是 BlockState，
+        //   必须同时收集左右两侧位置——任一侧在领地内即受 denyContainer 管控。
+        //   旧实现只反射取 left 且 getLeft() 返回 Inventory 无 getBlock()，
+        //   反射异常被吞后 loc=null 直接放行，导致大箱子完全绕过领地判定。
+        if (e.getInventory() instanceof org.bukkit.inventory.DoubleChestInventory) {
+            org.bukkit.inventory.DoubleChestInventory dci =
+                    (org.bukkit.inventory.DoubleChestInventory) e.getInventory();
+            addChestSideLocation(locs, dci.getLeftSide());
+            addChestSideLocation(locs, dci.getRightSide());
+        } else if (holder instanceof org.bukkit.block.DoubleChest) {
+            org.bukkit.block.DoubleChest dc = (org.bukkit.block.DoubleChest) holder;
+            addChestSideLocation(locs, dc.getLeftSide());
+            addChestSideLocation(locs, dc.getRightSide());
         }
         // ★ 检测所有容器类型：箱子、熔炉、高炉、潜影盒、末影箱、讲台、铁砧、信标、漏斗、发射器、投掷器、酿造台、工作台等
         else if (holder instanceof BlockState) {
             BlockState bs = (BlockState) holder;
-            loc = bs.getLocation();
+            locs.add(bs.getLocation());
         } else if (holder instanceof Container) {
             // Container接口覆盖所有方块容器
             if (holder instanceof org.bukkit.block.Block) {
                 org.bukkit.block.Block block = (org.bukkit.block.Block) holder;
-                loc = block.getLocation();
+                locs.add(block.getLocation());
             }
         }
 
         // ★ Issue 9: 矿车容器（漏斗矿车、运输矿车）
-        if (holder != null && loc == null) {
+        if (holder != null && locs.isEmpty()) {
             String className = holder.getClass().getSimpleName();
             if (className.contains("Minecart")) {
                 // 矿车容器使用实体位置
                 if (holder instanceof org.bukkit.entity.Entity) {
                     org.bukkit.entity.Entity entity = (org.bukkit.entity.Entity) holder;
-                    loc = entity.getLocation();
+                    locs.add(entity.getLocation());
                 }
             }
         }
 
-        // 末影箱特殊处理：检查末影箱所在位置而非玩家位置
-        if (holder != null) {
-            String typeName = holder.getClass().getSimpleName();
-            if (typeName.contains("EnderChest") || typeName.contains("Ender")) {
-                // 末影箱也是BlockState，已经在上面处理
-            }
+        if (locs.isEmpty()) return;
+
+        // ★ 跨边界大箱子：任一侧在领地内即判定；先取第一个命中领地做打开记录
+        AreaConfig ac = null;
+        Location hitLoc = null;
+        for (Location loc : locs) {
+            if (loc == null || loc.getWorld() == null) continue;
+            AreaConfig a = getArea(loc.getWorld().getName(),
+                    loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+            if (a != null) { ac = a; hitLoc = loc; break; }
         }
-
-        if (loc == null) return;
-
-        AreaConfig ac = getArea(loc.getWorld().getName(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
-        if (ac == null) return;
+        if (ac == null || hitLoc == null) return;
 
         // ★ 领地记录（所有容器打开都记录，含领地主/管理员/公共设施）
         String containerType;
-        if (loc.getBlock().getType() != org.bukkit.Material.AIR) {
-            containerType = loc.getBlock().getType().name();
+        if (hitLoc.getBlock().getType() != org.bukkit.Material.AIR) {
+            containerType = hitLoc.getBlock().getType().name();
         } else {
             containerType = holder.getClass().getSimpleName();
         }
-        plugin.landRecordManager.recordContainerOpen(ac, p, loc, containerType, e.getInventory());
+        plugin.landRecordManager.recordContainerOpen(ac, p, hitLoc, containerType, e.getInventory());
 
-        if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
+        // ★ 逐侧判定：任一侧所在领地禁止容器访问即拦截（跨边界大箱子不再漏网）
+        for (Location loc : locs) {
+            if (loc == null || loc.getWorld() == null) continue;
+            AreaConfig a = getArea(loc.getWorld().getName(),
+                    loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+            if (a == null) continue;
+            if (hasPermission(p, a, PermissionLevel.OWNER)) continue;
 
-        // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（跳过禁止检查）
-        if (ac.isPublicBuilding) return;
+            // ★ 公共设施连控：公共设施启用时，访客自动获得容器交互权限（跳过禁止检查）
+            if (a.isPublicBuilding) continue;
 
-        // ★ 容器管理权限：denyContainer控制访客能否访问容器
-        //    getEffectiveDeny 已内置 ADMIN/OWNER/VISITOR 豁免，
-        //    对无权限玩家则走领地默认 denyContainer 配置
-        if (getEffectiveDeny(p, ac, "denyContainer")) {
-            e.setCancelled(true);
-            p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
-            return;
+            // ★ 容器管理权限：denyContainer控制访客能否访问容器
+            //    getEffectiveDeny 已内置 ADMIN/OWNER/VISITOR 豁免，
+            //    对无权限玩家则走领地默认 denyContainer 配置
+            if (getEffectiveDeny(p, a, "denyContainer")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
+                return;
+            }
         }
     }
 
-    public void loadWhitelists() {
+    // ★ 双箱侧边定位：从半边(Inventory 或 InventoryHolder)的 BlockState holder 取其方块位置
+    private void addChestSideLocation(java.util.List<Location> locs, Object side) {
+        if (side == null) return;
+        Object sh = side;
+        if (side instanceof org.bukkit.inventory.Inventory) {
+            sh = ((org.bukkit.inventory.Inventory) side).getHolder();
+        }
+        if (sh instanceof BlockState) {
+            Location l = ((BlockState) sh).getLocation();
+            if (l != null) locs.add(l);
+        } else if (sh instanceof org.bukkit.block.Block) {
+            locs.add(((org.bukkit.block.Block) sh).getLocation());
+        }
+    }
+
+        public void loadWhitelists() {
         globalPlayerWhitelist.clear();
         areaPlayerWhitelist.clear();
 

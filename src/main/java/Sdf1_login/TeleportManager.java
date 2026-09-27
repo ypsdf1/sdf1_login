@@ -416,6 +416,33 @@ public class TeleportManager implements Listener {
         }
     }
     
+    /**
+     * 发送带可点击按钮的 tpaall（全服传送）通知
+     * ★ 语义：A 请求"全服玩家一起传送到 A 身边"，接受者会被传到发起者那里，
+     *   绝不能复用 tpa 的"请求传送到你身边"文案（那是 A 想来到你这边）。
+     */
+    private void sendClickableTPAllNotice(Player target, String senderName) {
+        if (isBedrockPlayer(target)) {
+            target.sendMessage("§e[传送] §f" + senderName + " §e请求全服玩家一起传送到他身边");
+            target.sendMessage("§7接受后，§f你 §7会被传送到 §f" + senderName + " §7身边");
+            target.sendMessage("§7────────────────────");
+            target.sendMessage("§a使用 §e/tpaccept §a接受，§e/tpdeny §a拒绝");
+        } else {
+            target.sendMessage(Component.text("§e[传送] §f" + senderName + " §e请求全服玩家一起传送到他身边"));
+            target.sendMessage(Component.text("§7（接受后，§f你 §7会被传送到 §f" + senderName + " §7身边）"));
+            target.sendMessage(Component.text("§7────────────────────"));
+            target.sendMessage(Component.empty()
+                .append(Component.text("§a[✔ 接受] ")
+                    .clickEvent(ClickEvent.runCommand("/tpaccept " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("接受 " + senderName + " 的全服传送请求"))))
+                .append(Component.text("  "))
+                .append(Component.text("§c[✘ 拒绝] ")
+                    .clickEvent(ClickEvent.runCommand("/tpdeny " + senderName))
+                    .hoverEvent(HoverEvent.showText(Component.text("拒绝 " + senderName + " 的全服传送请求")))));
+            target.sendMessage(Component.text("§7或输入 §e/tpaccept §7查看全部待处理请求"));
+        }
+    }
+
     // ==================== CLI 交互菜单 ====================
     
     /**
@@ -509,9 +536,9 @@ public class TeleportManager implements Listener {
         // 全服传送
         player.sendMessage(Component.empty()
             .append(Component.text("  §e/tpaall "))
-            .append(Component.text("§b[请求全服传送到你身边] ")
+            .append(Component.text("§b[请求全服玩家一起传送到你身边] ")
                 .clickEvent(ClickEvent.runCommand("/tpaall"))
-                .hoverEvent(HoverEvent.showText(Component.text("向所有在线玩家发送传送请求")))));
+                .hoverEvent(HoverEvent.showText(Component.text("向全服在线玩家发送传送请求，接受后他们一起传送到你所在位置")))));
         
         // 自动接受开关
         String autoStatus = autoAccept ? "§a已开启" : "§c已关闭";
@@ -764,8 +791,13 @@ public class TeleportManager implements Listener {
         removeIncomingRequest(player.getName(), targetName);
         removeOutgoingRequest(targetName, player.getName());
         
-        player.sendMessage("§a[传送] 已传送到 §f" + targetName + " §a身边");
-        actualSender.sendMessage("§a[传送] §f" + player.getName() + " §a已接受请求");
+        if ("tpaall".equals(requestType)) {
+            player.sendMessage("§a[传送] §a已接受全服传送，你被传送到 §f" + targetName + " §a身边");
+            actualSender.sendMessage("§a[传送] §f" + player.getName() + " §a已接受全服传送，来到你身边");
+        } else {
+            player.sendMessage("§a[传送] 已传送到 §f" + targetName + " §a身边");
+            actualSender.sendMessage("§a[传送] §f" + player.getName() + " §a已接受请求");
+        }
         teleportCooldown.remove(actualSender.getName());
         
         return true;
@@ -1106,8 +1138,8 @@ public class TeleportManager implements Listener {
             teleportRequestTimes.put(sender + ":" + name, now);
             teleportRequestTypes.put(sender + ":" + name, "tpaall");
             
-            // 可点击通知
-            sendClickableRequestNotice(p, sender);
+            // 可点击通知（tpaall 专用文案：全服传送到发起者身边）
+            sendClickableTPAllNotice(p, sender);
             
             count++;
         }
@@ -1231,7 +1263,7 @@ public class TeleportManager implements Listener {
         ItemMeta tpaAllMeta = tpaAllItem.getItemMeta();
         if (tpaAllMeta != null) {
             tpaAllMeta.setDisplayName("§b全服传送");
-            tpaAllMeta.setLore(Arrays.asList("§7请求所有玩家传送到你身边"));
+            tpaAllMeta.setLore(Arrays.asList("§7全服玩家接受后一起传送到你身边", "§7（A 请求全服玩家一起传送到 A 身边）"));
             tpaAllItem.setItemMeta(tpaAllMeta);
         }
         inv.setItem(4, tpaAllItem);

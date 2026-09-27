@@ -109,7 +109,7 @@ public class ChatFilterManager {
     
     static class VerificationData {
         long createTime;
-        int a, b, op; // 0=加法, 1=减法, 2=乘法
+        int a, b, op; // 0=加法, 1=减法, 2=乘法(九九表), 3=除法(九九表)
         String guiTargets; // GUI模式下需要选择的物品名列表（"|"分隔）
         VerificationType type; // 验证码类型
         boolean completed;
@@ -120,6 +120,7 @@ public class ChatFilterManager {
             this.type = type;
         }
         
+        /** 30秒未作答 = 超时；超时【不放行】，由上层清掉旧题重新出题 */
         boolean isExpired() {
             return System.currentTimeMillis() - createTime > 30000;
         }
@@ -130,7 +131,8 @@ public class ChatFilterManager {
         NEED_VERIFICATION, // 需要验证码
         PENDING,           // 验证码进行中
         VERIFIED,          // 已验证
-        FAILED             // 验证失败（消息吞噬）
+        FAILED,            // 验证失败（消息吞噬）
+        TIMEOUT            // 超时未作答（不放行，自动重新出题）
     }
 
     /** 验证码答案缓存，供外部判断是否为答案 */
@@ -161,11 +163,12 @@ public class ChatFilterManager {
                 verificationData.remove(name);
                 return VerificationResult.VERIFIED;
             }
-            // 验证码是否过期 — 过期后自动放行，不无限卡玩家
+            // ★ 30秒未作答 = 超时：不放行，清掉旧题并重新出题（绝不加入 verifiedPlayers）
             if (vd.isExpired()) {
                 verificationData.remove(name);
-                verifiedPlayers.add(name);
-                return VerificationResult.VERIFIED;
+                p.sendMessage("§c§l[验证码] §c上一题超时，已为你换新题");
+                generateMathVerification(name);
+                return VerificationResult.TIMEOUT;
             }
             return VerificationResult.PENDING;
         }
@@ -184,43 +187,76 @@ public class ChatFilterManager {
     private static final ThreadLocal<Random> sharedRandom = ThreadLocal.withInitial(Random::new);
     
     /**
-     * 生成随机验证码：数学题或GUI随机50%概率
+     * 生成随机验证码：加 / 减 / 乘 / 除 / GUI 五种每次随机抽一种。
+     * 乘法与除法严格取自九九乘法表。
+     *
+     * ★ 出题前必须先关掉可能还开着的旧验证码GUI：旧GUI 的 InventoryCloseEvent
+     *   会清 verificationData，让它先跑完，否则刚生成的新题会被清掉（点哪儿都没用）。
      */
     public void generateMathVerification(String playerName) {
         Random rand = sharedRandom.get();
-        // 50% 概率数学题，50% 概率GUI
-        if (rand.nextBoolean()) {
-            generateMathChallenge(playerName, rand);
-        } else {
+        Player online = org.bukkit.Bukkit.getPlayer(playerName);
+        if (online != null) {
+            closeVerificationGuiIfOpen(online);
+        }
+
+        int kind = rand.nextInt(5); // 0加 1减 2乘 3除 4GUI
+        if (kind == 4) {
             generateGUIChallenge(playerName, rand);
+        } else {
+            generateMathChallenge(playerName, kind, rand);
+        }
+    }
+
+    /** 关掉还开着的验证码GUI（标题匹配才关，避免误关玩家自己的箱子/菜单） */
+    private void closeVerificationGuiIfOpen(Player p) {
+        try {
+            String title = p.getOpenInventory().getTitle();
+            if (title != null && title.contains("点击") && title.contains("完成验证")) {
+                p.closeInventory();
+            }
+        } catch (Exception ignored) {
         }
     }
     
-    /** 生成数学题验证码 */
-    private void generateMathChallenge(String playerName, Random rand) {
-        int op = rand.nextInt(3); // 0=加, 1=减, 2=乘
+    /** 生成数学题验证码（op: 0加 1减 2乘 3除；乘/除每次从九九乘法表随机抽一题） */
+    private void generateMathChallenge(String playerName, int op, Random rand) {
         int a, b;
 
         switch (op) {
-            case 0: a = rand.nextInt(10) + 1; b = rand.nextInt(10) + 1; break;
-            case 1: a = rand.nextInt(10) + 2; b = rand.nextInt(a) + 1; break;
-            default: a = rand.nextInt(10) + 1; b = rand.nextInt(10) + 1; break;
+            case 0: // 两位数加法
+                a = 10 + rand.nextInt(90);
+                b = 10 + rand.nextInt(90);
+                break;
+            case 1: // 两位数减法（保证结果仍是两位数，不出现负数）
+                a = 20 + rand.nextInt(80);
+                b = 10 + rand.nextInt(a - 19); // b ∈ [10, a-10]，结果 ≥ 10
+                break;
+            case 2: // 九九乘法表：1×1 ~ 9×9
+                a = 1 + rand.nextInt(9);
+                b = 1 + rand.nextInt(9);
+                break;
+            default: // 九九乘法表除法（整除）：(i×j) ÷ j = i
+                b = 1 + rand.nextInt(9);
+                a = (1 + rand.nextInt(9)) * b;
+                break;
         }
-        
+
         VerificationData vd = new VerificationData(a, b, op, VerificationType.MATH);
         verificationData.put(playerName, vd);
 
         String opSymbol = switch (op) {
             case 0 -> "+";
             case 1 -> "-";
-            default -> "×";
+            case 2 -> "×";
+            default -> "÷";
         };
-        
+
         org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> {
             Player p = org.bukkit.Bukkit.getPlayer(playerName);
             if (p != null && p.isOnline()) {
                 p.sendMessage("§e§l[验证码] §f请回答: §e" + a + " " + opSymbol + " " + b + " = ?");
-                p.sendMessage("§7(30秒内输入答案)");
+                p.sendMessage("§7(30秒内输入答案，超时会自动换新题)");
             }
         });
     }
@@ -366,8 +402,8 @@ public class ChatFilterManager {
                     p.openInventory(inv);
                 } catch (Exception ex) {
                     plugin.getLogger().warning("[验证码] GUI挑战生成失败: " + ex.getMessage());
-                    // 降级为数学题
-                    generateMathChallenge(playerName, rand);
+                    // 降级为数学题（随机抽一种运算）
+                    generateMathChallenge(playerName, rand.nextInt(4), rand);
                 }
             }
         });
@@ -391,10 +427,11 @@ public class ChatFilterManager {
         VerificationData vd = verificationData.get(playerName);
         if (vd == null) return VerificationResult.VERIFIED;
         
+        // ★ 超时不放行：清旧题并重新出题
         if (vd.isExpired()) {
             verificationData.remove(playerName);
-            verifiedPlayers.add(playerName);
-            return VerificationResult.VERIFIED;
+            generateMathVerification(playerName);
+            return VerificationResult.TIMEOUT;
         }
         
         if (vd.type == VerificationType.MATH) {
@@ -414,10 +451,11 @@ public class ChatFilterManager {
         VerificationData vd = verificationData.get(playerName);
         if (vd == null) return VerificationResult.VERIFIED; // 无验证码 → 放行
 
+        // ★ 超时不放行：清旧题并重新出题
         if (vd.isExpired()) {
             verificationData.remove(playerName);
-            verifiedPlayers.add(playerName); // 过期后不再要求
-            return VerificationResult.VERIFIED;
+            generateMathVerification(playerName);
+            return VerificationResult.TIMEOUT;
         }
 
         if (vd.type == VerificationType.MATH) {
@@ -427,7 +465,8 @@ public class ChatFilterManager {
                 switch (vd.op) {
                     case 0 -> expected = vd.a + vd.b;
                     case 1 -> expected = vd.a - vd.b;
-                    default -> expected = vd.a * vd.b;
+                    case 2 -> expected = vd.a * vd.b;
+                    default -> expected = vd.a / vd.b; // 九九表整除
                 }
                 
                 if (ans == expected) {
@@ -462,13 +501,20 @@ public class ChatFilterManager {
     public VerificationResult checkGUIClick(String playerName, String clickedItemName) {
         String name = playerName;
         VerificationData vd = verificationData.get(name);
-        if (vd == null) return VerificationResult.VERIFIED;
+        // ★ 没有题目（旧题已被5秒定时器清掉）时绝不能算通过，
+        //   否则超时后随便点一下就绕过验证；已通过的老玩家仍按通过处理（防连点二次出题）
+        if (vd == null) {
+            return verifiedPlayers.contains(name)
+                    ? VerificationResult.VERIFIED
+                    : VerificationResult.TIMEOUT;
+        }
         if (!VerificationType.GUI.equals(vd.type)) return VerificationResult.PENDING;
-        
+
+        // ★ 30秒未点选 = 超时：不放行，重新出题
         if (vd.isExpired()) {
             verificationData.remove(name);
-            verifiedPlayers.add(name);
-            return VerificationResult.VERIFIED;
+            generateMathVerification(name);
+            return VerificationResult.TIMEOUT;
         }
         
         // ★ 关键修复：点击的物品名必须等于目标物品名才通过
@@ -507,7 +553,8 @@ public class ChatFilterManager {
     }
 
     /**
-     * 清理过期的验证码
+     * 清理过期的验证码（只做内存回收，绝不把玩家标记为已验证；
+     * 玩家下一次发言/点击会走 NEED_VERIFICATION 或 TIMEOUT 分支重新出题）
      */
     public void cleanupExpiredVerifications() {
         long now = System.currentTimeMillis();

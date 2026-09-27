@@ -3428,6 +3428,16 @@ public class Main extends JavaPlugin
                 e.setCancelled(true);
                 return;
             }
+
+            if (vr == ChatFilterManager.VerificationResult.TIMEOUT) {
+                // ★ 30秒超时：不放行（已在 ChatFilterManager 里清旧题并换新题）
+                //   这条消息：纯数字按"超时的答案"吞掉，其它照样缓存，避免玩家打的字丢失
+                if (!msg.trim().matches("-?\\d+")) {
+                    chatFilter.cachePendingMessage(p.getName(), msg);
+                }
+                e.setCancelled(true);
+                return;
+            }
             
             if (vr == ChatFilterManager.VerificationResult.PENDING) {
                 // 验证进行中：当前聊天框输入就是答案
@@ -4078,6 +4088,11 @@ public class Main extends JavaPlugin
                         }
                         chatFilter.pendingMessages.remove(p.getName());
                     }
+                } else if (vr == ChatFilterManager.VerificationResult.TIMEOUT) {
+                    // ★ 超时/旧题已被清理：不放行、不清缓存消息，直接换新题
+                    p.closeInventory();
+                    p.sendMessage("§c§l[验证码] §c上一题超时，已为你换新题");
+                    chatFilter.generateMathVerification(p.getName());
                 } else {
                     p.closeInventory();
                     chatFilter.pendingMessages.remove(p.getName());
