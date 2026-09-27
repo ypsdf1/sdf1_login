@@ -106,3 +106,5 @@ backup/
 *.rar
 test.*
 /*.rev
+# 屏蔽编译输出日志
+build.log
