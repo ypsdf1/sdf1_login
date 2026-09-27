@@ -25,6 +25,9 @@ db/debug_ip_v2.php
 api/test_db.php
 api/diag_db_content.php
 
+# 开发辅助文档（本地保留，不推送到仓库）
+/代码关联关系.md
+
 # ===== 支付密钥 - 严禁提交 (double insurance) =====
 # 彩虹易支付 RSA 私钥/公钥/商户ID 全部在此文件，一旦进 git 或进公网 web 根目录即泄露
 密钥文件_git拉黑.txt
