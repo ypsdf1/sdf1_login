@@ -52,21 +52,44 @@ jobs:
           ls -la target/*.jar
           echo "Verification completed"
 
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          echo "Generating release notes from commits..."
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          # Get all commits since last tag
+          COMMITS=$(git log --format="- %s" $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD~10)..HEAD 2>/dev/null || git log --format="- %s" -10)
+          
+          # Format: include commit hash and date
+          FULL_LOG=$(git log --format="**%h** - %an (%ad)%n%s" --date=short $(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo HEAD~10)..HEAD 2>/dev/null || git log --format="**%h** - %an (%ad)%n%s" --date=short -10)
+          
+          echo "## Changes" > /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          echo "$FULL_LOG" >> /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          echo "### Full Changelog" >> /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          echo "\`$TAG\`" >> /tmp/release_body.md
+          
+          echo "Release notes generated:"
+          cat /tmp/release_body.md
+
       - name: Create Release
         env:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
         run: |
           set -e
-          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
-          TAG="v$VERSION"
+          TAG="${{ steps.notes.outputs.tag }}"
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
-          echo "Version: $VERSION, Tag: $TAG"
+          echo "Creating release for $TAG"
           
           echo "=== Checking existing tag $TAG ==="
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG")
           echo "Check tag HTTP: $HTTP_CODE"
           
-          RELEASE_ID=""
           if [ "$HTTP_CODE" = "200" ]; then
             RELEASE_ID=$(curl -s -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
             echo "Tag $TAG exists (release #$RELEASE_ID), deleting..."
@@ -80,7 +103,7 @@ jobs:
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"Auto release by Gitea Actions\",\"draft\":false,\"prerelease\":false}")
+            -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":$(cat /tmp/release_body.md | python3 -c \"import sys,json; print(json.dumps(sys.stdin.read()))\"),\"draft\":false,\"prerelease\":false}")
           RELEASE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
           echo "Created release #$RELEASE_ID"
           
