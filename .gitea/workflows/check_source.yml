@@ -1,0 +1,21 @@
+name: Check Source
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check workspace
+        run: |
+          echo "=== PWD ==="
+          pwd
+          echo "=== LS ==="
+          ls -la
+          echo "=== FIND POM ==="
+          find / -name "pom.xml" 2>/dev/null
+          echo "=== ENV ==="
+          env | grep -iE "workspace|repo|git" | sort
+          echo "=== DONE ==="
