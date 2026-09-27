@@ -80,7 +80,7 @@ jobs:
             -H "Authorization: token ${RUNNER_TOKEN}" \
             -H "Content-Type: application/json" \
             "${BASE}/releases" \
-            -d "{"tag_name":"${TAG}","name":"${TAG}","body":"Auto release by Gitea Actions","draft":false,"prerelease":false}"
+            -d '{"tag_name":"${TAG}","name":"${TAG}","body":"Auto release by Gitea Actions","draft":false,"prerelease":false}'
 
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
