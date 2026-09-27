@@ -53,12 +53,10 @@ jobs:
           echo "Verification completed"
 
       - name: Generate Release Notes
-        id: notes
         run: |
           echo "Generating release notes..."
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v$VERSION"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
           
           # Generate release notes from last 10 commits
           echo "## Changes in $TAG" > /tmp/release_body.md
@@ -77,37 +75,37 @@ jobs:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
         run: |
           set -e
-          TAG="${{ steps.notes.outputs.tag }}"
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
+          TAG="v$VERSION"
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
-          echo "Creating release for $TAG"
+          echo "Version: $VERSION, Tag: $TAG"
           
-          # Check if release exists
+          echo "=== Checking existing tag $TAG ==="
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG")
           echo "Check tag HTTP: $HTTP_CODE"
           
           if [ "$HTTP_CODE" = "200" ]; then
-            RELEASE_ID=$(curl -s -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
-            echo "Tag $TAG exists (release #$RELEASE_ID), deleting..."
-            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/$RELEASE_ID"
+            OLD_ID=$(curl -s -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+            echo "Tag $TAG exists (release #$OLD_ID), deleting..."
+            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/$OLD_ID"
             curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "$BASE/tags/$TAG"
             sleep 1
           fi
           
-          # Create new release
-          RESP=$(curl -s -X POST \
+          echo "=== Creating release ==="
+          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
+          curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$(cat /tmp/release_body.md | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))"),"draft":false,"prerelease":false}")
-          RELEASE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
-          echo "Created release #$RELEASE_ID"
+            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}"
           
-          # Upload JAR
+          echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
           UPLOAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/jar" \
-            "$BASE/releases/$RELEASE_ID/assets?name=$(basename $JAR)" \
+            "$BASE/releases/tags/$TAG/assets?name=$(basename $JAR)" \
             --data-binary "@$JAR")
           echo "Upload HTTP: $UPLOAD_CODE"
           
