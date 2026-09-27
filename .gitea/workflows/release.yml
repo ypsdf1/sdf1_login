@@ -10,16 +10,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout code
-        run: |
-          echo "Checking out code..."
-          git config --global user.email "action@gitea.com"
-          git config --global user.name "Action"
-          git clone "https://x-access-token:${GITEA_TOKEN}@${GITEA_HOST}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" /workspace
-          cd /workspace
-          git checkout ${GITHUB_REF#refs/heads/}
-          echo "Checkout completed"
-
       - name: Setup Java
         run: |
           echo "Setting up Java..."
@@ -30,7 +20,6 @@ jobs:
           echo "Java setup completed"
 
       - name: Build with Maven
-        working-directory: /workspace
         run: |
           echo "Building with Maven..."
           export PATH="$JAVA_HOME/bin:$PATH"
@@ -38,42 +27,48 @@ jobs:
           echo "Build completed"
 
       - name: Verify JAR
-        working-directory: /workspace
         run: |
           echo "Verifying JAR..."
           ls -la target/*.jar
           echo "Verification completed"
 
       - name: Create Release
-        working-directory: /workspace
         env:
-          GITEA_TOKEN: ${GITEA_TOKEN}
+          RUNNER_TOKEN: ${ACTIONS_RUNTIME_TOKEN}
         run: |
           set -e
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v${VERSION}"
-          BASE="http://${GITEA_HOST}/api/v1/repos/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]')"
+          BASE="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
           echo "Version: ${VERSION}, Tag: ${TAG}"
 
           echo "=== Checking existing tag ${TAG} ==="
-          RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -H "Authorization: token ${GITEA_TOKEN}" "${BASE}/releases/tags/${TAG}")
+          RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -H "Authorization: token ${RUNNER_TOKEN}" "${BASE}/releases/tags/${TAG}")
           HTTP_CODE=$(echo "$RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Check tag HTTP: ${HTTP_CODE}"
 
           if [ "$HTTP_CODE" = "200" ]; then
             OLD_ID=$(echo "$RESP" | head -1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
             echo "Tag ${TAG} exists (release #${OLD_ID}), deleting..."
-            curl -s -X DELETE -H "Authorization: token ${GITEA_TOKEN}" "${BASE}/releases/${OLD_ID}"
-            curl -s -X DELETE -H "Authorization: token ${GITEA_TOKEN}" "${BASE}/tags/${TAG}"
+            curl -s -X DELETE -H "Authorization: token ${RUNNER_TOKEN}" "${BASE}/releases/${OLD_ID}"
+            curl -s -X DELETE -H "Authorization: token ${RUNNER_TOKEN}" "${BASE}/tags/${TAG}"
             sleep 1
           fi
 
           echo "=== Creating release ==="
-          curl -s -X POST             -H "Authorization: token ${GITEA_TOKEN}"             -H "Content-Type: application/json"             "${BASE}/releases"             -d "{"tag_name":"${TAG}","name":"${TAG}","body":"Auto release by Gitea Actions","draft":false,"prerelease":false}"
+          curl -s -X POST \
+            -H "Authorization: token ${RUNNER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${BASE}/releases" \
+            -d "{\"tag_name\":\"${TAG}",\"name\":\"${TAG}",\"body\":\"Auto release by Gitea Actions\",\"draft\":false,\"prerelease\":false}"
 
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
-          UPLOAD_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST             -H "Authorization: token ${GITEA_TOKEN}"             -H "Content-Type: application/jar"             "${BASE}/releases/tags/${TAG}/assets?name=$(basename ${JAR})"             --data-binary "@${JAR}")
+          UPLOAD_RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -X POST \
+            -H "Authorization: token ${RUNNER_TOKEN}" \
+            -H "Content-Type: application/jar" \
+            "${BASE}/releases/tags/${TAG}/assets?name=$(basename ${JAR})" \
+            --data-binary "@${JAR}")
           UPLOAD_CODE=$(echo "$UPLOAD_RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
           echo "Upload HTTP: ${UPLOAD_CODE}"
           echo "$UPLOAD_RESP" | head -1
