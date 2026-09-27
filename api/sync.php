@@ -169,6 +169,9 @@ switch ($action) {
     case 'complete_web_login_request':
         completeWebLoginRequest();
         break;
+    case 'clear_pending_web_logins':
+        clearPendingWebLogins();
+        break;
     case 'push_web_credentials':
         pushWebCredentials();
         break;
@@ -4514,5 +4517,107 @@ function syncBans() {
         $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
         $stmt->execute();
     }
-    success(['count' => count($bans)]);
+
+    // ★ v2：Java封禁IP时顺手把IP写入 web_ip_blacklist（Web端按IP拦截）
+    //    ips 缺省时保持现有黑名单不动（兼容旧版Java端）
+    $ipCount = -1;
+    $ipsRaw = getParam('ips');
+    if ($ipsRaw !== null && $ipsRaw !== '') {
+        $ips = json_decode($ipsRaw, true);
+        if (is_array($ips)) {
+            $ipCount = syncIpBlacklist($db, $ips, $now);
+        }
+    }
+
+    success(['count' => count($bans), 'ip_blacklist' => $ipCount]);
+}
+
+/**
+ * ★ 把Java推送的IP封禁全量同步到 web_ip_blacklist
+ * 规则：当前封禁列表里的IP全部入表；表里已不存在于本次推送的IP自动移除（解封即放行）
+ * @return int 生效中的黑名单IP数
+ */
+function syncIpBlacklist($db, $ips, $now) {
+    $db->exec("CREATE TABLE IF NOT EXISTS web_ip_blacklist (
+        ip TEXT PRIMARY KEY,
+        reason TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        expire INTEGER DEFAULT 0,
+        banned_at INTEGER DEFAULT 0
+    )");
+
+    // 已过期的条目直接丢弃
+    $keep = [];
+    foreach ($ips as $item) {
+        $ip = is_array($item) ? ($item['ip'] ?? ($item['target'] ?? '')) : (string)$item;
+        $ip = trim($ip);
+        if ($ip === '') continue;
+        $expire = is_array($item) ? (int)($item['expire'] ?? 0) : 0;
+        if ($expire > 0 && $expire <= $now) continue; // 临时封禁已到期
+        $keep[$ip] = [
+            'reason'  => is_array($item) ? (string)($item['reason'] ?? '') : '',
+            'source'  => is_array($item) ? (string)($item['source'] ?? '') : '',
+            'expire'  => $expire,
+        ];
+    }
+
+    // 移除本次推送中已消失的IP（解封）
+    $existing = [];
+    $res = $db->query("SELECT ip FROM web_ip_blacklist");
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) $existing[$row['ip']] = true;
+    $del = $db->prepare("DELETE FROM web_ip_blacklist WHERE ip = :ip");
+    foreach (array_keys($existing) as $ip) {
+        if (!isset($keep[$ip])) {
+            $del->bindValue(':ip', $ip, SQLITE3_TEXT);
+            $del->execute();
+        }
+    }
+
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_ip_blacklist (ip, reason, source, expire, banned_at)
+                          VALUES (:ip, :reason, :source, :expire, :banned_at)");
+    foreach ($keep as $ip => $meta) {
+        $stmt->bindValue(':ip', $ip, SQLITE3_TEXT);
+        $stmt->bindValue(':reason', $meta['reason'], SQLITE3_TEXT);
+        $stmt->bindValue(':source', $meta['source'], SQLITE3_TEXT);
+        $stmt->bindValue(':expire', (int)$meta['expire'], SQLITE3_INTEGER);
+        $stmt->bindValue(':banned_at', $now, SQLITE3_INTEGER);
+        $stmt->execute();
+    }
+    debugLog("syncIpBlacklist: 黑名单更新", ['count' => count($keep)]);
+    return count($keep);
+}
+
+// ===== 清空所有待处理的Web登录请求（游戏内「清空队列」联动调用，SECRET_KEY认证）=====
+function clearPendingWebLogins() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
+    }
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_login_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        password TEXT NOT NULL,
+        request_time INTEGER NOT NULL,
+        status TEXT DEFAULT 'pending',
+        result TEXT DEFAULT '',
+        result_time INTEGER DEFAULT 0
+    )");
+
+    $before = 0;
+    try {
+        $cnt = $db->query("SELECT COUNT(*) AS c FROM web_login_requests WHERE status = 'pending'");
+        $row = $cnt ? $cnt->fetchArray(SQLITE3_ASSOC) : null;
+        $before = $row ? (int)$row['c'] : 0;
+    } catch (\Throwable $e) {}
+
+    $now = time();
+    // 标记为cancelled（保留历史行，便于排查），Web端轮询立即看到已结束
+    $db->exec("UPDATE web_login_requests SET status = 'cancelled',
+               result = '{\"success\":false,\"message\":\"已由游戏内清空队列清理\"}',
+               result_time = " . (int)$now . " WHERE status = 'pending'");
+
+    debugLog("clearPendingWebLogins: 清理pending请求", ['cleared' => $before]);
+    success(['cleared' => $before]);
 }

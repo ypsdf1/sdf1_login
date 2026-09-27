@@ -1840,3 +1840,105 @@ function sendLocationAlertEmail($name, $email, $ip, $location, $lastLoc, $freeze
         . "Content-Type: text/html; charset=UTF-8\r\n";
     smtpSendEmail(SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, $email, $subject, $html, $headers, SMTP_USE_SSL);
 }
+
+// =====================================================================================
+// ===== IP黑名单（游戏内封禁IP → Java推送 → Web端拦截） =====
+// 数据来源：api/sync.php?action=sync_bans 携带的 ips 负载写入 web_ip_blacklist 表。
+// 拦截规则（核心要求）：被封IP访问Web【必须】携带游戏内 /web 命令签发的有效token
+//                      （weblogin_tokens 表，未过期），否则一律 403。
+// 放行白名单：① Java插件 SECRET_KEY 同步调用 ② 已登录的管理后台/收银台会话
+//             （防止管理员把自己的IP锁在站外）③ 有效 /web token。
+// 任何异常一律 fail-open 放行，避免误伤整站。
+// =====================================================================================
+
+/** 该IP是否在Web黑名单中（含过期时间判断） */
+function isIpBlacklisted($ip) {
+    if (!$ip) return false;
+    try {
+        $db = getDB();
+        $chk = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_ip_blacklist'");
+        if (!$chk || !$chk->fetchArray()) return false;
+        $stmt = $db->prepare("SELECT 1 FROM web_ip_blacklist WHERE ip = :ip AND (expire = 0 OR expire > :now) LIMIT 1");
+        $stmt->bindValue(':ip', $ip, SQLITE3_TEXT);
+        $stmt->bindValue(':now', time(), SQLITE3_INTEGER);
+        $row = $stmt->execute()->fetchArray();
+        return $row !== false;
+    } catch (\Throwable $e) {
+        @error_log("[ip_blacklist] 查询失败(放行): " . $e->getMessage());
+        return false;
+    }
+}
+
+/** token 是否为游戏内 /web 签发且未过期 */
+function hasWebTokenForBlacklist($token) {
+    if (!$token) return false;
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("SELECT created_at, expire_seconds FROM weblogin_tokens WHERE web_token = :t LIMIT 1");
+        $stmt->bindValue(':t', $token, SQLITE3_TEXT);
+        $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+        if (!$row) return false;
+        return (time() - (int)$row['created_at']) <= (int)$row['expire_seconds'];
+    } catch (\Throwable $e) {
+        return false;
+    }
+}
+
+/** 入口拦截：命中黑名单且没有放行凭据 → 403 */
+function enforceIpBlacklist() {
+    if (PHP_SAPI === 'cli') return;
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($ip === '' || !isIpBlacklisted($ip)) return;
+
+    // ① Java插件同步（SECRET_KEY）
+    $secret = getParam('secret');
+    if ($secret && $secret === SECRET_KEY) return;
+
+    // ② 已登录的管理后台 / 收银台会话（仅在浏览器带了会话cookie时才查，避免给API请求种session）
+    if (!empty($_COOKIE[session_name()])) {
+        try { if (isAdminLoggedIn()) return; } catch (\Throwable $e) {}
+        try { if (isCashierLoggedIn()) return; } catch (\Throwable $e) {}
+    }
+
+    // ③ 游戏内 /web 签发的有效token
+    $token = getParam('web_token');
+    if (hasWebTokenForBlacklist($token)) {
+        @error_log("[ip_blacklist] 放行(持/webtoken): ip=$ip uri=" . ($_SERVER['REQUEST_URI'] ?? ''));
+        return;
+    }
+
+    @error_log("[ip_blacklist] 拦截: ip=$ip uri=" . ($_SERVER['REQUEST_URI'] ?? ''));
+
+    $uri = $_SERVER['REQUEST_URI'] ?? '';
+    $accept = $_SERVER['HTTP_ACCEPT'] ?? '';
+    $isApi = strpos($uri, '/api/') !== false || strpos($accept, 'application/json') !== false;
+    if ($isApi) {
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(403);
+        echo json_encode([
+            'success' => false,
+            'blocked_ip' => true,
+            'message' => '该IP已被服务器封禁，需在游戏内执行 /web 获取授权token后才能访问'
+        ], JSON_UNESCAPED_UNICODE);
+    } else {
+        http_response_code(403);
+        echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">'
+           . '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+           . '<title>403 - IP已被封禁</title><style>'
+           . 'body{background:#0d1117;color:#e6edf3;font-family:"Segoe UI",system-ui,sans-serif;'
+           . 'min-height:100vh;display:flex;align-items:center;justify-content:center;margin:0}'
+           . '.c{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px;'
+           . 'max-width:460px;text-align:center}'
+           . 'h1{color:#f85149;font-size:48px;margin:0 0 12px}'
+           . 'p{color:#8b949e;line-height:1.8;font-size:14px}'
+           . 'code{color:#79c0ff;background:#0d1117;padding:2px 6px;border-radius:4px}'
+           . '</style></head><body><div class="c">'
+           . '<h1>403</h1><p><b>当前IP已被服务器封禁</b></p>'
+           . '<p>如需访问网页，请先在游戏内执行 <code>/web</code> 获取授权token，'
+           . '再携带 <code>web_token</code> 访问。</p></div></body></html>';
+    }
+    exit;
+}
+
+// core.php 被所有页面/API引入 → 在此统一执行入口拦截
+enforceIpBlacklist();

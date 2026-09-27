@@ -21,6 +21,45 @@ header('Access-Control-Allow-Origin: *');
 require_once __DIR__ . '/pay_secrets.php';
 
 // ====================================================================
+//  ★ IP黑名单拦截（与 core.php 的 enforceIpBlacklist 同源数据）
+//  本文件不引 core.php（自成体系），故内联一份同等逻辑：
+//  被封IP访问必须携带游戏内 /web 签发的有效 token，否则 403；
+//  Java 插件的 secret 调用与任何异常一律放行（fail-open）。
+// ====================================================================
+require_once __DIR__ . '/../config.php';   // 取 SECRET_KEY（require_once，不会重复定义）
+function mcAuthIpBlacklisted() {
+    if (PHP_SAPI === 'cli') return false;
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+    if ($ip === '') return false;
+    // 放行通道：Java插件 secret
+    if (isset($_REQUEST['secret']) && $_REQUEST['secret'] === SECRET_KEY) return false;
+    try {
+        $path = dirname(__DIR__) . '/db/web.db';
+        if (!file_exists($path)) return false;
+        $w = new PDO('sqlite:' . $path);
+        $w->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $st = $w->prepare("SELECT 1 FROM web_ip_blacklist WHERE ip = ? AND (expire = 0 OR expire > ?) LIMIT 1");
+        $st->execute([$ip, time()]);
+        if (!$st->fetch()) return false;              // 未被封 → 放行
+        // 被封 → 必须持游戏内 /web 签发的有效token
+        $token = isset($_REQUEST['web_token']) ? (string)$_REQUEST['web_token'] : '';
+        if ($token === '') return true;
+        $t = $w->prepare("SELECT created_at, expire_seconds FROM weblogin_tokens WHERE web_token = ? LIMIT 1");
+        $t->execute([$token]);
+        $row = $t->fetch(PDO::FETCH_ASSOC);
+        return !($row && (time() - (int)$row['created_at']) <= (int)$row['expire_seconds']);
+    } catch (\Throwable $e) {
+        return false;                                 // 任何异常 fail-open，避免误伤
+    }
+}
+if (mcAuthIpBlacklisted()) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'blocked_ip' => true,
+        'message' => '该IP已被服务器封禁，需在游戏内执行 /web 获取授权token后才能访问'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ====================================================================
 //  工具函数
 // ====================================================================
 
