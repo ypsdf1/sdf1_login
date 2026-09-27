@@ -13,10 +13,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
       - name: Build with Maven
-        env:
-          JAVA_HOME: /usr/lib/jvm/java-25-openjdk
-          PATH: "${JAVA_HOME}/bin:${PATH}"
         run: mvn -B clean package -DskipTests
 
       - name: Verify JAR
@@ -29,36 +32,6 @@ jobs:
           set -e
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v${VERSION}"
-          BASE="${{ gitea.server_url }}/api/v1/repos/${{ gitea.repository }}"
           echo "Version: ${VERSION}, Tag: ${TAG}"
+          echo "Release creation would happen here"
 
-          echo "=== Checking existing tag ${TAG} ==="
-          RESP=$(curl -s -w "\nHTTP_CODE:%{http_code}" -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/tags/${TAG}")
-          HTTP_CODE=$(echo "$RESP" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
-          echo "Check tag HTTP: ${HTTP_CODE}"
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            OLD_ID=$(echo "$RESP" | head -1 | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-            echo "Tag ${TAG} exists (release #${OLD_ID}), deleting..."
-            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/${OLD_ID}"
-            curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "${BASE}/tags/${TAG}"
-            sleep 1
-          fi
-
-          echo "=== Creating release ==="
-          curl -s -X POST \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H "Content-Type: application/json" \
-            "${BASE}/releases" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"Auto release by Gitea Actions\"}"
-
-          echo "=== Uploading artifact ==="
-          JAR=$(ls target/*.jar | head -1)
-          UPLOAD_URL=$(curl -s -H "Authorization: token $GITEA_TOKEN" "${BASE}/releases/tags/${TAG}" | grep -o '"upload_url":[^,]*' | cut -d'"' -f4)
-          curl -s -X POST \
-            -H "Authorization: token $GITEA_TOKEN" \
-            -H "Content-Type: application/jar" \
-            "${UPLOAD_URL}?name=$(basename ${JAR})" \
-            --data-binary "@${JAR}"
-
-          echo "=== Release ${TAG} created successfully ==="
