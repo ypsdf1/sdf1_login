@@ -201,10 +201,28 @@ public class ChatFilterManager {
         }
 
         int kind = rand.nextInt(5); // 0加 1减 2乘 3除 4GUI
+        // ★ 基岩版特性：没法用聊天框唤醒GUI验证码 → 基岩版固定出算术题
+        if (kind == 4 && online != null && isBedrockPlayer(online)) {
+            kind = rand.nextInt(4); // 0加 1减 2乘 3除
+        }
         if (kind == 4) {
             generateGUIChallenge(playerName, rand);
         } else {
             generateMathChallenge(playerName, kind, rand);
+        }
+    }
+
+    /** ★ 基岩版玩家判定：UUID特征 + Geyser/Floodgate API 兜底 */
+    private boolean isBedrockPlayer(Player p) {
+        if (!(plugin instanceof Main)) return false;
+        Main main = (Main) plugin;
+        try {
+            VerificationManager vm = main.getVerification();
+            if (vm != null && vm.isBedrockPlayer(p)) return true;
+            TeleportManager tm = main.getTeleport();
+            return tm != null && tm.isBedrockPlayer(p);
+        } catch (Throwable t) {
+            return false;
         }
     }
 

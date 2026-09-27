@@ -3383,6 +3383,8 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("deny_crop_harvest", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_wool_shear", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_animal_feeding", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_spawn_egg", 0)).append(":");
+                hashBuilder.append(land.getOrDefault("deny_wax", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_mob_attack", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_fire", 0)).append(":");
                 hashBuilder.append(land.getOrDefault("deny_all_effects", 0)).append(":");

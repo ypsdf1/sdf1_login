@@ -258,7 +258,8 @@ public class TeleportManager implements Listener {
     /**
      * 判断是否为基岩版玩家（通过Geyser/Floodgate API）
      */
-    private boolean isBedrockPlayer(Player player) {
+    // ★ 公开：验证码（ChatFilterManager）复用此判定，保证基岩版不出GUI题
+    public boolean isBedrockPlayer(Player player) {
         // 检查 Geyser-Spigot 插件
         Plugin geyserPlugin = Bukkit.getPluginManager().getPlugin("Geyser-Spigot");
         if (geyserPlugin == null || !geyserPlugin.isEnabled()) {

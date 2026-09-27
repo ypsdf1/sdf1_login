@@ -554,6 +554,8 @@ public class AreaCLIManager {
             case "move": oldState = land.denyMove; land.denyMove = !land.denyMove; break;
             case "block_place": oldState = land.denyBlockPlace; land.denyBlockPlace = !land.denyBlockPlace; break;
             case "block_break": oldState = land.denyBlockBreak; land.denyBlockBreak = !land.denyBlockBreak; break;
+            case "spawn_egg": oldState = land.denySpawnEgg; land.denySpawnEgg = !land.denySpawnEgg; break;
+            case "wax": oldState = land.denyWax; land.denyWax = !land.denyWax; break;
             case "entity_interact": oldState = land.denyEntityInteract; land.denyEntityInteract = !land.denyEntityInteract; break;
             case "container": oldState = land.denyContainer; land.denyContainer = !land.denyContainer; break;
             case "pvp": oldState = land.denyPVP; land.denyPVP = !land.denyPVP; break;
@@ -614,6 +616,8 @@ public class AreaCLIManager {
             case "move": return "denyMove";
             case "block_place": return "denyBlockPlace";
             case "block_break": return "denyBlockBreak";
+            case "spawn_egg": return "denySpawnEgg";
+            case "wax": return "denyWax";
             case "entity_interact": return "denyEntityInteract";
             case "container": return "denyContainer";
             case "pvp": return "denyPVP";
@@ -675,6 +679,8 @@ public class AreaCLIManager {
         perms.add(new PermItem("move", "移动", !land.denyMove));
         perms.add(new PermItem("block_place", "放置方块", !land.denyBlockPlace));
         perms.add(new PermItem("block_break", "破坏方块", !land.denyBlockBreak));
+        perms.add(new PermItem("spawn_egg", "生物蛋", !land.denySpawnEgg));
+        perms.add(new PermItem("wax", "涂蜡/刮蜡", !land.denyWax));
         perms.add(new PermItem("entity_interact", "实体交互(船/矿车/盔甲架/展示框)", !land.denyEntityInteract));
         perms.add(new PermItem("container", "容器管理", !land.denyContainer));
         perms.add(new PermItem("pvp", "玩家对战", !land.denyPVP));
@@ -717,6 +723,8 @@ public class AreaCLIManager {
             case "move": return "移动";
             case "block_place": return "放置方块";
             case "block_break": return "破坏方块";
+            case "spawn_egg": return "生物蛋";
+            case "wax": return "涂蜡/刮蜡";
             case "container": return "容器管理";
             case "pvp": return "玩家对战";
             case "mount": return "骑乘坐具";
@@ -1134,6 +1142,8 @@ public class AreaCLIManager {
                 {"move", "移动", "denyMove"},
                 {"block_place", "放置方块", "denyBlockPlace"},
                 {"block_break", "破坏方块", "denyBlockBreak"},
+                {"spawn_egg", "生物蛋", "denySpawnEgg"},
+                {"wax", "涂蜡/刮蜡", "denyWax"},
                 {"entity_interact", "实体交互", "denyEntityInteract"},
                 {"container", "容器管理", "denyContainer"},
                 {"pvp", "玩家对战", "denyPVP"},
@@ -1229,6 +1239,8 @@ public class AreaCLIManager {
             case "denyMove": return land.denyMove;
             case "denyBlockPlace": return land.denyBlockPlace;
             case "denyBlockBreak": return land.denyBlockBreak;
+            case "denySpawnEgg": return land.denySpawnEgg;
+            case "denyWax": return land.denyWax;
             case "denyEntityInteract": return land.denyEntityInteract;
             case "denyContainer": return land.denyContainer;
             case "denyPVP": return land.denyPVP;

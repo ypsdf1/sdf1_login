@@ -487,6 +487,7 @@ public class AreaGUIManager implements Listener {
         // 权限列表
         String[][] permDefs = {
                 {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
+                {"生物蛋", "denySpawnEgg"}, {"涂蜡/刮蜡", "denyWax"},
                 {"实体交互", "denyEntityInteract"},
                 {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                 {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
@@ -585,6 +586,11 @@ public class AreaGUIManager implements Listener {
             case "denyMove": return land.denyMove;
             case "denyBlockPlace": return land.denyBlockPlace;
             case "denyBlockBreak": return land.denyBlockBreak;
+            case "denySpawnEgg": return land.denySpawnEgg;
+            case "denyWax": return land.denyWax;
+            case "denyMobAttack": return land.denyMobAttack;
+            case "denyFarmlandTrample": return land.denyFarmlandTrample;
+            case "denyEnderTeleport": return land.denyEnderTeleport;
             case "denyEntityInteract": return land.denyEntityInteract;
             case "denyContainer": return land.denyContainer;
             case "denyPVP": return land.denyPVP;
@@ -669,6 +675,8 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("移动", !land.denyMove));
         perms.add(new PermEntry("放置方块", !land.denyBlockPlace));
         perms.add(new PermEntry("破坏方块", !land.denyBlockBreak));
+        perms.add(new PermEntry("生物蛋", !land.denySpawnEgg));
+        perms.add(new PermEntry("涂蜡/刮蜡", !land.denyWax));
         perms.add(new PermEntry("实体交互(船/矿车/盔甲架/展示框)", !land.denyEntityInteract));
         perms.add(new PermEntry("容器管理", !land.denyContainer));
         perms.add(new PermEntry("玩家对战", !land.denyPVP));
@@ -727,6 +735,8 @@ public class AreaGUIManager implements Listener {
             case "移动": land.denyMove = !land.denyMove; break;
             case "放置方块": land.denyBlockPlace = !land.denyBlockPlace; break;
             case "破坏方块": land.denyBlockBreak = !land.denyBlockBreak; break;
+            case "生物蛋": land.denySpawnEgg = !land.denySpawnEgg; break;
+            case "涂蜡/刮蜡": land.denyWax = !land.denyWax; break;
             case "实体交互(船/矿车/盔甲架/展示框)": land.denyEntityInteract = !land.denyEntityInteract; break;
             case "容器管理": land.denyContainer = !land.denyContainer; break;
             case "玩家对战": land.denyPVP = !land.denyPVP; break;
@@ -1153,6 +1163,7 @@ public class AreaGUIManager implements Listener {
                 // 切换权限
                 String[][] permDefs = {
                         {"移动", "denyMove"}, {"放置方块", "denyBlockPlace"}, {"破坏方块", "denyBlockBreak"},
+                        {"生物蛋", "denySpawnEgg"}, {"涂蜡/刮蜡", "denyWax"},
                         {"实体交互", "denyEntityInteract"},
                         {"容器管理", "denyContainer"}, {"玩家对战", "denyPVP"}, {"骑乘坐具", "denyMount"}, {"投掷末影珍珠", "denyEnderPearl"},
                         {"投掷物", "denyThrownProjectiles"}, {"禁止袭击", "denyRaid"}, {"弓箭射击", "denyBow"},
@@ -1164,7 +1175,8 @@ public class AreaGUIManager implements Listener {
                         {"农作物收获", "denyCropHarvest"}, {"剪切羊毛", "denyWoolShear"}, {"投喂动物", "denyAnimalFeeding"},
                         {"攻击生物", "denyMobAttack"},
                         {"禁止编辑告示牌", "denySignEdit"},
-                        {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"}
+                        {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"},
+                        {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"}
                 };
 
                 if (raw < permDefs.length) {

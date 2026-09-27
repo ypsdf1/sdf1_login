@@ -1233,6 +1233,8 @@ public class AreaProtection implements Listener {
                 try { ac.denyContainer = rs.getInt("deny_container") == 1; } catch (Exception ignored) {}
                 try { ac.denyMobAttack = rs.getInt("deny_mob_attack") == 1; } catch (Exception ignored) {}
                 try { ac.denySignEdit = rs.getInt("deny_sign_edit") == 1; } catch (Exception ignored) {}
+                try { ac.denySpawnEgg = rs.getInt("deny_spawn_egg") == 1; } catch (Exception ignored) {}
+                try { ac.denyWax = rs.getInt("deny_wax") == 1; } catch (Exception ignored) {}
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1529,6 +1531,10 @@ public class AreaProtection implements Listener {
             // ★ 二级权限：实体交互（受一级放置/破坏总开关影响）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_entity_interact INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN create_cost INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 生物蛋权限列（上级权限：放置方块）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_spawn_egg INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 涂蜡/刮蜡权限列（上级权限：破坏方块/放置方块）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_wax INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -2913,6 +2919,32 @@ public class AreaProtection implements Listener {
         return getLandDefaultDeny(ac, permName);
     }
 
+    /** ★ 是否为刷怪蛋（生物蛋）物品 */
+    private static boolean isSpawnEggItem(Material m) {
+        return m != null && m.name().endsWith("_SPAWN_EGG");
+    }
+
+    /**
+     * ★ 涂蜡/刮蜡权限是否生效：
+     *   本权限为二级权限，上级权限=破坏方块/放置方块，
+     *   上级两项都未开启时，单独开启本项不生效。
+     */
+    private boolean isWaxDenied(Player player, AreaConfig ac) {
+        if (ac == null) return false;
+        if (!getEffectiveDeny(player, ac, "denyWax")) return false;
+        return getEffectiveDeny(player, ac, "denyBlockBreak")
+                || getEffectiveDeny(player, ac, "denyBlockPlace");
+    }
+
+    /** ★ 可涂蜡/刮蜡的方块（铜质方块、避雷针、告示牌） */
+    private static boolean isWaxableBlock(Block b) {
+        if (b == null) return false;
+        String n = b.getType().name();
+        if (n.contains("COPPER") && !n.contains("RAW_COPPER")) return true;
+        if (n.equals("LIGHTNING_ROD")) return true;
+        return n.endsWith("_SIGN");
+    }
+
     /**
      * 获取领地默认deny状态（按字段名映射）
      */
@@ -2952,6 +2984,8 @@ public class AreaProtection implements Listener {
             case "denyAnimalFeeding": return ac.denyAnimalFeeding;
             case "denyMobAttack": return ac.denyMobAttack;
             case "denySignEdit": return ac.denySignEdit;
+            case "denySpawnEgg": return ac.denySpawnEgg;
+            case "denyWax": return ac.denyWax;
             case "peaceMode": return ac.peaceMode;
             default: return false;
         }
@@ -5086,6 +5120,15 @@ public class AreaProtection implements Listener {
                 loc.getBlockZ());
         if (ac == null) return;
 
+        // ★ 生物蛋权限：上级权限=放置方块（放置未开启时，单独开启生物蛋不生效）
+        if (isSpawnEggItem(p.getInventory().getItemInMainHand().getType())
+                && getEffectiveDeny(p, ac, "denyBlockPlace")
+                && getEffectiveDeny(p, ac, "denySpawnEgg")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止使用生物蛋");
+            return;
+        }
+
         // 层级：denyBlockPlace (一级) → denyEntityInteract (二级) → denyItemFrame (三级)
         if (getEffectiveDeny(p, ac, "denyBlockPlace")) {
             e.setCancelled(true);
@@ -5322,6 +5365,43 @@ public class AreaProtection implements Listener {
                         }
                     }
                 }
+                return;
+            }
+        }
+
+        // ===== 涂蜡/刮蜡权限（denyWax）=====
+        // 上级权限=破坏方块/放置方块：两者都未开启时，单独开启本项不生效
+        if (e.getAction() == Action.RIGHT_CLICK_BLOCK) {
+            Block waxBlock = e.getClickedBlock();
+            if (waxBlock != null) {
+                Material waxMat = hand.getType();
+                boolean waxOn = waxMat == Material.HONEYCOMB && isWaxableBlock(waxBlock);
+                boolean waxOff = waxMat.name().endsWith("_AXE") && isWaxableBlock(waxBlock);
+                if (waxOn || waxOff) {
+                    AreaConfig waxAc = getArea(waxBlock.getWorld().getName(),
+                            waxBlock.getX(), waxBlock.getY(), waxBlock.getZ());
+                    if (isWaxDenied(p, waxAc)) {
+                        e.setCancelled(true);
+                        p.sendMessage("§c§l[区域防护] §f禁止" + (waxOn ? "涂蜡" : "刮蜡"));
+                        return;
+                    }
+                }
+            }
+        }
+
+        // ===== 生物蛋权限（denySpawnEgg）=====
+        // 上级权限=放置方块：放置未开启时，单独开启本项不生效
+        if (isSpawnEggItem(hand.getType())
+                && (e.getAction() == Action.RIGHT_CLICK_BLOCK || e.getAction() == Action.RIGHT_CLICK_AIR)) {
+            Block eggBlock = e.getClickedBlock();
+            Location eggLoc = (eggBlock != null) ? eggBlock.getLocation() : p.getLocation();
+            AreaConfig eggAc = getArea(p.getWorld().getName(),
+                    eggLoc.getBlockX(), eggLoc.getBlockY(), eggLoc.getBlockZ());
+            if (eggAc != null
+                    && getEffectiveDeny(p, eggAc, "denyBlockPlace")
+                    && getEffectiveDeny(p, eggAc, "denySpawnEgg")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止使用生物蛋");
                 return;
             }
         }
@@ -6087,6 +6167,19 @@ public class AreaProtection implements Listener {
         if (!(e.getPlayer() instanceof Player)) return;
         Player p = e.getPlayer();
         Entity entity = e.getRightClicked();
+
+        // ★ 蜜脾涂蜡实体（铜傀儡等）：受涂蜡权限管控（上级=破坏方块/放置方块）
+        ItemStack waxHand = p.getInventory().getItemInMainHand();
+        if (waxHand != null && waxHand.getType() == Material.HONEYCOMB) {
+            Location waxLoc = entity.getLocation();
+            AreaConfig waxAc = getArea(waxLoc.getWorld().getName(),
+                    waxLoc.getBlockX(), waxLoc.getBlockY(), waxLoc.getBlockZ());
+            if (isWaxDenied(p, waxAc)) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止涂蜡");
+                return;
+            }
+        }
         // 只检测动物类
         String typeName = entity.getType().name();
         if (!(entity instanceof Animals || typeName.contains("IRON_GOLEM")
@@ -7911,11 +8004,11 @@ public class AreaProtection implements Listener {
                     break;
                 }
             }
+            // ★ 非管理员携带 -f：不报错、不提示，静默回退到普通60秒删除流程
+            if (forceDelete && !isAreaAdmin(sender)) {
+                forceDelete = false;
+            }
             if (forceDelete) {
-                if (!isAreaAdmin(sender)) {
-                    sender.sendMessage("§c强制删除(-f)仅插件管理员可用");
-                    return true;
-                }
                 if (delAc == null) {
                     sender.sendMessage("§c领地数据异常: " + areaName);
                     return true;
@@ -9391,8 +9484,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -9405,7 +9498,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -9477,6 +9570,8 @@ public class AreaProtection implements Listener {
             stmt.setInt(68, ac.denyFarmlandTrample ? 1 : 0);
             stmt.setInt(69, ac.denyEnderTeleport ? 1 : 0);
             stmt.setInt(70, ac.createCost);
+            stmt.setInt(71, ac.denySpawnEgg ? 1 : 0);
+            stmt.setInt(72, ac.denyWax ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -9881,6 +9976,8 @@ public class AreaProtection implements Listener {
             case "deny_crop_harvest":   ac.denyCropHarvest = "1".equals(value); break;
             case "deny_wool_shear":     ac.denyWoolShear = "1".equals(value); break;
             case "deny_animal_feeding": ac.denyAnimalFeeding = "1".equals(value); break;
+            case "deny_spawn_egg":     ac.denySpawnEgg = "1".equals(value); break;
+            case "deny_wax":           ac.denyWax = "1".equals(value); break;
             case "deny_mob_attack":     ac.denyMobAttack = "1".equals(value); break;
             case "deny_item_frame":     ac.denyItemFrame = "1".equals(value); break;
             case "deny_entity_interact": ac.denyEntityInteract = "1".equals(value); break;
@@ -12082,6 +12179,10 @@ public class AreaProtection implements Listener {
         public boolean denyWoolShear = false;
         // ★ 投喂动物
         public boolean denyAnimalFeeding = false;
+        // ★ 生物蛋（右键刷怪蛋生成实体）——上级权限：放置方块（放置未开启时单独开启本项不生效）
+        public boolean denySpawnEgg = false;
+        // ★ 涂蜡/刮蜡（蜜脾涂蜡、斧头刮蜡）——上级权限：破坏方块/放置方块（两者都未开启时单独开启本项不生效）
+        public boolean denyWax = false;
         // ★ 玩家攻击生物
         public boolean denyMobAttack = false;
         public boolean enableAnnounce = false;
@@ -12228,6 +12329,8 @@ public class AreaProtection implements Listener {
             if (denyCropHarvest) c++;
             if (denyWoolShear) c++;
             if (denyAnimalFeeding) c++;
+            if (denySpawnEgg) c++;
+            if (denyWax) c++;
             if (!peaceWhitelist.isEmpty()) c++;
 
             return c;

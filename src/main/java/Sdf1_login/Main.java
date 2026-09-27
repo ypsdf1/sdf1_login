@@ -288,6 +288,10 @@ public class Main extends JavaPlugin
         return verification;
     }
 
+    public TeleportManager getTeleport() {
+        return teleportMgr;
+    }
+
     public RiskControlManager getRiskControl() {
         return riskControl;
     }
@@ -7962,7 +7966,8 @@ public class Main extends JavaPlugin
                                 "fire", "fire_spread", "pickup", "drop", "explosion",
                                 "fall_damage", "hunger", "all_damage", "all_effects",
                                 "item_frame", "redstone", "door", "audio", "lead",
-                                "crop_harvest", "wool_shear", "animal_feed", "glowing", "peace_mode"),
+                                "crop_harvest", "wool_shear", "animal_feed", "glowing", "peace_mode",
+                                "spawn_egg", "wax"),
                                 args[3]);
                     }
                     if (action.equals("manage") || action.equals("members")
@@ -7999,7 +8004,8 @@ public class Main extends JavaPlugin
                                 "denyFire", "denyFireSpread", "denyPickup", "denyDrop", "denyExplosion",
                                 "denyFallDamage", "denyHunger", "denyAllDamage", "denyAllEffects",
                                 "denyItemFrame", "denyRedstoneInteraction", "denyDoorInteraction", "denyNoteblockJukebox",
-                                "denyLead", "denyCropHarvest", "denyWoolShear", "denyAnimalFeeding", "denyGlowing", "peaceMode"),
+                                "denyLead", "denyCropHarvest", "denyWoolShear", "denyAnimalFeeding", "denyGlowing", "peaceMode",
+                                "denySpawnEgg", "denyWax"),
                                 args[4]);
                     }
                 }
