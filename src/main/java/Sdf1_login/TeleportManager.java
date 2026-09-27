@@ -1144,7 +1144,19 @@ public class TeleportManager implements Listener {
             count++;
         }
         
-        player.sendMessage("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求");
+        if (isBedrockPlayer(player)) {
+            player.sendMessage("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求");
+            player.sendMessage("§7使用 §e/tpacancel §7撤回全部请求");
+        } else {
+            player.sendMessage(Component.empty()
+                .append(Component.text("§a[传送] 已向 §e" + count + " §a名玩家发送传送请求")));
+            // ★ 撤回按钮：发错了可立即撤销，避免更多人接受
+            player.sendMessage(Component.empty()
+                .append(Component.text("§7全服玩家接受前 "))
+                .append(Component.text("§c[↩ 撤回全部请求]")
+                    .clickEvent(ClickEvent.runCommand("/tpacancel"))
+                    .hoverEvent(HoverEvent.showText(Component.text("立即撤回这次 tpaall 的全部待处理请求")))));
+        }
         return true;
     }
     
@@ -1577,7 +1589,8 @@ public class TeleportManager implements Listener {
             case 4: // 全服传送
                 event.setCancelled(true);
                 handleTPAll(player);
-                player.closeInventory();
+                // ★ 发送后重开面板：slot 5「取消已发出的请求」立即可用作撤回入口
+                openTeleportPanel(player);
                 break;
             case 5: // 取消已发出请求
                 event.setCancelled(true);

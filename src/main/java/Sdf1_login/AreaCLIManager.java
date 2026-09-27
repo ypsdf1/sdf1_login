@@ -143,6 +143,7 @@ public class AreaCLIManager {
         String maxLands = areaProtect.getAreaConfigValue("max_lands_per_player");
         String height = areaProtect.getAreaConfigValue("default_height");
         String peace = areaProtect.getAreaConfigValue("peace_mode_max_duration");
+        String refund = areaProtect.getAreaConfigValue("refund_ratio_per_cent");
 
         // 创建价格
         p.sendMessage(Component.empty()
@@ -186,6 +187,19 @@ public class AreaCLIManager {
                 .append(Component.text("§c[-600] ")
                         .clickEvent(ClickEvent.suggestCommand("/protect config peace_duration " + safeParseInt(peace, 3600, -600)))
                         .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值"))))
+        );
+
+        // 退费比例
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a删除退费比例(%): §f" + (refund != null ? refund : "0")
+                        + (((refund == null ? 0 : Integer.parseInt(refund)) <= 0) ? " §7(已关闭退费)"
+                        : ((refund != null && Integer.parseInt(refund) >= 100) ? " §7(全额退款)" : " §7(原价×比例)")) + " "))
+                .append(Component.text("§a[+10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config refund_ratio " + safeParseInt(refund, 0, 10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值（自动限制0~100）"))))
+                .append(Component.text("§c[-10] ")
+                        .clickEvent(ClickEvent.suggestCommand("/protect config refund_ratio " + safeParseInt(refund, 0, -10)))
+                        .hoverEvent(HoverEvent.showText(Component.text("§e点击后输入新值（自动限制0~100）"))))
         );
 
         p.sendMessage(Component.text("§7提示: 点击修改值后，可在聊天栏输入任意数字进行精确调整"));

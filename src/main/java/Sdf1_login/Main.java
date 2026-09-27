@@ -7932,7 +7932,7 @@ public class Main extends JavaPlugin
                 // ★ config: 第三层是配置key
                 if (sub.equals("config")) {
                     return filterTab(
-                            Arrays.asList("create_price", "max_lands", "default_height", "peace_duration"),
+                            Arrays.asList("create_price", "max_lands", "default_height", "peace_duration", "refund_ratio"),
                             args[2]);
                 }
                 // ★ cli manage/members/visitorperm/toggle/memberperm/playerperm/toggleplayerperm/clearplayerperm: 第三层是领地名

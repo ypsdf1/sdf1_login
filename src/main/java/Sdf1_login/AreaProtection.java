@@ -117,6 +117,7 @@ public class AreaProtection implements Listener {
     private int globalMaxLandsPerPlayer = 5;   // 每人最多领地数
     private int globalMaxHomePerPlayer = 5;    // 每人最多传送点(home)数量
     private int globalDefaultHeight = 255;      // 默认高度
+    private int globalRefundRatioPerCent = 0;   // 删除领地退费比例(0=关闭退费,100=全额退款,其他=原价×比例%)
 
     // 选地
     private static final Material WAND = Material.BLAZE_ROD;
@@ -427,6 +428,8 @@ public class AreaProtection implements Listener {
         loadAllAreas();
         loadWhitelists();
         recoverPendingEffects();
+        // ★ 封禁/注销领主的领地自动清理（每5分钟扫描）
+        startBannedOwnerSweepTask();
     }
     public void recoverPendingEffects() {
         try {
@@ -1250,6 +1253,7 @@ public class AreaProtection implements Listener {
                 ac.enableAnnounce = rs.getInt("enable_announce") == 1;
                 ac.announceTemplate = rs.getString("announce_template");
                 ac.txtContent = rs.getString("txt_content");
+                try { ac.createCost = rs.getInt("create_cost"); } catch (Exception ignored) {}
                 areas.put(ac.name, ac);
                 count++;
             }
@@ -1524,6 +1528,7 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_fluid INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 二级权限：实体交互（受一级放置/破坏总开关影响）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_entity_interact INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN create_cost INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -1538,6 +1543,8 @@ public class AreaProtection implements Listener {
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('default_height', '255')");
                     stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('peace_mode_max_duration', '3600')");
                 }
+                // ★ 退费比例配置（新键，已存在则忽略）
+                try { stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('refund_ratio_per_cent', '0')"); } catch (Exception ignored) {}
                 // 读取全局配置
                 ResultSet cfgRs = stmt.executeQuery("SELECT key, value FROM area_config");
                 while (cfgRs.next()) {
@@ -1549,6 +1556,7 @@ public class AreaProtection implements Listener {
                             case "max_lands_per_player": globalMaxLandsPerPlayer = Integer.parseInt(v); break;
                             case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(v); break;
                             case "default_height": globalDefaultHeight = Integer.parseInt(v); break;
+                            case "refund_ratio_per_cent": globalRefundRatioPerCent = Integer.parseInt(v); break;
                         }
                     } catch (NumberFormatException ignored) {}
                 }
@@ -5382,28 +5390,35 @@ public class AreaProtection implements Listener {
         if (e.getAction() == Action.RIGHT_CLICK_BLOCK) {
             Block clicked = e.getClickedBlock();
             if (clicked != null && isUIBlock(clicked.getType())) {
+                // ★ 补刀：被点击方块定位 + 四向相邻同材质半边（双箱被点侧在领地外）
+                //   + 上下方向（潜影盒叠放/箱子上下不合并但漏斗矿车场景仍按方块算）
+                //   任一侧命中领地且 denyContainer 即拦截。
+                java.util.List<AreaConfig> cands = new java.util.ArrayList<>();
                 AreaConfig cac = getArea(clicked.getWorld().getName(),
                         clicked.getX(), clicked.getY(), clicked.getZ());
-                if (cac == null && (clicked.getType() == Material.CHEST
-                        || clicked.getType() == Material.TRAPPED_CHEST)) {
-                    org.bukkit.block.BlockFace[] horiz = {
+                if (cac != null) cands.add(cac);
+                if (clicked.getType() == Material.CHEST
+                        || clicked.getType() == Material.TRAPPED_CHEST) {
+                    org.bukkit.block.BlockFace[] around = {
                             org.bukkit.block.BlockFace.EAST, org.bukkit.block.BlockFace.WEST,
                             org.bukkit.block.BlockFace.NORTH, org.bukkit.block.BlockFace.SOUTH};
-                    for (org.bukkit.block.BlockFace bf : horiz) {
+                    for (org.bukkit.block.BlockFace bf : around) {
                         Block nb = clicked.getRelative(bf);
                         if (nb.getType() == clicked.getType()) {
-                            cac = getArea(nb.getWorld().getName(),
+                            AreaConfig na = getArea(nb.getWorld().getName(),
                                     nb.getX(), nb.getY(), nb.getZ());
-                            if (cac != null) break;
+                            if (na != null && !cands.contains(na)) cands.add(na);
                         }
                     }
                 }
-                // 公共设施连控：公共设施启用时访客自动获得容器交互权限
-                if (cac != null && !cac.isPublicBuilding
-                        && getEffectiveDeny(p, cac, "denyContainer")) {
-                    e.setCancelled(true);
-                    p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
-                    return;
+                // ★ 公共设施连控：公共设施启用时访客自动获得容器交互权限
+                for (AreaConfig cand : cands) {
+                    if (cand.isPublicBuilding) continue;
+                    if (getEffectiveDeny(p, cand, "denyContainer")) {
+                        e.setCancelled(true);
+                        p.sendMessage("§c§l[区域防护] §f此领地禁止访问容器");
+                        return;
+                    }
                 }
             }
         }
@@ -5604,6 +5619,17 @@ public class AreaProtection implements Listener {
             }
         }
 
+        // ★ 补刀：holder 无法解析出位置（部分容器/插件自定义 holder）时，
+        //   回退用玩家视线命中的方块再定位一次，避免直接放行。
+        if (locs.isEmpty()) {
+            try {
+                Block eye = p.getTargetBlockExact(6);
+                if (eye != null && isUIBlock(eye.getType())) {
+                    locs.add(eye.getLocation());
+                }
+            } catch (Throwable ignored) {}
+        }
+
         if (locs.isEmpty()) return;
 
         // ★ 跨边界大箱子：任一侧在领地内即判定；先取第一个命中领地做打开记录
@@ -5627,10 +5653,27 @@ public class AreaProtection implements Listener {
         plugin.landRecordManager.recordContainerOpen(ac, p, hitLoc, containerType, e.getInventory());
 
         // ★ 逐侧判定：任一侧所在领地禁止容器访问即拦截（跨边界大箱子不再漏网）
+        // ★ 补刀：某侧查不到领地时，回查四向同材质半边（被开侧在领地外、
+        //   另一半在领地内）与视线命中方块，避免站领地外开领地内箱子漏网。
         for (Location loc : locs) {
             if (loc == null || loc.getWorld() == null) continue;
             AreaConfig a = getArea(loc.getWorld().getName(),
                     loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+            if (a == null) {
+                Block blk = loc.getBlock();
+                if (blk.getType() == Material.CHEST || blk.getType() == Material.TRAPPED_CHEST) {
+                    org.bukkit.block.BlockFace[] around = {
+                            org.bukkit.block.BlockFace.EAST, org.bukkit.block.BlockFace.WEST,
+                            org.bukkit.block.BlockFace.NORTH, org.bukkit.block.BlockFace.SOUTH};
+                    for (org.bukkit.block.BlockFace bf : around) {
+                        Block nb = blk.getRelative(bf);
+                        if (nb.getType() != blk.getType()) continue;
+                        a = getArea(nb.getWorld().getName(),
+                                nb.getX(), nb.getY(), nb.getZ());
+                        if (a != null) break;
+                    }
+                }
+            }
             if (a == null) continue;
             if (hasPermission(p, a, PermissionLevel.OWNER)) continue;
 
@@ -5655,11 +5698,22 @@ public class AreaProtection implements Listener {
         if (side instanceof org.bukkit.inventory.Inventory) {
             sh = ((org.bukkit.inventory.Inventory) side).getHolder();
         }
+        // ★ 补刀：半边 holder 仍可能是 DoubleChest（跨边界双箱的其中一侧），递归展开
+        if (sh instanceof org.bukkit.block.DoubleChest) {
+            org.bukkit.block.DoubleChest dc2 = (org.bukkit.block.DoubleChest) sh;
+            addChestSideLocation(locs, dc2.getLeftSide());
+            addChestSideLocation(locs, dc2.getRightSide());
+            return;
+        }
         if (sh instanceof BlockState) {
             Location l = ((BlockState) sh).getLocation();
             if (l != null) locs.add(l);
         } else if (sh instanceof org.bukkit.block.Block) {
             locs.add(((org.bukkit.block.Block) sh).getLocation());
+        } else if (sh instanceof Container) {
+            // ★ 补刀：非 BlockState 的 Container（如矿车容器被包装）取其位置
+            Location l = ((Container) sh).getLocation();
+            if (l != null) locs.add(l);
         }
     }
 
@@ -5968,6 +6022,9 @@ public class AreaProtection implements Listener {
                 || mat == Material.BREWING_STAND
                 || mat.name().contains("SIGN") || mat.name().contains("BANNER")
                 || mat == Material.BARREL || mat.name().contains("SHULKER_BOX")
+                // ★ 补刀：漏掉的容器/UI方块（此前这些方块在领地外右键不受 denyContainer 管控）
+                || mat == Material.CRAFTER || mat.name().contains("BOOKSHELF")
+                || mat == Material.COMPOSTER || mat.name().contains("CAULDRON")
                 || mat == Material.ENDER_CHEST || mat.name().contains("CHEST")
                 || mat.name().contains("FURNACE") || mat.name().contains("BLAST_FURNACE")
                 || mat.name().contains("SMOKER") || mat == Material.HOPPER
@@ -6927,6 +6984,7 @@ public class AreaProtection implements Listener {
             int cPrice = (cugm != null) ? cugm.getPlayerLandPricePerSqm(cp.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
             int cCost = cArea * cPrice;
             // 扣费
+            int chargedCost = 0;
             if (cCost > 0) {
                 BondManager cbm = plugin.getBonds();
                 if (cbm != null) {
@@ -6935,12 +6993,14 @@ public class AreaProtection implements Listener {
                     }
                     String cSrc = (cPrice != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
                     cp.sendMessage("§a§l[防护] §f创建领地扣除 §e" + cCost + " §f债券（" + cArea + "㎡×" + cPrice + "/㎡）" + cSrc);
+                    chargedCost = cCost;
                 }
             }
             AreaConfig cac = new AreaConfig();
             cac.name = confirmName; cac.owner = cp.getName(); cac.world = cl1.getWorld().getName();
             cac.x1 = cl1.getBlockX(); cac.z1 = cl1.getBlockZ(); cac.x2 = cl2.getBlockX(); cac.z2 = cl2.getBlockZ();
             cac.yMin = 0; cac.yMax = 255;
+            cac.createCost = chargedCost; // ★ 记录创建扣款（删除时按比例退费的基数）
             saveAreaToDb(cac);
             areas.put(confirmName, cac); // ★ 立即更新内存
             cp.sendMessage("§a§l[防护] §f区域 " + confirmName + " 已创建 (owner: " + cp.getName() + ")");
@@ -7154,8 +7214,11 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§e§l==== 全局配置 ====");
                 sender.sendMessage("§a创建价格(每㎡): §f" + globalCreatePricePerSqm);
                 sender.sendMessage("§a每人最大领地数: §f" + globalMaxLandsPerPlayer);
+                sender.sendMessage("§a删除退费比例(%): §f" + globalRefundRatioPerCent
+                        + (globalRefundRatioPerCent <= 0 ? " §7(已关闭退费)"
+                        : (globalRefundRatioPerCent >= 100 ? " §7(全额退款)" : " §7(原价×比例)")));
                 sender.sendMessage("§7用法: /protect config <key> <value>");
-                sender.sendMessage("§7可用key: create_price, max_lands, default_height, peace_duration");
+                sender.sendMessage("§7可用key: create_price, max_lands, default_height, peace_duration, refund_ratio");
                 return true;
             }
             String key = args[1];
@@ -7177,6 +7240,13 @@ public class AreaProtection implements Listener {
                     case "peace_duration":
                         int newDuration = parseSmartNumber(value, 3600, 0);
                         updateAreaConfig("peace_mode_max_duration", String.valueOf(newDuration));
+                        break;
+                    case "refund_ratio":
+                        int newRatio = parseSmartNumber(value, globalRefundRatioPerCent, 0);
+                        if (newRatio > 100) newRatio = 100;   // 上限100%=全额退款
+                        if (newRatio < 0) newRatio = 0;       // 0=关闭退费
+                        globalRefundRatioPerCent = newRatio;
+                        updateAreaConfig("refund_ratio_per_cent", String.valueOf(newRatio));
                         break;
                     default:
                         sender.sendMessage("§c未知配置项: " + key);
@@ -7814,7 +7884,8 @@ public class AreaProtection implements Listener {
             }
             Player p = (Player) sender;
             if (args.length < 2) {
-                sender.sendMessage("§e用法: /protect 删除 <名>");
+                sender.sendMessage("§e用法: /protect 删除 <名> [-f]");
+                sender.sendMessage("§7-f = 管理员强制删除：跳过60秒倒计时与退费流程，立即删除");
                 return true;
             }
             String areaName = args[1];
@@ -7830,6 +7901,36 @@ public class AreaProtection implements Listener {
             boolean isOwner = delAc != null && samePlayer(p.getName(), delAc.owner);
             if (!isAreaAdmin(sender) && !isOwner) {
                 sender.sendMessage("§c需要管理员权限或领地所有权");
+                return true;
+            }
+            // ★ 管理员强制删除 -f：跳过60秒倒计时与退费流程，立即删除
+            boolean forceDelete = false;
+            for (String argTok : args) {
+                if (argTok.equalsIgnoreCase("-f") || argTok.equalsIgnoreCase("--force")) {
+                    forceDelete = true;
+                    break;
+                }
+            }
+            if (forceDelete) {
+                if (!isAreaAdmin(sender)) {
+                    sender.sendMessage("§c强制删除(-f)仅插件管理员可用");
+                    return true;
+                }
+                if (delAc == null) {
+                    sender.sendMessage("§c领地数据异常: " + areaName);
+                    return true;
+                }
+                cancelPendingDelete(areaName);
+                deleteAreaFromDb(areaName);
+                areas.remove(areaName);
+                plugin.getLogger().warning("[防护] 管理员 " + sender.getName() + " 强制删除领地: " + areaName
+                        + " (owner=" + delAc.owner + ", 未退费, 坐标 " + delAc.world + " "
+                        + delAc.x1 + "," + delAc.z1 + " ~ " + delAc.x2 + "," + delAc.z2 + ")");
+                sender.sendMessage("§a§l[防护] §f已强制删除领地 §e" + areaName + " §7(跳过倒计时与退费)");
+                reportLandRemovalToAdmins("§6§l[防护-强制删除] §f" + sender.getName()
+                        + " 强制删除领地 §e" + areaName + " §7(owner=" + delAc.owner
+                        + ", 不退款) [" + delAc.world + " " + delAc.x1 + "," + delAc.z1
+                        + " ~ " + delAc.x2 + "," + delAc.z2 + "]");
                 return true;
             }
             // ★ 检查是否已有待删除请求
@@ -7848,6 +7949,7 @@ public class AreaProtection implements Listener {
             // 也显示到领地列表（CLI/GUI取消按钮会自动刷新）
             UUID uid = p.getUniqueId();
             String finalAreaName = areaName;
+            final String finalOperator = p.getName();
             long start = System.currentTimeMillis();
             BukkitTask task = new BukkitRunnable() {
                 @Override
@@ -7855,6 +7957,8 @@ public class AreaProtection implements Listener {
                     pendingDeletes.remove(finalAreaName);
                     // ★ 60秒到期后自动删除领地
                     if (areas.containsKey(finalAreaName)) {
+                        // ★ 到期删除：按创建扣款比例退费（0%=关闭退费）
+                        refundOnLandDelete(areas.get(finalAreaName), finalOperator, "删除领地退费: " + finalAreaName);
                         deleteAreaFromDb(finalAreaName);
                         areas.remove(finalAreaName);
                         plugin.getLogger().info("[防护] 领地 §e" + finalAreaName + " §7等待期结束，已自动删除");
@@ -9029,6 +9133,143 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 删除领地时按创建扣款比例退费
+     * 退费比例读取 area_config.refund_ratio_per_cent：
+     *   0   = 关闭退费（不退）
+     *   100 = 全额退款（原价 100%）
+     *   其他= 原价 × 比例%
+     * 债券走 BondManager.addBonds（记 land_refund 流水）
+     */
+    private void refundOnLandDelete(AreaConfig ac, String operator, String reason) {
+        if (ac == null) return;
+        int ratio = globalRefundRatioPerCent;
+        if (ratio <= 0) return;            // 0 = 关闭退费
+        if (ratio > 100) ratio = 100;      // 上限 100%
+        if (ac.createCost <= 0) return;    // 未扣款（历史数据/管理员创建）不退
+        int refund = (int) Math.floor(ac.createCost * (ratio / 100.0));
+        if (refund <= 0) return;
+        BondManager bm = plugin.getBonds();
+        if (bm == null) return;
+        String op = (operator == null || operator.isEmpty()) ? "system" : operator;
+        int after = bm.addBonds(ac.owner, refund, "land_refund", ac.owner, op, reason);
+        if (after < 0) {
+            plugin.getLogger().warning("[防护] 领地退费失败(账户冻结?): " + ac.owner + " +" + refund);
+            return;
+        }
+        plugin.getLogger().info("[防护] 领地 " + ac.name + " 删除退费: " + ac.owner
+                + " +" + refund + " (原价 " + ac.createCost + " × " + ratio + "%)");
+        Player ownerOnline = Bukkit.getPlayerExact(ac.owner);
+        if (ownerOnline != null && ownerOnline.isOnline()) {
+            ownerOnline.sendMessage("§a§l[防护] §f领地 §e" + ac.name + " §f已删除，退还债券 §e" + refund
+                    + " §7(创建原价 " + ac.createCost + " × " + ratio + "%)");
+        }
+    }
+
+    /**
+     * ★ 向在线的插件管理员 & OP 上报领地强制删除信息（含坐标）
+     */
+    private void reportLandRemovalToAdmins(String message) {
+        int sent = 0;
+        for (Player online : Bukkit.getOnlinePlayers()) {
+            if (online.isOp() || isAreaAdmin(online)) {
+                online.sendMessage(message);
+                sent++;
+            }
+        }
+        plugin.getLogger().info("[防护] 已上报 " + sent + " 名在线管理员: " + message.replaceAll("§.", ""));
+    }
+
+    // ==================== 封禁/注销领主的领地自动清理 ====================
+
+    private BukkitTask bannedOwnerSweepTask;
+    /** 扫描周期：5分钟 */
+    private static final long SWEEP_INTERVAL_TICKS = 6000L;
+    /** 剩余封禁时长 ≥ 9年，视为"10年封禁" */
+    private static final long LONG_BAN_REMAIN_MS = 9L * 365 * 24 * 3600 * 1000L;
+
+    /**
+     * ★ 启动封禁/注销领主的领地自动清理任务
+     * 命中以下任一条件的领地 → 立即强制删除（不退款、不注销账号），
+     * 并把领地坐标上报给在线的插件管理员 & OP：
+     *   1) 领主被永久封禁
+     *   2) 领主被 10 年封禁
+     *   3) 领主账户已注销
+     */
+    public void startBannedOwnerSweepTask() {
+        if (bannedOwnerSweepTask != null) {
+            bannedOwnerSweepTask.cancel();
+        }
+        bannedOwnerSweepTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                try {
+                    sweepBannedOwnerLands();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[防护] 领地自动清理任务异常: " + e.getMessage());
+                }
+            }
+        }.runTaskTimer(plugin, 200L, SWEEP_INTERVAL_TICKS);
+    }
+
+    public void stopBannedOwnerSweepTask() {
+        if (bannedOwnerSweepTask != null) {
+            bannedOwnerSweepTask.cancel();
+            bannedOwnerSweepTask = null;
+        }
+    }
+
+    private void sweepBannedOwnerLands() {
+        if (areas.isEmpty()) return;
+        DatabaseManager dbMgr = plugin.getDb();
+        for (AreaConfig ac : new ArrayList<>(areas.values())) {
+            if (ac == null || ac.owner == null || ac.owner.isEmpty()) continue;
+            // 快照遍历期间已被删除/重载的跳过
+            if (areas.get(ac.name) != ac) continue;
+
+            String reason = null;
+
+            // 1/2) 永久封禁 / 10年封禁
+            try {
+                org.bukkit.BanEntry<?> ban =
+                        Bukkit.getBanList(org.bukkit.BanList.Type.NAME).getBanEntry(ac.owner);
+                if (ban != null) {
+                    java.util.Date exp = ban.getExpiration();
+                    if (exp == null) {
+                        reason = "永久封禁";
+                    } else if (exp.getTime() - System.currentTimeMillis() >= LONG_BAN_REMAIN_MS) {
+                        reason = "10年封禁";
+                    }
+                }
+            } catch (Exception ignored) {}
+
+            // 3) 账户已注销（在线领主一律跳过，避免误删）
+            if (reason == null) {
+                if (dbMgr == null) continue;
+                Player ownerOnline = Bukkit.getPlayerExact(ac.owner);
+                if (ownerOnline != null && ownerOnline.isOnline()) continue;
+                try {
+                    if (!dbMgr.userExists(ac.owner)) {
+                        reason = "账户已注销";
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            if (reason == null) continue;
+
+            // 不退款、不注销账号，直接强制删除
+            cancelPendingDelete(ac.name);
+            deleteAreaFromDb(ac.name);
+            areas.remove(ac.name);
+            String coord = ac.world + " " + ac.x1 + "," + ac.z1 + " ~ " + ac.x2 + "," + ac.z2;
+            plugin.getLogger().warning("[防护] 自动清理领地 " + ac.name + "：领主 " + ac.owner
+                    + " 因" + reason + "，已强制删除（不退款）坐标 " + coord);
+            reportLandRemovalToAdmins("§6§l[防护-自动清理] §f领主 §e" + ac.owner
+                    + " §f因§c" + reason + " §f已自动删除其领地 §e" + ac.name
+                    + " §7(不退款) [" + coord + "]");
+        }
+    }
+
+    /**
      * 如果领地有待删除请求，取消它（玩家操作领地时自动解除冻结）
      */
     // ★ package-private供AreaCLIManager访问
@@ -9150,8 +9391,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -9164,7 +9405,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -9235,6 +9476,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(67, ac.allowVisitorTeleport ? 1 : 0);
             stmt.setInt(68, ac.denyFarmlandTrample ? 1 : 0);
             stmt.setInt(69, ac.denyEnderTeleport ? 1 : 0);
+            stmt.setInt(70, ac.createCost);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -9846,6 +10088,7 @@ public class AreaProtection implements Listener {
                     case "max_lands_per_player": globalMaxLandsPerPlayer = Integer.parseInt(value); break;
                     case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(value); break;
                     case "default_height": globalDefaultHeight = Integer.parseInt(value); break;
+                    case "refund_ratio_per_cent": globalRefundRatioPerCent = Integer.parseInt(value); break;
                 }
             } catch (NumberFormatException ignored) {}
         } catch (Exception e) {
@@ -9933,6 +10176,12 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // ★ 退费比例范围钳制：0=关闭，100=全额
+        if ("refund_ratio_per_cent".equals(configKey)) {
+            if (newValue > 100) newValue = 100;
+            if (newValue < 0) newValue = 0;
+        }
+
         // 读取当前值
         int currentValue = 0;
         try {
@@ -9948,6 +10197,7 @@ public class AreaProtection implements Listener {
             case "create_price_per_sqm": globalCreatePricePerSqm = newValue; break;
             case "max_lands_per_player": globalMaxLandsPerPlayer = newValue; break;
             case "default_height": globalDefaultHeight = newValue; break;
+            case "refund_ratio_per_cent": globalRefundRatioPerCent = newValue; break;
         }
 
         String configName = getConfigNameByKey(configKey);
@@ -10409,6 +10659,7 @@ public class AreaProtection implements Listener {
             case "max_lands_per_player": return "每人最大领地数";
             case "default_height": return "默认高度";
             case "peace_mode_max_duration": return "和平模式最大时长(秒)";
+            case "refund_ratio_per_cent": return "删除退费比例(%)";
             default: return key;
         }
     }
@@ -11859,6 +12110,8 @@ public class AreaProtection implements Listener {
         public boolean isPublicBuilding = false;
         // ★ 访客传送权限（默认关闭：未授权访客不能传送进入领地）
         public boolean allowVisitorTeleport = false;
+        // ★ 创建领地时实际扣款金额（删除领地按比例退费的基数；0=无扣款）
+        public int createCost = 0;
 
 
 
@@ -12056,6 +12309,7 @@ public class AreaProtection implements Listener {
         }
 
         // ★ 扣费
+        int chargedCost = 0;
         if (bm != null && totalCost > 0) {
             String src = (pricePerSqm != globalCreatePricePerSqm) ? "（用户组优惠价）" : "";
             if (!bm.deductBonds(p.getName(), totalCost, "land_create", p.getName(), p.getName(),
@@ -12064,6 +12318,7 @@ public class AreaProtection implements Listener {
                 return false;
             }
             p.sendMessage("§a§l[防护] §f创建领地扣除 §e" + totalCost + " §f债券（" + area + "㎡×" + pricePerSqm + "/㎡）" + src);
+            chargedCost = totalCost;
         }
 
         // ★ 创建领地
@@ -12073,6 +12328,7 @@ public class AreaProtection implements Listener {
         ac.world = p.getWorld().getName();
         ac.x1 = x1; ac.z1 = z1; ac.x2 = x2; ac.z2 = z2;
         ac.yMin = 0; ac.yMax = 255;
+        ac.createCost = chargedCost; // ★ 记录创建扣款（删除时按比例退费的基数）
         saveAreaToDb(ac);
         areas.put(autoName, ac);
         loadAllAreas();

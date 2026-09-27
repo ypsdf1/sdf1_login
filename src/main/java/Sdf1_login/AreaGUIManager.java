@@ -1655,6 +1655,7 @@ public class AreaGUIManager implements Listener {
         int maxLands = 5;
         int defaultHeight = 255;
         int peaceDuration = 3600;
+        int refundRatio = 0;
         try {
             String val = areaProtect.getAreaConfigValue("create_price_per_sqm");
             if (val != null) pricePerSqm = Integer.parseInt(val);
@@ -1664,6 +1665,8 @@ public class AreaGUIManager implements Listener {
             if (val != null) defaultHeight = Integer.parseInt(val);
             val = areaProtect.getAreaConfigValue("peace_mode_max_duration");
             if (val != null) peaceDuration = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("refund_ratio_per_cent");
+            if (val != null) refundRatio = Integer.parseInt(val);
         } catch (Exception ignored) {}
 
         // 每平米价格（位置11）
@@ -1683,6 +1686,16 @@ public class AreaGUIManager implements Listener {
                 "§7当前: §f" + defaultHeight + " 格",
                 "",
                 "§e左键+32 / 右键-32"));
+
+        // 删除退费比例（位置16）
+        inv.setItem(16, createItem(Material.GOLD_INGOT, "§e§l删除领地退费比例",
+                "§7当前: §f" + refundRatio + "% " + (refundRatio <= 0 ? "§c(已关闭退费)"
+                        : (refundRatio >= 100 ? "§a(全额退款)" : "§e(原价×比例)")),
+                "",
+                "§70=不退款  100=全额退款  其他=原价×比例%",
+                "§7强制删除(-f)与自动清理不退费",
+                "",
+                "§e左键+10 / 右键-10（自动限制0~100）"));
 
         // 和平模式最大时间（位置22）
         inv.setItem(22, createItem(Material.SHIELD, "§e§l和平模式最长时间",
@@ -1768,6 +1781,11 @@ public class AreaGUIManager implements Listener {
             p.closeInventory();
             p.sendMessage("§e§l[配置] §f请输入新的默认高度:");
             areaProtect.setPendingConfigInput(p.getUniqueId(), "default_height");
+        } else if (raw == 16) {
+            // 删除退费比例
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入删除领地的退费比例(%)，0=关闭，100=全额退款:");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "refund_ratio_per_cent");
         } else if (raw == 22) {
             // 和平模式时间
             p.closeInventory();
