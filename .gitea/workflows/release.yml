@@ -55,11 +55,10 @@ jobs:
       - name: Generate Release Notes
         run: |
           echo "Generating release notes..."
-          cat << 'EOF' > /tmp/gen_notes.sh
-          #!/bin/bash
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v$VERSION"
           
+          # Generate release notes from last 10 commits
           echo "## Changes in $TAG" > /tmp/release_body.md
           echo "" >> /tmp/release_body.md
           git log --format="- **%h** %s (%an, %ad)" --date=short -10 >> /tmp/release_body.md
@@ -69,17 +68,13 @@ jobs:
           echo "[View all commits](/youpaishidifu/Sdf1_login/commits/main)" >> /tmp/release_body.md
           
           echo "Release notes generated for $TAG"
-          EOF
-          chmod +x /tmp/gen_notes.sh
-          /tmp/gen_notes.sh
+          cat /tmp/release_body.md
 
       - name: Create Release
         env:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
         run: |
           set -e
-          cat << 'EOF' > /tmp/create_release.sh
-          #!/bin/bash
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
           TAG="v$VERSION"
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
@@ -98,12 +93,19 @@ jobs:
           fi
           
           echo "=== Creating release ==="
-          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/release_body.md').read()))")
+          # Use python3 to construct proper JSON
+          python3 -c "
+          import json, sys
+          body = open('/tmp/release_body.md').read()
+          data = {'tag_name': '$TAG', 'name': '$TAG', 'body': body, 'draft': False, 'prerelease': False}
+          print(json.dumps(data))
+          " > /tmp/release_payload.json
+          
           curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}"
+            -d @/tmp/release_payload.json
           
           echo "=== Uploading artifact ==="
           JAR=$(ls target/*.jar | head -1)
@@ -115,6 +117,3 @@ jobs:
           echo "Upload HTTP: $UPLOAD_CODE"
           
           echo "=== Release $TAG created successfully ==="
-          EOF
-          chmod +x /tmp/create_release.sh
-          /tmp/create_release.sh
