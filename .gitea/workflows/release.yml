@@ -12,6 +12,7 @@ jobs:
     steps:
       - name: Setup JDK 25
         run: |
+          echo "Setting up JDK 25..."
           apt-get update -qq
           apt-get install -y -qq wget unzip
           wget -q https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk -O /tmp/jdk25.tar.gz
@@ -19,73 +20,95 @@ jobs:
           export JAVA_HOME=$(ls -d /opt/jdk-25* | head -1)
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "$JAVA_HOME/bin" >> $GITHUB_PATH
+          echo "JDK 25 installed: $($JAVA_HOME/bin/java -version 2>&1 | head -1)"
+          echo "Setup completed"
 
       - name: Setup Maven
         run: |
+          echo "Setting up Maven..."
           apt-get install -y -qq maven
+          echo "Maven version: $(mvn -version 2>&1 | head -1)"
+          echo "Setup completed"
 
       - name: Checkout code
         run: |
+          echo "Checking out code..."
+          GIT_HOST=${GITHUB_SERVER_URL#http://}
+          GIT_HOST=${GIT_HOST#https://}
           rm -rf /workspace/youpaishidifu/Sdf1_login/*
-          git clone "http://$GITHUB_SERVER_URL/$(echo $GITHUB_REPOSITORY | tr '[:upper:]' '[:lower:]').git" .
+          rm -rf /workspace/youpaishidifu/Sdf1_login/.[!.]*
+          git clone "http://${GIT_HOST}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" .
+          echo "Checkout completed"
 
       - name: Build with Maven
-        run: mvn -B clean package -DskipTests
+        run: |
+          echo "Building with Maven..."
+          mvn -B clean package -DskipTests
+          echo "Build completed"
+
+      - name: Verify JAR
+        run: |
+          echo "Verifying JAR..."
+          ls -la target/*.jar
+          echo "Verification completed"
+
+      - name: Generate Release Notes
+        id: notes
+        run: |
+          echo "Generating release notes..."
+          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          
+          # Generate release notes from last 10 commits
+          echo "## Changes in $TAG" > /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          git log --format="- **%h** %s (%an, %ad)" --date=short -10 >> /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          echo "### Full changelog" >> /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          echo "[View all commits](/youpaishidifu/Sdf1_login/commits/main)" >> /tmp/release_body.md
+          
+          echo "Release notes generated:"
+          cat /tmp/release_body.md
 
       - name: Create Release
         env:
           GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
         run: |
           set -e
-          # Read version from plugin.yml
-          VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
-          TAG="v$VERSION"
+          TAG="${{ steps.notes.outputs.tag }}"
           BASE="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY"
-          echo "Version: $VERSION Tag: $TAG"
-          
-          # Generate release notes
-          echo "## Changes in $TAG" > /tmp/body.md
-          echo "" >> /tmp/body.md
-          git log --format="- **%h** %s (%an, %ad)" --date=short -10 >> /tmp/body.md
-          echo "" >> /tmp/body.md
-          echo "### Full changelog" >> /tmp/body.md
-          echo "" >> /tmp/body.md
-          echo "[View all commits](/youpaishidifu/Sdf1_login/commits/main)" >> /tmp/body.md
-          
-          echo "=== Release Notes ==="
-          cat /tmp/body.md
-          echo "===================="
+          echo "Creating release for $TAG"
           
           # Check if release exists
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG")
-          echo "Check: $HTTP_CODE"
+          echo "Check tag HTTP: $HTTP_CODE"
           
-          RELEASE_ID=""
           if [ "$HTTP_CODE" = "200" ]; then
             RELEASE_ID=$(curl -s -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/tags/$TAG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
-            echo "Deleting old release #$RELEASE_ID"
+            echo "Tag $TAG exists (release #$RELEASE_ID), deleting..."
             curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "$BASE/releases/$RELEASE_ID"
             curl -s -X DELETE -H "Authorization: token $GITEA_TOKEN" "$BASE/tags/$TAG"
             sleep 1
           fi
           
           # Create new release
-          BODY_JSON=$(python3 -c "import sys,json; print(json.dumps(open('/tmp/body.md').read()))")
           RESP=$(curl -s -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/json" \
             "$BASE/releases" \
-            -d "{"tag_name":"$TAG","name":"$TAG","body":$BODY_JSON,"draft":false,"prerelease":false}")
-          
+            -d "{"tag_name":"$TAG","name":"$TAG","body":$(cat /tmp/release_body.md | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))"),"draft":false,"prerelease":false}")
           RELEASE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
           echo "Created release #$RELEASE_ID"
           
           # Upload JAR
           JAR=$(ls target/*.jar | head -1)
-          curl -s -X POST \
+          UPLOAD_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: token $GITEA_TOKEN" \
             -H "Content-Type: application/jar" \
             "$BASE/releases/$RELEASE_ID/assets?name=$(basename $JAR)" \
-            --data-binary "@$JAR"
+            --data-binary "@$JAR")
+          echo "Upload HTTP: $UPLOAD_CODE"
           
-          echo "Release $TAG created successfully!"
+          echo "=== Release $TAG created successfully ==="
