@@ -19,6 +19,14 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "Java setup completed"
 
+      - name: Checkout code
+        run: |
+          echo "Checking out code..."
+          rm -rf /workspace/youpaishidifu/Sdf1_login/*
+          rm -rf /workspace/youpaishidifu/Sdf1_login/.[!.]*
+          git clone "https://x-access-token:${ACTIONS_RUNTIME_TOKEN}@${GITHUB_SERVER_URL}/$(echo ${GITHUB_REPOSITORY} | tr '[:upper:]' '[:lower:]').git" .
+          echo "Checkout completed"
+
       - name: Build with Maven
         run: |
           echo "Building with Maven..."
