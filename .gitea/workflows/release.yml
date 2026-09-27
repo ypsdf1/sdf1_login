@@ -23,6 +23,13 @@ jobs:
           echo "JDK 25 installed: $($JAVA_HOME/bin/java -version 2>&1 | head -1)"
           echo "Setup completed"
 
+      - name: Setup Maven
+        run: |
+          echo "Setting up Maven..."
+          apt-get install -y -qq maven
+          echo "Maven version: $(mvn -version 2>&1 | head -1)"
+          echo "Setup completed"
+
       - name: Checkout code
         run: |
           echo "Checking out code..."
