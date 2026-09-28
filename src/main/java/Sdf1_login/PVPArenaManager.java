@@ -1007,14 +1007,34 @@ public class PVPArenaManager implements Listener {
      * 下次 /pvp join 会随机重新生成地形，破坏/砍树的痕迹随删除完全复原，杜绝背图玩家单方面碾压。
      * ★ 2026-07-08：改为"无人即删"，取消原先的 5 分钟空场冷却（冷却期仍可被复用，与用户要求的
      *   "有玩家就复用、没人就删除"语义不一致）。
+     * ★ 2026-09-28 修复"2人全下线却仍提示还有玩家驻场"：
+     *   PlayerQuitEvent 处理过程中，world.getPlayers() 里【仍包含正在退出的玩家】，
+     *   当场判定必然误报"仍有玩家在场" → 世界永远删不掉、日志天天喊"驻场"。
+     *   现改为延后 1 tick（退出玩家已彻底移出世界）再判定，并把"到底还剩谁"打出来。
      */
     private void scheduleWorldDeletionIfEmpty() {
+        // 延后一 tick 判定：断线/换世界要等事件处理完，玩家才真正从 world.getPlayers() 消失
+        Bukkit.getScheduler().runTask(plugin, this::checkWorldEmptyAndDelete);
+    }
+
+    /** 空场判定实体（延后一 tick 执行）：仍有人 → 打印剩余名单并保留世界；真的没人 → 立即删除 */
+    private void checkWorldEmptyAndDelete() {
         World w = Bukkit.getWorld(pvpWorldName);
         if (w == null) return;
+        List<String> names = new ArrayList<>();
+        for (Player p : w.getPlayers()) names.add(p.getName());
         // 仍有玩家滞留于 PVP 世界内 → 保留世界（多人保护，后续进入直接加入战斗）
-        if (!w.getPlayers().isEmpty()) {
-            plugin.getLogger().info("[PVP] PVP世界仍有玩家在场，保留世界（后续进入直接加入战斗）");
+        if (!names.isEmpty()) {
+            plugin.getLogger().info("[PVP] PVP世界仍有玩家在场（" + String.join(", ", names)
+                    + "），保留世界（后续进入直接加入战斗）");
             return;
+        }
+        // ★ 世界已空但登记表还有人 → 说明是断线漏清理的"幽灵在场"，顺手清掉，
+        //   否则下次 /pvp join 会误判"已有其他玩家在场"而复用一个空局。
+        if (!inPVPArena.isEmpty()) {
+            plugin.getLogger().warning("[PVP] ⚠ 世界已空但登记表仍有残留: " + inPVPArena
+                    + "，已清理幽灵登记");
+            inPVPArena.clear();
         }
         plugin.getLogger().info("[PVP] PVP世界已无玩家，立即删除世界以释放资源（下次进入随机重生）");
         deletePVPWorld(w);
@@ -1637,6 +1657,16 @@ public class PVPArenaManager implements Listener {
         if (!inPVPArena.contains(player.getName())) return;
         // paper-api 1.21.4: getKiller() 已移除，改用 DamageSource.getCausingEntity()
         org.bukkit.entity.Entity killer = event.getDamageSource().getCausingEntity();
+        // ★ 死亡状态留痕（2026-09-28）：把双方"是不是观赛者"直接打进日志。
+        //   下次再出现"观赛者被人击杀了"的反馈，日志一句话给出答案：
+        //   受害者当时的模式 / 是否登记观赛身份 / 保护判定，不用再靠回忆对时间线。
+        Player killerPlayer = killer != null ? resolveDamageActor(killer) : null;
+        plugin.getLogger().info("[PVP] 竞技场死亡状态：受害者 " + describePlayerState(player)
+                + "，观赛保护=" + (isProtectedSpectator(player) ? "应拦截却死亡⚠(严重异常)" : "不保护(正常可死)")
+                + "；来源=" + (killerPlayer != null ? describePlayerState(killerPlayer)
+                : (killer != null ? killer.getType().name() : "环境/其他"))
+                + (killerPlayer != null ? "，观赛保护=" + (isProtectedSpectator(killerPlayer)
+                ? "应拦截却出手⚠(严重异常)" : "不保护(正常可出手)") : ""));
         if (killer instanceof Player && inPVPArena.contains(killer.getName())) {
             String kName = killer.getName();
             String vName = player.getName();
@@ -1929,7 +1959,11 @@ public class PVPArenaManager implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         Player player = event.getPlayer();
-        if (inPVPArena.contains(player.getName())) {
+        // ★ 先记录"退出时人在哪/在不在登记表"：forceLeaveArena 之后登记会被清掉，事后就判断不出来了
+        boolean quitInArenaWorld = player.getWorld() != null
+                && player.getWorld().getName().equals(pvpWorldName);
+        boolean inArenaRegistry = inPVPArena.contains(player.getName());
+        if (inArenaRegistry) {
             // 断线前最后备份一次当前状态
             if (equipmentConfirmed.contains(player.getName())) {
                 // 已装备确认过 → 当前身上是PVP装备，需要用之前的备份来还原
@@ -1953,7 +1987,12 @@ public class PVPArenaManager implements Listener {
                 cancelKickTimeout(player.getName());
                 cleanupPlayerStats(player);
             }
-            // 断线后若世界已无玩家（含本玩家），立即删除世界（"没人了就删除"）
+        }
+        // 断线后若世界已无玩家（含本玩家），立即删除世界（"没人了就删除"）
+        // ★ 无论有没有登记，只要退出时人在 PVP 世界都要复核一次：未登记的旁观者/误入者
+        //   下线后同样该触发空场删除，否则世界会卡在"没人却删不掉"的状态。
+        //   判定本身已延后 1 tick（见 scheduleWorldDeletionIfEmpty），此时退出玩家才算真正离场。
+        if (inArenaRegistry || quitInArenaWorld) {
             scheduleWorldDeletionIfEmpty();
         }
     }
@@ -3145,6 +3184,7 @@ public class PVPArenaManager implements Listener {
 
         p.sendMessage("§a§l[PVP观赛] §f已退出观察者，恢复为" + gameModeName(back)
                 + "模式（8秒缓降，地面观赛可能被战斗波及）");
+        p.sendMessage("§c§l⚠ 从现在起你是生存模式：§f可以被攻击、也会攻击到别人 §c（再输 /pvp join see 可重新观赛）");
         p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
         plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 退出观赛观察者模式 → " + back.name());
     }
