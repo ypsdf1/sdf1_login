@@ -1,6 +1,9 @@
 package Sdf1_login;
 
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
@@ -348,35 +351,238 @@ public class MaintenanceManager implements Listener {
         String msg = this.rawMessage;
         long s = this.windowStart;
         long e = this.windowEnd;
-        msg = replaceVar(msg, new String[]{"username", "用户名", "player", "玩家名"}, playerName);
-        msg = replaceVar(msg, new String[]{"starttime", "开始时间", "start"}, fmt(s));
-        msg = replaceVar(msg, new String[]{"endtime", "结束时间", "end"}, fmt(e));
+        msg = replaceVar(msg, new String[]{"username", "用户名", "用户", "player", "玩家名",
+                "玩家", "name", "昵称"}, playerName);
+        msg = replaceVar(msg, new String[]{"starttime", "start_time", "开始时间",
+                "起始时间", "start"}, fmt(s));
+        msg = replaceVar(msg, new String[]{"endtime", "end_time", "结束时间",
+                "截止时间", "end"}, fmt(e));
         return format(msg);
     }
 
+    // ==================== 占位符定界符 ====================
+
+    /**
+     * 占位符可用的定界符对：中英文小括号、中括号、花括号，外加 %…% 与 &lt;…&gt;。
+     * 例：{username} [username] (username) 【用户】 （用户） ｛username｝ ［username］
+     *     「玩家名」 『开始时间』 %endtime% &lt;结束时间&gt;
+     * JSON 模式会跳过花括号 {} 这一对——JSON 对象结构本身就是花括号，避免不必要的冲突。
+     */
+    private static final String[][] PLACEHOLDER_DELIMS = {
+            {"{", "}"},
+            {"[", "]"},
+            {"(", ")"},
+            {"【", "】"},
+            {"（", "）"},
+            {"｛", "｝"},
+            {"［", "］"},
+            {"「", "」"},
+            {"『", "』"},
+            {"%", "%"},
+            {"<", ">"}
+    };
+
+    /** 是否 Legacy 色码字符（0-9a-fk-or，大小写不敏感，含 hex 的 x） */
+    private static boolean isLegacyCodeChar(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+                || "kKlLoOmMnNrRxX".indexOf(c) >= 0;
+    }
+
+    /**
+     * 防御性剥离：去掉首尾空白与 Legacy 色码（&amp;c / §c / &amp;x&amp;R&amp;R&amp;R&amp;R&amp;R&amp;R）。
+     * headDeco（可为 null）收集头部被剥离的色码原串，JSON 解析成功后回贴到组件上；
+     * 尾部色码只剥离不收集——它后面已无文本，应用它没有意义。
+     * 这层剥离专门解决「&amp;c&amp;l 包着 JSON → 判不出 JSON → 原样吐源码给玩家」的冲突。
+     */
+    private static String stripDecoration(String s, StringBuilder headDeco) {
+        if (s == null) return "";
+        int b = 0, e = s.length();
+        while (b < e) {
+            char c = s.charAt(b);
+            if (Character.isWhitespace(c)) {
+                b++;
+                continue;
+            }
+            if ((c == '&' || c == '§') && b + 1 < e && isLegacyCodeChar(s.charAt(b + 1))) {
+                if (headDeco != null) headDeco.append(c).append(s.charAt(b + 1));
+                b += 2;
+                continue;
+            }
+            break;
+        }
+        while (e > b) {
+            char last = s.charAt(e - 1);
+            if (Character.isWhitespace(last)) {
+                e--;
+                continue;
+            }
+            if (e - 2 >= b && (s.charAt(e - 2) == '&' || s.charAt(e - 2) == '§')
+                    && isLegacyCodeChar(last)) {
+                e -= 2;
+                continue;
+            }
+            break;
+        }
+        return s.substring(b, e);
+    }
+
+    /** Legacy 色码字符 → Adventure 命名色（0-9a-f），未知字符返回 null */
+    private static NamedTextColor legacyColor(char c) {
+        switch (c) {
+            case '0': return NamedTextColor.BLACK;
+            case '1': return NamedTextColor.DARK_BLUE;
+            case '2': return NamedTextColor.DARK_GREEN;
+            case '3': return NamedTextColor.DARK_AQUA;
+            case '4': return NamedTextColor.DARK_RED;
+            case '5': return NamedTextColor.DARK_PURPLE;
+            case '6': return NamedTextColor.GOLD;
+            case '7': return NamedTextColor.GRAY;
+            case '8': return NamedTextColor.DARK_GRAY;
+            case '9': return NamedTextColor.BLUE;
+            case 'a': return NamedTextColor.GREEN;
+            case 'b': return NamedTextColor.AQUA;
+            case 'c': return NamedTextColor.RED;
+            case 'd': return NamedTextColor.LIGHT_PURPLE;
+            case 'e': return NamedTextColor.YELLOW;
+            case 'f': return NamedTextColor.WHITE;
+            default: return null;
+        }
+    }
+
+    /**
+     * 把剥离出来的前置色码（&amp;c&amp;l / §c§l / &amp;x&amp;R…）贴回解析好的组件：
+     * 包一层空组件承载，色码只是「默认样式」，JSON 片段里显式写了颜色/样式的仍然优先。
+     */
+    private static Component applyDecoration(Component c, String deco) {
+        if (c == null) return Component.empty();
+        if (deco == null || deco.isEmpty()) return c;
+        Component out = Component.empty();
+        for (int i = 0; i + 1 < deco.length(); i++) {
+            char sep = deco.charAt(i);
+            if (sep != '&' && sep != '§') continue;
+            char code = Character.toLowerCase(deco.charAt(i + 1));
+            if (code == 'x') {
+                // 六位十六进制：&x&R&R&R&R&R&R（成对色码，只吃 hex 数字）
+                StringBuilder hex = new StringBuilder();
+                int j = i + 2;
+                while (j + 1 < deco.length()
+                        && (deco.charAt(j) == '&' || deco.charAt(j) == '§')
+                        && isLegacyCodeChar(deco.charAt(j + 1))) {
+                    char h = Character.toLowerCase(deco.charAt(j + 1));
+                    if (h < '0' || (h > '9' && h < 'a') || h > 'f') break;
+                    hex.append(h);
+                    j += 2;
+                }
+                if (hex.length() == 6) {
+                    TextColor col = TextColor.fromHexString("#" + hex);
+                    if (col != null) out = out.color(col);
+                    i = j - 2;
+                }
+                continue;
+            }
+            if ((code >= '0' && code <= '9') || (code >= 'a' && code <= 'f')) {
+                NamedTextColor col = legacyColor(code);
+                if (col != null) out = out.color(col);
+            } else if (code == 'l') {
+                out = out.decorate(TextDecoration.BOLD);
+            } else if (code == 'o') {
+                out = out.decorate(TextDecoration.ITALIC);
+            } else if (code == 'n') {
+                out = out.decorate(TextDecoration.UNDERLINED);
+            } else if (code == 'm') {
+                out = out.decorate(TextDecoration.STRIKETHROUGH);
+            } else if (code == 'k') {
+                out = out.decorate(TextDecoration.OBFUSCATED);
+            } else if (code == 'r') {
+                out = out.color(null)
+                        .decoration(TextDecoration.BOLD, TextDecoration.State.FALSE)
+                        .decoration(TextDecoration.ITALIC, TextDecoration.State.FALSE)
+                        .decoration(TextDecoration.UNDERLINED, TextDecoration.State.FALSE)
+                        .decoration(TextDecoration.STRIKETHROUGH, TextDecoration.State.FALSE)
+                        .decoration(TextDecoration.OBFUSCATED, TextDecoration.State.FALSE);
+            }
+        }
+        return out.append(c);
+    }
+
+    /** 解析 JSON 文本组件；失败返回 null（不抛异常） */
+    private static Component tryParseJson(String json) {
+        try {
+            return GsonComponentSerializer.gson().deserialize(json);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 「像 JSON 但没闭合」的防御判定：以 { 或 [ 开头，且含引号后跟冒号的键值特征。
+     * 普通文本（[公告] 他说你好）不含该特征，挡在外面，不会被误修。
+     */
+    private static boolean looksRepairableJson(String s) {
+        if (s == null || s.length() < 2) return false;
+        char f = s.charAt(0);
+        return (f == '{' || f == '[') && s.indexOf("\":") >= 0;
+    }
+
+    /**
+     * 尽力修补残缺 JSON：引号数为奇数则补一个闭合引号，再按括号栈补齐右括号。
+     * 只在原解析失败后调用；修不好就返回原串（调用方退回纯文本渲染）。
+     */
+    private static String repairJson(String s) {
+        String out = s;
+        int quotes = 0;
+        for (int i = 0; i < out.length(); i++) {
+            if (out.charAt(i) == '"') quotes++;
+        }
+        if (quotes % 2 == 1) out = out + '"';
+        StringBuilder stack = new StringBuilder();
+        boolean inStr = false;
+        for (int i = 0; i < out.length(); i++) {
+            char c = out.charAt(i);
+            if (c == '"' && (i == 0 || out.charAt(i - 1) != '\\')) inStr = !inStr;
+            if (inStr) continue;
+            if (c == '{') stack.append('}');
+            else if (c == '[') stack.append(']');
+            else if (c == '}' || c == ']') {
+                if (stack.length() > 0 && stack.charAt(stack.length() - 1) == c) {
+                    stack.deleteCharAt(stack.length() - 1);
+                }
+            }
+        }
+        for (int i = stack.length() - 1; i >= 0; i--) out = out + stack.charAt(i);
+        return out;
+    }
+
+    /**
+     * 占位符替换，定界符见 PLACEHOLDER_DELIMS（中英文小/中/大括号、%…%、&lt;…&gt;）。
+     * JSON 消息（含 &amp;c&amp;l 包着 JSON 的情形）：跳过花括号 {}、不做裸子串替换——
+     * 花括号是 JSON 对象结构本身，裸替换会吃掉正文里的 end/start/player 等英文词
+     * （"end soon" -> "2026-09-28 10:00 soon"）。JSON 消息里请用 [username]、(用户)、%username% 等形式。
+     * 普通 &amp;c 文本：全部定界符 + 裸替换都生效（{username}、username 均可）。
+     */
     private static String replaceVar(String msg, String[] keys, String value) {
         if (msg == null || msg.isEmpty()) return msg;
         String v = value == null ? "" : value;
-        // JSON 消息只替换 {占位符}/%占位符%/<占位符>，不做裸子串替换：
-        // 否则正文里的 end/start/player 等英文词会被占位符值覆盖（"end soon" -> "2026-09-28 10:00 soon"）
-        boolean bareOk = !looksLikeJson(msg);
+        boolean jsonMode = looksLikeJson(msg);
         for (String k : keys) {
-            msg = msg.replace("{" + k + "}", v);
-            msg = msg.replace("%" + k + "%", v);
-            msg = msg.replace("<" + k + ">", v);
-            if (bareOk) msg = msg.replace(k, v);
+            for (String[] d : PLACEHOLDER_DELIMS) {
+                if (jsonMode && d[0].equals("{")) continue; // JSON 跳过花括号，避免与 JSON 结构冲突
+                msg = msg.replace(d[0] + k + d[1], v);
+            }
+            if (!jsonMode) msg = msg.replace(k, v);
         }
         return msg;
     }
 
     /**
      * 整段是否为 JSON 文本组件：形如 {...} 或 [...]，且含双引号。
+     * 先剥离首尾色码与空白再判定——&amp;c&amp;l 包着 JSON 也认得出来（防御层）。
      * 「含双引号」用于把 [玩家名]、[公告] 这类普通文本挡在 JSON 分支之外——
      * Gson 默认宽松解析会把 [玩家名] 当字符串数组吃掉，导致正文被吞。
      */
     private static boolean looksLikeJson(String s) {
         if (s == null) return false;
-        String t = s.trim();
+        String t = stripDecoration(s, null);
         int n = t.length();
         if (n < 2 || t.indexOf('"') < 0) return false;
         char f = t.charAt(0);
@@ -397,22 +603,29 @@ public class MaintenanceManager implements Listener {
 
     /**
      * 消息格式化：
+     *  0) 防御层：剥掉首尾色码/空白再判定 JSON；残缺 JSON 尽力修补——
+     *     绝不把 JSON 源码原样吐给玩家（剥掉的色码如 &amp;c&amp;l 作为默认样式贴回结果）
      *  1) 整段是 JSON（对象 {...} 或顶层数组 [...]，后者是 tellraw 常见写法）
      *     → 按文本组件解析（支持 text/color/extra 等）；字面 &lt;br&gt; 会先换成 JSON 转义换行
      *  2) 否则处理 &lt;br&gt; 与字面 \n 换行、&amp; 颜色码与 § 颜色码
      */
     private static Component format(String msg) {
         if (msg == null) msg = "";
-        String trimmed = msg.trim();
-        if (looksLikeJson(trimmed)) {
-            try {
-                // ★ JSON 字符串里的字面 <br>/<br/> 同样要变成换行，否则标签会原样显示给玩家。
-                //   Gson 只认 JSON 转义（反斜杠 + n），所以替换成两字符序列，而不是真实换行
-                //   （真实换行在 JSON 字符串里是非法字符，会让整段解析失败退回纯文本）。
-                return GsonComponentSerializer.gson().deserialize(replaceBrInJson(trimmed));
-            } catch (Throwable t) {
-                // 不是合法 JSON，退回普通文本处理
+        // 防御层：先剥掉包在外面的 Legacy 色码（&c&l / §c§l 等）再判定，
+        // 否则「&c&l 包着 JSON」首字符是 & → 判不出 JSON → JSON 源码原样吐给玩家。
+        StringBuilder headDeco = new StringBuilder();
+        String core = stripDecoration(msg.trim(), headDeco);
+        if (looksLikeJson(core) || looksRepairableJson(core)) {
+            // ★ JSON 字符串里的字面 <br>/<br/> 同样要变成换行，否则标签会原样显示给玩家。
+            //   Gson 只认 JSON 转义（反斜杠 + n），所以替换成两字符序列，而不是真实换行
+            //   （真实换行在 JSON 字符串里是非法字符，会让整段解析失败退回纯文本）。
+            Component parsed = tryParseJson(replaceBrInJson(core));
+            if (parsed == null) {
+                // 残缺 JSON（缺引号/右括号）→ 尽力补齐再试一次，同样是为了不原样吐源码
+                String fixed = repairJson(core);
+                if (!fixed.equals(core)) parsed = tryParseJson(replaceBrInJson(fixed));
             }
+            if (parsed != null) return applyDecoration(parsed, headDeco.toString());
         }
         String s = msg;
         s = s.replace("<br/>", "\n").replace("<br />", "\n").replace("<br>", "\n");
