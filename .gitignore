@@ -106,5 +106,11 @@ backup/
 *.rar
 test.*
 /*.rev
-# 屏蔽编译输出日志
-build.log
+# 屏蔽全部日志文件
+*.log
+# 屏蔽开发计划相关文件
+*.xlsx
+*.docs
+*.doc
+*.txt
+
