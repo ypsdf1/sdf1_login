@@ -231,6 +231,12 @@ public class PVPArenaManager implements Listener {
 
         // 加载配置
         loadConfig();
+
+        // ★ 观赛身份强制巡视（每2秒）：已登记为观赛者且仍在PVP世界的玩家，
+        //   若模式被外部改成生存/冒险等 → 立即强制恢复观察者并打印诊断日志。
+        //   战斗拦截另有"登记身份"双保险（见 isProtectedSpectator），二者共同保证
+        //   观赛者以任何形式都无法攻击玩家或被玩家攻击。
+        Bukkit.getScheduler().runTaskTimer(plugin, this::enforceSpectatorModes, 40L, 40L);
     }
 
     /**
@@ -767,24 +773,83 @@ public class PVPArenaManager implements Listener {
         }
     }
 
-    private void deleteWorldFolder(File folder) {
-        if (folder == null || !folder.exists()) return;
-        File[] children = folder.listFiles();
-        if (children != null) {
-            for (File c : children) deleteWorldFolder(c);
+    /** 统计目录规模：返回 [文件数, 总字节数]（用于删除前后日志对比） */
+    private static long[] dirStats(File dir) {
+        long[] s = {0L, 0L};
+        if (dir == null || !dir.exists()) return s;
+        File[] kids = dir.listFiles();
+        if (kids == null) return s;
+        for (File k : kids) {
+            if (k.isDirectory()) {
+                long[] r = dirStats(k);
+                s[0] += r[0];
+                s[1] += r[1];
+            } else {
+                s[0] += 1L;
+                s[1] += k.length();
+            }
         }
-        folder.delete();
+        return s;
+    }
+
+    /** 人类可读大小 */
+    private static String fmtSize(long bytes) {
+        if (bytes >= 1024L * 1024L * 1024L) return (bytes / (1024.0 * 1024 * 1024)) + "GB";
+        if (bytes >= 1024L * 1024L) return (bytes / (1024.0 * 1024)) + "MB";
+        if (bytes >= 1024L) return (bytes / 1024.0) + "KB";
+        return bytes + "B";
     }
 
     /**
-     * 将旧世界目录"重命名"移入回收站（而非直接删除）。
-     * ★ 原因：Windows 上 unloadWorld 后 region 文件可能仍被 OS 锁定，
-     *   File.delete() 会静默失败导致旧虚空世界残留；而 File.renameTo() 移动目录在
-     *   文件锁定时仍可靠成功。移走后 createWorld() 因目录不存在而生成全新 NORMAL 主世界地形。
+     * 递归删除目录，失败路径收集进 failed（供入口打印明细）。
+     * ★ 旧实现忽略 File.delete() 返回值 → Windows 文件锁下静默失败、
+     *   上层却照常打印"删除成功"，导致"日志说删了、世界还躺在磁盘上"。
+     * @return true = 已彻底删干净
      */
-    private void moveWorldToTrash(File folder) {
-        if (folder == null || !folder.exists()) return;
-        plugin.getLogger().info("[PVP] moveWorldToTrash: 目标=" + folder.getAbsolutePath());
+    private boolean deleteWorldFolder(File folder, List<String> failed) {
+        if (folder == null || !folder.exists()) return true;
+        boolean ok = true;
+        File[] children = folder.listFiles();
+        if (children != null) {
+            for (File c : children) {
+                if (!deleteWorldFolder(c, failed)) ok = false;
+            }
+        }
+        if (!folder.delete() && folder.exists()) {
+            ok = false;
+            if (failed != null) failed.add(folder.getAbsolutePath());
+        }
+        return ok && !folder.exists();
+    }
+
+    /** 递归删除目录（带失败统计日志），返回是否彻底删干净 */
+    private boolean deleteWorldFolder(File folder) {
+        List<String> failed = new ArrayList<>();
+        boolean ok = deleteWorldFolder(folder, failed);
+        if (!ok) {
+            plugin.getLogger().warning("[PVP] 递归删除未彻底：失败 " + failed.size()
+                    + " 项，首个失败路径=" + (failed.isEmpty() ? "(无)" : failed.get(0)));
+        }
+        return ok;
+    }
+
+    /**
+     * 将旧世界目录"重命名"移入回收站，随后【立即尝试把回收站也删掉】，全程打完整日志。
+     * ★ 原因：Windows 上 unloadWorld 后 region 文件可能仍被 OS 锁定，
+     *   File.delete() 会静默失败导致旧世界残留；File.renameTo() 移动目录在文件锁定时
+     *   仍常能成功。移走后 createWorld() 因目录不存在而生成全新 NORMAL 主世界地形。
+     * ★ 2026-09-28：旧实现只移进回收站、从不验证磁盘结果，回收站目录要等【重启】才清理
+     *   （cleanupOldTrashWorlds 仅在启动时跑）→ 玩家看到"日志说删了，世界还在磁盘上"。
+     *   现改为：删除/重命名每步打日志 → 立即删回收站 → 失败自动重试（5s/10s/20s/40s/80s）
+     *   → 最后以磁盘 exists() 复核为准打印结论。
+     * @return true = 原目录已从磁盘消失
+     */
+    private boolean moveWorldToTrash(File folder) {
+        if (folder == null || !folder.exists()) return true;
+        long[] st = dirStats(folder);
+        plugin.getLogger().info("[PVP] 删除世界目录: " + folder.getAbsolutePath()
+                + "（文件数=" + st[0] + "，大小=" + fmtSize(st[1]) + "）");
+
         File parent = folder.getParentFile();
         String base = folder.getName();
         long ts = System.currentTimeMillis();
@@ -794,13 +859,77 @@ public class PVPArenaManager implements Listener {
             i++;
             trash = new File(parent, base + "_trash_" + ts + "_" + i);
         }
+
+        File target; // 最终还需要从磁盘上弄消失的目录（重命名成功=回收站，失败=原目录）
         if (folder.renameTo(trash)) {
-            plugin.getLogger().info("[PVP] 旧世界已移入回收站(避免Windows删除锁): " + trash.getName());
+            plugin.getLogger().info("[PVP] 步骤A 重命名进回收站成功(规避Windows删除锁): "
+                    + trash.getAbsolutePath());
+            target = trash;
+            // ★ 立即尝试彻底删除回收站（锁已随卸载释放时可直接删干净）
+            List<String> failed = new ArrayList<>();
+            if (deleteWorldFolder(trash, failed) && !trash.exists()) {
+                plugin.getLogger().info("[PVP] 步骤B ✓ 回收站已立即彻底删除，磁盘无残留: "
+                        + trash.getName());
+                return !folder.exists();
+            }
+            plugin.getLogger().info("[PVP] 步骤B 回收站暂未删净（文件仍被占用，失败 "
+                    + failed.size() + " 项），已安排自动重试: " + trash.getName());
         } else {
-            // 极少数情况下重命名也失败，退回递归删除
-            plugin.getLogger().warning("[PVP] 旧世界重命名失败，退回递归删除: " + base);
-            deleteWorldFolder(folder);
+            plugin.getLogger().warning("[PVP] 步骤A 重命名失败(被占用?)，退回直接递归删除: " + base);
+            target = folder;
+            List<String> failed = new ArrayList<>();
+            if (deleteWorldFolder(folder, failed) && !folder.exists()) {
+                plugin.getLogger().info("[PVP] 步骤B ✓ 直接递归删除成功，磁盘无残留: " + base);
+                return true;
+            }
+            plugin.getLogger().info("[PVP] 步骤B 直接删除未删净（失败 " + failed.size()
+                    + " 项），已安排自动重试: " + base);
         }
+
+        boolean gone = !folder.exists();
+        if (gone) {
+            plugin.getLogger().info("[PVP] ✓ 原目录已从磁盘移除: " + base);
+        } else {
+            plugin.getLogger().warning("[PVP] ⚠ 原目录仍在磁盘(等待重试清除): "
+                    + folder.getAbsolutePath());
+        }
+        scheduleDirRemovalRetry(target, 1);
+        return gone;
+    }
+
+    /**
+     * 世界目录删除失败后的自动重试（5s/10s/20s/40s/80s 共5次），每次打印磁盘现状。
+     * ★ 供 moveWorldToTrash / deletePVPWorld 在"日志说删了但磁盘还有"时兜底，
+     *   确保最终要么删干净、要么留下明确的失败日志（不再出现无凭据的"删除成功"）。
+     */
+    private void scheduleDirRemovalRetry(final File dir, final int attempt) {
+        if (dir == null || attempt > 5) {
+            if (dir != null && dir.exists()) {
+                plugin.getLogger().warning("[PVP] ⚠ 重试5次后目录仍残留于磁盘（可能被进程锁定）: "
+                        + dir.getAbsolutePath());
+            }
+            return;
+        }
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (!dir.exists()) {
+                plugin.getLogger().info("[PVP] 重试删除(" + attempt + "/5): " + dir.getName()
+                        + " → 已不存在，✓ 删除成功");
+                return;
+            }
+            long[] st = dirStats(dir);
+            plugin.getLogger().info("[PVP] 重试删除(" + attempt + "/5): " + dir.getAbsolutePath()
+                    + "（文件数=" + st[0] + "，大小=" + fmtSize(st[1]) + "）");
+            List<String> failed = new ArrayList<>();
+            deleteWorldFolder(dir, failed);
+            if (!dir.exists()) {
+                plugin.getLogger().info("[PVP] ✓ 第" + attempt + "次重试删除成功，磁盘无残留: "
+                        + dir.getName());
+            } else {
+                plugin.getLogger().warning("[PVP] 第" + attempt + "次重试后仍残留（失败 "
+                        + failed.size() + " 项）: " + dir.getAbsolutePath());
+                scheduleDirRemovalRetry(dir, attempt + 1);
+            }
+        }, 100L * attempt);
     }
 
     /**
@@ -808,10 +937,25 @@ public class PVPArenaManager implements Listener {
      * best-effort，失败不阻断主流程。
      */
     private void cleanupOldTrashWorlds() {
+        int cleaned = 0, left = 0;
         for (File f : listWorldFolders(PVP_WORLD_NAME + "_")) {
-            if (f.getName().contains("_trash_")) {
-                deleteWorldFolder(f);
+            if (!f.getName().contains("_trash_")) continue;
+            long[] st = dirStats(f);
+            plugin.getLogger().info("[PVP] 清理回收站目录: " + f.getAbsolutePath()
+                    + "（文件数=" + st[0] + "，大小=" + fmtSize(st[1]) + "）");
+            deleteWorldFolder(f);
+            if (f.exists()) {
+                left++;
+                plugin.getLogger().warning("[PVP] ⚠ 回收站清理失败(目录仍被占用): "
+                        + f.getAbsolutePath() + "，已安排自动重试");
+                scheduleDirRemovalRetry(f, 1);
+            } else {
+                cleaned++;
+                plugin.getLogger().info("[PVP] ✓ 回收站已删除: " + f.getName());
             }
+        }
+        if (cleaned > 0 || left > 0) {
+            plugin.getLogger().info("[PVP] 回收站清理汇总: 成功=" + cleaned + "，待重试=" + left);
         }
     }
 
@@ -822,20 +966,29 @@ public class PVPArenaManager implements Listener {
      * world/dimensions/minecraft/ 下的 pvp_arena_* 全部属于一次性随机命名世界，删掉不影响任何在局对局。
      */
     private void cleanupStalePVPArenaWorlds() {
-        int n = 0;
+        int n = 0, left = 0;
         for (File f : listWorldFolders(PVP_WORLD_NAME)) {
             String name = f.getName();
             if (name.contains("_trash_")) continue;   // 回收站交给 cleanupOldTrashWorlds()
             if (Bukkit.getWorld(name) != null) continue; // 世界已加载 → 正在使用，跳过
-            plugin.getLogger().info("[PVP] 清理残留PVP世界目录: " + f.getAbsolutePath());
+            long[] st = dirStats(f);
+            plugin.getLogger().info("[PVP] 清理残留PVP世界目录: " + f.getAbsolutePath()
+                    + "（文件数=" + st[0] + "，大小=" + fmtSize(st[1]) + "）");
             // 启动阶段这些世界都未加载（上面已跳过已加载的），直接递归删除即可立即释放磁盘；
             // 若个别文件被占用删不掉，退回重命名移入回收站
             deleteWorldFolder(f);
             if (f.exists()) moveWorldToTrash(f);
+            if (f.exists()) {
+                left++;
+                plugin.getLogger().warning("[PVP] ⚠ 残留目录未能删除，已安排自动重试: "
+                        + f.getAbsolutePath());
+                scheduleDirRemovalRetry(f, 1);
+            }
             n++;
         }
         if (n > 0) {
-            plugin.getLogger().info("[PVP] 共清理 " + n + " 个残留PVP世界目录（历史清理失效遗留）");
+            plugin.getLogger().info("[PVP] 共清理 " + n + " 个残留PVP世界目录（历史清理失效遗留），"
+                    + "其中仍需重试=" + left);
         }
     }
 
@@ -871,30 +1024,102 @@ public class PVPArenaManager implements Listener {
      * 卸载并删除PVP世界（含磁盘目录），下次进入将随机重新生成地形
      */
     private void deletePVPWorld(World world) {
+        deletePVPWorld(world, true);
+    }
+
+    /**
+     * 卸载并删除PVP世界（含磁盘目录），下次进入将随机重新生成地形。
+     * ★ 2026-09-28 全链路日志加固：三步（卸载 → 目录清除 → 磁盘复核）逐步打印，
+     *   每步以真实返回值/exists() 为准；卸载失败先清人并延迟重试，绝不再出现
+     *   "日志说删除成功、世界却安安稳稳躺在磁盘上"的假成功。
+     *
+     * @param allowUnloadRetry 卸载失败时是否允许5秒后重试一次（防递归套娃，仅一层）
+     */
+    private void deletePVPWorld(World world, boolean allowUnloadRetry) {
         if (world == null) return;
+        String worldName = world.getName();
         // ★ 世界销毁：清空本局所有玩家战绩(击杀/死亡)与死亡榜（仅此时才清战机）
         pvpKills.clear();
         pvpDeaths.clear();
         scoreEntries.clear();
         pvpScoreboard = null;
-        // 兜底：确保世界内无玩家（理论上冷却结束时已无人）
+
+        // 兜底：把仍在世界内的玩家送回主世界。
+        // ★ 若取到的落点本身还在本世界内（复活点被锁在竞技场），必须强制改用主世界出生点，
+        //   否则玩家传了等于没传 → unloadWorld 必失败 → 目录删不掉 → 假"删除成功"。
+        World main = Bukkit.getWorlds().get(0);
         for (Player p : new ArrayList<>(world.getPlayers())) {
-            World main = Bukkit.getWorlds().get(0);
-            p.teleport(getBedOrSpawnLocation(p));
+            Location dest = getBedOrSpawnLocation(p);
+            if (dest == null || dest.getWorld() == null || dest.getWorld().equals(world)) {
+                dest = main.getSpawnLocation();
+            }
+            p.teleport(dest);
             p.sendMessage("§e[PVP] 竞技场已关闭，你被传回主世界");
         }
+
         // ★ 卸载前先取真实世界目录：unload 后 Bukkit.getWorld() 返回 null，
         //   而新布局下根目录根本不存在该文件夹（旧实现取根目录路径 → exists() 恒 false → 从不删除）
         File worldFolder = world.getWorldFolder();
-        Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
-        // ★ 同样用重命名移走，避免 Windows 删除锁导致旧世界残留
-        if (worldFolder == null || !worldFolder.exists()) {
-            worldFolder = resolveWorldFolder(pvpWorldName);
+        long[] preStats = (worldFolder != null && worldFolder.exists()) ? dirStats(worldFolder) : null;
+        plugin.getLogger().info("[PVP] ==== 开始删除PVP世界 " + worldName
+                + " | 目录=" + (worldFolder == null ? "(未知)" : worldFolder.getAbsolutePath())
+                + (preStats == null ? "" : " | 文件数=" + preStats[0] + " 大小=" + fmtSize(preStats[1])));
+
+        // 步骤1：卸载世界（★ 旧实现忽略返回值，卸载失败也照样往下"删"）
+        boolean unloaded = Bukkit.unloadWorld(world, false); // false=不保存（即将删除，避免残留破坏的地形）
+        if (unloaded) {
+            plugin.getLogger().info("[PVP] 步骤1/3 卸载世界成功: " + worldName);
+        } else {
+            List<String> still = new ArrayList<>();
+            for (Player q : world.getPlayers()) still.add(q.getName());
+            plugin.getLogger().warning("[PVP] 步骤1/3 ⚠ 卸载世界失败: " + worldName
+                    + "，仍在场玩家=" + still + " → 暂停删除（目录属于运行中的世界，强删会出脏数据）");
+            if (allowUnloadRetry) {
+                // 5秒后复核：世界空了就重试完整删除；已卸载就直接清目录；还有人则放弃等下次空场
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    World again = Bukkit.getWorld(worldName);
+                    if (again == null) {
+                        plugin.getLogger().info("[PVP] 延迟复核: 世界 " + worldName + " 已卸载，继续清理其目录");
+                        File f = resolveWorldFolder(worldName);
+                        if (f != null && f.exists()) moveWorldToTrash(f);
+                    } else if (again.getPlayers().isEmpty()) {
+                        plugin.getLogger().info("[PVP] 延迟复核: 世界 " + worldName + " 已无人，重试删除");
+                        deletePVPWorld(again, false);
+                    } else {
+                        plugin.getLogger().warning("[PVP] 延迟复核: 世界 " + worldName
+                                + " 仍有玩家 " + again.getPlayers().size() + " 人，放弃删除（下次空场时再删）");
+                    }
+                }, 100L);
+            }
+            resetMatchLock();
+            return;
         }
-        moveWorldToTrash(worldFolder);
+
+        // 步骤2：定位并清除目录（unload 后 getWorldFolder 可能失效 → resolveWorldFolder 兜底）
+        if (worldFolder == null || !worldFolder.exists()) {
+            File resolved = resolveWorldFolder(worldName);
+            plugin.getLogger().info("[PVP] 步骤2/3 getWorldFolder 不可用，改用 resolveWorldFolder 解析: "
+                    + (resolved == null ? "(null)" : resolved.getAbsolutePath()));
+            worldFolder = resolved;
+        }
+        if (worldFolder == null || !worldFolder.exists()) {
+            plugin.getLogger().info("[PVP] 步骤2/3 目标目录不存在，无需删除: " + worldName);
+        } else {
+            moveWorldToTrash(worldFolder); // 内部含：统计 → 重命名/删除 → 回收站即删 → 失败自动重试
+        }
+
         // ★ 世界销毁 → 重置本局公平锁定，下一局首位玩家重新定死附魔
         resetMatchLock();
-        plugin.getLogger().info("[PVP] PVP世界已删除，下次进入将随机重新生成地形");
+
+        // 步骤3：磁盘复核——结论以 exists() 为唯一依据，不再无凭据打印"已删除"
+        boolean stillThere = worldFolder != null && worldFolder.exists();
+        if (!stillThere) {
+            plugin.getLogger().info("[PVP] 步骤3/3 ✓ 磁盘复核通过：PVP世界目录已彻底删除（"
+                    + worldName + "），下次进入将随机重新生成地形");
+        } else {
+            plugin.getLogger().warning("[PVP] 步骤3/3 ⚠ 磁盘复核未通过：目录仍在磁盘上！"
+                    + worldFolder.getAbsolutePath() + "（已安排自动重试删除，删不掉会持续告警）");
+        }
     }
 
     /**
@@ -911,10 +1136,21 @@ public class PVPArenaManager implements Listener {
     private void deleteWorldFolderIfExists(String name) {
         if (name == null) return;
         File folder = resolveWorldFolder(name);
-        if (folder == null || !folder.exists()) return;
-        plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: "
-                + folder.getAbsolutePath());
+        if (folder == null || !folder.exists()) {
+            plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: " + name
+                    + " → 目录不存在（" + (folder == null ? "无法解析路径" : folder.getAbsolutePath()) + "），跳过");
+            return;
+        }
+        long[] st = dirStats(folder);
+        plugin.getLogger().info("[PVP] best-effort 清理上一次世界目录: " + folder.getAbsolutePath()
+                + "（文件数=" + st[0] + "，大小=" + fmtSize(st[1]) + "）");
         moveWorldToTrash(folder);
+        if (folder.exists()) {
+            plugin.getLogger().warning("[PVP] ⚠ 上一次世界目录仍残留（已安排自动重试）: "
+                    + folder.getAbsolutePath());
+        } else {
+            plugin.getLogger().info("[PVP] ✓ 上一次世界目录已清除: " + name);
+        }
     }
 
     /**
@@ -1653,6 +1889,8 @@ public class PVPArenaManager implements Listener {
 
                 // ★ 上次以观赛观察者身份断线 → 重连强制恢复为生存（避免在主世界仍是观察者）
                 if (player.getGameMode() == GameMode.SPECTATOR) {
+                    // ★ 先注销观赛身份再改模式：否则留着身份残留，会被战斗拦截/强制巡视误伤
+                    spectatorBackups.remove(player.getName());
                     player.setGameMode(GameMode.SURVIVAL);
                     player.sendMessage("§a§l[PVP观赛] §f已退出观赛观察者模式");
                 }
@@ -1675,8 +1913,9 @@ public class PVPArenaManager implements Listener {
                 player.teleport(getBedOrSpawnLocation(player));
                 cleanupPlayerStats(player);
                 inPVPArena.remove(player.getName());
-                // ★ 观赛观察者断线残留 → 强制恢复为生存
+                // ★ 观赛观察者断线残留 → 强制恢复为生存（先注销观赛身份，避免身份残留）
                 if (player.getGameMode() == GameMode.SPECTATOR) {
+                    spectatorBackups.remove(player.getName());
                     player.setGameMode(GameMode.SURVIVAL);
                 }
                 player.sendMessage("§e[PVP] 检测到你在竞技场非正常断线，已送你回主世界");
@@ -2815,6 +3054,14 @@ public class PVPArenaManager implements Listener {
         // ★ 退出观察者在任何世界都放行（防止玩家被带离PVP世界后卡在观察者回不来）
         if ("exit".equals(mode)) {
             if (!already) {
+                // ★ 状态漂移兜底：身份仍登记为观赛者但模式已被外部改走 → 清掉身份残留
+                if (spectatorBackups.remove(p.getName()) != null) {
+                    p.sendMessage("§e§l[PVP观赛] §f你已不在观察者模式，已清理观赛身份残留");
+                    plugin.getLogger().info("[PVP观赛] 玩家 " + p.getName()
+                            + " 用 /pvp leave see 清理了观赛身份残留（模式已是 "
+                            + p.getGameMode().name() + "）");
+                    return;
+                }
                 p.sendMessage("§e§l[PVP观赛] §f你当前不在观察者模式");
                 return;
             }
@@ -2871,9 +3118,19 @@ public class PVPArenaManager implements Listener {
 
     /** 退出观察者 → 还原进入前的游戏模式（默认生存），含安全落点与缓降保护 */
     private void exitSpectator(Player p) {
-        if (p.getGameMode() != GameMode.SPECTATOR) return;
-
         GameMode back = spectatorBackups.remove(p.getName());
+
+        // ★ 状态漂移兜底：身份登记为观赛者但模式已被外部改走（领地强制模式/其他插件等）
+        //   → 只清掉观赛身份即可，不再动模式（避免把别人的设置覆盖掉）
+        if (p.getGameMode() != GameMode.SPECTATOR) {
+            if (back != null) {
+                plugin.getLogger().info("[PVP观赛] 玩家 " + p.getName() + " 退出观赛"
+                        + "（模式已被外部改为 " + p.getGameMode().name() + "，仅清理观赛身份）");
+                p.sendMessage("§a§l[PVP观赛] §f已退出观赛身份");
+            }
+            return;
+        }
+
         // ★ 兜底：备份缺失/观察者/创造 一律还原为生存（退出观赛绝不回创造，防止作弊）
         if (back == null || back == GameMode.SPECTATOR || back == GameMode.CREATIVE) {
             back = GameMode.SURVIVAL;
@@ -2917,27 +3174,79 @@ public class PVPArenaManager implements Listener {
         }
     }
 
+    /** 观赛者模式漂移诊断日志限频：玩家名 → 上次打印时间戳（10秒内不重复刷屏） */
+    private final Map<String, Long> spectatorDriftLogAt = new ConcurrentHashMap<>();
+
     /**
-     * ★ 观察者战斗保护（仅 PVP 世界）：
-     *   ① 观察者不能伤害任何人（旁观状态下客户端本不发攻击包，此处兜底拦截投掷物/残留判定）
-     *   ② 任何人不能伤害观察者（含玩家、生物、箭、TNT、摔落等一切伤害来源）
-     *   观察者视角进入的EntityDamageByEntityEvent中 damager 为观察者本人；
-     *   保护观察者则需同时拦掉 e.getEntity() 是观察者的情形。
+     * ★ 观赛身份判定（战斗保护唯一依据，2026-09-28 重构）：
+     *   - 原版观察者模式（GameMode.SPECTATOR）→ 是观赛者（任何世界）；
+     *   - 已在 spectatorBackups 登记为观赛者且身在 PVP 世界 → 是观赛者
+     *     （即使模式被领地强制模式/其他插件改成生存也照样算，杜绝"观赛者+生存"能互殴）。
+     * 只要判定为观赛者，攻与被攻一律拦截，不看世界、不看来源类型。
+     */
+    private boolean isProtectedSpectator(Player p) {
+        if (p == null) return false;
+        if (p.getGameMode() == GameMode.SPECTATOR) return true;
+        return spectatorBackups.containsKey(p.getName()) && isPVPWorld(p.getWorld());
+    }
+
+    /** 观赛者状态漂移诊断日志（限频：同一key 10秒最多一条），用于定位"谁把观赛者改成了生存" */
+    private void logSpectatorDrift(String key, String msg) {
+        long now = System.currentTimeMillis();
+        Long last = spectatorDriftLogAt.get(key);
+        if (last != null && now - last < 10_000L) return;
+        spectatorDriftLogAt.put(key, now);
+        plugin.getLogger().warning("[PVP观赛] " + msg);
+    }
+
+    /**
+     * 每2秒巡视：已登记为观赛者且仍在 PVP 世界的玩家，模式不是观察者 → 强制恢复观察者。
+     * 这是"观赛者以任何形式都不能攻击/被攻击"的第二道防线
+     * （第一道：isProtectedSpectator 直接拦截战斗事件）。
+     */
+    private void enforceSpectatorModes() {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            if (!spectatorBackups.containsKey(p.getName())) continue;
+            if (!isPVPWorld(p.getWorld())) continue;   // PVP世界内才强制（出世界的走正常退出流程）
+            GameMode gm = p.getGameMode();
+            if (gm == GameMode.SPECTATOR) continue;
+            p.setGameMode(GameMode.SPECTATOR);
+            logSpectatorDrift("enforce:" + p.getName(),
+                    "观赛者 " + p.getName() + " 在PVP世界内被外部改为 " + gm.name()
+                            + "，已强制恢复观察者（world=" + p.getWorld().getName()
+                            + "）。若反复出现请排查：领地强制游戏模式 / 其他插件的 setGameMode");
+        }
+    }
+
+    /**
+     * 观赛者模式被改动的诊断钩子（仅记录，不拦截——真正的纠偏交给 enforceSpectatorModes）。
+     * 插件自身的正常退出（exitSpectator/forceLeaveArena/onPlayerJoin重置）都会【先移除登记】
+     * 再改模式，因此不会触发本日志；触发即说明是外部改动，可据此定位根因。
+     */
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSpectatorGameModeChanged(org.bukkit.event.player.PlayerGameModeChangeEvent e) {
+        Player p = e.getPlayer();
+        if (!spectatorBackups.containsKey(p.getName())) return;
+        if (e.getNewGameMode() == GameMode.SPECTATOR) return;
+        logSpectatorDrift("change:" + p.getName(),
+                "观赛者 " + p.getName() + " 的模式被外部从观察者改为 " + e.getNewGameMode()
+                        + "（world=" + p.getWorld().getName() + "）→ 2秒内将强制恢复观察者");
+    }
+
+    /**
+     * ★ 观赛者战斗保护（2026-09-28 重构，以"登记身份"为准，不再只看 GameMode）：
+     *   ① 观赛者不能伤害任何人（含投掷物/药水等一切以其为伤害来源的判定）
+     *   ② 任何人不能伤害观赛者（含玩家、生物、箭、TNT、摔落等一切伤害来源）
+     *   ③ "观赛者" = 原版观察者模式 ∪（已登记观赛身份且身在PVP世界）
+     *      —— 即使模式被外部改成生存（"观赛者+生存"），攻击/被攻击照样全部拦截。
+     *   ④ 拦截时若发现身份与模式不一致（漂移），打印限频诊断日志帮助定位根因。
      */
     @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
     public void onSpectatorCombat(org.bukkit.event.entity.EntityDamageByEntityEvent e) {
         if (!(e.getEntity() instanceof Player)) return;
         Player victim = (Player) e.getEntity();
 
-        // ② 别人打观察者 → 直接取消
-        if (victim.getGameMode() == GameMode.SPECTATOR) {
-            if (isPVPWorld(victim.getWorld())) {
-                e.setCancelled(true);
-            }
-            return;
-        }
-
-        // ① 观察者打别人 → 取消（观察者投出的雪球/药水等弹射物伤害）
+        // 解析攻击者（玩家直击 / 弹射物 shooter）
         org.bukkit.entity.Entity damager = e.getDamager();
         Player attacker = null;
         if (damager instanceof Player) {
@@ -2947,21 +3256,43 @@ public class PVPArenaManager implements Listener {
                     ((org.bukkit.entity.Projectile) damager).getShooter();
             if (src instanceof Player) attacker = (Player) src;
         }
-        if (attacker != null
-                && attacker.getGameMode() == GameMode.SPECTATOR
-                && isPVPWorld(attacker.getWorld())) {
-            e.setCancelled(true);
+
+        boolean victimProtected = isProtectedSpectator(victim);
+        boolean attackerProtected = attacker != null && isProtectedSpectator(attacker);
+        if (!victimProtected && !attackerProtected) return;
+
+        // ①/② 双向一律取消——观赛者以任何形式不能攻击玩家、也不能被玩家攻击
+        e.setCancelled(true);
+
+        // ④ 漂移诊断：登记为观赛者但模式不是观察者 → 说明被外部改过
+        if (victimProtected && victim.getGameMode() != GameMode.SPECTATOR) {
+            logSpectatorDrift("victim:" + victim.getName(),
+                    "拦截：观赛者 " + victim.getName() + "（模式=" + victim.getGameMode().name()
+                            + "，world=" + victim.getWorld().getName() + "）遭到 " +
+                            (attacker != null ? attacker.getName() : damager.getType().name())
+                            + " 攻击，已取消（身份与模式不一致，将强制恢复观察者）");
+        }
+        if (attackerProtected && attacker != null && attacker.getGameMode() != GameMode.SPECTATOR) {
+            logSpectatorDrift("attacker:" + attacker.getName(),
+                    "拦截：观赛者 " + attacker.getName() + "（模式=" + attacker.getGameMode().name()
+                            + "，world=" + attacker.getWorld().getName() + "）攻击了 "
+                            + victim.getName() + "，已取消（身份与模式不一致，将强制恢复观察者）");
         }
     }
 
-    /** 观察者被其他实体（非EntityDamageByEntity路径）直接伤害时的兜底：取消 PVP 世界内对观察者的伤害 */
+    /** 观赛者被其他实体（非EntityDamageByEntity路径）直接伤害时的兜底：一律取消（以登记身份为准） */
     @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
     public void onSpectatorHurt(org.bukkit.event.entity.EntityDamageEvent e) {
         if (!(e.getEntity() instanceof Player)) return;
         Player victim = (Player) e.getEntity();
-        if (victim.getGameMode() != GameMode.SPECTATOR) return;
-        if (!isPVPWorld(victim.getWorld())) return;
+        if (!isProtectedSpectator(victim)) return;
         e.setCancelled(true);
+        if (victim.getGameMode() != GameMode.SPECTATOR) {
+            logSpectatorDrift("hurt:" + victim.getName(),
+                    "拦截：观赛者 " + victim.getName() + "（模式=" + victim.getGameMode().name()
+                            + "，world=" + victim.getWorld().getName()
+                            + "）受到 " + e.getCause() + " 伤害，已取消（身份与模式不一致）");
+        }
     }
 
 // ==================== 公共查询 ====================
