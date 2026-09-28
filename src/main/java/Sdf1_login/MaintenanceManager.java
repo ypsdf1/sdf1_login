@@ -1,0 +1,547 @@
+package Sdf1_login;
+
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * 维护模式（白名单）管理器
+ *
+ * 配置文件：plugins/Sdf1_login/白名单.txt，分两个段落：
+ *   [控制段]   启用 / 开始时间 / 结束时间 / 时长 / 消息 等键值对
+ *   [白名单段]  每行一个玩家名（也可用逗号分隔多个）
+ *
+ * 特性：
+ *  - 24 小时硬封顶：无论怎么配，单次维护窗口最长 24 小时，到点自动结束
+ *  - 多格式时间：10位秒级时间戳 / 13位毫秒 / yyyy-MM-dd HH:mm / 2026年9月28日14时30分 / 只写 HH:mm(今天)
+ *  - 未写时长与结束时间时默认 24 小时
+ *  - 消息支持 & 与 § 颜色码、整段 JSON 文本组件、\n 与 &lt;br&gt; 换行
+ *  - 变量：username / 用户名、starttime / 开始时间、endtime / 结束时间
+ *  - 玩家登录(异步预登录)、加入、退出时热重载配置，改完文件即生效，无需重启
+ *  - 拦截发生在异步预登录阶段，不给未授权客户端发送任何世界/区块数据包
+ *  - 独立于 MC 自带白名单，互不影响
+ */
+public class MaintenanceManager implements Listener {
+
+    /** 24小时硬封顶 */
+    private static final long MAX_WINDOW_MS = 24L * 60L * 60L * 1000L;
+    /** 未配置时长/结束时间时的默认窗口 */
+    private static final long DEFAULT_WINDOW_MS = MAX_WINDOW_MS;
+
+    private static final String DEFAULT_MESSAGE =
+            "&c&l[服务器维护] &7服务器正在维护中，请稍后再试&7（结束时间: &e{结束时间}&7）";
+
+    private static final Pattern NUM_PAT = Pattern.compile("\\d+");
+    private static final Pattern DUR_PAT = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*([a-zA-Z\\u4e00-\\u9fa5]*)");
+    private static final Pattern AMP_COLOR_PAT = Pattern.compile("&([0-9a-fk-orA-FK-OR])");
+
+    private final Main plugin;
+    private final File file;
+
+    /** 解析互斥：异步登录线程与主线程(join/quit)都可能触发热重载 */
+    private final Object lock = new Object();
+
+    private volatile long lastMtime = -1L;
+    private volatile boolean enabled = false;
+    private volatile long windowStart = 0L;
+    private volatile long windowEnd = 0L;
+    private volatile boolean opBypass = true;
+    private volatile String rawMessage = DEFAULT_MESSAGE;
+    private volatile Set<String> whitelistLower = Collections.emptySet();
+
+    /** 未显式写「开始时间」时记住本轮起点，避免热重载把窗口反复清零 */
+    private long implicitStart = 0L;
+    /** 到期日志只打一次 */
+    private volatile boolean expiryLogged = false;
+    /** OP 查询缓存（异步线程里只查一次） */
+    private final ConcurrentHashMap<String, Boolean> opCache = new ConcurrentHashMap<>();
+
+    public MaintenanceManager(Main plugin) {
+        this.plugin = plugin;
+        this.file = new File(plugin.getDataFolder(), "白名单.txt");
+        try {
+            Files.createDirectories(plugin.getDataFolder().toPath());
+        } catch (IOException e) {
+            plugin.getLogger().warning("[维护模式] 创建数据目录失败: " + e.getMessage());
+        }
+        if (!file.exists()) {
+            writeDefaultFile();
+        }
+        reload(true);
+    }
+
+    // ==================== 对外接口 ====================
+
+    /** 维护窗口是否正在生效 */
+    public boolean isActive() {
+        if (!enabled) return false;
+        long now = System.currentTimeMillis();
+        return now >= windowStart && now < windowEnd;
+    }
+
+    /** 玩家是否在白名单内（大小写不敏感） */
+    public boolean isWhitelisted(String name) {
+        if (name == null || name.isEmpty()) return false;
+        return whitelistLower.contains(name.toLowerCase(Locale.ROOT));
+    }
+
+    public long getWindowStart() {
+        return windowStart;
+    }
+
+    public long getWindowEnd() {
+        return windowEnd;
+    }
+
+    public Set<String> getWhitelist() {
+        return whitelistLower;
+    }
+
+    // ==================== 配置文件 ====================
+
+    private void writeDefaultFile() {
+        String tpl = String.join("\n",
+                "# =========================================================",
+                "#  维护模式（白名单）配置文件",
+                "#  修改保存后无需重启：玩家尝试登录 / 加入 / 退出时自动热加载",
+                "#",
+                "#  [控制段]   用「键 = 值」写服务器开关、时间与提示语",
+                "#  [白名单段]  每行一个玩家名（也可以用逗号分隔多个）",
+                "#",
+                "#  可用键：",
+                "#    启用     = true / false",
+                "#    开始时间 = 时间戳 / 2026-09-28 20:00 / 2026年9月28日20时00分（留空=立即开始）",
+                "#    结束时间 = 同上（留空则按时长或默认24小时计算）",
+                "#    时长     = 24h / 12小时 / 90分钟（单次维护最长 24 小时，硬封顶）",
+                "#    OP可绕过 = true / false（OP 是否可以绕过维护直接进服）",
+                "#    消息     = 支持 &a§a 颜色码、整段 JSON、\\n 与 <br> 换行",
+                "#               可用变量 {username} {starttime} {endtime}",
+                "# =========================================================",
+                "",
+                "# ===== 控制段 =====",
+                "启用 = false",
+                "开始时间 =",
+                "结束时间 =",
+                "时长 = 24h",
+                "OP可绕过 = true",
+                "消息 = " + DEFAULT_MESSAGE,
+                "",
+                "# ===== 白名单段 =====",
+                "[白名单]",
+                "");
+        try {
+            Files.write(file.toPath(), tpl.getBytes(StandardCharsets.UTF_8));
+            plugin.getLogger().info("[维护模式] 已生成默认配置: " + file.getAbsolutePath());
+        } catch (IOException e) {
+            plugin.getLogger().warning("[维护模式] 写入默认配置失败: " + e.getMessage());
+        }
+    }
+
+    /** 玩家登录/加入/退出时调用：文件变了就重新解析 */
+    public void reloadIfChanged() {
+        if (!file.exists()) return;
+        long m;
+        try {
+            m = file.lastModified();
+        } catch (Exception e) {
+            return;
+        }
+        if (m == lastMtime) return;
+        reload(true);
+    }
+
+    private void reload(boolean force) {
+        synchronized (lock) {
+            long m;
+            try {
+                m = file.lastModified();
+            } catch (Exception e) {
+                return;
+            }
+            if (!force && m == lastMtime) return;
+
+            String text;
+            try {
+                text = decode(Files.readAllBytes(file.toPath()));
+            } catch (IOException e) {
+                plugin.getLogger().warning("[维护模式] 读取配置失败: " + e.getMessage());
+                return;
+            }
+
+            Map<String, String> ctl = new LinkedHashMap<>();
+            Set<String> wl = new LinkedHashSet<>();
+            boolean inWhite = false;
+            for (String rawLine : text.split("\n")) {
+                String line = rawLine.trim();
+                if (line.isEmpty()) continue;
+                if (line.startsWith("#") || line.startsWith("//")) continue;
+                if (isWhitelistHeader(line)) {
+                    inWhite = true;
+                    continue;
+                }
+                if (inWhite) {
+                    for (String part : line.split("[,，、;；\\s]+")) {
+                        if (!part.isEmpty()) wl.add(part);
+                    }
+                } else {
+                    int eq = line.indexOf('=');
+                    if (eq < 0) eq = line.indexOf('：');
+                    if (eq < 0) continue;
+                    String k = normKey(line.substring(0, eq));
+                    if (k.isEmpty()) continue;
+                    ctl.put(k, line.substring(eq + 1).trim());
+                }
+            }
+
+            boolean wasActive = isActive();
+            boolean wasEnabled = this.enabled;
+
+            boolean en = toBool(pick(ctl,
+                    "启用", "开启", "开关", "维护", "enable", "enabled", "maintenance", "on"), false);
+            Long st = parseTime(pick(ctl, "开始时间", "开始", "起始时间", "start", "starttime", "begintime"));
+            Long enT = parseTime(pick(ctl, "结束时间", "结束", "截止时间", "end", "endtime"));
+            Long dur = parseDuration(pick(ctl, "时长", "持续时间", "持续", "duration", "hours", "小时"));
+            boolean op = toBool(pick(ctl, "OP可绕过", "op可绕过", "OP绕过", "管理员绕过",
+                    "opbypass", "op_bypass", "op", "bypass"), true);
+            String msg = pick(ctl, "消息", "提示", "维护消息", "踢出消息", "message", "msg", "kickmessage");
+            if (msg == null || msg.isEmpty()) msg = DEFAULT_MESSAGE;
+
+            long now = System.currentTimeMillis();
+            if (st == null) {
+                // 没写开始时间：沿用上一轮未过期的起点，否则从现在开始
+                if (implicitStart > 0L && implicitStart + MAX_WINDOW_MS > now) {
+                    st = implicitStart;
+                } else {
+                    st = now;
+                }
+            }
+            implicitStart = st;
+
+            long end;
+            if (enT != null) {
+                end = enT;
+            } else if (dur != null) {
+                end = st + dur;
+            } else {
+                end = st + DEFAULT_WINDOW_MS;
+            }
+            // ★ 24小时硬封顶
+            if (end > st + MAX_WINDOW_MS) end = st + MAX_WINDOW_MS;
+            if (end < st) end = st;
+
+            this.enabled = en;
+            this.windowStart = st;
+            this.windowEnd = end;
+            this.opBypass = op;
+            this.rawMessage = msg;
+            Set<String> lowered = new LinkedHashSet<>();
+            for (String n : wl) lowered.add(n.toLowerCase(Locale.ROOT));
+            this.whitelistLower = Collections.unmodifiableSet(lowered);
+            this.lastMtime = m;
+            if (wasEnabled && !en) {
+                this.implicitStart = 0L;   // 手动关掉后，下次开启重新计时
+            }
+            this.expiryLogged = false;
+            this.opCache.clear();
+
+            boolean nowActive = isActive();
+            if (nowActive && !wasActive) {
+                plugin.getLogger().info("[维护模式] ★ 维护已开启，白名单 " + whitelistLower.size()
+                        + " 人，窗口 " + fmt(windowStart) + " ~ " + fmt(windowEnd));
+            } else if (nowActive) {
+                plugin.getLogger().info("[维护模式] 配置已热重载，白名单 " + whitelistLower.size()
+                        + " 人，窗口 " + fmt(windowStart) + " ~ " + fmt(windowEnd));
+            } else if (wasActive) {
+                plugin.getLogger().info("[维护模式] 维护已结束");
+            }
+        }
+    }
+
+    // ==================== 登录拦截 ====================
+
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onPreLogin(AsyncPlayerPreLoginEvent e) {
+        // 登录阶段热重载：改完文件直接重连即可生效
+        try {
+            reloadIfChanged();
+        } catch (Throwable t) {
+            // 配置读取异常不能影响正常登录
+        }
+
+        if (!isActive()) {
+            // 到期后只提示一次
+            if (enabled && !expiryLogged && System.currentTimeMillis() >= windowEnd) {
+                expiryLogged = true;
+                plugin.getLogger().info("[维护模式] 维护窗口已到期（" + fmt(windowEnd) + "），自动结束");
+            }
+            return;
+        }
+
+        String name = e.getName();
+        if (isWhitelisted(name)) return;
+        if (opBypass && isOp(name)) {
+            plugin.getLogger().info("[维护模式] 放行OP: " + name);
+            return;
+        }
+
+        // ★ 无感化拦截：在异步预登录阶段直接断开，客户端只看到自定义提示，
+        //   服务端不会为他分配世界/区块，也不产生多余的网络往返
+        e.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED, buildMessage(name));
+        plugin.getLogger().info("[维护模式] 已拦截未在白名单的玩家: " + name);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent e) {
+        try {
+            reloadIfChanged();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onQuit(PlayerQuitEvent e) {
+        try {
+            reloadIfChanged();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ==================== 提示消息 ====================
+
+    private Component buildMessage(String playerName) {
+        String msg = this.rawMessage;
+        long s = this.windowStart;
+        long e = this.windowEnd;
+        msg = replaceVar(msg, new String[]{"username", "用户名", "player", "玩家名"}, playerName);
+        msg = replaceVar(msg, new String[]{"starttime", "开始时间", "start"}, fmt(s));
+        msg = replaceVar(msg, new String[]{"endtime", "结束时间", "end"}, fmt(e));
+        return format(msg);
+    }
+
+    private static String replaceVar(String msg, String[] keys, String value) {
+        if (msg == null || msg.isEmpty()) return msg;
+        String v = value == null ? "" : value;
+        for (String k : keys) {
+            msg = msg.replace("{" + k + "}", v);
+            msg = msg.replace("%" + k + "%", v);
+            msg = msg.replace("<" + k + ">", v);
+            msg = msg.replace(k, v);
+        }
+        return msg;
+    }
+
+    /**
+     * 消息格式化：
+     *  1) 整段是 JSON → 按文本组件解析（支持 text/color/extra 等）
+     *  2) 否则处理 &lt;br&gt; 与字面 \n 换行、&amp; 颜色码与 § 颜色码
+     */
+    private static Component format(String msg) {
+        if (msg == null) msg = "";
+        String trimmed = msg.trim();
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+                return GsonComponentSerializer.gson().deserialize(trimmed);
+            } catch (Throwable t) {
+                // 不是合法 JSON，退回普通文本处理
+            }
+        }
+        String s = msg;
+        s = s.replace("<br/>", "\n").replace("<br />", "\n").replace("<br>", "\n");
+        s = s.replace("</br>", "\n").replace("<BR>", "\n").replace("<Br>", "\n");
+        s = s.replace("\\n", "\n");
+        s = AMP_COLOR_PAT.matcher(s).replaceAll("§$1");
+
+        String[] lines = s.split("\n", -1);
+        Component out = Component.empty();
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) out = out.append(Component.newline());
+            out = out.append(LegacyComponentSerializer.legacySection().deserialize(lines[i]));
+        }
+        return out;
+    }
+
+    private static String fmt(long ms) {
+        try {
+            return new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date(ms));
+        } catch (Exception e) {
+            return String.valueOf(ms);
+        }
+    }
+
+    // ==================== 工具 ====================
+
+    private boolean isOp(String name) {
+        Boolean cached = opCache.get(name);
+        if (cached != null) return cached;
+        boolean r = false;
+        try {
+            OfflinePlayer p = Bukkit.getOfflinePlayer(name);
+            r = p.isOp();
+        } catch (Throwable t) {
+            r = false;
+        }
+        opCache.put(name, r);
+        return r;
+    }
+
+    /** 段落头：[白名单] / 白名单 / ===== 白名单段 ===== / [WHITELIST] */
+    private static boolean isWhitelistHeader(String line) {
+        String s = line.trim();
+        if (s.isEmpty() || s.startsWith("#") || s.startsWith("//")) return false;
+        String stripped = s.replaceAll("[\\[\\]\\-=_:：·*#\\s]+", "");
+        String low = stripped.toLowerCase(Locale.ROOT);
+        return low.equals("白名单段") || low.equals("白名单")
+                || low.equals("whitelist") || low.endsWith("白名单") || low.endsWith("whitelist");
+    }
+
+    private static String normKey(String k) {
+        if (k == null) return "";
+        return k.trim().toLowerCase(Locale.ROOT).replace(" ", "").replace("_", "").replace("　", "");
+    }
+
+    private static String pick(Map<String, String> ctl, String... keys) {
+        for (String k : keys) {
+            String v = ctl.get(normKey(k));
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        }
+        return null;
+    }
+
+    private static boolean toBool(String v, boolean def) {
+        if (v == null) return def;
+        String s = v.trim().toLowerCase(Locale.ROOT);
+        if (s.isEmpty()) return def;
+        return s.equals("true") || s.equals("yes") || s.equals("y") || s.equals("on")
+                || s.equals("1") || s.equals("是") || s.equals("开") || s.equals("开启") || s.equals("启用");
+    }
+
+    /**
+     * 时间解析，支持：
+     *  - 10位秒级时间戳 / 13位毫秒时间戳
+     *  - 2026-09-28 20:00 / 2026/9/28 20:00:33 / 2026.09.28
+     *  - 2026年9月28日20时30分 / 2026年9月28日 20:30
+     *  - 只写 20:00（今天该时刻）
+     * 解析失败返回 null
+     */
+    static Long parseTime(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim().replace("\"", "");
+        if (s.isEmpty()) return null;
+        if (s.matches("\\d{10}")) return Long.parseLong(s) * 1000L;
+        if (s.matches("\\d{13}")) return Long.parseLong(s);
+
+        List<Long> n = new ArrayList<>();
+        Matcher m = NUM_PAT.matcher(s);
+        while (m.find()) {
+            try {
+                n.add(Long.parseLong(m.group()));
+            } catch (Exception ignore) {
+            }
+        }
+        if (n.isEmpty()) return null;
+
+        String first = String.valueOf(n.get(0));
+        if (first.length() == 10) return n.get(0) * 1000L;
+        if (first.length() == 13) return n.get(0);
+
+        if (n.size() == 2 && n.get(0) <= 23 && n.get(1) <= 59) {
+            LocalDateTime now = LocalDateTime.now();
+            return now.withHour(n.get(0).intValue()).withMinute(n.get(1).intValue())
+                    .withSecond(0).withNano(0)
+                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        }
+        if (n.size() < 3) return null;
+
+        int y = n.get(0).intValue();
+        int mo = n.get(1).intValue();
+        int d = n.get(2).intValue();
+        int h = n.size() > 3 ? n.get(3).intValue() : 0;
+        int mi = n.size() > 4 ? n.get(4).intValue() : 0;
+        int se = n.size() > 5 ? n.get(5).intValue() : 0;
+        if (y < 1970 || y > 2100 || mo < 1 || mo > 12 || d < 1 || d > 31
+                || h > 23 || mi > 59 || se > 59) {
+            return null;
+        }
+        try {
+            return LocalDateTime.of(y, mo, d, h, mi, se)
+                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 时长解析：24 / 24h / 12小时 / 90分钟 / 2天，默认单位小时 */
+    static Long parseDuration(String raw) {
+        if (raw == null) return null;
+        String s = raw.trim().toLowerCase(Locale.ROOT);
+        if (s.isEmpty()) return null;
+        Matcher m = DUR_PAT.matcher(s);
+        if (!m.find()) return null;
+        double v;
+        try {
+            v = Double.parseDouble(m.group(1));
+        } catch (Exception e) {
+            return null;
+        }
+        String unit = m.group(2) == null ? "" : m.group(2);
+        long ms;
+        if (unit.contains("毫秒")) ms = 1L;
+        else if (unit.startsWith("s") || unit.contains("秒")) ms = 1000L;
+        else if (unit.startsWith("m") || unit.contains("分")) ms = 60_000L;
+        else if (unit.startsWith("d") || unit.contains("天")) ms = 86_400_000L;
+        else ms = 3_600_000L;
+        long r = (long) (v * ms);
+        return r <= 0 ? null : r;
+    }
+
+    /** 优先按 UTF-8 严格解码，失败则按 GBK（Windows 记事本默认编码） */
+    private static String decode(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return "";
+        try {
+            CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
+            dec.decode(ByteBuffer.wrap(bytes));
+            return new String(bytes, StandardCharsets.UTF_8);
+        } catch (CharacterCodingException e) {
+            try {
+                return new String(bytes, Charset.forName("GBK"));
+            } catch (Exception e2) {
+                return new String(bytes, StandardCharsets.UTF_8);
+            }
+        }
+    }
+}
