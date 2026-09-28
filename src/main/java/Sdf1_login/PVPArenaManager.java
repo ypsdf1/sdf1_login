@@ -3177,17 +3177,24 @@ public class PVPArenaManager implements Listener {
     /** 观赛者模式漂移诊断日志限频：玩家名 → 上次打印时间戳（10秒内不重复刷屏） */
     private final Map<String, Long> spectatorDriftLogAt = new ConcurrentHashMap<>();
 
+    /** ★ 观赛拦截留痕限频：key → 上次打印时间戳（5秒内不重复刷屏）——每次拦截都必须留下证据 */
+    private final Map<String, Long> spectatorBlockLogAt = new ConcurrentHashMap<>();
+
+    /** 观赛名册巡视日志上次打印时间戳（30秒一条，用于确认"身份到底登记上没有"） */
+    private long spectatorRosterLogAt = 0L;
+
     /**
-     * ★ 观赛身份判定（战斗保护唯一依据，2026-09-28 重构）：
+     * ★ 观赛身份判定（战斗保护唯一依据，2026-09-28 重构 / 同日二次加固）：
      *   - 原版观察者模式（GameMode.SPECTATOR）→ 是观赛者（任何世界）；
-     *   - 已在 spectatorBackups 登记为观赛者且身在 PVP 世界 → 是观赛者
-     *     （即使模式被领地强制模式/其他插件改成生存也照样算，杜绝"观赛者+生存"能互殴）。
-     * 只要判定为观赛者，攻与被攻一律拦截，不看世界、不看来源类型。
+     *   - 已在 spectatorBackups 登记为观赛者 → 是观赛者，【不再限定 PVP 世界】
+     *     （即使模式被领地强制模式/其他插件改成生存、甚至被带出竞技场也照样算，
+     *       杜绝"观赛者+生存"能互殴；所有正常退出流程都会先注销登记，不会误伤）。
+     * 只要判定为观赛者，攻与被攻一律拦截：不看世界、不看来源类型、不看伤害对象是不是玩家。
      */
     private boolean isProtectedSpectator(Player p) {
         if (p == null) return false;
         if (p.getGameMode() == GameMode.SPECTATOR) return true;
-        return spectatorBackups.containsKey(p.getName()) && isPVPWorld(p.getWorld());
+        return spectatorBackups.containsKey(p.getName());
     }
 
     /** 观赛者状态漂移诊断日志（限频：同一key 10秒最多一条），用于定位"谁把观赛者改成了生存" */
@@ -3200,21 +3207,101 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * 每2秒巡视：已登记为观赛者且仍在 PVP 世界的玩家，模式不是观察者 → 强制恢复观察者。
+     * ★ 观赛拦截留痕日志（限频：同一key 5秒最多一条）。
+     * 旧版只在"身份与模式不一致"时才打印，正常拦截是静默的 —— 结果"到底拦没拦住"完全无从查证。
+     * 现在每一次拦截都打印，日志里能直接看到拦截证据。
+     */
+    private void logSpectatorBlocked(String key, String msg) {
+        long now = System.currentTimeMillis();
+        Long last = spectatorBlockLogAt.get(key);
+        if (last != null && now - last < 5_000L) return;
+        spectatorBlockLogAt.put(key, now);
+        plugin.getLogger().info("[PVP观赛] " + msg);
+    }
+
+    /** 玩家观赛状态描述（日志用）：名字 / 当前模式 / 是否登记观赛身份 / 所在世界 */
+    private String describePlayerState(Player p) {
+        return p.getName() + "(模式=" + p.getGameMode().name()
+                + ",登记=" + (spectatorBackups.containsKey(p.getName()) ? "是" : "否")
+                + ",world=" + p.getWorld().getName() + ")";
+    }
+
+    /**
+     * 解析伤害来源中的玩家（玩家直击 / 弹射物 shooter），非玩家来源返回 null。
+     */
+    private Player resolveDamageActor(org.bukkit.entity.Entity damager) {
+        if (damager instanceof Player) return (Player) damager;
+        if (damager instanceof org.bukkit.entity.Projectile) {
+            org.bukkit.projectiles.ProjectileSource src =
+                    ((org.bukkit.entity.Projectile) damager).getShooter();
+            if (src instanceof Player) return (Player) src;
+        }
+        return null;
+    }
+
+    /** 伤害来源描述（日志用） */
+    private String describeDamager(org.bukkit.entity.Entity damager) {
+        Player a = resolveDamageActor(damager);
+        if (a != null) return "玩家 " + a.getName();
+        return damager.getType().name();
+    }
+
+    /**
+     * 每2秒巡视（2026-09-28 二次加固）：
+     *   ① PVP世界里出现"观察者模式但没登记"的玩家 → 自动补登记，
+     *      堵住"不是走 enterSpectator 进的观察者 → 身份没登记 → 被改成生存后彻底没人保护"的漏洞；
+     *   ② 已登记观赛者但模式不是观察者 → 强制恢复观察者（PVP世界内）；
+     *      在 PVP 世界之外则保留身份并告警（战斗照样拦截，避免把人硬锁在观察者里）；
+     *   ③ 每30秒打印一次观赛名册，用来确认"身份到底登记上没有"。
      * 这是"观赛者以任何形式都不能攻击/被攻击"的第二道防线
      * （第一道：isProtectedSpectator 直接拦截战斗事件）。
      */
     private void enforceSpectatorModes() {
+        StringBuilder roster = new StringBuilder();
+        int total = 0;
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (!spectatorBackups.containsKey(p.getName())) continue;
-            if (!isPVPWorld(p.getWorld())) continue;   // PVP世界内才强制（出世界的走正常退出流程）
+            boolean registered = spectatorBackups.containsKey(p.getName());
             GameMode gm = p.getGameMode();
-            if (gm == GameMode.SPECTATOR) continue;
-            p.setGameMode(GameMode.SPECTATOR);
-            logSpectatorDrift("enforce:" + p.getName(),
-                    "观赛者 " + p.getName() + " 在PVP世界内被外部改为 " + gm.name()
-                            + "，已强制恢复观察者（world=" + p.getWorld().getName()
-                            + "）。若反复出现请排查：领地强制游戏模式 / 其他插件的 setGameMode");
+
+            // ① PVP世界内的"野生观察者"自动补登记（备份目标取生存，绝不把创造当还原目标）
+            if (!registered && gm == GameMode.SPECTATOR && isPVPWorld(p.getWorld())) {
+                spectatorBackups.put(p.getName(), GameMode.SURVIVAL);
+                registered = true;
+                plugin.getLogger().info("[PVP观赛] 巡视发现 " + p.getName()
+                        + " 在PVP世界处于观察者模式却没登记观赛身份，已自动补登记"
+                        + "（退出观赛将还原为生存）。world=" + p.getWorld().getName());
+            }
+            if (!registered) continue;
+
+            total++;
+            if (gm == GameMode.SPECTATOR) {
+                roster.append(p.getName()).append("(观察者@").append(p.getWorld().getName()).append(") ");
+                continue;
+            }
+
+            if (isPVPWorld(p.getWorld())) {
+                // ② PVP世界内：强制恢复观察者
+                p.setGameMode(GameMode.SPECTATOR);
+                logSpectatorDrift("enforce:" + p.getName(),
+                        "观赛者 " + p.getName() + " 在PVP世界内被外部改为 " + gm.name()
+                                + "，已强制恢复观察者（world=" + p.getWorld().getName()
+                                + "）。若反复出现请排查：领地强制游戏模式 / 其他插件的 setGameMode");
+                roster.append(p.getName()).append("(强制恢复观察者,原").append(gm.name()).append(") ");
+            } else {
+                // ② 出了PVP世界：只告警+保留保护，不硬锁观察者（正常退出会先注销身份）
+                logSpectatorDrift("outside:" + p.getName(),
+                        "观赛身份残留：" + p.getName() + " 已不在PVP世界（world="
+                                + p.getWorld().getName() + "）但模式是 " + gm.name()
+                                + "，仍按观赛者拦截战斗；如需彻底退出请执行 /pvp leave see");
+                roster.append(p.getName()).append("(身份残留@").append(p.getWorld().getName()).append(") ");
+            }
+        }
+
+        // ③ 名册日志（30秒一条）
+        long now = System.currentTimeMillis();
+        if (total > 0 && now - spectatorRosterLogAt >= 30_000L) {
+            spectatorRosterLogAt = now;
+            plugin.getLogger().info("[PVP观赛] 巡视名册：观赛者 " + total + " 名 → " + roster);
         }
     }
 
@@ -3234,49 +3321,55 @@ public class PVPArenaManager implements Listener {
     }
 
     /**
-     * ★ 观赛者战斗保护（2026-09-28 重构，以"登记身份"为准，不再只看 GameMode）：
-     *   ① 观赛者不能伤害任何人（含投掷物/药水等一切以其为伤害来源的判定）
+     * ★ 观赛者战斗保护（2026-09-28 重构 + 二次加固，以"登记身份"为准，不再只看 GameMode）：
+     *   ① 观赛者不能伤害任何人（含投掷物/药水等一切以其为伤害来源的判定，也含打生物）
      *   ② 任何人不能伤害观赛者（含玩家、生物、箭、TNT、摔落等一切伤害来源）
-     *   ③ "观赛者" = 原版观察者模式 ∪（已登记观赛身份且身在PVP世界）
+     *   ③ "观赛者" = 原版观察者模式 ∪ 已登记观赛身份（不再限定PVP世界）
      *      —— 即使模式被外部改成生存（"观赛者+生存"），攻击/被攻击照样全部拦截。
-     *   ④ 拦截时若发现身份与模式不一致（漂移），打印限频诊断日志帮助定位根因。
+     *   ④ 每次拦截都打印留痕日志（5秒限频），"拦没拦住"必须能在日志里查到。
+     *   ⑤ 拦截时若发现身份与模式不一致（漂移），另打印限频告警帮助定位根因。
      */
     @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
     public void onSpectatorCombat(org.bukkit.event.entity.EntityDamageByEntityEvent e) {
-        if (!(e.getEntity() instanceof Player)) return;
-        Player victim = (Player) e.getEntity();
+        Player victim = e.getEntity() instanceof Player ? (Player) e.getEntity() : null;
+        Player attacker = resolveDamageActor(e.getDamager());
 
-        // 解析攻击者（玩家直击 / 弹射物 shooter）
-        org.bukkit.entity.Entity damager = e.getDamager();
-        Player attacker = null;
-        if (damager instanceof Player) {
-            attacker = (Player) damager;
-        } else if (damager instanceof org.bukkit.entity.Projectile) {
-            org.bukkit.projectiles.ProjectileSource src =
-                    ((org.bukkit.entity.Projectile) damager).getShooter();
-            if (src instanceof Player) attacker = (Player) src;
-        }
-
-        boolean victimProtected = isProtectedSpectator(victim);
+        boolean victimProtected = victim != null && isProtectedSpectator(victim);
         boolean attackerProtected = attacker != null && isProtectedSpectator(attacker);
         if (!victimProtected && !attackerProtected) return;
 
-        // ①/② 双向一律取消——观赛者以任何形式不能攻击玩家、也不能被玩家攻击
+        // ①/② 双向一律取消——观赛者以任何形式不能攻击、也不能被攻击
         e.setCancelled(true);
 
-        // ④ 漂移诊断：登记为观赛者但模式不是观察者 → 说明被外部改过
+        // ④ 拦截留痕：每次拦截都看得见
+        if (victimProtected) {
+            logSpectatorBlocked("cbv:" + victim.getName(),
+                    "拦截【被攻击】观赛者 " + describePlayerState(victim)
+                            + " 被 " + describeDamager(e.getDamager())
+                            + " 攻击 → 已取消，cause=" + e.getCause());
+        }
+        if (attackerProtected && attacker != null) {
+            logSpectatorBlocked("cba:" + attacker.getName(),
+                    "拦截【攻击】观赛者 " + describePlayerState(attacker)
+                            + " 攻击 " + (victim != null ? victim.getName()
+                            : e.getEntity().getType().name())
+                            + " → 已取消，cause=" + e.getCause());
+        }
+
+        // ⑤ 漂移诊断：登记为观赛者但模式不是观察者 → 说明被外部改过
         if (victimProtected && victim.getGameMode() != GameMode.SPECTATOR) {
             logSpectatorDrift("victim:" + victim.getName(),
                     "拦截：观赛者 " + victim.getName() + "（模式=" + victim.getGameMode().name()
                             + "，world=" + victim.getWorld().getName() + "）遭到 " +
-                            (attacker != null ? attacker.getName() : damager.getType().name())
+                            describeDamager(e.getDamager())
                             + " 攻击，已取消（身份与模式不一致，将强制恢复观察者）");
         }
         if (attackerProtected && attacker != null && attacker.getGameMode() != GameMode.SPECTATOR) {
             logSpectatorDrift("attacker:" + attacker.getName(),
                     "拦截：观赛者 " + attacker.getName() + "（模式=" + attacker.getGameMode().name()
                             + "，world=" + attacker.getWorld().getName() + "）攻击了 "
-                            + victim.getName() + "，已取消（身份与模式不一致，将强制恢复观察者）");
+                            + (victim != null ? victim.getName() : e.getEntity().getType().name())
+                            + "，已取消（身份与模式不一致，将强制恢复观察者）");
         }
     }
 
@@ -3287,12 +3380,44 @@ public class PVPArenaManager implements Listener {
         Player victim = (Player) e.getEntity();
         if (!isProtectedSpectator(victim)) return;
         e.setCancelled(true);
+        // 拦截留痕：每次拦截都看得见
+        logSpectatorBlocked("hurt:" + victim.getName(),
+                "拦截【受伤】观赛者 " + describePlayerState(victim)
+                        + " 受到 " + e.getCause() + " 伤害 → 已取消");
         if (victim.getGameMode() != GameMode.SPECTATOR) {
             logSpectatorDrift("hurt:" + victim.getName(),
                     "拦截：观赛者 " + victim.getName() + "（模式=" + victim.getGameMode().name()
                             + "，world=" + victim.getWorld().getName()
                             + "）受到 " + e.getCause() + " 伤害，已取消（身份与模式不一致）");
         }
+    }
+
+    /**
+     * ★ 战斗保护安全网（MONITOR 最后一道闸门，2026-09-28 二次加固）：
+     *  正常情况下 onSpectatorCombat / onSpectatorHurt 已在 HIGHEST 阶段取消；
+     *  若同优先级更靠后、或 MONITOR 阶段的其他插件把这次取消【又解除了】，
+     *  这里会发现"涉及观赛者却没有被取消"，强制补取消并打告警——
+     *  这正是"观赛者还能互殴"的头号可疑根因，日志会直接把它揪出来。
+     */
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = false)
+    public void onSpectatorCombatSafetyNet(org.bukkit.event.entity.EntityDamageEvent e) {
+        if (e.isCancelled()) return;   // 已被拦截（含我们HIGHEST阶段的取消）→ 无需兜底
+        Player victim = e.getEntity() instanceof Player ? (Player) e.getEntity() : null;
+        Player attacker = null;
+        if (e instanceof org.bukkit.event.entity.EntityDamageByEntityEvent) {
+            attacker = resolveDamageActor(
+                    ((org.bukkit.event.entity.EntityDamageByEntityEvent) e).getDamager());
+        }
+        boolean victimProtected = victim != null && isProtectedSpectator(victim);
+        boolean attackerProtected = attacker != null && isProtectedSpectator(attacker);
+        if (!victimProtected && !attackerProtected) return;
+
+        e.setCancelled(true);
+        plugin.getLogger().warning("[PVP观赛] ⚠ 观赛拦截未生效（可能被其他插件解除），已在MONITOR强制补取消："
+                + "victim=" + (victim != null ? describePlayerState(victim) : "-")
+                + "，attacker=" + (attacker != null ? describePlayerState(attacker) : "-")
+                + "，cause=" + e.getCause()
+                + "。若频繁出现，请排查在 HIGHEST/MONITOR 阶段解除取消的其他插件");
     }
 
 // ==================== 公共查询 ====================
