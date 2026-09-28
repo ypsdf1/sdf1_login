@@ -139,7 +139,7 @@ public class MaintenanceManager implements Listener {
                 "#  修改保存后无需重启：玩家尝试登录 / 加入 / 退出时自动热加载",
                 "#",
                 "#  [控制段]   用「键 = 值」写服务器开关、时间与提示语",
-                "#  [白名单段]  每行一个玩家名（也可以用逗号分隔多个）",
+                "#  [白名单段]  严格一行一个玩家名（一行只写一个，不支持逗号/空格分隔）",
                 "#",
                 "#  可用键：",
                 "#    启用     = true / false",
@@ -213,9 +213,14 @@ public class MaintenanceManager implements Listener {
                     continue;
                 }
                 if (inWhite) {
-                    for (String part : line.split("[,，、;；\\s]+")) {
-                        if (!part.isEmpty()) wl.add(part);
+                    // ★ 严格按「一行一个玩家名」：整行就是一个条目，不再按逗号/顿号/空白拆分。
+                    //   含分隔符的行说明格式写错了，直接告警便于发现，而不是静默拆成多个错误条目。
+                    if (line.indexOf(',') >= 0 || line.indexOf('\uFF0C') >= 0 || line.indexOf('\u3001') >= 0
+                            || line.indexOf(';') >= 0 || line.indexOf('\uFF1B') >= 0 || line.indexOf(' ') >= 0
+                            || line.indexOf('\u3000') >= 0 || line.indexOf('\t') >= 0) {
+                        plugin.getLogger().warning("[维护模式] 白名单条目不符合「一行一个玩家名」，已按整行收录: " + line);
                     }
+                    wl.add(line);
                 } else {
                     int eq = line.indexOf('=');
                     if (eq < 0) eq = line.indexOf('：');
@@ -286,6 +291,10 @@ public class MaintenanceManager implements Listener {
                         + " 人，窗口 " + fmt(windowStart) + " ~ " + fmt(windowEnd));
             } else if (wasActive) {
                 plugin.getLogger().info("[维护模式] 维护已结束");
+            }
+            if (nowActive && whitelistLower.isEmpty() && !opBypass) {
+                plugin.getLogger().warning("[维护模式] ⚠ 维护已开启，但白名单为空且 OP 不可绕过："
+                        + "所有玩家都会被拦在外面！请检查 [白名单] 段标题与条目写法");
             }
         }
     }
@@ -417,14 +426,26 @@ public class MaintenanceManager implements Listener {
         return r;
     }
 
-    /** 段落头：[白名单] / 白名单 / ===== 白名单段 ===== / [WHITELIST] */
+    /** 段落头：[白名单] / 【白名单】 / 白名单 / ===== 白名单段 ===== / 玩家白名单 / [WHITELIST]（含 = 的行一律不是段落头） */
     private static boolean isWhitelistHeader(String line) {
         String s = line.trim();
         if (s.isEmpty() || s.startsWith("#") || s.startsWith("//")) return false;
-        String stripped = s.replaceAll("[\\[\\]\\-=_:：·*#\\s]+", "");
+        // ★ 硬门槛：先剥掉首尾装饰符号（=====、----、::: 等），再看中间是否还剩「=」。
+        //   剩下的 = 说明这是控制段的键值对（如「挂机白名单 = xxx」），绝不是段落头；
+        //   只有装饰等号的 =====白名单段===== 剥完就干净了，不会被误杀。
+        //   没有这道门槛时，控制键一旦被误判成段落头，后续所有行都滑进白名单段，
+        //   「启用 = true」就读不到 → 维护开关直接失效。
+        String body = s.replaceAll("^[=\\-_:：·*#\\s]+|[=\\-_:：·*#\\s]+$", "");
+        if (body.indexOf('=') >= 0) return false;
+        // 剥离各类括号与装饰符号（含全角【】〔〕「」『』（）），只留标题正文
+        String stripped = s.replaceAll("[\\[\\]\\u3010\\u3011\\u3014\\u3015\\u300c\\u300d\\u300e\\u300f"
+                + "\\uff08\\uff09()\\-=_:：·*#\\s]+", "");
         String low = stripped.toLowerCase(Locale.ROOT);
-        return low.equals("白名单段") || low.equals("白名单")
-                || low.equals("whitelist") || low.endsWith("白名单") || low.endsWith("whitelist");
+        // 精确匹配常见写法；再兜底 endsWith 兼容「玩家白名单」「ALLOWLIST」这类变体标题
+        //（有了上面的 = 门槛，endsWith 已经不会再吞掉控制段键值对）
+        return low.equals("白名单") || low.equals("白名单段") || low.equals("白名单列表")
+                || low.equals("允许名单") || low.equals("whitelist") || low.equals("allowlist")
+                || low.endsWith("白名单") || low.endsWith("whitelist") || low.endsWith("allowlist");
     }
 
     private static String normKey(String k) {
