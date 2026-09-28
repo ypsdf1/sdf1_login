@@ -559,17 +559,34 @@ public class MaintenanceManager implements Listener {
      * 花括号是 JSON 对象结构本身，裸替换会吃掉正文里的 end/start/player 等英文词
      * （"end soon" -> "2026-09-28 10:00 soon"）。JSON 消息里请用 [username]、(用户)、%username% 等形式。
      * 普通 &amp;c 文本：全部定界符 + 裸替换都生效（{username}、username 均可）。
+     * 「标签+定界符」混合写法（开始时间[starttime]）：只替换定界符占位符、保留标签文字，
+     * 避免标签被裸替换二次吃掉、渲染成双份时间。
      */
     private static String replaceVar(String msg, String[] keys, String value) {
         if (msg == null || msg.isEmpty()) return msg;
         String v = value == null ? "" : value;
         boolean jsonMode = looksLikeJson(msg);
+        // 「标签+定界符」混合写法防御：如「开始时间[starttime]，结束时间：{endtime}」。
+        // 只要本组任一 key 已以定界符形式出现，就说明用户写的是「标签文字 + 占位符」，
+        // 此时整组跳过裸子串替换、保留 开始时间/结束时间 这类标签原文；
+        // 否则标签会被二次替换成时间，渲染成「时间 时间」双份连排。
+        boolean delimHit = false;
+        for (String k : keys) {
+            for (String[] d : PLACEHOLDER_DELIMS) {
+                if (jsonMode && d[0].equals("{")) continue;
+                if (msg.contains(d[0] + k + d[1])) {
+                    delimHit = true;
+                    break;
+                }
+            }
+            if (delimHit) break;
+        }
         for (String k : keys) {
             for (String[] d : PLACEHOLDER_DELIMS) {
                 if (jsonMode && d[0].equals("{")) continue; // JSON 跳过花括号，避免与 JSON 结构冲突
                 msg = msg.replace(d[0] + k + d[1], v);
             }
-            if (!jsonMode) msg = msg.replace(k, v);
+            if (!jsonMode && !delimHit) msg = msg.replace(k, v);
         }
         return msg;
     }
