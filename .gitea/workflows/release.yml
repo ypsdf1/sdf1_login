@@ -72,7 +72,7 @@ jobs:
 
       - name: Create Release
         env:
-          GITEA_TOKEN: 2cb4826439e13d6f80776bf1e5832a88669856e2
+          GITEA_TOKEN: 194187cbdc8e1f1d3bc810b1b9e07ddc904a1f73
         run: |
           set -e
           VERSION=$(grep "^version:" src/main/resources/plugin.yml | awk '{print $2}' | tr -d '\r\n ')
@@ -120,3 +120,4 @@ jobs:
           echo "Upload HTTP: $UPLOAD_CODE"
           
           echo "=== Release $TAG created successfully ==="
+
