@@ -3269,7 +3269,10 @@ public class PVPArenaManager implements Listener {
                 registered = true;
                 plugin.getLogger().info("[PVP观赛] 巡视发现 " + p.getName()
                         + " 在PVP世界处于观察者模式却没登记观赛身份，已自动补登记"
-                        + "（退出观赛将还原为生存）。world=" + p.getWorld().getName());
+                        + "（退出观赛将还原为生存）。world=" + p.getWorld().getName()
+                        + "；不是本人主动观赛的，请执行 /pvp leave see 注销身份");
+                p.sendMessage("§e§l[PVP观赛] §f检测到你在PVP世界处于观察者模式，已按观赛者保护"
+                        + "（与他人互不伤害）。不是主动观赛请执行 §a/pvp leave see §f注销身份");
             }
             if (!registered) continue;
 
