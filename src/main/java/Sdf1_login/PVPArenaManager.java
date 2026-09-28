@@ -1917,12 +1917,15 @@ public class PVPArenaManager implements Listener {
                 db.deletePvpInventoryBackup(player.getName());
                 player.sendMessage("§a§l检测到你上次在PVP中断线，背包已自动恢复");
 
-                // ★ 上次以观赛观察者身份断线 → 重连强制恢复为生存（避免在主世界仍是观察者）
+                // ★ 上次以观赛身份断线（幽灵/裁判任一形态）→ 重连统一结束观赛，避免身份残留：
+                //   幽灵强制回生存；裁判本就是生存，仅注销身份（背包已还原、即将送回主世界）
                 if (player.getGameMode() == GameMode.SPECTATOR) {
                     // ★ 先注销观赛身份再改模式：否则留着身份残留，会被战斗拦截/强制巡视误伤
                     spectatorBackups.remove(player.getName());
                     player.setGameMode(GameMode.SURVIVAL);
-                    player.sendMessage("§a§l[PVP观赛] §f已退出观赛观察者模式");
+                    player.sendMessage("§a§l[PVP观赛] §f已退出观赛（幽灵形态已恢复生存）");
+                } else if (spectatorBackups.remove(player.getName()) != null) {
+                    player.sendMessage("§a§l[PVP观赛] §f已退出观赛（裁判身份已注销）");
                 }
 
                 // 若仍在竞技场世界，送回主世界
@@ -1943,10 +1946,12 @@ public class PVPArenaManager implements Listener {
                 player.teleport(getBedOrSpawnLocation(player));
                 cleanupPlayerStats(player);
                 inPVPArena.remove(player.getName());
-                // ★ 观赛观察者断线残留 → 强制恢复为生存（先注销观赛身份，避免身份残留）
+                // ★ 观赛断线残留（幽灵/裁判任一形态）→ 统一结束观赛（先注销身份，避免身份残留）
                 if (player.getGameMode() == GameMode.SPECTATOR) {
                     spectatorBackups.remove(player.getName());
                     player.setGameMode(GameMode.SURVIVAL);
+                } else {
+                    spectatorBackups.remove(player.getName());
                 }
                 player.sendMessage("§e[PVP] 检测到你在竞技场非正常断线，已送你回主世界");
             }, 5L);
@@ -3072,39 +3077,56 @@ public class PVPArenaManager implements Listener {
      * /pvp see —— PVP 观赛模式（仅 PVP 世界生效）
      *
      * 三种调用形式：
-     *   /pvp see       → 切换（在观察者⇄普通模式之间来回切，mode=null）
-     *   /pvp join see  → 强制进入观察者（mode="enter"）
-     *   /pvp leave see → 强制退出观察者（mode="exit"）
+     *   /pvp see       → 切换观赛形态（mode=null）
+     *   /pvp join see  → 强制进入观赛（mode="enter"，默认幽灵形态）
+     *   /pvp leave see → 彻底退出观赛（mode="exit"，并重新触发选装、补发PVP装备）
      *
-     * ★ v2 设计变更：原版【观察者模式下物品栏会被客户端自动隐藏替换】，
-     *   雪球发了也看不见、无法右键，故已彻底移除雪球方案，只保留命令切换。
-     *   观察者不能伤害玩家，玩家也不能伤害观察者（见 onSpectatorCombat）。
+     * ★ v3 形态设计（2026-09-28 修正）：观赛有两种形态，/pvp see 只在二者之间来回切：
+     *   ① 幽灵形态 = 原版观察者模式：能看到别人，别人看不到你；
+     *   ② 裁判形态 = 普通生存模式 + 已登记观赛身份：可见站在现场像裁判，
+     *      但不能伤人、别人也不能伤害你（双向免伤，见 onSpectatorCombat）。
+     *   ★ 切换【绝不】把玩家变成无保护的普通玩家；只有 /pvp leave see 才彻底退出，
+     *     且退出时重新触发选装、补发装备，避免"退出观赛后没装备打不过"。
      */
     public void handleSeeCommand(Player p) {
         handleSeeCommand(p, null);
     }
 
     /**
-     * @param mode null=切换  "enter"=强制进观察者  "exit"=强制退观察者
+     * @param mode null=切换形态  "enter"=强制进入观赛(幽灵)  "exit"=彻底退出观赛(补发装备)
      */
     public void handleSeeCommand(Player p, String mode) {
-        boolean already = p.getGameMode() == GameMode.SPECTATOR;
+        boolean ghost = p.getGameMode() == GameMode.SPECTATOR;
+        boolean registered = spectatorBackups.containsKey(p.getName());
+        boolean spectating = ghost || registered; // 幽灵/裁判任一形态都算观赛者
 
-        // ★ 退出观察者在任何世界都放行（防止玩家被带离PVP世界后卡在观察者回不来）
+        // ★ /pvp leave see → 彻底退出观赛：注销身份 + 还原模式 + 重新触发选装补发装备
+        //   （任何世界都放行，防止玩家被带离PVP世界后卡在观赛身份回不来）
         if ("exit".equals(mode)) {
-            if (!already) {
-                // ★ 状态漂移兜底：身份仍登记为观赛者但模式已被外部改走 → 清掉身份残留
-                if (spectatorBackups.remove(p.getName()) != null) {
-                    p.sendMessage("§e§l[PVP观赛] §f你已不在观察者模式，已清理观赛身份残留");
-                    plugin.getLogger().info("[PVP观赛] 玩家 " + p.getName()
-                            + " 用 /pvp leave see 清理了观赛身份残留（模式已是 "
-                            + p.getGameMode().name() + "）");
-                    return;
-                }
-                p.sendMessage("§e§l[PVP观赛] §f你当前不在观察者模式");
+            if (!spectating) {
+                p.sendMessage("§e§l[PVP观赛] §f你当前不在观赛状态");
                 return;
             }
+            // ★ 先回收可能残留的PVP专属装备，防止接下来补发时装备翻倍
+            回收PVPEquipment(p);
             exitSpectator(p);
+            // ★ 重新触发PVP选装补发装备（仅限仍在PVP世界的参战者；
+            //   已被带离竞技场的玩家由离场流程还原自己的背包，不发PVP装备）
+            if (isPVPWorld(p.getWorld())) {
+                p.sendMessage("§e§l[PVP观赛] §f正在重新打开选装界面并补发你的PVP装备");
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!p.isOnline() || !isPVPWorld(p.getWorld())) return;
+                    if (p.getGameMode() == GameMode.SPECTATOR
+                            || spectatorBackups.containsKey(p.getName())) return; // 已再次进入观赛
+                    openEquipmentSelection(p);
+                    // 未完成过选装的玩家重新计时（60秒未确认自动遣返的安全网继续生效）
+                    if (!equipmentConfirmed.contains(p.getName()) && inPVPArena.contains(p.getName())) {
+                        scheduleKickTimeout(p.getName());
+                    }
+                    plugin.getLogger().info("[PVP观赛] 玩家 " + p.getName()
+                            + " 彻底退出观赛，已重新触发PVP选装补发装备");
+                });
+            }
             return;
         }
 
@@ -3114,31 +3136,38 @@ public class PVPArenaManager implements Listener {
         }
 
         if ("enter".equals(mode)) {
-            if (already) {
-                p.sendMessage("§e§l[PVP观赛] §f你已经在观察者模式了");
+            if (spectating) {
+                p.sendMessage(ghost
+                        ? "§e§l[PVP观赛] §f你已经在观赛中（幽灵形态，别人看不到你）"
+                        : "§e§l[PVP观赛] §f你已经在观赛中（裁判形态，§7/pvp see §f可切幽灵）");
                 return;
             }
             enterSpectator(p);
             return;
         }
 
-        // mode == null → 切换
-        if (already) {
-            exitSpectator(p);
-        } else {
+        // mode == null → 在两种观赛形态之间切换（普通玩家首次按 → 先进幽灵形态）
+        if (!spectating) {
             enterSpectator(p);
+        } else if (ghost) {
+            toReferee(p);
+        } else {
+            toGhost(p);
         }
     }
 
-    /** 进入观察者观赛：回收PVP装备(不退自己装备) → 记录原模式 → 进入原版观察者 */
+    /** 进入观赛（默认幽灵形态）：回收PVP装备(不退自己装备) → 记录原模式 → 进入原版观察者 */
     private void enterSpectator(Player p) {
         if (p.getGameMode() == GameMode.SPECTATOR) return;
 
         // 1) 回收PVP专属装备；★ 玩家自己的装备【不发还】，仍留在备份中，离场时统一还原
         回收PVPEquipment(p);
 
-        // 2) 记录原模式并进入 MC 原版观察者
-        //    ★ 必须【先记再切】：观察者模式下 addItem 会掉地上，故不再发放任何物品
+        // ★ 观赛期间没有"选装中"这回事 → 暂停60秒未确认遣返定时器（退出观赛时重新计时）
+        cancelKickTimeout(p.getName());
+
+        // 2) 记录原模式并进入 MC 原版观察者（幽灵形态）
+        //    ★ 必须【先记再切】：观赛身份登记是战斗保护的唯一依据
         //    ★ 绝不把【创造模式】当作还原目标：以创造进入观赛的，退出一律回生存（防止退出观赛变成创造作弊）
         GameMode before = p.getGameMode();
         if (before == GameMode.CREATIVE || before == GameMode.SPECTATOR) {
@@ -3147,46 +3176,72 @@ public class PVPArenaManager implements Listener {
         spectatorBackups.put(p.getName(), before);
         p.setGameMode(GameMode.SPECTATOR);
 
-        p.sendMessage("§a§l[PVP观赛] §f已进入观察者模式，可穿墙自由观赛");
-        p.sendMessage("§7  §f/pvp see §7→ 切换回普通模式");
-        p.sendMessage("§7  §f/pvp leave see §7→ 退出观察者");
-        p.sendMessage("§7  旁观状态下你与他人互不伤害，可放心观战");
+        p.sendMessage("§a§l[PVP观赛] §f已进入【幽灵形态】：能看到别人，别人看不到你");
+        p.sendMessage("§7  §f/pvp see §7→ 切换为裁判形态（可见站在现场，同样互不伤害）");
+        p.sendMessage("§7  §f/pvp leave see §7→ 彻底退出观赛（重新选装并补发PVP装备）");
+        p.sendMessage("§7  观赛期间你与他人互不伤害，可放心观战");
         p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 进入观赛观察者模式");
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 进入观赛（幽灵形态）");
     }
 
-    /** 退出观察者 → 还原进入前的游戏模式（默认生存），含安全落点与缓降保护 */
-    private void exitSpectator(Player p) {
-        GameMode back = spectatorBackups.remove(p.getName());
+    /**
+     * 幽灵形态 → 裁判形态：原版观察者切回普通生存模式，但【保留观赛身份登记】。
+     * 裁判可见站在现场，却依旧双向免伤——保护依据是登记身份而不是游戏模式（见 isProtectedSpectator）。
+     */
+    private void toReferee(Player p) {
+        // 兜底：没走过 enterSpectator 的野生观察者 → 补登记，否则切回生存后彻底没人保护
+        spectatorBackups.putIfAbsent(p.getName(), GameMode.SURVIVAL);
 
-        // ★ 状态漂移兜底：身份登记为观赛者但模式已被外部改走（领地强制模式/其他插件等）
-        //   → 只清掉观赛身份即可，不再动模式（避免把别人的设置覆盖掉）
-        if (p.getGameMode() != GameMode.SPECTATOR) {
-            if (back != null) {
-                plugin.getLogger().info("[PVP观赛] 玩家 " + p.getName() + " 退出观赛"
-                        + "（模式已被外部改为 " + p.getGameMode().name() + "，仅清理观赛身份）");
-                p.sendMessage("§a§l[PVP观赛] §f已退出观赛身份");
-            }
-            return;
-        }
+        // 幽灵常悬在高空或钻进方块里 → 落地安全处理（同退出流程：安全落点 + 缓降）
+        safeRecoverPosition(p);
+        p.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                org.bukkit.potion.PotionEffectType.SLOW_FALLING, 20 * 8, 0, false, true));
+        p.setGameMode(GameMode.SURVIVAL);
+
+        p.sendMessage("§a§l[PVP观赛] §f已切换为【裁判形态】：可见站在现场，你与他人互不伤害");
+        p.sendMessage("§7  §f/pvp see §7→ 切换为幽灵形态（别人看不到你）");
+        p.sendMessage("§7  §f/pvp leave see §7→ 彻底退出观赛（重新选装并补发PVP装备）");
+        p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 观赛切换 → 裁判形态（生存+登记保护）");
+    }
+
+    /** 裁判形态 → 幽灵形态：切回原版观察者（保留登记；期间持有的物品随身带进幽灵） */
+    private void toGhost(Player p) {
+        if (p.getGameMode() == GameMode.SPECTATOR) return;
+        p.setGameMode(GameMode.SPECTATOR);
+
+        p.sendMessage("§a§l[PVP观赛] §f已切换为【幽灵形态】：能看到别人，别人看不到你");
+        p.sendMessage("§7  §f/pvp see §7→ 切换为裁判形态（可见站在现场）");
+        p.sendMessage("§7  §f/pvp leave see §7→ 彻底退出观赛（重新选装并补发PVP装备）");
+        p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 观赛切换 → 幽灵形态");
+    }
+
+    /** 彻底退出观赛 → 注销身份并还原进入前的游戏模式（默认生存），含安全落点与缓降保护 */
+    private void exitSpectator(Player p) {
+        boolean wasGhost = p.getGameMode() == GameMode.SPECTATOR;
+        GameMode back = spectatorBackups.remove(p.getName());
 
         // ★ 兜底：备份缺失/观察者/创造 一律还原为生存（退出观赛绝不回创造，防止作弊）
         if (back == null || back == GameMode.SPECTATOR || back == GameMode.CREATIVE) {
             back = GameMode.SURVIVAL;
         }
 
-        // 观察者常悬在高空或钻进方块里 → 切回可玩模式前先挪到可站立的空气格
-        safeRecoverPosition(p);
-        // 先给缓降再切模式，落地不摔死
-        p.addPotionEffect(new org.bukkit.potion.PotionEffect(
-                org.bukkit.potion.PotionEffectType.SLOW_FALLING, 20 * 8, 0, false, true));
+        // 幽灵形态才需要落点/缓降恢复（裁判形态本来就站在地面上）
+        if (wasGhost) {
+            // 观察者常悬在高空或钻进方块里 → 切回可玩模式前先挪到可站立的空气格
+            safeRecoverPosition(p);
+            // 先给缓降再切模式，落地不摔死
+            p.addPotionEffect(new org.bukkit.potion.PotionEffect(
+                    org.bukkit.potion.PotionEffectType.SLOW_FALLING, 20 * 8, 0, false, true));
+        }
         p.setGameMode(back);
 
-        p.sendMessage("§a§l[PVP观赛] §f已退出观察者，恢复为" + gameModeName(back)
-                + "模式（8秒缓降，地面观赛可能被战斗波及）");
-        p.sendMessage("§c§l⚠ 从现在起你是生存模式：§f可以被攻击、也会攻击到别人 §c（再输 /pvp join see 可重新观赛）");
+        p.sendMessage("§a§l[PVP观赛] §f已退出观赛，恢复为" + gameModeName(back) + "模式");
+        p.sendMessage("§c§l⚠ 你现在是普通参战者：§f可以被攻击、也会攻击到别人");
         p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.0f);
-        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 退出观赛观察者模式 → " + back.name());
+        plugin.getLogger().info("[PVP] 玩家 " + p.getName() + " 彻底退出观赛（原形态="
+                + (wasGhost ? "幽灵" : "裁判") + "）→ " + back.name());
     }
 
     /** 观察者常卡在方块内部/高空 → 切回可玩模式前，把玩家挪到最近的可站立空气格 */
@@ -3224,11 +3279,12 @@ public class PVPArenaManager implements Listener {
     private long spectatorRosterLogAt = 0L;
 
     /**
-     * ★ 观赛身份判定（战斗保护唯一依据，2026-09-28 重构 / 同日二次加固）：
-     *   - 原版观察者模式（GameMode.SPECTATOR）→ 是观赛者（任何世界）；
-     *   - 已在 spectatorBackups 登记为观赛者 → 是观赛者，【不再限定 PVP 世界】
-     *     （即使模式被领地强制模式/其他插件改成生存、甚至被带出竞技场也照样算，
-     *       杜绝"观赛者+生存"能互殴；所有正常退出流程都会先注销登记，不会误伤）。
+     * ★ 观赛身份判定（战斗保护唯一依据，2026-09-28 重构 / 同日二次加固 + 形态修正）：
+     *   观赛有两种形态，二者都受保护：
+     *   - 幽灵形态 = 原版观察者模式（GameMode.SPECTATOR）→ 是观赛者（任何世界）；
+     *   - 裁判形态 = 普通生存模式 + 已在 spectatorBackups 登记 → 是观赛者，
+     *     【不再限定 PVP 世界】（即使模式被领地强制模式/其他插件改成生存、
+     *       甚至被带出竞技场也照样算；所有正常退出流程都会先注销登记，不会误伤）。
      * 只要判定为观赛者，攻与被攻一律拦截：不看世界、不看来源类型、不看伤害对象是不是玩家。
      */
     private boolean isProtectedSpectator(Player p) {
@@ -3290,7 +3346,8 @@ public class PVPArenaManager implements Listener {
      * 每2秒巡视（2026-09-28 二次加固）：
      *   ① PVP世界里出现"观察者模式但没登记"的玩家 → 自动补登记，
      *      堵住"不是走 enterSpectator 进的观察者 → 身份没登记 → 被改成生存后彻底没人保护"的漏洞；
-     *   ② 已登记观赛者但模式不是观察者 → 强制恢复观察者（PVP世界内）；
+     *   ② 已登记观赛者在PVP世界内：生存/冒险=合法裁判形态（不纠偏）；
+     *      创造等非法形态 → 强制回到裁判形态（生存）；
      *      在 PVP 世界之外则保留身份并告警（战斗照样拦截，避免把人硬锁在观察者里）；
      *   ③ 每30秒打印一次观赛名册，用来确认"身份到底登记上没有"。
      * 这是"观赛者以任何形式都不能攻击/被攻击"的第二道防线
@@ -3318,18 +3375,23 @@ public class PVPArenaManager implements Listener {
 
             total++;
             if (gm == GameMode.SPECTATOR) {
-                roster.append(p.getName()).append("(观察者@").append(p.getWorld().getName()).append(") ");
+                roster.append(p.getName()).append("(幽灵@").append(p.getWorld().getName()).append(") ");
                 continue;
             }
 
             if (isPVPWorld(p.getWorld())) {
-                // ② PVP世界内：强制恢复观察者
-                p.setGameMode(GameMode.SPECTATOR);
-                logSpectatorDrift("enforce:" + p.getName(),
-                        "观赛者 " + p.getName() + " 在PVP世界内被外部改为 " + gm.name()
-                                + "，已强制恢复观察者（world=" + p.getWorld().getName()
-                                + "）。若反复出现请排查：领地强制游戏模式 / 其他插件的 setGameMode");
-                roster.append(p.getName()).append("(强制恢复观察者,原").append(gm.name()).append(") ");
+                if (gm == GameMode.SURVIVAL || gm == GameMode.ADVENTURE) {
+                    // ② 裁判形态（生存/冒险 + 登记）= 合法形态：可见现场但双向免伤，不纠偏
+                    roster.append(p.getName()).append("(裁判@").append(p.getWorld().getName()).append(") ");
+                } else {
+                    // ② 异常形态（创造等）：强制回到裁判形态（生存）——绝不把观赛者留在创造里
+                    p.setGameMode(GameMode.SURVIVAL);
+                    logSpectatorDrift("enforce:" + p.getName(),
+                            "观赛者 " + p.getName() + " 在PVP世界内处于非法形态 " + gm.name()
+                                    + "，已强制回到裁判形态（生存，world=" + p.getWorld().getName()
+                                    + "）。若反复出现请排查：其他插件的 setGameMode");
+                    roster.append(p.getName()).append("(强制裁判,原").append(gm.name()).append(") ");
+                }
             } else {
                 // ② 出了PVP世界：只告警+保留保护，不硬锁观察者（正常退出会先注销身份）
                 logSpectatorDrift("outside:" + p.getName(),
@@ -3350,17 +3412,22 @@ public class PVPArenaManager implements Listener {
 
     /**
      * 观赛者模式被改动的诊断钩子（仅记录，不拦截——真正的纠偏交给 enforceSpectatorModes）。
+     * ★ v3 形态语义：幽灵⇄裁判切换（本插件 /pvp see 或外部改成生存/冒险）都是正常形态，
+     *   且登记保护不受游戏模式影响，故不告警；只有切到创造等非法形态才留痕
+     *   （enforceSpectatorModes 会在2秒内强制拉回裁判形态）。
      * 插件自身的正常退出（exitSpectator/forceLeaveArena/onPlayerJoin重置）都会【先移除登记】
-     * 再改模式，因此不会触发本日志；触发即说明是外部改动，可据此定位根因。
+     * 再改模式，因此不会触发本日志。
      */
     @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
     public void onSpectatorGameModeChanged(org.bukkit.event.player.PlayerGameModeChangeEvent e) {
         Player p = e.getPlayer();
         if (!spectatorBackups.containsKey(p.getName())) return;
-        if (e.getNewGameMode() == GameMode.SPECTATOR) return;
+        GameMode nm = e.getNewGameMode();
+        if (nm == GameMode.SPECTATOR) return;                          // 幽灵形态：合法
+        if (nm == GameMode.SURVIVAL || nm == GameMode.ADVENTURE) return; // 裁判形态：合法（登记保护仍生效）
         logSpectatorDrift("change:" + p.getName(),
-                "观赛者 " + p.getName() + " 的模式被外部从观察者改为 " + e.getNewGameMode()
-                        + "（world=" + p.getWorld().getName() + "）→ 2秒内将强制恢复观察者");
+                "观赛者 " + p.getName() + " 的模式被外部改为 " + nm
+                        + "（world=" + p.getWorld().getName() + "）→ 2秒内将强制恢复裁判形态（生存）");
     }
 
     /**
