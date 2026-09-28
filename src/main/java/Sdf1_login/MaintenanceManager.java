@@ -147,8 +147,8 @@ public class MaintenanceManager implements Listener {
                 "#    结束时间 = 同上（留空则按时长或默认24小时计算）",
                 "#    时长     = 24h / 12小时 / 90分钟（单次维护最长 24 小时，硬封顶）",
                 "#    OP可绕过 = true / false（OP 是否可以绕过维护直接进服）",
-                "#    消息     = 支持 &a§a 颜色码、整段 JSON、\\n 与 <br> 换行",
-                "#               可用变量 {username} {starttime} {endtime}",
+                "#    消息     = 支持 &a§a 颜色码、整段 JSON（对象 {...} 或数组 [...]）、\\n 与 <br> 换行",
+                "#               可用变量 {username} {starttime} {endtime}（带花括号，JSON 内同样生效）",
                 "# =========================================================",
                 "",
                 "# ===== 控制段 =====",
@@ -363,24 +363,43 @@ public class MaintenanceManager implements Listener {
     private static String replaceVar(String msg, String[] keys, String value) {
         if (msg == null || msg.isEmpty()) return msg;
         String v = value == null ? "" : value;
+        // JSON 消息只替换 {占位符}/%占位符%/<占位符>，不做裸子串替换：
+        // 否则正文里的 end/start/player 等英文词会被占位符值覆盖（"end soon" -> "2026-09-28 10:00 soon"）
+        boolean bareOk = !looksLikeJson(msg);
         for (String k : keys) {
             msg = msg.replace("{" + k + "}", v);
             msg = msg.replace("%" + k + "%", v);
             msg = msg.replace("<" + k + ">", v);
-            msg = msg.replace(k, v);
+            if (bareOk) msg = msg.replace(k, v);
         }
         return msg;
     }
 
     /**
+     * 整段是否为 JSON 文本组件：形如 {...} 或 [...]，且含双引号。
+     * 「含双引号」用于把 [玩家名]、[公告] 这类普通文本挡在 JSON 分支之外——
+     * Gson 默认宽松解析会把 [玩家名] 当字符串数组吃掉，导致正文被吞。
+     */
+    private static boolean looksLikeJson(String s) {
+        if (s == null) return false;
+        String t = s.trim();
+        int n = t.length();
+        if (n < 2 || t.indexOf('"') < 0) return false;
+        char f = t.charAt(0);
+        char l = t.charAt(n - 1);
+        return (f == '{' && l == '}') || (f == '[' && l == ']');
+    }
+
+    /**
      * 消息格式化：
-     *  1) 整段是 JSON → 按文本组件解析（支持 text/color/extra 等）
+     *  1) 整段是 JSON（对象 {...} 或顶层数组 [...]，后者是 tellraw 常见写法）
+     *     → 按文本组件解析（支持 text/color/extra 等）
      *  2) 否则处理 &lt;br&gt; 与字面 \n 换行、&amp; 颜色码与 § 颜色码
      */
     private static Component format(String msg) {
         if (msg == null) msg = "";
         String trimmed = msg.trim();
-        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        if (looksLikeJson(trimmed)) {
             try {
                 return GsonComponentSerializer.gson().deserialize(trimmed);
             } catch (Throwable t) {
