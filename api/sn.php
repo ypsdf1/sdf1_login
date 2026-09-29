@@ -345,7 +345,9 @@ function snPushCatalog() {
                loc_y=excluded.loc_y, loc_z=excluded.loc_z,
                container_type=excluded.container_type, in_land=excluded.in_land,
                land_name=excluded.land_name, last_seen=excluded.last_seen,
-               cancel_time=excluded.cancel_time, lost_count=excluded.lost_count,
+               cancel_time=CASE WHEN excluded.cancel_time > 0
+                                THEN excluded.cancel_time ELSE cancel_time END,
+               lost_count=excluded.lost_count,
                lost_state=excluded.lost_state, remark=excluded.remark,
                bind_reason=excluded.bind_reason, bind_time=excluded.bind_time,
                updated_at=excluded.updated_at");
