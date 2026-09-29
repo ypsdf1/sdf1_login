@@ -159,13 +159,44 @@ function snStatusCn($s) {
     return isset($m[$s]) ? $m[$s] : $s;
 }
 
-/** 下发一条命令给 Java */
+/**
+ * web_sn_commands.is_force 列懒迁移（管理员强制操作标记）。
+ * 老库没有这列，写入/读取前各补一次；每个请求最多一次 PRAGMA。
+ */
+function snEnsureCmdCols($db) {
+    static $checked = false;
+    if ($checked) return;
+    $has = false;
+    try {
+        $r = $db->query("PRAGMA table_info(web_sn_commands)");
+        if ($r) {
+            while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+                if (isset($row['name']) && $row['name'] === 'is_force') {
+                    $has = true;
+                    break;
+                }
+            }
+        }
+    } catch (\Throwable $e) {}
+    if (!$has) {
+        try {
+            $db->exec("ALTER TABLE web_sn_commands ADD COLUMN is_force INTEGER DEFAULT 0");
+        } catch (\Throwable $e) {}
+    }
+    $checked = true;
+}
+
+/**
+ * 下发一条命令给 Java。
+ * $isForce = 1 → 管理员强制操作，Java 侧仅本次绕过冷静期（冷静期记录保留）。
+ */
 function snEnqueueCmd($db, $cmd, $sn, $player, $itemType, $reason,
-                      $linkType = '', $linkId = 0) {
+                      $linkType = '', $linkId = 0, $isForce = 0) {
+    snEnsureCmdCols($db);
     $stmt = $db->prepare(
         "INSERT INTO web_sn_commands
-         (cmd, sn, player, item_type, reason, link_type, link_id, status, created_at)
-         VALUES (:cmd, :sn, :player, :type, :reason, :lt, :li, 'pending', :ts)");
+         (cmd, sn, player, item_type, reason, link_type, link_id, is_force, status, created_at)
+         VALUES (:cmd, :sn, :player, :type, :reason, :lt, :li, :f, 'pending', :ts)");
     $stmt->bindValue(':cmd', $cmd, SQLITE3_TEXT);
     $stmt->bindValue(':sn', $sn, SQLITE3_TEXT);
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
@@ -173,9 +204,28 @@ function snEnqueueCmd($db, $cmd, $sn, $player, $itemType, $reason,
     $stmt->bindValue(':reason', $reason, SQLITE3_TEXT);
     $stmt->bindValue(':lt', $linkType, SQLITE3_TEXT);
     $stmt->bindValue(':li', (int)$linkId, SQLITE3_INTEGER);
+    $stmt->bindValue(':f', (int)$isForce, SQLITE3_INTEGER);
     $stmt->bindValue(':ts', snNow(), SQLITE3_INTEGER);
     $stmt->execute();
     return (int)$db->lastInsertRowID();
+}
+
+/**
+ * Java 侧命令执行结论是否算成功（据以决定要不要改 web 状态）。
+ * 失败样例：SN不存在 / 注销失败 / 玩家不在线，待其上线后再补发 /
+ *          补发申领被拒（见玩家提示） / 补发登记成功但发放失败 / 执行异常: ...
+ */
+function snCmdOk($result) {
+    $r = trim((string)$result);
+    if ($r === '') return false;
+    $bad0 = array('SN不存在', '注销失败', '玩家不在线', '补发申领被拒',
+                  '补发登记成功', '执行异常', '未知命令');
+    foreach ($bad0 as $b) {
+        if (mb_strpos($r, $b) === 0) return false;
+    }
+    if (mb_strpos($r, '失败') !== false) return false;
+    if (mb_strpos($r, '拒绝') === 0) return false;
+    return true;
 }
 
 // ============================================================
@@ -392,8 +442,9 @@ function snPullCommands() {
                    WHERE status='sent' AND sent_at < " . ($now - 180));
     } catch (\Throwable $e) {}
 
+    snEnsureCmdCols($db);
     $out = [];
-    $res = $db->query("SELECT id, cmd, sn, player, item_type, reason
+    $res = $db->query("SELECT id, cmd, sn, player, item_type, reason, is_force
                        FROM web_sn_commands WHERE status='pending'
                        ORDER BY id ASC LIMIT 20");
     if ($res) {
@@ -405,6 +456,7 @@ function snPullCommands() {
                 'player'    => (string)$row['player'],
                 'item_type' => (string)$row['item_type'],
                 'reason'    => (string)$row['reason'],
+                'force'     => (int)$row['is_force'],
             ];
             $u = $db->prepare("UPDATE web_sn_commands SET status='sent', sent_at=:t WHERE id=:id");
             $u->bindValue(':t', $now, SQLITE3_INTEGER);
@@ -461,7 +513,8 @@ function snAckCommands() {
         $done++;
 
         // 注销成功 → 记录冷静期（展示用）
-        if ($cmd === 'cancel' && $player !== '') {
+        // ★ Java 侧失败就不改状态，避免"后台显示已注销、游戏里实物还能用"
+        if ($cmd === 'cancel' && $player !== '' && snCmdOk($result)) {
             $c = $db->prepare("INSERT INTO web_sn_cooldown (player, until) VALUES (:p, :u)
                                ON CONFLICT(player) DO UPDATE SET until=excluded.until");
             $c->bindValue(':p', $player, SQLITE3_TEXT);
@@ -475,8 +528,8 @@ function snAckCommands() {
             $s->execute();
         }
 
-        // 补发成功 → 记录旧 SN 已作废
-        if ($cmd === 'reissue') {
+        // 补发成功 → 记录旧 SN 已作废（失败则保持原状态）
+        if ($cmd === 'reissue' && snCmdOk($result)) {
             $s = $db->prepare("UPDATE web_item_sn SET status='reissued', updated_at=:t WHERE sn=:sn");
             $s->bindValue(':t', $now, SQLITE3_INTEGER);
             $s->bindValue(':sn', $sn, SQLITE3_TEXT);
@@ -488,8 +541,11 @@ function snAckCommands() {
             snHandleLostCheck($db, $linkId, $result, $now);
         }
         if ($cmd === 'reissue' && $linkType === 'lost' && $linkId > 0) {
-            $h = $db->prepare("UPDATE web_sn_lost SET status='done', result=:r, handled_at=:t
+            // 成功 → 结单；失败 → 转人工，别假装已补发
+            $lostStatus = snCmdOk($result) ? 'done' : 'manual';
+            $h = $db->prepare("UPDATE web_sn_lost SET status=:s, result=:r, handled_at=:t
                                WHERE id=:id");
+            $h->bindValue(':s', $lostStatus, SQLITE3_TEXT);
             $h->bindValue(':r', $result, SQLITE3_TEXT);
             $h->bindValue(':t', $now, SQLITE3_INTEGER);
             $h->bindValue(':id', $linkId, SQLITE3_INTEGER);
@@ -820,6 +876,11 @@ function snCancel() {
     if ($row['status'] === 'destroyed') error('该SN已销毁解绑，无需注销');
     if ($row['status'] === 'reissued') error('该SN已被新SN替代，无需注销');
 
+    // ★ 位置前置检查：物在容器里 / 在别的玩家手上 → 直接拒绝。
+    //   否则 DB 注销了、箱子里的实物却还能接着用（与补发/报失保持一致）。
+    $chk = snLocBlocking($db, $sn, $player);
+    if ($chk['block']) error($chk['msg']);
+
     $pr = $db->prepare("SELECT COUNT(*) AS c FROM web_sn_commands
                         WHERE sn=:sn AND cmd='cancel' AND status IN ('pending','sent')");
     $pr->bindValue(':sn', $sn, SQLITE3_TEXT);
@@ -954,8 +1015,9 @@ function snAdminCmd() {
     $row = $rr->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('SN不存在');
 
+    // ★ 管理员强制操作 is_force=1：Java 侧仅本次绕过冷静期（冷静期记录保留）
     $id = snEnqueueCmd($db, $cmd, $sn, $row['owner'], $row['item_type'],
-                       $reason !== '' ? $reason : '管理员操作');
+                       $reason !== '' ? $reason : '管理员操作', '', 0, 1);
     success(['id' => $id], '命令已下发，等待游戏服务器执行（10~30 秒）');
 }
 

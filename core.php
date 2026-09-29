@@ -905,6 +905,7 @@ function initTables(SQLite3 $db) {
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_sn_lost_sn ON web_sn_lost(sn, created_at)");
 
         // PHP -> Java 命令队列（注销 / 补发 / 报失核查 / 永久绑定）
+        // is_force=1 → 管理员强制操作，Java 侧仅本次绕过冷静期
         $db->exec("CREATE TABLE IF NOT EXISTS web_sn_commands (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cmd TEXT DEFAULT '',
@@ -912,6 +913,7 @@ function initTables(SQLite3 $db) {
             player TEXT DEFAULT '',
             item_type TEXT DEFAULT '',
             reason TEXT DEFAULT '',
+            is_force INTEGER DEFAULT 0,
             link_type TEXT DEFAULT '',
             link_id INTEGER DEFAULT 0,
             status TEXT DEFAULT 'pending',
