@@ -4,6 +4,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
+import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
@@ -18,6 +20,8 @@ import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRecipeBookClickEvent;
 import org.bukkit.inventory.Inventory;
@@ -115,6 +119,9 @@ public class SnManager implements Listener {
 
     /** 最近一次报错限流，避免刷日志 */
     private final Map<String, Long> errThrottle = new ConcurrentHashMap<>();
+
+    /** 作废实物拦截提示限流（玩家名 -> 上次提示时间） */
+    private final Map<String, Long> deadMsgAt = new ConcurrentHashMap<>();
 
     /** PHP 命令执行结果缓冲（id + \u0001 + result），由 tickSync 回传 */
     private final List<String> ackBuf = new ArrayList<String>();
@@ -228,6 +235,8 @@ public class SnManager implements Listener {
                     + ")");
 
             st.close();
+            // ★ 无SN旧品自动回收 / 作废实物回收：每 60 秒清点在线玩家
+            startAutoSweepTask();
         } catch (SQLException e) {
             plugin.getLogger().severe("[SN] 建表失败: " + e.getMessage());
         }
@@ -478,14 +487,29 @@ public class SnManager implements Listener {
         return applySnEx(p, itemType, what, false);
     }
 
+    /**
+     * 申领（管理员强制版）：仅本次绕过冷静期，冷静期记录原样保留
+     * （防滥用规则不削弱），"同种类仅 1 个"仍然生效。
+     */
+    public synchronized String applySnForce(Player p, String itemType,
+                                            String what) {
+        return applySnEx(p, itemType, what, false, true);
+    }
+
     private synchronized String applySnEx(Player p, String itemType,
                                           String what, boolean quiet) {
+        return applySnEx(p, itemType, what, quiet, false);
+    }
+
+    private synchronized String applySnEx(Player p, String itemType,
+                                          String what, boolean quiet,
+                                          boolean force) {
         if (p == null) return null;
         String name = p.getName();
         long now = System.currentTimeMillis();
 
         long cd = getCooldownUntil(name);
-        if (cd > now) {
+        if (!force && cd > now) {
             if (!quiet) {
                 long mins = (cd - now + 59999) / 60000;
                 p.sendMessage("§c[SN] 注销冷静期未结束，还剩约 §f" + mins
@@ -788,7 +812,7 @@ public class SnManager implements Listener {
      * 玩家拾取 4 类物品时探查：SN 登记的主人与拾取人不符 → 写 SQL 队列
      * 等待自动同步（任务6），并按"非法形式传给其他玩家"永久绑定。
      */
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPickup(EntityPickupItemEvent e) {
         try {
             if (!(e.getEntity() instanceof Player)) return;
@@ -801,6 +825,15 @@ public class SnManager implements Listener {
 
             Map<String, Object> row = getSn(sn);
             if (row == null) return; // 未登记的存量物品，交清点流程处理
+
+            // ★ 已注销/补发作废/已销毁的实物：拒绝拾取，留在原地等自然消失
+            if (isDeadSnStatus(str(row.get("status")))) {
+                e.setCancelled(true);
+                msgDead(p, "§c[SN] 该" + typeName(str(row.get("item_type")))
+                        + "已" + statusCn(str(row.get("status")))
+                        + "，无法拾取");
+                return;
+            }
 
             String owner = str(row.get("owner"));
             boolean mismatch = !owner.equalsIgnoreCase(p.getName());
@@ -1040,6 +1073,146 @@ public class SnManager implements Listener {
         }
     }
 
+    // ==================== 自动回收（任务7补充） ====================
+
+    /**
+     * 状态已"死"的 SN：其实物不允许继续存在/使用。
+     * illegal（永久绑定）不算死——那是给原主继续用的。
+     */
+    private static boolean isDeadSnStatus(String st) {
+        return ST_CANCELLED.equals(st) || ST_REISSUED.equals(st)
+                || ST_DESTROYED.equals(st);
+    }
+
+    /** 作废实物相关提示（限流 3 秒/人） */
+    private void msgDead(Player p, String msg) {
+        long now = System.currentTimeMillis();
+        Long last = deadMsgAt.get(p.getName());
+        if (last != null && now - last < 3000L) return;
+        deadMsgAt.put(p.getName(), now);
+        p.sendMessage(msg);
+    }
+
+    /**
+     * 上线后 5 秒自动清点一次（等登录完成、背包恢复之后再动）。
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onJoin(PlayerJoinEvent e) {
+        final Player p = e.getPlayer();
+        Bukkit.getScheduler().runTaskLater(plugin, new Runnable() {
+            @Override
+            public void run() {
+                autoSweep(p, true);
+            }
+        }, 100L);
+    }
+
+    /**
+     * 定时兜底：每 60 秒清点全体在线玩家。
+     * "箱子里的无SN旧品取进背包"就是在这一轮被回收的（不动容器内容）。
+     */
+    private void startAutoSweepTask() {
+        try {
+            Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+                @Override
+                public void run() {
+                    List<Player> online =
+                            new ArrayList<>(Bukkit.getOnlinePlayers());
+                    for (Player p : online) autoSweep(p, false);
+                }
+            }, 200L, 1200L);
+        } catch (Throwable t) {
+            throttleErr("sweeptimer:" + t.getMessage());
+        }
+    }
+
+    /**
+     * 自动回收单个玩家：
+     * 1) 抠掉状态已死的实物（已注销/补发作废/已销毁——这些 DB 注销了但实物还能用）；
+     * 2) 把背包里无 SN 的 4 类旧品 1:1 换发成带 SN 的（冷静期/名额占用时暂缓，绝不净损失）。
+     * 仅处理已登录玩家：未登录时背包正被登录流程接管。
+     */
+    private void autoSweep(Player p, boolean fromJoin) {
+        if (p == null || !p.isOnline()) return;
+        try {
+            if (!plugin.getLoggedIn().contains(p.getName())) return;
+            int dead = sweepDeadSn(p);
+            int[] r = auditAndResend(p, false);
+            if (dead > 0) {
+                p.sendMessage("§c[SN] 已回收 §f" + dead
+                        + " §c件已注销/作废的物品");
+            }
+            if (r[0] > 0) {
+                p.sendMessage("§a[SN] 旧物品清点：回收无SN物品 §f" + r[0]
+                        + " §a件，换发带SN物品 §f" + r[1] + " §a件"
+                        + (fromJoin ? "（上线清点）" : ""));
+            }
+        } catch (Throwable t) {
+            throttleErr("autosweep:" + t.getMessage());
+        }
+    }
+
+    /**
+     * 把背包里状态已死的实物抠掉。
+     * 覆盖"注销时物在箱子 → 后来被取进背包"的漏网之鱼。
+     *
+     * @return 回收件数
+     */
+    public int sweepDeadSn(Player p) {
+        int n = 0;
+        if (p == null) return 0;
+        try {
+            ItemStack[] contents = p.getInventory().getContents();
+            if (contents == null) return 0;
+            for (int i = 0; i < contents.length; i++) {
+                ItemStack it = contents[i];
+                if (it == null || it.getType() == Material.AIR) continue;
+                String sn = readSn(it);
+                if (sn == null) continue;
+                Map<String, Object> row = getSn(sn);
+                if (row == null) continue;  // 无登记行，交给清点流程补登记
+                String st = str(row.get("status"));
+                if (!isDeadSnStatus(st)) continue;
+                p.getInventory().setItem(i, null);
+                n++;
+                logSn(sn, str(row.get("item_type")), "reclaim", p.getName(),
+                        "回收已作废实物(" + statusCn(st) + ")");
+            }
+        } catch (Throwable t) {
+            throttleErr("sweepdead:" + t.getMessage());
+        }
+        return n;
+    }
+
+    /**
+     * 作废实物使用拦截：已注销/补发作废/已销毁的 SN 物品，
+     * 即使还留在背包里（例如注销时存箱子、后来取出来）也一律不能用。
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onDeadSnUse(PlayerInteractEvent e) {
+        try {
+            Player p = e.getPlayer();
+            if (p == null) return;
+            ItemStack it = e.getItem();
+            if (it == null || it.getType() == Material.AIR) return;
+            String type = detectType(it);
+            if (type == null || !WATCH_TYPES.contains(type)) return;
+            String sn = readSn(it);
+            if (sn == null) return;
+            Map<String, Object> row = getSn(sn);
+            if (row == null) return;
+            String st = str(row.get("status"));
+            if (!isDeadSnStatus(st)) return;
+            e.setCancelled(true);
+            if (removeSnFromInventory(p, sn)) {
+                msgDead(p, "§c[SN] 该" + typeName(type) + "已"
+                        + statusCn(st) + "，已回收");
+            }
+        } catch (Throwable t) {
+            throttleErr("deaduse:" + t.getMessage());
+        }
+    }
+
     // ==================== 退出 ====================
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -1121,9 +1294,10 @@ public class SnManager implements Listener {
         for (Player t : targets) {
             ItemStack[] contents = t.getInventory().getContents();
             if (contents == null) continue;
-            // 先记录要替换的类型（去重，同类型只补发 1 个）
-            Map<String, Integer> need = new LinkedHashMap<>();
-            List<Integer> slots = new ArrayList<>();
+            String owner = t.getName();
+            // 无 SN 旧品按类型归槽位；已有 SN 的记类型（判定"重复品"用）
+            Map<String, List<Integer>> noSn = new LinkedHashMap<>();
+            Set<String> typedInInv = new HashSet<>();
             for (int i = 0; i < contents.length; i++) {
                 ItemStack it = contents[i];
                 if (it == null) continue;
@@ -1132,31 +1306,74 @@ public class SnManager implements Listener {
                 String sn = readSn(it);
                 if (sn != null) {
                     // 已有 SN：确认登记表里有记录，缺则补登记（防丢账）
-                    ensureRegistered(sn, type, t.getName());
+                    ensureRegistered(sn, type, owner);
+                    typedInInv.add(type);
                     continue;
                 }
-                removed++;
-                if (!dry) slots.add(i);
-                need.put(type, need.containsKey(type)
-                        ? need.get(type) + 1 : 1);
-                if (dry) continue;
+                if (!noSn.containsKey(type)) {
+                    noSn.put(type, new ArrayList<Integer>());
+                }
+                noSn.get(type).add(i);
+                if (dry) removed++;   // dry 只统计"待清理"件数
             }
-            if (dry) {
-                // dry 模式只统计
-                continue;
-            }
-            // 清掉无 SN 的旧物品
-            for (int idx : slots) {
-                ItemStack old = t.getInventory().getItem(idx);
-                if (old == null) continue;
-                t.getInventory().setItem(idx, null);
-            }
-            // 按类型重发（同类型只发 1 个，多余的不补，符合"1人同种类1个"）
-            for (Map.Entry<String, Integer> en : need.entrySet()) {
-                if (giveNewSnItem(t, en.getKey())) resent++;
+            if (dry || noSn.isEmpty()) continue;
+
+            long now = System.currentTimeMillis();
+            for (Map.Entry<String, List<Integer>> en : noSn.entrySet()) {
+                String type = en.getKey();
+                List<Integer> slots = en.getValue();
+
+                // ★ 铁律：确认能换发出去之后才删旧的，绝不净损失
+                if (findActive(owner, type) != null) {
+                    if (typedInInv.contains(type)) {
+                        // 背包里已有带 SN 的有效登记 → 这些是重复旧货，回收不补发
+                        clearSlots(t, slots);
+                        removed += slots.size();
+                        logSn("", type, "recycle_dup", owner,
+                                "回收无SN重复品 x" + slots.size());
+                    } else {
+                        // 名额被占用却没见实物：不确定是否误删 → 暂缓，留给人工核查
+                        throttleErr("recycle-hold:" + owner + ":" + type
+                                + " 有无SN" + typeName(type)
+                                + "，但同类登记已存在且背包内无对应实物，暂缓回收");
+                    }
+                    continue;
+                }
+                if (getCooldownUntil(owner) > now) {
+                    // 冷静期：换发必被拒 → 一个都不删，下轮再试（防净损失）
+                    throttleErr("recycle-cd:" + owner + ":" + type
+                            + " 注销冷静期内，暂缓回收无SN" + typeName(type));
+                    continue;
+                }
+                String newSn = applySnQuiet(t, type, typeName(type));
+                if (newSn == null) {
+                    throttleErr("recycle-apply:" + owner + ":" + type
+                            + " 换发登记被拒，暂缓回收无SN" + typeName(type));
+                    continue;
+                }
+                ItemStack fresh = buildSnItem(t, type, newSn);
+                if (fresh == null) {
+                    destroySn(newSn, "无SN旧品换发构建失败回滚");
+                    throttleErr("recycle-build:" + owner + ":" + type
+                            + " 物品构建失败，已回滚登记");
+                    continue;
+                }
+                clearSlots(t, slots);
+                giveTo(t, fresh);
+                removed += slots.size();
+                resent++;
+                logSn(newSn, type, "recycle", owner,
+                        "无SN旧品换发 x" + slots.size());
             }
         }
         return new int[]{removed, resent};
+    }
+
+    /** 清空指定槽位 */
+    private void clearSlots(Player p, List<Integer> slots) {
+        for (int idx : slots) {
+            p.getInventory().setItem(idx, null);
+        }
     }
 
     /** 已有 SN 但登记表缺失 → 补登记（存量物品对账） */
@@ -1191,41 +1408,49 @@ public class SnManager implements Listener {
      */
     public boolean giveNewSnItem(Player p, String itemType) {
         try {
-            if (TYPE_MENU.equals(itemType)) {
-                String sn = applySn(p, TYPE_MENU, "雪球菜单");
-                if (sn == null) return false;
-                ItemStack it = buildMenuItem(p, sn);
-                giveTo(p, it);
-                return true;
-            }
-            if (TYPE_ECHO.equals(itemType)) {
-                String sn = applySn(p, TYPE_ECHO, "回声碎片");
-                if (sn == null) return false;
-                ItemStack it = plugin.landRecordManager.createEchoShard();
-                writeSn(it, sn, TYPE_ECHO);
-                giveTo(p, it);
-                return true;
-            }
-            if (TYPE_WAND.equals(itemType)) {
-                String sn = applySn(p, TYPE_WAND, "区域选择工具");
-                if (sn == null) return false;
-                ItemStack it = buildWand();
-                writeSn(it, sn, TYPE_WAND);
-                giveTo(p, it);
-                return true;
-            }
-            if (TYPE_PVP.equals(itemType)) {
-                String sn = applySn(p, TYPE_PVP, "PVP圈地棒");
-                if (sn == null) return false;
-                ItemStack it = buildPvpTool();
-                writeSn(it, sn, TYPE_PVP);
-                giveTo(p, it);
-                return true;
-            }
+            String sn = applySnForType(p, itemType);
+            if (sn == null) return false;
+            ItemStack it = buildSnItem(p, itemType, sn);
+            if (it == null) return false;
+            giveTo(p, it);
+            return true;
         } catch (Throwable t) {
             throttleErr("give:" + t.getMessage());
         }
         return false;
+    }
+
+    /** 按类型申领（提示文案与各发放入口保持一致），未知类型返回 null */
+    private String applySnForType(Player p, String itemType) {
+        if (TYPE_MENU.equals(itemType)) return applySn(p, TYPE_MENU, "雪球菜单");
+        if (TYPE_ECHO.equals(itemType)) return applySn(p, TYPE_ECHO, "回声碎片");
+        if (TYPE_WAND.equals(itemType)) return applySn(p, TYPE_WAND, "区域选择工具");
+        if (TYPE_PVP.equals(itemType)) return applySn(p, TYPE_PVP, "PVP圈地棒");
+        return null;
+    }
+
+    /**
+     * 按已登记的 SN 构造对应类型的实物（不查库、不重复登记）。
+     * 补发 / 无SN旧品换发共用；未知类型返回 null。
+     */
+    private ItemStack buildSnItem(Player p, String itemType, String sn) {
+        if (TYPE_MENU.equals(itemType)) return buildMenuItem(p, sn);
+        if (TYPE_ECHO.equals(itemType)) {
+            ItemStack it = plugin.landRecordManager.createEchoShard();
+            writeSn(it, sn, TYPE_ECHO);
+            return it;
+        }
+        if (TYPE_WAND.equals(itemType)) {
+            ItemStack it = buildWand();
+            writeSn(it, sn, TYPE_WAND);
+            return it;
+        }
+        if (TYPE_PVP.equals(itemType)) {
+            ItemStack it = buildPvpTool();
+            writeSn(it, sn, TYPE_PVP);
+            return it;
+        }
+        return null;
     }
 
     private void giveTo(Player p, ItemStack it) {
@@ -1509,12 +1734,14 @@ public class SnManager implements Listener {
             String player = str(c.get("player"));
             String itemType = str(c.get("item_type"));
             String reason = str(c.get("reason"));
+            // ★ 管理员强制操作（force=1）：仅本次绕过冷静期
+            boolean force = num(c.get("force")) != 0;
             result = "";
 
             if ("cancel".equalsIgnoreCase(cmd)) {
                 result = doCancel(sn, player, reason);
             } else if ("reissue".equalsIgnoreCase(cmd)) {
-                result = doReissue(sn, player, itemType, reason);
+                result = doReissue(sn, player, itemType, reason, force);
             } else if ("locate".equalsIgnoreCase(cmd)) {
                 Map<String, Object> row = getSn(sn);
                 result = row == null ? "SN不存在" : "位置=" + str(row.get("loc_type"))
@@ -1549,8 +1776,8 @@ public class SnManager implements Listener {
         Map<String, Object> row = getSn(sn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
-        // 找到并销毁实物：在线玩家背包
-        boolean removedItem = removeSnFromWorld(sn, owner);
+        // 找到并销毁实物：在线玩家背包 + 登记在案的容器
+        boolean removedItem = removeSnFromWorld(sn, owner, row);
         int n = setStatus(sn, ST_CANCELLED, "注销:" + reason,
                 System.currentTimeMillis());
         if (n == 0) return "注销失败";
@@ -1560,9 +1787,13 @@ public class SnManager implements Listener {
                 + "，冷静期 1 小时";
     }
 
-    /** 补发：旧 SN 作废 → 生成新 SN 并发放（自动补发 + 签发新SN） */
+    /**
+     * 补发：旧 SN 作废 → 生成新 SN 并发放（自动补发 + 签发新SN）。
+     *
+     * @param force 管理员强制操作：仅本次绕过冷静期（冷静期记录保留）
+     */
     private String doReissue(String oldSn, String player, String itemType,
-                             String reason) {
+                             String reason, boolean force) {
         Map<String, Object> row = getSn(oldSn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
@@ -1573,19 +1804,29 @@ public class SnManager implements Listener {
         Player online = Bukkit.getPlayerExact(owner);
         if (online == null) return "玩家不在线，待其上线后再补发";
 
-        // 旧 SN 作废
+        // 旧 SN 作废 + 顺手回收旧实物（背包 / 登记在案的容器）
         setStatus(oldSn, ST_REISSUED, "补发->新SN:" + reason,
                 System.currentTimeMillis());
         logSn(oldSn, itemType, "reissue_old", owner, reason);
+        removeSnFromWorld(oldSn, owner, row);
 
-        // 绕过"同种类1个"限制：旧的已置 reissued，findActive 不再命中
-        String newSn = applySn(online, itemType, typeName(itemType));
+        // ★ 只登记一次：新 SN 落库 → 据此造物 → 发放。
+        // 旧版此处调 applySn 之后又调 giveNewSnItem（其内部会再 applySn 一次），
+        // 被"同种类仅1个"挡下，永远返回"补发登记成功但发放失败"，物品根本没给出去。
+        String newSn = force
+                ? applySnForce(online, itemType, typeName(itemType))
+                : applySn(online, itemType, typeName(itemType));
         if (newSn == null) return "补发申领被拒（见玩家提示）";
-        if (giveNewSnItem(online, itemType)) {
-            logSn(newSn, itemType, "reissue_new", owner, reason);
-            return "补发成功，新SN=" + newSn;
+
+        ItemStack fresh = buildSnItem(online, itemType, newSn);
+        if (fresh == null) {
+            // 未知类型：回滚刚登记的新 SN，别白占"同种类仅1个"名额
+            destroySn(newSn, "补发物品构建失败回滚");
+            return "补发登记成功但物品构建失败";
         }
-        return "补发登记成功但发放失败";
+        giveTo(online, fresh);
+        logSn(newSn, itemType, "reissue_new", owner, reason);
+        return "补发成功，新SN=" + newSn;
     }
 
     /** 报失核查：返回该 SN 当前位置结论（任务2） */
@@ -1610,24 +1851,100 @@ public class SnManager implements Listener {
         return "可补发:登记位置=" + locType + " 持有=" + locPlayer;
     }
 
-    /** 从在线玩家背包 / 已知容器移除该 SN 的实物 */
+    /** 从在线玩家背包移除该 SN 的实物（不看登记位置） */
     private boolean removeSnFromWorld(String sn, String owner) {
+        return removeSnFromWorld(sn, owner, null);
+    }
+
+    /**
+     * 从在线玩家背包 + 登记在案的容器移除该 SN 的实物。
+     * 容器只处理"区块已加载"的（不强制加载区块）；没抠到也没关系——
+     * 状态已是 cancelled/reissued，死 SN 兜底扫描会在其进背包/被使用时回收。
+     *
+     * @param row 该 SN 的登记行（可为 null，为 null 时不扫容器）
+     */
+    private boolean removeSnFromWorld(String sn, String owner,
+                                      Map<String, Object> row) {
         boolean hit = false;
         if (owner != null && !owner.isEmpty()) {
             Player p = Bukkit.getPlayerExact(owner);
-            if (p != null) {
-                ItemStack[] contents = p.getInventory().getContents();
-                for (int i = 0; i < contents.length; i++) {
-                    ItemStack it = contents[i];
-                    if (it == null) continue;
-                    if (sn.equals(readSn(it))) {
-                        p.getInventory().setItem(i, null);
-                        hit = true;
-                    }
+            if (p != null) hit |= removeSnFromInventory(p, sn);
+        }
+        if (!hit && row != null) {
+            String locType = str(row.get("loc_type"));
+            if ("container".equals(locType)) {
+                hit |= removeFromContainer(sn, row);
+            } else if ("player".equals(locType)) {
+                // 登记在别人手上（异常转移）→ 也去那个人背包里抠掉，
+                // 否则"已注销的实物还在别人手里接着用"
+                String holder = str(row.get("loc_player"));
+                if (!holder.isEmpty() && !holder.equals(owner)) {
+                    Player hp = Bukkit.getPlayerExact(holder);
+                    if (hp != null) hit |= removeSnFromInventory(hp, sn);
                 }
             }
         }
         return hit;
+    }
+
+    /** 从某玩家背包（含副手）里抠掉指定 SN 的实物 */
+    private boolean removeSnFromInventory(Player p, String sn) {
+        boolean hit = false;
+        ItemStack[] contents = p.getInventory().getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack it = contents[i];
+            if (it == null || it.getType() == Material.AIR) continue;
+            if (sn.equals(readSn(it))) {
+                p.getInventory().setItem(i, null);
+                hit = true;
+            }
+        }
+        // 主/副手兜底（部分版本 getContents() 不含副手槽）
+        ItemStack main = p.getInventory().getItemInMainHand();
+        if (main != null && main.getType() != Material.AIR
+                && sn.equals(readSn(main))) {
+            p.getInventory().setItemInMainHand(null);
+            hit = true;
+        }
+        ItemStack off = p.getInventory().getItemInOffHand();
+        if (off != null && off.getType() != Material.AIR
+                && sn.equals(readSn(off))) {
+            p.getInventory().setItemInOffHand(null);
+            hit = true;
+        }
+        return hit;
+    }
+
+    /** 按登记坐标到容器里抠掉指定 SN 的实物（注销时物在箱子的场景） */
+    private boolean removeFromContainer(String sn, Map<String, Object> row) {
+        try {
+            String wn = str(row.get("loc_world"));
+            if (wn.isEmpty()) return false;
+            World w = Bukkit.getWorld(wn);
+            if (w == null) return false;
+            int x = (int) num(row.get("loc_x"));
+            int y = (int) num(row.get("loc_y"));
+            int z = (int) num(row.get("loc_z"));
+            // 区块没加载就不动（避免强制加载），交由死 SN 兜底扫描处理
+            if (!w.isChunkLoaded(x >> 4, z >> 4)) return false;
+            Block b = w.getBlockAt(x, y, z);
+            BlockState bs = b.getState();
+            if (!(bs instanceof InventoryHolder)) return false;
+            Inventory inv = ((InventoryHolder) bs).getInventory();
+            ItemStack[] c = inv.getContents();
+            boolean hit = false;
+            for (int i = 0; i < c.length; i++) {
+                if (c[i] == null || c[i].getType() == Material.AIR) continue;
+                if (sn.equals(readSn(c[i]))) {
+                    inv.setItem(i, null);
+                    hit = true;
+                }
+            }
+            return hit;
+        } catch (Throwable t2) {
+            throttleErr("rmcontainer:" + t2.getMessage());
+            return false;
+        }
     }
 
     private void markCommandDone(long id, String result) {
