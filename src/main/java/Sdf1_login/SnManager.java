@@ -166,8 +166,21 @@ public class SnManager implements Listener {
                     + "lost_state TEXT DEFAULT '',"
                     + "bind_reason TEXT DEFAULT '',"
                     + "bind_time INTEGER DEFAULT 0,"
-                    + "remark TEXT DEFAULT ''"
+                    + "remark TEXT DEFAULT '',"
+                    // 脱离自身管控的起始时刻（毫秒；0 = 当前仍在本人管辖内）
+                    + "detached_at INTEGER DEFAULT 0,"
+                    // 登记容器是否落在"本人名下领地"里（= 自己的箱子）
+                    + "own_chest INTEGER DEFAULT 0"
                     + ")");
+            // 老库补列：注销 / 报失 / 补办三条件判定的数据基础
+            try {
+                st.execute("ALTER TABLE item_sn ADD COLUMN detached_at INTEGER DEFAULT 0");
+            } catch (Exception ignored) {
+            }
+            try {
+                st.execute("ALTER TABLE item_sn ADD COLUMN own_chest INTEGER DEFAULT 0");
+            } catch (Exception ignored) {
+            }
 
             st.execute("CREATE TABLE IF NOT EXISTS sn_log ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -665,6 +678,42 @@ public class SnManager implements Listener {
                           Location loc, String containerType) {
         try {
             Connection db = plugin.getDb().getConnection();
+            long now = System.currentTimeMillis();
+
+            // ★ 顺带维护"是否仍在本人管辖"三条件的两个数据位：
+            //   own_chest（容器是否在本人名下领地）+ detached_at（脱离管控起始时刻）。
+            //   回到本人管辖 → detached_at 清零；再次脱离 → 从 0 重新起算（防反复搬运凑时长）。
+            String owner = "";
+            PreparedStatement qs = db.prepareStatement(
+                    "SELECT owner FROM item_sn WHERE sn = ?");
+            qs.setString(1, sn);
+            ResultSet qrs = qs.executeQuery();
+            if (qrs.next()) owner = str(qrs.getString("owner"));
+            qrs.close();
+            qs.close();
+
+            boolean inBody = "player".equals(locType) && owner != null
+                    && !owner.isEmpty() && locPlayer != null
+                    && AreaProtection.samePlayer(owner, locPlayer);
+            boolean ownChest = false;
+            if ("container".equals(locType) && loc != null
+                    && loc.getWorld() != null) {
+                try {
+                    Sdf1_login.AreaProtection.AreaConfig ac =
+                            plugin.areaProtection != null
+                                    ? plugin.areaProtection.getArea(
+                                    loc.getWorld().getName(),
+                                    loc.getBlockX(), loc.getBlockY(),
+                                    loc.getBlockZ())
+                                    : null;
+                    ownChest = ac != null && ac.owner != null
+                            && !ac.owner.isEmpty() && owner != null
+                            && AreaProtection.samePlayer(owner, ac.owner);
+                } catch (Throwable ignored) {
+                }
+            }
+            boolean custody = inBody || ownChest;
+
             StringBuilder sb = new StringBuilder(
                     "UPDATE item_sn SET loc_type = ?, loc_player = ?,");
             List<Object> args = new ArrayList<>();
@@ -677,9 +726,16 @@ public class SnManager implements Listener {
                 args.add(loc.getBlockY());
                 args.add(loc.getBlockZ());
             }
-            sb.append(" container_type = ?, last_seen = ? WHERE sn = ?");
+            sb.append(" container_type = ?, own_chest = ?,")
+                    .append(" detached_at = CASE WHEN ? = 1 THEN 0")
+                    .append(" WHEN detached_at > 0 THEN detached_at")
+                    .append(" ELSE ? END,")
+                    .append(" last_seen = ? WHERE sn = ?");
             args.add(containerType == null ? "" : containerType);
-            args.add(System.currentTimeMillis());
+            args.add(ownChest ? 1 : 0);
+            args.add(custody ? 1 : 0);
+            args.add(now);
+            args.add(now);
             args.add(sn);
 
             PreparedStatement ps = db.prepareStatement(sb.toString());
@@ -848,7 +904,9 @@ public class SnManager implements Listener {
             String owner = str(row.get("owner"));
             boolean mismatch = !owner.equalsIgnoreCase(p.getName());
 
-            updateLoc(sn, type, p.getName(), p.getLocation(), "");
+            // ★ loc_type 必须记 "player"（旧版误传了 detectType 的物品类型，
+            //   导致登记位置恒不是 'player'，"是否在本人身上"这一条永远判不出来）
+            updateLoc(sn, "player", p.getName(), p.getLocation(), "");
             if (mismatch) {
                 String detail = "登记主=" + owner + " 实际拾取=" + p.getName();
                 enqueue("pickup_mismatch", sn, p.getName(), detail);
@@ -1659,7 +1717,8 @@ public class SnManager implements Listener {
                             + " loc_type, loc_player, loc_world, loc_x, loc_y,"
                             + " loc_z, container_type, in_land, land_name,"
                             + " last_seen, cancel_time, lost_count, lost_state,"
-                            + " remark, bind_reason, bind_time"
+                            + " remark, bind_reason, bind_time,"
+                            + " detached_at, own_chest"
                             + " FROM item_sn ORDER BY issue_time DESC LIMIT 3000");
             ResultSet rs = ps.executeQuery();
             Map<String, Object> row;
@@ -1769,7 +1828,7 @@ public class SnManager implements Listener {
             result = "";
 
             if ("cancel".equalsIgnoreCase(cmd)) {
-                result = doCancel(sn, player, reason);
+                result = doCancel(sn, player, reason, force);
             } else if ("reissue".equalsIgnoreCase(cmd)) {
                 result = doReissue(sn, player, itemType, reason, force);
             } else if ("locate".equalsIgnoreCase(cmd)) {
@@ -1783,7 +1842,7 @@ public class SnManager implements Listener {
                 bindIllegal(sn, reason.isEmpty() ? "管理员标记" : reason);
                 result = "已永久绑定";
             } else if ("report_check".equalsIgnoreCase(cmd)) {
-                result = doReportCheck(sn, player);
+                result = doReportCheck(sn, player, force);
             } else {
                 result = "未知命令: " + cmd;
             }
@@ -1801,11 +1860,95 @@ public class SnManager implements Listener {
         return result == null ? "" : result;
     }
 
+    /** 脱离自身管控硬性阈值：12 小时（毫秒） */
+    private static final long CUSTODY_DETACH_MS = 12L * 60 * 60 * 1000;
+
+    /** 三条件未达标时给玩家的统一回执：不说具体是哪一条没过（最小化信息透露） */
+    private static final String CUSTODY_DENY = "拒绝:未达到办理条件";
+
+    /**
+     * 注销 / 报失 / 补办统一门槛的三条件判定：
+     *   ① 物品不在本人身上；
+     *   ② 物品不在本人名下领地内的箱子里（只认领地归属）；
+     *   ③ 物品脱离自身管控已超过 12 小时（回到管辖内计时清零，再次脱离重新起算）。
+     *
+     * <p>三条同时满足才算达标。返回 null 表示达标；否则返回逐条判定明细。
+     * 明细只允许出现在管理员可见的位置（web_sn_commands / 管理端详情），
+     * 对玩家一律回 {@link #CUSTODY_DENY}——web_sn_lost.result 会展示给玩家，
+     * 所以任何会写进报失单的回执都不能带明细。</p>
+     *
+     * @param row 该 SN 的登记行（含 detached_at / own_chest）
+     */
+    private String snCustodyDetail(String sn, Map<String, Object> row) {
+        String owner = str(row.get("owner"));
+        String locType = str(row.get("loc_type"));
+        String locPlayer = str(row.get("loc_player"));
+
+        // ① 在本人身上：在线时实盘扫背包（登记位置可能过期），离线才信登记位置
+        boolean inBody;
+        Player self = (owner == null || owner.isEmpty())
+                ? null : Bukkit.getPlayerExact(owner);
+        if (self != null) {
+            inBody = snInInventory(self, sn);
+        } else {
+            inBody = "player".equals(locType) && !locPlayer.isEmpty()
+                    && AreaProtection.samePlayer(owner, locPlayer);
+        }
+
+        // ② 在本人领地内的箱子里
+        boolean inOwnChest = "container".equals(locType)
+                && num(row.get("own_chest")) > 0;
+        if (!inOwnChest && "container".equals(locType)) {
+            // own_chest 还没被 updateLoc 写过（存量数据 / 领地易主）→ 按坐标现算
+            try {
+                Sdf1_login.AreaProtection.AreaConfig ac =
+                        plugin.areaProtection != null
+                                ? plugin.areaProtection.getArea(
+                                str(row.get("loc_world")),
+                                (int) num(row.get("loc_x")),
+                                (int) num(row.get("loc_y")),
+                                (int) num(row.get("loc_z")))
+                                : null;
+                inOwnChest = ac != null && ac.owner != null
+                        && !ac.owner.isEmpty()
+                        && AreaProtection.samePlayer(owner, ac.owner);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // ③ 脱离自身管控时长：detached_at 是最近一次"脱离"的时刻（0=仍在管辖内）
+        long detachedAt = num(row.get("detached_at"));
+        if (detachedAt <= 0) detachedAt = num(row.get("last_seen"));
+        long heldMs = detachedAt > 0
+                ? System.currentTimeMillis() - detachedAt : 0L;
+        boolean detachedOk = !inBody && !inOwnChest
+                && detachedAt > 0 && heldMs > CUSTODY_DETACH_MS;
+
+        if (!inBody && !inOwnChest && detachedOk) return null;
+
+        String held = (inBody || inOwnChest)
+                ? "0（仍在自身管控内）"
+                : (heldMs / 3600000L) + " 小时 "
+                + ((heldMs % 3600000L) / 60000L) + " 分";
+        return "在本人身上=" + (inBody ? "是" : "否")
+                + " / 在本人领地箱子=" + (inOwnChest ? "是" : "否")
+                + " / 脱离自身管控=" + held + "（阈值 12 小时）";
+    }
+
     /** 注销：销毁对应 SN 物品 + 启动 1 小时冷静期（任务3） */
-    private String doCancel(String sn, String player, String reason) {
+    private String doCancel(String sn, String player, String reason,
+                            boolean force) {
         Map<String, Object> row = getSn(sn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
+        // ★ 统一门槛：不在本人身上 ∩ 不在本人领地箱子 ∩ 脱离管控 > 12 小时。
+        //   管理员「强制注销」(force) 按定义豁免三项；「代办注销」照常校验。
+        //   未达标对玩家只给通用回执，明细留在管理端。
+        if (!force && snCustodyDetail(sn, row) != null) {
+            logSn(sn, str(row.get("item_type")), "gate_deny", player,
+                    "注销申请未达到办理条件");
+            return CUSTODY_DENY;
+        }
         // 找到并销毁实物：在线玩家背包 + 登记在案的容器
         boolean removedItem = removeSnFromWorld(sn, owner, row);
         int n = setStatus(sn, ST_CANCELLED, "注销:" + reason,
@@ -1830,6 +1973,14 @@ public class SnManager implements Listener {
         if (player != null && !player.isEmpty()) owner = player;
         if (itemType == null || itemType.isEmpty())
             itemType = str(row.get("item_type"));
+
+        // ★ 统一门槛（与注销 / 报失同一套）；管理员强制补发豁免三项，
+        //   自动补发、玩家申请补发均按三项校验，未达标只给通用回执。
+        if (!force && snCustodyDetail(oldSn, row) != null) {
+            logSn(oldSn, itemType, "gate_deny", player,
+                    "补办申请未达到办理条件");
+            return CUSTODY_DENY;
+        }
 
         Player online = Bukkit.getPlayerExact(owner);
         if (online == null) return "玩家不在线，待其上线后再补发";
@@ -1859,26 +2010,45 @@ public class SnManager implements Listener {
         return "补发成功，新SN=" + newSn;
     }
 
-    /** 报失核查：返回该 SN 当前位置结论（任务2） */
-    private String doReportCheck(String sn, String player) {
+    /**
+     * 报失核查：按统一三条件门槛给结论。
+     * force=1（管理员手动核查，回执只进 web_sn_commands，管理端可见）时
+     * 连逐条判定一起回；force=0（玩家报失，回执会写进 web_sn_lost.result
+     * 并展示给玩家）时只回通用回执，不透露是哪一条没达标。
+     */
+    private String doReportCheck(String sn, String player, boolean force) {
         Map<String, Object> row = getSn(sn);
         if (row == null) return "SN不存在";
-        String locType = str(row.get("loc_type"));
-        String locPlayer = str(row.get("loc_player"));
-        String container = str(row.get("container_type"));
-        if ("container".equals(locType)) {
-            return "拒绝:物在容器 " + container + " @ "
-                    + str(row.get("loc_world")) + " "
-                    + num(row.get("loc_x")) + "," + num(row.get("loc_y"))
-                    + "," + num(row.get("loc_z"))
-                    + (num(row.get("in_land")) > 0
-                    ? "（领地 " + str(row.get("land_name")) + "）" : "");
+        String detail = snCustodyDetail(sn, row);
+        if (detail != null) {
+            if (force) return CUSTODY_DENY + "（" + detail + "）";
+            logSn(sn, str(row.get("item_type")), "gate_deny", player,
+                    "报失核查未达到办理条件");
+            return CUSTODY_DENY;
         }
-        if ("player".equals(locType) && !locPlayer.isEmpty()
-                && !locPlayer.equalsIgnoreCase(player)) {
-            return "拒绝:物在其他玩家 " + locPlayer + " 手上";
+        return "可补发:登记位置=" + str(row.get("loc_type"))
+                + " 持有=" + str(row.get("loc_player"));
+    }
+
+    /** 该 SN 的实物是否在指定玩家背包里（含主/副手兜底） */
+    private boolean snInInventory(Player p, String sn) {
+        try {
+            ItemStack[] contents = p.getInventory().getContents();
+            for (int i = 0; i < contents.length; i++) {
+                ItemStack it = contents[i];
+                if (it == null || it.getType() == Material.AIR) continue;
+                if (sn.equals(readSn(it))) return true;
+            }
+            ItemStack main = p.getInventory().getItemInMainHand();
+            if (main != null && main.getType() != Material.AIR
+                    && sn.equals(readSn(main))) return true;
+            ItemStack off = p.getInventory().getItemInOffHand();
+            if (off != null && off.getType() != Material.AIR
+                    && sn.equals(readSn(off))) return true;
+        } catch (Throwable t) {
+            throttleErr("snininv:" + t.getMessage());
         }
-        return "可补发:登记位置=" + locType + " 持有=" + locPlayer;
+        return false;
     }
 
     /** 从在线玩家背包移除该 SN 的实物（不看登记位置） */
