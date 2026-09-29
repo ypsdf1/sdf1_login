@@ -41,6 +41,10 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
+// ★ 紧急加固（2026-09-29）：第二层 IP 白名单 —— 白名单未配置时，
+//   任何外部 IP 连 login/status 也一律 403（127.0.0.1 本机永放行）
+secGateApi();
+
 $action = getParam('action', 'status');
 
 try {
@@ -89,10 +93,33 @@ switch ($action) {
 
 // ===== 各函数定义 =====
 function adminDoLogin() {
+    // ★ 紧急加固：同 IP 暴力破解限速（5 次失败锁定 10 分钟），失败写审计日志
+    $ip = function_exists('secClientIp') ? secClientIp() : '';
+    if (function_exists('secThrottleLocked')) {
+        $lock = secThrottleLocked('login_fail', $ip, 5, 600);
+        if ($lock > 0) {
+            if (function_exists('secLog')) secLog('login_throttled', 'lock=' . $lock . 's');
+            exit(json_encode(['success' => false, 'message' => '尝试次数过多，请 ' . $lock . ' 秒后再试', 'code' => 429], JSON_UNESCAPED_UNICODE));
+        }
+    }
     $password = getParam('password');
     if (!$password) exit(json_encode(['success' => false, 'message' => 'Missing password'], JSON_UNESCAPED_UNICODE));
     if (adminLogin($password)) {
-        exit(json_encode(['success' => true, 'data' => ['login_time' => time()], 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
+        if (function_exists('secThrottleReset')) secThrottleReset('login_fail', $ip);
+        if (function_exists('secLog')) secLog('login_pass', 'password_ok');
+        // ★ 第一层：已启用二次验证时，告知前端跳转 6 位动态码验证页
+        $need2fa = function_exists('secSessionNeed2FA') && secSessionNeed2FA();
+        // ★ 第三层：登录成功后把后台入口令牌交给前端，用于拼 admin.php?token=...
+        //   —— 令牌只在密码正确之后才出现，登录页 HTML 里不含它。
+        $tok = function_exists('secToken') ? secToken() : '';
+        exit(json_encode(['success' => true, 'data' => ['login_time' => time(), 'need_2fa' => $need2fa, 'token' => $tok], 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
+    }
+    if (function_exists('secThrottleFail')) {
+        $left = secThrottleFail('login_fail', $ip, 5, 600);
+        if (function_exists('secLog')) secLog('login_fail', 'bad_password' . ($left > 0 ? ' LOCKED_' . $left . 's' : ''));
+        if ($left > 0) {
+            exit(json_encode(['success' => false, 'message' => '尝试次数过多，请 ' . $left . ' 秒后再试', 'code' => 429], JSON_UNESCAPED_UNICODE));
+        }
     }
     exit(json_encode(['success' => false, 'message' => '密码错误', 'code' => 401], JSON_UNESCAPED_UNICODE));
 }
@@ -103,9 +130,16 @@ function adminDoLogout() {
 }
 
 function adminStatus() {
+    $in = function_exists('isAdminLoggedIn') ? isAdminLoggedIn() : false;
+    // ★ 第一层：前端据 need_2fa 决定跳验证页还是直进后台
+    $need2fa = $in && function_exists('secSessionNeed2FA') && secSessionNeed2FA();
     exit(json_encode([
         'success' => true,
-        'data' => ['logged_in' => isAdminLoggedIn(), 'login_time' => $_SESSION['admin_login_time'] ?? 0],
+        'data' => [
+            'logged_in' => $in,
+            'login_time' => $_SESSION['admin_login_time'] ?? 0,
+            'need_2fa' => $need2fa
+        ],
         'message' => 'ok'
     ], JSON_UNESCAPED_UNICODE));
 }

@@ -1,3 +1,8 @@
+<?php
+// ★ 紧急加固（2026-09-29）：第二层 IP 白名单 —— 登录页本身也只对白名单 IP 开放
+require_once __DIR__ . '/security.php';
+secGatePage();
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -70,8 +75,14 @@
             });
             const data = await res.json();
             if (data.success) {
-                // 设置session cookie后跳转
-                window.location.href = 'admin.php';
+                // ★ 第三层：登录接口在密码正确后才下发入口令牌，用来拼 admin.php?token=
+                const tk = (data.data && data.data.token) ? ('?token=' + encodeURIComponent(data.data.token)) : '';
+                // ★ 第一层：启用二次验证时先进 6 位动态码验证页，通过后再进后台
+                if (data.data && data.data.need_2fa) {
+                    window.location.href = 'admin_2fa.php';
+                } else {
+                    window.location.href = 'admin.php' + tk;
+                }
             } else {
                 document.getElementById('errorMsg').textContent = data.message;
                 document.getElementById('errorMsg').style.display = 'block';

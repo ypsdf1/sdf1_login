@@ -1,6 +1,8 @@
 <?php
 // ===== Web通信系统 - 核心引擎 =====
 require_once __DIR__ . '/config.php';
+// ★ 紧急安全加固（2026-09-29）：TOTP 二次验证 + IP 白名单 + 会话纪元（见 security.php）
+require_once __DIR__ . '/security.php';
 
 // ★ 确保任何前置输出（包括 BOM、空格、Warning）都被丢弃
 if (ob_get_level() > 0) {
@@ -1226,6 +1228,16 @@ function requireAdminSession() {
     if (!isset($_SESSION['admin_auth']) || !$_SESSION['admin_auth']) {
         error('未登录管理后台', 401);
     }
+    // ★ 紧急加固：安全纪元之前的会话一律作废（部署时同步踢掉入侵者的活会话）
+    if (function_exists('secSessionEpochOk') && !secSessionEpochOk()) {
+        $_SESSION = array();
+        @session_destroy();
+        error('登录已失效，请重新登录', 401);
+    }
+    // ★ 紧急加固：已启用二次验证但本会话未通过 6 位动态码 → 拒绝一切管理操作
+    if (function_exists('secSessionNeed2FA') && secSessionNeed2FA()) {
+        error('需要二次验证：请先完成6位动态码验证', 403);
+    }
 }
 
 // ===== 管理员认证 =====
@@ -1239,6 +1251,8 @@ function adminLogin($password) {
     }
     $_SESSION['admin_auth'] = true;
     $_SESSION['admin_login_time'] = time();
+    // ★ 紧急加固：每次重新登录都必须重新过二次验证
+    unset($_SESSION['admin_2fa_ok'], $_SESSION['admin_2fa_ip']);
     return true;
 }
 
@@ -1246,7 +1260,14 @@ function isAdminLoggedIn() {
     if (session_status() === PHP_SESSION_NONE) {
         session_start();
     }
-    return isset($_SESSION['admin_auth']) && $_SESSION['admin_auth'];
+    if (!isset($_SESSION['admin_auth']) || !$_SESSION['admin_auth']) {
+        return false;
+    }
+    // ★ 紧急加固：安全纪元之前的旧会话视为未登录（只读展示场景，不销毁）
+    if (function_exists('secSessionEpochOk') && !secSessionEpochOk()) {
+        return false;
+    }
+    return true;
 }
 
 // ===== 收银员认证 =====

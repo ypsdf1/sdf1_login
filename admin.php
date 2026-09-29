@@ -1,4 +1,17 @@
-<?php header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0'); header('Pragma: no-cache'); ?>
+<?php
+// ★ 紧急加固（2026-09-29）：三层加固的第三层 + 第二层
+//   第三层动态令牌：必须 admin.php?token=<SEC_ACCESS_TOKEN> 才放行，
+//       不带/带错令牌一律返回 nginx 原生 404 页（与文件不存在时完全一致）。
+//       注意必须放在 secGatePage() 之前 —— 否则白名单 403 会暴露这个文件确实存在。
+//   第二层 IP 白名单 —— 页面本身也只对白名单 IP 开放。
+require_once __DIR__ . '/security.php';
+secTokenGate();
+secGatePage();
+// 令牌在 URL 上，禁止页面内任何外链通过 Referer 把它带走
+header('Referrer-Policy: no-referrer');
+header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -171,6 +184,7 @@
         <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
         <div class="si" data-p="recharge_orders" onclick="go('recharge_orders')">💳 充值对账</div>
         <div class="si" data-p="shop_config" onclick="go('shop_config')">🛒 充值商店配置</div>
+        <div class="si" onclick="location.href='admin_2fa_setup.php'">🛡️ 安全配置（2FA / IP白名单 / 入口令牌）</div>
     </div>
     <div class="content" id="C"></div>
 </div>
@@ -261,7 +275,11 @@ function go(p) {
             }
         });
         if (!d.data || !d.data.logged_in) {
-            location.href='admin_login.php'; 
+            location.href='admin_login.php';
+            return;
+        }
+        if (d.data.need_2fa) {
+            location.href='admin_2fa.php';
             return;
         }
         go('dashboard');
@@ -281,6 +299,10 @@ async function loadDashboard(el) {
             credentials: 'same-origin',
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         }).then(r => r.text().then(t => { try { return JSON.parse(t.replace(/^\uFEFF/,'').trim()); } catch(e) { console.error('Status JSON error:', t.substring(0,200)); throw e; } }));
+        if (s.success && s.data && s.data.need_2fa) {
+            location.href='admin_2fa.php';
+            return;
+        }
         if (!s.success || !s.data || !s.data.logged_in) {
             el.innerHTML = '<div class="card" style="text-align:center;padding:40px"><h2>请先登录</h2><p style="color:var(--dim);margin-top:8px">尚未登录管理后台</p><p style="color:var(--dim);margin-top:4px">如已登录，请清除浏览器缓存后重试</p><p style="color:var(--red);margin-top:4px">调试: ' + JSON.stringify(s) + '</p></div>';
             return;
