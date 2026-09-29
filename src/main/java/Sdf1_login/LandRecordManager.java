@@ -110,7 +110,25 @@ public class LandRecordManager implements Listener {
 
     /** 直接发放一枚回声碎片给玩家（GUI 菜单调用） */
     public void giveEchoShard(Player p) {
+        // ★ SN 管控：1人同种类仅限1个
+        if (plugin.getSnManager() != null
+                && plugin.getSnManager().isBlocked(
+                p, SnManager.TYPE_ECHO)) {
+            p.sendMessage("§c§l[回声碎片] §f你已有回声碎片的有效登记，"
+                    + "旧SN未注销前不能重新申领");
+            return;
+        }
         ItemStack shard = createEchoShard();
+        if (plugin.getSnManager() != null) {
+            String sn = plugin.getSnManager().applySn(
+                    p, SnManager.TYPE_ECHO, "回声碎片");
+            if (sn == null) {
+                p.sendMessage("§c§l[回声碎片] §f申领被SN系统拒绝");
+                return;
+            }
+            plugin.getSnManager().writeSn(
+                    shard, sn, SnManager.TYPE_ECHO);
+        }
         HashMap<Integer, ItemStack> left =
                 p.getInventory().addItem(shard);
         if (!left.isEmpty()) {

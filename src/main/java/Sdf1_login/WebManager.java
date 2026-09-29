@@ -2012,6 +2012,15 @@ public class WebManager {
                     catch (Exception e) { landSyncFailCount++; }
                 }
 
+                // ★ SN 防刷同步（任务6）：手持上报 + 事件队列 + 命令拉取
+                try {
+                    SnManager snm = plugin.getSnManager();
+                    if (snm != null) snm.tickSync();
+                } catch (Throwable t) {
+                    plugin.getLogger().warning(
+                            "[SN] 同步异常: " + t.getMessage());
+                }
+
                 // 全量批处理同步（仅在nextSyncTime到达时执行）
                 if (now >= nextSyncTime) {
                     try { doActiveSyncBatch(); }

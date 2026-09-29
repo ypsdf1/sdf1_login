@@ -6628,12 +6628,31 @@ public class AreaProtection implements Listener {
                     return true;
                 }
             }
+            // ★ SN 管控：1人同种类仅限1个
+            if (plugin.getSnManager() != null
+                    && plugin.getSnManager().isBlocked(
+                    p, SnManager.TYPE_WAND)) {
+                p.sendMessage("§c§l[防护] §f你已有区域选择工具的有效登记，"
+                        + "旧SN未注销前不能重新申领");
+                wandCooldownMap.put(p.getUniqueId(), now);
+                return true;
+            }
             ItemStack tool = new ItemStack(WAND);
             ItemMeta meta = tool.getItemMeta();
             meta.setDisplayName("§a§l区域选择工具");
             meta.setLore(Arrays.asList(
                     "§7左键: 位置1", "§7右键: 位置2"));
             tool.setItemMeta(meta);
+            if (plugin.getSnManager() != null) {
+                String sn = plugin.getSnManager().applySn(
+                        p, SnManager.TYPE_WAND, "区域选择工具");
+                if (sn == null) {
+                    wandCooldownMap.put(p.getUniqueId(), now);
+                    return true;
+                }
+                plugin.getSnManager().writeSn(
+                        tool, sn, SnManager.TYPE_WAND);
+            }
             p.getInventory().addItem(tool);
             p.sendMessage("§a§l[防护] §f已获取选择工具");
             wandCooldownMap.put(p.getUniqueId(), now);

@@ -1765,6 +1765,25 @@ public class AreaGUIManager implements Listener {
                 return;
             }
         }
+        // ★ SN 管控：1人同种类仅限1个
+        if (plugin.getSnManager() != null
+                && plugin.getSnManager().isBlocked(
+                p, SnManager.TYPE_WAND)) {
+            p.sendMessage("§e你已有区域选择工具的有效登记，"
+                    + "旧SN未注销前不能重新申领");
+            areaProtect.wandCooldownMap.put(p.getUniqueId(), now);
+            return;
+        }
+        if (plugin.getSnManager() != null) {
+            String sn = plugin.getSnManager().applySn(
+                    p, SnManager.TYPE_WAND, "区域选择工具");
+            if (sn == null) {
+                areaProtect.wandCooldownMap.put(p.getUniqueId(), now);
+                return;
+            }
+            plugin.getSnManager().writeSn(
+                    wand, sn, SnManager.TYPE_WAND);
+        }
         p.getInventory().addItem(wand);
         // ★ GUI模式不发送聊天消息
         areaProtect.wandCooldownMap.put(p.getUniqueId(), now);

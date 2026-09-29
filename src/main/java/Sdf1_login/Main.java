@@ -155,6 +155,7 @@ public class Main extends JavaPlugin
     // 在 Main.java 字段声明区域（bondManager 附近）添加：
 // 在 bondManager 字段附近添加：
     private BondPrinter bondPrinter;
+    private SnManager snManager;
     private OrderManager orderManager;
 
     public OrderManager getOrderManager() {
@@ -591,6 +592,17 @@ public class Main extends JavaPlugin
             getCommand("cypay").setTabCompleter(cypayCommand);
         }
         bondPrinter = new BondPrinter(this);
+        // ===== SN 防刷系统：建表 + 注册事件 =====
+        try {
+            snManager = new SnManager(this);
+            snManager.init();
+            getServer().getPluginManager()
+                    .registerEvents(snManager, this);
+        } catch (Throwable t) {
+            snManager = null;
+            getLogger().severe("[SN] 初始化失败: " + t.getMessage());
+            t.printStackTrace();
+        }
         //   cdkManager.loadCDKsFromDir();
 //14 ====商店====
         // ★ 构造器内已加载完毕，此处重复
@@ -755,6 +767,10 @@ public class Main extends JavaPlugin
 
     public BondPrinter getBondPrinter() {
         return bondPrinter;
+    }
+
+    public SnManager getSnManager() {
+        return snManager;
     }
 
     public ShopManager getShopManager() {
@@ -2716,6 +2732,34 @@ public class Main extends JavaPlugin
         }
     }
 
+    /**
+     * SN 打标：为即将发放的物品登记 SN 并写入物品。
+     *
+     * @return true = 可以发放；false = 被 SN 管控拒绝（调用方放弃发放）
+     */
+    private boolean snTag(Player p, ItemStack it,
+                          String type, String what) {
+        if (snManager == null) return true;
+        String sn = snManager.applySnQuiet(p, type, what);
+        if (sn == null) {
+            // 冷静期 / 同种类已有有效登记 → 拒绝发放
+            if (snManager.isBlocked(p, type)) return false;
+            // 数据库异常等：放行但不打标，避免卡死正常发放
+            getLogger().warning("[SN] 打标失败: " + what
+                    + " -> " + p.getName());
+            return true;
+        }
+        snManager.writeSn(it, sn, type);
+        return true;
+    }
+
+    /** 轻点：清理某玩家背包内无 SN 的插件自定义物品并补发带 SN 版本 */
+    private void snSweep(CommandSender sender, Player target) {
+        int[] r = snManager.auditAndResend(target, false);
+        sender.sendMessage("§a[SN] " + target.getName()
+                + "：清理 §f" + r[0] + " §a件，补发 §f" + r[1] + " §a件");
+    }
+
     private static final String MENU_SNOWBALL_TAG =
             "sdf1_menu";
 
@@ -2742,6 +2786,12 @@ public class Main extends JavaPlugin
         }
         if (hasMenu) {
             // getLogger().info("[菜单] " + name + " 已有菜单物品, 跳过发放");
+            return;
+        }
+
+        // ★ SN 管控：1人同种类仅限1个，旧SN未注销/冷静期未过不再发放
+        if (snManager != null
+                && snManager.isBlocked(p, SnManager.TYPE_MENU)) {
             return;
         }
 
@@ -2779,6 +2829,10 @@ public class Main extends JavaPlugin
                 cm.setLore(cmLore);
                 customIcon.setItemMeta(cm);
             }
+            if (!snTag(p, customIcon,
+                    SnManager.TYPE_MENU, "自定义菜单图标")) {
+                return;
+            }
             int slot = p.getInventory()
                     .firstEmpty();
             if (slot >= 0) {
@@ -2803,6 +2857,9 @@ public class Main extends JavaPlugin
             lore.add("\u00a78" + MENU_SNOWBALL_TAG);
             im.setLore(lore);
             snow.setItemMeta(im);
+        }
+        if (!snTag(p, snow, SnManager.TYPE_MENU, "雪球菜单")) {
+            return;
         }
         int slot = p.getInventory()
                 .firstEmpty();
@@ -2831,6 +2888,12 @@ public class Main extends JavaPlugin
                 return;
             }
         }
+
+        // ★ SN 管控：1人同种类仅限1个，旧SN未注销/冷静期未过不再发放
+        if (snManager != null
+                && snManager.isBlocked(p, SnManager.TYPE_MENU)) {
+            return;
+        }
         ItemStack snow = new ItemStack(
                 Material.SNOWBALL);
         ItemMeta im = snow.getItemMeta();
@@ -2843,6 +2906,9 @@ public class Main extends JavaPlugin
             lore.add("§8" + MENU_SNOWBALL_TAG);
             im.setLore(lore);
             snow.setItemMeta(im);
+        }
+        if (!snTag(p, snow, SnManager.TYPE_MENU, "雪球菜单")) {
+            return;
         }
         int slot = p.getInventory()
                 .firstEmpty();
@@ -5982,6 +6048,46 @@ public class Main extends JavaPlugin
                 bondPrinter.printAll(sender);
                 return true;
             }
+            // ===== /printer item [玩家名] → 导出 SN 记录 =====
+            if (args.length >= 1
+                    && "item".equalsIgnoreCase(args[0])) {
+                if (snManager == null) {
+                    sender.sendMessage("§cSN系统未初始化");
+                    return true;
+                }
+                String snTarget = args.length >= 2
+                        ? args[1] : null;
+                sender.sendMessage("§e正在导出SN记录...");
+                snManager.printSnRecords(sender, snTarget);
+                return true;
+            }
+            // ===== /printer sweep [玩家名] → 一次性轻点补发 =====
+            if (args.length >= 1
+                    && "sweep".equalsIgnoreCase(args[0])) {
+                if (snManager == null) {
+                    sender.sendMessage("§cSN系统未初始化");
+                    return true;
+                }
+                if (args.length >= 2) {
+                    Player tp = Bukkit.getPlayer(args[1]);
+                    if (tp == null) {
+                        sender.sendMessage("§c玩家不在线: " + args[1]);
+                        return true;
+                    }
+                    snSweep(sender, tp);
+                    return true;
+                }
+                sender.sendMessage("§e正在轻点全体在线玩家...");
+                int removed = 0, resent = 0;
+                for (Player tp : Bukkit.getOnlinePlayers()) {
+                    int[] r = snManager.auditAndResend(tp, false);
+                    removed += r[0];
+                    resent += r[1];
+                }
+                sender.sendMessage("§a[SN] 轻点完成：清理 §f" + removed
+                        + " §a件，补发 §f" + resent + " §a件");
+                return true;
+            }
             if (args.length == 1) {
                 // 打印指定玩家
                 String target = args[0];
@@ -5992,7 +6098,8 @@ public class Main extends JavaPlugin
                 return true;
             }
             sender.sendMessage(
-                    "§7用法: /printer [玩家名]");
+                    "§7用法: /printer [玩家名] | /printer item [玩家名]"
+                            + " | /printer sweep [玩家名]");
             return true;
         }
         // ===== /chat 独立命令 =====

@@ -485,10 +485,27 @@ public class PVPManager implements Listener {
                 break;
             }
         }
-        if (!has) {
-            p.getInventory()
-                    .addItem(createTool());
+        if (has) return;
+        // ★ SN 管控：1人同种类仅限1个
+        if (plugin.getSnManager() != null
+                && plugin.getSnManager().isBlocked(
+                p, SnManager.TYPE_PVP)) {
+            p.sendMessage("§c[PVP] 你已有PVP圈地棒的有效登记，"
+                    + "旧SN未注销前不能重新申领");
+            return;
         }
+        ItemStack tool = createTool();
+        if (plugin.getSnManager() != null) {
+            String sn = plugin.getSnManager().applySn(
+                    p, SnManager.TYPE_PVP, "PVP圈地棒");
+            if (sn == null) {
+                p.sendMessage("§c[PVP] 申领被SN系统拒绝");
+                return;
+            }
+            plugin.getSnManager().writeSn(
+                    tool, sn, SnManager.TYPE_PVP);
+        }
+        p.getInventory().addItem(tool);
     }
 
     // ===== 边框粒子 =====
