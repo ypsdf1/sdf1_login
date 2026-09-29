@@ -114,8 +114,13 @@ public class LandRecordManager implements Listener {
         if (plugin.getSnManager() != null
                 && plugin.getSnManager().isBlocked(
                 p, SnManager.TYPE_ECHO)) {
-            p.sendMessage("§c§l[回声碎片] §f你已有回声碎片的有效登记，"
-                    + "旧SN未注销前不能重新申领");
+            long cdMin = plugin.getSnManager().cooldownMinutesLeft(p.getName());
+            if (cdMin > 0) {
+                p.sendMessage("§c§l[回声碎片] §f注销冷静期未结束，还剩约 §e" + cdMin + " §f分钟，期间无法申领新设备");
+            } else {
+                p.sendMessage("§c§l[回声碎片] §f你已有回声碎片的有效登记，"
+                        + "旧SN未注销前不能重新申领");
+            }
             return;
         }
         ItemStack shard = createEchoShard();

@@ -1605,13 +1605,7 @@ public class WebManager {
             // ★ Timer D已独立运行，不再需要重启
             if (timersBCPaused) {
                 timersBCPaused = false;
-                long randB = (long)(Math.random() * 10) * 2;
-                long randC = (long)(Math.random() * 10) * 2;
-                long randE = (long)(Math.random() * 10) * 2;
-                scheduleTimerB(40L + randB);   // 2秒后重启B
-                scheduleTimerC(120L + randC);  // 6秒后重启C
-                scheduleTimerE(240L + randE);  // 12秒后重启E
-                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C/E已恢复(随机偏移B=" + (randB/20) + "s C=" + (randC/20) + "s E=" + (randE/20) + "s)");
+                plugin.getLogger().info("[合并C] ★ 玩家上线，Timer B/C/E 已恢复");
             }
 
             // 玩家在线：全量批处理
@@ -1932,10 +1926,12 @@ public class WebManager {
                     return;
                 }
 
-                // ★ 全员下线暂停：不调度下一轮
+                // ★ 全员下线暂停：跳过本轮工作但保持链存活
+                // ★ 关键：恢复逻辑在 doActiveSyncBatch 里，只由 Timer C 调用，
+                // ★ 如果在这里直接 return 停死，就再也没人能唤醒它（生产事故根因）
                 if (timersBCPaused) {
-                    plugin.getLogger().info("[合并B] ★ 全员下线，Timer B已暂停");
-                    return; // 不调度下一轮，定时器自然停止
+                    scheduleTimerB(calcStaggeredDelay(TIMER_B, 0, 10));
+                    return;
                 }
 
                 // ★ PHP锁库退避检查
@@ -1994,10 +1990,16 @@ public class WebManager {
                     return;
                 }
 
-                // ★ 全员下线暂停：不调度下一轮
+                // ★ 全员下线暂停：Timer C 兼任看门狗，不能停死
                 if (timersBCPaused) {
-                    plugin.getLogger().info("[合并C] ★ 全员下线，Timer C已暂停");
-                    return; // 不调度下一轮，定时器自然停止
+                    if (!Bukkit.getOnlinePlayers().isEmpty()) {
+                        timersBCPaused = false;
+                        plugin.getLogger().info("[合并C] ★ 检测到玩家上线，Timer B/C/E 恢复运行");
+                        // 三条链本身一直存活（下方都改为保活调度），这里无需重新 schedule B/E，继续本轮正常流程
+                    } else {
+                        scheduleTimerC(calcStaggeredDelay(TIMER_C, 10, 20));
+                        return;
+                    }
                 }
 
                 // ★ PHP锁库退避检查
@@ -2095,37 +2097,10 @@ public class WebManager {
                     return;
                 }
 
-                // ★ 全员下线暂停：不调度下一轮
+                // ★ 全员下线暂停：跳过本轮工作但保持链存活（原实现会停死，且每轮打印 ASCII 噪音）
                 if (timersBCPaused) {
-                    plugin.getLogger().info("[续费轮询E] ★ 全员下线，Timer E已暂停");
-                    log.error("\n" +
-                            " __          __                             _                                                                    \n" +
-                            " \\ \\        / /                            | |                                                                   \n" +
-                            "  \\ \\  /\\  / /__  ___ ___  _ __ ___   ___  | |_ ___                                                              \n" +
-                            "   \\ \\/  \\/ / _ \\/ __/ _ \\| '_ ` _ \\ / _ \\ | __/ _ \\                                                             \n" +
-                            "    \\  /\\  /  __/ (_| (_) | | | | | |  __/ | || (_) |                                                            \n" +
-                            "     \\/  \\/ \\___|\\___\\___/|_| |_| |_|\\___|  \\__\\___/                _                                            \n" +
-                            "                                             | |                   (_)                                           \n" +
-                            "   ___ __ _  ___    _   _ _   _  __ _ _ __   | |_ __ _ _ __   __  ___  __ _ _ __    ___  ___ _ ____   _____ _ __ \n" +
-                            "  / __/ _` |/ _ \\  | | | | | | |/ _` | '_ \\  | __/ _` | '_ \\  \\ \\/ / |/ _` | '_ \\  / __|/ _ \\ '__\\ \\ / / _ \\ '__|\n" +
-                            " | (_| (_| | (_) | | |_| | |_| | (_| | | | | | || (_| | | | |  >  <| | (_| | | | | \\__ \\  __/ |   \\ V /  __/ |   \n" +
-                            "  \\___\\__,_|\\___/   \\__, |\\__,_|\\__,_|_| |_|  \\__\\__,_|_| |_| /_/\\_\\_|\\__,_|_| |_| |___/\\___|_|    \\_/ \\___|_|   \n" +
-                            "  _                  __/ |  ___                   _     _     _ _  __                                            \n" +
-                            " (_)     _          |___/  |__ \\                 | |   (_)   | (_)/ _|                                           \n" +
-                            "  _ _ __(_)  _ __ ___   ___   ) | _   _ _ __  ___| |__  _  __| |_| |_ _   _   ___ _ __                           \n" +
-                            " | | '_ \\   | '_ ` _ \\ / __| / / | | | | '_ \\/ __| '_ \\| |/ _` | |  _| | | | / __| '_ \\                          \n" +
-                            " | | |_) |  | | | | | | (__ / /_ | |_| | |_) \\__ \\ | | | | (_| | | | | |_| || (__| | | |                         \n" +
-                            " |_| .__(_) |_| |_| |_|\\___|____(_)__, | .__/|___/_| |_|_|\\__,_|_|_|  \\__,_(_)___|_| |_|                         \n" +
-                            "   | |                             __/ | |                                                                       \n" +
-                            "   |_|            _       ____   _|___/|_|______ ___                                                             \n" +
-                            "                 | |  _  |___ \\ / _ \\  / /____  / _ \\                                                            \n" +
-                            "  _ __   ___  ___| |_(_)   __) | | | |/ /_   / / (_) |                                                           \n" +
-                            " | '_ \\ / _ \\/ __| __|    |__ <| | | | '_ \\ / / \\__, |                                                           \n" +
-                            " | |_) | (_) \\__ \\ |_ _   ___) | |_| | (_) / /    / /                                                            \n" +
-                            " | .__/ \\___/|___/\\__(_) |____/ \\___/ \\___/_/    /_/                                                             \n" +
-                            " | |                                                                                                             \n" +
-                            " |_|                                                                                                             ");
-                    return; // 不调度下一轮，定时器自然停止
+                    scheduleTimerE(calcStaggeredDelay(TIMER_E, 20, 30));
+                    return;
                 }
 
                 // ★ PHP锁库退避检查

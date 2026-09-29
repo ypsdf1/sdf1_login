@@ -1769,8 +1769,13 @@ public class AreaGUIManager implements Listener {
         if (plugin.getSnManager() != null
                 && plugin.getSnManager().isBlocked(
                 p, SnManager.TYPE_WAND)) {
-            p.sendMessage("§e你已有区域选择工具的有效登记，"
-                    + "旧SN未注销前不能重新申领");
+            long cdMin = plugin.getSnManager().cooldownMinutesLeft(p.getName());
+            if (cdMin > 0) {
+                p.sendMessage("§e注销冷静期未结束，还剩约 §f" + cdMin + " §e分钟，期间无法申领区域选择工具");
+            } else {
+                p.sendMessage("§e你已有区域选择工具的有效登记，"
+                        + "旧SN未注销前不能重新申领");
+            }
             areaProtect.wandCooldownMap.put(p.getUniqueId(), now);
             return;
         }

@@ -490,8 +490,13 @@ public class PVPManager implements Listener {
         if (plugin.getSnManager() != null
                 && plugin.getSnManager().isBlocked(
                 p, SnManager.TYPE_PVP)) {
-            p.sendMessage("§c[PVP] 你已有PVP圈地棒的有效登记，"
-                    + "旧SN未注销前不能重新申领");
+            long cdMin = plugin.getSnManager().cooldownMinutesLeft(p.getName());
+            if (cdMin > 0) {
+                p.sendMessage("§c[PVP] 注销冷静期未结束，还剩约 " + cdMin + " 分钟，期间无法申领新设备");
+            } else {
+                p.sendMessage("§c[PVP] 你已有PVP圈地棒的有效登记，"
+                        + "旧SN未注销前不能重新申领");
+            }
             return;
         }
         ItemStack tool = createTool();

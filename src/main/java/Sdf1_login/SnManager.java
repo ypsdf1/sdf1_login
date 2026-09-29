@@ -437,6 +437,13 @@ public class SnManager implements Listener {
         }
     }
 
+    /** 注销冷静期剩余分钟数，0 = 不在冷静期 */
+    public long cooldownMinutesLeft(String player) {
+        long cd = getCooldownUntil(player);
+        long now = System.currentTimeMillis();
+        return cd > now ? (cd - now + 59999) / 60000 : 0L;
+    }
+
     /** 启动 1 小时冷静期 */
     public void startCooldown(String player) {
         try {
@@ -697,7 +704,8 @@ public class SnManager implements Listener {
                             + " bind_reason = CASE WHEN ? = 'illegal'"
                             + " THEN ? ELSE bind_reason END,"
                             + " bind_time = CASE WHEN ? = 'illegal'"
-                            + " THEN ? ELSE bind_time END"
+                            + " THEN ? ELSE bind_time END,"
+                            + " cancel_time = CASE WHEN ? = 'cancelled' THEN ? ELSE cancel_time END"
                             + " WHERE sn = ?");
             ps.setString(1, status);
             ps.setString(2, remark);
@@ -705,7 +713,9 @@ public class SnManager implements Listener {
             ps.setString(4, remark);
             ps.setString(5, status);
             ps.setLong(6, time);
-            ps.setString(7, sn);
+            ps.setString(7, status);
+            ps.setLong(8, time);
+            ps.setString(9, sn);
             int n = ps.executeUpdate();
             ps.close();
             return n;
