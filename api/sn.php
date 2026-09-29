@@ -188,7 +188,10 @@ function snEnsureCmdCols($db) {
 
 /**
  * 下发一条命令给 Java。
- * $isForce = 1 → 管理员强制操作，Java 侧仅本次绕过冷静期（冷静期记录保留）。
+ * $isForce = 1 → 管理员强制操作：
+ *   cancel  → 豁免三条件门槛，且不启动 1 小时冷静期（回执侧也不写 web_sn_cooldown）；
+ *   reissue → 豁免三条件门槛，申领时本次绕过冷静期校验（已有冷静期记录保留）。
+ * $isForce = 0（代办 / 玩家申请）→ 照常：三条件门槛 + 1 小时冷静期。
  */
 function snEnqueueCmd($db, $cmd, $sn, $player, $itemType, $reason,
                       $linkType = '', $linkId = 0, $isForce = 0) {
@@ -480,6 +483,7 @@ function snPullCommands() {
 function snAckCommands() {
     snRequireSecret();
     $db = getDB();
+    snEnsureCmdCols($db);
     $rows = snBodyArray();
     $now = snNow();
     $done = 0;
@@ -496,8 +500,10 @@ function snAckCommands() {
         $itemType = '';
         $linkType = '';
         $linkId = 0;
+        $isForce = 0;
         $alreadyDone = false;
-        $res = $db->prepare("SELECT cmd, sn, player, item_type, link_type, link_id, status
+        $res = $db->prepare("SELECT cmd, sn, player, item_type, link_type, link_id, status,
+                                    is_force
                               FROM web_sn_commands WHERE id = :id");
         $res->bindValue(':id', $id, SQLITE3_INTEGER);
         $rr = $res->execute();
@@ -508,6 +514,7 @@ function snAckCommands() {
             $itemType = (string)$row['item_type'];
             $linkType = (string)$row['link_type'];
             $linkId = (int)$row['link_id'];
+            $isForce = (int)$row['is_force'];
             $alreadyDone = ((string)$row['status'] === 'done');
         }
 
@@ -527,14 +534,19 @@ function snAckCommands() {
         //   只废这一条，不能连坐把整批回执打断（早先一条 SQL 报错就让
         //   后面所有命令永远停在 sent，玩家端十分钟等不到回调）。
         try {
-            // 注销成功 → 记录冷静期（展示用）
+            // 注销成功 → 更新状态 + 记录冷静期（展示用）
             // ★ Java 侧失败就不改状态，避免"后台显示已注销、游戏里实物还能用"
+            // ★ 2026-09-29 冷静期分流：is_force=1（管理员强制注销）只改状态、
+            //   不写 web_sn_cooldown —— 强制注销按定义跳过 1 小时冷静期；
+            //   代办注销 / 玩家注销（is_force=0）照常记录，三条件门槛也不变。
             if ($cmd === 'cancel' && $player !== '' && snCmdOk($result)) {
-                $c = $db->prepare("INSERT INTO web_sn_cooldown (player, until) VALUES (:p, :u)
-                                   ON CONFLICT(player) DO UPDATE SET until=excluded.until");
-                $c->bindValue(':p', $player, SQLITE3_TEXT);
-                $c->bindValue(':u', $now + 3600, SQLITE3_INTEGER);
-                $c->execute();
+                if (!$isForce) {
+                    $c = $db->prepare("INSERT INTO web_sn_cooldown (player, until) VALUES (:p, :u)
+                                       ON CONFLICT(player) DO UPDATE SET until=excluded.until");
+                    $c->bindValue(':p', $player, SQLITE3_TEXT);
+                    $c->bindValue(':u', $now + 3600, SQLITE3_INTEGER);
+                    $c->execute();
+                }
                 $s = $db->prepare("UPDATE web_item_sn SET status='cancelled', cancel_time=:t,
                                    updated_at=:t2 WHERE sn=:sn");
                 $s->bindValue(':t', $now, SQLITE3_INTEGER);

@@ -4208,7 +4208,7 @@ async function renderSnDetail(el, sn) {
         '<button class="btn btn-yellow" onclick="snAdmCmd(\'report_check\')">🚩 报失核查</button>' +
         '</div>' +
         '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。' +
-        '<br><b>强制注销 / 强制补发</b>：豁免上面的三条件门槛，按定义直接执行；' +
+        '<br><b>强制注销</b>：豁免三条件门槛，直接执行且<b>不进入冷静期</b>；<b>强制补发</b>：豁免三条件门槛，按定义直接执行；' +
         '<b>代办注销</b>：按三条件校验，未达标会被拒绝（对玩家只提示"未达到办理条件"）。</p>';
 
     html += '<h3 style="margin:18px 0 8px;font-size:14px">📨 命令记录</h3>';
@@ -4290,8 +4290,8 @@ async function snAdmCmd(cmd, force) {
         locate: '立即查询该SN在游戏世界中的位置？',
         reissue: '强制补发 ' + sn + '？旧SN作废并签发新SN，玩家需在线。',
         cancel: force
-            ? '强制注销 ' + sn + '？豁免三条件门槛，将销毁对应实物并进入1小时冷静期。'
-            : '代办注销 ' + sn + '？按三条件门槛校验（不在本人身上 / 不在本人领地箱子 / 脱离自身管控超12小时），未达标会被拒绝。',
+            ? '强制注销 ' + sn + '？豁免三条件门槛，将销毁对应实物并直接注销，不进入1小时冷静期。'
+            : '代办注销 ' + sn + '？按三条件门槛校验（不在本人身上 / 不在本人领地箱子 / 脱离自身管控超12小时），未达标会被拒绝；成功后进入1小时冷静期。',
         bind: '把 ' + sn + ' 永久绑定为非法物品？该SN不可恢复。',
         report_check: '立即核查 ' + sn + ' 的当前位置并给出报失结论？'
     };
