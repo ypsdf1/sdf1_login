@@ -493,7 +493,8 @@ function snAckCommands() {
         $itemType = '';
         $linkType = '';
         $linkId = 0;
-        $res = $db->prepare("SELECT cmd, sn, player, item_type, link_type, link_id
+        $alreadyDone = false;
+        $res = $db->prepare("SELECT cmd, sn, player, item_type, link_type, link_id, status
                               FROM web_sn_commands WHERE id = :id");
         $res->bindValue(':id', $id, SQLITE3_INTEGER);
         $rr = $res->execute();
@@ -504,7 +505,12 @@ function snAckCommands() {
             $itemType = (string)$row['item_type'];
             $linkType = (string)$row['link_type'];
             $linkId = (int)$row['link_id'];
+            $alreadyDone = ((string)$row['status'] === 'done');
         }
+
+        // ★ 幂等：Java 侧只有确认收到才从本地回执缓冲移除，网络抖动会原样重发。
+        //   已处理过的直接跳过，否则报失核查通过会再入队一次补发、注销会重置冷静期。
+        if ($alreadyDone) continue;
 
         $u = $db->prepare("UPDATE web_sn_commands SET status='done', result=:r, done_at=:t
                            WHERE id=:id");

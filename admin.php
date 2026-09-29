@@ -4258,9 +4258,44 @@ async function snAdmCmd(cmd) {
         if (!r.success) { toast(r.message || '下发失败', 'err'); return; }
         toast(r.message || '命令已下发', 'ok');
         setTimeout(() => renderSnAdmin(document.getElementById('C')), 1200);
+        // ★ 游戏服回执是异步的（原先要等下一轮 Timer C，10~2 分钟不等）。
+        //   原实现只在 1.2 秒后刷新一次，那时 status 还是 pending、result 为空，
+        //   看起来就像"没动作 / 结果没返回"。这里持续轮询该命令回执直到出结果。
+        const cmdId = (r.data && r.data.id) || 0;
+        if (cmdId) snAdmPollCmd(cmdId, sn, 0);
     } catch (e) {
         toast('下发失败: ' + e.message, 'err');
     }
+}
+
+/**
+ * 轮询 SN 命令回执（3 秒一次，最长 150 秒）。
+ * 游戏服执行完会把 web_sn_commands.status 置为 done 并写入 result；
+ * 3 分钟未回执则被后端标记为 timeout。
+ */
+function snAdmPollCmd(cmdId, sn, tries) {
+    const MAX_TRIES = 50;   // 50 * 3s = 150 秒
+    setTimeout(async () => {
+        if (snAdm.tab !== 'detail' || snAdm.sn !== sn) return;  // 用户已离开该详情页
+        let c = null;
+        try {
+            const r = await snAdmApi('admin_detail', { sn: sn });
+            const list = (r.success && r.data && r.data.commands) || [];
+            c = list.find(x => Number(x.id) === Number(cmdId)) || null;
+        } catch (e) { /* 网络抖动，下一轮再试 */ }
+        if (c && (c.status === 'done' || c.status === 'timeout')) {
+            if (c.status === 'timeout') toast('游戏服 3 分钟内未回执，命令已超时', 'err');
+            else toast('游戏服已执行：' + (c.result || '（无结果）'), 'ok');
+            renderSnAdmin(document.getElementById('C'));
+            return;
+        }
+        if (tries < MAX_TRIES) {
+            snAdmPollCmd(cmdId, sn, tries + 1);
+        } else {
+            toast('游戏服仍未回执，可稍后刷新查看', 'err');
+            renderSnAdmin(document.getElementById('C'));
+        }
+    }, 3000);
 }
 
 async function renderSnLost(el) {
