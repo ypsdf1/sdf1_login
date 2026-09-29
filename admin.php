@@ -4162,14 +4162,32 @@ async function renderSnDetail(el, sn) {
         snAdmRow('报失次数', it.lost_count) +
         '</table>';
 
+    // 注销 / 报失 / 补办统一门槛：三条件逐条判定（管理端专有，玩家端不可见）
+    const cu = it.custody || null;
+    if (cu) {
+        html += '<div style="margin-top:14px;padding:10px 12px;border:1px solid var(--border);' +
+            'border-radius:8px;background:rgba(255,255,255,.02)">' +
+            '<div style="font-size:13px;font-weight:600;margin-bottom:6px">🚪 办理门槛（三条件，同时满足才放行）</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+            snAdmRow('① 不在本人身上', cu.in_body ? '❌ 在本人身上' : '✅ 不在身上') +
+            snAdmRow('② 不在本人领地箱子', cu.in_own_chest ? '❌ 在本人领地箱子内' : '✅ 不在') +
+            snAdmRow('③ 脱离自身管控 &gt; 12 小时',
+                (cu.detached_ok ? '✅ 达标' : '❌ 未达标') + '（已脱离 ' + escAdmHtml(String(cu.detached_text || '-')) + '，阈值 12 小时）') +
+            snAdmRow('总判定', cu.pass ? '✅ 达标，可办理' : '❌ 未达标（对玩家只回通用提示）') +
+            '</table></div>';
+    }
+
     html += '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
         '<button class="btn" onclick="snAdmCmd(\'locate\')">📍 立即定位</button>' +
         '<button class="btn btn-yellow" onclick="snAdmCmd(\'reissue\')">♻️ 强制补发</button>' +
-        '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\')">🗑️ 注销</button>' +
+        '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\', 1)">🗑️ 强制注销</button>' +
+        '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\', 0)">📋 代办注销</button>' +
         '<button class="btn btn-red" onclick="snAdmCmd(\'bind\')">🔒 永久绑定</button>' +
         '<button class="btn btn-yellow" onclick="snAdmCmd(\'report_check\')">🚩 报失核查</button>' +
         '</div>' +
-        '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。</p>';
+        '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。' +
+        '<br><b>强制注销 / 强制补发</b>：豁免上面的三条件门槛，按定义直接执行；' +
+        '<b>代办注销</b>：按三条件校验，未达标会被拒绝（对玩家只提示"未达到办理条件"）。</p>';
 
     html += '<h3 style="margin:18px 0 8px;font-size:14px">📨 命令记录</h3>';
     const cmds = d.commands || [];
@@ -4241,20 +4259,26 @@ function snAdmLogTable(rows, heads, mapper) {
     return h + '</table></div>';
 }
 
-async function snAdmCmd(cmd) {
+async function snAdmCmd(cmd, force) {
+    if (force === undefined || force === null) force = 1;
     const sn = snAdm.sn;
     if (!sn) return;
-    const names = { locate: '定位', reissue: '强制补发', cancel: '注销', bind: '永久绑定', report_check: '报失核查' };
+    const names = { locate: '定位', reissue: '强制补发', cancel: (force ? '强制注销' : '代办注销'), bind: '永久绑定', report_check: '报失核查' };
     const warns = {
         locate: '立即查询该SN在游戏世界中的位置？',
         reissue: '强制补发 ' + sn + '？旧SN作废并签发新SN，玩家需在线。',
-        cancel: '注销 ' + sn + '？将销毁对应实物并进入1小时冷静期。',
+        cancel: force
+            ? '强制注销 ' + sn + '？豁免三条件门槛，将销毁对应实物并进入1小时冷静期。'
+            : '代办注销 ' + sn + '？按三条件门槛校验（不在本人身上 / 不在本人领地箱子 / 脱离自身管控超12小时），未达标会被拒绝。',
         bind: '把 ' + sn + ' 永久绑定为非法物品？该SN不可恢复。',
         report_check: '立即核查 ' + sn + ' 的当前位置并给出报失结论？'
     };
     if (!await glassConfirm(warns[cmd] || ('确认对 ' + sn + ' 执行「' + names[cmd] + '」？'))) return;
     try {
-        const r = await snAdmApi('admin_cmd', { cmd: cmd, sn: sn, reason: '管理员手动执行' });
+        const r = await snAdmApi('admin_cmd', {
+            cmd: cmd, sn: sn, force: force,
+            reason: force ? '管理员强制执行' : '管理员代办（按三条件门槛校验）'
+        });
         if (!r.success) { toast(r.message || '下发失败', 'err'); return; }
         toast(r.message || '命令已下发', 'ok');
         setTimeout(() => renderSnAdmin(document.getElementById('C')), 1200);

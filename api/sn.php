@@ -334,9 +334,9 @@ function snPushCatalog() {
              (sn, item_type, owner, status, issue_time, loc_type, loc_player,
               loc_world, loc_x, loc_y, loc_z, container_type, in_land, land_name,
               last_seen, cancel_time, lost_count, lost_state, remark,
-              bind_reason, bind_time, updated_at)
+              bind_reason, bind_time, detached_at, own_chest, updated_at)
              VALUES (:sn,:type,:owner,:status,:issue,:lt,:lp,:lw,:lx,:ly,:lz,
-                     :ct,:il,:ln,:ls,:ctm,:lc,:lss,:remark,:br,:bt,:ua)
+                     :ct,:il,:ln,:ls,:ctm,:lc,:lss,:remark,:br,:bt,:da,:oc,:ua)
              ON CONFLICT(sn) DO UPDATE SET
                item_type=excluded.item_type, owner=excluded.owner,
                status=excluded.status, issue_time=excluded.issue_time,
@@ -350,6 +350,7 @@ function snPushCatalog() {
                lost_count=excluded.lost_count,
                lost_state=excluded.lost_state, remark=excluded.remark,
                bind_reason=excluded.bind_reason, bind_time=excluded.bind_time,
+               detached_at=excluded.detached_at, own_chest=excluded.own_chest,
                updated_at=excluded.updated_at");
         $stmt->bindValue(':sn', $sn, SQLITE3_TEXT);
         $stmt->bindValue(':type', snStr(isset($it['item_type']) ? $it['item_type'] : ''), SQLITE3_TEXT);
@@ -372,6 +373,8 @@ function snPushCatalog() {
         $stmt->bindValue(':remark', snStr(isset($it['remark']) ? $it['remark'] : ''), SQLITE3_TEXT);
         $stmt->bindValue(':br', snStr(isset($it['bind_reason']) ? $it['bind_reason'] : ''), SQLITE3_TEXT);
         $stmt->bindValue(':bt', snTs(isset($it['bind_time']) ? $it['bind_time'] : 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':da', snTs(isset($it['detached_at']) ? $it['detached_at'] : 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':oc', snInt(isset($it['own_chest']) ? $it['own_chest'] : 0), SQLITE3_INTEGER);
         $stmt->bindValue(':ua', $now, SQLITE3_INTEGER);
         $stmt->execute();
         $n++;
@@ -520,57 +523,124 @@ function snAckCommands() {
         $u->execute();
         $done++;
 
-        // 注销成功 → 记录冷静期（展示用）
-        // ★ Java 侧失败就不改状态，避免"后台显示已注销、游戏里实物还能用"
-        if ($cmd === 'cancel' && $player !== '' && snCmdOk($result)) {
-            $c = $db->prepare("INSERT INTO web_sn_cooldown (player, until) VALUES (:p, :u)
-                               ON CONFLICT(player) DO UPDATE SET until=excluded.until");
-            $c->bindValue(':p', $player, SQLITE3_TEXT);
-            $c->bindValue(':u', $now + 3600, SQLITE3_INTEGER);
-            $c->execute();
-            $s = $db->prepare("UPDATE web_item_sn SET status='cancelled', cancel_time=:t,
-                               updated_at=:t2 WHERE sn=:sn");
-            $s->bindValue(':t', $now, SQLITE3_INTEGER);
-            $s->bindValue(':t2', $now, SQLITE3_INTEGER);
-            $s->bindValue(':sn', $sn, SQLITE3_TEXT);
-            $s->execute();
-        }
+        // ★ 业务处理与"标 done"分开包 try：任何一条回执的业务逻辑抛异常，
+        //   只废这一条，不能连坐把整批回执打断（早先一条 SQL 报错就让
+        //   后面所有命令永远停在 sent，玩家端十分钟等不到回调）。
+        try {
+            // 注销成功 → 记录冷静期（展示用）
+            // ★ Java 侧失败就不改状态，避免"后台显示已注销、游戏里实物还能用"
+            if ($cmd === 'cancel' && $player !== '' && snCmdOk($result)) {
+                $c = $db->prepare("INSERT INTO web_sn_cooldown (player, until) VALUES (:p, :u)
+                                   ON CONFLICT(player) DO UPDATE SET until=excluded.until");
+                $c->bindValue(':p', $player, SQLITE3_TEXT);
+                $c->bindValue(':u', $now + 3600, SQLITE3_INTEGER);
+                $c->execute();
+                $s = $db->prepare("UPDATE web_item_sn SET status='cancelled', cancel_time=:t,
+                                   updated_at=:t2 WHERE sn=:sn");
+                $s->bindValue(':t', $now, SQLITE3_INTEGER);
+                $s->bindValue(':t2', $now, SQLITE3_INTEGER);
+                $s->bindValue(':sn', $sn, SQLITE3_TEXT);
+                $s->execute();
+            }
 
-        // 补发成功 → 记录旧 SN 已作废（失败则保持原状态）
-        if ($cmd === 'reissue' && snCmdOk($result)) {
-            $s = $db->prepare("UPDATE web_item_sn SET status='reissued', updated_at=:t WHERE sn=:sn");
-            $s->bindValue(':t', $now, SQLITE3_INTEGER);
-            $s->bindValue(':sn', $sn, SQLITE3_TEXT);
-            $s->execute();
-        }
+            // 补发成功 → 记录旧 SN 已作废（失败则保持原状态）
+            if ($cmd === 'reissue' && snCmdOk($result)) {
+                $s = $db->prepare("UPDATE web_item_sn SET status='reissued', updated_at=:t WHERE sn=:sn");
+                $s->bindValue(':t', $now, SQLITE3_INTEGER);
+                $s->bindValue(':sn', $sn, SQLITE3_TEXT);
+                $s->execute();
+            }
 
-        // 报失核查结果 → 决定拒绝还是自动补发
-        if ($cmd === 'report_check' && $linkType === 'lost' && $linkId > 0) {
-            snHandleLostCheck($db, $linkId, $result, $now);
-        }
-        if ($cmd === 'reissue' && $linkType === 'lost' && $linkId > 0) {
-            // 成功 → 结单；失败 → 转人工，别假装已补发
-            $lostStatus = snCmdOk($result) ? 'done' : 'manual';
-            $h = $db->prepare("UPDATE web_sn_lost SET status=:s, result=:r, handled_at=:t
-                               WHERE id=:id");
-            $h->bindValue(':s', $lostStatus, SQLITE3_TEXT);
-            $h->bindValue(':r', $result, SQLITE3_TEXT);
-            $h->bindValue(':t', $now, SQLITE3_INTEGER);
-            $h->bindValue(':id', $linkId, SQLITE3_INTEGER);
-            $h->execute();
+            // 报失核查结果 → 决定拒绝还是自动补发
+            if ($cmd === 'report_check' && $linkType === 'lost' && $linkId > 0) {
+                snHandleLostCheck($db, $linkId, $result, $now);
+            }
+            if ($cmd === 'reissue' && $linkType === 'lost' && $linkId > 0) {
+                // 成功 → 结单；失败 → 转人工，别假装已补发
+                $lostStatus = snCmdOk($result) ? 'done' : 'manual';
+                $h = $db->prepare("UPDATE web_sn_lost SET status=:s, result=:r, handled_at=:t
+                                   WHERE id=:id");
+                $h->bindValue(':s', $lostStatus, SQLITE3_TEXT);
+                $h->bindValue(':r', $result, SQLITE3_TEXT);
+                $h->bindValue(':t', $now, SQLITE3_INTEGER);
+                $h->bindValue(':id', $linkId, SQLITE3_INTEGER);
+                $h->execute();
+            }
+        } catch (\Throwable $e) {
+            // 这一条的业务没落地 → 把关联报失单转人工，别让它永远挂着"检查中"
+            if ($linkType === 'lost' && $linkId > 0) {
+                try {
+                    $h = $db->prepare("UPDATE web_sn_lost SET status='manual', result=:r,
+                                       handled_at=:t WHERE id=:id AND status='checking'");
+                    $h->bindValue(':r', '回执处理异常，已转人工：' . $e->getMessage(), SQLITE3_TEXT);
+                    $h->bindValue(':t', $now, SQLITE3_INTEGER);
+                    $h->bindValue(':id', $linkId, SQLITE3_INTEGER);
+                    $h->execute();
+                } catch (\Throwable $e2) {}
+            }
         }
     }
+
+    // ★ 自愈：把"命令早已回执、报失单却还停在 checking"的历史卡单补齐。
+    //   老版本一次 SQL 报错留下的存量数据靠它追平，玩家端刷新即可看到结论。
+    snHealStuckLost($db, $now);
 
     jsonResponse(['ok' => true, 'n' => $done]);
 }
 
+/**
+ * 自愈停摆的报失单：
+ *  - report_check 已回执 → 按结论推进（拒绝 / 自动补发）；
+ *  - report_check 超时或命令缺失 → 转人工，不能让玩家永远等"检查中"。
+ * 幂等：只处理 status='checking' 的行，snHandleLostCheck 内部不会重复入队。
+ */
+function snHealStuckLost($db, $now) {
+    try {
+        $sql = "SELECT l.id AS lid, l.sn AS lsn, c.status AS cstatus, c.result AS cresult
+                FROM web_sn_lost l
+                LEFT JOIN web_sn_commands c
+                  ON c.link_type='lost' AND c.link_id=l.id AND c.cmd='report_check'
+                WHERE l.status='checking'
+                ORDER BY l.id DESC LIMIT 50";
+        $res = $db->query($sql);
+        if (!$res) return;
+        $rows = [];
+        while ($x = $res->fetchArray(SQLITE3_ASSOC)) $rows[] = $x;
+        foreach ($rows as $x) {
+            $lid = (int)$x['lid'];
+            $st = (string)$x['cstatus'];
+            if ($st === 'done') {
+                snHandleLostCheck($db, $lid, (string)$x['cresult'], $now);
+                continue;
+            }
+            if ($st === 'timeout' || $st === '') {
+                $h = $db->prepare("UPDATE web_sn_lost SET status='manual', result=:r,
+                                   handled_at=:t WHERE id=:id AND status='checking'");
+                $h->bindValue(':r', $st === 'timeout'
+                    ? '游戏服超时未回执，已转人工核查'
+                    : '未找到对应核查命令，已转人工核查', SQLITE3_TEXT);
+                $h->bindValue(':t', $now, SQLITE3_INTEGER);
+                $h->bindValue(':id', $lid, SQLITE3_INTEGER);
+                $h->execute();
+            }
+            // pending / sent → 仍在等待游戏服，保持 checking，下轮再看
+        }
+    } catch (\Throwable $e) {}
+}
+
 /** 报失核查回执：拒绝 / 放行自动补发 */
 function snHandleLostCheck($db, $lostId, $result, $now) {
-    $res = $db->prepare("SELECT sn, player, item_type FROM web_sn_lost WHERE id=:id");
+    // ★ web_sn_lost 表没有 item_type 列（早先误写进 SELECT），SQLite 直接抛
+    //   "no such column" → 整批回执在写完 status='done' 之后中断 → 报失单
+    //   永久停在 checking，玩家端十分钟都等不到回调。列名必须与建表语句一致。
+    $res = $db->prepare("SELECT sn, player, status FROM web_sn_lost WHERE id=:id");
     $res->bindValue(':id', $lostId, SQLITE3_INTEGER);
     $rr = $res->execute();
     $row = $rr->fetchArray(SQLITE3_ASSOC);
     if (!$row) return;
+    // ★ 幂等闸门：主路径与 snHealStuckLost 自愈都可能调到这里。
+    //   只有仍是 checking 才允许推进，否则会重复入队一次补发（刷物品）。
+    if ((string)$row['status'] !== 'checking') return;
 
     $sn = (string)$row['sn'];
     $player = (string)$row['player'];
@@ -582,12 +652,14 @@ function snHandleLostCheck($db, $lostId, $result, $now) {
     if ($row2 = $r2->fetchArray(SQLITE3_ASSOC)) $itemType = (string)$row2['item_type'];
 
     if (mb_strpos($result, '拒绝') === 0) {
+        // UPDATE 带 status='checking' 条件，抢不到说明已被别处结单 → 直接返回
         $h = $db->prepare("UPDATE web_sn_lost SET status='rejected', result=:r, handled_at=:t
-                           WHERE id=:id");
+                           WHERE id=:id AND status='checking'");
         $h->bindValue(':r', $result, SQLITE3_TEXT);
         $h->bindValue(':t', $now, SQLITE3_INTEGER);
         $h->bindValue(':id', $lostId, SQLITE3_INTEGER);
         $h->execute();
+        if ($db->changes() <= 0) return;
         $u = $db->prepare("UPDATE web_item_sn SET lost_state='rejected', updated_at=:t WHERE sn=:sn");
         $u->bindValue(':t', $now, SQLITE3_INTEGER);
         $u->bindValue(':sn', $sn, SQLITE3_TEXT);
@@ -595,12 +667,14 @@ function snHandleLostCheck($db, $lostId, $result, $now) {
         return;
     }
 
+    // 先抢状态再入队：抢到手才补发，防止并发/自愈路径下重复入队
     $h = $db->prepare("UPDATE web_sn_lost SET status='auto_reissue', result=:r, handled_at=:t
-                       WHERE id=:id");
+                       WHERE id=:id AND status='checking'");
     $h->bindValue(':r', $result, SQLITE3_TEXT);
     $h->bindValue(':t', $now, SQLITE3_INTEGER);
     $h->bindValue(':id', $lostId, SQLITE3_INTEGER);
     $h->execute();
+    if ($db->changes() <= 0) return;
 
     $u = $db->prepare("UPDATE web_item_sn SET lost_state='reissuing', updated_at=:t WHERE sn=:sn");
     $u->bindValue(':t', $now, SQLITE3_INTEGER);
@@ -652,6 +726,9 @@ function snDecorate($db, $row, $viewer) {
     $row['is_owner'] = ($viewer !== null
         && strcasecmp($row['owner'], $viewer) === 0);
     $row['loc_desc'] = snLocDesc($row);
+    // 三条件的原始数据位（脱离管控起始时刻 / 是否在本人领地箱子）只对管理端
+    // 开放——玩家端若拿到 detached_at 就能反推出 12 小时这条硬阈值。
+    unset($row['detached_at'], $row['own_chest']);
     return $row;
 }
 
@@ -680,6 +757,7 @@ function snQuery() {
     $sn = trim(getParam('sn', ''));
     if ($sn === '') error('请输入SN码');
     $db = getDB();
+    snHealStuckLost($db, snNow());
 
     $res = $db->prepare("SELECT * FROM web_item_sn WHERE sn = :sn");
     $res->bindValue(':sn', $sn, SQLITE3_TEXT);
@@ -735,26 +813,120 @@ function snMaskName($name) {
     return mb_substr($n, 0, 1) . str_repeat('*', min(6, mb_strlen($n) - 2)) . mb_substr($n, -1);
 }
 
-/** 位置是否"确实在别处"（报失 / 补发前置检查） */
-function snLocBlocking($db, $sn, $player) {
+/**
+ * 注销 / 报失 / 补办统一门槛的三条件判定（与 Java snCustodyDetail 同口径）：
+ *   ① 物品不在本人身上；
+ *   ② 物品不在本人名下领地内的箱子里（只认领地归属）；
+ *   ③ 物品脱离自身管控已超过 12 小时（回到管辖内清零，再次脱离重新起算）。
+ * 返回逐条判定结果——仅供【管理端】展示，对玩家一律只回通用回执。
+ */
+function snCustodyEval($db, $row, $player) {
+    $lt = isset($row['loc_type']) ? (string)$row['loc_type'] : '';
+    $lp = isset($row['loc_player']) ? (string)$row['loc_player'] : '';
+
+    // ① 在本人身上：登记位置 + 手持快照（每 10~30 秒上报）双重佐证
+    $inBody = ($lt === 'player' && $lp !== ''
+               && strcasecmp($lp, $player) === 0);
+    if (!$inBody) {
+        try {
+            $h = $db->prepare("SELECT holder FROM web_sn_held WHERE sn=:sn");
+            $h->bindValue(':sn', $row['sn'], SQLITE3_TEXT);
+            $hr = $h->execute();
+            if ($x = $hr->fetchArray(SQLITE3_ASSOC)) {
+                $holder = (string)$x['holder'];
+                if ($holder !== '' && strcasecmp($holder, $player) === 0) {
+                    $inBody = true;
+                }
+            }
+        } catch (\Throwable $e) {}
+    }
+
+    // ② 在本人领地的箱子里：own_chest 由 Java 写入；为防同步延迟，坐标现算兜底
+    //   （web_area_lands 与游戏服 area_lands 双向同步，判定规则与 Java getArea 一致）
+    $inOwnChest = ($lt === 'container') && !empty($row['own_chest']);
+    if ($lt === 'container' && !$inOwnChest) {
+        try {
+            $w = (string)(isset($row['loc_world']) ? $row['loc_world'] : '');
+            $x = (int)(isset($row['loc_x']) ? $row['loc_x'] : 0);
+            $y = (int)(isset($row['loc_y']) ? $row['loc_y'] : 0);
+            $z = (int)(isset($row['loc_z']) ? $row['loc_z'] : 0);
+            // SELECT * ：core.php 建表用 y1/y2、sync.php 用 y_min/y_max，
+            // 两边历史不一致，不能写死列名
+            $lq = $db->prepare("SELECT * FROM web_area_lands
+                                WHERE world = :w AND owner = :o");
+            $lq->bindValue(':w', $w, SQLITE3_TEXT);
+            $lq->bindValue(':o', $player, SQLITE3_TEXT);
+            $lqr = $lq->execute();
+            while ($l = $lqr->fetchArray(SQLITE3_ASSOC)) {
+                $minX = min((int)$l['x1'], (int)$l['x2']);
+                $maxX = max((int)$l['x1'], (int)$l['x2']);
+                $minZ = min((int)$l['z1'], (int)$l['z2']);
+                $maxZ = max((int)$l['z1'], (int)$l['z2']);
+                if ($x < $minX || $x > $maxX || $z < $minZ || $z > $maxZ) continue;
+                // Y 区间（两套列名都试；区间无效则不按 Y 过滤）
+                if (array_key_exists('y1', $l)) {
+                    $yLo = (int)$l['y1']; $yHi = (int)$l['y2'];
+                } elseif (array_key_exists('y_min', $l)) {
+                    $yLo = (int)$l['y_min']; $yHi = (int)$l['y_max'];
+                } else {
+                    $yLo = null; $yHi = null;
+                }
+                if ($yLo !== null && $yHi > $yLo
+                        && ($y < $yLo || $y > $yHi)) continue;
+                $inOwnChest = true;
+                break;
+            }
+        } catch (\Throwable $e) {}
+    }
+
+    // ③ 脱离自身管控时长（秒；detached_at=0 表示此刻仍在自身管控内）
+    $det = isset($row['detached_at']) ? (int)$row['detached_at'] : 0;
+    if ($det <= 0) $det = isset($row['last_seen']) ? (int)$row['last_seen'] : 0;
+    $since = ($inBody || $inOwnChest) ? 0 : $det;
+    $held = $since > 0 ? max(0, snNow() - $since) : 0;
+    $detachedOk = (!$inBody && !$inOwnChest) && $since > 0 && $held > 43200;
+    $pass = (!$inBody && !$inOwnChest && $detachedOk);
+
+    $heldText = ($inBody || $inOwnChest)
+        ? '0（仍在自身管控内）'
+        : (floor($held / 3600) > 0
+            ? floor($held / 3600) . ' 小时 ' . floor(($held % 3600) / 60) . ' 分'
+            : floor($held / 60) . ' 分');
+
+    return [
+        'pass' => $pass,
+        'in_body' => $inBody,
+        'in_own_chest' => $inOwnChest,
+        'detached_ok' => $detachedOk,
+        'detached_since' => $since,
+        'detached_hours' => $since > 0 ? round($held / 3600, 2) : 0,
+        'detached_text' => $heldText,
+        'text' => '在本人身上=' . ($inBody ? '是' : '否')
+                . ' / 在本人领地箱子=' . ($inOwnChest ? '是' : '否')
+                . ' / 脱离自身管控=' . $heldText . '（阈值 12 小时）',
+    ];
+}
+
+/**
+ * 办理前置门槛（报失 / 补办 / 注销共用）。
+ * 达标 → block=false；未达标 → block=true，msg 是给玩家看的【通用】回执，
+ * 不透露具体是哪一条没达标（最小化信息透露），逐条结果放 custody 供管理端展示。
+ */
+function snCustodyGate($db, $sn, $player) {
     $res = $db->prepare("SELECT * FROM web_item_sn WHERE sn=:sn");
     $res->bindValue(':sn', $sn, SQLITE3_TEXT);
     $rr = $res->execute();
     $row = $rr->fetchArray(SQLITE3_ASSOC);
-    if (!$row) return ['block' => true, 'msg' => 'SN不存在'];
+    if (!$row) {
+        return ['block' => true, 'msg' => 'SN不存在', 'row' => null, 'custody' => null];
+    }
 
-    $lt = $row['loc_type'];
-    $lp = $row['loc_player'];
-    if ($lt === 'container') {
-        $msg = '物品当前在容器内：' . $row['container_type'] . ' @ '
-             . $row['loc_world'] . ' ' . $row['loc_x'] . ',' . $row['loc_y'] . ',' . $row['loc_z']
-             . (!empty($row['in_land']) ? '（领地 ' . $row['land_name'] . '）' : '');
-        return ['block' => true, 'msg' => '无法办理：' . $msg, 'row' => $row];
+    $custody = snCustodyEval($db, $row, $player);
+    if ($custody['pass']) {
+        return ['block' => false, 'msg' => '', 'row' => $row, 'custody' => $custody];
     }
-    if ($lt === 'player' && $lp !== '' && strcasecmp($lp, $player) !== 0) {
-        return ['block' => true, 'msg' => '无法办理：物品当前在其他玩家 ' . $lp . ' 手上', 'row' => $row];
-    }
-    return ['block' => false, 'msg' => '', 'row' => $row];
+    return ['block' => true, 'msg' => '未达到办理条件，请稍后再试',
+            'row' => $row, 'custody' => $custody];
 }
 
 /** 报失（挂失） */
@@ -775,8 +947,9 @@ function snReportLost() {
         error('该SN当前状态（' . snStatusCn($row['status']) . '）不允许报失');
     }
 
-    // ★ 立即检查位置：在箱子里 / 在别的玩家身上 → 直接拒绝
-    $chk = snLocBlocking($db, $sn, $player);
+    // ★ 统一门槛：不在本人身上 ∩ 不在本人领地箱子 ∩ 脱离自身管控 > 12 小时。
+    //   不达标只回通用回执（不说是哪一条），逐条判定只进管理端展示。
+    $chk = snCustodyGate($db, $sn, $player);
     if ($chk['block']) {
         $db->exec("INSERT INTO web_sn_lost (sn, player, reason, status, result,
                     report_count, created_at, handled_at)
@@ -850,7 +1023,8 @@ function snReissue() {
         error('该SN状态为' . snStatusCn($row['status']) . '，不可补发');
     }
 
-    $chk = snLocBlocking($db, $sn, $player);
+    // 补办与报失 / 注销同口径：三条件统一门槛，不达标只给通用回执
+    $chk = snCustodyGate($db, $sn, $player);
     if ($chk['block']) error($chk['msg']);
 
     // 已有待执行的补发命令 → 避免重复
@@ -884,9 +1058,10 @@ function snCancel() {
     if ($row['status'] === 'destroyed') error('该SN已销毁解绑，无需注销');
     if ($row['status'] === 'reissued') error('该SN已被新SN替代，无需注销');
 
-    // ★ 位置前置检查：物在容器里 / 在别的玩家手上 → 直接拒绝。
-    //   否则 DB 注销了、箱子里的实物却还能接着用（与补发/报失保持一致）。
-    $chk = snLocBlocking($db, $sn, $player);
+    // ★ 统一门槛：物品脱离自身管控（不在本人身上、不在本人领地箱子、>12 小时）
+    //   才允许注销，否则玩家可拿身上/箱子里的东西反复注销换新。
+    //   未达标只回通用回执，逐条判定只在管理端 SN 详情里看。
+    $chk = snCustodyGate($db, $sn, $player);
     if ($chk['block']) error($chk['msg']);
 
     $pr = $db->prepare("SELECT COUNT(*) AS c FROM web_sn_commands
@@ -971,6 +1146,8 @@ function snAdminDetail() {
     $row['status_cn'] = snStatusCn($row['status']);
     $row['issue_time_str'] = $row['issue_time'] ? date('Y-m-d H:i:s', (int)$row['issue_time']) : '';
     $row['loc_desc'] = snLocDesc($row);
+    // 管理端专属：注销 / 报失 / 补办三条件逐条判定（玩家端拿不到这些字段）
+    $row['custody'] = snCustodyEval($db, $row, $row['owner']);
 
     $logs = [];
     $lr = $db->prepare("SELECT * FROM web_sn_log WHERE sn=:sn ORDER BY time DESC LIMIT 100");
@@ -1023,9 +1200,12 @@ function snAdminCmd() {
     $row = $rr->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('SN不存在');
 
-    // ★ 管理员强制操作 is_force=1：Java 侧仅本次绕过冷静期（冷静期记录保留）
+    // ★ is_force=1（默认，强制操作）：Java 侧本次绕过冷静期 + 绕过三条件门槛
+    //   （强制注销 / 强制补发按定义豁免"脱离自身管控"三项）。
+    //   代办操作传 force=0 → 照常按三条件校验，逐条判定见 SN 详情的 custody。
+    $force = (int)getParam('force', 1) ? 1 : 0;
     $id = snEnqueueCmd($db, $cmd, $sn, $row['owner'], $row['item_type'],
-                       $reason !== '' ? $reason : '管理员操作', '', 0, 1);
+                       $reason !== '' ? $reason : '管理员操作', '', 0, $force);
     success(['id' => $id], '命令已下发，等待游戏服务器执行（10~30 秒）');
 }
 
@@ -1123,7 +1303,7 @@ function snAdminLostHandle() {
         $u->bindValue(':id', $id, SQLITE3_INTEGER);
         $u->execute();
         snEnqueueCmd($db, 'reissue', $row['sn'], $owner, $itemType,
-                     '人工核查通过补发', 'lost', $id);
+                     '人工核查通过补发', 'lost', $id, 1);
         success(null, '已通过，补发命令已下发');
     }
 }

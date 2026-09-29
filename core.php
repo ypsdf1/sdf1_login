@@ -839,6 +839,16 @@ function initTables(SQLite3 $db) {
             updated_at INTEGER DEFAULT 0
         )");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_item_sn_owner ON web_item_sn(owner, item_type)");
+        // 脱离自身管控起始时刻（秒；0=仍在本人管辖内）/ 容器是否在本人名下领地
+        // ——注销、报失、补办统一三条件判定的数据基础，由 Java push_catalog 同步
+        foreach (['detached_at INTEGER DEFAULT 0',
+                  'own_chest INTEGER DEFAULT 0'] as $snCustodyCol) {
+            try {
+                $db->exec("ALTER TABLE web_item_sn ADD COLUMN " . $snCustodyCol);
+            } catch (\Throwable $e) {
+                // 列已存在 → 忽略
+            }
+        }
 
         // SN 操作日志尾部（Java sn_log 镜像）
         $db->exec("CREATE TABLE IF NOT EXISTS web_sn_log (
