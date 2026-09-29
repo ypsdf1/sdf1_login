@@ -1565,17 +1565,37 @@ public class SnManager implements Listener {
             String resp = wm.httpGet("api/sn.php", params);
             if (resp != null && resp.contains("[")) {
                 List<Map<String, Object>> cmds = parseJsonArray(resp);
-                for (final Map<String, Object> c : cmds) {
-                    // 改背包必须回主线程
-                    if (Bukkit.isPrimaryThread()) {
-                        execCommand(c);
-                    } else {
-                        Bukkit.getScheduler().runTask(plugin, new Runnable() {
-                            @Override
-                            public void run() {
+                if (!cmds.isEmpty()) {
+                    // 改背包必须回主线程。tickSync 跑在异步线程，原先 fire-and-forget
+                    // 提交后立刻走到第4步 ack，此时 ackBuf 还是空的 → 回执要等
+                    // 下一轮 Timer C（10~20秒，异常时1~2分钟）才发出，后台迟迟看不到结果。
+                    // 这里用 CountDownLatch 等主线程执行完（超时3秒兜底），
+                    // 让 pull → 执行 → ack 在同一轮内完成。
+                    final java.util.concurrent.CountDownLatch latch =
+                            new java.util.concurrent.CountDownLatch(cmds.size());
+                    for (final Map<String, Object> c : cmds) {
+                        if (Bukkit.isPrimaryThread()) {
+                            try {
                                 execCommand(c);
+                            } finally {
+                                latch.countDown();
                             }
-                        });
+                        } else {
+                            Bukkit.getScheduler().runTask(plugin, new Runnable() {
+                                @Override
+                                public void run() {
+                                    try {
+                                        execCommand(c);
+                                    } finally {
+                                        latch.countDown();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    if (!latch.await(3, java.util.concurrent.TimeUnit.SECONDS)) {
+                        // 主线程被卡住：结果仍在 ackBuf 里，下一轮重发，不丢
+                        throttleErr("tick-cmd:主线程执行超时3s，回执延后到下一轮");
                     }
                 }
             }
@@ -1588,10 +1608,10 @@ public class SnManager implements Listener {
             List<String> acks;
             synchronized (ackBuf) {
                 if (ackBuf.isEmpty()) acks = null;
-                else {
-                    acks = new ArrayList<String>(ackBuf);
-                    ackBuf.clear();
-                }
+                // ★ 只做只读快照，不 clear：PHP 确认收到后才移除（见下方 ackResp 判断）。
+                //   原实现先 clear 再 POST，POST 失败时这批回执被永久丢弃 →
+                //   PHP 端命令一直停在 sent，180 秒后被判 timeout，状态永不回写。
+                else acks = new ArrayList<String>(ackBuf);
             }
             if (acks != null) {
                 List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();

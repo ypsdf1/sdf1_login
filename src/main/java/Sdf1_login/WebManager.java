@@ -2024,13 +2024,21 @@ public class WebManager {
                 }
 
                 // 全量批处理同步（仅在nextSyncTime到达时执行）
-                if (now >= nextSyncTime) {
-                    try { doActiveSyncBatch(); }
-                    catch (Exception e) {
-                        plugin.getLogger().warning("[合并C-全量同步] 异常: " + e.getMessage());
-                    } finally {
-                        scheduleNextSync(); // 设置60~90秒后的下一次同步时间
-                    }
+                // ★ doActiveSyncBatch 内部有 9 处 6~14 秒的错峰 sleep（合计 54~126 秒），
+                //   原来同步跑在本定时器里，直接把 Timer C 单轮拉长到约 2 分钟，
+                //   SN 命令的拉取/回执也跟着变成 1~2 分钟一轮。
+                //   改为丢到独立异步线程执行：Timer C 只负责到点触发后立刻排下一轮，
+                //   批处理照旧串行错峰（防 PHP 锁库），只是不再占用 SN 同步链路。
+                if (now >= nextSyncTime && !activeSyncRunning) {
+                    Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                        try {
+                            doActiveSyncBatch();
+                        } catch (Exception e) {
+                            plugin.getLogger().warning("[合并C-全量同步] 异常: " + e.getMessage());
+                        } finally {
+                            scheduleNextSync(); // 批处理结束后设置60~90秒后的下一次同步时间
+                        }
+                    });
                 }
 
                 // 自调度下一轮（10~20秒，错峰）
