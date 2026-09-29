@@ -1823,7 +1823,11 @@ public class SnManager implements Listener {
             String player = str(c.get("player"));
             String itemType = str(c.get("item_type"));
             String reason = str(c.get("reason"));
-            // ★ 管理员强制操作（force=1）：仅本次绕过冷静期
+            // ★ 管理员强制操作（force=1）：
+            //   cancel → 豁免三条件门槛，且不启动 1 小时冷静期；
+            //   reissue → 豁免三条件门槛，申领时本次绕过冷静期校验（记录保留）；
+            //   report_check → 回执带逐条判定（仅管理端可见）。
+            //   代办（force=0）一律照常：三条件 + 1 小时冷静期。
             boolean force = num(c.get("force")) != 0;
             result = "";
 
@@ -1935,7 +1939,17 @@ public class SnManager implements Listener {
                 + " / 脱离自身管控=" + held + "（阈值 12 小时）";
     }
 
-    /** 注销：销毁对应 SN 物品 + 启动 1 小时冷静期（任务3） */
+    /**
+     * 注销：销毁对应 SN 物品（任务3）。
+     *
+     * <p>冷静期按操作类型分流（2026-09-29 修正）：
+     * <ul>
+     *   <li>管理员「强制注销」(force=true)：豁免三条件门槛，<b>且不启动 1 小时冷静期</b>
+     *       ——强制操作按定义直接执行，不能把玩家锁进冷静期。</li>
+     *   <li>「代办注销」(force=false)：照常走三条件门槛 + 注销成功后启动 1 小时冷静期。</li>
+     * </ul>
+     * 冷静期记录只新增、不清除：强制注销不会动玩家已有的冷静期记录。</p>
+     */
     private String doCancel(String sn, String player, String reason,
                             boolean force) {
         Map<String, Object> row = getSn(sn);
@@ -1955,9 +1969,15 @@ public class SnManager implements Listener {
                 System.currentTimeMillis());
         if (n == 0) return "注销失败";
         logSn(sn, str(row.get("item_type")), "cancel", owner, reason);
-        startCooldown(owner);
+        // ★ 冷静期只在非强制时启动：强制注销跳过 1 小时冷静，代办注销照常进入。
+        if (!force) {
+            startCooldown(owner);
+        } else {
+            logSn(sn, str(row.get("item_type")), "cancel_force", owner,
+                    "管理员强制注销，跳过1小时冷静期");
+        }
         return (removedItem ? "已销毁实物并注销" : "已注销（未找到实物，稍后自动清理）")
-                + "，冷静期 1 小时";
+                + (force ? "（强制注销，不进入冷静期）" : "，冷静期 1 小时");
     }
 
     /**
