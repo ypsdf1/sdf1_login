@@ -133,6 +133,7 @@ public class HomeManager implements Listener {
         
         player.sendMessage("§a家 §e" + homeName + " §a已设置！");
         player.sendMessage("§7使用 §e/home " + homeName + " §7传送回家");
+        player.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
         
         return true;
     }
@@ -155,7 +156,7 @@ public class HomeManager implements Listener {
         
         deleteHome(player.getName(), homeName);
         player.sendMessage("§a家 §e" + homeName + " §a已删除！");
-        
+        player.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
         return true;
     }
     
@@ -169,6 +170,7 @@ public class HomeManager implements Listener {
             if (homes.isEmpty()) {
                 player.sendMessage("§c你还没有设置任何家");
                 player.sendMessage("§7使用 §e/sethome <名称> §7设置一个家");
+                player.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
                 return true;
             }
             teleportToHome(player, homes.get(0));
@@ -212,6 +214,8 @@ public class HomeManager implements Listener {
         player.sendMessage("§7使用 §e/home <名称> §7传送");
         player.sendMessage("§7使用 §e/sethome <名称> §7设置新家");
         player.sendMessage("§7使用 §e/delhome <名称> §7删除家");
+        player.sendMessage("§7—————————————————————");
+        player.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
         
         return true;
     }
@@ -287,6 +291,7 @@ public class HomeManager implements Listener {
             // 与其它床交互 → 更新传送点坐标
             updateHome(player.getName(), "bed", bedLoc);
             player.sendMessage("§a床传送点已更新为该床的位置");
+            player.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
         }
     }
 
@@ -356,6 +361,7 @@ public class HomeManager implements Listener {
             Player p = Bukkit.getPlayerExact(owner);
             if (p != null && p.isOnline()) {
                 p.sendMessage("§c你的床已被破坏，/home bed 传送点已自动删除");
+                p.sendMessage("§a§l欢迎来到草原探险服务器，服务器ip:mc2.ypshidifu.cn 端口(基岩版需要)：30679");
             }
         }
     }
