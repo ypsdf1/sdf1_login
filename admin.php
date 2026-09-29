@@ -164,6 +164,7 @@
         <div class="si" data-p="online_curve" onclick="go('online_curve')">📈 在线曲线</div>
         <div class="si" data-p="reset_requests" onclick="go('reset_requests')">🔑 密码重置审核</div>
         <div class="si" data-p="tickets" onclick="go('tickets')">📋 工单管理</div>
+        <div class="si" data-p="sn" onclick="go('sn')">🔢 SN防伪管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
         <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
@@ -235,6 +236,7 @@ function go(p) {
     else if (p==='online_curve') loadOnlineCurve(c);
     else if (p==='reset_requests') loadResetRequests(c);
     else if (p==='tickets') loadTickets(c);
+    else if (p==='sn') loadSn(c);
     else if (p==='lands') loadLands(c);
     else if (p==='usergroups') loadUserGroups(c);
     else if (p==='cashier') loadCashier(c);
@@ -3985,6 +3987,375 @@ async function loadOnlineCurve(el) {
             } catch(e){}
         }, 60000);
     } catch (e) { el.innerHTML = '<div class="card">网络错误: '+escAdmHtml(e.message)+'</div>'; }
+}
+
+// ==================== SN 防伪管理 ====================
+const snAdm = { tab: 'items', kw: '', status: '', page: 1, size: 20, sn: '' };
+
+async function snAdmApi(action, params = {}) {
+    const url = new URL('api/sn.php', location.href);
+    url.searchParams.set('action', action);
+    for (const [k, v] of Object.entries(params)) {
+        if (v === '' || v === null || v === undefined) continue;
+        url.searchParams.set(k, v);
+    }
+    const res = await fetch(url, { credentials: 'same-origin' });
+    return await res.json();
+}
+
+async function loadSn(el) {
+    snAdm.tab = 'items';
+    snAdm.page = 1;
+    snAdm.kw = '';
+    snAdm.status = '';
+    await renderSnAdmin(el);
+}
+
+async function renderSnAdmin(el) {
+    el.innerHTML = '<div class="card"><p style="color:var(--dim)">加载中...</p></div>';
+    try {
+        if (snAdm.tab === 'lost') { await renderSnLost(el); return; }
+        if (snAdm.tab === 'stats') { await renderSnStats(el); return; }
+        if (snAdm.tab === 'detail') { await renderSnDetail(el, snAdm.sn); return; }
+        await renderSnItems(el);
+    } catch (e) {
+        el.innerHTML = '<div class="card"><p style="color:var(--red)">SN管理加载失败: ' + escAdmHtml(e.message) + '</p></div>';
+    }
+}
+
+function snTabs() {
+    const t = snAdm.tab;
+    const base = (t === 'detail' ? 'items' : t);
+    const mk = (k, label) => '<div class="tab ' + (base === k ? 'active' : '') + '" onclick="snAdmTab(\'' + k + '\')">' + label + '</div>';
+    return '<div class="tabs">' +
+        mk('items', '📦 设备列表') +
+        mk('lost', '🚨 报失工单') +
+        mk('stats', '📊 统计') +
+        '</div>';
+}
+
+function snAdmTab(tab) {
+    snAdm.tab = tab;
+    snAdm.page = 1;
+    renderSnAdmin(document.getElementById('C'));
+}
+
+const SN_STATUS_CN = {
+    active: '有效', destroyed: '已销毁解绑', cancelled: '已注销',
+    lost: '报失处理中', illegal: '非法绑定', reissued: '已补发作废'
+};
+const SN_LOST_CN = {
+    checking: '⏳ 核查中', manual: '🧑‍💻 待人工', rejected: '🚫 已驳回',
+    auto_reissue: '♻️ 已补发', done: '✅ 已完成'
+};
+
+function snStatusCn(s) { return SN_STATUS_CN[s] || s; }
+
+function snAdmSearch() {
+    snAdm.kw = (document.getElementById('snKw') || {}).value || '';
+    snAdm.status = (document.getElementById('snSt') || {}).value || '';
+    snAdm.page = 1;
+    renderSnAdmin(document.getElementById('C'));
+}
+
+function snAdmPage(p) {
+    snAdm.page = p;
+    renderSnAdmin(document.getElementById('C'));
+}
+
+async function renderSnItems(el) {
+    const r = await snAdmApi('admin_list', {
+        kw: snAdm.kw, status: snAdm.status, page: snAdm.page, size: snAdm.size
+    });
+    if (!r.success) { el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escAdmHtml(r.message || '加载失败') + '</p></div>'; return; }
+    const d = r.data || {};
+    const list = d.list || [];
+    const total = d.total || 0;
+    const pages = Math.max(1, Math.ceil(total / snAdm.size));
+
+    let html = '<div class="card"><h2>🔢 SN防伪管理</h2>' + snTabs() +
+        '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
+        '<input id="snKw" type="text" placeholder="搜索 SN / 玩家 / 领地..." value="' + escAdmHtml(snAdm.kw) + '" style="flex:1;min-width:180px">' +
+        '<select id="snSt" style="min-width:130px">' +
+        '<option value="">全部状态</option>';
+    for (const [k, v] of Object.entries(SN_STATUS_CN)) {
+        html += '<option value="' + k + '"' + (snAdm.status === k ? ' selected' : '') + '>' + v + '</option>';
+    }
+    html += '</select>' +
+        '<button class="btn btn-primary" onclick="snAdmSearch()">🔍 查询</button>' +
+        '</div>';
+
+    if (!list.length) {
+        html += '<p style="color:var(--dim)">暂无数据。游戏服每 30 秒推送一次目录快照。</p></div>';
+        el.innerHTML = html;
+        return;
+    }
+
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+        '<tr style="color:var(--dim);text-align:left">' +
+        '<th style="padding:6px">SN码</th><th style="padding:6px">类型</th><th style="padding:6px">状态</th>' +
+        '<th style="padding:6px">主人</th><th style="padding:6px">位置</th><th style="padding:6px">签发时间</th>' +
+        '<th style="padding:6px">操作</th></tr>';
+    for (const row of list) {
+        html += '<tr style="border-top:1px solid var(--border)">' +
+            '<td style="padding:7px 6px;font-family:monospace;word-break:break-all">' + escAdmHtml(row.sn) + '</td>' +
+            '<td style="padding:7px 6px">' + escAdmHtml(row.type_cn || '') + '</td>' +
+            '<td style="padding:7px 6px;color:' + (row.status === 'active' ? 'var(--green)' : (row.status === 'illegal' ? 'var(--red)' : 'var(--yellow)')) + '">' + escAdmHtml(row.status_cn || snStatusCn(row.status)) + '</td>' +
+            '<td style="padding:7px 6px">' + escAdmHtml(row.owner || '') + '</td>' +
+            '<td style="padding:7px 6px;color:var(--dim)">' + escAdmHtml(row.loc_desc || '') + '</td>' +
+            '<td style="padding:7px 6px;color:var(--dim);white-space:nowrap">' + escAdmHtml(row.issue_time_str || '') + '</td>' +
+            '<td style="padding:7px 6px;white-space:nowrap">' +
+            '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snAdmDetail(\'' + escAdmHtml(row.sn) + '\')">详情</button>' +
+            '</td></tr>';
+    }
+    html += '</table></div>';
+
+    html += '<div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap">' +
+        '<button class="btn" ' + (snAdm.page <= 1 ? 'disabled' : '') + ' onclick="snAdmPage(' + (snAdm.page - 1) + ')">上一页</button>' +
+        '<span style="color:var(--dim);font-size:13px">第 ' + snAdm.page + ' / ' + pages + ' 页 · 共 ' + total + ' 条</span>' +
+        '<button class="btn" ' + (snAdm.page >= pages ? 'disabled' : '') + ' onclick="snAdmPage(' + (snAdm.page + 1) + ')">下一页</button>' +
+        '</div></div>';
+    el.innerHTML = html;
+}
+
+function snAdmDetail(sn) {
+    snAdm.tab = 'detail';
+    snAdm.sn = sn;
+    renderSnAdmin(document.getElementById('C'));
+}
+
+function snAdmBack() {
+    snAdm.tab = 'items';
+    renderSnAdmin(document.getElementById('C'));
+}
+
+function snFmtTs(ts) {
+    const n = parseInt(ts, 10) || 0;
+    if (!n) return '';
+    const t = n >= 100000000000 ? Math.floor(n / 1000) : n;
+    const d = new Date(t * 1000);
+    const p = x => (x < 10 ? '0' : '') + x;
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+        p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+async function renderSnDetail(el, sn) {
+    const r = await snAdmApi('admin_detail', { sn: sn });
+    if (!r.success) {
+        el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escAdmHtml(r.message || '加载失败') + '</p>' +
+            '<button class="btn" onclick="snAdmBack()">← 返回</button></div>';
+        return;
+    }
+    const d = r.data || {};
+    const it = d.sn || {};
+    let html = '<div class="card">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+        '<h2 style="margin:0">🔢 ' + escAdmHtml(it.sn || sn) + '</h2>' +
+        '<button class="btn" onclick="snAdmBack()">← 返回列表</button></div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+        snAdmRow('类型', it.type_cn) +
+        snAdmRow('状态', it.status_cn) +
+        snAdmRow('主人', it.owner) +
+        snAdmRow('签发时间', it.issue_time_str) +
+        snAdmRow('当前位置', it.loc_desc) +
+        snAdmRow('绑定原因', it.bind_reason ? (it.bind_reason + ' @ ' + snFmtTs(it.bind_time)) : '-') +
+        snAdmRow('报失次数', it.lost_count) +
+        '</table>';
+
+    html += '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+        '<button class="btn" onclick="snAdmCmd(\'locate\')">📍 立即定位</button>' +
+        '<button class="btn btn-yellow" onclick="snAdmCmd(\'reissue\')">♻️ 强制补发</button>' +
+        '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\')">🗑️ 注销</button>' +
+        '<button class="btn btn-red" onclick="snAdmCmd(\'bind\')">🔒 永久绑定</button>' +
+        '<button class="btn btn-yellow" onclick="snAdmCmd(\'report_check\')">🚩 报失核查</button>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。</p>';
+
+    html += '<h3 style="margin:18px 0 8px;font-size:14px">📨 命令记录</h3>';
+    const cmds = d.commands || [];
+    if (!cmds.length) html += '<p style="color:var(--dim);font-size:13px">暂无</p>';
+    else {
+        html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+            '<tr style="color:var(--dim);text-align:left"><th style="padding:5px">ID</th><th style="padding:5px">命令</th><th style="padding:5px">状态</th>' +
+            '<th style="padding:5px">原因</th><th style="padding:5px">结果</th><th style="padding:5px">时间</th></tr>';
+        for (const c of cmds) {
+            html += '<tr style="border-top:1px solid var(--border)">' +
+                '<td style="padding:5px">' + c.id + '</td>' +
+                '<td style="padding:5px">' + escAdmHtml(c.cmd) + '</td>' +
+                '<td style="padding:5px">' + escAdmHtml(c.status) + '</td>' +
+                '<td style="padding:5px;color:var(--dim)">' + escAdmHtml(c.reason) + '</td>' +
+                '<td style="padding:5px;color:var(--dim);word-break:break-all">' + escAdmHtml(c.result || '') + '</td>' +
+                '<td style="padding:5px;color:var(--dim);white-space:nowrap">' + snFmtTs(c.created_at) + '</td></tr>';
+        }
+        html += '</table></div>';
+    }
+
+    html += '<h3 style="margin:18px 0 8px;font-size:14px">📜 操作日志</h3>' + snAdmLogTable(d.logs || [], ['时间', '动作', '玩家', '说明'], r => [
+        snFmtTs(r.time), r.action, r.player, r.detail
+    ]);
+
+    html += '<h3 style="margin:18px 0 8px;font-size:14px">📦 出入库登记</h3>' + snAdmLogTable(d.stock || [], ['时间', '动作', '容器', '坐标', '领地', '玩家'], r => [
+        snFmtTs(r.time), r.action, r.container_type || '-',
+        (r.world || '') + ' ' + r.x + ',' + r.y + ',' + r.z,
+        r.in_land ? (r.land_name || '是') : '-', r.player || '-'
+    ]);
+
+    const losts = d.losts || [];
+    html += '<h3 style="margin:18px 0 8px;font-size:14px">🚨 报失记录</h3>' +
+        snAdmLogTable(losts, ['时间', '状态', '次数', '原因', '结论'], r => [
+            snFmtTs(r.created_at), SN_LOST_CN[r.status] || r.status, r.report_count, r.reason || '-', r.result || '-'
+        ]);
+
+    if (d.held) {
+        html += '<h3 style="margin:18px 0 8px;font-size:14px">📡 最近上报（手持快照）</h3>' +
+            '<p style="color:var(--dim);font-size:13px">持有者 ' + escAdmHtml(d.held.holder || '-') +
+            ' · 主人 ' + escAdmHtml(d.held.owner || '-') +
+            ' · ' + (d.held.held ? '手持中' : '在背包') +
+            ' · ' + snFmtTs(d.held.time) + '</p>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+function snAdmRow(k, v) {
+    return '<tr style="border-top:1px solid var(--border)">' +
+        '<td style="padding:7px 6px;color:var(--dim);width:120px">' + escAdmHtml(k) + '</td>' +
+        '<td style="padding:7px 6px;word-break:break-all">' + escAdmHtml(v == null || v === '' ? '-' : String(v)) + '</td></tr>';
+}
+
+function snAdmLogTable(rows, heads, mapper) {
+    if (!rows.length) return '<p style="color:var(--dim);font-size:13px">暂无记录</p>';
+    let h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        '<tr style="color:var(--dim);text-align:left">';
+    for (const t of heads) h += '<th style="padding:5px">' + t + '</th>';
+    h += '</tr>';
+    for (const r of rows) {
+        const cells = mapper(r);
+        h += '<tr style="border-top:1px solid var(--border)">';
+        for (const c of cells) {
+            h += '<td style="padding:5px;word-break:break-all">' + escAdmHtml(c == null ? '' : String(c)) + '</td>';
+        }
+        h += '</tr>';
+    }
+    return h + '</table></div>';
+}
+
+async function snAdmCmd(cmd) {
+    const sn = snAdm.sn;
+    if (!sn) return;
+    const names = { locate: '定位', reissue: '强制补发', cancel: '注销', bind: '永久绑定', report_check: '报失核查' };
+    const warns = {
+        locate: '立即查询该SN在游戏世界中的位置？',
+        reissue: '强制补发 ' + sn + '？旧SN作废并签发新SN，玩家需在线。',
+        cancel: '注销 ' + sn + '？将销毁对应实物并进入1小时冷静期。',
+        bind: '把 ' + sn + ' 永久绑定为非法物品？该SN不可恢复。',
+        report_check: '立即核查 ' + sn + ' 的当前位置并给出报失结论？'
+    };
+    if (!await glassConfirm(warns[cmd] || ('确认对 ' + sn + ' 执行「' + names[cmd] + '」？'))) return;
+    try {
+        const r = await snAdmApi('admin_cmd', { cmd: cmd, sn: sn, reason: '管理员手动执行' });
+        if (!r.success) { toast(r.message || '下发失败', 'err'); return; }
+        toast(r.message || '命令已下发', 'ok');
+        setTimeout(() => renderSnAdmin(document.getElementById('C')), 1200);
+    } catch (e) {
+        toast('下发失败: ' + e.message, 'err');
+    }
+}
+
+async function renderSnLost(el) {
+    const r = await snAdmApi('admin_lost_list', { page: 1, size: 100 });
+    if (!r.success) { el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escAdmHtml(r.message || '加载失败') + '</p></div>'; return; }
+    const list = (r.data && r.data.list) || [];
+    const total = (r.data && r.data.total) || 0;
+
+    let html = '<div class="card"><h2>🚨 SN 报失工单 (' + total + ')</h2>' + snTabs();
+    if (!list.length) {
+        html += '<p style="color:var(--dim)">暂无报失工单。</p></div>';
+        el.innerHTML = html;
+        return;
+    }
+    html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+        '<tr style="color:var(--dim);text-align:left">' +
+        '<th style="padding:6px">ID</th><th style="padding:6px">SN</th><th style="padding:6px">类型</th>' +
+        '<th style="padding:6px">玩家</th><th style="padding:6px">状态</th><th style="padding:6px">次数</th>' +
+        '<th style="padding:6px">原因 / 结论</th><th style="padding:6px">时间</th><th style="padding:6px">操作</th></tr>';
+    for (const row of list) {
+        const pending = (row.status === 'checking' || row.status === 'manual');
+        html += '<tr style="border-top:1px solid var(--border)">' +
+            '<td style="padding:7px 6px">' + row.id + '</td>' +
+            '<td style="padding:7px 6px;font-family:monospace;word-break:break-all">' +
+            '<a href="javascript:void(0)" onclick="snAdmDetail(\'' + escAdmHtml(row.sn) + '\')" style="color:var(--accent)">' + escAdmHtml(row.sn) + '</a></td>' +
+            '<td style="padding:7px 6px">' + escAdmHtml(row.type_cn || '') + '</td>' +
+            '<td style="padding:7px 6px">' + escAdmHtml(row.player) + '</td>' +
+            '<td style="padding:7px 6px">' + escAdmHtml(SN_LOST_CN[row.status] || row.status) + '</td>' +
+            '<td style="padding:7px 6px">' + (row.report_count || 1) + '</td>' +
+            '<td style="padding:7px 6px;color:var(--dim);word-break:break-all">' + escAdmHtml((row.reason || '') + (row.result ? ' → ' + row.result : '')) + '</td>' +
+            '<td style="padding:7px 6px;color:var(--dim);white-space:nowrap">' + snFmtTs(row.created_at) + '</td>' +
+            '<td style="padding:7px 6px;white-space:nowrap">';
+        if (pending) {
+            html += '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snAdmLostHandle(' + row.id + ',\'approve\')">通过补发</button> ' +
+                '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snAdmLostHandle(' + row.id + ',\'reject\')">驳回</button>';
+        } else {
+            html += '<span style="color:var(--dim)">已处理</span>';
+        }
+        html += '</td></tr>';
+    }
+    html += '</table></div></div>';
+    el.innerHTML = html;
+}
+
+async function snAdmLostHandle(id, act) {
+    const tip = act === 'approve'
+        ? '通过该报失工单？将立即向玩家下发补发命令。'
+        : '驳回该报失工单？';
+    if (!await glassConfirm(tip)) return;
+    let reason = act === 'approve' ? '人工核查通过' : '人工核查未通过';
+    if (act === 'reject') {
+        try {
+            const v = await showModal('驳回报失', '请填写驳回原因', '人工核查未通过');
+            if (v === false || v === null || v === undefined) return;
+            if (String(v).trim()) reason = String(v).trim();
+        } catch (e) { /* 保持默认原因 */ }
+    }
+    try {
+        const r = await snAdmApi('admin_lost_handle', { id: id, act: act, reason: reason });
+        if (!r.success) { toast(r.message || '处理失败', 'err'); return; }
+        toast(r.message || '处理成功', 'ok');
+        renderSnAdmin(document.getElementById('C'));
+    } catch (e) {
+        toast('处理失败: ' + e.message, 'err');
+    }
+}
+
+async function renderSnStats(el) {
+    const r = await snAdmApi('admin_stats', {});
+    if (!r.success) { el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escAdmHtml(r.message || '加载失败') + '</p></div>'; return; }
+    const d = r.data || {};
+    let html = '<div class="card"><h2>📊 SN 统计</h2>' + snTabs() +
+        '<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px">' +
+        snAdmRow('SN 总数', d.total || 0) +
+        snAdmRow('待处理报失', d.lost_pending || 0) +
+        snAdmRow('事件条数', d.events || 0) +
+        '</table>' +
+        '<h3 style="margin:18px 0 8px;font-size:14px">按状态</h3>';
+    const bs = d.by_status || {};
+    if (!Object.keys(bs).length) html += '<p style="color:var(--dim)">暂无数据</p>';
+    else {
+        html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+        for (const [k, v] of Object.entries(bs)) html += snAdmRow(snStatusCn(k) + ' (' + k + ')', v);
+        html += '</table>';
+    }
+    html += '<h3 style="margin:18px 0 8px;font-size:14px">按类型</h3>';
+    const bt = d.by_type || {};
+    if (!Object.keys(bt).length) html += '<p style="color:var(--dim)">暂无数据</p>';
+    else {
+        html += '<table style="width:100%;border-collapse:collapse;font-size:13px">';
+        for (const [k, v] of Object.entries(bt)) html += snAdmRow(k, v);
+        html += '</table>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
 }
 
 // 切换页面时清理定时器

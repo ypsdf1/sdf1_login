@@ -811,6 +811,122 @@ function initTables(SQLite3 $db) {
             // 列已存在 → 忽略
         }
 
+
+        // ===== SN 防刷系统（PHP 端镜像 + 报失/命令队列）=====
+        // 物品 SN 全量镜像：由 Java 定时 push_catalog 同步
+        $db->exec("CREATE TABLE IF NOT EXISTS web_item_sn (
+            sn TEXT PRIMARY KEY,
+            item_type TEXT DEFAULT '',
+            owner TEXT DEFAULT '',
+            status TEXT DEFAULT 'active',
+            issue_time INTEGER DEFAULT 0,
+            loc_type TEXT DEFAULT '',
+            loc_player TEXT DEFAULT '',
+            loc_world TEXT DEFAULT '',
+            loc_x INTEGER DEFAULT 0,
+            loc_y INTEGER DEFAULT 0,
+            loc_z INTEGER DEFAULT 0,
+            container_type TEXT DEFAULT '',
+            in_land INTEGER DEFAULT 0,
+            land_name TEXT DEFAULT '',
+            last_seen INTEGER DEFAULT 0,
+            cancel_time INTEGER DEFAULT 0,
+            lost_count INTEGER DEFAULT 0,
+            lost_state TEXT DEFAULT '',
+            remark TEXT DEFAULT '',
+            bind_reason TEXT DEFAULT '',
+            bind_time INTEGER DEFAULT 0,
+            updated_at INTEGER DEFAULT 0
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_item_sn_owner ON web_item_sn(owner, item_type)");
+
+        // SN 操作日志尾部（Java sn_log 镜像）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_log (
+            id INTEGER PRIMARY KEY,
+            sn TEXT DEFAULT '',
+            item_type TEXT DEFAULT '',
+            action TEXT DEFAULT '',
+            player TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            time INTEGER DEFAULT 0
+        )");
+
+        // 出入库登记（容器坐标 / 是否在领地 / 领地名）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_stock (
+            id INTEGER PRIMARY KEY,
+            sn TEXT DEFAULT '',
+            item_type TEXT DEFAULT '',
+            action TEXT DEFAULT '',
+            world TEXT DEFAULT '',
+            x INTEGER DEFAULT 0,
+            y INTEGER DEFAULT 0,
+            z INTEGER DEFAULT 0,
+            container_type TEXT DEFAULT '',
+            in_land INTEGER DEFAULT 0,
+            land_name TEXT DEFAULT '',
+            player TEXT DEFAULT '',
+            time INTEGER DEFAULT 0
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_sn_stock_sn ON web_sn_stock(sn, time)");
+
+        // 手持/背包 SN 快照（每 10~30 秒上报）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_held (
+            sn TEXT PRIMARY KEY,
+            player TEXT DEFAULT '',
+            holder TEXT DEFAULT '',
+            owner TEXT DEFAULT '',
+            item_type TEXT DEFAULT '',
+            held INTEGER DEFAULT 0,
+            time INTEGER DEFAULT 0
+        )");
+
+        // Java -> PHP 事件流（拾取归属不符 / 销毁 / 非法处理）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_event (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action TEXT DEFAULT '',
+            sn TEXT DEFAULT '',
+            player TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            created_at INTEGER DEFAULT 0
+        )");
+
+        // 玩家报失工单
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_lost (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sn TEXT DEFAULT '',
+            player TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            status TEXT DEFAULT 'checking',
+            result TEXT DEFAULT '',
+            report_count INTEGER DEFAULT 1,
+            created_at INTEGER DEFAULT 0,
+            handled_at INTEGER DEFAULT 0
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_sn_lost_sn ON web_sn_lost(sn, created_at)");
+
+        // PHP -> Java 命令队列（注销 / 补发 / 报失核查 / 永久绑定）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cmd TEXT DEFAULT '',
+            sn TEXT DEFAULT '',
+            player TEXT DEFAULT '',
+            item_type TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            link_type TEXT DEFAULT '',
+            link_id INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            result TEXT DEFAULT '',
+            created_at INTEGER DEFAULT 0,
+            sent_at INTEGER DEFAULT 0,
+            done_at INTEGER DEFAULT 0
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_web_sn_cmd_status ON web_sn_commands(status, id)");
+
+        // 冷静期（注销后 1 小时禁止申领，展示用；真正生效在 Java 侧）
+        $db->exec("CREATE TABLE IF NOT EXISTS web_sn_cooldown (
+            player TEXT PRIMARY KEY,
+            until INTEGER DEFAULT 0
+        )");
         $db->exec('COMMIT');
     } catch (Exception $e) {
         $db->exec('ROLLBACK');

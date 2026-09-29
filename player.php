@@ -280,6 +280,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="orders" onclick="switchPage('orders')">📋 我的订单</div>
             <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
+            <div class="sidebar-item" data-page="sn" onclick="switchPage('sn')">🔢 SN设备管理</div>
         </div>
 
         <div class="content" id="content">
@@ -1052,6 +1053,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'groups') renderGroups(c);
         else if (page === 'account') renderAccount(c);
         else if (page === 'ticket') renderTicket(c);
+        else if (page === 'sn') renderSn(c);
         else if (page === 'recharge') renderRecharge(c);
         else if (page === 'orders') renderMyOrders(c);
     }
@@ -4002,6 +4004,227 @@ async function clearAllMemberPerms(landName, targetPlayer) {
         glassAlert('操作失败: ' + e.message);
     }
 }
+
+    // ==================== SN 防伪设备管理 ====================
+    var snState = { view: 'list', sn: '' };
+
+    async function renderSn(el) {
+        if (snState.view === 'detail' && snState.sn) { await renderSnDetail(el, snState.sn); return; }
+        snState.view = 'list';
+        await renderSnList(el);
+    }
+
+    function snStatusBadge(s) {
+        const m = {
+            active:    ['有效', 'var(--green)'],
+            destroyed: ['已销毁解绑', 'var(--dim)'],
+            cancelled: ['已注销', 'var(--yellow)'],
+            lost:      ['报失处理中', 'var(--yellow)'],
+            illegal:   ['非法绑定', 'var(--red)'],
+            reissued:  ['已补发作废', 'var(--dim)']
+        };
+        const v = m[s] || [s, 'var(--dim)'];
+        return '<span style="color:' + v[1] + '">' + v[0] + '</span>';
+    }
+
+    async function renderSnList(el) {
+        el.innerHTML = '<div class="card"><h2>🔢 SN设备管理</h2><p style="color:var(--dim)">加载中...</p></div>';
+        try {
+            const r = await api('sn.php', { action: 'my_list' });
+            if (!r.success) {
+                el.innerHTML = '<div class="card"><h2>🔢 SN设备管理</h2><p style="color:var(--red)">' + escHtml(r.message || '加载失败') + '</p></div>';
+                return;
+            }
+            const d = r.data || {};
+            const list = d.list || [];
+            const cdLeft = d.cooldown_left || 0;
+            let html = '<div class="card">' +
+                '<h2>🔢 我的SN设备 (' + list.length + ')</h2>' +
+                '<p style="color:var(--dim);font-size:13px;margin-bottom:10px">每件插件签发的设备都带有唯一SN码（玩家名 + 10位时间戳 + 2位识别码）。游戏内使用 <b>/printer item</b> 可导出SN记录，<b>/printer</b> 查看流水。</p>';
+            if (cdLeft > 0) {
+                html += '<div style="background:rgba(255,180,0,0.08);border:1px solid rgba(255,180,0,0.45);border-radius:8px;padding:10px 12px;color:var(--yellow);font-size:13px;margin-bottom:12px">⚠️ 注销冷静期剩余 ' + Math.ceil(cdLeft / 60) + ' 分钟，期间无法申领新设备。</div>';
+            }
+            html += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">' +
+                '<input id="snQueryInput" type="text" placeholder="输入SN码查询 / 办理..." maxlength="64" style="flex:1;min-width:200px">' +
+                '<button class="btn btn-primary" onclick="snDoAction(\'query\')">🔍 查询</button>' +
+                '</div>';
+
+            if (!list.length) {
+                html += '<p style="color:var(--dim)">暂无名下设备。可在游戏内申领雪球菜单 / 区域选择工具 / 回声碎片 / PVP圈地棒。</p>';
+            } else {
+                html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                    '<tr style="color:var(--dim);text-align:left">' +
+                    '<th style="padding:6px">SN码</th><th style="padding:6px">类型</th><th style="padding:6px">状态</th>' +
+                    '<th style="padding:6px">位置</th><th style="padding:6px">签发时间</th><th style="padding:6px">操作</th></tr>';
+                for (const row of list) {
+                    const canDo = row.is_owner && (row.status === 'active' || row.status === 'lost');
+                    html += '<tr style="border-top:1px solid var(--border)">' +
+                        '<td style="padding:7px 6px;font-family:monospace;word-break:break-all">' +
+                        '<a href="javascript:void(0)" onclick="snOpen(\'' + escHtml(row.sn) + '\')" style="color:var(--accent)">' + escHtml(row.sn) + '</a></td>' +
+                        '<td style="padding:7px 6px">' + escHtml(row.type_cn || '') + '</td>' +
+                        '<td style="padding:7px 6px">' + snStatusBadge(row.status) + '</td>' +
+                        '<td style="padding:7px 6px;color:var(--dim)">' + escHtml(row.loc_desc || '') + '</td>' +
+                        '<td style="padding:7px 6px;color:var(--dim)">' + escHtml(row.issue_time_str || '') + '</td>' +
+                        '<td style="padding:7px 6px;white-space:nowrap">';
+                    if (canDo) {
+                        html += '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snDoAction(\'report_lost\',\'' + escHtml(row.sn) + '\')">报失</button> ' +
+                            '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snDoAction(\'reissue\',\'' + escHtml(row.sn) + '\')">补发</button> ' +
+                            '<button class="btn btn-dim" style="padding:3px 8px;font-size:12px" onclick="snDoAction(\'cancel\',\'' + escHtml(row.sn) + '\')">注销</button>';
+                    }
+                    html += '</td></tr>';
+                }
+                html += '</table></div>';
+            }
+            html += '</div>';
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = '<div class="card"><p style="color:var(--red)">加载失败: ' + escHtml(e.message) + '</p></div>';
+        }
+    }
+
+    function snOpen(sn) {
+        snState.view = 'detail';
+        snState.sn = sn;
+        renderSn(document.getElementById('content'));
+    }
+
+    async function snDoAction(action, sn) {
+        const box = document.getElementById('snQueryInput');
+        sn = sn || (box ? box.value.trim() : '');
+        if (!sn) { toast('请输入SN码', 'error'); return; }
+        if (action !== 'query') {
+            const tips = {
+                report_lost: '确定对 ' + sn + ' 报失吗？系统会立即核对物品位置：若在容器内或在其他玩家身上将被拒绝；确认丢失后自动补发新SN。',
+                reissue: '确定申请补发 ' + sn + ' 吗？旧SN将作废，并签发带新SN的同类物品。',
+                cancel: '确定注销 ' + sn + ' 吗？将立即销毁对应实物，并进入1小时冷静期，期间无法申领新设备。'
+            };
+            if (!await glassConfirm(tips[action] || '确认执行该操作？')) return;
+        }
+        try {
+            const r = await api('sn.php', { action: action, sn: sn });
+            if (!r.success) { toast(r.message || '操作失败', 'error'); return; }
+            toast(r.message || '操作成功');
+            if (action === 'query') snOpen(sn);
+            else renderSn(document.getElementById('content'));
+        } catch (e) {
+            toast('操作失败: ' + e.message, 'error');
+        }
+    }
+
+    function snBack() {
+        snState.view = 'list';
+        snState.sn = '';
+        renderSn(document.getElementById('content'));
+    }
+
+    async function renderSnDetail(el, sn) {
+        el.innerHTML = '<div class="card"><h2>SN详情</h2><p style="color:var(--dim)">加载中...</p></div>';
+        try {
+            const r = await api('sn.php', { action: 'query', sn: sn });
+            if (!r.success) {
+                el.innerHTML = '<div class="card"><p style="color:var(--red)">' + escHtml(r.message || '查询失败') + '</p>' +
+                    '<button class="btn" onclick="snBack()">← 返回</button></div>';
+                return;
+            }
+            const d = r.data || {};
+            const head = '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">' +
+                '<h2 style="margin:0">🔢 ' + escHtml(d.sn || sn) + '</h2>' +
+                '<button class="btn" onclick="snBack()">← 返回列表</button></div>';
+
+            let html = '<div class="card">' + head;
+            if (d.is_owner === false) {
+                html += '<p style="color:var(--dim);font-size:13px">该SN不属于你，仅展示脱敏信息。</p>' +
+                    '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                    snRow('类型', d.type_cn) + snRow('状态', d.status_cn) + snRow('持有人', d.owner_mask) +
+                    '</table></div>';
+                el.innerHTML = html;
+                return;
+            }
+
+            const canDo = (d.status === 'active' || d.status === 'lost');
+            html += '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                snRow('类型', d.type_cn) +
+                snRow('状态', d.status_cn) +
+                snRow('签发时间', d.issue_time_str) +
+                snRow('最近出现', d.last_seen_str) +
+                snRow('当前位置', d.loc_desc) +
+                '</table>';
+            if (canDo) {
+                html += '<div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">' +
+                    '<button class="btn btn-yellow" onclick="snDoAction(\'report_lost\',\'' + escHtml(d.sn) + '\')">🚩 报失</button>' +
+                    '<button class="btn" onclick="snDoAction(\'reissue\',\'' + escHtml(d.sn) + '\')">♻️ 申请补发</button>' +
+                    '<button class="btn btn-red" onclick="snDoAction(\'cancel\',\'' + escHtml(d.sn) + '\')">🗑️ 注销</button>' +
+                    '</div>';
+            }
+
+            html += '<h3 style="margin:18px 0 8px;font-size:14px">📜 操作日志</h3>';
+            const logs = d.logs || [];
+            if (!logs.length) html += '<p style="color:var(--dim);font-size:13px">暂无记录</p>';
+            else {
+                html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+                    '<tr style="color:var(--dim);text-align:left"><th style="padding:5px">时间</th><th style="padding:5px">动作</th><th style="padding:5px">玩家</th><th style="padding:5px">说明</th></tr>';
+                for (const l of logs) {
+                    html += '<tr style="border-top:1px solid var(--border)">' +
+                        '<td style="padding:5px;white-space:nowrap;color:var(--dim)">' + escHtml(snFmtTime(l.time)) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(l.action) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(l.player) + '</td>' +
+                        '<td style="padding:5px;color:var(--dim);word-break:break-all">' + escHtml(l.detail) + '</td></tr>';
+                }
+                html += '</table></div>';
+            }
+
+            html += '<h3 style="margin:18px 0 8px;font-size:14px">📦 出入库登记</h3>';
+            const stock = d.stock || [];
+            if (!stock.length) html += '<p style="color:var(--dim);font-size:13px">暂无记录</p>';
+            else {
+                html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">' +
+                    '<tr style="color:var(--dim);text-align:left"><th style="padding:5px">时间</th><th style="padding:5px">动作</th><th style="padding:5px">容器</th><th style="padding:5px">坐标</th><th style="padding:5px">领地</th><th style="padding:5px">玩家</th></tr>';
+                for (const st of stock) {
+                    const land = st.in_land ? (st.land_name || '是') : '-';
+                    html += '<tr style="border-top:1px solid var(--border)">' +
+                        '<td style="padding:5px;white-space:nowrap;color:var(--dim)">' + escHtml(snFmtTime(st.time)) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(st.action) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(st.container_type || '-') + '</td>' +
+                        '<td style="padding:5px;font-family:monospace">' + escHtml((st.world || '') + ' ' + st.x + ',' + st.y + ',' + st.z) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(land) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(st.player || '-') + '</td></tr>';
+                }
+                html += '</table></div>';
+            }
+
+            const losts = d.losts || [];
+            if (losts.length) {
+                html += '<h3 style="margin:18px 0 8px;font-size:14px">🚨 报失记录</h3><ul style="font-size:13px;color:var(--dim);padding-left:18px;margin:0">';
+                for (const lo of losts) {
+                    html += '<li>' + escHtml(snFmtTime(lo.created_at)) + ' · ' + escHtml(lo.status) +
+                        (lo.result ? ' · ' + escHtml(lo.result) : '') + '</li>';
+                }
+                html += '</ul>';
+            }
+
+            html += '</div>';
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = '<div class="card"><p style="color:var(--red)">加载失败: ' + escHtml(e.message) + '</p>' +
+                '<button class="btn" onclick="snBack()">← 返回</button></div>';
+        }
+    }
+
+    function snRow(k, v) {
+        return '<tr style="border-top:1px solid var(--border)">' +
+            '<td style="padding:7px 6px;color:var(--dim);width:110px">' + escHtml(k) + '</td>' +
+            '<td style="padding:7px 6px;word-break:break-all">' + escHtml(v == null ? '' : String(v)) + '</td></tr>';
+    }
+
+    function snFmtTime(ts) {
+        const n = parseInt(ts, 10) || 0;
+        if (!n) return '';
+        const t = n >= 100000000000 ? Math.floor(n / 1000) : n;
+        const d = new Date(t * 1000);
+        const p = x => (x < 10 ? '0' : '') + x;
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+            p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
