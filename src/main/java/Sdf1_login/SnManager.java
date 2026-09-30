@@ -1847,6 +1847,8 @@ public class SnManager implements Listener {
                 result = "已永久绑定";
             } else if ("report_check".equalsIgnoreCase(cmd)) {
                 result = doReportCheck(sn, player, force);
+            } else if ("issue".equalsIgnoreCase(cmd)) {
+                result = doIssue(sn, player, itemType, reason, force);
             } else {
                 result = "未知命令: " + cmd;
             }
@@ -2028,6 +2030,63 @@ public class SnManager implements Listener {
         giveTo(online, fresh);
         logSn(newSn, itemType, "reissue_new", owner, reason);
         return "补发成功，新SN=" + newSn;
+    }
+
+    /**
+     * 办理签发：管理员在后台为玩家签发新设备（新 SN）。
+     *
+     * <p>前置校验在 PHP 端完成（旧 SN 已注销解绑 + 注销冷静期已结束，
+     * 未达标分别提示是哪一条），Java 侧做兜底复核，防止绕过接口直接入队。
+     *
+     * <p>与「强制补发」(doReissue) 的区别：issue 不作废旧 SN
+     * （旧 SN 本就已注销/销毁/补发了结），直接按类型登记新 SN 并发放；
+     * 因此也不需要 removeSnFromWorld 回收旧实物。</p>
+     *
+     * @param force 管理员强制操作（PHP 侧 issue 固定传 0）：仅跳过冷静期兜底校验
+     */
+    private String doIssue(String sn, String player, String itemType,
+                           String reason, boolean force) {
+        Map<String, Object> row = getSn(sn);
+        if (row == null) return "SN不存在";
+        String owner = (player != null && !player.isEmpty())
+                ? player : str(row.get("owner"));
+        if (itemType == null || itemType.isEmpty())
+            itemType = str(row.get("item_type"));
+
+        // ★ 兜底复核①：旧 SN 必须已了结（PHP 已校验，此处防绕过）
+        String st = str(row.get("status"));
+        if (!ST_CANCELLED.equals(st) && !ST_DESTROYED.equals(st)
+                && !ST_REISSUED.equals(st)) {
+            return "旧SN尚未注销解绑，不能办理签发";
+        }
+        // ★ 兜底复核②：本地冷静期未结束不办理（权威值在本服 sn_cooldown）
+        if (!force) {
+            long cd = getCooldownUntil(owner);
+            long now = System.currentTimeMillis();
+            if (cd > now) {
+                long mins = (cd - now + 59999) / 60000;
+                return "注销冷静期未结束，还剩约 " + mins + " 分钟";
+            }
+        }
+
+        Player online = Bukkit.getPlayerExact(owner);
+        if (online == null) return "玩家不在线，待其上线后再办理";
+
+        // 登记新 SN（同种类仅 1 个 仍然生效；旧 SN 已了结不会占名额）
+        String newSn = force
+                ? applySnForce(online, itemType, typeName(itemType))
+                : applySn(online, itemType, typeName(itemType));
+        if (newSn == null) return "办理申领被拒（见玩家提示）";
+
+        ItemStack fresh = buildSnItem(online, itemType, newSn);
+        if (fresh == null) {
+            // 未知类型：回滚刚登记的新 SN，别白占"同种类仅1个"名额
+            destroySn(newSn, "办理签发物品构建失败回滚");
+            return "办理登记成功但物品构建失败";
+        }
+        giveTo(online, fresh);
+        logSn(newSn, itemType, "issue_admin", owner, reason);
+        return "办理成功，新SN=" + newSn;
     }
 
     /**
