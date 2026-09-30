@@ -4304,7 +4304,7 @@ async function snAdmCmd(cmd, force) {
     try {
         const r = await snAdmApi('admin_cmd', {
             cmd: cmd, sn: sn, force: force,
-            reason: force ? '管理员强制执行' : '管理员代办（按三条件门槛校验）'
+            reason: cmd === 'issue' ? '管理员办理签发' : (force ? '管理员强制执行' : '管理员代办（按三条件门槛校验）')
         });
         if (!r.success) { toast(r.message || '下发失败', 'err'); return; }
         toast(r.message || '命令已下发', 'ok');
