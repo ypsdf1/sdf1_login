@@ -1849,6 +1849,9 @@ public class SnManager implements Listener {
                 result = doReportCheck(sn, player, force);
             } else if ("issue".equalsIgnoreCase(cmd)) {
                 result = doIssue(sn, player, itemType, reason, force);
+            } else if ("issue_new".equalsIgnoreCase(cmd)) {
+                // 顶层「办理签发」：没有旧 SN，只凭 玩家ID + 设备类型 直发
+                result = doIssueNew(player, itemType, reason, force);
             } else {
                 result = "未知命令: " + cmd;
             }
@@ -2086,6 +2089,65 @@ public class SnManager implements Listener {
         }
         giveTo(online, fresh);
         logSn(newSn, itemType, "issue_admin", owner, reason);
+        return "办理成功，新SN=" + newSn;
+    }
+
+    /**
+     * 顶层「办理签发」（issue_new）：只凭 玩家ID + 设备类型 直接签发，
+     * 不依赖任何旧 SN 记录——管理端 SN 页顶层表单走的就是这条链路。
+     *
+     * <p>与 {@link #doIssue} 的区别：doIssue 必须先查到旧 SN 并复核它
+     * "已注销/销毁/补发了结"；本方法没有旧 SN，改为直接核对
+     * 「同种类仅 1 个」名额与冷静期，然后按类型登记发放。</p>
+     *
+     * <p>名额/冷静期查的是本服本地库（权威），不在 PHP 侧预判——
+     * web_item_sn 是 Java 推送的副本，可能滞后 30 秒。</p>
+     *
+     * @param force 管理员强制操作（PHP 顶层入口固定传 0）：仅跳过冷静期校验，
+     *              「同种类仅 1 个」不豁免
+     */
+    private String doIssueNew(String player, String itemType, String reason,
+                              boolean force) {
+        if (player == null || player.isEmpty()) return "缺少玩家ID";
+        if (itemType == null || itemType.isEmpty()) return "缺少设备类型";
+        if (!TYPE_MENU.equals(itemType) && !TYPE_ECHO.equals(itemType)
+                && !TYPE_WAND.equals(itemType) && !TYPE_PVP.equals(itemType)) {
+            return "未知设备类型: " + itemType;
+        }
+
+        Player online = Bukkit.getPlayerExact(player);
+        if (online == null) return "玩家不在线，待其上线后再办理";
+
+        String name = online.getName();
+        // ★ 名额校验（findActive 看 active/lost/illegal 三种占位状态）
+        Map<String, Object> old = findActive(name, itemType);
+        if (old != null) {
+            return "该玩家已有有效" + typeName(itemType) + "登记（SN="
+                    + str(old.get("sn")) + "），请先注销/补发后再签发";
+        }
+        if (!force) {
+            long cd = getCooldownUntil(name);
+            long now = System.currentTimeMillis();
+            if (cd > now) {
+                long mins = (cd - now + 59999) / 60000;
+                return "注销冷静期未结束，还剩约 " + mins + " 分钟";
+            }
+        }
+
+        String newSn = force
+                ? applySnForce(online, itemType, typeName(itemType))
+                : applySn(online, itemType, typeName(itemType));
+        if (newSn == null) return "办理申领被拒（见玩家提示）";
+
+        ItemStack fresh = buildSnItem(online, itemType, newSn);
+        if (fresh == null) {
+            // 类型能过上面的白名单却构建失败 → 回滚，别白占"同种类仅1个"名额
+            destroySn(newSn, "顶层办理签发物品构建失败回滚");
+            return "办理登记成功但物品构建失败";
+        }
+        giveTo(online, fresh);
+        logSn(newSn, itemType, "issue_admin", name,
+                reason.isEmpty() ? "管理员顶层办理签发" : reason);
         return "办理成功，新SN=" + newSn;
     }
 
