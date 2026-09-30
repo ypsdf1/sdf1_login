@@ -4088,6 +4088,15 @@ async function clearAllMemberPerms(landName, targetPlayer) {
         renderSn(document.getElementById('content'));
     }
 
+    const SN_ACTION_CN = {
+        issue: '申领', issue_admin: '办理签发', backfill: '存量补登记',
+        cancel: '注销', cancel_force: '强制注销', reissue: '补发',
+        destroy: '销毁解绑', report: '报失', pickup_mismatch: '拾取归属不符',
+        illegal_craft: '非法合成', illegal_burn: '非法熔炼', bind: '永久绑定',
+        locate: '位置查询'
+    };
+    function snActionCn(a) { return SN_ACTION_CN[a] || a; }
+
     async function snDoAction(action, sn) {
         const box = document.getElementById('snQueryInput');
         sn = sn || (box ? box.value.trim() : '');
@@ -4166,7 +4175,7 @@ async function clearAllMemberPerms(landName, targetPlayer) {
                 for (const l of logs) {
                     html += '<tr style="border-top:1px solid var(--border)">' +
                         '<td style="padding:5px;white-space:nowrap;color:var(--dim)">' + escHtml(snFmtTime(l.time)) + '</td>' +
-                        '<td style="padding:5px">' + escHtml(l.action) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(snActionCn(l.action)) + '</td>' +
                         '<td style="padding:5px">' + escHtml(l.player) + '</td>' +
                         '<td style="padding:5px;color:var(--dim);word-break:break-all">' + escHtml(l.detail) + '</td></tr>';
                 }
@@ -4183,7 +4192,7 @@ async function clearAllMemberPerms(landName, targetPlayer) {
                     const land = st.in_land ? (st.land_name || '是') : '-';
                     html += '<tr style="border-top:1px solid var(--border)">' +
                         '<td style="padding:5px;white-space:nowrap;color:var(--dim)">' + escHtml(snFmtTime(st.time)) + '</td>' +
-                        '<td style="padding:5px">' + escHtml(st.action) + '</td>' +
+                        '<td style="padding:5px">' + escHtml(snActionCn(st.action)) + '</td>' +
                         '<td style="padding:5px">' + escHtml(st.container_type || '-') + '</td>' +
                         '<td style="padding:5px;font-family:monospace">' + escHtml((st.world || '') + ' ' + st.x + ',' + st.y + ',' + st.z) + '</td>' +
                         '<td style="padding:5px">' + escHtml(land) + '</td>' +

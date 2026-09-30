@@ -4074,6 +4074,14 @@ const SN_LOST_CN = {
     auto_reissue: '♻️ 已补发', done: '✅ 已完成'
 };
 
+const SN_ACTION_CN = {
+    issue: '申领', issue_admin: '办理签发', backfill: '存量补登记',
+    cancel: '注销', cancel_force: '强制注销', reissue: '补发',
+    destroy: '销毁解绑', report: '报失', pickup_mismatch: '拾取归属不符',
+    illegal_craft: '非法合成', illegal_burn: '非法熔炼', bind: '永久绑定',
+    locate: '位置查询'
+};
+function snActionCn(a) { return SN_ACTION_CN[a] || a; }
 function snStatusCn(s) { return SN_STATUS_CN[s] || s; }
 
 function snAdmSearch() {
@@ -4235,11 +4243,11 @@ async function renderSnDetail(el, sn) {
     }
 
     html += '<h3 style="margin:18px 0 8px;font-size:14px">📜 操作日志</h3>' + snAdmLogTable(d.logs || [], ['时间', '动作', '玩家', '说明'], r => [
-        snFmtTs(r.time), r.action, r.player, r.detail
+        snFmtTs(r.time), snActionCn(r.action), r.player, r.detail
     ]);
 
     html += '<h3 style="margin:18px 0 8px;font-size:14px">📦 出入库登记</h3>' + snAdmLogTable(d.stock || [], ['时间', '动作', '容器', '坐标', '领地', '玩家'], r => [
-        snFmtTs(r.time), r.action, r.container_type || '-',
+        snFmtTs(r.time), snActionCn(r.action), r.container_type || '-',
         (r.world || '') + ' ' + r.x + ',' + r.y + ',' + r.z,
         r.in_land ? (r.land_name || '是') : '-', r.player || '-'
     ]);
