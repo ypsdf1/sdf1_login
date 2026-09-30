@@ -19,6 +19,8 @@ header('Access-Control-Allow-Origin: *');
 
 // 加载密钥配置
 require_once __DIR__ . '/pay_secrets.php';
+// 第四层：全局限流（2026-09-30）
+require_once __DIR__ . '/../security.php';
 
 // ====================================================================
 //  ★ IP黑名单拦截（与 core.php 的 enforceIpBlacklist 同源数据）

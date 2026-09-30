@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-30）
 // ★ 强制缓存失效：用文件修改时间作为版本号
 // 每次修改player.php后，文件时间戳变化 → URL不同 → 浏览器必须获取新内容
 header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');

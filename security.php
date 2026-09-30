@@ -9,6 +9,12 @@
  * 第三层：admin.php 动态访问令牌 —— 必须是 admin.php?token=<SEC_ACCESS_TOKEN>
  *         才算"这个文件存在"，否则一律返回 nginx 原生 404 页（与文件不存在时
  *         的表现完全一致，让探测者分不清是文件不在还是自己请求错了）。
+ * 第四层：全局限流（2026-09-30）—— 每个客户端 IP 每 60 秒最多 20 次请求，
+ *         玩家端与管理端统一生效。白名单 IP（维护者/管理员）、携带正确
+ *         SECRET_KEY 的 Java/服务端调用、以及登录轮询等机器接口不计数；
+ *         超限请求**不返回任何数据**，直接挂起连接直到 nginx/浏览器超时
+ *         自动断开（挂起槽有并发上限，避免把 PHP-FPM worker 占满）。
+ *         应急关闭：配置 define('SEC_RATE_LIMIT', false); 或建 db/ratelimit.off。
  *
  * 引导令牌（防自锁逃生舱）：
  *   忘记密码之外的"被锁在外面"场景，用宝塔/SSH 打开 config.php 查看 SEC_BOOT_TOKEN，
@@ -677,3 +683,225 @@ function secWriteConfig(array $kv) {
     secLog('config_write', 'keys=' . implode(',', array_keys($kv)));
     return true;
 }
+
+// ======================================================================
+//  第四层：全局限流（每 IP 每 60 秒最多 20 次；白名单 IP 不限）
+//  本文件被任何入口 require 时自动执行一次，玩家端与管理端统一生效。
+// ======================================================================
+
+/** 应急开关：config 里 SEC_RATE_LIMIT===false，或存在 db/ratelimit.off 时停用。 */
+function secRateLimitOff() {
+    if (defined('SEC_RATE_LIMIT') && SEC_RATE_LIMIT === false) return true;
+    return file_exists(__DIR__ . '/db/ratelimit.off');
+}
+
+/** 当前脚本名（api/sync.php → sync.php）。 */
+function secRateScript() {
+    $s = '';
+    if (!empty($_SERVER['SCRIPT_NAME'])) $s = (string)$_SERVER['SCRIPT_NAME'];
+    elseif (!empty($_SERVER['PHP_SELF'])) $s = (string)$_SERVER['PHP_SELF'];
+    elseif (!empty($_SERVER['REQUEST_URI'])) $s = (string)parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $s = str_replace('\\', '/', (string)$s);
+    return basename($s);
+}
+
+/**
+ * 轮询/机器接口豁免表：脚本名 => 免计数的 action 列表。
+ * 这些是前端每 0.5~5 秒一次的登录轮询与支付补单器，超过 20 次/分钟是正常行为，
+ * 若也计数会让玩家无法登录、支付无法补单。
+ * 数组里放空字符串 '' 表示整个脚本豁免。
+ */
+function secRateExemptMap() {
+    static $map = array(
+        'sync.php'           => array('check_web_login_result', 'web_access_check'),
+        'pay.php'            => array('query_order'),
+        'land_api.php'       => array('get_add_visitor_status', 'get_visitor_status', 'add_visitor_status'),
+        'minecraft_auth.php' => array('check_session'),
+        'poller_online.php'  => array(''),   // 支付补单器：只被服务端/Java 触发，自带进程锁
+    );
+    return $map;
+}
+
+/** 当前请求是否命中轮询豁免表。 */
+function secRateExempt() {
+    $map = secRateExemptMap();
+    $script = secRateScript();
+    if (!isset($map[$script])) return false;
+    $list = $map[$script];
+    if (count($list) === 1 && $list[0] === '') return true;
+    $action = '';
+    if (isset($_REQUEST['action'])) $action = trim((string)$_REQUEST['action']);
+    return $action !== '' && in_array($action, $list, true);
+}
+
+/**
+ * 是否携带了正确的 SECRET_KEY（Java/服务端内部调用，不计数）。
+ * 取值顺序与各接口一致：GET / POST / JSON 请求体。
+ */
+function secRateHasSecret() {
+    if (!defined('SECRET_KEY') || SECRET_KEY === '') return false;
+    $key = (string)SECRET_KEY;
+    $cands = array();
+    if (isset($_GET['secret'])) $cands[] = (string)$_GET['secret'];
+    if (isset($_POST['secret'])) $cands[] = (string)$_POST['secret'];
+    if (isset($_REQUEST['secret'])) $cands[] = (string)$_REQUEST['secret'];
+    foreach ($cands as $c) {
+        if ($c !== '' && hash_equals($key, $c)) return true;
+    }
+    // 个别接口把 secret 放在 JSON 请求体里（Content-Type: application/json）
+    $ct = isset($_SERVER['CONTENT_TYPE']) ? (string)$_SERVER['CONTENT_TYPE'] : '';
+    if ($ct !== '' && stripos($ct, 'json') !== false && empty($_POST)) {
+        $len = isset($_SERVER['CONTENT_LENGTH']) ? (int)$_SERVER['CONTENT_LENGTH'] : 0;
+        if ($len > 0 && $len <= 262144) {
+            $raw = file_get_contents('php://input');
+            if (is_string($raw) && $raw !== '') {
+                $j = json_decode($raw, true);
+                if (is_array($j)) {
+                    foreach (array('secret', 'key') as $k) {
+                        if (isset($j[$k]) && is_string($j[$k]) && $j[$k] !== ''
+                            && hash_equals($key, $j[$k])) return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * 计一次数，返回该 IP 当前 60 秒窗口内的请求数（含本次）。
+ * 计数与判断放在同一把文件锁里，避免“读到没超、写入后已超”的竞态。
+ */
+function secRateCount($ip, $max, $win) {
+    $f = secStateFile();
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0755, true); }
+    $fp = @fopen($f, 'c+');
+    if (!$fp) return 0;
+    flock($fp, LOCK_EX);
+    $raw = stream_get_contents($fp);
+    $state = json_decode($raw, true);
+    if (!is_array($state)) $state = array();
+    $now = time();
+    $k = 'rate|' . $ip;
+    $arr = (isset($state[$k]) && is_array($state[$k])) ? $state[$k] : array();
+    $arr[] = $now;
+    $fresh = array();
+    foreach ($arr as $ts) { if ((int)$ts > $now - $win) $fresh[] = (int)$ts; }
+    // 单 IP 最多留 60 条：即便被刷爆，也只按窗口内的条数判超限，不撑爆文件
+    if (count($fresh) > 60) $fresh = array_slice($fresh, -60);
+    $state[$k] = $fresh;
+    // 文件过大时顺手清掉其它已过期 IP 的桶，防止长期堆积
+    if (strlen((string)$raw) > 262144) {
+        foreach ($state as $kk => $vv) {
+            if (!is_array($vv)) { unset($state[$kk]); continue; }
+            $alive = false;
+            foreach ($vv as $ts) { if ((int)$ts > $now - $win) { $alive = true; break; } }
+            if (!$alive) unset($state[$kk]);
+        }
+    }
+    ftruncate($fp, 0); rewind($fp);
+    fwrite($fp, json_encode($state, JSON_UNESCAPED_UNICODE));
+    fflush($fp); flock($fp, LOCK_UN); fclose($fp);
+    return count($fresh);
+}
+
+/** 挂起槽文件（记录当前正在被挂起的连接，防止占满 PHP-FPM worker）。 */
+function secHangFile() {
+    return __DIR__ . '/db/sec_hang.json';
+}
+
+/**
+ * 申请一个挂起槽：每 IP 最多 2 个、全局最多 4 个。
+ * 返回槽 id（成功）或 ''（槽满）。槽位带 300 秒过期自愈，进程被强杀也不会永久泄漏。
+ */
+function secHangAcquire($ip) {
+    $f = secHangFile();
+    if (!is_dir(dirname($f))) { @mkdir(dirname($f), 0755, true); }
+    $fp = @fopen($f, 'c+');
+    if (!$fp) return '';
+    flock($fp, LOCK_EX);
+    $raw = stream_get_contents($fp);
+    $list = json_decode($raw, true);
+    if (!is_array($list)) $list = array();
+    $now = time();
+    $mine = 0; $total = 0; $keep = array();
+    foreach ($list as $e) {
+        if (!is_array($e) || !isset($e['ip'], $e['t'])) continue;
+        if ((int)$e['t'] < $now - 300) continue;      // 过期自愈
+        $keep[] = $e;
+        $total++;
+        if ((string)$e['ip'] === (string)$ip) $mine++;
+    }
+    $id = '';
+    if ($mine < 2 && $total < 4) {
+        $id = uniqid('h', true);
+        $keep[] = array('ip' => (string)$ip, 't' => $now, 'id' => $id);
+    }
+    ftruncate($fp, 0); rewind($fp);
+    fwrite($fp, json_encode($keep, JSON_UNESCAPED_UNICODE));
+    fflush($fp); flock($fp, LOCK_UN); fclose($fp);
+    return $id;
+}
+
+/** 释放挂起槽。 */
+function secHangRelease($id) {
+    if (!is_string($id) || $id === '') return;
+    $f = secHangFile();
+    if (!file_exists($f)) return;
+    $fp = @fopen($f, 'r+');
+    if (!$fp) return;
+    flock($fp, LOCK_EX);
+    $raw = stream_get_contents($fp);
+    $list = json_decode($raw, true);
+    if (is_array($list)) {
+        $out = array();
+        foreach ($list as $e) {
+            if (is_array($e) && isset($e['id']) && (string)$e['id'] === $id) continue;
+            $out[] = $e;
+        }
+        if (count($out) !== count($list)) {
+            ftruncate($fp, 0); rewind($fp);
+            fwrite($fp, json_encode($out, JSON_UNESCAPED_UNICODE));
+            fflush($fp);
+        }
+    }
+    flock($fp, LOCK_UN); fclose($fp);
+}
+
+/**
+ * 超限处理：一个字节都不返回，挂起连接直到超时/对端断开。
+ * - 挂起槽满时立即结束（同样不输出任何内容），避免把 worker 占满导致全站不可用；
+ * - 挂起期间关闭 session 写锁，否则同用户的下一个请求会被 session 文件锁卡死；
+ * - 上限 90 秒：nginx fastcgi_read_timeout 默认 60 秒会先返回 504 断开。
+ */
+function secRateSuspend($ip) {
+    $id = secHangAcquire($ip);
+    if ($id === '') { exit; }
+    @set_time_limit(0);
+    if (session_status() === PHP_SESSION_ACTIVE) { @session_write_close(); }
+    $start = time();
+    while (time() - $start < 90) {
+        if (connection_aborted()) break;
+        @sleep(1);
+    }
+    secHangRelease($id);
+    exit;
+}
+
+/** 第四层入口：include security.php 时自动执行一次。 */
+function secRateLimitGate() {
+    if (PHP_SAPI === 'cli') return;                 // 命令行脚本不参与限流
+    if (empty($_SERVER['REMOTE_ADDR'])) return;      // 无来源地址（CLI/内部）不参与
+    if (secRateLimitOff()) return;                   // 应急开关
+    $ip = secClientIp();
+    if ($ip === '') return;
+    if (secIpAllowed()) return;                      // 第二层白名单 IP = 维护者/管理员，不限
+    if (secRateHasSecret()) return;                  // Java/服务端调用（带正确 SECRET_KEY）
+    if (secRateExempt()) return;                     // 登录轮询、支付补单等机器接口
+    $n = secRateCount($ip, 20, 60);
+    if ($n <= 20) return;
+    if ($n === 21) { secLog('rate_blocked', '超过 20 次/分钟，开始挂起连接不返回数据'); }
+    secRateSuspend($ip);
+}
+
+secRateLimitGate();

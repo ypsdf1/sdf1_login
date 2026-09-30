@@ -9,6 +9,8 @@ error_reporting(E_ERROR | E_PARSE);
 // 取 SECRET_KEY（插件与 Web 端约定的通信密钥，值在 config.php 里由部署者自己填）。
 // require_once：本文件也可能被别的入口 include，不会重复定义。
 require_once __DIR__ . '/../config.php';
+// 第四层：全局限流（2026-09-30）
+require_once __DIR__ . '/../security.php';
 
 /**
  * ★ 将Java自定义格式转换为JSON数组

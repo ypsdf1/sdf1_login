@@ -1,3 +1,6 @@
+<?php
+require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-30）
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>

@@ -9,6 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+require_once __DIR__ . '/../security.php';   // 第四层：全局限流（2026-09-30）
 require_once __DIR__ . '/../inc/function.php';
 
 /** @var PDO $db */

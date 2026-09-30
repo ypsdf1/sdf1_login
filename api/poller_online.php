@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../security.php';   // 第四层：全局限流（2026-09-30）
 /**
  * 支付补单器（poller_online.php）— 绕过 Cloudflare WAF 拦截的 HTTP 回调通知
  *

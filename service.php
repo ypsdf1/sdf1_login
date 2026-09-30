@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-30）
 header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
 header('Pragma: no-cache');
 header('Expires: 0');
