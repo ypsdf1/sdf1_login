@@ -160,6 +160,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
                 secLog('twofa_enabled', '');
                 $ok = '✅ 二次验证已启用！之后每次登录后台都必须输入 6 位动态码（当前会话也需重新验证）';
             } elseif ($act === 'rotate_token') {
+                // ★ 防误触兜底（2026-09-30 事故）：本操作曾是表单第一个 submit 按钮，
+                //   任何文本框按回车都会隐式提交命中它。现在只有点了「重新生成令牌」
+                //   按钮并确认对话框（rotate_confirm=1）才执行；回车等路径一律拒绝。
+                if (!isset($_POST['rotate_confirm']) || (string)$_POST['rotate_confirm'] !== '1') {
+                    secLog('token_rotate_denied', '缺少显式确认标记（疑似回车隐式提交），已拒绝');
+                    throw new Exception('已拦截一次非按钮发起的令牌重置（防误触）。请点「重新生成令牌」按钮并在确认框中点确定。');
+                }
                 // ★ 需求：重置访问密钥不得关闭二次验证。
                 //   1) 写前先拍一张 SEC-UPDATE 区快照；
                 //   2) 最小写入 —— 本次只提交"两个令牌键"，绝不再走 $full() 把内存里的
@@ -291,8 +298,9 @@ if (file_exists($secLogPath)) {
     <?php if ($err !== ''): ?><span class="msg err">❌ <?php echo $err; ?></span><?php endif; ?>
     <?php if ($ok !== ''): ?><span class="msg ok">✅ <?php echo $ok; ?></span><?php endif; ?>
 
-    <form method="post" autocomplete="off">
+    <form method="post" autocomplete="off" id="secForm">
         <input type="hidden" name="act" id="act" value="">
+        <input type="hidden" name="rotate_confirm" id="rotateConfirmBox" value="">
 
         <?php if ($mode === 'session'): ?>
         <div class="pwd-row">
@@ -318,7 +326,7 @@ if (file_exists($secLogPath)) {
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($secBootTok, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button>
                 <div class="hint">🔖 后台唯一入口（请收藏这一条，不带 token 访问 admin.php 一律返回 404）：<br><code><?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?></code>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?>', this)">复制地址</button>
-                <button type="submit" class="btn btn-gray" style="margin-left:6px" onclick="setAct('rotate_token')">重新生成令牌</button></div>
+                <button type="submit" class="btn btn-gray" style="margin-left:6px" onclick="return rotateConfirm()">重新生成令牌</button></div>
                 <div class="hint">恢复访问地址：<code><?php echo htmlspecialchars($recoverUrl, ENT_QUOTES, 'UTF-8'); ?></code>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($recoverUrl, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button></div>
             </div>
@@ -2719,6 +2727,35 @@ var qrcode = function() {
 </script>
 <script>
 function setAct(v) { document.getElementById('act').value = v; }
+// ★ 重新生成令牌：必须显式点击 + 二次确认，并置 rotate_confirm=1 供服务端兜底校验
+function rotateConfirm() {
+    if (!confirm('确定重新生成后台入口令牌？\n旧地址将立即失效（404），请复制新地址并更新书签。\n（此操作不影响二次验证状态）')) { return false; }
+    document.getElementById('rotateConfirmBox').value = '1';
+    setAct('rotate_token');
+    return true;
+}
+// ★ 回车隐式提交防护（2026-09-30 事故根因）：
+//   表单里第一个 type=submit 是「重新生成令牌」，浏览器在任意文本框按回车都会
+//   隐式提交并命中它，导致"只想绑定二次验证，结果重置了后台密钥"。这里统一拦截：
+//   - 绑定流程中验证码框回车 = 点「确认绑定」（等价操作，体验不变）
+//   - 其它输入框回车一律不提交（必须显式点按钮，防误触破坏性操作）
+//   注：只拦 INPUT —— textarea 的 Enter 本就是换行、不会提交表单，拦了反而没法换行。
+document.addEventListener('DOMContentLoaded', function () {
+    var fm = document.getElementById('secForm');
+    if (!fm) return;
+    fm.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter') return;
+        var t = ev.target;
+        if (!t || t.tagName !== 'INPUT') return;
+        if (t.type === 'submit' || t.type === 'button' || t.type === 'image') return;
+        ev.preventDefault();
+        if (t.id === 'codeBox' && <?php echo (!$twoFaOn && $pending !== '') ? 'true' : 'false'; ?>) {
+            document.getElementById('rotateConfirmBox').value = '';
+            setAct('twofa_finish');
+            fm.submit();
+        }
+    });
+});
 // 重新生成密钥前必须确认：旧密钥一作废，认证器里那条就永远对不上了
 function regenConfirm() {
     if (!confirm('重新生成会作废当前密钥——你认证器里已经添加的那条将立即失效（动态码会一直被拒）。确定继续？')) return false;
