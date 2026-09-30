@@ -1201,7 +1201,7 @@ function snAdminCmd() {
     $cmd = trim(getParam('cmd', ''));
     $sn = trim(getParam('sn', ''));
     $reason = trim(getParam('reason', ''));
-    $allowed = ['cancel', 'reissue', 'locate', 'bind', 'report_check'];
+    $allowed = ['cancel', 'reissue', 'locate', 'bind', 'report_check', 'issue'];
     if (!in_array($cmd, $allowed, true)) error('非法命令');
     if ($sn === '') error('缺少sn');
 
@@ -1212,12 +1212,29 @@ function snAdminCmd() {
     $row = $rr->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('SN不存在');
 
+    // issue（办理签发）：两条硬校验、分别提示哪条不达标（与玩家端最小化提示相反）。
+    //   error() 直接 exit → 两条提示天然互斥。校验通过才入队，isForce 固定为 0（无豁免）。
+    if ($cmd === 'issue') {
+        $st = (string)$row['status'];
+        if (!in_array($st, array('cancelled', 'destroyed', 'reissued'), true)) {
+            error('旧SN尚未注销解绑，当前状态：' . snStatusCn($st)
+                  . '。请先完成注销/销毁/补发后再办理');
+        }
+        $cdUntil = snCooldownLeft($db, (string)$row['owner']);
+        $nowTs = snNow();
+        if ($cdUntil > $nowTs) {
+            error('注销冷静期未结束，还剩 ' . ceil(($cdUntil - $nowTs) / 60) . ' 分钟');
+        }
+    }
+
     // ★ is_force=1（默认，强制操作）：Java 侧本次绕过冷静期 + 绕过三条件门槛
     //   （强制注销 / 强制补发按定义豁免"脱离自身管控"三项）。
     //   代办操作传 force=0 → 照常按三条件校验，逐条判定见 SN 详情的 custody。
     $force = (int)getParam('force', 1) ? 1 : 0;
+    // issue 不受 $force 影响（校验是硬的、无豁免）；cancel/reissue 等原有 force 语义不变。
     $id = snEnqueueCmd($db, $cmd, $sn, $row['owner'], $row['item_type'],
-                       $reason !== '' ? $reason : '管理员操作', '', 0, $force);
+                       $reason !== '' ? $reason : ($cmd === 'issue' ? '管理员办理签发' : '管理员操作'),
+                       '', 0, $cmd === 'issue' ? 0 : $force);
     success(['id' => $id], '命令已下发，等待游戏服务器执行（10~30 秒）');
 }
 

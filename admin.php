@@ -4209,6 +4209,7 @@ async function renderSnDetail(el, sn) {
         '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\', 0)">📋 代办注销</button>' +
         '<button class="btn btn-red" onclick="snAdmCmd(\'bind\')">🔒 永久绑定</button>' +
         '<button class="btn btn-yellow" onclick="snAdmCmd(\'report_check\')">🚩 报失核查</button>' +
+        '<button class="btn btn-yellow" onclick="snAdmCmd(\'issue\')">🎫 办理签发</button>' +
         '</div>' +
         '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。' +
         '<br><b>强制注销</b>：豁免三条件门槛，直接执行且<b>不进入冷静期</b>；<b>强制补发</b>：豁免三条件门槛，按定义直接执行；' +
@@ -4288,7 +4289,7 @@ async function snAdmCmd(cmd, force) {
     if (force === undefined || force === null) force = 1;
     const sn = snAdm.sn;
     if (!sn) return;
-    const names = { locate: '定位', reissue: '强制补发', cancel: (force ? '强制注销' : '代办注销'), bind: '永久绑定', report_check: '报失核查' };
+    const names = { locate: '定位', reissue: '强制补发', cancel: (force ? '强制注销' : '代办注销'), bind: '永久绑定', report_check: '报失核查', issue: '办理签发' };
     const warns = {
         locate: '立即查询该SN在游戏世界中的位置？',
         reissue: '强制补发 ' + sn + '？旧SN作废并签发新SN，玩家需在线。',
@@ -4296,7 +4297,8 @@ async function snAdmCmd(cmd, force) {
             ? '强制注销 ' + sn + '？豁免三条件门槛，将销毁对应实物并直接注销，不进入1小时冷静期。'
             : '代办注销 ' + sn + '？按三条件门槛校验（不在本人身上 / 不在本人领地箱子 / 脱离自身管控超12小时），未达标会被拒绝；成功后进入1小时冷静期。',
         bind: '把 ' + sn + ' 永久绑定为非法物品？该SN不可恢复。',
-        report_check: '立即核查 ' + sn + ' 的当前位置并给出报失结论？'
+        report_check: '立即核查 ' + sn + ' 的当前位置并给出报失结论？',
+        issue: '为 ' + sn + ' 办理签发新设备？前提：旧SN已注销解绑 且 注销冷静期已结束（1小时），未达标会分别提示是哪一条未通过。'
     };
     if (!await glassConfirm(warns[cmd] || ('确认对 ' + sn + ' 执行「' + names[cmd] + '」？'))) return;
     try {
