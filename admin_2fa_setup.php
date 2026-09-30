@@ -42,6 +42,9 @@ $twoFaSecret = defined('SEC_2FA_SECRET') ? (string)SEC_2FA_SECRET : '';
 // ★ 第三层：后台入口令牌（config.php 的 SEC_ACCESS_TOKEN）。
 //   若旧版 config 尚未有该键，首次任何写操作会顺手生成一个（自愈），本页会把地址显示出来。
 $secToken = (defined('SEC_ACCESS_TOKEN') && SEC_ACCESS_TOKEN !== '') ? (string)SEC_ACCESS_TOKEN : secNewToken();
+// ★ boot 引导令牌同理：config.php 分发版里 SEC-UPDATE 区是空的（隐私信息不入库），
+//   首次保存时自动生成，之后一直沿用 —— 否则逃生舱永远是空令牌、谁都进不来也等于没锁。
+$secBootTok = (defined('SEC_BOOT_TOKEN') && SEC_BOOT_TOKEN !== '') ? (string)SEC_BOOT_TOKEN : secNewToken();
 $pending = isset($_SESSION['sec_pending_secret']) ? (string)$_SESSION['sec_pending_secret'] : '';
 $myIp = secClientIp();
 $err = '';
@@ -80,9 +83,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
             // 全量写回（未提及的键保留旧值由 secWriteConfig 内部保证）
             $full = function ($over) {
                 return array_merge(array(
-                    'SEC_BOOT_TOKEN' => SEC_BOOT_TOKEN,
+                    // 用变量而不是常量：分发版 config.php 的 SEC-UPDATE 区是空的，
+                    // 未定义时常量会触发 PHP8 undefined constant Error；这里取"当前值或本次生成的值"，
+                    // 首次保存时把随机 boot 令牌 / 访问令牌 / 纪元就地补进 config.php。
+                    'SEC_BOOT_TOKEN' => $GLOBALS['secBootTok'],
                     'SEC_ACCESS_TOKEN' => $GLOBALS['secToken'],
-                    'SEC_EPOCH' => (int)SEC_EPOCH,
+                    'SEC_EPOCH' => defined('SEC_EPOCH') ? (int)SEC_EPOCH : time(),
                     'ADMIN_IP_WHITELIST' => $GLOBALS['whitelist'],
                     'SEC_2FA_ENABLED' => $GLOBALS['twoFaOn'],
                     'SEC_2FA_SECRET' => $GLOBALS['twoFaSecret'],
@@ -106,7 +112,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
                     }
                 }
                 $items = array_values(array_unique($items));
+                // 改白名单同样不许碰 2FA：写前快照 + 写后护栏（同 rotate_token）
+                $twoFaSnap = secReadUpdateBlock();
                 secWriteConfig($full(array('ADMIN_IP_WHITELIST' => $items)));
+                secGuardTwoFaUnchanged($twoFaSnap, 'save_whitelist');
                 $whitelist = $items;
                 secLog('whitelist_save', 'count=' . count($items) . ' ' . implode(',', $items));
                 $ok = 'IP 白名单已保存（' . count($items) . ' 条）' . (count($items) === 0 ? '。注意：白名单为空 = 仅服务器本机可访问后台！' : '');
@@ -151,11 +160,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
                 secLog('twofa_enabled', '');
                 $ok = '✅ 二次验证已启用！之后每次登录后台都必须输入 6 位动态码（当前会话也需重新验证）';
             } elseif ($act === 'rotate_token') {
+                // ★ 需求：重置访问密钥不得关闭二次验证。
+                //   1) 写前先拍一张 SEC-UPDATE 区快照；
+                //   2) 最小写入 —— 本次只提交"两个令牌键"，绝不再走 $full() 把内存里的
+                //      2FA / 白名单 / 纪元一起带进去（secWriteConfig 对未提及的键一律按
+                //      磁盘旧值原样保留，所以那些键连一个字节都不会动）。
+                //      顺带写 SEC_BOOT_TOKEN 是为了：分发版 config.php 的区段是空的，
+                //      页面上算出来的引导令牌必须落盘一次，否则刷新就变、逃生舱永远用不了。
+                //   3) 写后由 secGuardTwoFaUnchanged 复核磁盘上的 2FA 状态，
+                //      只要被打开/关闭或密钥被清空就立刻回滚并报错。
+                $twoFaSnap = secReadUpdateBlock();
                 $newTok = secNewToken();
-                secWriteConfig($full(array('SEC_ACCESS_TOKEN' => $newTok)));
+                secWriteConfig(array(
+                    'SEC_ACCESS_TOKEN' => $newTok,
+                    'SEC_BOOT_TOKEN' => $GLOBALS['secBootTok'],
+                ));
+                secGuardTwoFaUnchanged($twoFaSnap, 'rotate_token');
                 $secToken = $newTok;
-                secLog('token_rotate', 'admin.php 入口令牌已更换');
-                $ok = '后台入口令牌已重新生成，旧地址立即失效（返回 404）。请复制下方新地址并更新书签。';
+                secLog('token_rotate', 'admin.php 入口令牌已更换，2FA 保持' . ($twoFaOn ? '启用' : '原样'));
+                $ok = '后台入口令牌已重新生成，旧地址立即失效（返回 404）。二次验证状态不受影响（仍为'
+                    . ($twoFaOn ? '已启用 ✅' : '未启用') . '）。请复制下方新地址并更新书签。';
             } elseif ($act === 'twofa_disable') {
                 if ($mode !== 'boot') {
                     // 非引导模式：必须出示当前动态码（证明认证器在手）
@@ -187,7 +211,7 @@ $reqPath = parse_url(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : 
 $baseDir = rtrim(dirname($reqPath), '/');
 $scheme = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
 $host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '';
-$recoverUrl = $scheme . '://' . $host . $baseDir . '/admin_2fa_setup.php?boot=' . SEC_BOOT_TOKEN;
+$recoverUrl = $scheme . '://' . $host . $baseDir . '/admin_2fa_setup.php?boot=' . $secBootTok;
 // ★ 第三层：后台唯一正确入口（不带令牌访问 admin.php 一律 404）
 $adminUrl = $scheme . '://' . $host . $baseDir . '/admin.php?token=' . rawurlencode($secToken);
 
@@ -287,11 +311,11 @@ if (file_exists($secLogPath)) {
                 <span class="badge <?php echo $twoFaOn ? 'b-on' : 'b-off'; ?>"><?php echo $twoFaOn ? 'ON' : 'OFF'; ?></span><br>
                 IP 白名单：<b><?php echo count($whitelist) === 0 ? '空（仅服务器本机可访问）⚠️' : count($whitelist) . ' 条'; ?></b><br>
                 你的 IP：<b style="font-family:monospace;color:#58a6ff"><?php echo htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8'); ?></b><br>
-                安全纪元：<b><?php echo date('Y-m-d H:i:s', (int)SEC_EPOCH); ?></b>（此前的登录会话已全部作废）<br>
+                安全纪元：<b><?php echo secEpoch() > 0 ? date('Y-m-d H:i:s', secEpoch()) : '未设置（首次保存时自动定格）'; ?></b>（此前的登录会话已全部作废）<br>
                 后台入口令牌：<b style="font-family:monospace;color:#3fb950"><?php echo htmlspecialchars($secToken, ENT_QUOTES, 'UTF-8'); ?></b>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($secToken, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button><br>
-                引导令牌：<b style="font-family:monospace;color:#d29922"><?php echo htmlspecialchars(SEC_BOOT_TOKEN, ENT_QUOTES, 'UTF-8'); ?></b>
-                <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars(SEC_BOOT_TOKEN, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button>
+                引导令牌：<b style="font-family:monospace;color:#d29922"><?php echo htmlspecialchars($secBootTok, ENT_QUOTES, 'UTF-8'); ?></b>
+                <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($secBootTok, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button>
                 <div class="hint">🔖 后台唯一入口（请收藏这一条，不带 token 访问 admin.php 一律返回 404）：<br><code><?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?></code>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?>', this)">复制地址</button>
                 <button type="submit" class="btn btn-gray" style="margin-left:6px" onclick="setAct('rotate_token')">重新生成令牌</button></div>

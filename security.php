@@ -528,6 +528,84 @@ function secExportVal($v) {
 }
 
 /**
+ * 读取 config.php 的 SEC-UPDATE 区当前各 define 原始字面量（写前快照 / 写后自检用）。
+ * @return array|null 键=常量名，值=define 第二参数的原文；区段缺失或不可读返回 null
+ */
+function secReadUpdateBlock() {
+    $path = secConfigPath();
+    $src = @file_get_contents($path);
+    if ($src === false) return null;
+    $bPos = strpos($src, 'SEC-UPDATE-BEGIN');
+    $ePos = strpos($src, 'SEC-UPDATE-END');
+    if ($bPos === false || $ePos === false || $ePos < $bPos) return null;
+    $blk = substr($src, $bPos, $ePos - $bPos);
+    $out = array();
+    foreach (explode("\n", $blk) as $line) {
+        if (preg_match('/^define\(\'([A-Z0-9_]+)\',\s*(.*)\);\s*$/', trim($line), $m)) {
+            $out[$m[1]] = $m[2];
+        }
+    }
+    return $out;
+}
+
+/**
+ * 二次验证状态的语义指纹：'on|set' / 'off|empty' / null（读不到）。
+ * 用语义而不是字面量比对，避免 true/1 这类等价写法误判。
+ */
+function secTwoFaState($blk) {
+    if (!is_array($blk)) return null;
+    if (!array_key_exists('SEC_2FA_ENABLED', $blk)) return null;
+    $on = trim($blk['SEC_2FA_ENABLED']);
+    $enabled = ($on === 'true' || $on === '1'
+             || ((strncmp($on, '\'', 1) === 0 || strncmp($on, '"', 1) === 0) && trim($on, '\'"') !== ''));
+    $sec = array_key_exists('SEC_2FA_SECRET', $blk) ? trim($blk['SEC_2FA_SECRET']) : '';
+    $hasSecret = !($sec === '' || $sec === "''" || $sec === '""' || $sec === 'null');
+    return ($enabled ? 'on' : 'off') . '|' . ($hasSecret ? 'set' : 'empty');
+}
+
+/**
+ * 还原 config.php 到写入前的最近一次自动备份（secWriteConfig 每次写前必备份）。
+ * @return bool 是否还原成功
+ */
+function secRestoreLastConfigBackup($op) {
+    $baks = glob(__DIR__ . '/db/config_bak/config.*.php');
+    if (!is_array($baks) || count($baks) === 0) return false;
+    sort($baks);
+    $last = $baks[count($baks) - 1];
+    $src = @file_get_contents($last);
+    if ($src === false) return false;
+    $path = secConfigPath();
+    if (@file_put_contents($path, $src, LOCK_EX) === false) return false;
+    if (function_exists('opcache_invalidate')) @opcache_invalidate($path, true);
+    secLog('config_rollback', $op . ' restored from ' . basename($last));
+    return true;
+}
+
+/**
+ * 二次验证护栏：给「本轮操作本来就不该动 2FA」的动作（重置访问令牌、改白名单）用。
+ * 用写入前的快照和写入后的磁盘实际状态比对，一旦 2FA 被打开/关闭或密钥被清空，
+ * 立即从写前备份回滚并抛错 —— 结构上保证"重置访问密钥绝不会顺带关掉二次验证"。
+ *
+ * @param array|null $before 写入前 secReadUpdateBlock() 的快照
+ * @param string     $op     操作名（日志用）
+ * @throws Exception 检测到 2FA 状态被改动时（此时已尝试回滚）
+ */
+function secGuardTwoFaUnchanged($before, $op) {
+    $b = secTwoFaState($before);
+    if ($b === null) return;              // 快照不可得：护栏不拦，避免误伤
+    $a = secTwoFaState(secReadUpdateBlock());
+    if ($a === null) return;
+    if ($b === $a) {
+        secLog('twofa_guard_ok', $op . ' 2FA=' . $a . ' 未变');
+        return;
+    }
+    $restored = secRestoreLastConfigBackup($op);
+    secLog('twofa_guard_trip', $op . ' 2FA ' . $b . ' -> ' . $a . ' | rollback=' . ($restored ? 'ok' : 'FAIL'));
+    throw new Exception('安全护栏触发：' . $op . ' 意外改动了二次验证配置，已'
+        . ($restored ? '自动回滚，二次验证未被关闭。' : '回滚失败，请立刻用引导令牌进本页检查 2FA 状态。'));
+}
+
+/**
  * 整段重写 config.php 的 SEC-UPDATE 标记区。
  * - 未在 $kv 中出现的既有 define 一律按旧值保留（防丢 SEC_EPOCH / SEC_BOOT_TOKEN）
  * - 写前备份到 db/config_bak/（保留最近 5 份），tmp+rename 原子替换
