@@ -190,6 +190,11 @@ header('Pragma: no-cache');
 </div>
 
 <script data-cfasync="false">
+// ★ 通信密钥与 API 地址：定义放到 script 最前，避免下方代码在 const 初始化前引用（TDZ）。
+//   真实密钥值只存在 config.php 里（不入库），运行时由服务端注入，源码里没有字面量。
+const SECRET = <?php echo json_encode((string)SECRET_KEY, JSON_UNESCAPED_UNICODE); ?>;
+const LAND_API = 'api/land_api.php';
+
 // ★ 全局错误处理器：捕获所有未处理异常
 window.onerror = function(msg, src, line, col, err) {
     console.error('[GlobalError]', msg, 'at', src, 'line', line + ':' + col, err);
@@ -2553,9 +2558,9 @@ async function loadLands(el) {
     el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
     try {
         const [landsRes, shopRes, configRes] = await Promise.all([
-            fetch('api/land_api.php?action=list_lands&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()),
-            fetch('api/land_api.php?action=list_shop&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()),
-            fetch('api/land_api.php?action=get_config&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json())
+            fetch('api/land_api.php?action=list_lands&secret=' + SECRET + '').then(r => r.json()),
+            fetch('api/land_api.php?action=list_shop&secret=' + SECRET + '').then(r => r.json()),
+            fetch('api/land_api.php?action=get_config&secret=' + SECRET + '').then(r => r.json())
         ]);
 
         let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
@@ -2678,12 +2683,12 @@ async function saveLandConfig() {
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=create_price_per_sqm&value=' + encodeURIComponent(price) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'key=create_price_per_sqm&value=' + encodeURIComponent(price) + '&secret=' + SECRET + ''
         });
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=max_lands_per_player&value=' + encodeURIComponent(maxLands) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'key=max_lands_per_player&value=' + encodeURIComponent(maxLands) + '&secret=' + SECRET + ''
         });
         document.querySelector('.modal-close')?.click();
         loadLands(document.getElementById('C'));
@@ -2697,7 +2702,7 @@ async function deleteLand(name) {
     fetch('api/land_api.php?action=delete_land', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu'
+        body: 'name=' + encodeURIComponent(name) + '&secret=' + SECRET + ''
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else glassAlert('失败: ' + (d.error||''));
@@ -2724,7 +2729,7 @@ async function adminTransferLand(name, currentOwner) {
         const res = await fetch('api/land_api.php?action=update_land_owner', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'name=' + encodeURIComponent(name) + '&owner=' + encodeURIComponent(trimmed) + '&secret=' + SECRET + ''
         });
         const d = await res.json();
         if (d.success && d.pending) {
@@ -2735,7 +2740,7 @@ async function adminTransferLand(name, currentOwner) {
             const interval = 3000; // 3秒轮询一次
             const poll = async () => {
                 try {
-                    const pollRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu');
+                    const pollRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=' + SECRET + '');
                     const pollData = await pollRes.json();
                     if (pollData.success) {
                         if (pollData.status === 'completed') {
@@ -2757,7 +2762,7 @@ async function adminTransferLand(name, currentOwner) {
                         setTimeout(poll, interval);
                     } else {
                         // 超时，检查最终状态
-                        const finalRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=sdf1_web_comm_2026_ypshidifu');
+                        const finalRes = await fetch('api/land_api.php?action=get_owner_change_status&name=' + encodeURIComponent(name) + '&secret=' + SECRET + '');
                         const finalData = await finalRes.json();
                         if (finalData.success && finalData.status === 'completed') {
                             glassAlert('改主成功！领地 [' + name + '] 所有者已变更为 [' + trimmed + ']');
@@ -2806,7 +2811,7 @@ async function deleteShopItem(id) {
     fetch('api/land_api.php?action=delete_shop_item', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'id=' + id + '&secret=sdf1_web_comm_2026_ypshidifu'
+        body: 'id=' + id + '&secret=' + SECRET + ''
     }).then(r => r.json()).then(d => {
         if (d.success) loadLands(document.getElementById('C'));
         else glassAlert('失败: ' + (d.error||''));
@@ -2814,8 +2819,6 @@ async function deleteShopItem(id) {
 }
 
 // ==================== 用户组管理 ====================
-const SECRET = 'sdf1_web_comm_2026_ypshidifu';
-const LAND_API = 'api/land_api.php';
 
 // 权限名称映射（中文名→Java key）
 const PERM_NAMES = {
@@ -2861,7 +2864,7 @@ async function loadUserGroups(el) {
     try {
         const [res, configRes] = await Promise.all([
             apiCall('list_user_groups'),
-            fetch('api/land_api.php?action=get_config&secret=sdf1_web_comm_2026_ypshidifu').then(r => r.json()).catch(() => ({config:{}}))
+            fetch('api/land_api.php?action=get_config&secret=' + SECRET + '').then(r => r.json()).catch(() => ({config:{}}))
         ]);
         const groups = res.groups || [];
         const homeCfg = (configRes.config && configRes.config.max_home_per_player) || '5';
@@ -2956,7 +2959,7 @@ async function saveHomeConfig() {
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'key=max_home_per_player&value=' + encodeURIComponent(maxHome) + '&secret=sdf1_web_comm_2026_ypshidifu'
+            body: 'key=max_home_per_player&value=' + encodeURIComponent(maxHome) + '&secret=' + SECRET + ''
         });
         document.querySelector('.modal-close')?.click();
         loadUserGroups(document.getElementById('C'));

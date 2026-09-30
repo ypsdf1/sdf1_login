@@ -6,6 +6,9 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 error_reporting(E_ERROR | E_PARSE);
+// 取 SECRET_KEY（插件与 Web 端约定的通信密钥，值在 config.php 里由部署者自己填）。
+// require_once：本文件也可能被别的入口 include，不会重复定义。
+require_once __DIR__ . '/../config.php';
 
 /**
  * ★ 将Java自定义格式转换为JSON数组
@@ -3423,9 +3426,9 @@ function handleTransferStatus($db, $playerName, $landName) {
 }
 
 function validateSecret($secret) {
-    if (empty($secret)) return false;
-    $validSecrets = [
-        'sdf1_web_comm_2026_ypshidifu'
-    ];
-    return in_array($secret, $validSecrets);
+    // 密钥值只存在 config.php 里（部署者自己填、不入库），这里一律比对 SECRET_KEY，
+    // 不再在代码里硬编码任何真实密钥。
+    if (!is_string($secret) || $secret === '') return false;
+    if (!defined('SECRET_KEY') || SECRET_KEY === '') return false;
+    return hash_equals((string)SECRET_KEY, $secret);
 }
