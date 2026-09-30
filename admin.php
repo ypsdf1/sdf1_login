@@ -4375,12 +4375,12 @@ function snIssueBox() {
     }
     return '<div style="margin:10px 0 14px;padding:12px 14px;border:1px solid var(--border);' +
         'border-radius:10px;background:rgba(255,255,255,.02)">' +
-        '<div style="font-weight:700;font-size:14px;margin-bottom:8px">\U0001f3ab 办理签发（按玩家直发）</div>' +
+        '<div style="font-weight:700;font-size:14px;margin-bottom:8px">🎫 办理签发（按玩家直发）</div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
         '<input id="snIssuePlayer" type="text" placeholder="玩家 ID（游戏内昵称，需在线）" ' +
         'style="flex:1;min-width:170px" onkeydown="if(event.key===\'Enter\')snAdmIssueNew()">' +
         '<select id="snIssueType" style="min-width:150px">' + opts + '</select>' +
-        '<button class="btn btn-primary" onclick="snAdmIssueNew()">\U0001f3ab 办理签发</button>' +
+        '<button class="btn btn-primary" onclick="snAdmIssueNew()">🎫 办理签发</button>' +
         '</div>' +
         '<p style="color:var(--dim);font-size:12px;margin-top:8px;line-height:1.6">' +
         '只填 <b>玩家 ID</b> + <b>设备类型</b> 即可签发。前提：玩家在线 · 该类名下没有有效登记 · 注销冷静期（1小时）已结束；' +
@@ -4399,7 +4399,7 @@ async function snAdmIssueNew() {
     if (!player) { toast('请输入玩家 ID', 'err'); return; }
     if (!itemType) { toast('请选择设备类型', 'err'); return; }
     const ok = await glassConfirm('为玩家 ' + player + ' 办理签发「' + snTypeCn(itemType) + '」？' +
-        '前提：玩家在线、该类名下无有效登记、注销冷静期已结束；未达标会回执是哪一条。', '\U0001f3ab');
+        '前提：玩家在线、该类名下无有效登记、注销冷静期已结束；未达标会回执是哪一条。', '🎫');
     if (!ok) return;
     try {
         const r = await snAdmApi('admin_issue_new', {
