@@ -2418,6 +2418,8 @@ public class SnManager implements Listener {
     private String actionCn(String a) {
         if (a == null || a.isEmpty()) return "";
         if ("issue".equals(a)) return "申领";
+        if ("issue_admin".equals(a)) return "办理签发";
+        if ("cancel_force".equals(a)) return "强制注销";
         if ("backfill".equals(a)) return "存量补登记";
         if ("cancel".equals(a)) return "注销";
         if ("reissue".equals(a)) return "补发";
