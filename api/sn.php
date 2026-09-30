@@ -15,6 +15,8 @@
  * 管理端（admin session）：
  *   admin_list / admin_detail / admin_cmd / admin_stats
  *   admin_lost_list / admin_lost_handle
+ *   admin_issue_new   顶层办理签发（只传 玩家ID + 设备类型）
+ *   admin_cmd_result  按命令ID查回执（顶层签发没有详情页可挂）
  */
 
 while (ob_get_level() > 0) { @ob_end_clean(); }
@@ -69,6 +71,8 @@ try {
         case 'admin_stats':       snAdminStats(); break;
         case 'admin_lost_list':   snAdminLostList(); break;
         case 'admin_lost_handle': snAdminLostHandle(); break;
+        case 'admin_issue_new':    snAdminIssueNew(); break;
+        case 'admin_cmd_result':   snAdminCmdResult(); break;
 
         default:
             error('未知操作: ' . $action);
@@ -1195,7 +1199,7 @@ function snAdminDetail() {
              'losts' => $losts, 'commands' => $cmds, 'held' => $held]);
 }
 
-/** 管理员下发命令：cancel / reissue / locate / bind / report_check */
+/** 管理员下发命令：cancel / reissue / locate / bind / report_check / issue */
 function snAdminCmd() {
     snRequireAdmin();
     $cmd = trim(getParam('cmd', ''));
@@ -1236,6 +1240,52 @@ function snAdminCmd() {
                        $reason !== '' ? $reason : ($cmd === 'issue' ? '管理员办理签发' : '管理员操作'),
                        '', 0, $cmd === 'issue' ? 0 : $force);
     success(['id' => $id], '命令已下发，等待游戏服务器执行（10~30 秒）');
+}
+
+/**
+ * 顶层「办理签发」：只传 玩家ID + 设备类型，直接为该玩家签发一台新设备。
+ *
+ * 与 admin_cmd 的 issue（先查旧 SN、校验其已注销解绑 + 冷静期）是两条链路：
+ * 这里根本没有旧 SN，所以不在 PHP 侧做名额/冷静期预判——web_item_sn 是
+ * Java 推送的副本（30 秒一刷）可能滞后，权威判定在游戏服本地库。
+ * PHP 只做"参数齐不齐、类型认不认识"这两个恒真校验，其余交给 Java issue_new。
+ *
+ * is_force=0：冷静期与「同种类仅 1 个」照常生效，拒绝原因原样回执到管理端。
+ */
+function snAdminIssueNew() {
+    snRequireAdmin();
+    $player = trim(getParam('player', ''));
+    $itemType = trim(getParam('item_type', ''));
+    $reason = trim(getParam('reason', ''));
+    if ($player === '') error('缺少玩家ID');
+    if ($itemType === '') error('缺少设备类型');
+    $known = array('menu_snowball', 'land_wand', 'echo_shard', 'pvp_tool');
+    if (!in_array($itemType, $known, true)) {
+        error('未知设备类型：' . $itemType . '（可选 ' . implode(' / ', $known) . '）');
+    }
+
+    $db = getDB();
+    $id = snEnqueueCmd($db, 'issue_new', '', $player, $itemType,
+                       $reason !== '' ? $reason : '管理员顶层办理签发', '', 0, 0);
+    success(['id' => $id], '签发命令已下发，等待游戏服务器执行（10~30 秒）');
+}
+
+/**
+ * 按命令 ID 查回执：顶层办理签发没有 SN 详情页可挂（命令的 sn 是空的，
+ * admin_detail 查不到），只能按 id 直查 status/result。
+ */
+function snAdminCmdResult() {
+    snRequireAdmin();
+    $id = (int)getParam('id', 0);
+    if ($id <= 0) error('缺少id');
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, cmd, status, result, created_at
+                          FROM web_sn_commands WHERE id=:id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $rr = $stmt->execute();
+    $row = $rr->fetchArray(SQLITE3_ASSOC);
+    if (!$row) error('命令不存在');
+    success($row);
 }
 
 /** 管理端统计 */

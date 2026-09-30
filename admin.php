@@ -4069,6 +4069,11 @@ const SN_STATUS_CN = {
     active: '有效', destroyed: '已销毁解绑', cancelled: '已注销',
     lost: '报失处理中', illegal: '非法绑定', reissued: '已补发作废'
 };
+const SN_TYPE_CN = {
+    menu_snowball: '雪球菜单', land_wand: '区域选择工具',
+    echo_shard: '回声碎片', pvp_tool: 'PVP圈地棒'
+};
+function snTypeCn(t) { return SN_TYPE_CN[t] || t; }
 const SN_LOST_CN = {
     checking: '⏳ 核查中', manual: '🧑‍💻 待人工', rejected: '🚫 已驳回',
     auto_reissue: '♻️ 已补发', done: '✅ 已完成'
@@ -4107,6 +4112,7 @@ async function renderSnItems(el) {
     const pages = Math.max(1, Math.ceil(total / snAdm.size));
 
     let html = '<div class="card"><h2>🔢 SN防伪管理</h2>' + snTabs() +
+        snIssueBox() +
         '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">' +
         '<input id="snKw" type="text" placeholder="搜索 SN / 玩家 / 领地..." value="' + escAdmHtml(snAdm.kw) + '" style="flex:1;min-width:180px">' +
         '<select id="snSt" style="min-width:130px">' +
@@ -4217,11 +4223,11 @@ async function renderSnDetail(el, sn) {
         '<button class="btn btn-red" onclick="snAdmCmd(\'cancel\', 0)">📋 代办注销</button>' +
         '<button class="btn btn-red" onclick="snAdmCmd(\'bind\')">🔒 永久绑定</button>' +
         '<button class="btn btn-yellow" onclick="snAdmCmd(\'report_check\')">🚩 报失核查</button>' +
-        '<button class="btn btn-yellow" onclick="snAdmCmd(\'issue\')">🎫 办理签发</button>' +
         '</div>' +
         '<p style="color:var(--dim);font-size:12px;margin-top:8px">命令通过 web_sn_commands 下发，游戏服 10~30 秒内执行并回执。' +
         '<br><b>强制注销</b>：豁免三条件门槛，直接执行且<b>不进入冷静期</b>；<b>强制补发</b>：豁免三条件门槛，按定义直接执行；' +
-        '<b>代办注销</b>：按三条件校验，未达标会被拒绝（对玩家只提示"未达到办理条件"）。</p>';
+        '<b>代办注销</b>：按三条件校验，未达标会被拒绝（对玩家只提示"未达到办理条件"）。' +
+        '<br><b>办理签发</b>在列表页顶部（只填 玩家ID + 设备类型 即可直发，不依赖本条旧SN）。</p>';
 
     html += '<h3 style="margin:18px 0 8px;font-size:14px">📨 命令记录</h3>';
     const cmds = d.commands || [];
@@ -4355,6 +4361,86 @@ function snAdmPollCmd(cmdId, sn, tries) {
             renderSnAdmin(document.getElementById('C'));
         }
     }, 3000);
+}
+
+/**
+ * 顶层「办理签发」区块：只传 玩家ID + 设备类型，直接为该玩家签发一台新设备。
+ * 与 SN 详情里的签发（基于"旧SN已注销"的重发场景）是两条不同链路——
+ * 这里没有旧 SN，后端 admin_issue_new 入队 issue_new → Java doIssueNew 按类型登记发放。
+ */
+function snIssueBox() {
+    let opts = '';
+    for (const [k, v] of Object.entries(SN_TYPE_CN)) {
+        opts += '<option value="' + k + '">' + v + '</option>';
+    }
+    return '<div style="margin:10px 0 14px;padding:12px 14px;border:1px solid var(--border);' +
+        'border-radius:10px;background:rgba(255,255,255,.02)">' +
+        '<div style="font-weight:700;font-size:14px;margin-bottom:8px">\U0001f3ab 办理签发（按玩家直发）</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+        '<input id="snIssuePlayer" type="text" placeholder="玩家 ID（游戏内昵称，需在线）" ' +
+        'style="flex:1;min-width:170px" onkeydown="if(event.key===\'Enter\')snAdmIssueNew()">' +
+        '<select id="snIssueType" style="min-width:150px">' + opts + '</select>' +
+        '<button class="btn btn-primary" onclick="snAdmIssueNew()">\U0001f3ab 办理签发</button>' +
+        '</div>' +
+        '<p style="color:var(--dim);font-size:12px;margin-top:8px;line-height:1.6">' +
+        '只填 <b>玩家 ID</b> + <b>设备类型</b> 即可签发。前提：玩家在线 · 该类名下没有有效登记 · 注销冷静期（1小时）已结束；' +
+        '任一不满足会在 10~30 秒内回执具体原因。命令由游戏服异步执行。</p>' +
+        '</div>';
+}
+
+/**
+ * 顶层「办理签发」提交：只带 玩家ID + 设备类型。
+ */
+async function snAdmIssueNew() {
+    const pEl = document.getElementById('snIssuePlayer');
+    const tEl = document.getElementById('snIssueType');
+    const player = ((pEl && pEl.value) || '').trim();
+    const itemType = (tEl && tEl.value) || '';
+    if (!player) { toast('请输入玩家 ID', 'err'); return; }
+    if (!itemType) { toast('请选择设备类型', 'err'); return; }
+    const ok = await glassConfirm('为玩家 ' + player + ' 办理签发「' + snTypeCn(itemType) + '」？' +
+        '前提：玩家在线、该类名下无有效登记、注销冷静期已结束；未达标会回执是哪一条。', '\U0001f3ab');
+    if (!ok) return;
+    try {
+        const r = await snAdmApi('admin_issue_new', {
+            player: player, item_type: itemType, reason: '管理员顶层办理签发'
+        });
+        if (!r.success) { toast(r.message || '下发失败', 'err'); return; }
+        toast(r.message || '签发命令已下发', 'ok');
+        const cmdId = (r.data && r.data.id) || 0;
+        if (cmdId) snAdmPollIssue(cmdId, 0);
+    } catch (e) {
+        toast('下发失败: ' + e.message, 'err');
+    }
+}
+
+/**
+ * 顶层签发的回执轮询：这条命令没有 SN 详情页可挂，按命令 ID 直查
+ * （admin_cmd_result）。3 秒一次、最长 150 秒，与 snAdmPollCmd 同节奏。
+ */
+function snAdmPollIssue(cmdId, tries) {
+    const MAX_TRIES = 50;
+    setTimeout(async () => {
+        let c = null;
+        try {
+            const r = await snAdmApi('admin_cmd_result', { id: cmdId });
+            c = (r.success && r.data) || null;
+        } catch (e) { /* 网络抖动，下一轮再试 */ }
+        if (c && (c.status === 'done' || c.status === 'timeout')) {
+            const res = c.result || '';
+            if (c.status === 'timeout') toast('游戏服 3 分钟内未回执，命令已超时', 'err');
+            else toast('游戏服已执行：' + (res || '（无结果）'), snCmdLooksBad(res) ? 'err' : 'ok');
+            renderSnAdmin(document.getElementById('C'));
+            return;
+        }
+        if (tries < MAX_TRIES) snAdmPollIssue(cmdId, tries + 1);
+        else { toast('游戏服仍未回执，可稍后刷新查看', 'err'); renderSnAdmin(document.getElementById('C')); }
+    }, 3000);
+}
+
+/** 回执文本是否算失败（与 PHP snCmdOk 同口径：出现失败类词即按失败提示） */
+function snCmdLooksBad(res) {
+    return !res || /(失败|拒绝|未|不存在|异常|未知|不在线|超时|已有有效)/.test(res);
 }
 
 async function renderSnLost(el) {
