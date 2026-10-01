@@ -19,6 +19,8 @@ import org.bukkit.event.entity.ItemDespawnEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -974,6 +976,132 @@ public class SnManager implements Listener {
     // ==================== 事件：出入库登记 ====================
 
     /**
+     * 开箱扫描（针对收藏癖）：容器里存的 4 类插件物品若没有 SN，打开的瞬间
+     * 按「开箱人名下是否已有同类 SN 登记」分流：
+     * <li>已有登记 → 旧的直接强制收回（全部回收，不补发）；
+     * <li>没有登记 → 以旧换新：旧的全部回收，只换发 1 个带 SN 的新物品。
+     * <p>
+     * 铁律：先登记 + 构建新物品成功，才删箱内旧品，绝不净损失。
+     * 不变量：本插件物品要么不存在、要么带 SN，绝不允许带 SN 与无 SN 共存。
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onChestOpen(InventoryOpenEvent e) {
+        try {
+            if (!(e.getPlayer() instanceof Player)) return;
+            Player p = (Player) e.getPlayer();
+            if (!plugin.getLoggedIn().contains(p.getName())) return;
+            Inventory inv = e.getInventory();
+            if (!isBlockContainer(inv)) return;
+            recycleNoSnInContainer(p, inv);
+        } catch (Throwable t) {
+            throttleErr("open:" + t.getMessage());
+        }
+    }
+
+    /** 是否为方块容器视图（含大箱子；排除玩家背包/自定义 GUI 等） */
+    private boolean isBlockContainer(Inventory inv) {
+        if (inv instanceof org.bukkit.inventory.DoubleChestInventory) return true;
+        InventoryHolder h = inv.getHolder();
+        if (h instanceof org.bukkit.block.BlockState) return true;
+        if (h instanceof org.bukkit.block.Container) return true;
+        // 潜影盒物品（未放置）打开时 holder 可能为 null，按视图类型兜底
+        return h == null && inv.getType() == InventoryType.SHULKER_BOX;
+    }
+
+    /**
+     * 开箱回收：容器内 4 类无SN物品按「开箱人名下登记」分流。
+     * 已有登记 → 直接收回（不补发）；无登记 → 以旧换新（旧的全收、只发 1 件）。
+     */
+    private void recycleNoSnInContainer(Player p, Inventory inv) {
+        String owner = p.getName();
+        long now = System.currentTimeMillis();
+
+        Map<String, List<Integer>> noSn = new LinkedHashMap<>();
+        ItemStack[] contents = inv.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack it = contents[i];
+            if (it == null) continue;
+            String type = detectType(it);
+            if (type == null || !WATCH_TYPES.contains(type)) continue;
+            if (readSn(it) != null) continue;
+            if (!noSn.containsKey(type)) {
+                noSn.put(type, new ArrayList<Integer>());
+            }
+            noSn.get(type).add(i);
+        }
+        if (noSn.isEmpty()) return;
+
+        int reclaimed = 0, resent = 0;
+        for (Map.Entry<String, List<Integer>> en : noSn.entrySet()) {
+            String type = en.getKey();
+            List<Integer> slots = en.getValue();
+
+            if (findActive(owner, type) != null
+                    || playerHasSnItem(p, type)) {
+                // 名下已有登记（或背包已有带SN实物）= 已经有了 → 直接强制收回，不补发
+                clearContainerSlots(inv, slots);
+                reclaimed += slots.size();
+                logSn("", type, "recycle_dup", owner,
+                        "开箱强制收回无SN" + typeName(type) + " x" + slots.size());
+                continue;
+            }
+            if (getCooldownUntil(owner) > now) {
+                // 冷静期换发必被拒 → 不动旧品，绝不净损失
+                throttleErr("open-cd:" + owner + ":" + type
+                        + " 注销冷静期内，暂缓开箱回收无SN" + typeName(type));
+                continue;
+            }
+            String newSn = applySnQuiet(p, type, typeName(type));
+            if (newSn == null) {
+                throttleErr("open-apply:" + owner + ":" + type
+                        + " 换发登记被拒，暂缓开箱回收无SN" + typeName(type));
+                continue;
+            }
+            ItemStack fresh = buildSnItem(p, type, newSn);
+            if (fresh == null) {
+                destroySn(newSn, "开箱以旧换新构建失败回滚");
+                throttleErr("open-build:" + owner + ":" + type
+                        + " 物品构建失败，已回滚登记");
+                continue;
+            }
+            clearContainerSlots(inv, slots);
+            giveTo(p, fresh);
+            reclaimed += slots.size();
+            resent++;
+            logSn(newSn, type, "recycle", owner,
+                    "开箱以旧换新：收回无SN旧品 x" + slots.size() + "，换发1件");
+        }
+        if (reclaimed > 0) {
+            if (resent > 0) {
+                p.sendMessage("§a[SN] 以旧换新：收回箱内无SN物品 §f" + reclaimed
+                        + " §a件，换发带SN物品 §f" + resent + " §a件");
+            } else {
+                p.sendMessage("§a[SN] 已收回箱内无SN物品 §f" + reclaimed
+                        + " §a件（名下已有同类SN登记）");
+            }
+        }
+    }
+
+    /** 清空容器指定槽位 */
+    private void clearContainerSlots(Inventory inv, List<Integer> slots) {
+        for (int idx : slots) {
+            inv.setItem(idx, null);
+        }
+    }
+
+    /** 玩家背包里是否已有该类带 SN 的实物（登记行缺失时的兜底判据） */
+    private boolean playerHasSnItem(Player p, String itemType) {
+        ItemStack[] contents = p.getInventory().getContents();
+        if (contents == null) return false;
+        for (ItemStack it : contents) {
+            if (it == null) continue;
+            if (!itemType.equals(detectType(it))) continue;
+            if (readSn(it) != null) return true;
+        }
+        return false;
+    }
+
+    /**
      * 容器关闭时做入库/出库登记（任务4）：
      * 记录容器坐标、容器类型、是否在领地及领地名。
      * 只处理真方块容器（箱子 / 末影箱 / 潜影盒 / 木桶 / 漏斗 / 投掷器等）。
@@ -1177,7 +1305,7 @@ public class SnManager implements Listener {
 
     /**
      * 定时兜底：每 60 秒清点全体在线玩家。
-     * "箱子里的无SN旧品取进背包"就是在这一轮被回收的（不动容器内容）。
+     * 背包里的无SN旧品在这一轮回收；箱内存放的无SN旧品由开箱扫描（onChestOpen）处理。
      */
     private void startAutoSweepTask() {
         try {
@@ -1197,7 +1325,8 @@ public class SnManager implements Listener {
     /**
      * 自动回收单个玩家：
      * 1) 抠掉状态已死的实物（已注销/补发作废/已销毁——这些 DB 注销了但实物还能用）；
-     * 2) 把背包里无 SN 的 4 类旧品 1:1 换发成带 SN 的（冷静期/名额占用时暂缓，绝不净损失）。
+     * 2) 背包里无 SN 的 4 类旧品：名下已有同类登记 → 直接强制收回不补发；
+     *    名下无登记 → 以旧换新（旧的全回收、只换发 1 件）；冷静期暂缓，绝不净损失。
      * 仅处理已登录玩家：未登录时背包正被登录流程接管。
      */
     private void autoSweep(Player p, boolean fromJoin) {
@@ -1347,7 +1476,11 @@ public class SnManager implements Listener {
     // ==================== 存量清点（任务7）====================
 
     /**
-     * 轻点：把玩家背包里无 SN 的 4 类旧物品全部销毁并重发带 SN 的。
+     * 轻点：把玩家背包里无 SN 的 4 类旧物品销毁并换发带 SN 的。
+     * <p>
+     * ★ 改判：名下只要有同类 SN 登记就判定「已经有了」→ 无SN旧品直接强制收回、
+     * 不补发（实物可能存放在箱子里，不能因为背包没见到带SN的就暂缓）；
+     * 名下无登记才走以旧换新：旧的全部回收、只换发 1 件。
      *
      * @param p     目标玩家（null = 全体在线）
      * @param dry   true 只统计不改动
@@ -1363,9 +1496,8 @@ public class SnManager implements Listener {
             ItemStack[] contents = t.getInventory().getContents();
             if (contents == null) continue;
             String owner = t.getName();
-            // 无 SN 旧品按类型归槽位；已有 SN 的记类型（判定"重复品"用）
+            // 无 SN 旧品按类型归槽位
             Map<String, List<Integer>> noSn = new LinkedHashMap<>();
-            Set<String> typedInInv = new HashSet<>();
             for (int i = 0; i < contents.length; i++) {
                 ItemStack it = contents[i];
                 if (it == null) continue;
@@ -1375,7 +1507,6 @@ public class SnManager implements Listener {
                 if (sn != null) {
                     // 已有 SN：确认登记表里有记录，缺则补登记（防丢账）
                     ensureRegistered(sn, type, owner);
-                    typedInInv.add(type);
                     continue;
                 }
                 if (!noSn.containsKey(type)) {
@@ -1391,20 +1522,18 @@ public class SnManager implements Listener {
                 String type = en.getKey();
                 List<Integer> slots = en.getValue();
 
-                // ★ 铁律：确认能换发出去之后才删旧的，绝不净损失
-                if (findActive(owner, type) != null) {
-                    if (typedInInv.contains(type)) {
-                        // 背包里已有带 SN 的有效登记 → 这些是重复旧货，回收不补发
-                        clearSlots(t, slots);
-                        removed += slots.size();
-                        logSn("", type, "recycle_dup", owner,
-                                "回收无SN重复品 x" + slots.size());
-                    } else {
-                        // 名额被占用却没见实物：不确定是否误删 → 暂缓，留给人工核查
-                        throttleErr("recycle-hold:" + owner + ":" + type
-                                + " 有无SN" + typeName(type)
-                                + "，但同类登记已存在且背包内无对应实物，暂缓回收");
-                    }
+                // ★ 铁律：已拥有 → 直接收回；要换发 → 先确认能换发出去
+                //   才删旧的，绝不净损失
+                if (findActive(owner, type) != null
+                        || playerHasSnItem(t, type)) {
+                    // ★ 改判：名下有同类 SN 登记（或背包里已有带SN实物）= 已经有了
+                    //   → 无SN旧品直接强制收回、不补发。实物很可能存放在箱子里，
+                    //   绝不能因此"暂缓回收"。
+                    clearSlots(t, slots);
+                    removed += slots.size();
+                    logSn("", type, "recycle_dup", owner,
+                            "名下已有SN登记/实物，强制回收无SN旧品 x"
+                                    + slots.size());
                     continue;
                 }
                 if (getCooldownUntil(owner) > now) {
@@ -2492,6 +2621,9 @@ public class SnManager implements Listener {
         if ("illegal_burn".equals(a)) return "非法熔炼";
         if ("bind".equals(a)) return "永久绑定";
         if ("locate".equals(a)) return "位置查询";
+        if ("recycle".equals(a)) return "以旧换新";
+        if ("recycle_dup".equals(a)) return "重复品回收";
+        if ("reclaim".equals(a)) return "收回作废实物";
         return a;
     }
 
