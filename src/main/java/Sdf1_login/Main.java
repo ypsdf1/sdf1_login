@@ -2661,7 +2661,7 @@ public class Main extends JavaPlugin
         if (!sameIP) {
             // 不同IP → 跳过检查点2，直接强制密码验证
             getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP不同，跳过快速重连验证");
-            // ★ 2FA联动：IP变更 + 已绑定二次验证 → 提示完成一次2FA（正版玩家由检查点0统一提示）
+            // ★ 2FA联动：IP变更 + 已绑定二次验证 → 进入「密码 + 2FA」顺序两关（正版玩家由检查点0统一判定）
             if (twofa != null && db.userExists(name)
                     && !isVerifiedPremiumPlayer(name)
                     && twofa.isEnabled(name)) {
