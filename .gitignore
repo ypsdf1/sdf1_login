@@ -36,4 +36,5 @@ robots.json
 密钥文件_git拉黑.txt
 pay_secrets.php
 *.paykey
-
+# 屏蔽无用的db文件夹(仓库不需要db文件)
+db/
