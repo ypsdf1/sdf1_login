@@ -99,6 +99,15 @@ public class SnManager implements Listener {
     /** 注销冷静期：1 小时 */
     public static final long COOLDOWN_MS = 60L * 60L * 1000L;
 
+    /**
+     * 脱离宽限期：扔在地上超过 10 分钟没人捡，才算脱离玩家本人管控
+     * （10 分钟内捡回不算脱离，计时清零）。进本插件垃圾箱无宽限，投入即脱离。
+     */
+    public static final long DETACH_GRACE_MS = 10L * 60L * 1000L;
+
+    /** 脱离自身管控硬性阈值：12 小时，超时 = 彻底丢失，可注销 / 补发 */
+    public static final long CUSTODY_DETACH_MS = 12L * 60L * 60L * 1000L;
+
     /** 4 类物品的中文名（提示与报表用） */
     private static final Map<String, String> TYPE_CN = new LinkedHashMap<>();
 
@@ -252,6 +261,8 @@ public class SnManager implements Listener {
             st.close();
             // ★ 无SN旧品自动回收 / 作废实物回收：每 60 秒清点在线玩家
             startAutoSweepTask();
+            // ★ 脱离管控计时巡检：补 detached_at + 超时丢失留痕（每 5 分钟）
+            startCustodySweepTask();
         } catch (SQLException e) {
             plugin.getLogger().severe("[SN] 建表失败: " + e.getMessage());
         }
@@ -736,7 +747,11 @@ public class SnManager implements Listener {
             args.add(containerType == null ? "" : containerType);
             args.add(ownChest ? 1 : 0);
             args.add(custody ? 1 : 0);
-            args.add(now);
+            // 脱离起始时刻：dropped 记 now+10 分钟（10 分钟内捡回不算脱离），
+            // trash / 非本人容器记 now（投入垃圾箱即脱离）。已有起始则保持原值，
+            // 防止反复搬运 / 反复投取凑满 12 小时。
+            args.add("dropped".equals(locType)
+                    ? now + DETACH_GRACE_MS : now);
             args.add(now);
             args.add(sn);
 
@@ -751,6 +766,53 @@ public class SnManager implements Listener {
             ps.close();
         } catch (SQLException e) {
             throttleErr("loc:" + e.getMessage());
+        }
+    }
+
+    /**
+     * 物品进入本插件垃圾箱（扫地机收走 / 玩家投入）→ 立即脱离玩家本人管控，
+     * 起算 12 小时找回期。垃圾箱里的东西玩家还能取回，取回即恢复管辖。
+     *
+     * <p>所有存入路径（shift 投入 / 光标放入 / 拖拽 / 扫地机清理地面）
+     * 最终都汇聚在 {@code GarbageManager.saveItem}，在那里统一挂口，
+     * 避免漏掉某条路径导致 detached_at 永远不起算。</p>
+     *
+     * @param stack 被收走的物品
+     * @param where 去处（垃圾站 / 扫地机清理），写进 container_type 与日志
+     */
+    public void onConfiscated(ItemStack stack, String where) {
+        try {
+            if (stack == null) return;
+            String type = detectType(stack);
+            if (type == null || !WATCH_TYPES.contains(type)) return;
+            String sn = readSn(stack);
+            if (sn == null) return;
+            updateLoc(sn, "trash", "", null, where);
+            logSn(sn, type, "trash_in", "",
+                    "投入" + where + "，脱离管控起算 12 小时找回期");
+        } catch (Throwable t) {
+            throttleErr("trash:" + t.getMessage());
+        }
+    }
+
+    /**
+     * 从垃圾箱取回 → 回到本人身上，脱离计时清零（等候找回窗口关闭）。
+     *
+     * @param stack 取回的物品
+     * @param p     取回者
+     */
+    public void onRecovered(ItemStack stack, Player p) {
+        try {
+            if (stack == null || p == null) return;
+            String type = detectType(stack);
+            if (type == null || !WATCH_TYPES.contains(type)) return;
+            String sn = readSn(stack);
+            if (sn == null) return;
+            updateLoc(sn, "player", p.getName(), p.getLocation(), "");
+            logSn(sn, type, "recovered", p.getName(),
+                    "从垃圾箱取回，脱离计时清零");
+        } catch (Throwable t) {
+            throttleErr("reco:" + t.getMessage());
         }
     }
 
@@ -938,8 +1000,17 @@ public class SnManager implements Listener {
     }
 
     /**
-     * 丢在地上的 SN 物品自然消失（到时消失）→ 自动解绑。
-     * 任务1：插件自定义物品被销毁时自动解绑 SN。
+     * 地上的 SN 物品自然消失（到时到期 / 被扫地机清掉）→ 不再立即销毁解绑，
+     * 改为「脱离本人管控」起算 12 小时找回期（2026-09-30 调整）。
+     *
+     * <p>原实现直接 destroySn：实物被清掉的瞬间 SN 就解绑了，DB 里却可能
+     * 仍停在旧的登记位置，后台状态与实际对不上；反过来扫地机若不触发本事件，
+     * loc_type 又会永远卡在 "地上"。统一口径为：</p>
+     * <ul>
+     *   <li>扔地上 10 分钟没人捡 → 脱离管控，开始计时；</li>
+     *   <li>12 小时内可从垃圾箱找回（取回即清零）；</li>
+     *   <li>超 12 小时未找回 = 彻底丢失 → 放行注销并允许补发。</li>
+     * </ul>
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onItemDespawn(ItemDespawnEvent e) {
@@ -949,8 +1020,11 @@ public class SnManager implements Listener {
             if (type == null || !WATCH_TYPES.contains(type)) return;
             String sn = readSn(it);
             if (sn == null) return;
-            destroySn(sn, "物品自然消失");
-            enqueue("destroyed", sn, "", "物品自然消失(到时/掉落丢失)");
+            Map<String, Object> row = getSn(sn);
+            if (row == null) return;
+            if (isDeadSnStatus(str(row.get("status")))) return;
+            updateLoc(sn, "dropped", "",
+                    e.getEntity().getLocation(), "");
         } catch (Throwable t) {
             throttleErr("despawn:" + t.getMessage());
         }
@@ -1319,6 +1393,74 @@ public class SnManager implements Listener {
             }, 200L, 1200L);
         } catch (Throwable t) {
             throttleErr("sweeptimer:" + t.getMessage());
+        }
+    }
+
+    /**
+     * 脱离计时巡检（每 5 分钟）：
+     * 1) 补齐没走过 updateLoc 的脱离起算 —— 扫地机 / 外部清理插件直接删实体
+     *    时不会触发任何 SN 事件，detached_at 恒为 0 → 三条件永远不达标 →
+     *    玩家自助注销被永久卡死（本次线上问题的根因）；
+     * 2) 已超 12 小时的打一条"彻底丢失"日志，说明该 SN 此刻起可注销 / 补发。
+     */
+    private void startCustodySweepTask() {
+        try {
+            Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+                @Override
+                public void run() {
+                    sweepCustody();
+                }
+            }, 400L, 6000L);
+        } catch (Throwable t) {
+            throttleErr("custodytimer:" + t.getMessage());
+        }
+    }
+
+    /** 已上报过"超时丢失"的 SN（内存限频，重启后最多重复一条） */
+    private final Set<String> lostReported =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private void sweepCustody() {
+        try {
+            Connection db = plugin.getDb().getConnection();
+
+            // 1) 存量补起算：非"在本人身上"、还没记脱离起始的
+            PreparedStatement ps = db.prepareStatement(
+                    "UPDATE item_sn SET detached_at = CASE"
+                            + " WHEN loc_type = 'dropped' THEN last_seen + ?"
+                            + " ELSE last_seen END"
+                            + " WHERE status = 'active' AND detached_at = 0"
+                            + " AND last_seen > 0"
+                            + " AND loc_type IN ('dropped','trash','container')"
+                            + " AND NOT (loc_type = 'container'"
+                            + " AND own_chest = 1)");
+            ps.setLong(1, DETACH_GRACE_MS);
+            int patched = ps.executeUpdate();
+            ps.close();
+            if (patched > 0) {
+                plugin.getLogger().info(
+                        "[SN] 巡检补齐脱离起算 " + patched + " 条");
+            }
+
+            // 2) 超过 12 小时：视为彻底丢失，留痕说明可办理
+            long cutoff = System.currentTimeMillis() - CUSTODY_DETACH_MS;
+            PreparedStatement qs = db.prepareStatement(
+                    "SELECT sn, item_type, owner FROM item_sn"
+                            + " WHERE status = 'active' AND detached_at > 0"
+                            + " AND detached_at < ?");
+            qs.setLong(1, cutoff);
+            ResultSet rs = qs.executeQuery();
+            while (rs.next()) {
+                String sn = rs.getString("sn");
+                if (!lostReported.add(sn)) continue;
+                logSn(sn, rs.getString("item_type"), "lost_timeout",
+                        rs.getString("owner"),
+                        "脱离管控已超 12 小时，视为彻底丢失，可注销 / 补发");
+            }
+            rs.close();
+            qs.close();
+        } catch (Throwable t) {
+            throttleErr("custody:" + t.getMessage());
         }
     }
 
@@ -1851,7 +1993,10 @@ public class SnManager implements Listener {
                             + " FROM item_sn ORDER BY issue_time DESC LIMIT 3000");
             ResultSet rs = ps.executeQuery();
             Map<String, Object> row;
-            while ((row = rsToMap(rs)) != null) items.add(row);
+            while ((row = rsToMap(rs)) != null) {
+                row.put("loc_cn", locCn(str(row.get("loc_type"))));
+                items.add(row);
+            }
             rs.close();
             ps.close();
 
@@ -1966,11 +2111,7 @@ public class SnManager implements Listener {
                 result = doReissue(sn, player, itemType, reason, force);
             } else if ("locate".equalsIgnoreCase(cmd)) {
                 Map<String, Object> row = getSn(sn);
-                result = row == null ? "SN不存在" : "位置=" + str(row.get("loc_type"))
-                        + " 持有=" + str(row.get("loc_player"))
-                        + " 容器=" + str(row.get("container_type"))
-                        + " 领地=" + str(row.get("land_name"))
-                        + " 状态=" + str(row.get("status"));
+                result = row == null ? "SN不存在" : custodyText(row);
             } else if ("bind".equalsIgnoreCase(cmd)) {
                 bindIllegal(sn, reason.isEmpty() ? "管理员标记" : reason);
                 result = "已永久绑定";
@@ -1997,9 +2138,6 @@ public class SnManager implements Listener {
         }
         return result == null ? "" : result;
     }
-
-    /** 脱离自身管控硬性阈值：12 小时（毫秒） */
-    private static final long CUSTODY_DETACH_MS = 12L * 60 * 60 * 1000;
 
     /** 三条件未达标时给玩家的统一回执：不说具体是哪一条没过（最小化信息透露） */
     private static final String CUSTODY_DENY = "拒绝:未达到办理条件";
@@ -2054,8 +2192,20 @@ public class SnManager implements Listener {
             }
         }
 
-        // ③ 脱离自身管控时长：detached_at 是最近一次"脱离"的时刻（0=仍在管辖内）
+        // ③ 脱离自身管控时长：detached_at 是脱离起始时刻（0 = 仍在管辖内，
+        //    dropped 的起始已含 10 分钟宽限）。
+        //    ★ 存量 / 漏登记数据（扫地机清走实物却没走 updateLoc 的）detached_at
+        //    恒为 0，原先兜底到 last_seen 后仍可能算不出时长 → 玩家注销永远被卡。
+        //    这里按登记位置推定起始：非"在本人身上"的一律视为已脱离，
+        //    地上的再补 10 分钟宽限，保证计时一定在走。
         long detachedAt = num(row.get("detached_at"));
+        if (detachedAt <= 0 && !"player".equals(locType)) {
+            long ls = num(row.get("last_seen"));
+            if (ls > 0) {
+                detachedAt = ls + ("dropped".equals(locType)
+                        ? DETACH_GRACE_MS : 0L);
+            }
+        }
         if (detachedAt <= 0) detachedAt = num(row.get("last_seen"));
         long heldMs = detachedAt > 0
                 ? System.currentTimeMillis() - detachedAt : 0L;
@@ -2064,13 +2214,47 @@ public class SnManager implements Listener {
 
         if (!inBody && !inOwnChest && detachedOk) return null;
 
-        String held = (inBody || inOwnChest)
-                ? "0（仍在自身管控内）"
-                : (heldMs / 3600000L) + " 小时 "
-                + ((heldMs % 3600000L) / 60000L) + " 分";
+        String held;
+        if (inBody || inOwnChest) {
+            held = "0（仍在自身管控内）";
+        } else {
+            long leftMs = CUSTODY_DETACH_MS - heldMs;
+            held = (heldMs / 3600000L) + " 小时 "
+                    + ((heldMs % 3600000L) / 60000L) + " 分"
+                    + (leftMs > 0
+                    ? "，还差 " + ((leftMs + 59999L) / 60000L)
+                    + " 分钟才满 12 小时"
+                    : "，已超 12 小时可办理");
+        }
         return "在本人身上=" + (inBody ? "是" : "否")
                 + " / 在本人领地箱子=" + (inOwnChest ? "是" : "否")
-                + " / 脱离自身管控=" + held + "（阈值 12 小时）";
+                + " / 脱离自身管控=" + held;
+    }
+
+    /** 登记位置的中文名（后台展示用） */
+    private static String locCn(String lt) {
+        if ("player".equals(lt)) return "在玩家身上";
+        if ("container".equals(lt)) return "在容器内";
+        if ("dropped".equals(lt)) return "在地上";
+        if ("trash".equals(lt)) return "在垃圾箱";
+        return lt == null || lt.isEmpty() ? "未知" : lt;
+    }
+
+    /**
+     * 位置 + 脱离状态的中文描述（管理端 locate / 报失回执共用）。
+     * detail == null 表示三条都已达标，此刻可注销、可补发。
+     */
+    private String custodyText(Map<String, Object> row) {
+        String detail = snCustodyDetail(str(row.get("sn")), row);
+        return "SN=" + str(row.get("sn"))
+                + " 状态=" + statusCn(str(row.get("status")))
+                + " 位置=" + locCn(str(row.get("loc_type")))
+                + " 持有=" + str(row.get("loc_player"))
+                + " 容器=" + str(row.get("container_type"))
+                + " 领地=" + str(row.get("land_name"))
+                + " | " + (detail == null
+                ? "已脱离管控超 12 小时，可注销 / 补发"
+                : detail);
     }
 
     /**
@@ -2296,8 +2480,7 @@ public class SnManager implements Listener {
                     "报失核查未达到办理条件");
             return CUSTODY_DENY;
         }
-        return "可补发:登记位置=" + str(row.get("loc_type"))
-                + " 持有=" + str(row.get("loc_player"));
+        return "可补发:" + custodyText(row);
     }
 
     /** 该 SN 的实物是否在指定玩家背包里（含主/副手兜底） */
@@ -2624,6 +2807,9 @@ public class SnManager implements Listener {
         if ("recycle".equals(a)) return "以旧换新";
         if ("recycle_dup".equals(a)) return "重复品回收";
         if ("reclaim".equals(a)) return "收回作废实物";
+        if ("trash_in".equals(a)) return "投入垃圾箱";
+        if ("recovered".equals(a)) return "垃圾箱取回";
+        if ("lost_timeout".equals(a)) return "超时丢失";
         return a;
     }
 

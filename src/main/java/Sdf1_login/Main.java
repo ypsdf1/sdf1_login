@@ -4587,8 +4587,17 @@ public class Main extends JavaPlugin
                                                             .getType());
                                 gm.setLore(null);
                                 give.setItemMeta(gm);
-                                p.getInventory()
-                                        .addItem(give);
+                                java.util.Map<Integer,
+                                        ItemStack> left =
+                                        p.getInventory()
+                                                .addItem(give);
+                                // ★ SN 物品取回 → 回到本人身上，
+                                //   脱离管控的 12 小时计时清零
+                                if ((left == null || left.isEmpty())
+                                        && getSnManager() != null) {
+                                    getSnManager()
+                                            .onRecovered(give, p);
+                                }
                                 e.getInventory()
                                         .setItem(
                                                 slot, null);

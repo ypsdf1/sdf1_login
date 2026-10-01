@@ -229,6 +229,11 @@ public class GarbageManager {
 
     public void saveItem(ItemStack stack) {
         try {
+            // ★ SN 物品进垃圾箱 = 脱离玩家本人管控，起算 12 小时找回期。
+            //   shift 投入 / 光标放入 / 拖拽 / 扫地机收地面掉落全走这里。
+            if (plugin.getSnManager() != null) {
+                plugin.getSnManager().onConfiscated(stack, "垃圾站");
+            }
             String data = stackToBase64(stack);
             if (data.isEmpty()) return;
             PreparedStatement ps = db.prepareStatement(
