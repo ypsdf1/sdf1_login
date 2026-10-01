@@ -5342,8 +5342,11 @@ public class WebManager {
         final String[] pollData = {sessionId};
         // ★ 连续无效响应（非JSON/结构不符）计数：只用于日志与提示，任何情况下都不会据此放行
         final int[] invalidPolls = {0};
+        final boolean[] offlined = {false};
         final long startTime = System.currentTimeMillis();
         final long maxPollTime = 660000; // 11分钟（比会话过期多1分钟）
+        // ★ 发起验证时先抓一次IP：玩家下线后 Player.getAddress 可能拿不到，用它兜底写 last_oauth_ip
+        final String beginIp = plugin.getPlayerIP(player);
 
         BukkitRunnable poller = new BukkitRunnable() {
             @Override
@@ -5360,13 +5363,11 @@ public class WebManager {
                     return;
                 }
 
-                // 玩家已下线
-                if (!player.isOnline()) {
-                    plugin.getLogger().info("[正版验证] 玩家下线，停止轮询: " + playerName);
-                    minecraftAuthSessions.remove(playerName);
-                    minecraftAuthPollers.remove(playerName);
-                    this.cancel();
-                    return;
+                // ★ 玩家已下线也不停轮询：PHP 一旦判定 verified 就照样写入内存+数据库，
+                //   这样"验证时人不在"也能永久生效，下次上线直接登录（消息发送处均已判 isOnline）
+                if (!player.isOnline() && !offlined[0]) {
+                    offlined[0] = true;
+                    plugin.getLogger().info("[正版验证] 玩家下线，转为后台继续轮询: " + playerName);
                 }
 
                 // 玩家已登录（可能通过其他方式）
@@ -5459,7 +5460,9 @@ public class WebManager {
                             plugin.addVerifiedPremiumPlayer(playerName, mcUuid, mcUsername);
 
                             // ★ 记录OAuth登录IP（用于异地登录风控）
-                            String oauthIP = plugin.getPlayerIP(player);
+                            //   玩家已离线时取不到地址 → 用发起验证时捕获的IP兜底
+                            String oauthIP = player.isOnline() ? plugin.getPlayerIP(player) : null;
+                            if (oauthIP == null || oauthIP.isEmpty()) oauthIP = beginIp;
                             if (oauthIP != null && !oauthIP.isEmpty()) {
                                 plugin.getDb().setField(playerName, "last_oauth_ip", oauthIP);
                             }

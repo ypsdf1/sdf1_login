@@ -188,49 +188,9 @@ public class LoginManager {
                     plugin.getDb().checkPassword(
                             name, hash);
             if (matchMain) {
-                // ★ 登录成功，重置风控
-                plugin.getRiskControl().onLoginSuccess(name);
-                plugin.getLoggedIn().add(name);
-                // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
-                if (plugin.webManager != null) {
-                    plugin.webManager.recordJavaLogin(name);
-                }
-                plugin.getDb().setLoggedIn(
-                        name, true);
-                plugin.getDb().setLoggedIn(
-                        name, true);
-                plugin.getDb().setField(name,
-                        "last_login_time",
-                        System.currentTimeMillis());
-                plugin.getDb().setField(name,
-                        "last_online_check",
-                        System.currentTimeMillis());
-                // ★ 立即同步在线状态到PHP（异步，避免阻塞主线程）
-                if (plugin.webManager != null) {
-                    Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-                        try {
-                            plugin.webManager.syncOnlinePlayers();
-                        } catch (Exception e) {
-                            plugin.getLogger().warning("[Web通信] 异步syncOnlinePlayers异常: " + e.getMessage());
-                        }
-                    });
-                }
-                // 登录成功关闭飞行
-                p.setAllowFlight(false);
-                p.setFlying(false);
-                // 只在有有效备份时恢复
-                plugin.restoreInventory(p);
-                plugin.recordIPLogin(p);
-                plugin.giveMenuSnowball(p);
-                p.sendMessage(plugin.getConfig2()
-                        .msg("login_success"));
-                activateCY(p, name);
-                // ★ 手动登录后恢复区域效果
-                Sdf1_login.AreaProtection areaProt =
-                        plugin.getAreaProtection();
-                if (areaProt != null) {
-                    areaProt.onPlayerJoin(p);
-                }
+                // ★ IP风控双验证第一步：只认密码，不解冻、不恢复背包
+                if (markDualStep1(p, false)) return true;
+                finishPasswordLogin(p, false);
                 return true;
             }
 
@@ -239,35 +199,9 @@ public class LoginManager {
                             .checkPasswordWithFallback(
                                     name, hash);
             if (pwdResult != null) {
-                // ★ 临时密码登录成功，也重置风控
-                plugin.getRiskControl().onLoginSuccess(name);
-                plugin.getLoggedIn().add(name);
-                // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
-                if (plugin.webManager != null) {
-                    plugin.webManager.recordJavaLogin(name);
-                }
-                plugin.getDb().setLoggedIn(name, true);
-                p.setAllowFlight(false);
-                p.setFlying(false);
-                plugin.getDb().setField(name, "last_login_time",
-                        System.currentTimeMillis());
-                plugin.getDb().setField(name, "last_online_check",
-                        System.currentTimeMillis());
-                plugin.restoreInventory(p);
-                plugin.recordIPLogin(p);
-                plugin.giveMenuSnowball(p);
-                // ★ 确保这行存在
-                plugin.getNeedsPasswordChange().add(name);
-                p.sendMessage(plugin.getConfig2().msg("login_success"));
-                p.sendMessage("§c§l[警告] §f您使用的是临时密码，请尽快修改密码！");
-                p.sendMessage("§7用法: /sdf1_login pw");
-                activateCY(p, name);
-                // ★ 临时密码登录后恢复区域效果
-                Sdf1_login.AreaProtection areaProt =
-                        plugin.getAreaProtection();
-                if (areaProt != null) {
-                    areaProt.onPlayerJoin(p);
-                }
+                // ★ IP风控双验证第一步：只认密码，不解冻、不恢复背包
+                if (markDualStep1(p, true)) return true;
+                finishPasswordLogin(p, true);
                 return true;
             }
 
@@ -296,6 +230,82 @@ public class LoginManager {
         return true;
     }
 
+
+    /**
+     * IP风控「密码 + 2FA」顺序两关的第一步。
+     * 密码正确只记录进度：<b>不加入 loggedIn、不恢复背包</b>，必须等第二步 /2fa code 通过才收口。
+     *
+     * @return true = 该玩家处于双验证流程，本轮 /login 到此为止
+     */
+    private boolean markDualStep1(Player p, boolean tempPassword) {
+        TwoFactorManager twofa = plugin.getTwofa();
+        String name = p.getName();
+        if (twofa == null || !twofa.isDualVerify(p)) return false;
+        twofa.onDualPasswordPassed(p, tempPassword);
+        // 密码这一步确实对了 → 重置「密码错误次数」风控（不代表已登录，仍不解冻）
+        plugin.getRiskControl().onLoginSuccess(name);
+        p.sendMessage("§a§l[双重验证] §a第一步密码验证通过（尚未解冻）");
+        p.sendMessage("§7第二步: 执行 §f/2fa code <动态码|恢复代码>");
+        p.sendMessage("§c两步全部通过后才会解冻并恢复背包");
+        return true;
+    }
+
+    /**
+     * 密码登录成功的统一收口：解冻 + 恢复背包 + 记录登录信息。
+     * 调用点：/login 主密码、/login 临时密码、IP风控双验证第二步通过后。
+     */
+    public void finishPasswordLogin(Player p, boolean tempPassword) {
+        String name = p.getName();
+        // ★ 登录成功，重置风控
+        plugin.getRiskControl().onLoginSuccess(name);
+        plugin.getLoggedIn().add(name);
+        // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
+        if (plugin.webManager != null) {
+            plugin.webManager.recordJavaLogin(name);
+        }
+        plugin.getDb().setLoggedIn(name, true);
+        if (!tempPassword) {
+            // 主密码路径保留原有的重复写入（行为与历史版本一致）
+            plugin.getDb().setLoggedIn(name, true);
+        }
+        plugin.getDb().setField(name, "last_login_time",
+                System.currentTimeMillis());
+        plugin.getDb().setField(name, "last_online_check",
+                System.currentTimeMillis());
+        // ★ 立即同步在线状态到PHP（异步，避免阻塞主线程）
+        if (!tempPassword && plugin.webManager != null) {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    plugin.webManager.syncOnlinePlayers();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web通信] 异步syncOnlinePlayers异常: " + e.getMessage());
+                }
+            });
+        }
+        // 登录成功关闭飞行
+        p.setAllowFlight(false);
+        p.setFlying(false);
+        // 只在有有效备份时恢复
+        plugin.restoreInventory(p);
+        plugin.recordIPLogin(p);
+        plugin.giveMenuSnowball(p);
+        if (tempPassword) {
+            // ★ 确保这行存在
+            plugin.getNeedsPasswordChange().add(name);
+        }
+        p.sendMessage(plugin.getConfig2().msg("login_success"));
+        if (tempPassword) {
+            p.sendMessage("§c§l[警告] §f您使用的是临时密码，请尽快修改密码！");
+            p.sendMessage("§7用法: /sdf1_login pw");
+        }
+        activateCY(p, name);
+        // ★ 登录后恢复区域效果
+        Sdf1_login.AreaProtection areaProt =
+                plugin.getAreaProtection();
+        if (areaProt != null) {
+            areaProt.onPlayerJoin(p);
+        }
+    }
 
     public void handleReset(Player p) {
         String name = p.getName();

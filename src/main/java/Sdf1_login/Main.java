@@ -379,6 +379,8 @@ public class Main extends JavaPlugin
         db = new DatabaseManager(getDataFolder());
         db.init();
         menuIconMgr = new MenuIconManager(this);
+        // ★ 启动时恢复「已通过正版OAuth验证」的玩家（验证一次即永久，重启不清）
+        loadVerifiedPremiumPlayers();
 
 
         // ===== 3. 菜单 =====
@@ -1917,11 +1919,68 @@ public class Main extends JavaPlugin
      */
     public void addVerifiedPremiumPlayer(String playerName, String mcUuid, String mcUsername) {
         verifiedPremiumPlayers.put(playerName, new String[]{mcUuid, mcUsername, String.valueOf(System.currentTimeMillis())});
+        // ★ 永久写入数据库：玩家当下去/已离线都不影响，下次上线直接登录
+        persistVerifiedPremium(playerName);
         getLogger().info("[正版验证] 玩家 " + playerName + " 已通过Microsoft OAuth验证 (UUID: " + mcUuid + ", MCName: " + mcUsername + ")");
     }
 
     /**
-     * 移除玩家的正版验证标记（下线时不清除，服务器重启时清除）
+     * 把「已通过正版OAuth验证」写进数据库：验证一次即永久，重启后仍自动放行。
+     * 账号行还不存在时静默跳过（首次 autoLogin 创建账号后会补写）。
+     */
+    public void persistVerifiedPremium(String playerName) {
+        String[] data = verifiedPremiumPlayers.get(playerName);
+        if (data == null) return;
+        if (!db.userExists(playerName)) return;
+        try {
+            db.setField(playerName, "premium_verified_uuid", data[0] == null ? "" : data[0]);
+            db.setField(playerName, "premium_verified_name", data[1] == null ? "" : data[1]);
+            db.setField(playerName, "premium_verified_at",
+                    Long.parseLong(data.length > 2 && data[2] != null ? data[2] : "0"));
+        } catch (Exception e) {
+            getLogger().warning("[正版验证] 持久化失败 " + playerName + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * 启动时从数据库恢复已验证的正版玩家（离线/重启都不丢，下次上线直接登录）
+     */
+    private void loadVerifiedPremiumPlayers() {
+        java.sql.Connection conn = db.getConnection();
+        if (conn == null) return;
+        int n = 0;
+        try (java.sql.Statement st = conn.createStatement();
+             java.sql.ResultSet rs = st.executeQuery(
+                     "SELECT player_name, premium_verified_uuid, premium_verified_name, premium_verified_at "
+                             + "FROM users WHERE premium_verified_at > 0")) {
+            while (rs.next()) {
+                String pn = rs.getString("player_name");
+                if (pn == null || pn.isEmpty()) continue;
+                String uuid = rs.getString("premium_verified_uuid");
+                String uname = rs.getString("premium_verified_name");
+                long at = rs.getLong("premium_verified_at");
+                verifiedPremiumPlayers.put(pn, new String[]{
+                        uuid == null ? "" : uuid,
+                        (uname == null || uname.isEmpty()) ? pn : uname,
+                        String.valueOf(at)});
+                n++;
+            }
+        } catch (Exception e) {
+            getLogger().warning("[正版验证] 启动恢复已验证玩家失败: " + e.getMessage());
+            return;
+        }
+        if (n > 0) {
+            getLogger().info("[正版验证] 已从数据库恢复 " + n + " 个已验证正版账号（重启不清）");
+        }
+    }
+
+    /** 2FA 管理器访问器：登录流程据此判断是否走「密码+2FA」顺序两关 */
+    public TwoFactorManager getTwofa() {
+        return twofa;
+    }
+
+    /**
+     * 移除玩家的正版验证标记（下线时不清除；数据库标记为永久，重启后由启动加载恢复）
      */
     public void removeVerifiedPremiumPlayer(String playerName) {
         verifiedPremiumPlayers.remove(playerName);
@@ -1938,6 +1997,15 @@ public class Main extends JavaPlugin
     public void autoLogin(Player p,
                           String registerType) {
         String name = p.getName();
+        // ★ IP风控双验证进行中：所有自动登录入口统一拦下，
+        //   必须「/login 密码 + /2fa code」两步全过才解冻恢复背包（单一未通过不放行）
+        if (twofa != null && twofa.isDualVerify(p)) {
+            getLogger().info("[双重验证] 拦截自动登录: 玩家 " + name + " 仍需完成「密码 + 2FA」两关");
+            if (p.isOnline()) {
+                p.sendMessage("§c§l[双重验证] §fIP风控未解除：请先 §f/login <密码> §7，再 §f/2fa code <动态码|恢复代码>");
+            }
+            return;
+        }
         String ip = getPlayerIP(p);
         String uuid =
                 p.getUniqueId().toString();
@@ -1977,6 +2045,11 @@ public class Main extends JavaPlugin
             db.setField(name,
                     "register_type", registerType);
             db.recordIP(name, ip);
+        }
+
+        // ★ 账号行刚创建/首次登录时补写正版验证标记，保证重启后仍自动放行
+        if (isVerifiedPremiumPlayer(name)) {
+            persistVerifiedPremium(name);
         }
 
         loggedIn.add(name);
@@ -2592,10 +2665,11 @@ public class Main extends JavaPlugin
             if (twofa != null && db.userExists(name)
                     && !isVerifiedPremiumPlayer(name)
                     && twofa.isEnabled(name)) {
-                twofa.markLoginPending(p, getPlayerIP(p));
-                p.sendMessage("§c§l[安全风控] §f检测到登录 IP 与上次不同");
-                p.sendMessage("§7建议先执行 §f/2fa code <动态码|恢复代码> §7完成二次验证");
-                p.sendMessage("§7（也可直接 §f/login <密码> §7登录）");
+                // ★ IP风控双验证（强制顺序两关）：第一步 /login，第二步 /2fa code
+                twofa.markDualVerify(p, getPlayerIP(p));
+                p.sendMessage("§c§l[安全风控] §f检测到登录 IP 与上次不同，需完成双重验证");
+                p.sendMessage("§7第一步 §f/login <密码> §7→ 第二步 §f/2fa code <动态码|恢复代码>");
+                p.sendMessage("§c两步全部通过才会解冻并恢复背包（只过一步不放行）");
             }
         } else {
             getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP相同，允许快速重连验证");
@@ -2673,11 +2747,18 @@ public class Main extends JavaPlugin
                 p.sendMessage("§7上次IP: §e" + lastOAuthIP);
                 p.sendMessage("§7当前IP: §e" + currentIP);
                 p.sendMessage("§c请使用 /login <密码> 手动登录，或重新完成 /mslogin 验证");
-                // ★ 2FA联动：已绑定二次验证 → 完成一次 2FA 后自动信任IP并放行
+                // ★ 2FA联动：已绑定二次验证 → 强制「密码 + 2FA」顺序两关
                 if (twofa != null && twofa.isEnabled(name)) {
-                    twofa.markLoginPending(p, currentIP);
-                    p.sendMessage("§e您已绑定二次验证，执行 §f/2fa code <动态码|恢复代码> §e完成验证");
-                    p.sendMessage("§7验证通过后将自动信任本次 IP 并登录");
+                    if (db.userExists(name)) {
+                        twofa.markDualVerify(p, currentIP);
+                        p.sendMessage("§e您已绑定二次验证，需完成双重验证:");
+                        p.sendMessage("§7第一步 §f/login <密码> §7→ 第二步 §f/2fa code <动态码|恢复代码>");
+                        p.sendMessage("§c两步全部通过才会解冻并恢复背包（只过一步不放行）");
+                    } else {
+                        twofa.markLoginPending(p, currentIP);
+                        p.sendMessage("§e您已绑定二次验证，执行 §f/2fa code <动态码|恢复代码> §e完成验证");
+                        p.sendMessage("§7验证通过后将自动信任本次 IP 并登录");
+                    }
                 }
                 // 不return，继续往下走触发正常登录流程
             } else {
@@ -2738,10 +2819,8 @@ public class Main extends JavaPlugin
             twofa.clearLoginPending(p);
         }
 
-        // ★ 停止正版验证轮询（如果玩家有进行中的验证）
-        if (webManager != null) {
-            webManager.stopMinecraftAuthPoller(name);
-        }
+        // ★ 这里刻意不停正版验证轮询：玩家下线后轮询继续，
+        //   只要 PHP 判定通过就照样写入内存+数据库，下次上线直接登录
 
         boolean wasLoggedIn =
                 loggedIn.contains(name);

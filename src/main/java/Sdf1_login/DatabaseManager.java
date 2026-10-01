@@ -123,6 +123,14 @@ public class DatabaseManager {
             safeAdd(st, "twofa_recovery_codes",
                     "TEXT DEFAULT ''");
 
+            // ===== 正版OAuth验证永久标记（验证一次即永久，重启后仍自动放行）=====
+            safeAdd(st, "premium_verified_at",
+                    "INTEGER DEFAULT 0");
+            safeAdd(st, "premium_verified_uuid",
+                    "TEXT DEFAULT ''");
+            safeAdd(st, "premium_verified_name",
+                    "TEXT DEFAULT ''");
+
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
             boolean hasOldTable = false;

@@ -354,7 +354,31 @@ public class TwoFactorManager {
     /** 验证通过后的收口：处理"IP 变更待验证"状态，或仅回执（不干预正常登录） */
     private void finishLoginVerify(Player p, boolean usedRecovery) {
         String name = p.getName();
-        String pendingIp = loginPending.remove(p.getUniqueId());
+        java.util.UUID uuid = p.getUniqueId();
+
+        // ===== IP风控「密码 + 2FA」顺序两关 =====
+        if (dualVerify.containsKey(uuid)) {
+            DualState st = dualVerify.get(uuid);
+            if (st == null || !st.passwordPassed) {
+                // 第二关先到 → 不放行，也不消耗/不信任IP，等第一步密码
+                p.sendMessage("§c§l[双重验证] §f请先完成第一步: §f/login <密码>");
+                p.sendMessage("§7（密码 + 二次验证两步全部通过后才会解冻并恢复背包）");
+                return;
+            }
+            // ★ 双通过 → 信任本次IP + 解冻 + 恢复背包
+            String ip = loginPending.remove(uuid);
+            dualVerify.remove(uuid);
+            if (ip != null && !ip.isEmpty()) {
+                plugin.getDb().setField(name, "last_oauth_ip", ip);
+                plugin.getDb().setField(name, "last_login_ip", ip);
+            }
+            p.sendMessage("§a§l[双重验证] §a第一步密码 ✓  第二步二次验证 ✓");
+            p.sendMessage("§a双重验证全部通过，已解冻并恢复背包");
+            plugin.getLoginMgr().finishPasswordLogin(p, st.tempPassword);
+            return;
+        }
+
+        String pendingIp = loginPending.remove(uuid);
         if (pendingIp == null) {
             // 玩家主动验证，不在登录风控流程里 → 只回执，不干预
             p.sendMessage("§a§l[2FA] §a验证通过");
@@ -393,6 +417,42 @@ public class TwoFactorManager {
     /** 玩家下线时清理待验证状态 */
     public void clearLoginPending(Player p) {
         loginPending.remove(p.getUniqueId());
+        dualVerify.remove(p.getUniqueId());
+    }
+
+    // ==================== IP风控「密码 + 2FA」双验证状态机 ====================
+
+    /** 双验证进度：passwordPassed=false 等第一步(/login)，true 密码已过等第二步(/2fa code) */
+    private static final class DualState {
+        boolean passwordPassed;
+        boolean tempPassword;
+    }
+
+    private final java.util.Map<java.util.UUID, DualState> dualVerify =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * IP风控触发时调用（Main 检查点3 / 检查点0）：
+     * 该账号必须先 /login 通过密码、再 /2fa code 通过二次验证，两步全过才解冻+恢复背包。
+     */
+    public void markDualVerify(Player p, String currentIp) {
+        dualVerify.put(p.getUniqueId(), new DualState());
+        markLoginPending(p, currentIp);
+    }
+
+    /** 该玩家是否处于「密码+2FA 双验证」流程 */
+    public boolean isDualVerify(Player p) {
+        return dualVerify.containsKey(p.getUniqueId());
+    }
+
+    /**
+     * 第一步通过（密码正确）：只记录进度，<b>不解冻、不恢复背包</b>。
+     */
+    public void onDualPasswordPassed(Player p, boolean tempPassword) {
+        DualState st = dualVerify.get(p.getUniqueId());
+        if (st == null) return;
+        st.passwordPassed = true;
+        st.tempPassword = tempPassword;
     }
 
     // ==================== 恢复代码 ====================
