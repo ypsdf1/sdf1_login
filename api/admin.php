@@ -32,6 +32,8 @@ if (!extension_loaded('sqlite3')) {
 }
 
 require_once __DIR__ . '/../core.php';
+// ★ 人机验证（2026-10-02）：adminDoLogin 在密码比对前 cgEnforce()，未配密钥时自动放行
+require_once __DIR__ . '/../captcha_guard.php';
 
 if (!function_exists('error') || !function_exists('success') || !function_exists('getParam')) {
     exit(json_encode(['success' => false, 'message' => 'core.php load failed'], JSON_UNESCAPED_UNICODE));

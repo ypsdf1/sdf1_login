@@ -2,6 +2,8 @@
 // ★ 紧急加固（2026-09-29）：第二层 IP 白名单 —— 登录页本身也只对白名单 IP 开放
 require_once __DIR__ . '/security.php';
 secGatePage();
+// ★ 人机验证（2026-10-02）：cgWidgetHtml() 渲染挂件，未配密钥时自动放行
+require_once __DIR__ . '/captcha_guard.php';
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
