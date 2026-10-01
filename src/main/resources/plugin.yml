@@ -63,6 +63,9 @@ commands:
   email:
     description: 绑定邮箱
     usage: /email <邮箱>
+  2fa:
+    description: 二次验证(TOTP)绑定
+    usage: /2fa add|code <6位>|remove <6位>
   绑定:
     description: 绑定邮箱(中文)
     usage: /绑定 <邮箱>

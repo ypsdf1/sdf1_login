@@ -156,6 +156,8 @@ public class Main extends JavaPlugin
 // 在 bondManager 字段附近添加：
     private BondPrinter bondPrinter;
     private SnManager snManager;
+    /** 2FA(TOTP) 绑定管理（全部逻辑Java本地，PHP只展示二维码） */
+    private TwoFactorManager twofa;
     private OrderManager orderManager;
 
     public OrderManager getOrderManager() {
@@ -421,6 +423,7 @@ public class Main extends JavaPlugin
         chatFilter.loadIllegalDomains(); // 加载非法域名后缀
         chatFilter.loadMutes(); // 启动加载持久化禁言（muted_until 字段）
         welcome = new WelcomeManager(this);
+        twofa = new TwoFactorManager(this);
 
         // ===== 5.5 Web通信管理器 =====
         webManager = new WebManager(this);
@@ -3655,6 +3658,14 @@ public class Main extends JavaPlugin
             return;
         }
 
+        // ★ 2FA 解绑确认输入拦截（30秒 confirm 窗口，
+        //   输入 confirm=解绑，其它任意内容/超时=取消）
+        if (twofa != null && twofa.isRemoveConfirming(p)) {
+            e.setCancelled(true);
+            twofa.handleRemoveConfirm(p, msg);
+            return;
+        }
+
         // ★ 管理员配置输入拦截（GUI点击后聊天栏输入）
         if (areaProtection != null && areaProtection.handleConfigInput(p, msg)) {
             e.setCancelled(true);
@@ -5568,6 +5579,20 @@ public class Main extends JavaPlugin
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+
+        // ===== /2fa 二次验证绑定（TOTP，全部校验在Java本地）=====
+        if (cmdName.equals("2fa")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            if (twofa == null) {
+                sender.sendMessage("§c2FA模块未加载");
+                return true;
+            }
+            return twofa.handleCommand((Player) sender, args);
+        }
+
         // 区域防护（必须在最前面）
         if (cmd.getName().equalsIgnoreCase("protect")
                 || cmd.getName().equals("区域保护")) {

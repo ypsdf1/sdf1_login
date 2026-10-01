@@ -2830,6 +2830,37 @@ public class WebManager {
         return doPostWithRetry(urlStr, jsonBody, maxRetries);
     }
 
+/**
+     * 推送 2FA 二维码载荷给 PHP 展示端（PHP 只存+渲染，不做任何 2FA 校验）
+     *
+     * @param token      玩家读取载荷用的一次性随机 token
+     * @param player     玩家名
+     * @param otpauthUri otpauth://totp/... 完整载荷
+     * @return 成功返回玩家可访问的二维码页 URL；未启用/失败返回 null
+     */
+    public String pushTwoFactorQr(String token, String player,
+                                  String otpauthUri) {
+        if (!isEnabled()) return null;
+        try {
+            JsonObject json = new JsonObject();
+            json.addProperty("secret", secretKey);
+            json.addProperty("token", token);
+            json.addProperty("player", player);
+            json.addProperty("otpauth", otpauthUri);
+            String resp = httpPost(
+                    "api/twofa.php?action=push_qr", json.toString());
+            if (resp != null && resp.contains("\"success\":true")) {
+                return webBaseUrl + "/twofa_qr.php?t=" + token;
+            }
+            plugin.getLogger().warning("[2FA] PHP拒绝二维码载荷: " + resp);
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[2FA] 推送二维码失败: "
+                    + e.getMessage());
+            return null;
+        }
+    }
+
     /**
      * 发送POST请求（带token）
      */

@@ -110,6 +110,15 @@ public class DatabaseManager {
             // ★ 正版OAuth登录IP（用于异地登录风控）
             safeAdd(st, "last_oauth_ip",
                     "TEXT DEFAULT ''");
+            // ===== 2FA 二次验证（TOTP，仅Java本地校验）=====
+            safeAdd(st, "twofa_secret",
+                    "TEXT DEFAULT ''");
+            safeAdd(st, "twofa_enabled",
+                    "INTEGER DEFAULT 0");
+            safeAdd(st, "twofa_pending_secret",
+                    "TEXT DEFAULT ''");
+            safeAdd(st, "twofa_pending_at",
+                    "INTEGER DEFAULT 0");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
