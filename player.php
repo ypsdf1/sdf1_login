@@ -340,12 +340,12 @@ if ($currentVersion !== $BUILD_VERSION) {
     // ★ 人机验证挂件HTML：由 config.php 的 CAPTCHA_PROVIDER 单点决定 CF/VA（全项目只用一家，不混用）。
     //   未启用（off / 密钥未配）时为空串，前端不挂件、服务端同步放行，
     //   不会出现"服务端要验证、前端却没组件"的错配。
-    //   JSON_HEX_TAG 必须带：HTML 里含 </script>，不转义会把本 <script> 提前截断。
+    //   JSON_HEX_TAG 必须带：挂件HTML里含 script 闭合标签，不转义会把本脚本块提前截断。
     window.__CG_HTML = <?php echo json_encode(cgWidgetHtml(), JSON_HEX_TAG | JSON_UNESCAPED_UNICODE); ?>;
 
     // ===== 人机验证挂件：全页唯一实例，挂到当前可见的登录表单 =====
     //   三个入口（主登录页 / 毛玻璃弹窗 / 安全验证弹窗）共用一个 cgBox，避免重复 id；
-    //   innerHTML 插入的 <script> 不会被浏览器执行 → 这里手动执行一次。
+    //   innerHTML 插入的 script 元素不会被浏览器执行 → 这里手动执行一次。
     function cgMount(slotId) {
         var slot = document.getElementById(slotId);
         if (!slot) return false;
