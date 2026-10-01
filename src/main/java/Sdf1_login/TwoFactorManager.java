@@ -113,7 +113,8 @@ public class TwoFactorManager {
                 System.currentTimeMillis());
 
         // 一次性随机 token：玩家凭它读取二维码载荷（10 分钟有效）
-        // token=裸hex64 已实测可过线上WAF（t=长hex / token=v1_前缀 两种形态均被拦）
+        // token=裸hex64。WAF实测(2026-10-01矩阵)：仅「查询参数名token+≥32位hex」被404，
+        // POST body 与「t=<hex>」均可过 —— 故推送走 POST、页面链接固定 ?t=<token>
         String token = hex(randomBytes(32));
         String uri = otpauthUri(p.getName(), secret);
 
