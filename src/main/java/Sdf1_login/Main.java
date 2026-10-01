@@ -5667,13 +5667,13 @@ public class Main extends JavaPlugin
 
         // ===== /2fa 二次验证绑定（TOTP，全部校验在Java本地）=====
         if (cmdName.equals("2fa")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage("§c仅玩家可用");
-                return true;
-            }
             if (twofa == null) {
                 sender.sendMessage("§c2FA模块未加载");
                 return true;
+            }
+            if (!(sender instanceof Player)) {
+                // ★ 控制台 = 管理员强制解绑专用入口（权限级别=控制台），结果全盘输出
+                return twofa.handleConsoleCommand(sender, args);
             }
             return twofa.handleCommand((Player) sender, args);
         }

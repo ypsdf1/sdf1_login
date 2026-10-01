@@ -1,6 +1,7 @@
 package Sdf1_login;
 
 import org.bukkit.Bukkit;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
 
@@ -26,6 +27,14 @@ import java.util.concurrent.ConcurrentHashMap;
  *                       输入是恢复代码 → 验证通过的同时立即解绑 2FA（一次性有效）
  *   /2fa remove <6位>   校验动态码 -> 进入 30 秒 confirm 确认窗口
  *   聊天输入 confirm    解绑；超时或输入其它任意内容 = 取消
+ *   [控制台] /2fa remove <玩家名> --force  管理员强制解绑：30 秒冷静期后才真正销毁
+ *   [控制台] /2fa remove -c                取消待执行的强制解绑（冷静期内可撤回）
+ *
+ * 安全约定：
+ *   1) 玩家侧 remove 只接受认证器 App 的 6 位动态码，其它任何输入（含玩家名、--force、-c）
+ *      一律回「验证码无效」，绝不提示权限问题（最小化信息透露）。
+ *   2) 强制解绑权限级别 = 控制台，玩家侧代码路径完全不解析 --force。
+ *   3) 解绑三场景（恢复代码 / 玩家主动 / 管理员强制）都会向「管理员邮箱」推报警邮件。
  *
  * 前置条件：必须先绑定邮箱（/email）。
  */
@@ -35,6 +44,8 @@ public class TwoFactorManager {
     private static final long PENDING_TTL_MS = 10 * 60 * 1000L;
     /** 解绑确认窗口：30 秒 */
     private static final long REMOVE_WINDOW_MS = 30 * 1000L;
+    /** 管理员强制解绑冷静期：30 秒（到期才真正销毁，期间可 -c 撤回） */
+    private static final long FORCE_COOLDOWN_MS = 30 * 1000L;
     /** TOTP 参数：SHA1 / 6位 / 30秒（与 PHP secOtpauthUri 管理端口径一致） */
     private static final String ISSUER = "SDF1";
     /** 绑定成功后随邮件下发的恢复代码组数 / 每组位数（一次性有效） */
@@ -49,6 +60,19 @@ public class TwoFactorManager {
     private final Map<UUID, Long> removeConfirmUntil = new ConcurrentHashMap<>();
     /** 登录 IP 变更待验证：玩家 UUID -> 触发风控时的登录 IP */
     private final Map<UUID, String> loginPending = new ConcurrentHashMap<>();
+    /** 管理员强制解绑待执行：小写玩家名 -> 冷静期记录（async 不涉及，主线程读写） */
+    private final Map<String, ForcePending> forcePending = new ConcurrentHashMap<>();
+
+    /** 冷静期记录：到期时间 + 调度任务ID（-c 时按 ID 撤销调度） */
+    private static final class ForcePending {
+        final long deadline;
+        final int taskId;
+
+        ForcePending(long deadline, int taskId) {
+            this.deadline = deadline;
+            this.taskId = taskId;
+        }
+    }
 
     public TwoFactorManager(Main plugin) {
         this.plugin = plugin;
@@ -341,6 +365,8 @@ public class TwoFactorManager {
             plugin.getDb().setField(name, "twofa_recovery_codes", "");
             plugin.getLogger().info("[2FA] 玩家 " + name
                     + " 使用恢复代码通过验证，已自动解绑二次验证");
+            sendUnbindAlarm(name, "恢复代码解绑", "玩家本人（恢复代码）",
+                    plugin.getPlayerIP(p));
             p.sendMessage("§e§l[2FA] §e恢复代码有效，本次验证通过");
             p.sendMessage("§c  检测到您使用了恢复代码，已立即解除二次验证绑定");
             p.sendMessage("§7  认证器恢复可用后请重新执行 §f/2fa add §7绑定");
@@ -550,8 +576,10 @@ public class TwoFactorManager {
 
     private void handleRemove(Player p, String code) {
         code = code.trim();
+        // ★ 最小化信息透露：玩家名、--force、-c 等任何非动态码输入
+        //   一律按「验证码无效」处理，不提示权限/用法差异
         if (!code.matches("\\d{6}")) {
-            p.sendMessage("§c动态码为 6 位数字");
+            p.sendMessage("§c验证码无效，请核对认证器 App 上的 6 位数字");
             return;
         }
         if (!isEnabled(p)) {
@@ -615,15 +643,259 @@ public class TwoFactorManager {
             Bukkit.getScheduler().runTask(plugin, () -> {
                 plugin.getDb().setField(name, "twofa_secret", "");
                 plugin.getDb().setField(name, "twofa_enabled", 0);
+                // 解绑要彻底：恢复代码一并作废，避免残留可再次触发解绑/验证
+                plugin.getDb().setField(name, "twofa_recovery_codes", "");
                 Player pl = Bukkit.getPlayer(uuid);
+                String srcIp = "";
                 if (pl != null && pl.isOnline()) {
+                    srcIp = plugin.getPlayerIP(pl) == null ? "" : plugin.getPlayerIP(pl);
                     pl.sendMessage("§a§l[2FA] §a二次验证已解绑");
                     pl.sendMessage("§7  账号回到仅密码保护状态，建议尽快重新绑定");
+                    // 已解绑 → 「密码+2FA」双验证失去第二关，退回普通密码登录
+                    if (isDualVerify(pl)) {
+                        clearLoginPending(pl);
+                        pl.sendMessage("§7  您的 IP 风控双验证已解除，请用 §f/login <密码> §7完成登录");
+                    }
+                } else {
+                    Object o = plugin.getDb().getField(name, "last_login_ip");
+                    srcIp = o == null ? "" : String.valueOf(o);
                 }
+                sendUnbindAlarm(name, "玩家主动解绑", "玩家本人", srcIp);
             });
         } else {
             p.sendMessage("§7[2FA] 输入不正确，解绑已取消（二次验证保持绑定）");
         }
+    }
+
+    // ==================== 控制台强制解绑（权限级别=控制台） ====================
+
+    /**
+     * 控制台版 /2fa 分发：只开放管理员强制解绑，执行结果全盘输出。
+     * <pre>
+     * /2fa remove <玩家名> --force   下发强制解绑（30 秒冷静期，到期才真正销毁）
+     * /2fa remove <玩家名> -c        取消指定玩家的待执行任务
+     * /2fa remove -c                 取消全部待执行任务
+     * </pre>
+     */
+    public boolean handleConsoleCommand(CommandSender sender, String[] args) {
+        String sub = args.length >= 1 ? args[0].toLowerCase() : "";
+        if (!"remove".equals(sub) && !"解绑".equals(sub)) {
+            sender.sendMessage("§c[2FA] 控制台仅支持强制解绑子命令");
+            sender.sendMessage("§7用法: /2fa remove <玩家名> --force   （30秒冷静期后执行）");
+            sender.sendMessage("§7取消: /2fa remove -c");
+            return true;
+        }
+        if (args.length < 2) {
+            sender.sendMessage("§c[2FA] 用法: /2fa remove <玩家名> --force");
+            sender.sendMessage("§7取消待执行任务: /2fa remove -c");
+            return true;
+        }
+        String a1 = args[1];
+        if ("-c".equalsIgnoreCase(a1) || "cancel".equalsIgnoreCase(a1)) {
+            cancelForcePending(sender, null);
+            return true;
+        }
+        if (args.length >= 3 && ("-c".equalsIgnoreCase(args[2])
+                || "cancel".equalsIgnoreCase(args[2]))) {
+            cancelForcePending(sender, a1);
+            return true;
+        }
+        boolean force = false;
+        for (int i = 2; i < args.length; i++) {
+            if ("--force".equalsIgnoreCase(args[i])) {
+                force = true;
+                break;
+            }
+        }
+        if (!force) {
+            sender.sendMessage("§c[2FA] 缺少 --force，未执行任何操作");
+            sender.sendMessage("§7用法: /2fa remove <玩家名> --force");
+            return true;
+        }
+        scheduleForceRemove(sender, a1);
+        return true;
+    }
+
+    /** 下发强制解绑：校验账号 -> 进入 30 秒冷静期 -> 到期自动执行（期间不销毁任何数据） */
+    private void scheduleForceRemove(CommandSender sender, String target) {
+        String key = target.toLowerCase();
+        if (forcePending.containsKey(key)) {
+            sender.sendMessage("§e[2FA] 玩家 " + target + " 已有待执行的强制解绑任务（30秒冷静期内）");
+            sender.sendMessage("§7重新下发前先取消: §f/2fa remove " + target + " -c");
+            return;
+        }
+        if (!plugin.getDb().userExists(target)) {
+            sender.sendMessage("§c[2FA] 删除异常：数据库中不存在玩家 " + target);
+            return;
+        }
+        if (!isEnabled(target)) {
+            sender.sendMessage("§e[2FA] 玩家 " + target + " 未绑定二次验证，无需删除");
+            return;
+        }
+
+        BukkitRunnable task = new BukkitRunnable() {
+            @Override
+            public void run() {
+                executeForceRemove(key, target);
+            }
+        };
+        int taskId = task.runTaskLater(plugin, FORCE_COOLDOWN_MS / 50L).getTaskId();
+        forcePending.put(key, new ForcePending(
+                System.currentTimeMillis() + FORCE_COOLDOWN_MS, taskId));
+
+        sender.sendMessage("§e§l[2FA] §e已进入 30 秒冷静期：将强制解除玩家 " + target + " 的二次验证");
+        sender.sendMessage("§7  到期后自动执行（冷静期内不销毁任何数据）");
+        sender.sendMessage("§7  取消: §f/2fa remove " + target + " -c §7或 §f/2fa remove -c");
+        sender.sendMessage("§7  到期执行结果会完整输出到本控制台");
+        plugin.getLogger().info("[2FA] 控制台下发强制解绑: " + target + "（30秒冷静期）");
+    }
+
+    /** 取消待执行的强制解绑（target == null 表示全部） */
+    private void cancelForcePending(CommandSender sender, String target) {
+        List<String> done = new ArrayList<>();
+        for (Map.Entry<String, ForcePending> e
+                : new ArrayList<>(forcePending.entrySet())) {
+            String key = e.getKey();
+            if (target != null && !key.equals(target.toLowerCase())) continue;
+            forcePending.remove(key);
+            Bukkit.getScheduler().cancelTask(e.getValue().taskId);
+            done.add(key);
+        }
+        if (done.isEmpty()) {
+            sender.sendMessage("§e[2FA] 当前没有待执行的强制解绑任务");
+            if (target != null) {
+                sender.sendMessage("§7  指定玩家: " + target);
+            }
+            return;
+        }
+        sender.sendMessage("§a[2FA] 已取消 " + done.size()
+                + " 个强制解绑任务（二次验证保持绑定）");
+        for (String k : done) {
+            sender.sendMessage("§7  - " + k);
+        }
+        plugin.getLogger().info("[2FA] 强制解绑已取消: " + done);
+    }
+
+    /** 冷静期到期：真正销毁 2FA 数据，执行结果全盘输出到控制台 */
+    private void executeForceRemove(String key, String target) {
+        if (forcePending.remove(key) == null) {
+            return;   // 已被 -c 取消
+        }
+        CommandSender out = Bukkit.getConsoleSender();
+        try {
+            if (!plugin.getDb().userExists(target)) {
+                out.sendMessage("§c[2FA] 删除异常：冷静期内玩家 " + target
+                        + " 已不存在（数据库无此账号）");
+                plugin.getLogger().warning("[2FA] 强制解绑中止: 玩家 " + target + " 不存在");
+                return;
+            }
+            if (!isEnabled(target)) {
+                out.sendMessage("§e[2FA] 玩家 " + target
+                        + " 在冷静期内已自行解绑，无需删除");
+                plugin.getLogger().info("[2FA] 强制解绑跳过: "
+                        + target + " 已自行解绑");
+                return;
+            }
+
+            plugin.getDb().setField(target, "twofa_secret", "");
+            plugin.getDb().setField(target, "twofa_enabled", 0);
+            plugin.getDb().setField(target, "twofa_recovery_codes", "");
+            plugin.getDb().setField(target, "twofa_pending_secret", "");
+            plugin.getDb().setField(target, "twofa_pending_at", 0L);
+
+            out.sendMessage("§a[2FA] 强制解绑成功：玩家 " + target);
+            out.sendMessage("§7  已清空 twofa_secret / twofa_enabled / "
+                    + "twofa_recovery_codes / twofa_pending_*");
+            plugin.getLogger().info("[2FA] 控制台强制解绑成功: " + target);
+
+            String ip = "";
+            Player pl = Bukkit.getPlayerExact(target);
+            if (pl != null && pl.isOnline()) {
+                ip = plugin.getPlayerIP(pl) == null ? "" : plugin.getPlayerIP(pl);
+                if (isDualVerify(pl)) {
+                    clearLoginPending(pl);
+                    pl.sendMessage("§7  您的 IP 风控双验证已解除，"
+                            + "请用 §f/login <密码> §7完成登录");
+                }
+                pl.sendMessage("§e§l[2FA] §e管理员已强制解除您的二次验证");
+                pl.sendMessage("§7  账号回到仅密码保护状态，如需重新绑定执行 §f/2fa add");
+            } else {
+                Object o = plugin.getDb().getField(target, "last_login_ip");
+                ip = o == null ? "" : String.valueOf(o);
+            }
+
+            if (!sendUnbindAlarm(target, "管理员强制解绑", "控制台（管理员）", ip)) {
+                out.sendMessage("§e[2FA] 报警邮件未发送：SMTP设置.txt 未配置"
+                        + "「管理员邮箱」（详情见后台日志）");
+            } else {
+                out.sendMessage("§7[2FA] 解绑报警邮件已投递至 "
+                        + maskEmail(safeAdminEmail()) + "（结果见后台日志）");
+            }
+        } catch (Exception e) {
+            out.sendMessage("§c[2FA] 删除异常：" + e);
+            plugin.getLogger().warning("[2FA] 强制解绑异常: " + target + " -> " + e);
+        }
+    }
+
+    // ==================== 解绑报警邮件 ====================
+
+    /** SMTP设置.txt 的「管理员邮箱」（安全事件报警收件人），未配置返回空串 */
+    private String safeAdminEmail() {
+        try {
+            String v = plugin.getConfig2().getSmtp("管理员邮箱");
+            return v == null ? "" : v.trim();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * 2FA 解绑报警邮件（恢复代码解绑 / 玩家主动解绑 / 管理员强制解绑 三场景统一调用）。
+     * 收件人 = SMTP设置.txt 的「管理员邮箱」；未配置则只记日志。
+     * 发信在异步线程做（SMTP 阻塞最长 15 秒，绝不能卡主线程）。
+     *
+     * @return true = 已投递发送（成败见后台日志）；false = 未配置管理员邮箱
+     */
+    private boolean sendUnbindAlarm(String playerName, String mode,
+                                    String operator, String ip) {
+        String admin = safeAdminEmail();
+        if (admin.isEmpty()) {
+            plugin.getLogger().warning("[2FA] 解绑报警邮件未发送："
+                    + "SMTP设置.txt 未配置「管理员邮箱」（玩家=" + playerName
+                    + " 方式=" + mode + "）");
+            return false;
+        }
+        String time = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                .format(new java.util.Date());
+        String bound = str(plugin.getDb().getField(playerName, "email"));
+
+        StringBuilder b = new StringBuilder();
+        b.append("【安全报警】玩家 ").append(playerName)
+                .append(" 的二次验证(2FA)已解除\n\n");
+        b.append("触发方式：").append(mode).append('\n');
+        b.append("执行者：").append(operator).append('\n');
+        b.append("时间：").append(time).append('\n');
+        b.append("来源IP：").append(ip == null || ip.isEmpty() ? "未知" : ip).append('\n');
+        b.append("玩家绑定邮箱：").append(bound.isEmpty() ? "无" : maskEmail(bound)).append('\n');
+        b.append("服务器：草原探险\n\n");
+        b.append("若该操作非本人发起，账号当前仅剩密码保护，");
+        b.append("请立即让玩家修改密码并重新绑定二次验证。");
+
+        final String to = admin;
+        final String subject = "[Sdf1_login] 2FA解绑报警 - " + playerName + "（" + mode + "）";
+        final String mailBody = b.toString();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            boolean ok = false;
+            try {
+                EmailManager em = plugin.getEmail();
+                ok = em != null && em.sendBody(to, subject, mailBody);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[2FA] 解绑报警邮件异常: " + e.getMessage());
+            }
+            plugin.getLogger().info("[2FA] 解绑报警邮件" + (ok ? "已发送至 " + maskEmail(to)
+                    : "发送失败") + "（玩家=" + playerName + " 方式=" + mode + "）");
+        });
+        return true;
     }
 
     // ==================== 状态读取 ====================
