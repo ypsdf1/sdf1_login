@@ -4,8 +4,9 @@
  *
  * 上下布局同时接入：
  *   1. Cloudflare Turnstile
- *   2. VAPTCHA (v3)
+ *   2. VAPTCHA V4（V3 的 v-cn/cdn/0/api.vaptcha.com 已全部 NXDOMAIN，2026-10-01 切 V4）
  * 各自渲染 -> 出 token -> 回调本页 action=verify 做服务端二次校验 -> 展示官方接口原文。
+ * VAPTCHA 服务端两种方式：ep=1 官方 v41.vaptcha.com/api/verify；ep=2 本地 HMAC-SHA256 验签。
  *
  * 密钥来源（软依赖，按优先级）：
  *   captcha_keys.php（不入库）> config.php 常量 > URL参数（临时）> robots.json（兜底）
@@ -16,6 +17,7 @@
 if (isset($_GET['action']) && $_GET['action'] === 'verify') {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
+    ini_set('display_errors', '0');   // PHP 8.5 的 Deprecated 告警不得污染 JSON
     $k = captchaTestKeys();
     $provider = isset($_GET['provider']) ? $_GET['provider'] : '';
     $token    = isset($_GET['token']) ? (string) $_GET['token'] : '';
@@ -49,23 +51,49 @@ if (isset($_GET['action']) && $_GET['action'] === 'verify') {
             echo json_encode(['ok' => false, 'err' => 'vaptcha VID/Key 未配置'], JSON_UNESCAPED_UNICODE);
             exit;
         }
-        // 候选端点：1=官方文档新接口，2=经典 verify 接口（实测择优）
-        $endpoints = [
-            1 => 'https://0.vaptcha.com/verify',
-            2 => 'https://api.vaptcha.com/v2/validate',
-        ];
-        $endpoint = $endpoints[$ep] ?? $endpoints[1];
+        // VAPTCHA V4 二次验证两种方式（2026-10-01 官方文档：document/install）
+        //   ep=1（默认）官方 verify 接口；ep=2 本地 HMAC-SHA256 验签（token = ts.id.sig）
+        $knock = isset($_GET['knock']) ? (string) $_GET['knock'] : '';
+        $dfu   = isset($_GET['dfu'])   ? (string) $_GET['dfu']   : '';
+        $sip   = isset($_GET['ip'])    ? (string) $_GET['ip']    : $ip;   // 优先 SDK 签名 IP
+        if (strlen($knock) > 256 || strlen($dfu) > 512 || strlen($sip) > 64) {
+            echo json_encode(['ok' => false, 'err' => 'knock/dfu/ip 参数过长'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        if ($ep === 2) {
+            // 方式二回退：本地验签（文档给的官方签名规则）
+            $parts = explode('.', $token);
+            $pass = false; $why = '';
+            if (count($parts) !== 3) { $why = 'token 非三段式'; }
+            elseif (abs(time() - (int) $parts[0]) > 180) { $why = 'token 超过 180s 有效期'; }
+            else {
+                $expected = hash_hmac('sha256', $parts[0] . '.' . $sip . '.' . $dfu . '.' . $knock, $k['v_key']);
+                $pass = hash_equals($expected, $parts[2]);
+                if (!$pass) $why = '签名校验不通过';
+            }
+            echo json_encode([
+                'ok' => true, 'provider' => 'VAPTCHA V4 本地验签', 'mode' => 'local-hmac',
+                'pass' => $pass, 'why' => $why,
+            ], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+
+        $endpoint = 'https://v41.vaptcha.com/api/verify';
         $payload = [
-            'id'        => $k['v_vid'],
-            'secretkey' => $k['v_key'],
-            'scene'     => $k['v_scene'],
-            'token'     => $token,
-            'ip'        => $ip,
+            'vid'   => $k['v_vid'],
+            'vkey'  => $k['v_key'],
+            'token' => $token,
+            'knock' => $knock,
+            'dfu'   => $dfu,
+            'ip'    => $sip,
         ];
         $r = captchaHttpPostJson($endpoint, $payload);
+        $decoded = json_decode($r['body'], true);
         echo json_encode([
-            'ok' => $r['errno'] === 0, 'provider' => 'VAPTCHA',
+            'ok' => $r['errno'] === 0, 'provider' => 'VAPTCHA V4', 'mode' => 'official-verify',
             'endpoint' => $endpoint, 'http' => $r['status'],
+            'result' => is_array($decoded) ? ($decoded['data']['result'] ?? null) : null,
             'body' => $r['body'], 'err' => $r['err'],
         ], JSON_UNESCAPED_UNICODE);
         exit;
@@ -156,7 +184,7 @@ function captchaHttpPostForm($url, array $fields) {
         $body = curl_exec($ch);
         $r['status'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $r['err'] = curl_error($ch);
-        curl_close($ch);
+        // PHP 8.0+ curl_close 为 no-op，8.5 起抛 Deprecated —— 不再调用，句柄随作用域释放
         if ($body !== false) { $r['body'] = (string) $body; $r['errno'] = 0; }
         return $r;
     }
@@ -186,7 +214,7 @@ function captchaHttpPostJson($url, array $payload) {
         $body = curl_exec($ch);
         $r['status'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $r['err'] = curl_error($ch);
-        curl_close($ch);
+        // PHP 8.0+ curl_close 为 no-op，8.5 起抛 Deprecated —— 不再调用，句柄随作用域释放
         if ($body !== false) { $r['body'] = (string) $body; $r['errno'] = 0; }
         return $r;
     }
@@ -278,14 +306,20 @@ function maskKey($s) {
 
     <!-- ============ 2. VAPTCHA ============ -->
     <div class="card">
-        <h2>2 · VAPTCHA (v3)</h2>
-        <div class="hint">SDK：v-cn.vaptcha.com/v3.js（失败自动尝试 cdn.vaptcha.com）· 点击式 mode=click</div>
+        <h2>2 · VAPTCHA (V4)</h2>
+        <div class="hint">SDK：c4.vaptcha.com/src/v4.js · 服务端校验 v41.vaptcha.com/api/verify（或本地 HMAC 验签）</div>
         <div id="vState" class="badge load">SDK 加载中…</div>
         <div id="vBox"></div>
+        <div style="margin-top:10px">
+            <button id="vStart" disabled
+                style="background:#2a3350;color:#e8ecf4;border:1px solid #3b4872;border-radius:8px;padding:8px 18px;font-size:13px;cursor:not-allowed">
+                发起验证
+            </button>
+        </div>
         <div id="vTok" class="tok"></div>
         <div id="vVerify" class="verify"></div>
-        <div class="tip">出 token 后自动调 <code>action=verify&amp;provider=vaptcha</code>（端点1失败可
-            <a href="#" id="vRetry" style="color:#7ee2a0">点此切换端点2重试</a>）。</div>
+        <div class="tip">点击「发起验证」出 token 后自动调 <code>action=verify&amp;provider=vaptcha</code>（默认官方接口，
+            失败可 <a href="#" id="vRetry" style="color:#7ee2a0">改用本地 HMAC 验签重试</a>）。</div>
     </div>
 
     <div class="tip" style="text-align:center">
@@ -374,9 +408,11 @@ function maskKey($s) {
     var vid = <?php echo json_encode($K['v_vid']); ?>;
     var scene = <?php echo (int) $K['v_scene']; ?>;
     var ep = 1;
-    var lastToken = '';
+    var lastResult = null;
+    var vaptchaObj = null;
+    var btn = document.getElementById('vStart');
 
-    window.__vRetryEp = function () { if (lastToken) doVerify(lastToken, ep === 1 ? 2 : 1); };
+    window.__vRetryEp = function () { if (lastResult) doVerify(lastResult, ep === 1 ? 2 : 1); };
     document.getElementById('vRetry').addEventListener('click', function (e) {
         e.preventDefault();
         window.__vRetryEp();
@@ -390,13 +426,10 @@ function maskKey($s) {
         document.head.appendChild(s);
     }
 
-    // 主源失败自动切备用源
-    loadScript('https://v-cn.vaptcha.com/v3.js', init, function () {
-        st.textContent = '主源失败，尝试备用 CDN…';
-        loadScript('https://cdn.vaptcha.com/v3.js', init, function () {
-            st.className = 'badge err';
-            st.textContent = 'SDK 加载失败（两个源都不可达）';
-        });
+    // VAPTCHA V4 官方 SDK（V3 的 v-cn/cdn.vaptcha.com 已 NXDOMAIN）
+    loadScript('https://c4.vaptcha.com/src/v4.js', init, function () {
+        st.className = 'badge err';
+        st.textContent = 'SDK 加载失败（c4.vaptcha.com 不可达）';
     });
 
     var inited = false;
@@ -410,38 +443,57 @@ function maskKey($s) {
         }
         st.className = 'badge load';
         st.textContent = '初始化中…';
+        // V4：SDK 不注入按钮/事件，业务页提供入口并显式调用 validate()
         vaptcha({
             vid: vid,
-            mode: 'click',
-            scene: scene,
             container: '#vBox',
-            area: 'auto'
+            lang: 'zh-CN'
         }).then(function (obj) {
-            obj.render();
+            vaptchaObj = obj;
             st.className = 'badge load';
-            st.textContent = '等待点击验证…';
-            var onPass = function () {
-                lastToken = obj.getToken ? obj.getToken() : '';
-                st.className = 'badge ok';
-                st.textContent = '前端验证通过，token 已获取';
-                tokBox.style.display = 'block';
-                tokBox.textContent = 'token: ' + lastToken;
-                if (lastToken) doVerify(lastToken, 1);
-            };
-            obj.listen('pass', onPass);
-            obj.listen('success', onPass);   // 兼容不同版本事件名
+            st.textContent = 'SDK 就绪，点击「发起验证」';
+            btn.disabled = false;
+            btn.style.cursor = 'pointer';
+            btn.addEventListener('click', function () {
+                st.className = 'badge load';
+                st.textContent = '验证中…';
+                Promise.resolve(obj.validate()).then(function (result) {
+                    if (!result || !result.token) {
+                        st.className = 'badge err';
+                        st.textContent = '未取得 token（用户取消或验证失败）';
+                        return;
+                    }
+                    lastResult = result;
+                    ep = 1;
+                    st.className = 'badge ok';
+                    st.textContent = '前端验证通过，token 已获取';
+                    tokBox.style.display = 'block';
+                    tokBox.textContent = 'token: ' + result.token
+                        + '\nknock: ' + (result.knock || '')
+                        + '\ndfu: ' + (result.dfu || '')
+                        + '\nip: ' + (result.ip || '');
+                    doVerify(result, 1);
+                }).catch(function (e) {
+                    st.className = 'badge err';
+                    st.textContent = 'validate() 异常: ' + (e && e.message ? e.message : e);
+                });
+            });
         }).catch(function (e) {
             st.className = 'badge err';
             st.textContent = '初始化失败: ' + (e && e.message ? e.message : e);
         });
     }
 
-    function doVerify(token, useEp) {
+    function doVerify(result, useEp) {
         ep = useEp;
         vBox.style.display = 'block';
-        vBox.textContent = '服务端校验中（端点' + ep + '）…';
-        fetch('captcha_test.php?action=verify&provider=vaptcha&ep=' + ep
-              + '&token=' + encodeURIComponent(token))
+        vBox.textContent = '服务端校验中（' + (ep === 1 ? '官方接口' : '本地 HMAC') + '）…';
+        var q = 'captcha_test.php?action=verify&provider=vaptcha&ep=' + ep
+              + '&token=' + encodeURIComponent(result.token || '')
+              + '&knock=' + encodeURIComponent(result.knock || '')
+              + '&dfu=' + encodeURIComponent(result.dfu || '')
+              + '&ip=' + encodeURIComponent(result.ip || '');
+        fetch(q)
             .then(function (r) { return r.json(); })
             .then(function (j) {
                 vBox.textContent = JSON.stringify(j, null, 2);
