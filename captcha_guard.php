@@ -371,9 +371,17 @@ function cgWidgetHtml() {
 
   function initCf(){
     el('cgCfBox').style.display='block';
+    // ★ 关键：本页必须自己拉起 Turnstile SDK（测试页是 <script src> 引的，本挂件漏了）
+    if (typeof turnstile === 'undefined' && !window.__cgSdkLoading){
+      window.__cgSdkLoading = true;
+      loadScript('https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit',
+        function(){ window.__cgSdkLoading = false; window.__cgSdkOk = true; },
+        function(){ window.__cgSdkLoading = false; window.__cgSdkErr = true; });
+    }
     var tries=0;
     (function wait(){
       if (typeof turnstile === 'undefined'){
+        if (window.__cgSdkErr){ fail('Turnstile SDK 加载失败（网络不通或域名未加入白名单），请刷新重试'); return; }
         if (++tries > 96){ fail('验证组件加载失败（网络或域名未加入白名单），请刷新重试'); return; }
         return setTimeout(wait,250);
       }
