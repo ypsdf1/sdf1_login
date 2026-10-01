@@ -58,15 +58,18 @@ define('SMTP_PASS', 'REPLACE_ME_SMTP_PASSWORD');
 define('SMTP_SENDER_NAME', 'Sdf1_login');
 define('SMTP_USE_SSL', true);
 
-// ===== 人机验证码选择（2026-10-02，实现见 captcha_guard.php）=====
-// 覆盖三个场景：管理员登录 / 用户后台账密登录 / 正版验证提交前。
-// 取值不区分大小写，兼容全名：
-//   'CF' 或 'cloudflare' 或 'turnstile' → Cloudflare Turnstile（默认，体验最好基本无感）
-//   'VA' 或 'vaptcha'                   → VAPTCHA V4
-//   '' 或 'off' 或 'none'               → 关闭人机验证
-// 本文件未定义本常量时（线上 config.php 是老版本），一律按默认 'CF' 处理。
-// 密钥本身不在这里，写在 captcha_keys.php（仓库里是空模板，真实值只放服务器）。
-define('CAPTCHA_PROVIDER', 'CF');
+// ===== 人机验证码：全项目只用一家，二选一（改下面这一行的值即可）=====
+//   'CF' → Cloudflare Turnstile（默认：无感、体验最好、基本不用点）
+//   'VA' → VAPTCHA V4（备用：需要点一下"发起验证"）
+//   'off'→ 关闭人机验证
+// 取值不区分大小写、兼容全名：cf / cloudflare / turnstile 都算 CF；va / vaptcha 都算 VA。
+//
+// ★ 三个场景（管理员登录、用户后台账密登录、正版验证提交前）全部跟着这一行走，
+//   不会出现"这里是 CF、那里是 VA"的混用 —— 全站厂商由本常量单独决定。
+// ★ 密钥不在本文件：CF 的 sitekey/secret 与 VA 的 VID/VKey 分别写在 captcha_keys.php
+//   的 Cloudflare / VAPTCHA 两段里，只填你启用的那家即可（仓库里是空模板，真值只放服务器）。
+// ★ 本文件没定义本常量时（老版本线上配置），一律按默认 'CF' 处理。
+define('CAPTCHA_PROVIDER', 'CF');   // ← 只改这个值：'CF' 用 Cloudflare，'VA' 用 VAPTCHA
 
 // ===== 紧急安全加固（2026-09-29 入侵事件响应，实现见 security.php）=====
 // 第一层：TOTP 二次验证 —— 1Password / Microsoft Authenticator 等标准 6 位动态码（仅校验，无推送）。
