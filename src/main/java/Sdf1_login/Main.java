@@ -2003,7 +2003,7 @@ public class Main extends JavaPlugin
         loggedIn.add(name);
         // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
         if (webManager != null) {
-            webManager.recordJavaLogin(name);
+            webManager.recordJavaLogin(name, ip);
         }
         p.setAllowFlight(false);
         p.setFlying(false);
@@ -2585,13 +2585,50 @@ public class Main extends JavaPlugin
 
         // ===== 快速重连三层检查（严格按流程图） =====
         
+        // ===== IP风控基准：当前IP vs 该玩家上次登录IP =====
+        // 记录点IP（本运行期Java登录记录，最准）优先，其次 DB last_login_ip / last_oauth_ip 兜底
+        String riskRefIP = (webManager != null) ? webManager.getJavaLoginRecordIp(name) : null;
+        if (riskRefIP == null || riskRefIP.isEmpty()) {
+            Object refObj = db.getField(name, "last_login_ip");
+            if (refObj != null && !String.valueOf(refObj).isEmpty()) {
+                riskRefIP = String.valueOf(refObj);
+            }
+        }
+        if (riskRefIP == null || riskRefIP.isEmpty()) {
+            Object refObj = db.getField(name, "last_oauth_ip");
+            if (refObj != null && !String.valueOf(refObj).isEmpty()) {
+                riskRefIP = String.valueOf(refObj);
+            }
+        }
+        boolean riskIpChanged = ip != null && riskRefIP != null
+                && !riskRefIP.isEmpty() && !ip.equals(riskRefIP);
+        // ★ 最基础防护：已绑定二次验证 + IP变更 → 强制「密码 + 2FA」顺序两关；
+        //   未绑定二次验证的玩家不在此拦截，维持原有「记录点时效内自动登录」逻辑
+        boolean riskDualRequired = riskIpChanged && twofa != null
+                && db.userExists(name) && twofa.isEnabled(name);
+        if (riskDualRequired && !twofa.isDualVerify(p)) {
+            getLogger().warning("[IP风控] 玩家 " + name + " 登录IP变更（上次: " + riskRefIP
+                    + "，当前: " + ip + "）且已绑定二次验证 → 强制双重验证");
+            twofa.markDualVerify(p, ip);
+            p.sendMessage("§c§l[安全风控] §f检测到登录 IP 与上次不同，需完成双重验证");
+            p.sendMessage("§7上次IP: §e" + riskRefIP);
+            p.sendMessage("§7当前IP: §e" + ip);
+            p.sendMessage("§7第一步 §f/login <密码> §7→ 第二步 §f/2fa code <动态码|恢复代码> §7，两步全过才解冻+恢复背包");
+        }
+
         // ★ 检查点1：检查玩家是否有Java手动登录记录
         // 优先检查loggedIn（当前在线），再检查javaLoginRecords（5分钟内重连有效）
         boolean hasJavaLogin = loggedIn.contains(name) || (webManager != null && webManager.isJavaLoginRecorded(name));
         if (hasJavaLogin) {
-            getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java登录记录，自动登录");
-            autoLogin(p, "java_reconnect");
-            return;  // 检查点1通过 → 直接放行
+            if (riskDualRequired) {
+                // ★ IP已变更且绑定2FA：5分钟记录点不再直接放行，转入「密码 + 2FA」顺序两关
+                getLogger().info("[Web登录] 检查点1拦截: 玩家 " + name
+                        + " 有Java登录记录，但IP已变更且绑定2FA → 强制双重验证");
+            } else {
+                getLogger().info("[Web登录] 检查点1通过: 玩家 " + name + " 有Java登录记录，自动登录");
+                autoLogin(p, "java_reconnect");
+                return;  // 检查点1通过 → 直接放行
+            }
         } else {
             getLogger().info("[Web登录] 检查点1失败: 玩家 " + name + " 无Java登录记录");
         }
@@ -2612,7 +2649,8 @@ public class Main extends JavaPlugin
             // ★ 2FA联动：IP变更 + 已绑定二次验证 → 进入「密码 + 2FA」顺序两关（正版玩家由检查点0统一判定）
             if (twofa != null && db.userExists(name)
                     && !isVerifiedPremiumPlayer(name)
-                    && twofa.isEnabled(name)) {
+                    && twofa.isEnabled(name)
+                    && !twofa.isDualVerify(p)) {
                 // ★ IP风控双验证（强制顺序两关）：第一步 /login，第二步 /2fa code
                 twofa.markDualVerify(p, getPlayerIP(p));
                 p.sendMessage("§c§l[安全风控] §f检测到登录 IP 与上次不同，需完成双重验证");
@@ -2624,7 +2662,8 @@ public class Main extends JavaPlugin
         }
         
         // ★ 检查点2：只有同IP才检查服务器内存中是否有该玩家来自PHP的验证请求
-        if (sameIP && webManager != null && webManager.isWebLoginVerified(name)) {
+        // ★ IP变更+已绑2FA 的玩家即使有PHP验证记录也不放行（密码类验证不能替代二次验证）
+        if (!riskDualRequired && sameIP && webManager != null && webManager.isWebLoginVerified(name)) {
             getLogger().info("[Web登录] 检查点2通过: 玩家 " + name + " 同IP且内存中有PHP验证记录，自动登录");
             webManager.clearWebLoginVerified(name);
             autoLogin(p, "web_password");
@@ -2696,7 +2735,7 @@ public class Main extends JavaPlugin
                 p.sendMessage("§7当前IP: §e" + currentIP);
                 p.sendMessage("§c请使用 /login <密码> 手动登录，或重新完成 /mslogin 验证");
                 // ★ 2FA联动：已绑定二次验证 → 强制「密码 + 2FA」顺序两关
-                if (twofa != null && twofa.isEnabled(name)) {
+                if (twofa != null && twofa.isEnabled(name) && !twofa.isDualVerify(p)) {
                     if (db.userExists(name)) {
                         twofa.markDualVerify(p, currentIP);
                         p.sendMessage("§e您已绑定二次验证，需完成双重验证:");

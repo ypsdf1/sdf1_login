@@ -68,6 +68,10 @@ public class WebManager {
     private final ConcurrentHashMap<String, Long> javaLoginRecords = new ConcurrentHashMap<>();
     private static final long JAVA_LOGIN_RECORD_EXPIRE_MS = 300000; // 5分钟过期
 
+    // ★ Java登录记录对应的登录IP：playerName -> 该玩家本运行期上次登录时的IP（不过期，登录即覆盖）
+    // 检查点1 IP风控基准：IP变了且已绑2FA → 不走5分钟直接放行，转「密码 + 2FA」双验证
+    private final ConcurrentHashMap<String, String> javaLoginRecordIps = new ConcurrentHashMap<>();
+
     // ★ 合并定时器错峰调度（v19：4个定时器）
     private static final int TIMER_A = 0; // 注册登录 0~5秒
     private static final int TIMER_B = 1; // 交易 0~10秒
@@ -5184,9 +5188,22 @@ public class WebManager {
      * 记录玩家Java手动登录成功（/l命令或autoLogin调用后）
      * onQuit不清除，5分钟内重连可直接放行（检查点1）
      */
-    public void recordJavaLogin(String playerName) {
+    public void recordJavaLogin(String playerName, String ip) {
         javaLoginRecords.put(playerName, System.currentTimeMillis());
+        // ★ 记下登录时IP，供检查点1做「IP是否变更」判断（下线不清除，下次登录覆盖）
+        if (ip != null && !ip.isEmpty()) {
+            javaLoginRecordIps.put(playerName, ip);
+        }
         plugin.getLogger().info("[Web登录] ✅ 记录Java登录: " + playerName + "（5分钟内重连可直接放行，当前记录数: " + javaLoginRecords.size() + "）");
+    }
+
+    /**
+     * 该玩家本运行期上次登录时的IP（检查点1 IP风控基准）
+     *
+     * @return 登录IP；本运行期无登录记录返回null
+     */
+    public String getJavaLoginRecordIp(String playerName) {
+        return javaLoginRecordIps.get(playerName);
     }
 
     /**

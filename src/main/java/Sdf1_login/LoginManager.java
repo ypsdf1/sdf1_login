@@ -68,7 +68,7 @@ public class LoginManager {
         plugin.getLoggedIn().add(name);
         // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
         if (plugin.webManager != null) {
-            plugin.webManager.recordJavaLogin(name);
+            plugin.webManager.recordJavaLogin(name, plugin.getPlayerIP(p));
         }
         p.setAllowFlight(false);
         p.setFlying(false);
@@ -261,7 +261,7 @@ public class LoginManager {
         plugin.getLoggedIn().add(name);
         // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
         if (plugin.webManager != null) {
-            plugin.webManager.recordJavaLogin(name);
+            plugin.webManager.recordJavaLogin(name, plugin.getPlayerIP(p));
         }
         plugin.getDb().setLoggedIn(name, true);
         if (!tempPassword) {
