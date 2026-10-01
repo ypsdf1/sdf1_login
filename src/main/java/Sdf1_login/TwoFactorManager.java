@@ -113,8 +113,8 @@ public class TwoFactorManager {
                 System.currentTimeMillis());
 
         // 一次性随机 token：玩家凭它读取二维码载荷（10 分钟有效）
-        // v1_ 前缀：线上WAF会拦「t=纯32+位hex」形态，前缀破坏纯hex特征（已实测通过）
-        String token = "v1_" + hex(randomBytes(32));
+        // token=裸hex64 已实测可过线上WAF（t=长hex / token=v1_前缀 两种形态均被拦）
+        String token = hex(randomBytes(32));
         String uri = otpauthUri(p.getName(), secret);
 
         // pending 已落库，玩家立即可 /2fa code；二维码链接异步推送后补发
