@@ -155,6 +155,13 @@ public class ChatFilterManager {
             return VerificationResult.VERIFIED;
         }
 
+        // ★ 联控：已通过正版 OAuth 验证（提交时已过人机验证）→ 豁免游戏内验证码
+        if (((Main) plugin).isVerifiedPremiumPlayer(name)) {
+            verifiedPlayers.add(name);
+            verificationData.remove(name);
+            return VerificationResult.VERIFIED;
+        }
+
         // 正在验证中（等待答案）
         if (verificationData.containsKey(name)) {
             VerificationData vd = verificationData.get(name);

@@ -6,7 +6,11 @@ import org.bukkit.scheduler.BukkitRunnable;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,7 +20,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 全部逻辑在 Java 本地完成（PHP 只负责展示二维码，不做任何校验）：
  *   /2fa add            申请绑定 -> 生成 pending 密钥 + 网页二维码链接（10 分钟有效）
- *   /2fa code <6位>     用认证器 App 的动态码完成绑定
+ *   /2fa code <6位>     ★绑定/验证统一端口：
+ *                       有 pending 申请 → 用动态码完成绑定（成功后发 8 组恢复代码到邮箱）
+ *                       已绑定        → 作为登录二次验证（IP 变更风控 / 主动验证）
+ *                       输入是恢复代码 → 验证通过的同时立即解绑 2FA（一次性有效）
  *   /2fa remove <6位>   校验动态码 -> 进入 30 秒 confirm 确认窗口
  *   聊天输入 confirm    解绑；超时或输入其它任意内容 = 取消
  *
@@ -30,6 +37,9 @@ public class TwoFactorManager {
     private static final long REMOVE_WINDOW_MS = 30 * 1000L;
     /** TOTP 参数：SHA1 / 6位 / 30秒（与 PHP secOtpauthUri 管理端口径一致） */
     private static final String ISSUER = "SDF1";
+    /** 绑定成功后随邮件下发的恢复代码组数 / 每组位数（一次性有效） */
+    public static final int RECOVERY_CODE_COUNT = 8;
+    public static final int RECOVERY_CODE_LEN = 6;
 
     private static final String B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
     private static final SecureRandom RNG = new SecureRandom();
@@ -37,6 +47,8 @@ public class TwoFactorManager {
     private final Main plugin;
     /** 解绑确认窗口：玩家 UUID -> 截止时间毫秒（async 聊天线程会读，必须并发安全） */
     private final Map<UUID, Long> removeConfirmUntil = new ConcurrentHashMap<>();
+    /** 登录 IP 变更待验证：玩家 UUID -> 触发风控时的登录 IP */
+    private final Map<UUID, String> loginPending = new ConcurrentHashMap<>();
 
     public TwoFactorManager(Main plugin) {
         this.plugin = plugin;
@@ -53,7 +65,7 @@ public class TwoFactorManager {
                 break;
             case "code":
                 if (args.length < 2) {
-                    p.sendMessage("§c用法: /2fa code <6位动态码>");
+                    p.sendMessage("§c用法: /2fa code <6位动态码|恢复代码>");
                     break;
                 }
                 handleCode(p, args[1]);
@@ -76,7 +88,8 @@ public class TwoFactorManager {
     public void sendHelp(Player p) {
         p.sendMessage("§e===== §f二次验证 /2fa §e=====");
         p.sendMessage("§7/2fa add §8- 生成绑定二维码（需先绑定邮箱）");
-        p.sendMessage("§7/2fa code <6位> §8- 用动态码完成绑定");
+        p.sendMessage("§7/2fa code <6位> §8- 绑定端口：完成绑定，或登录时完成一次二次验证");
+        p.sendMessage("§7/2fa code <恢复代码> §8- 认证器丢失时验证，验证后自动解绑");
         p.sendMessage("§7/2fa remove <6位> §8- 解绑（30秒内聊天输入 confirm 确认）");
         String state;
         if (isEnabled(p)) {
@@ -87,6 +100,9 @@ public class TwoFactorManager {
             state = "§c未绑定";
         }
         p.sendMessage("§7当前状态: " + state);
+        if (isEnabled(p)) {
+            p.sendMessage("§7剩余恢复代码: §f" + countRecoveryCodes(p.getName()) + " §7组（每组一次性）");
+        }
     }
 
     // ==================== /2fa add ====================
@@ -176,35 +192,298 @@ public class TwoFactorManager {
     private void handleCode(Player p, String code) {
         code = code.trim();
         if (!code.matches("\\d{6}")) {
-            p.sendMessage("§c动态码为 6 位数字");
+            p.sendMessage("§c动态码 / 恢复代码均为 6 位数字");
             return;
         }
-        String pending = getPendingSecret(p);
-        if (pending == null) {
-            p.sendMessage("§c没有待完成的绑定申请，请先执行 /2fa add");
-            return;
-        }
-        if (isPendingExpired(p)) {
-            plugin.getDb().setField(p.getName(), "twofa_pending_secret", "");
-            plugin.getDb().setField(p.getName(), "twofa_pending_at", 0L);
-            p.sendMessage("§c绑定申请已过期（10分钟），请重新执行 /2fa add");
-            return;
-        }
-        if (!verifyCode(pending, code)) {
-            p.sendMessage("§c动态码错误，请核对认证器 App 上的 6 位数字");
+        String name = p.getName();
+        String rawPending = str(plugin.getDb()
+                .getField(name, "twofa_pending_secret"));
+        String pending = getPendingSecret(p);   // null = 无申请或已过期
+        boolean bound = isEnabled(p);
+
+        // ===== 分支1：未绑定 + 有有效申请 → 绑定流程 =====
+        if (!bound) {
+            if (pending == null) {
+                if (!rawPending.isEmpty()) {
+                    plugin.getDb().setField(name, "twofa_pending_secret", "");
+                    plugin.getDb().setField(name, "twofa_pending_at", 0L);
+                    p.sendMessage("§c绑定申请已过期（10分钟），请重新执行 /2fa add");
+                } else {
+                    p.sendMessage("§c没有待完成的绑定申请，请先执行 /2fa add");
+                }
+                return;
+            }
+            if (!verifyCode(pending, code)) {
+                p.sendMessage("§c动态码错误，请核对认证器 App 上的 6 位数字");
+                return;
+            }
+            completeBinding(p, pending);
             return;
         }
 
+        // ===== 分支2：已绑定 → 验证流程（/2fa code = 绑定/验证统一端口）=====
+        // 残留的过期绑定申请先清掉，避免和验证语义打架
+        if (!rawPending.isEmpty()) {
+            plugin.getDb().setField(name, "twofa_pending_secret", "");
+            plugin.getDb().setField(name, "twofa_pending_at", 0L);
+            p.sendMessage("§e[2FA] 已忽略过期的绑定申请；如需换绑请 /2fa remove 后重新 /2fa add");
+        }
+        verifyForLogin(p, code);
+    }
+
+    // ==================== 绑定完成（含恢复代码下发） ====================
+
+    private void completeBinding(Player p, String pending) {
+        String name = p.getName();
         // 绑定成功：pending 转正
-        plugin.getDb().setField(p.getName(), "twofa_secret", pending);
-        plugin.getDb().setField(p.getName(), "twofa_enabled", 1);
-        plugin.getDb().setField(p.getName(), "twofa_pending_secret", "");
-        plugin.getDb().setField(p.getName(), "twofa_pending_at", 0L);
+        plugin.getDb().setField(name, "twofa_secret", pending);
+        plugin.getDb().setField(name, "twofa_enabled", 1);
+        plugin.getDb().setField(name, "twofa_pending_secret", "");
+        plugin.getDb().setField(name, "twofa_pending_at", 0L);
 
         p.sendMessage("§a§l[2FA] §a二次验证绑定成功！");
         p.sendMessage("§7  此后敏感操作需提供认证器动态码");
         p.sendMessage("§c  ★ 换手机/卸载 App 前请先 /2fa remove 解绑，"
                 + "否则动态码将永久丢失");
+
+        issueRecoveryCodes(p);
+    }
+
+    /**
+     * 绑定成功后生成 8 组 6 位恢复代码：
+     * 库里只存 SHA-256（明文只出现在邮件里），任一组用过即删（一次性）。
+     * 发信在异步线程做（SMTP 最长阻塞 15 秒，绝不能卡主线程）。
+     */
+    private void issueRecoveryCodes(Player p) {
+        String name = p.getName();
+        String email = str(plugin.getDb().getField(name, "email"));
+        if (email.isEmpty()) {
+            p.sendMessage("§e§l[2FA] §e未绑定邮箱，无法下发恢复代码");
+            p.sendMessage("§7  请先 §f/email <邮箱> §7再重新 /2fa remove → /2fa add 换绑");
+            return;
+        }
+
+        List<String> codes = generateRecoveryCodes(RECOVERY_CODE_COUNT);
+        plugin.getDb().setField(name, "twofa_recovery_codes", hashJoin(codes));
+
+        StringBuilder body = new StringBuilder();
+        body.append("玩家 ").append(name)
+                .append("，您刚刚为「草原探险」开启了二次验证。\n\n");
+        body.append("以下是您的 ").append(RECOVERY_CODE_COUNT)
+                .append(" 组 ").append(RECOVERY_CODE_LEN)
+                .append(" 位恢复代码（每组只能使用一次）：\n\n");
+        for (int i = 0; i < codes.size(); i++) {
+            body.append("  ").append(i + 1).append(". ")
+                    .append(codes.get(i)).append('\n');
+        }
+        body.append("\n使用方式：游戏内执行 /2fa code <恢复代码>。\n");
+        body.append("★ 用任意一组恢复代码完成验证后，二次验证会被立即解绑");
+        body.append("（能用恢复代码说明认证器已丢失/不可用），请重新 /2fa add 绑定。\n");
+        body.append("★ 请妥善保存本邮件，切勿泄露给他人。\n");
+
+        final String to = email;
+        final String subject = "[Sdf1_login] 2FA 恢复代码（" + name + "）";
+        final String mailBody = body.toString();
+        final UUID uuid = p.getUniqueId();
+
+        p.sendMessage("§a§l[2FA] §a已生成 " + RECOVERY_CODE_COUNT
+                + " 组 " + RECOVERY_CODE_LEN + " 位恢复代码");
+        p.sendMessage("§7  正在发送到绑定邮箱: §f" + maskEmail(email));
+
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            boolean ok = false;
+            try {
+                EmailManager em = plugin.getEmail();
+                ok = em != null && em.sendBody(to, subject, mailBody);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[2FA] 恢复代码邮件异常: "
+                        + e.getMessage());
+            }
+            final boolean sent = ok;
+            if (!sent) {
+                plugin.getLogger().warning("[2FA] 恢复代码邮件发送失败: "
+                        + name + " -> " + maskEmail(to));
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player pl = Bukkit.getPlayer(uuid);
+                if (pl == null || !pl.isOnline()) return;
+                if (sent) {
+                    pl.sendMessage("§a  恢复代码已发送到 §f" + maskEmail(to));
+                    pl.sendMessage("§7  请离线查收并妥善保存，每组一次性有效");
+                } else {
+                    pl.sendMessage("§c  恢复代码邮件发送失败（SMTP 未配置或网络异常）");
+                    pl.sendMessage("§c  请联系管理员补发，否则换机后将无法找回二次验证");
+                }
+            });
+        });
+    }
+
+    // ==================== 已绑定状态下的验证（登录场景） ====================
+
+    /**
+     * /2fa code 在已绑定状态下的校验：
+     * 先按认证器动态码验（通过则不干预正常登录），
+     * 不匹配再按恢复代码验（一次性 + 立即解绑）。
+     */
+    private void verifyForLogin(Player p, String code) {
+        String name = p.getName();
+        String secret = str(plugin.getDb().getField(name, "twofa_secret"));
+
+        if (!secret.isEmpty() && verifyCode(secret, code)) {
+            finishLoginVerify(p, false);
+            return;
+        }
+
+        if (consumeRecoveryCode(name, code)) {
+            // 恢复代码有效 = 认证器已丢失/不可用 → 立即解绑 2FA
+            plugin.getDb().setField(name, "twofa_secret", "");
+            plugin.getDb().setField(name, "twofa_enabled", 0);
+            plugin.getDb().setField(name, "twofa_recovery_codes", "");
+            plugin.getLogger().info("[2FA] 玩家 " + name
+                    + " 使用恢复代码通过验证，已自动解绑二次验证");
+            p.sendMessage("§e§l[2FA] §e恢复代码有效，本次验证通过");
+            p.sendMessage("§c  检测到您使用了恢复代码，已立即解除二次验证绑定");
+            p.sendMessage("§7  认证器恢复可用后请重新执行 §f/2fa add §7绑定");
+            finishLoginVerify(p, true);
+            return;
+        }
+
+        p.sendMessage("§c动态码或恢复代码错误，请核对后重试");
+    }
+
+    /** 验证通过后的收口：处理"IP 变更待验证"状态，或仅回执（不干预正常登录） */
+    private void finishLoginVerify(Player p, boolean usedRecovery) {
+        String name = p.getName();
+        String pendingIp = loginPending.remove(p.getUniqueId());
+        if (pendingIp == null) {
+            // 玩家主动验证，不在登录风控流程里 → 只回执，不干预
+            p.sendMessage("§a§l[2FA] §a验证通过");
+            return;
+        }
+        // IP 变更场景：把本次 IP 记为可信，然后放行登录
+        if (!pendingIp.isEmpty()) {
+            plugin.getDb().setField(name, "last_oauth_ip", pendingIp);
+            plugin.getDb().setField(name, "last_login_ip", pendingIp);
+        }
+        p.sendMessage("§a§l[2FA] §a二次验证通过，已信任本次登录 IP");
+        if (plugin.getLoggedIn().contains(name)) {
+            return;   // 已经登录成功了 → 不做任何多余动作
+        }
+        if (plugin.isVerifiedPremiumPlayer(name)) {
+            plugin.autoLogin(p, "premium");
+            return;
+        }
+        p.sendMessage("§7请继续使用 §f/login <密码> §7完成登录");
+    }
+
+    /**
+     * 登录 IP 变更风控调用点（Main 检查点0）：
+     * 记下"待完成一次二次验证"的状态，提示玩家走 /2fa code。
+     */
+    public void markLoginPending(Player p, String currentIp) {
+        loginPending.put(p.getUniqueId(),
+                currentIp == null ? "" : currentIp);
+    }
+
+    /** 该玩家是否处于"IP 变更待验证"状态 */
+    public boolean isLoginPending(Player p) {
+        return loginPending.containsKey(p.getUniqueId());
+    }
+
+    /** 玩家下线时清理待验证状态 */
+    public void clearLoginPending(Player p) {
+        loginPending.remove(p.getUniqueId());
+    }
+
+    // ==================== 恢复代码 ====================
+
+    static List<String> generateRecoveryCodes(int n) {
+        List<String> out = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            StringBuilder sb = new StringBuilder(RECOVERY_CODE_LEN);
+            for (int j = 0; j < RECOVERY_CODE_LEN; j++) {
+                sb.append(RNG.nextInt(10));
+            }
+            out.add(sb.toString());
+        }
+        return out;
+    }
+
+    static String sha256Hex(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append(Character.forDigit((b >> 4) & 0xf, 16));
+                sb.append(Character.forDigit(b & 0xf, 16));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String hashJoin(List<String> codes) {
+        StringBuilder sb = new StringBuilder();
+        for (String c : codes) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(sha256Hex(c));
+        }
+        return sb.toString();
+    }
+
+    /** 该玩家还剩几组未用的恢复代码 */
+    public int countRecoveryCodes(String name) {
+        String raw = str(plugin.getDb()
+                .getField(name, "twofa_recovery_codes"));
+        if (raw.isEmpty()) return 0;
+        int n = 0;
+        for (String h : raw.split(",")) {
+            if (!h.trim().isEmpty()) n++;
+        }
+        return n;
+    }
+
+    /** 消费一个恢复代码（一次性）：命中就从库里删掉并返回 true */
+    private boolean consumeRecoveryCode(String name, String code) {
+        String raw = str(plugin.getDb()
+                .getField(name, "twofa_recovery_codes"));
+        if (raw.isEmpty()) return false;
+        String want = sha256Hex(code);
+        if (want.isEmpty()) return false;
+
+        List<String> kept = new ArrayList<>();
+        boolean hit = false;
+        for (String h : raw.split(",")) {
+            String t = h.trim();
+            if (t.isEmpty()) continue;
+            if (!hit && t.equalsIgnoreCase(want)) {
+                hit = true;
+                continue;
+            }
+            kept.add(t);
+        }
+        if (!hit) return false;
+
+        StringBuilder sb = new StringBuilder();
+        for (String k : kept) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(k);
+        }
+        plugin.getDb().setField(name, "twofa_recovery_codes", sb.toString());
+        return true;
+    }
+
+    static String maskEmail(String email) {
+        int at = email == null ? -1 : email.indexOf('@');
+        if (at <= 0) return email == null ? "" : email;
+        String user = email.substring(0, at);
+        String dom = email.substring(at);
+        if (user.length() <= 2) {
+            return user.charAt(0) + "***" + dom;
+        }
+        return user.substring(0, 2) + "***" + dom;
     }
 
     // ==================== /2fa remove（进入 30 秒 confirm 窗口） ====================
@@ -290,7 +569,12 @@ public class TwoFactorManager {
     // ==================== 状态读取 ====================
 
     private boolean isEnabled(Player p) {
-        Object v = plugin.getDb().getField(p.getName(), "twofa_enabled");
+        return isEnabled(p.getName());
+    }
+
+    /** 按玩家名判断是否已绑定 2FA（Main 的登录 IP 变更风控会用） */
+    public boolean isEnabled(String playerName) {
+        Object v = plugin.getDb().getField(playerName, "twofa_enabled");
         if (v instanceof Number) return ((Number) v).intValue() != 0;
         return "1".equals(String.valueOf(v));
     }

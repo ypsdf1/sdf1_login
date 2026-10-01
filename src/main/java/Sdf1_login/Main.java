@@ -2588,6 +2588,15 @@ public class Main extends JavaPlugin
         if (!sameIP) {
             // 不同IP → 跳过检查点2，直接强制密码验证
             getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP不同，跳过快速重连验证");
+            // ★ 2FA联动：IP变更 + 已绑定二次验证 → 提示完成一次2FA（正版玩家由检查点0统一提示）
+            if (twofa != null && db.userExists(name)
+                    && !isVerifiedPremiumPlayer(name)
+                    && twofa.isEnabled(name)) {
+                twofa.markLoginPending(p, getPlayerIP(p));
+                p.sendMessage("§c§l[安全风控] §f检测到登录 IP 与上次不同");
+                p.sendMessage("§7建议先执行 §f/2fa code <动态码|恢复代码> §7完成二次验证");
+                p.sendMessage("§7（也可直接 §f/login <密码> §7登录）");
+            }
         } else {
             getLogger().info("[Web登录] 同IP检查: 玩家 " + name + " IP相同，允许快速重连验证");
         }
@@ -2664,6 +2673,12 @@ public class Main extends JavaPlugin
                 p.sendMessage("§7上次IP: §e" + lastOAuthIP);
                 p.sendMessage("§7当前IP: §e" + currentIP);
                 p.sendMessage("§c请使用 /login <密码> 手动登录，或重新完成 /mslogin 验证");
+                // ★ 2FA联动：已绑定二次验证 → 完成一次 2FA 后自动信任IP并放行
+                if (twofa != null && twofa.isEnabled(name)) {
+                    twofa.markLoginPending(p, currentIP);
+                    p.sendMessage("§e您已绑定二次验证，执行 §f/2fa code <动态码|恢复代码> §e完成验证");
+                    p.sendMessage("§7验证通过后将自动信任本次 IP 并登录");
+                }
                 // 不return，继续往下走触发正常登录流程
             } else {
                 // IP一致或首次登录 → 记录IP并放行
@@ -2718,6 +2733,10 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         chatInput.reset(p);
+        // ★ 2FA：清理"IP变更待验证"状态（下次上线重新判定）
+        if (twofa != null) {
+            twofa.clearLoginPending(p);
+        }
 
         // ★ 停止正版验证轮询（如果玩家有进行中的验证）
         if (webManager != null) {
@@ -3277,7 +3296,7 @@ public class Main extends JavaPlugin
             "注册", "登录", "改密码", "找回密码",
             "mslogin", "正版", "email", "绑定", "绑定邮箱",
             "删除账号", "通过", "拒绝", "web", "控制台",
-            "help"));
+            "2fa", "help"));
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onFrozenCommandGuard(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
@@ -7968,6 +7987,15 @@ public class Main extends JavaPlugin
             CommandSender sender, Command cmd,
             String label, String[] args) {
         List<String> list = new ArrayList<>();
+        // ★ /2fa 二次验证子命令补全（code/remove 第二层是动态码，不补全）
+        if (cmd.getName().equalsIgnoreCase("2fa")) {
+            if (args.length == 1) {
+                return filterTab(Arrays.asList(
+                        "add", "code", "remove", "解绑", "help"),
+                        args[0]);
+            }
+            return list;
+        }
         if (cmd.getName().equalsIgnoreCase(
                 "sdf1_login")
                 && args.length == 1) {

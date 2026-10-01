@@ -119,6 +119,9 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "twofa_pending_at",
                     "INTEGER DEFAULT 0");
+            // ===== 2FA 恢复代码（SHA-256 逗号连接存库，明文只发邮件，一次性有效）=====
+            safeAdd(st, "twofa_recovery_codes",
+                    "TEXT DEFAULT ''");
 
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
