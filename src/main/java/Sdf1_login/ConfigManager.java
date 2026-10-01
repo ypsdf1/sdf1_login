@@ -184,7 +184,7 @@ public class ConfigManager {
             changed = true;
         }
 
-        // 检查管理员报警邮箱配置项（2FA 解绑等安全事件的报警收件人）
+        // 检查管理员报警邮箱配置项（备用收件人；2FA 解绑报警现发玩家本人，见 TwoFactorManager）
         if (!smtpSettings.containsKey("管理员邮箱")) {
             logger.info("[Sdf1_login] 邮件配置缺失: 管理员邮箱，自动补全");
             smtpSettings.put("管理员邮箱", "");
@@ -204,7 +204,7 @@ public class ConfigManager {
         return smtpSettings.getOrDefault(key, "");
     }
 
-    /** 管理员报警邮箱（2FA 解绑等安全事件的收件人），未配置返回空串 */
+    /** 管理员报警邮箱（备用收件人，当前 2FA 解绑报警不使用），未配置返回空串 */
     public String getAdminEmail() {
         return getSmtp("管理员邮箱").trim();
     }
@@ -355,7 +355,7 @@ public class ConfigManager {
 
         // 保存管理员报警邮箱（2FA 解绑等安全事件收件人）
         L.add("");
-        L.add("# --- 管理员报警邮箱（2FA解绑等安全事件的收件人，留空则只记日志） ---");
+        L.add("# --- 管理员报警邮箱（备用收件人，2FA解绑报警现发玩家本人，留空则只记日志） ---");
         L.add("管理员邮箱=" + smtpSettings.getOrDefault("管理员邮箱", ""));
         writtenKeys.add("管理员邮箱");
 
@@ -394,7 +394,7 @@ public class ConfigManager {
         L.add("# 示例: qq.com");
         L.add("# 示例: gmail.com");
         L.add("邮箱后缀列表=");
-        L.add("# --- 管理员报警邮箱（2FA解绑等安全事件的收件人，留空则只记日志） ---");
+        L.add("# --- 管理员报警邮箱（备用收件人，2FA解绑报警现发玩家本人，留空则只记日志） ---");
         L.add("管理员邮箱=");
         writeLines(f, L);
     }

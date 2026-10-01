@@ -31,10 +31,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *   [控制台] /2fa remove -c                取消待执行的强制解绑（冷静期内可撤回）
  *
  * 安全约定：
- *   1) 玩家侧 remove 只接受认证器 App 的 6 位动态码，其它任何输入（含玩家名、--force、-c）
+ *   1) 玩家侧 remove 先判绑定：未绑定直说「未绑定」，不出现任何验证码字样；
+ *      已绑定则只接受认证器 App 的 6 位动态码，其它任何输入（含玩家名、--force、-c）
  *      一律回「验证码无效」，绝不提示权限问题（最小化信息透露）。
  *   2) 强制解绑权限级别 = 控制台，玩家侧代码路径完全不解析 --force。
- *   3) 解绑三场景（恢复代码 / 玩家主动 / 管理员强制）都会向「管理员邮箱」推报警邮件。
+ *   3) 解绑三场景（恢复代码 / 玩家主动 / 管理员强制）都向「当事玩家本人绑定的邮箱」
+ *      推报警邮件（不发管理员；玩家未绑定邮箱则只记日志）。
  *
  * 前置条件：必须先绑定邮箱（/email）。
  */
@@ -96,6 +98,11 @@ public class TwoFactorManager {
                 break;
             case "remove":
             case "解绑":
+                // ★ 未绑定 → 直说未绑定，不进入任何验证码话术
+                if (!isEnabled(p)) {
+                    p.sendMessage("§c您尚未绑定二次验证，无需解绑");
+                    break;
+                }
                 if (args.length < 2) {
                     p.sendMessage("§c用法: /2fa remove <6位动态码>");
                     break;
@@ -576,14 +583,15 @@ public class TwoFactorManager {
 
     private void handleRemove(Player p, String code) {
         code = code.trim();
-        // ★ 最小化信息透露：玩家名、--force、-c 等任何非动态码输入
+        // ★ 未绑定 → 直说未绑定，绝不出「验证码」字样（用户要求）
+        if (!isEnabled(p)) {
+            p.sendMessage("§c您尚未绑定二次验证，无需解绑");
+            return;
+        }
+        // ★ 最小化信息透露：已绑定玩家输入玩家名、--force、-c 等任何非动态码
         //   一律按「验证码无效」处理，不提示权限/用法差异
         if (!code.matches("\\d{6}")) {
             p.sendMessage("§c验证码无效，请核对认证器 App 上的 6 位数字");
-            return;
-        }
-        if (!isEnabled(p)) {
-            p.sendMessage("§c您尚未绑定二次验证");
             return;
         }
         String secret = str(plugin.getDb().getField(p.getName(), "twofa_secret"));
@@ -825,11 +833,11 @@ public class TwoFactorManager {
             }
 
             if (!sendUnbindAlarm(target, "管理员强制解绑", "控制台（管理员）", ip)) {
-                out.sendMessage("§e[2FA] 报警邮件未发送：SMTP设置.txt 未配置"
-                        + "「管理员邮箱」（详情见后台日志）");
+                out.sendMessage("§e[2FA] 报警邮件未发送：玩家 " + target
+                        + " 未绑定邮箱（详情见后台日志）");
             } else {
-                out.sendMessage("§7[2FA] 解绑报警邮件已投递至 "
-                        + maskEmail(safeAdminEmail()) + "（结果见后台日志）");
+                out.sendMessage("§7[2FA] 解绑报警邮件已投递至玩家 "
+                        + target + " 的绑定邮箱（结果见后台日志）");
             }
         } catch (Exception e) {
             out.sendMessage("§c[2FA] 删除异常：" + e);
@@ -839,49 +847,39 @@ public class TwoFactorManager {
 
     // ==================== 解绑报警邮件 ====================
 
-    /** SMTP设置.txt 的「管理员邮箱」（安全事件报警收件人），未配置返回空串 */
-    private String safeAdminEmail() {
-        try {
-            String v = plugin.getConfig2().getSmtp("管理员邮箱");
-            return v == null ? "" : v.trim();
-        } catch (Exception e) {
-            return "";
-        }
-    }
-
     /**
      * 2FA 解绑报警邮件（恢复代码解绑 / 玩家主动解绑 / 管理员强制解绑 三场景统一调用）。
-     * 收件人 = SMTP设置.txt 的「管理员邮箱」；未配置则只记日志。
+     * 收件人 = 当事玩家本人在 DB 绑定的邮箱（email 字段），不发管理员；
+     * 玩家未绑定邮箱则只记日志。
      * 发信在异步线程做（SMTP 阻塞最长 15 秒，绝不能卡主线程）。
      *
-     * @return true = 已投递发送（成败见后台日志）；false = 未配置管理员邮箱
+     * @return true = 已投递发送（成败见后台日志）；false = 玩家未绑定邮箱
      */
     private boolean sendUnbindAlarm(String playerName, String mode,
                                     String operator, String ip) {
-        String admin = safeAdminEmail();
-        if (admin.isEmpty()) {
-            plugin.getLogger().warning("[2FA] 解绑报警邮件未发送："
-                    + "SMTP设置.txt 未配置「管理员邮箱」（玩家=" + playerName
-                    + " 方式=" + mode + "）");
+        // 收件人 = 当事玩家本人绑定的邮箱
+        String to = str(plugin.getDb().getField(playerName, "email"));
+        if (to.isEmpty()) {
+            plugin.getLogger().warning("[2FA] 解绑报警邮件未发送：玩家 "
+                    + playerName + " 未绑定邮箱（方式=" + mode + "）");
             return false;
         }
         String time = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
                 .format(new java.util.Date());
-        String bound = str(plugin.getDb().getField(playerName, "email"));
 
         StringBuilder b = new StringBuilder();
-        b.append("【安全报警】玩家 ").append(playerName)
+        b.append("【安全报警】您的账号 ").append(playerName)
                 .append(" 的二次验证(2FA)已解除\n\n");
         b.append("触发方式：").append(mode).append('\n');
         b.append("执行者：").append(operator).append('\n');
         b.append("时间：").append(time).append('\n');
         b.append("来源IP：").append(ip == null || ip.isEmpty() ? "未知" : ip).append('\n');
-        b.append("玩家绑定邮箱：").append(bound.isEmpty() ? "无" : maskEmail(bound)).append('\n');
+        b.append("收件邮箱：").append(maskEmail(to)).append('\n');
         b.append("服务器：草原探险\n\n");
-        b.append("若该操作非本人发起，账号当前仅剩密码保护，");
-        b.append("请立即让玩家修改密码并重新绑定二次验证。");
+        b.append("若该操作非本人发起，您的账号当前仅剩密码保护，");
+        b.append("请立即修改密码并重新绑定二次验证；");
+        b.append("如非本人操作，请尽快检查登录记录并联系管理员。");
 
-        final String to = admin;
         final String subject = "[Sdf1_login] 2FA解绑报警 - " + playerName + "（" + mode + "）";
         final String mailBody = b.toString();
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
