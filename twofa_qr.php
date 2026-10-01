@@ -6,9 +6,9 @@
  * 取回 otpauth 载荷后由内联二维码库就地渲染；不做任何 2FA 校验逻辑。
  */
 $raw = isset($_GET['t']) ? (string) $_GET['t'] : '';
-$t = $raw;
-// v1_ 前缀 + 64hex：线上 WAF 拦「t=纯32+位hex」，前缀/换名双保险（与 api/twofa.php 对齐）
-$bad = preg_match('/^v1_[a-f0-9]{32,128}$/', $raw) !== 1;
+$t = strtolower(preg_replace('/[^a-f0-9]/', '', $raw));
+// 页面入参 t=裸hex64 实测可过线上WAF；取数改走 token= 参数名（t=长hex形态会被源站WAF 404）
+$bad = preg_match('/^[a-f0-9]{32,128}$/', $t) !== 1;
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">

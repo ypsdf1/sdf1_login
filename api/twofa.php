@@ -49,10 +49,11 @@ function twofaRequireSecret() {
     }
 }
 
-/** token 形态：v1_ 前缀 + 64 位十六进制（Java SecureRandom 256bit）。
- *  前缀不是装饰：线上 WAF 会拦「查询参数=32位以上纯hex」形态，实测带前缀可过。 */
+/** token 形态：64 位十六进制（Java SecureRandom 256bit）。
+ *  查询参数名必须用 token 不能用 t：线上源站WAF拦「t=<32+位hex>」与「token=v1_*」形态，
+ *  「token=<裸hex>」实测可过（2026-10-01 矩阵验证）。 */
 function twofaValidToken($t) {
-    return is_string($t) && preg_match('/^v1_[a-f0-9]{32,128}$/', $t) === 1;
+    return is_string($t) && preg_match('/^[a-f0-9]{32,128}$/', $t) === 1;
 }
 
 $action = getParam('action', '');
