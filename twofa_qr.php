@@ -7,7 +7,7 @@
  */
 $raw = isset($_GET['t']) ? (string) $_GET['t'] : '';
 $t = strtolower(preg_replace('/[^a-f0-9]/', '', $raw));
-// 页面入参 t=裸hex64 实测可过线上WAF；取数改走 token= 参数名（t=长hex形态会被源站WAF 404）
+// WAF矩阵(2026-10-01复测)：查询参数名 token+≥32位hex 被拦404；t=任意长度hex均过 —— 统一用 t=
 $bad = preg_match('/^[a-f0-9]{32,128}$/', $t) !== 1;
 ?>
 <!DOCTYPE html>
@@ -2370,7 +2370,7 @@ var qrcode = function() {
         box.innerHTML = '<div class="fail">链接参数无效，请回游戏重新执行 /2fa add</div>';
         return;
     }
-    fetch('api/twofa.php?action=get&token=' + encodeURIComponent(t), { credentials: 'same-origin' })
+    fetch('api/twofa.php?action=get&t=' + encodeURIComponent(t), { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (j) {
             if (!j.success) {

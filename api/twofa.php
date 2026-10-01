@@ -50,8 +50,9 @@ function twofaRequireSecret() {
 }
 
 /** token 形态：64 位十六进制（Java SecureRandom 256bit）。
- *  查询参数名必须用 token 不能用 t：线上源站WAF拦「t=<32+位hex>」与「token=v1_*」形态，
- *  「token=<裸hex>」实测可过（2026-10-01 矩阵验证）。 */
+ *  WAF 实测（2026-10-01 矩阵含重复验证）：查询参数名 `token` + ≥32位纯hex 会被
+ *  CF 源站 404 拦截；参数名 `t` 任意长度(16/32/48/64)均可过，POST body 亦可过。
+ *  故取数接口固定用 `t=`（`token=` 仅作兼容回退）。 */
 function twofaValidToken($t) {
     return is_string($t) && preg_match('/^[a-f0-9]{32,128}$/', $t) === 1;
 }
@@ -92,8 +93,9 @@ try {
 
         // ===== 玩家浏览器：取二维码载荷 =====
         case 'get': {
-            // 参数名用 token 而非 t：WAF 规则匹配「t=<长hex>」，换名+前缀双保险
-            $token = (string) getParam('token', '');
+            // 主参数名必须是 t：`token=<32+位hex>` 会被源站 WAF 404，`t=<hex>` 实测全长度可过
+            $token = (string) getParam('t', '');
+            if ($token === '') $token = (string) getParam('token', '');
             if (!twofaValidToken($token)) error('参数错误', 400);
 
             $db = getDB();
