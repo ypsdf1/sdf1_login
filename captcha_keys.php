@@ -10,7 +10,7 @@
  * 1) Cloudflare Turnstile（默认使用的验证码，体验最好、无感）
  *    申请入口：Cloudflare 控制台 → Workers & Pages / Turnstile → Add site
  *      https://dash.cloudflare.com/?to=/:account/turnstile
- *    绑定域名：*.ypshidifu.cn （添加 hostname 白名单）
+ *    绑定域名自己的域名(不一定要托管在CF)
  *    拿到两个值：
  *      $CF_SITEKEY  → 页面上显示的 Sitekey（0x4AAAA 开头）
  *      $CF_SECRET   → 后台的 Secret key（0x4AAAA 开头，不要和 sitekey 搞混）
