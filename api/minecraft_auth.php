@@ -29,6 +29,8 @@ require_once __DIR__ . '/../security.php';
 //  Java 插件的 secret 调用与任何异常一律放行（fail-open）。
 // ====================================================================
 require_once __DIR__ . '/../config.php';   // 取 SECRET_KEY（require_once，不会重复定义）
+// ★ 人机验证码（2026-10-02）：CF/VA 统一接入，见 captcha_guard.php
+require_once __DIR__ . '/../captcha_guard.php';
 function mcAuthIpBlacklisted() {
     if (PHP_SAPI === 'cli') return false;
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -758,6 +760,12 @@ switch ($action) {
             }
         }
 
+        // ★ 人机验证码（2026-10-02）：只拦浏览器粘贴页的提交；
+        //   Java 插件带 secret 的调用走的是服务端，不需要人机验证。
+        if (empty($secret)) {
+            cgEnforce('verify_code');
+        }
+
         // 查询会话
         $stmt = $db->prepare("SELECT * FROM mc_auth_sessions WHERE session_id = ?");
         $stmt->execute([$sessionId]);
@@ -864,6 +872,7 @@ switch ($action) {
 
         $playerName = htmlspecialchars($session['player_name']);
         $authUrl = htmlspecialchars(getAuthUrl($sessionId));
+        $captchaHtml = cgWidgetHtml();
         echo <<<HTML
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -908,6 +917,7 @@ button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
 <div class="input-group">
 <input type="text" id="codeInput" placeholder="粘贴完整URL或授权码" autofocus autocomplete="off">
 </div>
+{$captchaHtml}
 <button id="submitBtn" onclick="submitCode()">提交验证</button>
 <div class="msg" id="msg"></div>
 </div>
@@ -946,11 +956,18 @@ else{showMsg('❌ 服务器响应异常(HTTP '+httpStatus+'): '+rawPrev,'err');e
 };
 x2.send();
 }
-function doSubmit(code){
+async function doSubmit(code){
 if(submitting)return;
 submitting=true;
 var btn=document.getElementById('submitBtn');
 btn.disabled=true;btn.textContent='验证中...';
+// ★ 人机验证（2026-10-02）：CF 渲染完即有 token（基本无感）；VA 没做会在这里拉起验证
+var cap={};
+if(window.CaptchaGuard){
+try{cap=await CaptchaGuard.payload();}
+catch(e){submitting=false;btn.disabled=false;btn.textContent='提交验证';
+showMsg('❌ '+(e.message||'请先完成人机验证'),'err');return;}
+}
 var xhr=new XMLHttpRequest();
 xhr.open('POST','minecraft_auth.php?action=verify_code',true);
 xhr.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
@@ -964,7 +981,12 @@ if(d.success){showMsg('✅ 验证成功！请关闭此页面返回游戏','ok');
 else{showMsg('❌ '+(d.error||d.message||'验证失败'),'err');enableBtn();}
 }catch(e){showRealStatus(xhr.status,body);}
 }};
-xhr.send('session_id='+encodeURIComponent(sessionId)+'&code='+encodeURIComponent(code));
+xhr.send('session_id='+encodeURIComponent(sessionId)+'&code='+encodeURIComponent(code)
++'&captcha_provider='+encodeURIComponent(cap.captcha_provider||'')
++'&captcha_token='+encodeURIComponent(cap.captcha_token||'')
++'&captcha_knock='+encodeURIComponent(cap.captcha_knock||'')
++'&captcha_dfu='+encodeURIComponent(cap.captcha_dfu||'')
++'&captcha_ip='+encodeURIComponent(cap.captcha_ip||''));
 }
 function submitCode(){
 var raw=document.getElementById('codeInput').value.trim();

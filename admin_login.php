@@ -51,6 +51,7 @@ secGatePage();
             <label>管理密码</label>
             <input type="password" id="password" placeholder="请输入管理密码" autofocus>
         </div>
+        <?php echo cgWidgetHtml(); ?>
         <button class="login-btn" id="loginBtn" onclick="doLogin()">登 录</button>
         <div class="error" id="errorMsg"></div>
         <div class="links"><a href="player.php">← 返回玩家商城</a></div>
@@ -67,11 +68,25 @@ secGatePage();
         document.getElementById('loginBtn').disabled = true;
         document.getElementById('loginBtn').textContent = '登录中...';
 
+        // ★ 人机验证（2026-10-02）：CF 渲染完即有 token（基本无感）；VA 没做会在这里拉起验证
+        let cap = {};
+        if (window.CaptchaGuard) {
+            try {
+                cap = await CaptchaGuard.payload();
+            } catch (e) {
+                document.getElementById('errorMsg').textContent = e.message || '请先完成人机验证';
+                document.getElementById('errorMsg').style.display = 'block';
+                document.getElementById('loginBtn').disabled = false;
+                document.getElementById('loginBtn').textContent = '登 录';
+                return;
+            }
+        }
+
         try {
             const res = await fetch('api/admin.php?action=login', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({password: pw})
+                body: JSON.stringify(Object.assign({password: pw}, cap))
             });
             const data = await res.json();
             if (data.success) {

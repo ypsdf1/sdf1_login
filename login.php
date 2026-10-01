@@ -1,5 +1,7 @@
 <?php
 require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-30）
+// ★ 人机验证码（2026-10-02）：按 config.php 的 CAPTCHA_PROVIDER 选择 CF/VA，密钥在 captcha_keys.php
+require_once __DIR__ . '/captcha_guard.php';
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -86,6 +88,7 @@ require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-
                         style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
                     <p style="color:var(--dim);font-size:12px;margin-top:8px;text-align:left">密码由游戏服务器验证，Web端不存储密码</p>
                 </div>
+                <?php echo cgWidgetHtml(); ?>
                 <button class="btn btn-primary" style="width:100%" onclick="doPasswordLogin()">登录到Web端</button>
             </div>
             <!-- 邮箱验证码登录 -->
@@ -198,6 +201,13 @@ require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-
 
         if (!password) { showPwdError('请输入密码'); return; }
 
+        // ★ 人机验证（2026-10-02）：CF 渲染完即有 token（基本无感）；VA 没做会在这里拉起验证
+        let cap = {};
+        if (window.CaptchaGuard) {
+            try { cap = await CaptchaGuard.payload(); }
+            catch (e) { showPwdError(e.message || '请先完成人机验证'); return; }
+        }
+
         pwdStatusBox.className = 'status-box loading';
         pwdStatusBox.style.display = 'block';
         pwdStatusBox.innerHTML = '<span class="spinner"></span> 正在验证密码...';
@@ -208,7 +218,7 @@ require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-
             const reqRes = await fetch(apiUrl + '?action=web_login_request', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player: player, password: password})
+                body: JSON.stringify(Object.assign({player: player, password: password}, cap))
             });
             const reqData = await reqRes.json();
 

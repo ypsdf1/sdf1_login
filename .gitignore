@@ -25,7 +25,8 @@ db/debug_ip_v2.php
 api/test_db.php
 api/diag_db_content.php
 robots.json
-captcha_keys.php
+# captcha_keys.php 已于 2026-10-02 移出忽略名单：仓库里放的是「空模板」（密钥全部清空 + 填写说明），
+# 真实密钥只存在服务器上，且 deploy_php_only.py 的 EXCLUDE_PATTERNS 永不上传它，避免覆盖线上真值。
 
 # 开发辅助文档（本地保留，不推送到仓库）
 /代码关联关系.md

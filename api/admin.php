@@ -104,6 +104,8 @@ function adminDoLogin() {
     }
     $password = getParam('password');
     if (!$password) exit(json_encode(['success' => false, 'message' => 'Missing password'], JSON_UNESCAPED_UNICODE));
+    // ★ 人机验证码（2026-10-02）：放在限速之后、比对密码之前（不通过就不消耗密码尝试次数）
+    cgEnforce('admin_login');
     if (adminLogin($password)) {
         if (function_exists('secThrottleReset')) secThrottleReset('login_fail', $ip);
         if (function_exists('secLog')) secLog('login_pass', 'password_ok');

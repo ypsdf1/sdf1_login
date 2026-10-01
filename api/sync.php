@@ -50,6 +50,9 @@ set_exception_handler(function($e) {
 
 // debugLog() 函数已在 core.php 中定义，无需重复声明
 
+// ★ 人机验证码（2026-10-02）：CF/VA 统一接入，见 captcha_guard.php
+require_once __DIR__ . '/../captcha_guard.php';
+
 // ===== SMTP邮件发送函数（已统一移至 core.php，通过 require_once core.php 复用，避免重复定义） =====
 
 
@@ -2382,6 +2385,10 @@ function webLoginRequest() {
     if (!preg_match('/^[a-zA-Z0-9_]{1,16}$/', $player)) {
         error('玩家名格式不正确（1-16位字母数字下划线）');
     }
+
+    // ★ 人机验证码（2026-10-02）：账密登录提交前校验；
+    //   token 登录 / 邮箱验证码登录不经过这里，不受影响。
+    cgEnforce('web_login_request');
 
     $db = getDB();
 

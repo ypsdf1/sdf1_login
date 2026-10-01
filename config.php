@@ -58,6 +58,16 @@ define('SMTP_PASS', 'REPLACE_ME_SMTP_PASSWORD');
 define('SMTP_SENDER_NAME', 'Sdf1_login');
 define('SMTP_USE_SSL', true);
 
+// ===== 人机验证码选择（2026-10-02，实现见 captcha_guard.php）=====
+// 覆盖三个场景：管理员登录 / 用户后台账密登录 / 正版验证提交前。
+// 取值不区分大小写，兼容全名：
+//   'CF' 或 'cloudflare' 或 'turnstile' → Cloudflare Turnstile（默认，体验最好基本无感）
+//   'VA' 或 'vaptcha'                   → VAPTCHA V4
+//   '' 或 'off' 或 'none'               → 关闭人机验证
+// 本文件未定义本常量时（线上 config.php 是老版本），一律按默认 'CF' 处理。
+// 密钥本身不在这里，写在 captcha_keys.php（仓库里是空模板，真实值只放服务器）。
+define('CAPTCHA_PROVIDER', 'CF');
+
 // ===== 紧急安全加固（2026-09-29 入侵事件响应，实现见 security.php）=====
 // 第一层：TOTP 二次验证 —— 1Password / Microsoft Authenticator 等标准 6 位动态码（仅校验，无推送）。
 // 第二层：管理面 IP 白名单 —— 未配置白名单时，仅服务器本机 127.0.0.1 与持有 boot 引导令牌的
