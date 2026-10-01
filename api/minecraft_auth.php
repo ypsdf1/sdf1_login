@@ -895,6 +895,15 @@ input[type=text]:focus{border-color:#4ade80}
 button{width:100%;padding:14px;font-size:16px;font-weight:bold;background:#4ade80;color:#0f0f23;border:none;border-radius:8px;cursor:pointer;transition:all 0.2s}
 button:hover{background:#22c55e;transform:translateY(-1px)}
 button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+
+/* ===== 人机验证挂件对齐（正版验证页专用） =====
+   挂件自带 <style> 在本页之后输出、同优先级会覆盖，故用 .card 前缀提高优先级 */
+.card .cg-box{margin:0 0 16px;padding:14px 16px;background:#0f0f23;border:2px solid #333;
+  border-radius:8px;text-align:center}
+.card .cg-head{justify-content:center;gap:10px}
+.card .cg-err{text-align:center}
+.card .cg-btn{border-radius:8px}
+#cgCfBox{display:flex!important;justify-content:center;align-items:center}
 .msg{margin-top:16px;font-size:14px;min-height:20px}
 .msg.ok{color:#4ade80}
 .msg.err{color:#f87171}
