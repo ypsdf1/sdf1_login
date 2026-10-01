@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/security.php';   // 第四层：全局限流（2026-09-30）
+require_once __DIR__ . '/captcha_guard.php';   // ★ 人机验证统一接入（2026-10-02）：CF/VA 由 config.php 的 CAPTCHA_PROVIDER 单点决定
 // ★ 强制缓存失效：用文件修改时间作为版本号
 // 每次修改player.php后，文件时间戳变化 → URL不同 → 浏览器必须获取新内容
 header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
@@ -318,6 +319,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="status-msg" id="glassLoginStatus"></div>
             <input type="text" id="glassPlayerName" placeholder="玩家名" maxlength="16" autocomplete="username">
             <input type="password" id="glassPassword" placeholder="游戏内密码" maxlength="32" autocomplete="current-password">
+            <div id="cgSlotGlass"></div>
             <button class="login-btn" id="glassLoginBtn" onclick="doGlassLogin()">登 录</button>
             <p class="hint">也可在游戏中输入 <code>/sdf1_login weblogin</code> 获取链接</p>
         </div>
@@ -335,6 +337,44 @@ if ($currentVersion !== $BUILD_VERSION) {
     </div>
 
     <script>
+    // ★ 人机验证挂件HTML：由 config.php 的 CAPTCHA_PROVIDER 单点决定 CF/VA（全项目只用一家，不混用）。
+    //   未启用（off / 密钥未配）时为空串，前端不挂件、服务端同步放行，
+    //   不会出现"服务端要验证、前端却没组件"的错配。
+    //   JSON_HEX_TAG 必须带：HTML 里含 </script>，不转义会把本 <script> 提前截断。
+    window.__CG_HTML = <?php echo json_encode(cgWidgetHtml(), JSON_HEX_TAG | JSON_UNESCAPED_UNICODE); ?>;
+
+    // ===== 人机验证挂件：全页唯一实例，挂到当前可见的登录表单 =====
+    //   三个入口（主登录页 / 毛玻璃弹窗 / 安全验证弹窗）共用一个 cgBox，避免重复 id；
+    //   innerHTML 插入的 <script> 不会被浏览器执行 → 这里手动执行一次。
+    function cgMount(slotId) {
+        var slot = document.getElementById(slotId);
+        if (!slot) return false;
+        var html = window.__CG_HTML || '';
+        if (!html) return false;                        // 验证码未启用
+        if (slot.querySelector('#cgBox')) return true;  // 本表单已挂过 → 保留已通过的 token
+        var olds = document.querySelectorAll('.cg-box'); // 其它表单里的旧实例 → 移除（全页唯一）
+        for (var i = 0; i < olds.length; i++) {
+            var p = olds[i].parentNode;
+            if (p) p.removeChild(olds[i]);
+        }
+        slot.innerHTML = html;
+        var sc = slot.querySelector('script');
+        if (sc) {
+            var s = document.createElement('script');
+            s.textContent = sc.textContent;
+            document.head.appendChild(s);
+            if (sc.parentNode) sc.parentNode.removeChild(sc);
+        }
+        return !!window.CaptchaGuard;
+    }
+
+    // 提交前取 token：未启用时返回 {}（服务端同步放行），否则等待用户完成验证
+    async function cgPayload() {
+        if (!(window.__CG_HTML || '')) return {};
+        if (!window.CaptchaGuard) throw new Error('验证组件未加载，请刷新页面重试');
+        return await window.CaptchaGuard.payload();
+    }
+
     // ★ 防止bfcache（前进/后退缓存）绕过安全检查
     window.addEventListener('pageshow', function(e) {
         if (e.persisted) {
@@ -609,6 +649,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div id="authPasswordTab">
                 <div class="row"><label>游戏登录密码</label><input type="password" id="authPassword" placeholder="输入游戏内密码" autofocus></div>
                 <div style="text-align:right;margin-top:4px"><a href="javascript:void(0)" onclick="showResetPasswordModal()" style="color:var(--accent);font-size:12px">忘记密码？</a></div>
+                <div id="cgSlotAuth"></div>
             </div>
             <div id="authEmailTab" style="display:none">
                 <div class="row"><label>绑定邮箱</label>
@@ -620,6 +661,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                 </div>
             </div>
             <div id="authError" style="color:var(--red);font-size:12px;margin-top:4px"></div>`;
+        cgMount('cgSlotAuth');   // ★ 挂载人机验证（唯一实例）
         document.getElementById('modalConfirm').onclick = () => doAuth();
         document.getElementById('authPassword').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
         document.getElementById('authCode').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
@@ -691,13 +733,21 @@ if ($currentVersion !== $BUILD_VERSION) {
     async function doPasswordAuth() {
         const password = document.getElementById('authPassword').value;
         if (!password) { document.getElementById('authError').textContent = '请输入密码'; return; }
+        document.getElementById('authError').textContent = '等待人机验证完成...';
+        let cap;
+        try {
+            cap = await cgPayload();   // ★ 人机验证 token（config.php 单开关，未启用时为空对象）
+        } catch (e) {
+            document.getElementById('authError').textContent = e.message || '请先完成人机验证';
+            return;
+        }
         document.getElementById('authError').textContent = '正在提交登录请求...';
         try {
             // ★ 必须走web_login_request流程（Java验证密码），不能用verify_web_password（PHP直接验证=绕过Java）
             const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player: currentPlayer, password: password})
+                body: JSON.stringify(Object.assign({player: currentPlayer, password: password}, cap))
             });
             const reqData = await reqRes.json();
             if (!reqData.success) {
@@ -809,6 +859,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                             style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;outline:none;box-sizing:border-box">
                     </div>
                     <div id="loginStatusBox" style="display:none;margin-bottom:16px"></div>
+                    <div id="cgSlotLogin"></div>
                     <button id="loginSubmitBtn" class="btn btn-primary" style="width:100%;padding:12px" onclick="doDirectLogin()">登录</button>
                     <p style="color:var(--dim);font-size:12px;margin-top:12px">密码由游戏服务器验证，Web端不存储密码</p>
                 </div>
@@ -821,6 +872,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                 </div>
                 <button class="btn" onclick="showGuestMode()" style="padding:10px 20px;font-size:13px">👁️ 先逛逛（游客模式）</button>
             </div>`;
+        cgMount('cgSlotLogin');   // ★ 挂载人机验证（唯一实例）
         document.querySelector('.sidebar').style.display = 'none';
         // 自动聚焦密码框
         setTimeout(() => { const pwd = document.getElementById('loginPassword'); if (pwd) pwd.focus(); }, 100);
@@ -837,6 +889,15 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (!password) { showLoginStatus('请输入密码', 'error'); return; }
 
         submitBtn.disabled = true;
+        showLoginStatus('等待人机验证完成...', 'loading');
+        let cap;
+        try {
+            cap = await cgPayload();   // ★ 人机验证 token（config.php 单开关，未启用时为空对象）
+        } catch (e) {
+            showLoginStatus(e.message || '请先完成人机验证', 'error');
+            submitBtn.disabled = false;
+            return;
+        }
         showLoginStatus('正在提交登录请求...', 'loading');
 
         try {
@@ -844,7 +905,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player, password})
+                body: JSON.stringify(Object.assign({player, password}, cap))
             });
             const reqData = await reqRes.json();
             if (!reqData.success) {
@@ -933,6 +994,7 @@ if ($currentVersion !== $BUILD_VERSION) {
     function openGlassLogin() {
         const overlay = document.getElementById('glassLoginOverlay');
         overlay.classList.add('show');
+        cgMount('cgSlotGlass');   // ★ 挂载人机验证（唯一实例）
         glassLoginDismissed = false;
         // 隐藏C位登录按钮
         document.querySelector('.guest-center-login').classList.remove('show');
@@ -987,12 +1049,21 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (!player) { setGlassStatus('请输入玩家名', 'error'); return; }
         if (!password) { setGlassStatus('请输入密码', 'error'); return; }
         btn.disabled = true; btn.textContent = '登录中...';
+        setGlassStatus('等待人机验证完成...', 'loading');
+        let cap;
+        try {
+            cap = await cgPayload();   // ★ 人机验证 token（config.php 单开关，未启用时为空对象）
+        } catch (e) {
+            setGlassStatus(e.message || '请先完成人机验证', 'error');
+            btn.disabled = false; btn.textContent = '登 录';
+            return;
+        }
         setGlassStatus('正在提交登录请求...', 'loading');
         try {
             const reqRes = await fetch(API + 'sync.php?action=web_login_request', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player, password})
+                body: JSON.stringify(Object.assign({player, password}, cap))
             });
             const reqData = await reqRes.json();
             if (!reqData.success) { setGlassStatus(reqData.message || '提交失败', 'error'); btn.disabled = false; btn.textContent = '登 录'; return; }
