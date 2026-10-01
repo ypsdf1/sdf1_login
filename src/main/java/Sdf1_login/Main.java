@@ -379,8 +379,6 @@ public class Main extends JavaPlugin
         db = new DatabaseManager(getDataFolder());
         db.init();
         menuIconMgr = new MenuIconManager(this);
-        // ★ 启动时恢复「已通过正版OAuth验证」的玩家（验证一次即永久，重启不清）
-        loadVerifiedPremiumPlayers();
 
 
         // ===== 3. 菜单 =====
@@ -1916,62 +1914,17 @@ public class Main extends JavaPlugin
 
     /**
      * 记录玩家为已验证的正版玩家（PHP OAuth验证成功后调用）
+     *
+     * <p>语义：<b>只在本次服务器运行期内</b>赋予正版免登录权，重启即清空——
+     * 这样即便有人侥幸拿到过一次验证窗口，重启后也必须重新走 OAuth，
+     * 只有账号真正的主人才能每次都通过。
+     *
+     * <p>写入时<b>不看玩家是否在线</b>：网速慢、后端没及时对齐都可能错过窗口，
+     * 只要 PHP 判了 verified 就照写，人不在也照写。
      */
     public void addVerifiedPremiumPlayer(String playerName, String mcUuid, String mcUsername) {
         verifiedPremiumPlayers.put(playerName, new String[]{mcUuid, mcUsername, String.valueOf(System.currentTimeMillis())});
-        // ★ 永久写入数据库：玩家当下去/已离线都不影响，下次上线直接登录
-        persistVerifiedPremium(playerName);
-        getLogger().info("[正版验证] 玩家 " + playerName + " 已通过Microsoft OAuth验证 (UUID: " + mcUuid + ", MCName: " + mcUsername + ")");
-    }
-
-    /**
-     * 把「已通过正版OAuth验证」写进数据库：验证一次即永久，重启后仍自动放行。
-     * 账号行还不存在时静默跳过（首次 autoLogin 创建账号后会补写）。
-     */
-    public void persistVerifiedPremium(String playerName) {
-        String[] data = verifiedPremiumPlayers.get(playerName);
-        if (data == null) return;
-        if (!db.userExists(playerName)) return;
-        try {
-            db.setField(playerName, "premium_verified_uuid", data[0] == null ? "" : data[0]);
-            db.setField(playerName, "premium_verified_name", data[1] == null ? "" : data[1]);
-            db.setField(playerName, "premium_verified_at",
-                    Long.parseLong(data.length > 2 && data[2] != null ? data[2] : "0"));
-        } catch (Exception e) {
-            getLogger().warning("[正版验证] 持久化失败 " + playerName + ": " + e.getMessage());
-        }
-    }
-
-    /**
-     * 启动时从数据库恢复已验证的正版玩家（离线/重启都不丢，下次上线直接登录）
-     */
-    private void loadVerifiedPremiumPlayers() {
-        java.sql.Connection conn = db.getConnection();
-        if (conn == null) return;
-        int n = 0;
-        try (java.sql.Statement st = conn.createStatement();
-             java.sql.ResultSet rs = st.executeQuery(
-                     "SELECT player_name, premium_verified_uuid, premium_verified_name, premium_verified_at "
-                             + "FROM users WHERE premium_verified_at > 0")) {
-            while (rs.next()) {
-                String pn = rs.getString("player_name");
-                if (pn == null || pn.isEmpty()) continue;
-                String uuid = rs.getString("premium_verified_uuid");
-                String uname = rs.getString("premium_verified_name");
-                long at = rs.getLong("premium_verified_at");
-                verifiedPremiumPlayers.put(pn, new String[]{
-                        uuid == null ? "" : uuid,
-                        (uname == null || uname.isEmpty()) ? pn : uname,
-                        String.valueOf(at)});
-                n++;
-            }
-        } catch (Exception e) {
-            getLogger().warning("[正版验证] 启动恢复已验证玩家失败: " + e.getMessage());
-            return;
-        }
-        if (n > 0) {
-            getLogger().info("[正版验证] 已从数据库恢复 " + n + " 个已验证正版账号（重启不清）");
-        }
+        getLogger().info("[正版验证] 玩家 " + playerName + " 已通过Microsoft OAuth验证 (UUID: " + mcUuid + ", MCName: " + mcUsername + ")，本次运行期内免登录");
     }
 
     /** 2FA 管理器访问器：登录流程据此判断是否走「密码+2FA」顺序两关 */
@@ -1980,7 +1933,7 @@ public class Main extends JavaPlugin
     }
 
     /**
-     * 移除玩家的正版验证标记（下线时不清除；数据库标记为永久，重启后由启动加载恢复）
+     * 移除玩家的正版验证标记（下线时不清除，服务器重启时随内存一并清空）
      */
     public void removeVerifiedPremiumPlayer(String playerName) {
         verifiedPremiumPlayers.remove(playerName);
@@ -2045,11 +1998,6 @@ public class Main extends JavaPlugin
             db.setField(name,
                     "register_type", registerType);
             db.recordIP(name, ip);
-        }
-
-        // ★ 账号行刚创建/首次登录时补写正版验证标记，保证重启后仍自动放行
-        if (isVerifiedPremiumPlayer(name)) {
-            persistVerifiedPremium(name);
         }
 
         loggedIn.add(name);
