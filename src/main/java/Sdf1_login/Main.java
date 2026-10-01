@@ -1168,6 +1168,89 @@ public class Main extends JavaPlugin
         credentialSaveTasks.put(uid, task);
     }
 
+    // ==================== 未绑定邮箱玩家的登录安全提示 ====================
+    /** 未绑邮箱提示任务（与保存密码提示互不覆盖，重复触发先取消旧的） */
+    private final java.util.Map<java.util.UUID, org.bukkit.scheduler.BukkitTask>
+            emailBindTasks = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 提示持续时长：15 秒 */
+    private static final long EMAIL_BIND_MS = 15_000L;
+
+    /**
+     * 登录/注册成功后统一调用：只有"未绑定邮箱"的玩家才弹提示。
+     * 已绑定邮箱直接静默返回。
+     */
+    public void remindEmailBindIfNeeded(Player p) {
+        if (p == null || !p.isOnline()) return;
+        try {
+            Object v = db.getField(p.getName(), "email");
+            String email = v == null ? "" : String.valueOf(v).trim();
+            if (!email.isEmpty()) return;   // 已绑定邮箱：不打扰
+        } catch (Exception e) {
+            getLogger().warning("[邮箱提示] 读取email失败: " + e.getMessage());
+            return;
+        }
+        showEmailBindReminder(p);
+    }
+
+    /**
+     * 未绑定邮箱提示：聊天框打印一次 + actionbar 连续显示 15 秒。
+     * 若"保存账号密码"提示正在播放（注册场景），聊天先给，
+     * actionbar 等它放完再开始，避免两条提示互相顶掉。
+     */
+    public void showEmailBindReminder(Player p) {
+        if (p == null || !p.isOnline()) return;
+        final java.util.UUID uid = p.getUniqueId();
+
+        // 重复触发：先掐掉上一个提示（含还在等待中的）
+        org.bukkit.scheduler.BukkitTask old = emailBindTasks.remove(uid);
+        if (old != null) old.cancel();
+
+        p.sendMessage("§e§l[安全提示] §7您还没有绑定邮箱，"
+                + "绑定后才能找回账号、接收安全告警。");
+        p.sendMessage("§e         §7输入 §f/email §7开始绑定"
+                + " §8(已绑定可忽略本条)");
+
+        // 注册场景"保存密码"提示还在播：actionbar 顺延到它结束后
+        long delayTicks = 0L;
+        if (credentialSaveTasks.containsKey(uid)) {
+            delayTicks = CREDENTIAL_SAVE_MS / 50L + 5L; // 60秒 + 5 tick
+        }
+
+        final String line = "§e§l[安全提示] §f尚未绑定邮箱 "
+                + "§7· §f/email §7绑定 §8(15秒后消失)";
+        final long endAt = System.currentTimeMillis() + EMAIL_BIND_MS;
+
+        org.bukkit.scheduler.BukkitTask holder =
+                getServer().getScheduler().runTaskLater(this, () -> {
+            if (!p.isOnline()) return;
+            org.bukkit.scheduler.BukkitTask task =
+                    getServer().getScheduler().runTaskTimer(this, () -> {
+                Player pl = Bukkit.getPlayer(uid);
+                boolean expired =
+                        System.currentTimeMillis() >= endAt;
+                if (pl == null || !pl.isOnline() || expired) {
+                    if (pl != null && pl.isOnline()) {
+                        // 15秒到：清空 actionbar 小标题
+                        pl.spigot().sendMessage(
+                                net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                                net.md_5.bungee.api.chat.TextComponent
+                                        .fromLegacyText(""));
+                    }
+                    org.bukkit.scheduler.BukkitTask cur =
+                            emailBindTasks.remove(uid);
+                    if (cur != null) cur.cancel();
+                    return;
+                }
+                pl.spigot().sendMessage(
+                        net.md_5.bungee.api.ChatMessageType.ACTION_BAR,
+                        net.md_5.bungee.api.chat.TextComponent
+                                .fromLegacyText(line));
+            }, 0L, 20L);
+            emailBindTasks.put(uid, task); // 用真正的刷新任务替换等待任务
+        }, delayTicks);
+        emailBindTasks.put(uid, holder);
+    }
+
     private boolean isAdmin(CommandSender sender) {
         if (sender instanceof Player)
             return ((Player) sender)
@@ -1930,6 +2013,8 @@ public class Main extends JavaPlugin
         giveMenuSnowball(p);
         p.sendMessage("§a[Sdf1_login] §f您已自动登录！");
         if (welcome != null) welcome.onLogin(p);
+        // ★ 未绑定邮箱：登录后提示（聊天 + actionbar 15秒）
+        remindEmailBindIfNeeded(p);
         activateBeibao(p);
         pushPendingAlerts(p);
 
@@ -6385,6 +6470,11 @@ public class Main extends JavaPlugin
                     welcome.onRegister(p);
                 }
 
+                // ★ 未绑定邮箱：注册即登录，同样提示
+                if (loggedIn.contains(p.getName())) {
+                    remindEmailBindIfNeeded(p);
+                }
+
             } catch (Exception e) {
                 getLogger().severe(
                         "[Sdf1_login] reg命令异常: "
@@ -6422,6 +6512,11 @@ public class Main extends JavaPlugin
                 if (welcome != null
                         && loggedIn.contains(p.getName())) {
                     welcome.onLogin(p);
+                }
+
+                // ★ 未绑定邮箱：登录成功后提示
+                if (loggedIn.contains(p.getName())) {
+                    remindEmailBindIfNeeded(p);
                 }
 
             } catch (Exception e) {
