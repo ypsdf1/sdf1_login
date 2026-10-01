@@ -49,9 +49,10 @@ function twofaRequireSecret() {
     }
 }
 
-/** token 形态：64 位十六进制（Java SecureRandom 256bit） */
+/** token 形态：v1_ 前缀 + 64 位十六进制（Java SecureRandom 256bit）。
+ *  前缀不是装饰：线上 WAF 会拦「查询参数=32位以上纯hex」形态，实测带前缀可过。 */
 function twofaValidToken($t) {
-    return is_string($t) && preg_match('/^[a-f0-9]{32,128}$/', $t) === 1;
+    return is_string($t) && preg_match('/^v1_[a-f0-9]{32,128}$/', $t) === 1;
 }
 
 $action = getParam('action', '');
@@ -90,7 +91,8 @@ try {
 
         // ===== 玩家浏览器：取二维码载荷 =====
         case 'get': {
-            $token = (string) getParam('t', '');
+            // 参数名用 token 而非 t：WAF 规则匹配「t=<长hex>」，换名+前缀双保险
+            $token = (string) getParam('token', '');
             if (!twofaValidToken($token)) error('参数错误', 400);
 
             $db = getDB();

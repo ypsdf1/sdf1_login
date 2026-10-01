@@ -5,8 +5,10 @@
  * 页面凭据 = URL 里的随机 token（Java 端 SecureRandom 生成，10 分钟有效），
  * 取回 otpauth 载荷后由内联二维码库就地渲染；不做任何 2FA 校验逻辑。
  */
-$t = isset($_GET['t']) ? strtolower(preg_replace('/[^a-f0-9]/', '', (string) $_GET['t'])) : '';
-$bad = (strlen($t) < 32 || strlen($t) > 128);
+$raw = isset($_GET['t']) ? (string) $_GET['t'] : '';
+$t = $raw;
+// v1_ 前缀 + 64hex：线上 WAF 拦「t=纯32+位hex」，前缀/换名双保险（与 api/twofa.php 对齐）
+$bad = preg_match('/^v1_[a-f0-9]{32,128}$/', $raw) !== 1;
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -2368,7 +2370,7 @@ var qrcode = function() {
         box.innerHTML = '<div class="fail">链接参数无效，请回游戏重新执行 /2fa add</div>';
         return;
     }
-    fetch('api/twofa.php?action=get&t=' + encodeURIComponent(t), { credentials: 'same-origin' })
+    fetch('api/twofa.php?action=get&token=' + encodeURIComponent(t), { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (j) {
             if (!j.success) {
