@@ -294,17 +294,25 @@ function handleSyncFromPlatform() {
     try {
         $pdo = getAdminPlatformDB();
 
-        // 查所有已支付订单
-        $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
+        // ★ 2026-10-02 只查后端自己的订单：平台 MySQL 是多商户共用库，整表拉 200 条
+        //   会把其他商户/项目的单（纯数字单号）也同步成本地充值单，凭空造出
+        //   玩家=unknown 的垃圾订单。本方单号固定 RE 前缀（pay.php createOrder 生成），
+        //   平台侧据此过滤，PHP 侧再兜底校验；平台其他订单一概不碰。
+        $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE out_trade_no LIKE 'RE%' AND status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
         $platformOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $synced = 0;
         $alreadyPaid = 0;
+        $foreign = 0;
         $errors = [];
         $now = time();
 
         foreach ($platformOrders as $po) {
             $outTradeNo = $po['out_trade_no'];
+            if (strncmp((string)$outTradeNo, 'RE', 2) !== 0) {
+                $foreign++;   // 非本方订单：不建单、不写流水
+                continue;
+            }
             $player = $po['param'] ?? 'unknown';
             $tradeNo = $po['trade_no'] ?? '';
             $money = (string)$po['money'];
@@ -367,7 +375,8 @@ function handleSyncFromPlatform() {
             'platform_total' => count($platformOrders),
             'synced' => $synced,
             'already_paid' => $alreadyPaid,
-        ], "同步完成：平台{$synced}笔已同步，{$alreadyPaid}笔已存在");
+            'foreign_skipped' => $foreign,
+        ], "同步完成：平台{$synced}笔已同步，{$alreadyPaid}笔已存在，{$foreign}笔非本方订单已忽略");
 
     } catch (\Throwable $e) {
         error('同步失败: ' . $e->getMessage());

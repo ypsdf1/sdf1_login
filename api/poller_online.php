@@ -198,11 +198,16 @@ function pollPaidOrders() {
         return;
     }
 
-    // 查所有已支付订单 (status=1 或 status=2)。不过滤 notify：
-    // 平台可能已标记 notify=1 但本地的 DB 未更新（HTTP 回调被 CF WAF 拦截），
-    // 必须靠本地 SQLite 的 status='created' 来判断是否需要补单。
+    // ★ 2026-10-02 只查后端自己的订单：平台 MySQL 是多商户共用库，`pay_order` 里
+    //   绝大多数是其他商户/项目的单（纯数字单号）。以前不加过滤整表拉，平台每来一单
+    //   就被我们"捡走"、凭空写进本地 pay_orders + web_transactions，产生玩家=unknown
+    //   的垃圾充值单（Java 每次拉交易都刷屏处理它们），还顺手把别人的订单 notify
+    //   改成 1 —— 纯属多管闲事。本方单号由 pay.php createOrder 生成、固定 RE 前缀，
+    //   平台侧据此过滤，PHP 侧再兜底校验一次；平台其他订单一概不读不写。
+    //   仍不过滤 notify：平台可能已标记 notify=1 但本地 DB 未更新（HTTP 回调被
+    //   CF WAF 拦截），是否补单以本地 pay_orders 状态为准。
     $prefix = $PLATFORM_DB_PREFIX;
-    $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
+    $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE out_trade_no LIKE 'RE%' AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
     $allOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($allOrders)) {
@@ -210,11 +215,17 @@ function pollPaidOrders() {
         return;
     }
 
-    // 过滤掉本地已处理(paid)的
+    // 只保留本方订单（RE 前缀兜底校验），再过滤掉本地已处理(paid)的
     $orders = [];
+    $foreign = 0;
     foreach ($allOrders as $o) {
+        $outNo = (string)$o['out_trade_no'];
+        if (strncmp($outNo, 'RE', 2) !== 0) {
+            $foreign++;   // 非本方订单：不建单、不写流水、不改它的 notify
+            continue;
+        }
         $check = $sqlite->prepare("SELECT status FROM pay_orders WHERE out_trade_no = :no");
-        $check->bindValue(':no', $o['out_trade_no'], SQLITE3_TEXT);
+        $check->bindValue(':no', $outNo, SQLITE3_TEXT);
         $row = $check->execute()->fetchArray(SQLITE3_ASSOC);
         if (!$row || $row['status'] !== 'paid') {
             $orders[] = $o;
@@ -222,7 +233,7 @@ function pollPaidOrders() {
     }
 
     if (empty($orders)) {
-        echo json_encode(['result' => 'no_pending_orders', 'platform_paid_count' => count($allOrders)]);
+        echo json_encode(['result' => 'no_pending_orders', 'platform_paid_count' => count($allOrders), 'foreign_skipped' => $foreign]);
         return;
     }
 
@@ -310,6 +321,7 @@ function pollPaidOrders() {
         'result'   => 'ok',
         'processed' => $processed,
         'skipped'   => $skipped,
+        'foreign_skipped' => $foreign,
         'total'     => count($orders),
         'elapsed_ms' => $elapsed,
     ]);
