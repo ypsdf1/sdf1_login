@@ -5,7 +5,11 @@
  * 第一层：TOTP 二次验证（6 位动态码，兼容 1Password / Microsoft Authenticator /
  *         Google Authenticator 等标准 RFC6238 认证器，仅本地校验、无推送）
  * 第二层：管理面 IP 白名单（ADMIN_IP_WHITELIST 为空 = 仅服务器本机 127.0.0.1
- *         与 boot 引导令牌可访问；任何人一律拒绝）
+ *         与 boot 引导令牌可访问；不在白名单的请求一律返回 nginx 原生 404 页，
+ *         让探测者分不清是文件不存在还是被拦截 —— 最小化信息透露，维护者自己
+ *         知道哪里有问题（服务器在他手上）。全新部署首次访问例外：config 的
+ *         SEC-UPDATE 区还是空的、web.db 里也没有引导标记 → 先放行，引导部署者
+ *         配好白名单 / 访问令牌 / 2FA，配置页一保存即自动转为强制模式）。
  * 第三层：admin.php 动态访问令牌 —— 必须是 admin.php?token=<SEC_ACCESS_TOKEN>
  *         才算"这个文件存在"，否则一律返回 nginx 原生 404 页（与文件不存在时
  *         的表现完全一致，让探测者分不清是文件不在还是自己请求错了）。
@@ -199,11 +203,15 @@ function secNginx404() {
 /**
  * 第三层闸门：只有 admin.php?token=<SEC_ACCESS_TOKEN> 才放行。
  * - 令牌未配置（SEC_ACCESS_TOKEN 为空/不存在）→ 直接放行，向后兼容；
+ * - 尚未引导（全新部署第一次访问，见 secIsBootstrapped）→ 本层整体不生效，
+ *   否则部署者连配置页都进不去，首次引导无从完成；
  * - $allowBoot=true 时 ?boot=<SEC_BOOT_TOKEN> 也可放行（配置页逃生舱，
  *   boot 令牌本身就是"读得到 config.php 的服务器管理员"凭据）；
  * - 其余一律 nginx 404（不是 403 —— 403 会暴露文件确实存在）。
  */
 function secTokenGate($allowBoot = false) {
+    // 引导模式：config 里还没有任何令牌、web.db 里也没有引导标记 → 本层先不生效。
+    if (!secIsBootstrapped()) return;
     $want = secToken();
     if ($want === '') return;
     $got = '';
@@ -225,60 +233,189 @@ function secTokenUrl($page = 'admin.php', $extra = '') {
 }
 
 // ======================================================================
+//  引导标记（bootstrap marker）—— 判断"这站是否已经用过后台配置页"
+// ======================================================================
+//
+// 判据（任一成立 = 已引导，闸门转为强制模式）：
+//   1) config.php 的 SEC-UPDATE 区已有 SEC_BOOT_TOKEN / SEC_ACCESS_TOKEN
+//      （线上既有站点早就写过 → 改动上线即刻生效，不存在暴露窗口）；
+//   2) web.db 的 sec_bootstrap 标记表有行 —— admin_2fa_setup.php 每次保存都由
+//      secWriteConfig() 顺手写入（Java 插件产生的业务数据不算数）。
+//
+// 两者皆空 = 全新部署的第一次访问 → 引导模式：先放行，让部署者把自己的
+//   IP 白名单 / 访问令牌 / 2FA 配齐，配置页一保存即自动转强制。
+// 读库异常（文件损坏、被锁死、打不开）→ 从严按"已引导"处理：宁可把本机之外的
+//   访问挡成 404，也不把闸门敞开；127.0.0.1 与 boot 令牌永远不受影响。
+//
+// 为什么不用"库里有没有数据"当判据：Java 插件建站第一天就会往 web.db 写业务
+//   数据，按数据量判断会把还没配置完的部署者直接锁死在门外，故用显式标记。
+
+/** 打开 web.db（仅供引导标记读写）。$write=true 时允许新建文件；失败返回 null。 */
+function secBootstrapDb($write = false) {
+    if (!class_exists('SQLite3')) return null;
+    if (!defined('DB_PATH') || DB_PATH === '') return null;
+    $path = DB_PATH;
+    if ($write) {
+        $dir = dirname($path);
+        if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
+        $flags = SQLITE3_OPEN_READWRITE | SQLITE3_OPEN_CREATE;
+    } else {
+        if (!file_exists($path)) return null;
+        $flags = SQLITE3_OPEN_READWRITE;
+    }
+    try {
+        $db = new SQLite3($path, $flags);
+        // ★ 刻意不调用 enableExceptions()：PHP 8.4+ 该方法只保留异常模式，传 false
+        //   会触发 E_DEPRECATED —— 本函数跑在闸门判定里，任何提前输出都会把后面
+        //   secNginx404() 的状态行挤掉（headers already sent → 404 变 200）。
+        //   两种版本差异由调用方兜住：老版本返回 false、新版本抛异常，
+        //   而下面所有查询都带 @ 并处在 try/catch 里。
+        @$db->exec('PRAGMA busy_timeout=3000');
+        return $db;
+    } catch (Throwable $e) {
+        secLog('bootstrap_db_open_fail', $e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * 写入引导标记（secWriteConfig 成功后调用）。
+ * 失败只记日志、不抛错 —— 判据 1（config 已有令牌）足以兜底，不能因为写标记
+ * 失败就把一次好好的配置保存变成报错。
+ */
+function secMarkBootstrapped($note = '') {
+    $db = secBootstrapDb(true);
+    if ($db === null) {
+        secLog('bootstrap_mark_fail', 'open failed path=' . (defined('DB_PATH') ? DB_PATH : '(undefined)'));
+        return false;
+    }
+    try {
+        $ok = $db->exec('CREATE TABLE IF NOT EXISTS sec_bootstrap ('
+            . 'id INTEGER PRIMARY KEY CHECK (id = 1),'
+            . 'marked_at INTEGER NOT NULL,'
+            . 'note TEXT)');
+        if ($ok === false) {
+            secLog('bootstrap_mark_fail', 'create table: ' . $db->lastErrorMsg());
+            $db->close();
+            return false;
+        }
+        $t = (string)time();
+        $n = str_replace("'", "''", substr((string)$note, 0, 200));
+        $ok = $db->exec("INSERT OR REPLACE INTO sec_bootstrap (id, marked_at, note) VALUES (1, {$t}, '{$n}')");
+        if ($ok === false) {
+            secLog('bootstrap_mark_fail', 'insert: ' . $db->lastErrorMsg());
+            $db->close();
+            return false;
+        }
+        $db->close();
+        secLog('bootstrap_marked', 'note=' . $note);
+        return true;
+    } catch (Throwable $e) {
+        secLog('bootstrap_mark_fail', $e->getMessage());
+        return false;
+    }
+}
+
+/** 是否已引导（双判据说明见本段注释）。结果在单次请求内缓存。 */
+function secIsBootstrapped() {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+
+    // 判据 1：config 里已经有引导 / 访问令牌（分发版是空的，线上早就写过）
+    if (secBootToken() !== '' || secToken() !== '') {
+        $cached = true;
+        return true;
+    }
+    // 判据 2：web.db 还没建 = 全新部署第一次访问 → 引导模式
+    if (!defined('DB_PATH') || DB_PATH === '' || !file_exists(DB_PATH)) {
+        $cached = false;
+        return false;
+    }
+    $db = secBootstrapDb(false);
+    if ($db === null) {
+        $cached = true;              // 有库却打不开 → 从严按已引导
+        return true;
+    }
+    try {
+        $m = @$db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sec_bootstrap' LIMIT 1");
+        if ($m === false) {
+            $db->close();
+            $cached = true;          // 连 sqlite_master 都读不了 → 从严
+            return true;
+        }
+        if ($m->fetchArray() === false) {
+            $db->close();
+            $cached = false;         // 标记表还没建 = 没人保存过配置 → 引导模式
+            return false;
+        }
+        $r = @$db->query('SELECT marked_at FROM sec_bootstrap LIMIT 1');
+        if ($r === false) {
+            $db->close();
+            $cached = true;          // 从严
+            return true;
+        }
+        $has = ($r->fetchArray() !== false);
+        $db->close();
+        $cached = $has;
+        return $cached;
+    } catch (Throwable $e) {
+        secLog('bootstrap_read_fail', $e->getMessage());
+        $cached = true;              // 读库异常 → 从严按已引导
+        return true;
+    }
+}
+
+// ======================================================================
 //  页面 / API 闸门（第二层 IP 白名单的挂载点）
 // ======================================================================
 
-/** 页面级闸门。$allowBoot=true 时接受 boot 令牌解锁（仅配置页使用）。 */
+/**
+ * 页面级闸门。$allowBoot=true 时接受 boot 令牌解锁（仅配置页使用）。
+ * - 已引导 且 不在 IP 白名单 → nginx 原生 404（不是 403：403 会告诉探测者
+ *   "这个文件确实存在"，与最小化信息透露原则冲突）；
+ * - 未引导（全新部署第一次访问）→ 放行；后台主入口 admin.php 不直接渲染，
+ *   改跳到 admin_2fa_setup.php 完成白名单 / 令牌 / 2FA 的首次配置。
+ */
 function secGatePage($allowBoot = false) {
     // ★ boot 必须先于 IP 判定：IP 已在白名单时原逻辑直接 return，
     //   会导致 admin_2fa_setup.php?boot=... 在"自己 IP 已加白"的情况下进不了引导模式。
     if ($allowBoot && secBootAuthenticate()) return;
     if (secIpAllowed()) return;
+
+    // 引导模式：全新部署的第一次访问（config 无令牌、web.db 无引导标记）
+    // → 先放行，让部署者完成首次配置；后台主入口改跳配置页，这就是"引导"的落点。
+    if (!secIsBootstrapped()) {
+        secLog('ip_gate_open_bootstrap', 'path=' . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-'));
+        $script = basename(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '');
+        if ($script === 'admin.php') {
+            header('Location: admin_2fa_setup.php');
+            exit;
+        }
+        return;
+    }
+
+    // 已引导且不在白名单 → nginx 原生 404（绝不回 403：403 等于承认文件存在）。
+    // 维护者不需要提示页 —— 服务器在他手上，他知道该查 db/security.log；
+    // 试探者只能看到与"文件不存在"完全一致的表现。恢复入口写在 config.php 注释里
+    // （boot 引导令牌访问 admin_2fa_setup.php）。
     secLog('ip_block_page', 'path=' . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-'));
-    while (ob_get_level() > 0) { @ob_end_clean(); }
-    http_response_code(403);
-    header('Content-Type: text/html; charset=utf-8');
-    $ip = secClientIp() !== '' ? secClientIp() : '(未知)';
-    echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
-       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
-       . '<title>403 - 访问被拒绝</title><style>'
-       . 'body{background:#0d1117;color:#e6edf3;font-family:Segoe UI,system-ui,sans-serif;'
-       . 'display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
-       . '.b{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:36px;'
-       . 'width:460px;max-width:92%}h1{color:#f85149;font-size:22px;margin:0 0 10px}'
-       . '.ip{font-family:monospace;color:#58a6ff;background:#0d1117;border:1px solid #30363d;'
-       . 'border-radius:6px;padding:8px 12px;margin:12px 0;font-size:14px}'
-       . 'p{color:#8b949e;font-size:13px;line-height:1.7;margin:8px 0}'
-       . 'code{color:#d29922;font-family:monospace}</style></head><body><div class="b">'
-       . '<h1>⛔ 403 访问被拒绝</h1>'
-       . '<p>管理后台已启用 <b style="color:#e6edf3">IP 白名单</b>（未配置白名单时仅服务器本机可访问）。</p>'
-       . '<div class="ip">你的 IP：' . htmlspecialchars($ip, ENT_QUOTES, 'UTF-8') . '（不在白名单内）</div>'
-       . '<p>管理员恢复访问的两种方式：<br>'
-       . '1. 通过宝塔/SSH 编辑 <code>plugin/config.php</code>，把上面的 IP 加进 '
-       . '<code>ADMIN_IP_WHITELIST</code>；<br>'
-       . '2. 或用同一文件中的 <code>SEC_BOOT_TOKEN</code> 访问：<br>'
-       . '<code>你的域名/plugin/admin_2fa_setup.php?boot=令牌</code></p>'
-       . '<p style="color:#f85149;font-size:12px">本页拒绝记录已写入 db/security.log</p>'
-       . '</div></body></html>';
-    exit;
+    secNginx404();
 }
 
-/** API 级闸门（JSON 403）。 */
+/**
+ * API 级闸门。与页面闸门同规则：已引导且不在白名单 → nginx 原生 404；
+ * 引导模式 → 放行（各动作自己仍有登录 / 口令 / 人机验证把关）。
+ * 不再回 JSON 403 —— 403 等于告诉探测者"这个接口确实存在"，
+ * 而 404 与"服务器上根本没有这个文件"表现完全一致。
+ */
 function secGateApi() {
     if (secIpAllowed()) return;
+    if (!secIsBootstrapped()) {
+        secLog('api_gate_open_bootstrap', 'action=' . (isset($_GET['action']) ? $_GET['action'] : '-'));
+        return;
+    }
     secLog('ip_block_api', 'action=' . (isset($_GET['action']) ? $_GET['action'] : '-'));
-    while (ob_get_level() > 0) { @ob_end_clean(); }
-    http_response_code(403);
-    header('Content-Type: application/json; charset=utf-8');
-    header('X-Content-Type-Options: nosniff');
-    echo json_encode(array(
-        'success' => false,
-        'code' => 403,
-        'need_ip' => true,
-        'ip' => secClientIp(),
-        'message' => '访问被拒绝：IP 不在管理白名单内'
-    ), JSON_UNESCAPED_UNICODE);
-    exit;
+    secNginx404();
 }
 
 // ======================================================================
@@ -681,6 +818,9 @@ function secWriteConfig(array $kv) {
     }
     if (function_exists('opcache_invalidate')) { @opcache_invalidate($path, true); }
     secLog('config_write', 'keys=' . implode(',', array_keys($kv)));
+    // ★ 引导标记：配置一落盘 = "这站已经用过后台面板"，secIsBootstrapped() 的判据 2
+    //   从此成立（判据 1 是 config 里已有令牌，两者互为兜底）。
+    secMarkBootstrapped('secWriteConfig:' . implode(',', array_keys($kv)));
     return true;
 }
 

@@ -315,6 +315,7 @@ if (file_exists($secLogPath)) {
         <div class="card">
             <h2>📋 当前状态</h2>
             <div class="status-list">
+                门禁状态：<b><?php echo secIsBootstrapped() ? '已引导 · 强制模式（不在白名单的请求一律 nginx 404）✅' : '引导模式 · 尚未保存过配置（首次访问先放行，保存任意一项即转强制）⚠️'; ?></b><br>
                 二次验证：<b><?php echo $twoFaOn ? '已启用 ✅' : '未启用 ⚠️'; ?></b>
                 <span class="badge <?php echo $twoFaOn ? 'b-on' : 'b-off'; ?>"><?php echo $twoFaOn ? 'ON' : 'OFF'; ?></span><br>
                 IP 白名单：<b><?php echo count($whitelist) === 0 ? '空（仅服务器本机可访问）⚠️' : count($whitelist) . ' 条'; ?></b><br>

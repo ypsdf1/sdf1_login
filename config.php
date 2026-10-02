@@ -74,7 +74,10 @@ define('CAPTCHA_PROVIDER', 'CF');   // ← 只改这个值：'CF' 用 Cloudflare
 // ===== 紧急安全加固（2026-09-29 入侵事件响应，实现见 security.php）=====
 // 第一层：TOTP 二次验证 —— 1Password / Microsoft Authenticator 等标准 6 位动态码（仅校验，无推送）。
 // 第二层：管理面 IP 白名单 —— 未配置白名单时，仅服务器本机 127.0.0.1 与持有 boot 引导令牌的
-//         人可访问后台，其余任何人一律 403。
+//         人可访问后台；其余任何请求一律返回 nginx 原生 404 页（最小化信息透露：让探测者
+//         分不清是文件不存在还是被拦截），拒绝记录写入 db/security.log。
+//         ★ 例外 = 全新部署的第一次访问：本区还是空的、web.db 里也没有引导标记时先放行，
+//          引导你把自己的 IP 白名单 / 访问令牌 / 2FA 配齐；配置页一保存即自动转强制模式。
 // 第三层：admin.php 动态访问令牌 —— 只有 https://域名/plugin/admin.php?token=<SEC_ACCESS_TOKEN>
 //         才能打开后台；不带令牌（或令牌错）的请求一律返回 nginx 原生 404 页，
 //         与"服务器上根本没有这个文件"表现完全一致，探测者无从判断。
@@ -86,7 +89,9 @@ define('CAPTCHA_PROVIDER', 'CF');   // ← 只改这个值：'CF' 用 Cloudflare
 //   ADMIN_IP_WHITELIST  你自己的 IP 白名单
 //   SEC_2FA_ENABLED / SEC_2FA_SECRET  你自己的二次验证开关与密钥
 // 首次访问 https://域名/plugin/admin_2fa_setup.php 并保存任意一项时，缺失的键会由该页
-//         在你自己的服务器上随机生成并就地补全（写前自动备份到 db/config_bak/）。
+//         在你自己的服务器上随机生成并就地补全（写前自动备份到 db/config_bak/），
+//         同时在 web.db 的 sec_bootstrap 表写入一行"引导标记"——
+//         判据 = 本区已有令牌 或 db 有引导标记（任一成立即强制模式）。
 // 被锁在外面时的恢复方法：宝塔/SSH 查看本文件补全后的 SEC_BOOT_TOKEN，访问
 //         https://你的域名/plugin/admin_2fa_setup.php?boot=<令牌>
 //         进入配置页把自己当前 IP 加入白名单（boot 令牌本身也是配置页入口）。
