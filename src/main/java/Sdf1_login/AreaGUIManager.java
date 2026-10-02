@@ -1668,6 +1668,8 @@ public class AreaGUIManager implements Listener {
         int defaultHeight = 255;
         int peaceDuration = 3600;
         int refundRatio = 0;
+        int maxFreeArea = 3500;
+        int maxLandSide = 7000;
         try {
             String val = areaProtect.getAreaConfigValue("create_price_per_sqm");
             if (val != null) pricePerSqm = Integer.parseInt(val);
@@ -1679,6 +1681,10 @@ public class AreaGUIManager implements Listener {
             if (val != null) peaceDuration = Integer.parseInt(val);
             val = areaProtect.getAreaConfigValue("refund_ratio_per_cent");
             if (val != null) refundRatio = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("max_free_area_sqm");
+            if (val != null) maxFreeArea = Integer.parseInt(val);
+            val = areaProtect.getAreaConfigValue("max_land_side_blocks");
+            if (val != null) maxLandSide = Integer.parseInt(val);
         } catch (Exception ignored) {}
 
         // 每平米价格（位置11）
@@ -1708,6 +1714,24 @@ public class AreaGUIManager implements Listener {
                 "§7强制删除(-f)与自动清理不退费",
                 "",
                 "§e左键+10 / 右键-10（自动限制0~100）"));
+
+        // 单次扩建免审面积上限（位置17）
+        inv.setItem(17, createItem(Material.PAPER, "§e§l单次扩建免审上限",
+                "§7当前: §f" + maxFreeArea + " ㎡",
+                "",
+                "§7单次扩建超出即需管理员到领地现场审批",
+                "§7(管理员与OP不受此限制)",
+                "",
+                "§e点击后在聊天栏输入新值"));
+
+        // 领地免审边长上限（位置21）
+        inv.setItem(21, createItem(Material.COMPASS, "§e§l领地免审边长上限",
+                "§7当前: §f" + maxLandSide + " 格 × " + maxLandSide + " 格",
+                "",
+                "§7单边超过即需管理员到现场审批扩建",
+                "§7最大可设 7000(7000×7000)",
+                "",
+                "§e点击后在聊天栏输入新值"));
 
         // 和平模式最大时间（位置22）
         inv.setItem(22, createItem(Material.SHIELD, "§e§l和平模式最长时间",
@@ -1822,6 +1846,16 @@ public class AreaGUIManager implements Listener {
             p.closeInventory();
             p.sendMessage("§e§l[配置] §f请输入删除领地的退费比例(%)，0=关闭，100=全额退款:");
             areaProtect.setPendingConfigInput(p.getUniqueId(), "refund_ratio_per_cent");
+        } else if (raw == 17) {
+            // 单次扩建免审面积上限
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入单次扩建免审面积上限(㎡)，超出需管理员现场审批:");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "max_free_area_sqm");
+        } else if (raw == 21) {
+            // 领地免审边长上限
+            p.closeInventory();
+            p.sendMessage("§e§l[配置] §f请输入领地免审边长上限(格)，单边超过即需审批:");
+            areaProtect.setPendingConfigInput(p.getUniqueId(), "max_land_side_blocks");
         } else if (raw == 22) {
             // 和平模式时间
             p.closeInventory();
