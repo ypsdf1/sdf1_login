@@ -113,4 +113,6 @@ test.*
 *.docs
 *.doc
 *.txt
+# 屏蔽全部部署脚本(wb用)
+*.py
 

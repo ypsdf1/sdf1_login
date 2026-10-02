@@ -118,6 +118,10 @@ public class AreaProtection implements Listener {
     private int globalMaxHomePerPlayer = 5;    // 每人最多传送点(home)数量
     private int globalDefaultHeight = 255;      // 默认高度
     private int globalRefundRatioPerCent = 0;   // 删除领地退费比例(0=关闭退费,100=全额退款,其他=原价×比例%)
+    // ★ 面积限制（2026-09-29，PHP update_config → config_change 下发）：
+    //   单次扩建/创建超过 free 面积，或边长超过 side 上限 → 转管理员现场审批
+    private int globalMaxFreeAreaSqm = 3500;    // 单次扩建(含创建选区)免审面积上限(㎡)
+    private int globalMaxLandSideBlocks = 7000; // 单领地免审边长上限(X/Z 各向，格)
 
     // 选地
     private static final Material WAND = Material.BLAZE_ROD;
@@ -512,6 +516,17 @@ public class AreaProtection implements Listener {
         if (p == null || !p.isOnline()) return;
         UUID uid = p.getUniqueId();
         String playerName = p.getName();
+
+        // ★ 管理员上线提醒：有超限待审批提案（延迟60tick，等计分板标签恢复）
+        try {
+            org.bukkit.Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (!p.isOnline() || !isAreaAdmin(p)) return;
+                pruneExpiredPending();
+                if (pendingExpands.isEmpty()) return;
+                p.sendMessage("§6§l[领地审批] §f当前有 §e" + pendingExpands.size()
+                        + " §f条面积超限待审批申请，用 §a/protect accept §f查看列表");
+            }, 60L);
+        } catch (Exception ignored) {}
 
         // 获取玩家当前所在区域
         AreaConfig currentAc = getArea(
@@ -1551,6 +1566,9 @@ public class AreaProtection implements Listener {
                 }
                 // ★ 退费比例配置（新键，已存在则忽略）
                 try { stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('refund_ratio_per_cent', '0')"); } catch (Exception ignored) {}
+                // ★ 面积限制默认值（新键，已存在则忽略）
+                try { stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('max_free_area_sqm', '3500')"); } catch (Exception ignored) {}
+                try { stmt.executeUpdate("INSERT OR IGNORE INTO area_config VALUES ('max_land_side_blocks', '7000')"); } catch (Exception ignored) {}
                 // 读取全局配置
                 ResultSet cfgRs = stmt.executeQuery("SELECT key, value FROM area_config");
                 while (cfgRs.next()) {
@@ -1563,6 +1581,8 @@ public class AreaProtection implements Listener {
                             case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(v); break;
                             case "default_height": globalDefaultHeight = Integer.parseInt(v); break;
                             case "refund_ratio_per_cent": globalRefundRatioPerCent = Integer.parseInt(v); break;
+                            case "max_free_area_sqm": globalMaxFreeAreaSqm = Integer.parseInt(v); break;
+                            case "max_land_side_blocks": globalMaxLandSideBlocks = Integer.parseInt(v); break;
                         }
                     } catch (NumberFormatException ignored) {}
                 }
@@ -2883,10 +2903,12 @@ public class AreaProtection implements Listener {
         // 如果ac为null（不在任何领地内），直接允许
         if (ac == null) return false;
 
-        // ★ denyPVP / denyAllDamage / denyWax 是全局安全设置，ADMIN/OWNER/VISITOR 也不例外
+        // ★ denyPVP / denyAllDamage 是全局安全权限，ADMIN/OWNER/VISITOR 也不例外
+        // ★ denyWax（涂蜡/刮蜡）2026-09-29 起与其他 deny* 权限【对齐】，走下方四级判定：
+        //   领地主/插件管理员豁免 → per-player 授权 → 白名单访客豁免 → 普通访客回退领地默认。
+        //   即"禁止涂蜡/刮蜡"只约束普通访客，已授权玩家/管理员/领地主不受影响（订正倒反天罡 bug）。
         boolean isSecurityPerm = "denyPVP".equals(permName)
-                || "denyAllDamage".equals(permName)
-                || "denyWax".equals(permName);
+                || "denyAllDamage".equals(permName);
         PermissionLevel level = isSecurityPerm ? null : getPermissionLevel(player, ac);
 
         // 1) ADMIN/OWNER 永远豁免
@@ -2928,10 +2950,14 @@ public class AreaProtection implements Listener {
 
     /**
      * ★ 涂蜡/刮蜡权限是否生效：
-     *   2026-09-27 起改为【独立一级权限】：不再受"破坏方块/放置方块"上级开关约束，
-     *   也不做所有者/管理员/白名单豁免（按 denyPVP 同款"安全权限"处理）——
-     *   原因：此前"上级权限 + 角色豁免"双重条件导致领地开了开关却完全拦不住，
-     *   与"开启即禁止"的预期不符。需要放行特定玩家时，走 per-player 权限单独放行。
+     *   2026-09-27 起改为【独立一级权限】：不再受"破坏方块/放置方块"上级开关约束。
+     *   2026-09-29 订正：移出"安全权限"名单，与其他 deny* 权限【完全对齐】，
+     *   走 getEffectiveDeny 四级判定——
+     *     ① 领地主 / 插件管理员(含非OP领地管理员) 豁免；
+     *     ② per-player 显式授权优先（已授权涂蜡刮蜡的普通玩家放行）；
+     *     ③ 白名单访客豁免；
+     *     ④ 普通访客回退领地默认 denyWax（"禁止涂蜡/刮蜡"只约束这一层）。
+     *   此前按 denyPVP 处理导致 level 恒为 null、领地主和管理员也被拦（倒反天罡）。
      */
     private boolean isWaxDenied(Player player, AreaConfig ac) {
         if (ac == null) return false;
@@ -5341,9 +5367,12 @@ public class AreaProtection implements Listener {
         }
     }
 
-    /** 诊断用：denyWax 已开却放行的原因（改为安全权限后，只剩 per-player 单独放行一条路径） */
+    /** 诊断用：denyWax 已开却放行的原因（2026-09-29 对齐后放行路径与普通 deny* 一致） */
     private String waxAllowReason(Player p, AreaConfig ac) {
         try {
+            PermissionLevel lvl = getPermissionLevel(p, ac);
+            if (lvl == PermissionLevel.ADMIN) return "插件/领地管理员豁免";
+            if (lvl == PermissionLevel.OWNER) return "领地主豁免";
             int landId = getLandIdFromDb(ac.name);
             if (landId > 0) {
                 Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
@@ -5352,6 +5381,7 @@ public class AreaProtection implements Listener {
                     return "该玩家被单独放行(denyWax=false)";
                 }
             }
+            if (lvl == PermissionLevel.VISITOR) return "白名单访客豁免";
         } catch (Exception ignored) {}
         return "未知(请反馈该日志)";
     }
@@ -6221,7 +6251,7 @@ public class AreaProtection implements Listener {
         Player p = e.getPlayer();
         Entity entity = e.getRightClicked();
 
-        // ★ 蜜脾涂蜡实体（铜傀儡等）：受涂蜡权限管控（独立安全权限，开启即禁止）
+        // ★ 蜜脾涂蜡实体（铜傀儡等）：受涂蜡权限管控（与其他 deny* 对齐，仅约束普通访客）
         ItemStack waxHand = p.getInventory().getItemInMainHand();
         if (waxHand != null && waxHand.getType() == Material.HONEYCOMB) {
             Location waxLoc = entity.getLocation();
@@ -6460,7 +6490,7 @@ public class AreaProtection implements Listener {
                 "config", "配置",
                 "public", "公共", "listpublic", "公共列表", "tpb", "传送公共",
                 "group", "用户组", "groupadd", "groupdel", "grouplist", "groupset", "groupedit", "groupdelconfig", "groupmembers",
-                "confirm_create"
+                "confirm_create", "accept", "deny"
         ));
 
         String first = original[0].toLowerCase();
@@ -7095,6 +7125,11 @@ public class AreaProtection implements Listener {
             String balanceStr = (bm != null) ? String.valueOf(balance) : "?";
             p.sendMessage("§e§l[防护] §f创建领地 §a" + areaName + " §f的预览:");
             p.sendMessage("§7  面积: §f" + area + "㎡（" + width + "×" + length + "）");
+            if (width > globalMaxLandSideBlocks || length > globalMaxLandSideBlocks
+                    || area > globalMaxFreeAreaSqm) {
+                p.sendMessage("§e§l[防护] §f选区超出免审上限（单次 " + globalMaxFreeAreaSqm
+                        + "㎡ / 边长 " + globalMaxLandSideBlocks + " 格），确认创建后将提交管理员现场审批");
+            }
             p.sendMessage("§7  单价: §f" + effectivePricePerSqm + "/㎡" + priceSource);
             p.sendMessage("§7  费用: §e" + cost + " §7债券  余额: §a" + balanceStr + " §7债券");
             if (bm != null && balance < cost) {
@@ -7153,6 +7188,16 @@ public class AreaProtection implements Listener {
             int cArea = cw * cl;
             int cPrice = (cugm != null) ? cugm.getPlayerLandPricePerSqm(cp.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
             int cCost = cArea * cPrice;
+
+            // ★ 创建面积限制（2026-09-29）：选区面积/边长超免审上限 → 转管理员现场审批，暂不扣费
+            if (!isAreaAdmin(cp)
+                    && (cArea > globalMaxFreeAreaSqm
+                        || cw > globalMaxLandSideBlocks
+                        || cl > globalMaxLandSideBlocks)) {
+                registerPendingCreate(cp, confirmName, cl1, cl2, cw, cl, cArea, cCost);
+                return true;
+            }
+
             // 扣费
             int chargedCost = 0;
             if (cCost > 0) {
@@ -7387,8 +7432,10 @@ public class AreaProtection implements Listener {
                 sender.sendMessage("§a删除退费比例(%): §f" + globalRefundRatioPerCent
                         + (globalRefundRatioPerCent <= 0 ? " §7(已关闭退费)"
                         : (globalRefundRatioPerCent >= 100 ? " §7(全额退款)" : " §7(原价×比例)")));
+                sender.sendMessage("§a单次扩建免审面积(㎡): §f" + globalMaxFreeAreaSqm + " §7(超限转管理员审批)");
+                sender.sendMessage("§a领地免审边长(格): §f" + globalMaxLandSideBlocks + "×" + globalMaxLandSideBlocks + " §7(超限转管理员审批)");
                 sender.sendMessage("§7用法: /protect config <key> <value>");
-                sender.sendMessage("§7可用key: create_price, max_lands, default_height, peace_duration, refund_ratio");
+                sender.sendMessage("§7可用key: create_price, max_lands, default_height, peace_duration, refund_ratio, max_free_area, max_land_side");
                 return true;
             }
             String key = args[1];
@@ -7417,6 +7464,18 @@ public class AreaProtection implements Listener {
                         if (newRatio < 0) newRatio = 0;       // 0=关闭退费
                         globalRefundRatioPerCent = newRatio;
                         updateAreaConfig("refund_ratio_per_cent", String.valueOf(newRatio));
+                        break;
+                    case "max_free_area":
+                        int newFree = parseSmartNumber(value, globalMaxFreeAreaSqm, 1);
+                        if (newFree < 1) newFree = 1;
+                        globalMaxFreeAreaSqm = newFree;
+                        updateAreaConfig("max_free_area_sqm", String.valueOf(newFree));
+                        break;
+                    case "max_land_side":
+                        int newSide = parseSmartNumber(value, globalMaxLandSideBlocks, 1);
+                        if (newSide < 1) newSide = 1;
+                        globalMaxLandSideBlocks = newSide;
+                        updateAreaConfig("max_land_side_blocks", String.valueOf(newSide));
                         break;
                     default:
                         sender.sendMessage("§c未知配置项: " + key);
@@ -7945,6 +8004,16 @@ public class AreaProtection implements Listener {
             return true;
         }
 
+        // ===== accept / deny 面积审批（管理员现场审批） =====
+        if (sub.equals("accept") || sub.equals("deny")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            handleApproval((Player) sender, args, sub.equals("accept"));
+            return true;
+        }
+
         // ===== expand 扩建 =====
         if (sub.equals("expand")) {
             if (!(sender instanceof Player)) {
@@ -7978,10 +8047,39 @@ public class AreaProtection implements Listener {
             int maxZ = Math.max(ac.z1, ac.z2);
             float yaw = p.getLocation().getYaw();
             String dir = yawToDir(yaw);
+
+            // ★ 面积限制（2026-09-29）：先按原边界算基数，再算提案边界
+            if (amount <= 0) {
+                p.sendMessage("§c§l[防护] §f扩建格数必须为正整数");
+                return true;
+            }
+            if (amount > 100000) {
+                p.sendMessage("§c§l[防护] §f单次扩建格数上限 100000，请分次扩建");
+                return true;
+            }
+            long oldW = (long) maxX - minX + 1;
+            long oldL = (long) maxZ - minZ + 1;
+            long oldAreaSq = oldW * oldL;
+
             if (dir.equals("北")) minZ -= amount;
             else if (dir.equals("南")) maxZ += amount;
             else if (dir.equals("东")) maxX += amount;
             else if (dir.equals("西")) minX -= amount;
+
+            long newW = (long) maxX - minX + 1;
+            long newL = (long) maxZ - minZ + 1;
+            long newAreaSq = newW * newL;
+            long deltaSq = newAreaSq - oldAreaSq;
+            boolean overFree = deltaSq > globalMaxFreeAreaSqm
+                    || newW > globalMaxLandSideBlocks
+                    || newL > globalMaxLandSideBlocks;
+            if (overFree && !isAreaAdmin(p)) {
+                // 超限 → 转管理员现场审批（插件管理员不受限）
+                registerPendingExpand(p, ac, minX, maxX, minZ, maxZ,
+                        amount, dir, deltaSq, newW, newL, oldW, oldL);
+                return true;
+            }
+
             ac.x1 = minX;
             ac.x2 = maxX;
             ac.z1 = minZ;
@@ -9349,6 +9447,314 @@ public class AreaProtection implements Listener {
         plugin.getLogger().info("[防护] 已上报 " + sent + " 名在线管理员: " + message.replaceAll("§.", ""));
     }
 
+    // ==================== 领地面积审批流（2026-09-29） ====================
+
+    /** 待审批的面积超限请求（expand=扩建提案 / create=创建提案） */
+    private static class PendingExpand {
+        String type;          // "expand" | "create"
+        String landName;      // 领地名（create 为拟定名）
+        String requester;     // 申请人
+        String world;
+        int oldX1, oldX2, oldZ1, oldZ2;  // expand=原边界快照 / create=选区
+        int newX1, newX2, newZ1, newZ2;  // 提案边界（create 时同选区）
+        int amount;
+        String dir;
+        long deltaSq, newW, newL, oldW, oldL; // 展示用（expand）
+        int area, cost;                    // 展示用（create，申请时价格快照）
+        long createdAt;
+    }
+
+    /** 领地名(小写) → 待审批请求；同一领地重复申请以最新为准 */
+    private final Map<String, PendingExpand> pendingExpands = new ConcurrentHashMap<>();
+
+    private PendingExpand findPending(String key) {
+        PendingExpand byLand = pendingExpands.get(key.toLowerCase());
+        if (byLand != null) return byLand;
+        PendingExpand found = null;
+        for (PendingExpand pe : pendingExpands.values()) {
+            if (pe.requester.equalsIgnoreCase(key)) {
+                if (found != null) return null; // 多个匹配 → 要求用领地名精确指定
+                found = pe;
+            }
+        }
+        return found;
+    }
+
+    /** 申请人名下待审批条数（用于"多条申请请用领地名"的精确提示） */
+    private int countPendingByRequester(String name) {
+        int n = 0;
+        for (PendingExpand pe : pendingExpands.values()) {
+            if (pe.requester.equalsIgnoreCase(name)) n++;
+        }
+        return n;
+    }
+
+    /** 待审批提案有效期：24 小时（超时自动作废，防陈旧提案被误批） */
+    private static final long PENDING_EXPIRE_MS = 24L * 60 * 60 * 1000L;
+
+    /** 惰性清理超时提案（读取待审批列表前调用） */
+    private void pruneExpiredPending() {
+        if (pendingExpands.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        for (java.util.Iterator<Map.Entry<String, PendingExpand>> it =
+                pendingExpands.entrySet().iterator(); it.hasNext();) {
+            Map.Entry<String, PendingExpand> e = it.next();
+            PendingExpand pe = e.getValue();
+            if (now - pe.createdAt <= PENDING_EXPIRE_MS) continue;
+            it.remove();
+            Player req = Bukkit.getPlayerExact(pe.requester);
+            if (req != null && req.isOnline()) {
+                req.sendMessage("§c§l[防护] §f你的领地 §e" + pe.landName + " §f"
+                        + ("expand".equals(pe.type) ? "扩建" : "创建")
+                        + "申请已超时(24小时)自动作废，请重新提交");
+            }
+            plugin.getLogger().info("[领地审批] 提案超时作废: " + pe.landName
+                    + " (" + pe.type + ", 申请人 " + pe.requester + ")");
+        }
+    }
+
+    /** ★ 扩建超限 → 登记审批请求 + 通知申请人与在线管理员 */
+    private void registerPendingExpand(Player p, AreaConfig ac,
+            int nx1, int nx2, int nz1, int nz2,
+            int amount, String dir, long deltaSq, long newW, long newL,
+            long oldW, long oldL) {
+        PendingExpand pe = new PendingExpand();
+        pe.type = "expand";
+        pe.landName = ac.name;
+        pe.requester = p.getName();
+        pe.world = ac.world;
+        pe.oldX1 = Math.min(ac.x1, ac.x2);
+        pe.oldX2 = Math.max(ac.x1, ac.x2);
+        pe.oldZ1 = Math.min(ac.z1, ac.z2);
+        pe.oldZ2 = Math.max(ac.z1, ac.z2);
+        pe.newX1 = nx1; pe.newX2 = nx2; pe.newZ1 = nz1; pe.newZ2 = nz2;
+        pe.amount = amount;
+        pe.dir = dir;
+        pe.deltaSq = deltaSq; pe.newW = newW; pe.newL = newL;
+        pe.oldW = oldW; pe.oldL = oldL;
+        pe.createdAt = System.currentTimeMillis();
+        pendingExpands.put(ac.name.toLowerCase(), pe);
+
+        p.sendMessage("§e§l[防护] §f扩建超出免审上限（本次 +§e" + deltaSq
+                + "§f㎡，上限 §e" + globalMaxFreeAreaSqm + "§f㎡；新尺寸 §e"
+                + newW + "×" + newL + "§f，边长上限 §e" + globalMaxLandSideBlocks
+                + "§f），已提交管理员现场审批。");
+        p.sendMessage("§7管理员需进入该领地后执行 §a/protect accept " + ac.name + " §7或 §c/protect deny " + ac.name);
+        reportLandRemovalToAdmins("§6§l[领地审批] §f玩家 §e" + p.getName()
+                + " §f申请扩建领地 §e" + ac.name + " §7(+" + deltaSq + "㎡, 向" + dir + amount + "格, 新尺寸 "
+                + newW + "×" + newL + ") §f——管理员到现场后 §a/protect accept " + ac.name + "§f/§cdeny");
+        plugin.getLogger().info("[领地审批] 扩建申请: " + p.getName() + " → " + ac.name
+                + " +" + deltaSq + "㎡ (上限" + globalMaxFreeAreaSqm + ") 新尺寸 " + newW + "×" + newL);
+    }
+
+    /** ★ 创建超限 → 登记审批请求（不扣费，审批通过时按当时价格扣） */
+    private void registerPendingCreate(Player p, String name,
+            Location cl1, Location cl2, int cw, int cl, int cArea, int cCost) {
+        PendingExpand pe = new PendingExpand();
+        pe.type = "create";
+        pe.landName = name;
+        pe.requester = p.getName();
+        pe.world = cl1.getWorld().getName();
+        pe.oldX1 = cl1.getBlockX(); pe.oldZ1 = cl1.getBlockZ();
+        pe.oldX2 = cl2.getBlockX(); pe.oldZ2 = cl2.getBlockZ();
+        pe.newX1 = Math.min(cl1.getBlockX(), cl2.getBlockX());
+        pe.newX2 = Math.max(cl1.getBlockX(), cl2.getBlockX());
+        pe.newZ1 = Math.min(cl1.getBlockZ(), cl2.getBlockZ());
+        pe.newZ2 = Math.max(cl1.getBlockZ(), cl2.getBlockZ());
+        pe.area = cArea;
+        pe.cost = cCost;
+        pe.newW = cw; pe.newL = cl;
+        pe.createdAt = System.currentTimeMillis();
+        pendingExpands.put(name.toLowerCase(), pe);
+
+        p.sendMessage("§e§l[防护] §f创建选区 §e" + name + " §f（" + cw + "×" + cl
+                + " = " + cArea + "㎡）超出免审上限（单次 " + globalMaxFreeAreaSqm
+                + "㎡ / 边长 " + globalMaxLandSideBlocks + "格），已提交管理员现场审批，暂未扣费。");
+        p.sendMessage("§7管理员需进入选区后执行 §a/protect accept " + name + " §7或 §c/protect deny " + name);
+        reportLandRemovalToAdmins("§6§l[领地审批] §f玩家 §e" + p.getName()
+                + " §f申请创建领地 §e" + name + " §7(" + cw + "×" + cl + " = " + cArea
+                + "㎡) §f——管理员到选区后 §a/protect accept " + name + "§f/§cdeny");
+        plugin.getLogger().info("[领地审批] 创建申请: " + p.getName() + " → " + name
+                + " " + cw + "×" + cl + " (" + cArea + "㎡)");
+    }
+
+    /** ★ 审批命令核心：/protect accept|deny <领地名|申请人> */
+    private void handleApproval(Player adm, String[] args, boolean accept) {
+        pruneExpiredPending();
+        if (!isAreaAdmin(adm)) {
+            adm.sendMessage("§c§l[审批] §f需要插件管理员权限");
+            return;
+        }
+        if (args.length < 2) {
+            adm.sendMessage("§e用法: /protect " + (accept ? "accept" : "deny") + " <领地名|申请人>");
+            if (pendingExpands.isEmpty()) {
+                adm.sendMessage("§7当前没有待审批的面积申请");
+                return;
+            }
+            adm.sendMessage("§e==== 待审批列表 ====");
+            for (PendingExpand pe : pendingExpands.values()) {
+                adm.sendMessage((("expand".equals(pe.type)) ? "§e[扩建] " : "§e[创建] ")
+                        + "§f" + pe.landName + " §7申请人=" + pe.requester
+                        + ("expand".equals(pe.type)
+                            ? (" +" + pe.deltaSq + "㎡ 新尺寸" + pe.newW + "×" + pe.newL)
+                            : (" " + pe.newW + "×" + pe.newL + " = " + pe.area + "㎡")));
+            }
+            adm.sendMessage("§7审批必须亲自站到领地/选区范围内");
+            return;
+        }
+        PendingExpand pe = findPending(args[1]);
+        if (pe == null) {
+            if (countPendingByRequester(args[1]) > 1) {
+                adm.sendMessage("§c§l[审批] §f申请人 §e" + args[1]
+                        + " §f名下有多条申请，请用领地名指定");
+            } else {
+                adm.sendMessage("§c§l[审批] §f没有找到待审批的申请: §e" + args[1]);
+            }
+            return;
+        }
+
+        // ★ 现场校验：审批的管理员必须在领地/选区范围内
+        Location admLoc = adm.getLocation();
+        boolean inRange;
+        String rangeDesc;
+        if ("expand".equals(pe.type)) {
+            AreaConfig ac = areas.get(pe.landName);
+            AreaConfig here = getArea(admLoc.getWorld().getName(),
+                    admLoc.getBlockX(), admLoc.getBlockY(), admLoc.getBlockZ());
+            inRange = (ac != null && here != null && here.name.equalsIgnoreCase(pe.landName));
+            rangeDesc = "领地 §e" + pe.landName;
+        } else {
+            inRange = admLoc.getWorld().getName().equals(pe.world)
+                    && admLoc.getBlockX() >= Math.min(pe.newX1, pe.newX2)
+                    && admLoc.getBlockX() <= Math.max(pe.newX1, pe.newX2)
+                    && admLoc.getBlockZ() >= Math.min(pe.newZ1, pe.newZ2)
+                    && admLoc.getBlockZ() <= Math.max(pe.newZ1, pe.newZ2);
+            rangeDesc = "创建选区 §e" + pe.landName;
+        }
+        if (!inRange) {
+            adm.sendMessage("§c§l[审批] §f审批" + (accept ? "通过" : "驳回")
+                    + "需要你亲自站在" + rangeDesc + " §f范围内（当前不在）");
+            return;
+        }
+
+        Player requester = Bukkit.getPlayerExact(pe.requester);
+
+        if (!accept) {
+            pendingExpands.remove(pe.landName.toLowerCase());
+            adm.sendMessage("§a§l[审批] §f已驳回 §e" + pe.landName + " §f的"
+                    + ("expand".equals(pe.type) ? "扩建" : "创建") + "申请");
+            if (requester != null && requester.isOnline()) {
+                requester.sendMessage("§c§l[防护] §f你的领地 §e" + pe.landName + " §f"
+                        + ("expand".equals(pe.type) ? "扩建" : "创建") + "申请被管理员驳回");
+            }
+            plugin.getLogger().info("[领地审批] 驳回: " + pe.landName + " (申请人 " + pe.requester
+                    + ", 审批人 " + adm.getName() + ")");
+            return;
+        }
+
+        if ("expand".equals(pe.type)) {
+            // 边界已被改动的提案作废（防申请后领地被转让/缩放再套用旧提案）
+            AreaConfig ac = areas.get(pe.landName);
+            if (ac == null) {
+                pendingExpands.remove(pe.landName.toLowerCase());
+                adm.sendMessage("§c§l[审批] §f领地 §e" + pe.landName + " §f已不存在，申请作废");
+                return;
+            }
+            int curX1 = Math.min(ac.x1, ac.x2), curX2 = Math.max(ac.x1, ac.x2);
+            int curZ1 = Math.min(ac.z1, ac.z2), curZ2 = Math.max(ac.z1, ac.z2);
+            if (curX1 != pe.oldX1 || curX2 != pe.oldX2
+                    || curZ1 != pe.oldZ1 || curZ2 != pe.oldZ2) {
+                pendingExpands.remove(pe.landName.toLowerCase());
+                adm.sendMessage("§c§l[审批] §f领地 §e" + pe.landName
+                        + " §f边界在申请后已发生变化，提案作废，请申请人重新提交");
+                if (requester != null && requester.isOnline()) {
+                    requester.sendMessage("§c§l[防护] §f你的扩建申请作废：领地边界已变化，请重新 /protect expand");
+                }
+                return;
+            }
+            ac.x1 = pe.newX1; ac.x2 = pe.newX2;
+            ac.z1 = pe.newZ1; ac.z2 = pe.newZ2;
+            saveAreaToDb(ac);
+            pendingExpands.remove(pe.landName.toLowerCase());
+            adm.sendMessage("§a§l[审批] §f已批准 §e" + pe.landName + " §f扩建：+§e"
+                    + pe.deltaSq + "§f㎡（" + pe.oldW + "×" + pe.oldL + " → §e"
+                    + pe.newW + "×" + pe.newL + "§f）");
+            if (requester != null && requester.isOnline()) {
+                requester.sendMessage("§a§l[防护] §f你的领地 §e" + pe.landName
+                        + " §f扩建申请已被管理员批准，已生效");
+            }
+            plugin.getLogger().info("[领地审批] 扩建通过: " + pe.landName + " (申请人 " + pe.requester
+                    + ", 审批人 " + adm.getName() + ") +" + pe.deltaSq + "㎡");
+        } else {
+            // ---- 创建审批通过：重名/上限/扣费 重新校验后落库 ----
+            if (areaNameExists(pe.landName)) {
+                pendingExpands.remove(pe.landName.toLowerCase());
+                adm.sendMessage("§c§l[审批] §f领地名 §e" + pe.landName + " §f已被占用，申请作废");
+                return;
+            }
+            UserGroupManager aPugm = plugin.getUserGroup();
+            int aMax = (aPugm != null) ? aPugm.getPlayerMaxLands(pe.requester, globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
+            long aCnt = areas.values().stream().filter(a -> samePlayer(pe.requester, a.owner)).count();
+            if (aCnt >= aMax) {
+                pendingExpands.remove(pe.landName.toLowerCase());
+                adm.sendMessage("§c§l[审批] §f申请人 §e" + pe.requester + " §f已达领地上限(" + aMax + ")，申请作废");
+                if (requester != null && requester.isOnline()) {
+                    requester.sendMessage("§c§l[防护] §f你的领地数量已达上限，创建申请作废");
+                }
+                return;
+            }
+            int aPrice = (aPugm != null) ? aPugm.getPlayerLandPricePerSqm(pe.requester, globalCreatePricePerSqm) : globalCreatePricePerSqm;
+            int aCost = pe.area * aPrice;
+            int charged = 0;
+            if (aCost > 0) {
+                BondManager abm = plugin.getBonds();
+                if (abm != null) {
+                    if (!abm.deductBonds(pe.requester, aCost, "land_create", pe.requester, pe.requester,
+                            "管理员审批创建领地: " + pe.landName + " (" + pe.area + "㎡×" + aPrice + ")")) {
+                        adm.sendMessage("§c§l[审批] §f申请人 §e" + pe.requester
+                                + " §f余额不足（需 §e" + aCost + "§f），无法扣费，申请保留待处理");
+                        if (requester != null && requester.isOnline()) {
+                            requester.sendMessage("§c§l[防护] §f你的领地创建申请因余额不足（需 " + aCost + " 债券）未能完成，请充值后请管理员重新审批");
+                        }
+                        return;
+                    }
+                    charged = aCost;
+                }
+            }
+            AreaConfig nc = new AreaConfig();
+            nc.name = pe.landName;
+            nc.owner = pe.requester;
+            nc.world = pe.world;
+            nc.x1 = pe.newX1; nc.z1 = pe.newZ1;
+            nc.x2 = pe.newX2; nc.z2 = pe.newZ2;
+            nc.yMin = 0; nc.yMax = 255;
+            nc.createCost = charged;
+            saveAreaToDb(nc);
+            areas.put(pe.landName, nc);
+            pendingExpands.remove(pe.landName.toLowerCase());
+            loadAllAreas();
+            adm.sendMessage("§a§l[审批] §f已批准创建领地 §e" + pe.landName + " §f(§e"
+                    + pe.area + "㎡§f)，向申请人扣除 §e" + charged + " §f债券");
+            if (requester != null && requester.isOnline()) {
+                requester.sendMessage("§a§l[防护] §f你的领地 §e" + pe.landName
+                        + " §f已由管理员审批创建成功（" + pe.area + "㎡，扣除 " + charged + " 债券）");
+            }
+            plugin.getLogger().info("[领地审批] 创建通过: " + pe.landName + " (申请人 " + pe.requester
+                    + ", 审批人 " + adm.getName() + ", 扣费 " + charged + ")");
+        }
+    }
+
+    /** ★ 供 Tab 补全：待审批目标（领地名 + 申请人名） */
+    public List<String> getPendingApprovalTargets() {
+        pruneExpiredPending();
+        List<String> out = new ArrayList<>();
+        for (PendingExpand pe : pendingExpands.values()) {
+            out.add(pe.landName);
+            if (!out.contains(pe.requester)) out.add(pe.requester);
+        }
+        return out;
+    }
+
     // ==================== 封禁/注销领主的领地自动清理 ====================
 
     private BukkitTask bannedOwnerSweepTask;
@@ -9869,7 +10275,8 @@ public class AreaProtection implements Listener {
                 "deny_door_interaction", "deny_noteblock_jukebox", "deny_lead",
                 "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding",
                 "deny_container", "deny_mob_attack", "deny_fluid",
-                "is_public_building", "allow_visitor_teleport"
+                "is_public_building", "allow_visitor_teleport",
+                "deny_spawn_egg", "deny_wax"
             ));
             if (!allowedFields.contains(field)) {
                 plugin.getLogger().warning("[防护] PHP端更新未知字段: " + field);
@@ -10263,6 +10670,8 @@ public class AreaProtection implements Listener {
                     case "max_home_per_player": globalMaxHomePerPlayer = Integer.parseInt(value); break;
                     case "default_height": globalDefaultHeight = Integer.parseInt(value); break;
                     case "refund_ratio_per_cent": globalRefundRatioPerCent = Integer.parseInt(value); break;
+                    case "max_free_area_sqm": globalMaxFreeAreaSqm = Integer.parseInt(value); break;
+                    case "max_land_side_blocks": globalMaxLandSideBlocks = Integer.parseInt(value); break;
                 }
             } catch (NumberFormatException ignored) {}
         } catch (Exception e) {
@@ -10372,6 +10781,8 @@ public class AreaProtection implements Listener {
             case "max_lands_per_player": globalMaxLandsPerPlayer = newValue; break;
             case "default_height": globalDefaultHeight = newValue; break;
             case "refund_ratio_per_cent": globalRefundRatioPerCent = newValue; break;
+            case "max_free_area_sqm": globalMaxFreeAreaSqm = Math.max(1, newValue); break;
+            case "max_land_side_blocks": globalMaxLandSideBlocks = Math.max(1, newValue); break;
         }
 
         String configName = getConfigNameByKey(configKey);
@@ -10834,6 +11245,8 @@ public class AreaProtection implements Listener {
             case "default_height": return "默认高度";
             case "peace_mode_max_duration": return "和平模式最大时长(秒)";
             case "refund_ratio_per_cent": return "删除退费比例(%)";
+            case "max_free_area_sqm": return "单次扩建免审面积上限(㎡)";
+            case "max_land_side_blocks": return "领地免审边长上限(格)";
             default: return key;
         }
     }
@@ -11201,6 +11614,10 @@ public class AreaProtection implements Listener {
         sendClickableHelp(s, "/protect list", "列出白名单(需在领地内)");
         sendClickableHelp(s, "/protect listitem", "列出物品黑名单");
         sendClickableHelp(s, "/protect config", "查看/修改全局配置");
+        sendClickableHelp(s, "/protect expand [格数]", "扩建当前领地(超限转审批)");
+        s.sendMessage("§e§l---- 面积审批(管理员,需在现场) ----");
+        sendClickableHelp(s, "/protect accept <领地|申请人>", "批准超限扩建/创建");
+        sendClickableHelp(s, "/protect deny <领地|申请人>", "驳回超限扩建/创建");
 
         s.sendMessage("§e§l---- 权限管理 ----");
         sendClickableHelp(s, "/protect setowner", "设置当前领地所有者(管理员)");
@@ -12258,7 +12675,7 @@ public class AreaProtection implements Listener {
         public boolean denyAnimalFeeding = false;
         // ★ 生物蛋（右键刷怪蛋生成实体）——上级权限：放置方块（放置未开启时单独开启本项不生效）
         public boolean denySpawnEgg = false;
-        // ★ 涂蜡/刮蜡（蜜脾涂蜡、斧头刮蜡）——独立安全权限：开启即对所有人（含所有者/管理员/访客）禁止
+        // ★ 涂蜡/刮蜡（蜜脾涂蜡、斧头刮蜡）——独立一级权限（不受上级开关约束）：开启后普通访客禁涂/禁刮，领地主/插件管理员/已授权玩家豁免
         public boolean denyWax = false;
         // ★ 玩家攻击生物
         public boolean denyMobAttack = false;

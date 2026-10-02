@@ -8153,6 +8153,7 @@ public class Main extends JavaPlugin
                         "additem", "removeitem",
                         "on", "off", "tempon",
                         "expand", "contraction",
+                        "accept", "deny",
                         "list", "listitem",
                         "addname", "removename", "listname",
                         "addwhite", "removewhite", "listwhite",
@@ -8199,6 +8200,10 @@ public class Main extends JavaPlugin
                 // expand/contraction: 数字
                 if (sub.equals("expand") || sub.equals("contraction")) {
                     return Arrays.asList("1", "3", "5", "10", "20", "50");
+                }
+                // accept/deny: 待审批的领地名或申请人
+                if (sub.equals("accept") || sub.equals("deny")) {
+                    return filterTab(areaProtection.getPendingApprovalTargets(), args[1]);
                 }
                 // 创建/删除: 区域名
                 if (sub.equals("创建") || sub.equals("delete")) {
@@ -8319,7 +8324,8 @@ public class Main extends JavaPlugin
                 // ★ config: 第三层是配置key
                 if (sub.equals("config")) {
                     return filterTab(
-                            Arrays.asList("create_price", "max_lands", "default_height", "peace_duration", "refund_ratio"),
+                            Arrays.asList("create_price", "max_lands", "default_height", "peace_duration", "refund_ratio",
+                "max_free_area", "max_land_side"),
                             args[2]);
                 }
                 // ★ cli manage/members/visitorperm/toggle/memberperm/playerperm/toggleplayerperm/clearplayerperm: 第三层是领地名
