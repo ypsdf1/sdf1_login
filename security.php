@@ -1028,6 +1028,48 @@ function secRateSuspend($ip) {
     exit;
 }
 
+/**
+ * 该请求是否持有"不该被限流挂死"的凭据。本层的定位是拦陌生流量，
+ * 不能反过来把自己人（部署者 / 已认证管理员）挂成白屏。
+ *
+ * 四类放行：
+ *  1) 引导模式（config 无令牌、web.db 无引导标记 = 全新部署还没配置）——
+ *     此时 IP 白名单层与令牌层闸门本来就整体放行（secGatePage / secTokenGate），
+ *     限流若照常生效就等于"唯一还开着的闸只拦自己人"：后台页面 10 秒一轮询，
+ *     轻松打满 20 次/分钟 → secRateSuspend() 一个字节都不返回 → 整站白屏，
+ *     连配置页的白名单都提交不进去（2026-10-02 /test12 实测：200 + 0 字节，
+ *     带 token 与不带 token 表现完全一样 —— 因为限流先于令牌闸门执行）。
+ *  2) 持有效后台入口令牌（第三层已凭据，secTokenGate 反正会放行）；
+ *  3) 持有效 boot 会话 / ?boot= 参数匹配（配置页逃生舱凭据）；
+ *  4) 已登录后台的会话（admin.php 的轮询子请求只带 cookie 不带 token，
+ *     不认它的话管理员会看着自己的后台被第四层挂死）。
+ *
+ * 反向边界：以上都拿不到的普通访客流量照旧计数 —— 限流对陌生人一点没松。
+ */
+function secRateTrusted() {
+    // 1) 引导模式：还没配任何安全项，先把配置做完，配置一保存闸门自动转强制
+    if (!secIsBootstrapped()) return true;
+    // 2) 后台入口令牌（GET / POST 与 secTokenGate 取值顺序一致）
+    $t = secToken();
+    if ($t !== '') {
+        $got = '';
+        if (isset($_GET['token'])) $got = (string)$_GET['token'];
+        elseif (isset($_POST['token'])) $got = (string)$_POST['token'];
+        if ($got !== '' && hash_equals($t, $got)) return true;
+    }
+    // 3) boot 令牌 / 4) 后台会话：只有请求本身就带着 boot 参数或会话 cookie 时
+    //    才去开 session —— 否则给每一个路过的访客都平白 session_start() 一次。
+    //    （没有会话 cookie 就不可能存在有效会话，直接跳过是安全的。）
+    $hasBootParam = isset($_GET['boot']) || isset($_POST['boot']);
+    if ($hasBootParam || !empty($_COOKIE[session_name()])) {
+        secEnsureSession();
+        if ($hasBootParam && secBootAuthenticate()) return true;   // ?boot= 或已建立的 boot 会话
+        if (!empty($_SESSION['admin_auth'])) return true;          // 后台登录会话（伪造 cookie 无效）
+        if (secBootSessionActive()) return true;
+    }
+    return false;
+}
+
 /** 第四层入口：include security.php 时自动执行一次。 */
 function secRateLimitGate() {
     if (PHP_SAPI === 'cli') return;                 // 命令行脚本不参与限流
@@ -1038,6 +1080,7 @@ function secRateLimitGate() {
     if (secIpAllowed()) return;                      // 第二层白名单 IP = 维护者/管理员，不限
     if (secRateHasSecret()) return;                  // Java/服务端调用（带正确 SECRET_KEY）
     if (secRateExempt()) return;                     // 登录轮询、支付补单等机器接口
+    if (secRateTrusted()) return;                    // 引导模式 / 令牌 / boot / 后台会话
     $n = secRateCount($ip, 20, 60);
     if ($n <= 20) return;
     if ($n === 21) { secLog('rate_blocked', '超过 20 次/分钟，开始挂起连接不返回数据'); }
