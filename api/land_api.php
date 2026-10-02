@@ -147,6 +147,8 @@ $PERM_DEFAULT_COLS = [
     'denyWoolShear' => ['col' => 'deny_wool_shear'],
     'denyAnimalFeeding' => ['col' => 'deny_animal_feeding'],
     'denyMobAttack' => ['col' => 'deny_mob_attack'],
+    'denySpawnEgg' => ['col' => 'deny_spawn_egg'],
+    'denyWax' => ['col' => 'deny_wax'],
     'peaceMode' => ['col' => 'peace_mode'],
 ];
 
@@ -649,6 +651,8 @@ function initLandTables($db) {
         'deny_wool_shear' => "INTEGER DEFAULT 0",
         'deny_animal_feeding' => "INTEGER DEFAULT 0",
         'deny_mob_attack' => "INTEGER DEFAULT 0",
+        'deny_spawn_egg' => "INTEGER DEFAULT 0",
+        'deny_wax' => "INTEGER DEFAULT 0",
         'deny_container' => "INTEGER DEFAULT 0",
         'peace_mode' => "INTEGER DEFAULT 0",
         'peace_mode_duration' => "INTEGER DEFAULT 0",
@@ -833,6 +837,7 @@ function handleSyncLands($db, $post) {
          confiscate_msg, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction,
          deny_door_interaction, deny_noteblock_jukebox, deny_lead, deny_crop_harvest,
          deny_wool_shear, deny_animal_feeding,
+         deny_spawn_egg, deny_wax,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
          deny_container, deny_mob_attack,
          enable_announce, announce_template, txt_content, deny_fluid, is_public_building, allow_visitor_teleport)
@@ -848,6 +853,7 @@ function handleSyncLands($db, $post) {
                 :confiscate_msg, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction,
                 :deny_door_interaction, :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest,
                 :deny_wool_shear, :deny_animal_feeding,
+                :deny_spawn_egg, :deny_wax,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
                 :deny_container, :deny_mob_attack,
                 :enable_announce, :announce_template, :txt_content, :deny_fluid, :is_public_building, :allow_visitor_teleport)");
@@ -912,6 +918,8 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':deny_crop_harvest', (int)($land['deny_crop_harvest'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_wool_shear', (int)($land['deny_wool_shear'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_animal_feeding', (int)($land['deny_animal_feeding'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_spawn_egg', (int)($land['deny_spawn_egg'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_wax', (int)($land['deny_wax'] ?? 0), SQLITE3_INTEGER);
         // ★ 传送点
         $stmt->bindValue(':warp_x', (float)($land['warp_x'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_y', (float)($land['warp_y'] ?? 0), SQLITE3_FLOAT);
@@ -1047,6 +1055,13 @@ function handleUpdateConfig($db, $post) {
 
     // ★ 去除前导零：01 → 1，防止静默失败
     if (is_numeric($value)) $value = (string)(int)$value;
+
+    // ★ 面积限制/退费比例：服务端钳制，防脏值
+    if ($key === 'refund_ratio_per_cent') {
+        $value = (string)max(0, min(100, (int)$value));
+    } elseif ($key === 'max_free_area_sqm' || $key === 'max_land_side_blocks') {
+        $value = (string)max(1, (int)$value);
+    }
 
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_config (key, value) VALUES (:key, :val)");
     $stmt->bindValue(':key', $key, SQLITE3_TEXT);
@@ -1670,7 +1685,7 @@ function handleUpdateLandField($db, $playerName, $post) {
         'deny_item_frame', 'deny_glowing', 'deny_redstone_interaction',
         'deny_door_interaction', 'deny_noteblock_jukebox', 'deny_lead',
         'deny_crop_harvest', 'deny_wool_shear', 'deny_animal_feeding',
-        'deny_mob_attack', 'deny_fluid',
+        'deny_mob_attack', 'deny_fluid', 'deny_spawn_egg', 'deny_wax',
         // 高级设置
         'confiscate_items', 'deny_use_items', 'punish_commands',
         'peace_mode', 'peace_mode_duration', 'enforce_game_mode',

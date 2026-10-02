@@ -3468,6 +3468,8 @@ async function renderLandDetail(el, landName) {
             ['deny_wool_shear', '剪切羊毛/生物', false],
             ['deny_animal_feeding', '投喂动物', false],
             ['deny_mob_attack', '攻击生物', false],
+            ['deny_spawn_egg', '生物蛋(生成/孵化)', false],
+            ['deny_wax', '涂蜡/刮蜡', false],
             ['deny_fluid', '流体放置', false],
             ['allow_visitor_teleport', '允许传送', true],
             ['is_public_building', '公共建筑设施', true],

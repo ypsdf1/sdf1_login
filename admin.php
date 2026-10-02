@@ -2662,6 +2662,9 @@ function showLandConfig() {
     const cfg = window._landCfgData || {};
     const price = cfg.create_price_per_sqm || '10';
     const maxLands = cfg.max_lands_per_player || '5';
+    const refundRatio = cfg.refund_ratio_per_cent || '100';
+    const maxFreeArea = cfg.max_free_area_sqm || '3500';
+    const maxSide = cfg.max_land_side_blocks || '7000';
     const html = `<div style="padding:16px">
         <h3 style="margin:0 0 12px;color:var(--fg)">⚙️ 领地配置</h3>
         <div style="margin-bottom:12px">
@@ -2672,6 +2675,18 @@ function showLandConfig() {
             <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">每人最大领地数</label>
             <input id="cfgMaxLands" type="number" value="${maxLands}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
         </div>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">删除领地退费比例(%) <span style="opacity:.7">0=不退款 100=全额</span></label>
+            <input id="cfgRefundRatio" type="number" value="${refundRatio}" min="0" max="100" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">单次扩建免审面积上限(㎡) <span style="opacity:.7">超出需管理员现场审批</span></label>
+            <input id="cfgMaxFreeArea" type="number" value="${maxFreeArea}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <div style="margin-bottom:12px">
+            <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地免审边长上限(格) <span style="opacity:.7">单边超过即需审批，最大 7000×7000</span></label>
+            <input id="cfgMaxSide" type="number" value="${maxSide}" min="1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
         <button onclick="saveLandConfig()" style="width:100%;padding:8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">保存</button>
     </div>`;
     showModal('领地配置', '', null, html);
@@ -2680,6 +2695,9 @@ function showLandConfig() {
 async function saveLandConfig() {
     const price = document.getElementById('cfgPrice')?.value || '10';
     const maxLands = document.getElementById('cfgMaxLands')?.value || '5';
+    const refundRatio = document.getElementById('cfgRefundRatio')?.value || '100';
+    const maxFreeArea = document.getElementById('cfgMaxFreeArea')?.value || '3500';
+    const maxSide = document.getElementById('cfgMaxSide')?.value || '7000';
     try {
         await fetch('api/land_api.php?action=update_config', {
             method: 'POST',
@@ -2690,6 +2708,21 @@ async function saveLandConfig() {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: 'key=max_lands_per_player&value=' + encodeURIComponent(maxLands) + '&secret=' + SECRET + ''
+        });
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=refund_ratio_per_cent&value=' + encodeURIComponent(refundRatio) + '&secret=' + SECRET + ''
+        });
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=max_free_area_sqm&value=' + encodeURIComponent(maxFreeArea) + '&secret=' + SECRET + ''
+        });
+        await fetch('api/land_api.php?action=update_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'key=max_land_side_blocks&value=' + encodeURIComponent(maxSide) + '&secret=' + SECRET + ''
         });
         document.querySelector('.modal-close')?.click();
         loadLands(document.getElementById('C'));

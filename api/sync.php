@@ -489,6 +489,8 @@ function syncLands() {
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_raid INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_container INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_mob_attack INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_spawn_egg INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_wax INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN is_public_building INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN allow_visitor_teleport INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN confiscate_items TEXT DEFAULT ''"); } catch (\Throwable $e) {}
@@ -505,7 +507,7 @@ function syncLands() {
          deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
          deny_all_damage, clear_effects, give_effects, clear_all_bad,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
-         deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding,
+         deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, deny_spawn_egg, deny_wax,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
          deny_mount, deny_ender_pearl, deny_bow, deny_potion, deny_fire, deny_raid,
          deny_container, deny_mob_attack, is_public_building, allow_visitor_teleport,
@@ -517,7 +519,7 @@ function syncLands() {
                 :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
                 :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
-                :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding,
+                :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding, :deny_spawn_egg, :deny_wax,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
                 :deny_mount, :deny_ender_pearl, :deny_bow, :deny_potion, :deny_fire, :deny_raid,
                 :deny_container, :deny_mob_attack, :is_public_building, :allow_visitor_teleport,
@@ -578,6 +580,8 @@ function syncLands() {
         $stmt->bindValue(':deny_crop_harvest', (int)($land['deny_crop_harvest'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_wool_shear', (int)($land['deny_wool_shear'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_animal_feeding', (int)($land['deny_animal_feeding'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_spawn_egg', (int)($land['deny_spawn_egg'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':deny_wax', (int)($land['deny_wax'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':warp_x', (double)($land['warp_x'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_y', (double)($land['warp_y'] ?? 0), SQLITE3_FLOAT);
         $stmt->bindValue(':warp_z', (double)($land['warp_z'] ?? 0), SQLITE3_FLOAT);
