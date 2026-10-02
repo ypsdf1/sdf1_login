@@ -14,6 +14,10 @@ deploy_*.sh
 # 密钥文件
 密钥.md
 pay_secrets.php
+# pay_poller.php 硬编码平台 MySQL 账密 + MD5 密钥（2026-10-02 摘出仓库，同 pay_secrets 处理：
+# 本地留一份占位符模板供 release 参考，真实值只在服务器；deploy_php_only.py 永不上传它）
+api/pay_poller.php
+api/pay_poller.php.orig_backup
 debug_admin_api.php
 debug_online.php
 debug_region.php
