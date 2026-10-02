@@ -17,6 +17,10 @@ secEnsureSession();
 secGatePage(true);
 $boot = secBootSessionActive();
 
+// ★ 首次部署：管理密码还是分发占位符 → 走初始化模式。
+//   旧行为在这里直接跳登录页，是个死胡同：登录要密码，而这时候根本没有可用密码。
+$needInit = !secAdminPassConfigured();
+
 // ===== 访问模式判定 =====
 // 说明：本页只依赖 security.php（不加载 core.php），
 //       isAdminLoggedIn() 是 core 的函数，这里用等价的内联判定（admin_auth + 安全纪元）。
@@ -30,6 +34,8 @@ if ($boot) {
         exit;
     }
     $mode = 'session';
+} elseif ($needInit) {
+    $mode = 'init';
 } else {
     header('Location: admin_login.php');
     exit;
@@ -49,6 +55,11 @@ $pending = isset($_SESSION['sec_pending_secret']) ? (string)$_SESSION['sec_pendi
 $myIp = secClientIp();
 $err = '';
 $ok = '';
+// 初始化成功后 302 回本页刷新（令牌要落盘后重读才准），提示语靠 session 带过来
+if (!empty($_SESSION['sec_flash_ok'])) {
+    $ok = (string)$_SESSION['sec_flash_ok'];
+    unset($_SESSION['sec_flash_ok']);
+}
 
 // ===== POST：所有写操作 =====
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
@@ -57,6 +68,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
 
     if ($mode === 'boot') {
         $allowed = true;                       // 引导模式（已持有服务器文件级凭据）免密码
+    } elseif ($act === 'init_setup') {
+        // ★ 首次初始化：这一步要设的就是密码本身，没有密码可校验。
+        //   真正的闸门是 $needInit —— 密码一旦配置成功，这条分支立刻关死。
+        if (!$needInit) {
+            $err = '管理密码已配置，初始化只能进行一次';
+        } else {
+            $allowed = true;
+        }
     } else {
         // 第二层附加保护：改配置必须重输管理密码（防活会话被盗用者直接改安全配置）
         $lock = secThrottleLocked('setup_pw', $myIp, 5, 600);
@@ -65,7 +84,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
             secLog('setup_throttled', 'lock=' . $lock . 's');
         } else {
             $pw = isset($_POST['admin_pass']) ? (string)$_POST['admin_pass'] : '';
-            if ($pw !== '' && $pw === ADMIN_PASS) {
+            // 顺带关死"占位符当密码"这条路：密码没配置时 session 模式一律不放行
+            if ($pw !== '' && secAdminPassConfigured() && $pw === ADMIN_PASS) {
                 $allowed = true;
                 secThrottleReset('setup_pw', $myIp);
             } else {
@@ -95,23 +115,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $mode !== 'none') {
                 ), $over);
             };
 
-            if ($act === 'save_whitelist') {
-                $lines = preg_split('/\r\n|\r|\n/', isset($_POST['whitelist']) ? (string)$_POST['whitelist'] : '');
-                $items = array();
-                foreach ($lines as $L) {
-                    $L = trim($L);
-                    if ($L === '') continue;
-                    if (filter_var($L, FILTER_VALIDATE_IP)) {
-                        $items[] = $L;
-                    } elseif (preg_match('#^(\d{1,3}\.){3}\d{1,3}/(\d{1,2})$#', $L, $mm)
-                              && (int)$mm[2] <= 32
-                              && filter_var(explode('/', $L)[0], FILTER_VALIDATE_IP)) {
-                        $items[] = $L;
-                    } else {
-                        throw new Exception('无效的 IP / CIDR：' . htmlspecialchars($L, ENT_QUOTES, 'UTF-8'));
-                    }
+            if ($act === 'init_setup') {
+                // ===== 首次初始化：设置管理密码 + 写入白名单，一次做完 =====
+                if (!$needInit) throw new Exception('管理密码已配置，初始化只能进行一次');
+                $pw1 = isset($_POST['new_pass']) ? (string)$_POST['new_pass'] : '';
+                $ve = secValidateNewPassword($pw1, isset($_POST['new_pass2']) ? (string)$_POST['new_pass2'] : '');
+                if ($ve !== null) throw new Exception($ve);
+
+                $items = secParseWhitelistText(isset($_POST['whitelist']) ? (string)$_POST['whitelist'] : '');
+                // 自锁保护：初始化页还没展示过任何恢复地址，白名单里漏掉自己的 IP
+                // 就会保存完立刻 404、且不知道 boot 令牌是什么 → 这里直接拦下来。
+                if (!secIpInWhitelist($myIp, $items)) {
+                    throw new Exception('白名单里没有你当前的 IP（<b>' . htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8')
+                        . '</b>），保存后你会立刻把自己挡在门外。请把它加进去，或改成覆盖你网段的 CIDR。');
                 }
-                $items = array_values(array_unique($items));
+                $twoFaSnap = secReadUpdateBlock();
+                // ① 先改写 config 第 32 行那条 ADMIN_PASS，再写 SEC-UPDATE 区
+                //    （白名单 + 自动生成的两个令牌 + 安全纪元，顺手打引导标记）。
+                //    任一步失败都抛给下面的 catch 显示，可直接重试、不会把人锁死：
+                //    密码没设成 → 还是初始化页；密码设成而区段没写成 → 用新密码登录回来接着配。
+                secWriteAdminPass($pw1);
+                secWriteConfig($full(array('ADMIN_IP_WHITELIST' => $items)));
+                secGuardTwoFaUnchanged($twoFaSnap, 'init_setup');
+                $whitelist = $items;
+                secLog('admin_init', 'whitelist=' . count($items) . ' ' . implode(',', $items));
+
+                // ② 自动登录，省得刚设完密码又敲一遍
+                secEnsureSession();
+                $_SESSION['admin_auth'] = true;
+                $_SESSION['admin_login_time'] = time();
+                unset($_SESSION['admin_2fa_ok'], $_SESSION['admin_2fa_ip']);
+
+                // ③ 回本页刷新：两个令牌是这次才落盘的，当前请求里的 $secToken 还是
+                //    刚生成、没保存过的随机值，直接渲染出来会骗人（保存后就对不上了）。
+                $_SESSION['sec_flash_ok'] = '初始化完成：管理密码已设置，IP 白名单已保存（' . count($items)
+                    . ' 条），门禁已转为强制模式。请立刻收藏本页显示的后台入口地址。';
+                header('Location: admin_2fa_setup.php');
+                exit;
+            } elseif ($act === 'save_whitelist') {
+                $items = secParseWhitelistText(isset($_POST['whitelist']) ? (string)$_POST['whitelist'] : '');
                 // 改白名单同样不许碰 2FA：写前快照 + 写后护栏（同 rotate_token）
                 $twoFaSnap = secReadUpdateBlock();
                 secWriteConfig($full(array('ADMIN_IP_WHITELIST' => $items)));
@@ -290,7 +332,8 @@ if (file_exists($secLogPath)) {
         <h1>🔐 后台安全配置</h1>
         <div>
             <?php if ($mode === 'boot'): ?><span class="badge b-boot">引导模式（boot 令牌）</span><?php endif; ?>
-            <a href="<?php echo $twoFaOn ? 'admin_2fa.php' : htmlspecialchars(secTokenUrl('admin.php'), ENT_QUOTES, 'UTF-8'); ?>">← 返回</a>
+            <?php if ($mode === 'init'): ?><span class="badge b-boot">首次初始化</span><?php endif; ?>
+            <?php if (!$needInit): ?><a href="<?php echo $twoFaOn ? 'admin_2fa.php' : htmlspecialchars(secTokenUrl('admin.php'), ENT_QUOTES, 'UTF-8'); ?>">← 返回</a><?php endif; ?>
         </div>
     </div>
     <div class="sub">第一层：TOTP 二次验证（6 位动态码）　|　第二层：管理面 IP 白名单（未配置时仅本机可访问）</div>
@@ -298,6 +341,38 @@ if (file_exists($secLogPath)) {
     <?php if ($err !== ''): ?><span class="msg err">❌ <?php echo $err; ?></span><?php endif; ?>
     <?php if ($ok !== ''): ?><span class="msg ok">✅ <?php echo $ok; ?></span><?php endif; ?>
 
+    <?php if ($needInit): ?>
+    <!-- ===== 首次初始化：管理密码还是占位符时，本页唯一的入口 ===== -->
+    <form method="post" autocomplete="off">
+        <!-- act 默认就是 init_setup：回车隐式提交也走对分支（靠 JS 置值的话回车会提交空 act） -->
+        <input type="hidden" name="act" id="act" value="init_setup">
+        <div class="card" style="border-color:#d29922">
+            <h2>🚀 首次初始化 · 设置你的管理密码</h2>
+            <div class="hint" style="margin-top:0;margin-bottom:14px;line-height:1.9">
+                这是全新部署的第一次访问。config.php 里的管理密码还是出厂占位符
+                <code>REPLACE_ME_ADMIN_PASSWORD</code>，它不是可用密码 ——
+                <b>请在这里设置你自己的后台管理密码</b>，并确认下方白名单里有你的 IP。<br>
+                保存后门禁立刻转为强制模式：不在白名单的请求一律 nginx 404，
+                此后登录、保存配置都用这个密码（不存在"默认密码"这回事）。
+            </div>
+            <div class="row"><label>新管理密码</label>
+                <input type="password" name="new_pass" id="new_pass" placeholder="至少 6 位" required></div>
+            <div class="row"><label>再次输入</label>
+                <input type="password" name="new_pass2" id="new_pass2" placeholder="再输一遍确认" required></div>
+            <div class="row"><label>IP 白名单</label>
+                <textarea name="whitelist" id="initWhitelist" placeholder="一行一个 IP 或 CIDR"><?php echo htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8'); ?></textarea>
+            </div>
+            <div class="hint">
+                已预填你当前的访问 IP <code><?php echo htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8'); ?></code>，
+                请确认无误；还有别的管理机就一行填一个。<br>
+                白名单留空 = 只有服务器本机 127.0.0.1 能进后台（等于把自己挡在外面，只能靠引导令牌回来）。
+            </div>
+            <div class="row" style="margin-top:14px;margin-bottom:0">
+                <button type="submit" class="btn btn-green" onclick="setAct('init_setup')">保存并进入后台</button>
+            </div>
+        </div>
+    </form>
+    <?php else: ?>
     <form method="post" autocomplete="off" id="secForm">
         <input type="hidden" name="act" id="act" value="">
         <input type="hidden" name="rotate_confirm" id="rotateConfirmBox" value="">
@@ -405,6 +480,7 @@ if (file_exists($secLogPath)) {
             <div class="logbox"><?php echo $logLines ? htmlspecialchars(implode("\n", $logLines), ENT_QUOTES, 'UTF-8') : '（暂无记录）'; ?></div>
         </div>
     </form>
+    <?php endif; ?>
 </div>
 
 <!-- QR Code Generator for JavaScript v1.4.4 | MIT | Copyright (c) 2009 Kazuhiko Arase

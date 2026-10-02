@@ -1243,6 +1243,11 @@ function requireAdminSession() {
 // ===== 管理员认证 =====
 
 function adminLogin($password) {
+    // ★ 首次部署：ADMIN_PASS 还是出厂占位符 = 密码根本没配置，
+    //   绝不允许拿占位符当密码登录（配置页会引导用户先设自己的密码）。
+    if (function_exists('secAdminPassConfigured') && !secAdminPassConfigured()) {
+        return false;
+    }
     if ($password !== ADMIN_PASS) {
         return false;
     }

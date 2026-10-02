@@ -2,6 +2,12 @@
 // ★ 紧急加固（2026-09-29）：第二层 IP 白名单 —— 登录页本身也只对白名单 IP 开放
 require_once __DIR__ . '/security.php';
 secGatePage();
+// ★ 首次部署：管理密码还是分发占位符 → 登录页是个死胡同（要密码，可密码还不存在）。
+//   改投初始化页，让部署者先把自己的第一个密码设出来。
+if (!secAdminPassConfigured()) {
+    header('Location: admin_2fa_setup.php');
+    exit;
+}
 // ★ 人机验证（2026-10-02）：cgWidgetHtml() 渲染挂件，未配密钥时自动放行
 require_once __DIR__ . '/captcha_guard.php';
 ?>

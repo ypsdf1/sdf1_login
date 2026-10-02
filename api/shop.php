@@ -486,7 +486,13 @@ function shopBuyCart($token) {
             // 收银员已登录即授权，无需额外密码
         } elseif ($isAdminToken || $isAdminSession) {
             // 代购通路：校验管理员登录密码（代购操作者的密码），而非目标玩家游戏密码
-            if (!$password || trim($password) === '' || $password !== ADMIN_PASS) {
+            // ★ 首次部署：ADMIN_PASS 还是占位符 = 没配置密码，此时任何"管理员密码"
+            //   都无从校验 → 一律按未通过处理（引导页会要求先设置密码）。
+            $passReady = function_exists('secAdminPassConfigured')
+                ? secAdminPassConfigured()
+                : (defined('ADMIN_PASS') && trim((string)ADMIN_PASS) !== ''
+                   && trim((string)ADMIN_PASS) !== 'REPLACE_ME_ADMIN_PASSWORD');
+            if (!$password || trim($password) === '' || !$passReady || $password !== ADMIN_PASS) {
                 jsonResponse(['success' => false, 'need_password' => true,
                     'player' => $player, 'message' => '金额≥1000债券需确认管理员密码'], 401);
             }

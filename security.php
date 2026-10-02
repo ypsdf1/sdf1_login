@@ -748,6 +748,91 @@ function secGuardTwoFaUnchanged($before, $op) {
         . ($restored ? '自动回滚，二次验证未被关闭。' : '回滚失败，请立刻用引导令牌进本页检查 2FA 状态。'));
 }
 
+// ======================================================================
+//  管理员密码：首次由部署者自己设置（引导初始化）
+// ======================================================================
+//
+// 分发版 config.php 里 ADMIN_PASS 是占位符 REPLACE_ME_ADMIN_PASSWORD —— 它不是密码，
+// 只是"还没配"的标记。旧流程的死结：配置页在会话模式下每次写操作都要重输管理密码，
+// 可部署者手上根本没有可用密码，于是 IP 白名单永远提交不进去。
+//
+// 现在：密码还是占位符 → admin_2fa_setup.php 直接渲染初始化卡片，让部署者第一次就
+// 把自己的密码设好（白名单预填当前 IP），设完自动登录、门禁随即转强制。
+// 已经配过真密码的站点（线上 /plugin 一直是真密码）完全不受影响，照旧走登录流程。
+
+/** 分发版占位符：出现这个值 = 密码尚未配置。 */
+function secAdminPassPlaceholder() {
+    return 'REPLACE_ME_ADMIN_PASSWORD';
+}
+
+/** 管理员密码是否已真正配置（非空且不是占位符）。 */
+function secAdminPassConfigured() {
+    if (!defined('ADMIN_PASS')) return false;
+    $p = trim((string)ADMIN_PASS);
+    if ($p === '' || $p === secAdminPassPlaceholder()) return false;
+    return true;
+}
+
+/** 新密码强度校验：通过返回 null，否则返回中文错误信息。 */
+function secValidateNewPassword($pw, $pw2 = null) {
+    $pw = (string)$pw;
+    if ($pw === secAdminPassPlaceholder()) return '不能把默认占位符当密码';
+    if (strlen($pw) < 6) return '密码至少 6 位';
+    if (strlen($pw) > 128) return '密码过长（最多 128 位）';
+    if (trim($pw) !== $pw) return '密码首尾不能有空格';
+    if ($pw2 !== null && (string)$pw2 !== $pw) return '两次输入的密码不一致';
+    return null;
+}
+
+/**
+ * 解析 IP 白名单文本（一行一个 IP / CIDR，去空行去重）。
+ * 初始化卡片与白名单保存共用同一套校验，避免两处规则漂移。
+ * @throws Exception 含非法条目时抛出（调用方给用户回显）
+ */
+function secParseWhitelistText($text) {
+    $items = array();
+    foreach (preg_split('/\r\n|\r|\n/', (string)$text) as $L) {
+        $L = trim($L);
+        if ($L === '') continue;
+        if (filter_var($L, FILTER_VALIDATE_IP)) {
+            $items[] = $L;
+        } elseif (preg_match('#^(\d{1,3}\.){3}\d{1,3}/(\d{1,2})$#', $L, $mm)
+                  && (int)$mm[2] <= 32
+                  && filter_var(explode('/', $L)[0], FILTER_VALIDATE_IP)) {
+            $items[] = $L;
+        } else {
+            throw new Exception('无效的 IP / CIDR：' . htmlspecialchars($L, ENT_QUOTES, 'UTF-8'));
+        }
+    }
+    return array_values(array_unique($items));
+}
+
+/**
+ * IP 是否命中白名单（支持精确 IP 与 IPv4 CIDR；本机回环恒命中）。
+ * 用途：首次初始化时确认"部署者自己不会被刚保存的白名单挡在门外"。
+ */
+function secIpInWhitelist($ip, $items) {
+    if ($ip === '') return true;
+    if ($ip === '127.0.0.1' || $ip === '::1') return true;
+    $v4 = (string)filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4);
+    foreach ((array)$items as $it) {
+        $it = trim((string)$it);
+        if ($it === '') continue;
+        if (strpos($it, '/') === false) {
+            if ($it === $ip) return true;
+            continue;
+        }
+        if ($v4 !== $ip) continue;                 // CIDR 解析只做 IPv4
+        list($net, $bits) = explode('/', $it, 2);
+        $n = ip2long($net);
+        $b = (int)$bits;
+        if ($n === false || $b < 0 || $b > 32) continue;
+        $m = ($b === 0) ? 0 : (-1 << (32 - $b));
+        if ((ip2long($ip) & $m) === ($n & $m)) return true;
+    }
+    return false;
+}
+
 /**
  * 整段重写 config.php 的 SEC-UPDATE 标记区。
  * - 未在 $kv 中出现的既有 define 一律按旧值保留（防丢 SEC_EPOCH / SEC_BOOT_TOKEN）
@@ -795,6 +880,23 @@ function secWriteConfig(array $kv) {
 
     $new = substr($src, 0, $bStart) . $newBlock . substr($src, $eEnd);
 
+    secReplaceConfigFile($src, $new, 'keys=' . implode(',', array_keys($kv)));
+    // ★ 引导标记：配置一落盘 = "这站已经用过后台面板"，secIsBootstrapped() 的判据 2
+    //   从此成立（判据 1 是 config 里已有令牌，两者互为兜底）。
+    secMarkBootstrapped('secWriteConfig:' . implode(',', array_keys($kv)));
+    return true;
+}
+
+/**
+ * 备份 config.php（保留最近 5 份）并原子替换 —— secWriteConfig / secWriteAdminPass 共用。
+ * @param string $src 替换前的原文（用于备份）
+ * @param string $new 替换后的全文
+ * @param string $op  操作标识（写进 security.log）
+ * @throws Exception 备份目录不可写 / 临时文件写不进 / rename 失败
+ */
+function secReplaceConfigFile($src, $new, $op) {
+    $path = secConfigPath();
+
     // 备份（保留最近 5 份）
     $bakDir = __DIR__ . '/db/config_bak';
     if (!is_dir($bakDir)) { @mkdir($bakDir, 0755, true); }
@@ -817,10 +919,49 @@ function secWriteConfig(array $kv) {
         throw new Exception('替换 config.php 失败');
     }
     if (function_exists('opcache_invalidate')) { @opcache_invalidate($path, true); }
-    secLog('config_write', 'keys=' . implode(',', array_keys($kv)));
-    // ★ 引导标记：配置一落盘 = "这站已经用过后台面板"，secIsBootstrapped() 的判据 2
-    //   从此成立（判据 1 是 config 里已有令牌，两者互为兜底）。
-    secMarkBootstrapped('secWriteConfig:' . implode(',', array_keys($kv)));
+    secLog('config_write', $op);
+    return true;
+}
+
+/**
+ * 首次初始化：把管理密码写进 config.php 的 `define('ADMIN_PASS', ...)`。
+ *
+ * 注意两点：
+ *  - ADMIN_PASS 定义在 SEC-UPDATE 区**之外**（config.php 第 32 行），而 PHP 重复
+ *    define 只认第一次、之后的会告警并被忽略 —— 所以只能就地改写那一行，不能往
+ *    SEC-UPDATE 区里再塞一个同名 define。
+ *  - 就地改写用逐行匹配而不是正则，避免密码里带 $ / 引号 时被当替换模式或引用吃掉。
+ *
+ * @throws Exception 读写 config.php 失败
+ */
+function secWriteAdminPass($pw) {
+    $path = secConfigPath();
+    $src = @file_get_contents($path);
+    if ($src === false) throw new Exception('读取 config.php 失败');
+
+    $line = 'define(\'ADMIN_PASS\', ' . secExportVal((string)$pw) . ');  // 管理员密码（引导初始化写入）';
+
+    $lines = explode("\n", $src);
+    $idx = -1;
+    foreach ($lines as $i => $L) {
+        if (strncmp(ltrim($L), 'define(\'ADMIN_PASS\'', 19) === 0) { $idx = $i; break; }
+    }
+
+    if ($idx >= 0) {
+        if (trim($lines[$idx]) === trim($line)) return true;   // 值没变，别白备份一次
+        $lines[$idx] = $line;
+    } else {
+        // 模板里没有这一行：插到 SEC-UPDATE 区之前。必须在任何既有定义之前才生效。
+        $bPos = -1;
+        foreach ($lines as $i => $L) {
+            if (strpos($L, 'SEC-UPDATE-BEGIN') !== false) { $bPos = $i; break; }
+        }
+        if ($bPos < 0) throw new Exception('config.php 缺少 SEC-UPDATE 标记区，拒绝写入');
+        array_splice($lines, $bPos, 0, array($line));
+    }
+
+    secReplaceConfigFile($src, implode("\n", $lines), 'admin_pass');
+    secLog('admin_pass_written', 'len=' . strlen((string)$pw));
     return true;
 }
 
