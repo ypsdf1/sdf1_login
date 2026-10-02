@@ -519,6 +519,38 @@ public class GarbageManager {
         }
     }
 
+    /**
+     * 取回前按 id 读原始存档（含原 lore 与 PDC）。
+     * GUI 展示副本的 lore 已被覆盖成
+     * 「ID/点击取出」，取回必须用这个还原，
+     * 否则 §8SN 行与物品说明 lore 会丢。
+     *
+     * @param id items 表主键
+     * @return 原始物品；读不到返回 null
+     */
+    public ItemStack fetchItem(int id) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT item_data, amount FROM items "
+                            + "WHERE id=?");
+            ps.setInt(1, id);
+            ResultSet rs = ps.executeQuery();
+            ItemStack result = null;
+            if (rs.next()) {
+                result = base64ToStack(
+                        rs.getString("item_data"));
+                if (result != null) {
+                    result.setAmount(rs.getInt("amount"));
+                }
+            }
+            rs.close();
+            ps.close();
+            return result;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public int getItemCount() {
         try {
             Statement st = db.createStatement();

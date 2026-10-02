@@ -4573,28 +4573,66 @@ public class Main extends JavaPlugin
                             int dbId =
                                     Integer.parseInt(
                                             numStr);
+                            // ★ 取回必须用 DB 原始存档：GUI 展示
+                            //   副本的 lore 已被覆盖成「ID/点击取出
+                            //   」，直接给玩家会抹掉 §8SN 行。
+                            ItemStack original =
+                                    garbage.fetchItem(dbId);
                             if (garbage.removeItem(
                                     dbId)) {
-                                ItemStack give =
-                                        inSlot.clone();
-                                ItemMeta gm =
-                                        give.getItemMeta();
-                                if (gm == null)
-                                    gm = Bukkit
-                                            .getItemFactory()
-                                            .getItemMeta(
-                                                    give
-                                                            .getType());
-                                gm.setLore(null);
-                                give.setItemMeta(gm);
+                                ItemStack give;
+                                if (original != null) {
+                                    give = original;
+                                } else {
+                                    // 兜底：存档读不到时退回展示
+                                    // 副本，剥掉展示行
+                                    give = inSlot.clone();
+                                    ItemMeta gm =
+                                            give.getItemMeta();
+                                    if (gm == null)
+                                        gm = Bukkit
+                                                .getItemFactory()
+                                                .getItemMeta(
+                                                        give
+                                                                .getType());
+                                    gm.setLore(null);
+                                    give.setItemMeta(gm);
+                                }
+                                // ★ SN 物品确保 §8SN 行在位（PDC 是
+                                //   真值来源，lore 只是展示）
+                                if (getSnManager() != null) {
+                                    String gsn =
+                                            getSnManager()
+                                                    .readSn(give);
+                                    String gtype =
+                                            gsn == null
+                                                    ? null
+                                                    : getSnManager()
+                                                            .detectType(give);
+                                    if (gsn != null
+                                            && gtype != null)
+                                        getSnManager()
+                                                .writeSn(
+                                                        give,
+                                                        gsn,
+                                                        gtype);
+                                }
                                 java.util.Map<Integer,
                                         ItemStack> left =
                                         p.getInventory()
                                                 .addItem(give);
+                                // 背包满 → 掉脚下，绝不吞物品
+                                // （DB 已删，此处不能直接丢弃）
+                                if (left != null
+                                        && !left.isEmpty()) {
+                                    p.getWorld()
+                                            .dropItemNaturally(
+                                                    p.getLocation(),
+                                                    give);
+                                }
                                 // ★ SN 物品取回 → 回到本人身上，
                                 //   脱离管控的 12 小时计时清零
-                                if ((left == null || left.isEmpty())
-                                        && getSnManager() != null) {
+                                if (getSnManager() != null) {
                                     getSnManager()
                                             .onRecovered(give, p);
                                 }
