@@ -3730,6 +3730,31 @@ public class Main extends JavaPlugin
             java.util.Arrays.asList("cy_beibao", "sdf1", "sdf1_game",
                     "sdf1_login"));
 
+    /**
+     * 管理类指令：普通玩家敲了也没用（会被 isAdmin/isPrivileged 拦），
+     * 所以在"你是不是想输入"的建议里对非管理员隐藏，避免误导。
+     * 依据 plugin.yml 的 permission 声明 + 代码里的 isAdmin/isPrivileged 判定整理。
+     */
+    private static final Set<String> ADMIN_ONLY = new HashSet<>(
+            java.util.Arrays.asList(
+                    // 封禁 / 改判 / 注销
+                    "tempban", "tempbanip", "banip", "whois", "clear",
+                    "cleartake", "清空队列",
+                    // 账号管理
+                    "删除", "删除账号", "通过", "拒绝", "accept", "deny",
+                    "printer", "take", "give",
+                    // 聊天 / 清理 / 菜单
+                    "chat", "聊天", "menu", "垃圾清理", "recycle",
+                    // 系统运维
+                    "update", "import",
+                    // 商店 / 领地运营
+                    "shopadd", "shopdel", "landrec",
+                    // 插件默认 OP 的管理入口
+                    "quiz", "出题", "treasure", "寻宝"));
+
+    /** 控制台发言署名（/conmsg 设置），null=用默认"管理员" */
+    private volatile String consoleName = null;
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onUnknownCommand(
             org.bukkit.event.command.UnknownCommandEvent e) {
@@ -3778,22 +3803,35 @@ public class Main extends JavaPlugin
     /**
      * 控制台未命中指令时，把这行文本当普通聊天广播到全服。
      * 控制台本身不会触发聊天事件，所以这里直接 broadcast。
+     *
+     * ★ 署名不写死 "Console"：低龄玩家只见过单人存档，
+     *   单人存档里没有 Console/Server 这类词，直接暴露会吓到他们。
+     *   用 /conmsg <名字> 设置一个亲切署名（默认 "管理员"）。
      */
     private void broadcastAsChat(
             org.bukkit.command.CommandSender sender, String text) {
         try {
             String who = (sender instanceof Player)
                     ? ((Player) sender).getName()
-                    : "Console";
+                    : getConsoleName();
             net.kyori.adventure.text.Component msg =
-                    net.kyori.adventure.text.Component.text(who + "§7: §f" + text)
-                            .color(net.kyori.adventure.text.format.NamedTextColor.WHITE);
+                    net.kyori.adventure.text.Component
+                            .text(who + "§7: §f" + text)
+                            .color(net.kyori.adventure.text.format
+                                    .NamedTextColor.WHITE);
             Bukkit.broadcast(msg);
         } catch (Throwable t) {
             getLogger().warning("[无感切换] 控制台转发聊天失败: "
                     + t.getMessage());
             sender.sendMessage("§f" + text);
         }
+    }
+
+    /** 控制台发言署名（/conmsg 设置），默认"管理员" */
+    private String getConsoleName() {
+        String n = consoleName;
+        if (n == null || n.trim().isEmpty()) return "管理员";
+        return n.trim();
     }
 
     /** 编辑距离（Levenshtein），用于相似指令匹配 */
@@ -3817,8 +3855,13 @@ public class Main extends JavaPlugin
     }
 
     /**
-     * 玩家未命中任何指令时，给出最相似的几条自有插件指令。
-     * 完全不命中（相似度太低）才退回完整清单。
+     * 玩家未命中任何指令时的温柔提示。
+     *
+     * ★ 三条原则（用户 2026-10-03 要求）：
+     *   ① 按权限分层——普通玩家只看到自己能用得上的指令，
+     *      管理员才看到管理类指令，避免"我明明没这权限还一直推荐"。
+     *   ② 真的找不到就老实说找不到，不甩一整屏清单刷屏。
+     *   ③ 绝不出现血红色的 Unknown 报错，语气尽量平和。
      */
     private void sendSimilarHint(Player p, String typed) {
         int sp = typed.indexOf(' ');
@@ -3826,17 +3869,23 @@ public class Main extends JavaPlugin
                 .toLowerCase(java.util.Locale.ROOT);
         String rest = sp < 0 ? "" : typed.substring(sp + 1).trim();
 
-        // 收集自有插件指令（去重）
-        java.util.LinkedHashMap<String, String> own = collectOwnCommands();
-        if (own.isEmpty()) return;
+        boolean admin = isPrivileged(p);
 
-        // 打分：编辑距离越小越好；完全相等优先
+        // 只收集该身份能用的指令
+        java.util.LinkedHashMap<String, String> usable =
+                filterByPermission(p, admin);
+        if (usable.isEmpty()) {
+            p.sendMessage("§7没有找到你要的指令，"
+                    + "可以问问管理员～");
+            return;
+        }
+
+        // 打分：编辑距离越小越好
         java.util.List<java.util.Map.Entry<Integer, String>> scored =
                 new java.util.ArrayList<>();
-        for (String cmd : own.keySet()) {
-            int d = levenshtein(label, cmd);
-            // 长度差惩罚，避免短指令乱匹配
-            scored.add(new java.util.AbstractMap.SimpleEntry<>(d, cmd));
+        for (String cmd : usable.keySet()) {
+            scored.add(new java.util.AbstractMap.SimpleEntry<>(
+                    levenshtein(label, cmd), cmd));
         }
         scored.sort((a, b) -> a.getKey() - b.getKey());
 
@@ -3852,19 +3901,43 @@ public class Main extends JavaPlugin
 
         p.sendMessage("§8§m                    ");
         if (picked.isEmpty()) {
-            // 一个都不像 -> 给完整清单
-            p.sendMessage("§e§l你输入的 §f" + typed + " §e§l不是有效指令");
-            sendCommandListBody(p, own);
+            // ★ 老实说没找到，不甩清单
+            p.sendMessage("§7没有找到对应的指令呢，"
+                    + "换个说法试试？");
+            p.sendMessage("§8你输入的是：§f" + typed);
+            if (!admin) {
+                p.sendMessage("§8输入 §f/help §8可以看看基础指令");
+            }
         } else {
-            p.sendMessage("§e§l你是不是想输入：");
+            p.sendMessage("§e你是不是想输入：");
             for (String c : picked) {
                 p.sendMessage("§8  §f/" + c
                         + (rest.isEmpty() ? "" : " " + rest));
             }
-            p.sendMessage("§7完整指令清单：§f/help"
-                    + " §7或§f/sdf1_login");
+            p.sendMessage("§8输入 §f/help §8查看更多指令");
         }
         p.sendMessage("§8§m                    ");
+    }
+
+    /**
+     * 按身份过滤自有指令：
+     * 玩家层（无 admin）拿掉管理类指令，管理员拿全部。
+     * conmsg 是控制台独占，任何玩家都看不到。
+     */
+    private java.util.LinkedHashMap<String, String> filterByPermission(
+            Player p, boolean admin) {
+        java.util.LinkedHashMap<String, String> all = collectOwnCommands();
+        java.util.LinkedHashMap<String, String> out =
+                new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, String> en : all.entrySet()) {
+            String cmd = en.getKey();
+            // conmsg 永不下发给玩家
+            if ("conmsg".equals(cmd)) continue;
+            // 管理类指令仅管理员可见
+            if (!admin && ADMIN_ONLY.contains(cmd)) continue;
+            out.put(en.getKey(), en.getValue());
+        }
+        return out;
     }
 
     /** 收集 4 插件指令：label(小写) -> 显示用 label */
@@ -6364,6 +6437,33 @@ public class Main extends JavaPlugin
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+
+        // ===== /conmsg <名字>：控制台发言署名（仅控制台可用）=====
+        if (cmdName.equals("conmsg")) {
+            if (!(sender instanceof Player)) {
+                String nm = args.length > 0 ? args[0].trim() : "";
+                // 剥掉色码，防止有人刷 §c 之类污染聊天显示
+                nm = nm.replaceAll("[\u00a7&][0-9a-fk-orA-FK-OR]", "");
+                if (nm.isEmpty()) {
+                    sender.sendMessage("§e用法: §f/conmsg <名字>");
+                    sender.sendMessage("§7当前署名: §f" + getConsoleName());
+                } else {
+                    if (nm.length() > 16) nm = nm.substring(0, 16);
+                    consoleName = nm;
+                    sender.sendMessage("§a已设置控制台发言署名为: §f" + nm);
+                    getLogger().info("[无感切换] 控制台署名已改为: " + nm);
+                }
+                return true;
+            }
+            Player cp = (Player) sender;
+            if (!isPrivileged(cp)) {
+                cp.sendMessage("§7这个指令只有控制台能用哦");
+                return true;
+            }
+            cp.sendMessage("§7这是控制台用的指令，"
+                    + "直接在服务器控制台输入即可");
+            return true;
+        }
 
         // ===== /2fa 二次验证绑定（TOTP，全部校验在Java本地）=====
         if (cmdName.equals("2fa")) {

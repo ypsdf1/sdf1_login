@@ -117,6 +117,9 @@ commands:
   web:
     description: 生成Web端登录令牌
     usage: /web
+  conmsg:
+    description: 控制台发言署名（仅控制台可用，替换转发聊天时的 Console 字样）
+    usage: /conmsg <名字>
   控制台:
     description: 生成Web端登录令牌(中文版)
     usage: /控制台
