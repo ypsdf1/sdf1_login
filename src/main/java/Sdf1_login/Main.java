@@ -30,6 +30,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffectType;
@@ -3696,6 +3697,39 @@ public class Main extends JavaPlugin
     //   · 未命中 -> 压制提示 + 按普通聊天经插件管道转发公屏
     //   · 控制台不接管：控制台输错是运维操作，必须保留原声报错
     // =========================================================
+
+
+    // =========================================================
+    // ★ 任务50（2026-10-03 定案）：无感切换 —— 只接管 sdf1 系列 4 插件
+    //
+    //   【管辖范围：仅我们自己的 4 个插件】
+    //     CY_beibao / sdf1 / Sdf1_game / Sdf1_login
+    //     其余插件（LuckPerms 等）与原版指令一律不碰，
+    //     绝不破坏别人的判断与拦截链。
+    //
+    //   【Paper 26.x 拦截点（javap 反汇编服务端字节码定案）】
+    //     UnknownCommandEvent 唯一构造点 =
+    //       Commands.finishParsing(ParseResults, String)
+    //       玩家 + 控制台都走这里，是"未命中"的唯一拦截点。
+    //       父类是 org.bukkit.event.Event（无 Cancellable），
+    //       但 setMessage(String) 可改最终文案 -> 压制原生 unknown。
+    //     （PlayerCommandSendEvent 只对玩家触发且 getCommands()
+    //       返回 String 集合不可改写，故不用它做拦截。）
+    //
+    //   【三条分支】
+    //     1) 命中我们 4 插件的指令（大小写不敏感）-> 直接执行
+    //     2) 命中别人插件 / 原版指令 -> 完全不干预
+    //     3) 确实啥都没命中 -> 压制原生 unknown，
+    //        把我们 4 插件注册的指令清单回给玩家，由玩家手动执行
+    //
+    //   ★ 控制台不接管：控制台输错是运维操作，必须保留原声报错。
+    // =========================================================
+
+    /** 我们自己的 4 个插件名（小写比较） */
+    private static final Set<String> OWN_PLUGIN_NAMES = new HashSet<>(
+            java.util.Arrays.asList("cy_beibao", "sdf1", "sdf1_game",
+                    "sdf1_login"));
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onUnknownCommand(
             org.bukkit.event.command.UnknownCommandEvent e) {
@@ -3703,58 +3737,46 @@ public class Main extends JavaPlugin
         // ★ 控制台不接管
         if (!(sender instanceof Player)) return;
 
-        String line = e.getCommandLine();
-        if (line == null) return;
-        String body = line.trim();
+        String body = e.getCommandLine();
+        if (body == null) return;
+        body = body.trim();
         if (body.isEmpty()) return;
         if (body.charAt(0) == '/') body = body.substring(1).trim();
         if (body.isEmpty()) return;
 
         Player p = (Player) sender;
 
-        // ---- 1) 大小写不敏感补执行 ----
-        if (dispatchCaseInsensitive(p, body)) {
+        // ---- 1) 命中我们 4 插件的指令 -> 大小写不敏感直接执行 ----
+        if (dispatchOwnCommand(p, body)) {
             suppressUnknown(e);
             return;
         }
 
-        // ---- 2) 确属未命中 -> 压制原生提示 + 转公屏 ----
+        // ---- 2) 命中别人插件 / 原版 -> 完全不干预 ----
+        //    （服务端已判定"未命中"才走到本事件；若玩家输的是别人的指令，
+        //      说明那个插件没注册 or 权限不足，本插件不应插手。）
+        // ---- 3) 啥都没命中 -> 压制 unknown + 回我们的指令清单 ----
         suppressUnknown(e);
-        forwardAsChat(p, body);
-    }
-
-    /** 压制 "Unknown or incomplete command" 的最终输出（26.2 不可 cancel，只能改文案） */
-    private void suppressUnknown(
-            org.bukkit.event.command.UnknownCommandEvent e) {
-        try {
-            // ★ 26.2 的 setMessage(String) 收字符串（内部再转 TextComponent）
-            e.setMessage("");
-        } catch (Throwable ignored) {
-        }
+        sendOwnCommandList(p, body);
     }
 
     /**
-     * 大小写不敏感补执行：把 body 的首段小写后交给命令映射，
-     * 若确实存在该命令则分发执行并返回 true（表示已接管）。
-     * 服务端已用小写查过一次没命中 -> 这里只处理「输入为大写」的情形。
+     * 把 body 首段在【我们 4 个插件】的命令映射里小写复核，
+     * 命中则分发执行。返回 true 表示已接管。
      */
-    private boolean dispatchCaseInsensitive(Player p, String body) {
+    private boolean dispatchOwnCommand(Player p, String body) {
         try {
             int sp = body.indexOf(' ');
             String label = sp < 0 ? body : body.substring(0, sp);
-            String lower = label.toLowerCase(java.util.Locale.ROOT);
-            if (label.equals(lower)) return false;   // 已是小写，服务端查过确实没有
+            final String lower =
+                    label.toLowerCase(java.util.Locale.ROOT);
 
-            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
-            if (cm == null) return false;
-            org.bukkit.command.Command hit = cm.getCommand(lower);
-            if (hit == null) hit = cm.getCommand("minecraft:" + lower);
+            org.bukkit.command.Command hit = findOwnCommand(lower);
             if (hit == null) return false;
 
-            String rest = sp < 0 ? "" : body.substring(sp + 1);
+            final String rest = sp < 0 ? "" : body.substring(sp + 1);
             final String dispatch = lower
                     + (rest.isEmpty() ? "" : " " + rest);
-            // ★ 必须回主线程分发（事件在主线程但 scheduler 更稳，避免重入）
             Bukkit.getScheduler().runTask(this, () -> {
                 try {
                     Bukkit.dispatchCommand(p, dispatch);
@@ -3765,10 +3787,118 @@ public class Main extends JavaPlugin
             });
             return true;
         } catch (Throwable t) {
-            getLogger().warning("[无感切换] 大小写补执行异常: "
+            getLogger().warning("[无感切换] 大小写复核异常: "
                     + t.getMessage());
             return false;
         }
+    }
+
+    /** 在命令映射里找属于我们 4 插件的命令（lower 必须已小写） */
+    private org.bukkit.command.Command findOwnCommand(String lower) {
+        try {
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return null;
+            org.bukkit.command.Command c = cm.getCommand(lower);
+            if (c == null)
+                c = cm.getCommand("minecraft:" + lower);
+            if (c == null) return null;
+            // ★ 归属判定：命令的 executor 所属插件是否在我们 4 个之内
+            Plugin owner = resolveCommandPlugin(c);
+            if (owner != null && OWN_PLUGIN_NAMES.contains(
+                    owner.getName().toLowerCase(java.util.Locale.ROOT)))
+                return c;
+            return null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 反查命令所属插件：优先取 PluginCommand.getPlugin，其次扫已加载插件的 onCommand 归属 */
+    private Plugin resolveCommandPlugin(
+            org.bukkit.command.Command c) {
+        try {
+            if (c instanceof org.bukkit.command.PluginCommand) {
+                Plugin p = ((org.bukkit.command.PluginCommand) c).getPlugin();
+                if (p != null) return p;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 压制 "Unknown or incomplete command" 的最终输出 */
+    private void suppressUnknown(
+            org.bukkit.event.command.UnknownCommandEvent e) {
+        try {
+            e.setMessage("");
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 把「我们 4 插件」的指令清单发给玩家（去重、按长度排序、按插件分组）。
+     * 让玩家自己挑一个手动执行，而不是原样甩 unknown。
+     */
+    private void sendOwnCommandList(Player p, String typed) {
+        java.util.LinkedHashMap<String, java.util.List<String>> byPlugin =
+                new java.util.LinkedHashMap<>();
+        int total = 0;
+        try {
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return;
+            // ★ CommandMap.getKnownCommands() 返回 Map<String, Command>
+            //   （26.2 实测签名），直接遍历即可拿到全部已注册指令。
+            java.util.Map<String, org.bukkit.command.Command> known =
+                    cm.getKnownCommands();
+            if (known == null || known.isEmpty()) return;
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (java.util.Map.Entry<String, org.bukkit.command.Command> en
+                    : known.entrySet()) {
+                String label = en.getKey();
+                org.bukkit.command.Command c = en.getValue();
+                if (label == null || label.isEmpty() || c == null) continue;
+                if (label.indexOf(':') >= 0) continue;  // 跳过 minecraft: 前缀项
+                Plugin owner = resolveCommandPlugin(c);
+                if (owner == null) continue;
+                String pn = owner.getName().toLowerCase(java.util.Locale.ROOT);
+                if (!OWN_PLUGIN_NAMES.contains(pn)) continue;
+                java.util.List<String> lst =
+                        byPlugin.computeIfAbsent(owner.getName(),
+                                k -> new java.util.ArrayList<>());
+                String show = (c.getLabel() != null && !c.getLabel().isEmpty())
+                        ? c.getLabel() : label;
+                if (seen.add(pn + "::" + show)) {
+                    lst.add("/" + show);
+                    total++;
+                }
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 收集指令清单失败: "
+                    + t.getMessage());
+            return;
+        }
+        if (byPlugin.isEmpty()) return;
+
+        // 排序：短的前面，中文在后
+        for (java.util.List<String> lst : byPlugin.values())
+            lst.sort((a, b) -> {
+                boolean za = a.matches(".*[\\u4e00-\\u9fff].*");
+                boolean zb = b.matches(".*[\\u4e00-\\u9fff].*");
+                if (za != zb) return za ? 1 : -1;
+                return Integer.compare(a.length(), b.length());
+            });
+
+        p.sendMessage("§8§m                    ");
+        p.sendMessage("§e§l你输入的 §f" + typed
+                + " §e§l不是有效指令");
+        p.sendMessage("§7可用指令如下（§f请手动输入，勿加 §7/"
+                + "§f开头）§7：");
+        for (java.util.Map.Entry<String, java.util.List<String>> en
+                : byPlugin.entrySet()) {
+            p.sendMessage("§8[§b" + en.getKey() + "§8] §f"
+                    + String.join(" §7| §f", en.getValue()));
+        }
+        p.sendMessage("§8§m                    ");
     }
 
 
