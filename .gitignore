@@ -115,6 +115,7 @@ test.*
 *.txt
 # 屏蔽全部部署脚本(wb用)
 *.py
-# 屏蔽凭据文件
-account.md
-
+# 屏蔽其它文件
+*.md
+# 过滤readme
+!readme.md
