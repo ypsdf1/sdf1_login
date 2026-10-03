@@ -116,5 +116,5 @@ test.*
 # 屏蔽全部部署脚本(wb用)
 *.py
 # 屏蔽凭据文件
-accound.md
+account.md
 
