@@ -17,6 +17,7 @@ import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.ItemDespawnEvent;
 import org.bukkit.event.inventory.CraftItemEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.inventory.FurnaceBurnEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
@@ -1330,6 +1331,31 @@ public class SnManager implements Listener {
         }
     }
 
+    /**
+     * 发射器 / 投掷器把 SN 物品发射出去（2026-10-03）：
+     * 雪球菜单等管控物品一经机器发射即视为"已使用 / 分解"——永久锁定该 SN：
+     * <ul>
+     *   <li>不再发放：findActive 把 illegal 计入有效登记，同种类无法再申领；</li>
+     *   <li>不支持注销 / 补发：doCancel、doReissue 对 illegal 直接拒绝。</li>
+     * </ul>
+     * BlockDispenseEvent 在发射器与投掷器上都会触发（投掷器走同一条 dispense 逻辑）。
+     */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onDispense(BlockDispenseEvent e) {
+        try {
+            ItemStack out = e.getItem();
+            if (out == null) return;
+            String type = detectType(out);
+            if (type == null || !WATCH_TYPES.contains(type)) return;
+            String sn = readSn(out);
+            if (sn == null) return;
+            bindIllegal(sn, "发射器/投掷器发射消耗");
+            enqueue("illegal_dispense", sn, "", "发射器发射");
+        } catch (Throwable t) {
+            throttleErr("dispense:" + t.getMessage());
+        }
+    }
+
     private void scanMatrix(ItemStack[] matrix, Player p, String why) {
         if (matrix == null) return;
         for (ItemStack it : matrix) {
@@ -2273,6 +2299,12 @@ public class SnManager implements Listener {
         Map<String, Object> row = getSn(sn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
+        // ★ 永久锁定的 SN（发射器发射消耗等）：不支持注销（2026-10-03）
+        if (ST_ILLEGAL.equals(str(row.get("status")))) {
+            logSn(sn, str(row.get("item_type")), "cancel_deny", player,
+                    "SN已永久锁定（视为已使用/分解），不支持注销");
+            return "该SN已被永久锁定（视为已使用/分解），不支持注销";
+        }
         // ★ 统一门槛：不在本人身上 ∩ 不在本人领地箱子 ∩ 脱离管控 > 12 小时。
         //   管理员「强制注销」(force) 按定义豁免三项；「代办注销」照常校验。
         //   未达标对玩家只给通用回执，明细留在管理端。
@@ -2308,6 +2340,12 @@ public class SnManager implements Listener {
         Map<String, Object> row = getSn(oldSn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
+        // ★ 永久锁定的 SN（发射器发射消耗等）：不支持补发（2026-10-03）
+        if (ST_ILLEGAL.equals(str(row.get("status")))) {
+            logSn(oldSn, itemType, "reissue_deny", player,
+                    "SN已永久锁定（视为已使用/分解），不支持补发");
+            return "该SN已被永久锁定（视为已使用/分解），不支持补发";
+        }
         if (player != null && !player.isEmpty()) owner = player;
         if (itemType == null || itemType.isEmpty())
             itemType = str(row.get("item_type"));

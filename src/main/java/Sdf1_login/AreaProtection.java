@@ -5405,6 +5405,22 @@ public class AreaProtection implements Listener {
                         || action == Action.RIGHT_CLICK_BLOCK);
                 if (isLeft || isRight) {
                     e.setCancelled(true);
+                    // ★ SN 归属校验（2026-10-03）：只认本人的圈地工具，防止借他人工具圈地后消耗掉别人的申领资格
+                    if (!isAreaAdmin(p)) {
+                        SnManager snm = plugin.getSnManager();
+                        String wandSn = (snm != null) ? snm.readSn(hand) : null;
+                        Map<String, Object> wandRow = (wandSn != null) ? snm.getSn(wandSn) : null;
+                        Object wandOwnerObj = (wandRow != null) ? wandRow.get("owner") : null;
+                        String wandOwner = (wandOwnerObj == null) ? null : String.valueOf(wandOwnerObj);
+                        if (wandSn == null || wandOwner == null || wandOwner.isEmpty()
+                                || !samePlayer(wandOwner, p.getName())) {
+                            p.sendMessage("§c§l[防护] §f请使用你自己的圈地工具选区——"
+                                    + (wandSn == null
+                                        ? "该工具未绑定你本人，请用 §e/protect 工具 §f重新申领"
+                                        : "这是 §e" + wandOwner + " §f的圈地工具"));
+                            return;
+                        }
+                    }
                     Block block = e.getClickedBlock();
                     if (block == null) {
                         try { block = p.getTargetBlockExact(5); }
@@ -8080,14 +8096,36 @@ public class AreaProtection implements Listener {
                 return true;
             }
 
+            // ★ 扩建扣费（2026-10-03）：与创建同单价，余额不足则拒绝扩建
+            int expPrice = landPricePerSqm(p);
+            long expCostL = deltaSq * (long) expPrice;
+            if (expCostL > Integer.MAX_VALUE) {
+                p.sendMessage("§c§l[防护] §f本次扩建费用超出上限，请分次扩建");
+                return true;
+            }
+            int expCost = (int) expCostL;
+            if (expCost > 0) {
+                BondManager ebm = plugin.getBonds();
+                if (ebm == null || !ebm.deductBonds(p.getName(), expCost, "land_expand",
+                        p.getName(), p.getName(),
+                        "扩建领地: " + ac.name + " (+" + deltaSq + "㎡×" + expPrice + ")")) {
+                    p.sendMessage("§c§l[防护] §f余额不足，扩建需 §e" + expCost
+                            + " §f债券（" + deltaSq + "㎡×" + expPrice + "/㎡），请先充值再扩建");
+                    return true;
+                }
+            }
             ac.x1 = minX;
             ac.x2 = maxX;
             ac.z1 = minZ;
             ac.z2 = maxZ;
+            ac.createCost += expCost; // ★ 计入删除退费基数（后续删除按比例退）
             saveAreaToDb(ac);
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
                     + " §f向 §e" + dir + " §f扩建 §e"
-                    + amount + "§f格");
+                    + amount + "§f格"
+                    + (expCost > 0
+                        ? ("，扣除 §e" + expCost + " §f债券（" + deltaSq + "㎡×" + expPrice + "/㎡）")
+                        : ""));
             return true;
         }
 
@@ -8125,6 +8163,18 @@ public class AreaProtection implements Listener {
             int maxZ = Math.max(ac.z1, ac.z2);
             float yaw = p.getLocation().getYaw();
             String dir = yawToDir(yaw);
+            // ★ 收缩前置校验（2026-10-03）：负数会变成"负数扩建"白嫖，一并挡掉
+            if (amount <= 0) {
+                p.sendMessage("§c§l[防护] §f收缩格数必须为正整数");
+                return true;
+            }
+            if (amount > 100000) {
+                p.sendMessage("§c§l[防护] §f单次收缩格数上限 100000，请分次收缩");
+                return true;
+            }
+            long oldSqW = (long) maxX - minX + 1;
+            long oldSqL = (long) maxZ - minZ + 1;
+            long oldSq = oldSqW * oldSqL;
             if (dir.equals("北")) minZ += amount;
             else if (dir.equals("南")) maxZ -= amount;
             else if (dir.equals("东")) maxX -= amount;
@@ -8133,6 +8183,40 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c收缩过度");
                 return true;
             }
+            long newSqW = (long) maxX - minX + 1;
+            long newSqL = (long) maxZ - minZ + 1;
+            long shrinkSq = oldSq - newSqW * newSqL;
+
+            // ★ 收缩退款（2026-10-03）：单价 × 收缩面积 × 删除退款比例
+            //   基数不超过已付 createCost（历史免费地不凭空造钱），退款给领地主
+            int shrinkPrice = landPricePerSqm(p);
+            int shrinkRatio = globalRefundRatioPerCent;
+            if (shrinkRatio > 100) shrinkRatio = 100;
+            long baseL = shrinkSq * (long) shrinkPrice;
+            if (baseL > ac.createCost) baseL = ac.createCost;
+            if (baseL < 0) baseL = 0;
+            int refundBase = (int) baseL;
+            int shrinkRefund = 0;
+            if (shrinkRatio > 0 && refundBase > 0) {
+                shrinkRefund = (int) Math.floor(refundBase * (shrinkRatio / 100.0));
+            }
+            if (shrinkRefund > 0) {
+                BondManager sbm = plugin.getBonds();
+                if (sbm == null) {
+                    shrinkRefund = 0;
+                } else {
+                    int afterBal = sbm.addBonds(ac.owner, shrinkRefund, "land_refund",
+                            ac.owner, p.getName(),
+                            "收缩领地退费: " + ac.name + " (-" + shrinkSq + "㎡)");
+                    if (afterBal < 0) {
+                        plugin.getLogger().warning("[防护] 领地收缩退费失败(账户冻结?): "
+                                + ac.owner + " +" + shrinkRefund);
+                        shrinkRefund = 0;
+                    }
+                }
+            }
+            ac.createCost -= refundBase; // ★ 收缩掉的部分不再计入删除退费基数
+            if (ac.createCost < 0) ac.createCost = 0;
             ac.x1 = minX;
             ac.x2 = maxX;
             ac.z1 = minZ;
@@ -8140,7 +8224,11 @@ public class AreaProtection implements Listener {
             saveAreaToDb(ac);
             p.sendMessage("§a§l[防护] §f区域 §e" + ac.name
                     + " §f向 §e" + dir + " §f收缩 §e"
-                    + amount + "§f格");
+                    + amount + "§f格"
+                    + (shrinkRefund > 0
+                        ? ("，退还 §e" + shrinkRefund + " §f债券（"
+                            + shrinkSq + "㎡×" + shrinkPrice + "/㎡×" + shrinkRatio + "%）")
+                        : (shrinkRatio <= 0 ? "§7（退款比例 0，不退费）" : "")));
             return true;
         }
 
@@ -9447,6 +9535,17 @@ public class AreaProtection implements Listener {
         plugin.getLogger().info("[防护] 已上报 " + sent + " 名在线管理员: " + message.replaceAll("§.", ""));
     }
 
+    /**
+     * ★ 扩建 / 收缩单价：与创建同一口径（用户组可覆盖，缺省为创建单价 globalCreatePricePerSqm）。
+     * 扩建收费、收缩退费都按这个单价算，保证"创建一次扣费、扩建不再白嫖"。
+     */
+    private int landPricePerSqm(Player p) {
+        UserGroupManager ug = plugin.getUserGroup();
+        return (ug != null)
+                ? ug.getPlayerLandPricePerSqm(p.getName(), globalCreatePricePerSqm)
+                : globalCreatePricePerSqm;
+    }
+
     // ==================== 领地面积审批流（2026-09-29） ====================
 
     /** 待审批的面积超限请求（expand=扩建提案 / create=创建提案） */
@@ -9540,6 +9639,10 @@ public class AreaProtection implements Listener {
                 + newW + "×" + newL + "§f，边长上限 §e" + globalMaxLandSideBlocks
                 + "§f），已提交管理员现场审批。");
         p.sendMessage("§7管理员需进入该领地后执行 §a/protect accept " + ac.name + " §7或 §c/protect deny " + ac.name);
+        long peCostL = deltaSq * (long) landPricePerSqm(p);
+        p.sendMessage("§7审批通过时按创建单价 §e" + landPricePerSqm(p)
+                + "/㎡ §f收取 §e" + (peCostL > Integer.MAX_VALUE ? "（超额，请分次扩建）" : String.valueOf(peCostL))
+                + " §f债券");
         reportLandRemovalToAdmins("§6§l[领地审批] §f玩家 §e" + p.getName()
                 + " §f申请扩建领地 §e" + ac.name + " §7(+" + deltaSq + "㎡, 向" + dir + amount + "格, 新尺寸 "
                 + newW + "×" + newL + ") §f——管理员到现场后 §a/protect accept " + ac.name + "§f/§cdeny");
@@ -9672,16 +9775,44 @@ public class AreaProtection implements Listener {
                 }
                 return;
             }
+            // ★ 扩建审批扣费（2026-10-03）：审批时按创建单价 × 新增面积收款
+            UserGroupManager ePugm = plugin.getUserGroup();
+            int ePrice = (ePugm != null)
+                    ? ePugm.getPlayerLandPricePerSqm(pe.requester, globalCreatePricePerSqm)
+                    : globalCreatePricePerSqm;
+            long eCostL = pe.deltaSq * (long) ePrice;
+            if (eCostL > Integer.MAX_VALUE) {
+                adm.sendMessage("§c§l[审批] §f该扩建费用超出上限，无法扣费，申请保留待处理");
+                return;
+            }
+            int eCost = (int) eCostL;
+            int eCharged = 0;
+            if (eCost > 0) {
+                BondManager ebm = plugin.getBonds();
+                if (ebm == null || !ebm.deductBonds(pe.requester, eCost, "land_expand",
+                        pe.requester, pe.requester,
+                        "管理员审批扩建领地: " + pe.landName + " (+" + pe.deltaSq + "㎡×" + ePrice + ")")) {
+                    adm.sendMessage("§c§l[审批] §f申请人 §e" + pe.requester
+                            + " §f余额不足（需 §e" + eCost + "§f），无法扣费，申请保留待处理");
+                    if (requester != null && requester.isOnline()) {
+                        requester.sendMessage("§c§l[防护] §f你的扩建申请因余额不足（需 " + eCost
+                                + " 债券）未能完成，请充值后请管理员重新审批");
+                    }
+                    return;
+                }
+                eCharged = eCost;
+            }
             ac.x1 = pe.newX1; ac.x2 = pe.newX2;
             ac.z1 = pe.newZ1; ac.z2 = pe.newZ2;
+            ac.createCost += eCharged; // ★ 计入删除退费基数
             saveAreaToDb(ac);
             pendingExpands.remove(pe.landName.toLowerCase());
             adm.sendMessage("§a§l[审批] §f已批准 §e" + pe.landName + " §f扩建：+§e"
                     + pe.deltaSq + "§f㎡（" + pe.oldW + "×" + pe.oldL + " → §e"
-                    + pe.newW + "×" + pe.newL + "§f）");
+                    + pe.newW + "×" + pe.newL + "§f），向申请人扣除 §e" + eCharged + " §f债券");
             if (requester != null && requester.isOnline()) {
                 requester.sendMessage("§a§l[防护] §f你的领地 §e" + pe.landName
-                        + " §f扩建申请已被管理员批准，已生效");
+                        + " §f扩建申请已被管理员批准，已生效，扣除 " + eCharged + " 债券");
             }
             plugin.getLogger().info("[领地审批] 扩建通过: " + pe.landName + " (申请人 " + pe.requester
                     + ", 审批人 " + adm.getName() + ") +" + pe.deltaSq + "㎡");
