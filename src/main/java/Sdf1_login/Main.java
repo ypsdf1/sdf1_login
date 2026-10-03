@@ -6530,8 +6530,18 @@ public class Main extends JavaPlugin
                 //   换行/制表一律压成空格（署名占一行，多行会破聊天框版式）；
                 //   色码保留，由 parseLegacyOneLine 统一按 & 解析。
                 nm = nm.replaceAll("[\\r\\n\\t]+", " ").trim();
+                // ★ "clear" 是 conmsg 的保留子参数 = 恢复出厂设置（署名回到默认"管理员"）。
+                //   只在本分支拦：控制台/玩家直接敲 /clear 仍走原版清背包，插件不接管。
+                if ("clear".equalsIgnoreCase(nm)) {
+                    consoleName = null;
+                    sender.sendMessage("§a已恢复控制台发言署名为默认：§f"
+                            + getConsoleName());
+                    sender.sendMessage("§7（想清背包请直接敲 §f/clear §7，那是原版指令）");
+                    getLogger().info("[无感切换] 控制台署名已恢复默认");
+                    return true;
+                }
                 if (nm.isEmpty()) {
-                    sender.sendMessage("§e用法: §f/conmsg <名字>");
+                    sender.sendMessage("§e用法: §f/conmsg <名字> §e或 §f/conmsg clear §8(恢复默认)");
                     sender.sendMessage("§7当前署名: §f" + getConsoleName());
                 } else {
                     if (nm.length() > 16) nm = nm.substring(0, 16);
