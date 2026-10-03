@@ -45,6 +45,11 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.JoinConfiguration;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 
 public class Main extends JavaPlugin
@@ -3807,6 +3812,11 @@ public class Main extends JavaPlugin
      * ★ 署名不写死 "Console"：低龄玩家只见过单人存档，
      *   单人存档里没有 Console/Server 这类词，直接暴露会吓到他们。
      *   用 /conmsg <名字> 设置一个亲切署名（默认 "管理员"）。
+     *
+     * ★ 正文（text）与署名（who）解析规则不同，刻意区分：
+     *   - 署名：只做 & 色码兼容，**不支持换行**（用户名占一行，多行会破版式）。
+     *   - 正文：JSON 组件 + & 色码 + 换行三者并存，
+     *       即 {"text":"test","color":"red"} 和 &ctest 都能出红色 test。
      */
     private void broadcastAsChat(
             org.bukkit.command.CommandSender sender, String text) {
@@ -3814,17 +3824,91 @@ public class Main extends JavaPlugin
             String who = (sender instanceof Player)
                     ? ((Player) sender).getName()
                     : getConsoleName();
-            net.kyori.adventure.text.Component msg =
-                    net.kyori.adventure.text.Component
-                            .text(who + "§7: §f" + text)
-                            .color(net.kyori.adventure.text.format
-                                    .NamedTextColor.WHITE);
+
+            // 署名：仅 & 色码兼容，强制单行
+            Component nameComp = parseLegacyOneLine(who);
+            // 正文：JSON / &色码 / 换行 并存
+            Component bodyComp = parseBody(text);
+
+            Component msg = Component.text()
+                    .append(nameComp)
+                    .append(Component.text(": ")
+                            .color(NamedTextColor.GRAY))
+                    .append(bodyComp)
+                    .build();
             Bukkit.broadcast(msg);
         } catch (Throwable t) {
             getLogger().warning("[无感切换] 控制台转发聊天失败: "
                     + t.getMessage());
             sender.sendMessage("§f" + text);
         }
+    }
+
+    /**
+     * 署名专用解析：只把 & 色码转 §，不处理 JSON、不处理换行。
+     * 换行/回车一律压成空格，避免用户名把聊天框撑成多行。
+     */
+    private Component parseLegacyOneLine(String raw) {
+        if (raw == null || raw.isEmpty())
+            return Component.text("管理员", NamedTextColor.WHITE);
+        // 先剥掉可能混进来的 § 原生色码，避免与 & 转换叠加出乱码
+        String s = raw.replace("\u00a7", "&");
+        // 压掉换行与制表，保证单行
+        s = s.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return LegacyComponentSerializer.legacyAmpersand()
+                .deserialize(s)
+                .colorIfAbsent(NamedTextColor.WHITE);
+    }
+
+    /**
+     * 正文解析：JSON 组件 / & 色码 / 换行三者并存。
+     *
+     * 判定顺序很关键（用户 2026-10-03 明确）：
+     *   ① 整体是合法 JSON 组件 → 直接用（{"text":"test","color":"red"} 出红色）
+     *   ② 否则按 & 色码 + 逐行渲染（&ctest 出红色，多行保留换行）
+     *   ③ JSON 解析失败 → 退回 ②，绝不把 JSON 源码原样吐给玩家
+     */
+    private Component parseBody(String raw) {
+        if (raw == null || raw.isEmpty())
+            return Component.empty();
+
+        // ---- ① 整体就是 JSON 组件 ----
+        String t = raw.trim();
+        if (looksLikeJsonComponent(t)) {
+            try {
+                return GsonComponentSerializer.gson().deserialize(t);
+            } catch (Throwable ignored) {
+                // 落到 ②
+            }
+        }
+
+        // ---- ②& 色码 + 换行 ----
+        List<Component> lines = new ArrayList<>();
+        for (String line : raw.split("\\r?\\n", -1)) {
+            lines.add(LegacyComponentSerializer.legacyAmpersand()
+                    .deserialize(line)
+                    .colorIfAbsent(NamedTextColor.WHITE));
+        }
+        if (lines.isEmpty())
+            return LegacyComponentSerializer.legacyAmpersand()
+                    .deserialize(raw);
+        // ★ Adventure 5.x（Paper 26.2 带的 adventure-api-5.2.0）里
+        //   Component.join(separator, ...) 的分隔符类型已改为
+        //   JoinConfiguration，不再是 Component。
+        //   newlines() 正是"用换行拼接"，语义完全对上。
+        return Component.join(
+                JoinConfiguration.newlines(), lines);
+    }
+
+    /** 是否"看起来像"一个 JSON 文本组件（避免把普通聊天误判成 JSON） */
+    private boolean looksLikeJsonComponent(String t) {
+        if (t == null || t.length() < 2) return false;
+        char a = t.charAt(0), b = t.charAt(t.length() - 1);
+        boolean brace = (a == '{' && b == '}');
+        boolean bracket = (a == '[' && b == ']');
+        if (!brace && !bracket) return false;
+        // 必须含 "key": 或 "key":value 形态，纯 {abc} 不算
+        return t.matches("(?s).*\"[^\"]+\"\\s*:.*");
     }
 
     /** 控制台发言署名（/conmsg 设置），默认"管理员" */
@@ -6442,8 +6526,10 @@ public class Main extends JavaPlugin
         if (cmdName.equals("conmsg")) {
             if (!(sender instanceof Player)) {
                 String nm = args.length > 0 ? args[0].trim() : "";
-                // 剥掉色码，防止有人刷 §c 之类污染聊天显示
-                nm = nm.replaceAll("[\u00a7&][0-9a-fk-orA-FK-OR]", "");
+                // ★ 用户名只做 & 色码兼容，**不支持换行**：
+                //   换行/制表一律压成空格（署名占一行，多行会破聊天框版式）；
+                //   色码保留，由 parseLegacyOneLine 统一按 & 解析。
+                nm = nm.replaceAll("[\\r\\n\\t]+", " ").trim();
                 if (nm.isEmpty()) {
                     sender.sendMessage("§e用法: §f/conmsg <名字>");
                     sender.sendMessage("§7当前署名: §f" + getConsoleName());
