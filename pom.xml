@@ -27,10 +27,15 @@
     </repositories>
 
     <dependencies>
+        <!-- ★ 与测试服/生产服运行时保持一致（Paper 26.x）。
+             26.x 的命令分发改走 Brigadier：PlayerCommandPreprocessEvent 已
+             @Deprecated 且不再是拦截入口，未命中的唯一拦截点是
+             UnknownCommandEvent；聊天事件是 AsyncChatEvent 而非
+             AsyncPlayerChatEvent。用 1.21.4 编译会因签名不匹配直接编不过。 -->
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <version>1.21.4-R0.1-SNAPSHOT</version>
+            <version>26.2.build.129-stable</version>
             <scope>provided</scope>
         </dependency>
 

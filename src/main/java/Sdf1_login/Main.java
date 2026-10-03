@@ -3495,116 +3495,61 @@ public class Main extends JavaPlugin
     //   优先级 LOWEST：必须在服务端处理命令之前拦截，
     //   MONITOR 太晚（命令已执行/已返回 unknown）。
     // =========================================================
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
-    public void onSeamlessCommandSwitch(
-            org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
-        if (e.isCancelled()) return;
-        Player p = e.getPlayer();
-        String msg = e.getMessage().trim();
-        if (msg.isEmpty() || msg.charAt(0) != '/') return;
-        String body = msg.substring(1).trim();
-        if (body.isEmpty()) return;
 
-        getLogger().info("[无感切换] 事件触发: " + body);
-
-        org.bukkit.command.CommandMap cm = getCommandMapSafe();
-        if (cm == null) {
-            getLogger().warning("[无感切换] CommandMap 获取失败!");
-            return;   // 拿不到命令映射 -> 维持原行为
-        }
-
-        String label = body.split(" ", 2)[0];
-        String lowerLabel = label.toLowerCase(java.util.Locale.ROOT);
-        getLogger().info("[无感切换] label=" + label + " lower=" + lowerLabel);
-        // 命中判定统一用小写：SimpleCommandMap 的 key 本身就是小写
-        org.bukkit.command.Command hit = cm.getCommand(lowerLabel);
-        getLogger().info("[无感切换] hit=" + (hit != null ? hit.getName() : "null"));
-        if (hit == null) hit = cm.getCommand("minecraft:" + lowerLabel);
-        getLogger().info("[无感切换] hit2=" + (hit != null ? hit.getName() : "null"));
-
-        if (hit != null) {
-            // ★ 指令大小写不敏感：原样 label 查不到但小写查得到
-            //   -> 取消原事件，用小写 label 重新分发一次
-            if (!label.equals(lowerLabel)
-                    && cm.getCommand(label) == null) {
-                getLogger().info("[无感切换] 大小写重分发: " + lowerLabel);
-                e.setCancelled(true);
-                String rest = body.substring(label.length());
-                try {
-                    Bukkit.dispatchCommand(p, lowerLabel + rest);
-                } catch (Throwable t) {
-                    getLogger().warning("[无感切换] 指令分发失败: "
-                            + t.getMessage());
-                }
-            }
-            return;   // 命中 -> 直接执行，交还原版流程
-        }
-
-        // ★ 未命中：压制原生 "Unknown command"，转普通聊天
-        getLogger().info("[无感切换] 未命中，转聊天: " + body);
-        e.setCancelled(true);
-        forwardAsChat(p, body);
-    }
-
-    /**
-     * 反射取命令映射（Bukkit.getCommandMap 为 Paper API，
-     * 反射可同时兼容 Spigot / CraftServer 实现）。拿不到返回 null。
-     */
-    private org.bukkit.command.CommandMap getCommandMapSafe() {
-        // Paper API: Bukkit.getCommandMap()
-        try {
-            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
-            if (cm != null) return cm;
-        } catch (Throwable t) {
-            getLogger().warning("[无感切换] Paper API 失败: " + t.getMessage());
-        }
-        // 反射兜底
-        try {
-            java.lang.reflect.Method m =
-                    Bukkit.class.getMethod("getCommandMap");
-            Object cm = m.invoke(null);
-            if (cm instanceof org.bukkit.command.CommandMap)
-                return (org.bukkit.command.CommandMap) cm;
-        } catch (Throwable ignored) {
-        }
-        try {
-            java.lang.reflect.Method m = Bukkit.getServer().getClass()
-                    .getMethod("getCommandMap");
-            Object cm = m.invoke(Bukkit.getServer());
-            if (cm instanceof org.bukkit.command.CommandMap)
-                return (org.bukkit.command.CommandMap) cm;
-        } catch (Throwable ignored) {
-        }
-        return null;
-    }
 
     /**
      * 把「未命中指令」的文本当作玩家聊天，走插件既有聊天管道
      * （验证码 / 敏感词过滤 / 自定义格式 / 其它插件监听）。
      */
+    /**
+     * 把「未命中指令」的文本当作玩家聊天，走插件既有聊天管道
+     * （验证码 / 敏感词过滤 / 自定义格式 / 其它插件监听）。
+     * Paper 26.x 已弃用 AsyncPlayerChatEvent，改用 AsyncChatEvent。
+     */
+    /**
+     * 把「未命中指令」的文本当作玩家聊天，走插件既有聊天管道
+     * （验证码 / 敏感词过滤 / 自定义格式 / 其它插件监听）。
+     *
+     * ★ Paper 26.x 真实签名（已从 paper-api-26.2 字节码核实）：
+     *   AsyncChatEvent(boolean async, Player, Set&lt;Audience&gt;,
+     *                  ChatRenderer, Component message,
+     *                  Component originalMessage, SignedMessage)
+     *   父类 AbstractChatEvent 提供 message():Component /
+     *   viewers():Set&lt;Audience&gt; / setCancelled(boolean)。
+     *   旧版 AsyncPlayerChatEvent(String) 构造与 getRecipients() 已不存在。
+     */
     private void forwardAsChat(Player p, String text) {
         if (text == null || text.isEmpty()) return;
         try {
-            java.util.Set<Player> rcpt =
-                    new java.util.HashSet<>(Bukkit.getOnlinePlayers());
-            org.bukkit.event.player.AsyncPlayerChatEvent ev =
-                    new org.bukkit.event.player.AsyncPlayerChatEvent(
-                            false, p, text, rcpt);
+            net.kyori.adventure.text.Component msg =
+                    net.kyori.adventure.text.Component.text(text);
+            io.papermc.paper.event.player.AsyncChatEvent ev =
+                    new io.papermc.paper.event.player.AsyncChatEvent(
+                            false, p,
+                            java.util.Collections.emptySet(),
+                            null, msg, msg, null);
             Bukkit.getPluginManager().callEvent(ev);
             if (ev.isCancelled()) return;
-            String fmt = ev.getFormat();
-            // 新版 API 中 recipients 可能为空 -> 兜底全服
-            java.util.Set<Player> rs = ev.getRecipients();
-            if (rs == null || rs.isEmpty())
-                rs = new java.util.HashSet<>(Bukkit.getOnlinePlayers());
-            for (Player r : rs) {
-                r.sendMessage(String.format(fmt,
-                        p.getDisplayName(), ev.getMessage()));
+
+            java.util.Set<net.kyori.adventure.audience.Audience> rs =
+                    ev.viewers();
+            if (rs == null || rs.isEmpty()) {
+                java.util.Set<net.kyori.adventure.audience.Audience> all =
+                        new java.util.HashSet<>();
+                for (Player o : Bukkit.getOnlinePlayers())
+                    all.add(o);
+                rs = all;
             }
+            for (net.kyori.adventure.audience.Audience a : rs)
+                a.sendMessage(p.displayName()
+                        .append(net.kyori.adventure.text.Component.text(
+                                "§r: "))
+                        .append(ev.message()));
         } catch (Throwable t) {
             getLogger().warning("[无感切换] 转发聊天失败: "
                     + t.getMessage());
-            Bukkit.broadcastMessage(p.getDisplayName() + "§r: " + text);
+            for (Player o : Bukkit.getOnlinePlayers())
+                o.sendMessage("§f" + p.getName() + "§r: " + text);
         }
     }
 
@@ -3700,6 +3645,132 @@ public class Main extends JavaPlugin
         }
         return true;
     }
+
+    // =========================================================
+    // ★ 任务50（2026-10-03 修正）：无感切换 —— 服务端接管聊天栏 "/指令"
+    //
+    //   【为什么不能用 PlayerCommandPreprocessEvent】
+    //   Paper 26.x 的命令分发已重构为 Brigadier：
+    //     · net.minecraft.commands.Commands 走 PlayerCommandSendEvent
+    //       + fillUsableCommands(命令可用性过滤)
+    //     · PlayerCommandPreprocessEvent 只在
+    //       ServerGamePacketListenerImpl 里作为「遗留兼容路径」保留，
+    //       且 API 已标注 @Deprecated
+    //   实测：处理器注册成功、代码在 JAR 内，但日志一行都打不出来
+    //   -> 事件从未被调用，MONITOR/LOWEST 改优先级都无效。
+    //
+    //   【正确拦截点】
+    //   org.bukkit.event.command.UnknownCommandEvent
+    //     —— Paper 26.x 新链路里「未命中」的唯一拦截点，Cancellable，
+    //        取消后服务端不再输出 "Unknown or incomplete command"。
+    //
+    //   · 命中指令（含原版 + 插件，大小写不敏感）-> 服务端自己执行，本插件不干预
+    //   · 未命中 -> 取消事件压制原生提示，按普通聊天经插件管道转发公屏
+    // =========================================================
+
+
+
+    // =========================================================
+    // ★ 任务50（2026-10-03 修正）：无感切换 —— 服务端接管聊天栏 "/指令"
+    //
+    //   【为什么 PlayerCommandPreprocessEvent 不再可用】
+    //   Paper 26.x 把命令分发改成了 Brigadier：
+    //     · net.minecraft.commands.Commands.sendCommands ->
+    //       PlayerCommandSendEvent + fillUsableCommands（命令可用性过滤）
+    //     · PlayerCommandPreprocessEvent 仅在
+    //       ServerGamePacketListenerImpl 作为「遗留兼容路径」保留，
+    //       API 已标注 @Deprecated
+    //   实测：处理器注册成功、字节码在 JAR 内，但运行日志一行都打不出来
+    //   -> 事件从未被调用，改 MONITOR/LOWEST 优先级均无效。
+    //
+    //   【26.2 可用拦截点】
+    //   org.bukkit.event.command.UnknownCommandEvent
+    //     · getCommandLine():String  玩家原始命令行
+    //     · getSender():CommandSender
+    //     · getMessage():Component   ★ 父类是 org.bukkit.event.Event，
+    //       不能 setCancelled，但可以 setMessage() 改掉最终提示文案。
+    //     改 message 为空 -> 服务端不再向玩家输出
+    //     "Unknown or incomplete command"，压制原生 unknown。
+    //
+    //   · 命中指令（含原版 + 插件）-> 服务端自己执行，本插件不干预
+    //   · 未命中 -> 压制提示 + 按普通聊天经插件管道转发公屏
+    //   · 控制台不接管：控制台输错是运维操作，必须保留原声报错
+    // =========================================================
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onUnknownCommand(
+            org.bukkit.event.command.UnknownCommandEvent e) {
+        org.bukkit.command.CommandSender sender = e.getSender();
+        // ★ 控制台不接管
+        if (!(sender instanceof Player)) return;
+
+        String line = e.getCommandLine();
+        if (line == null) return;
+        String body = line.trim();
+        if (body.isEmpty()) return;
+        if (body.charAt(0) == '/') body = body.substring(1).trim();
+        if (body.isEmpty()) return;
+
+        Player p = (Player) sender;
+
+        // ---- 1) 大小写不敏感补执行 ----
+        if (dispatchCaseInsensitive(p, body)) {
+            suppressUnknown(e);
+            return;
+        }
+
+        // ---- 2) 确属未命中 -> 压制原生提示 + 转公屏 ----
+        suppressUnknown(e);
+        forwardAsChat(p, body);
+    }
+
+    /** 压制 "Unknown or incomplete command" 的最终输出（26.2 不可 cancel，只能改文案） */
+    private void suppressUnknown(
+            org.bukkit.event.command.UnknownCommandEvent e) {
+        try {
+            // ★ 26.2 的 setMessage(String) 收字符串（内部再转 TextComponent）
+            e.setMessage("");
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 大小写不敏感补执行：把 body 的首段小写后交给命令映射，
+     * 若确实存在该命令则分发执行并返回 true（表示已接管）。
+     * 服务端已用小写查过一次没命中 -> 这里只处理「输入为大写」的情形。
+     */
+    private boolean dispatchCaseInsensitive(Player p, String body) {
+        try {
+            int sp = body.indexOf(' ');
+            String label = sp < 0 ? body : body.substring(0, sp);
+            String lower = label.toLowerCase(java.util.Locale.ROOT);
+            if (label.equals(lower)) return false;   // 已是小写，服务端查过确实没有
+
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return false;
+            org.bukkit.command.Command hit = cm.getCommand(lower);
+            if (hit == null) hit = cm.getCommand("minecraft:" + lower);
+            if (hit == null) return false;
+
+            String rest = sp < 0 ? "" : body.substring(sp + 1);
+            final String dispatch = lower
+                    + (rest.isEmpty() ? "" : " " + rest);
+            // ★ 必须回主线程分发（事件在主线程但 scheduler 更稳，避免重入）
+            Bukkit.getScheduler().runTask(this, () -> {
+                try {
+                    Bukkit.dispatchCommand(p, dispatch);
+                } catch (Throwable t) {
+                    getLogger().warning("[无感切换] 指令分发失败: "
+                            + t.getMessage());
+                }
+            });
+            return true;
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 大小写补执行异常: "
+                    + t.getMessage());
+            return false;
+        }
+    }
+
 
     private void handleBanCommand(String rawCommand) {
         if (rawCommand.isEmpty()) return;
