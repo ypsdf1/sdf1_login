@@ -5405,19 +5405,34 @@ public class AreaProtection implements Listener {
                         || action == Action.RIGHT_CLICK_BLOCK);
                 if (isLeft || isRight) {
                     e.setCancelled(true);
-                    // ★ SN 归属校验（2026-10-03）：只认本人的圈地工具，防止借他人工具圈地后消耗掉别人的申领资格
+                    // ★ SN 归属 + 状态双校验（2026-10-03 两次收紧）：
+                    //   只认「登记在本人名下 + 状态 active」的圈地工具；
+                    //   注销 / 报失 / 非法绑定 / 补发了结 / 已销毁 一律不支持选区
+                    //   （isAreaAdmin 豁免）；无 SN、未在册同样拦截。
                     if (!isAreaAdmin(p)) {
                         SnManager snm = plugin.getSnManager();
                         String wandSn = (snm != null) ? snm.readSn(hand) : null;
                         Map<String, Object> wandRow = (wandSn != null) ? snm.getSn(wandSn) : null;
                         Object wandOwnerObj = (wandRow != null) ? wandRow.get("owner") : null;
                         String wandOwner = (wandOwnerObj == null) ? null : String.valueOf(wandOwnerObj);
-                        if (wandSn == null || wandOwner == null || wandOwner.isEmpty()
-                                || !samePlayer(wandOwner, p.getName())) {
-                            p.sendMessage("§c§l[防护] §f请使用你自己的圈地工具选区——"
-                                    + (wandSn == null
-                                        ? "该工具未绑定你本人，请用 §e/protect 工具 §f重新申领"
+                        boolean ownerOk = wandSn != null && wandRow != null
+                                && wandOwner != null && !wandOwner.isEmpty()
+                                && samePlayer(wandOwner, p.getName());
+                        if (!ownerOk) {
+                            String why = (wandSn == null
+                                    ? "该工具没有绑定 SN，请用 §e/protect 工具 §f重新申领"
+                                    : (wandOwner == null || wandOwner.isEmpty()
+                                        ? "该工具的 SN 未在登记簿中，请用 §e/protect 工具 §f重新申领"
                                         : "这是 §e" + wandOwner + " §f的圈地工具"));
+                            p.sendMessage("§c§l[防护] §f请使用你自己的圈地工具选区——" + why);
+                            return;
+                        }
+                        Object wandStatusObj = wandRow.get("status");
+                        String wandStatus = (wandStatusObj == null) ? null : String.valueOf(wandStatusObj);
+                        if (!SnManager.ST_ACTIVE.equals(wandStatus)) {
+                            p.sendMessage("§c§l[防护] §f该圈地工具的登记状态为 §e"
+                                    + snm.statusCn(wandStatus)
+                                    + "§f，不支持选区——请用 §e/protect 工具 §f重新申领");
                             return;
                         }
                     }

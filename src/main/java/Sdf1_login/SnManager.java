@@ -941,7 +941,11 @@ public class SnManager implements Listener {
 
     /**
      * 玩家拾取 4 类物品时探查：SN 登记的主人与拾取人不符 → 写 SQL 队列
-     * 等待自动同步（任务6），并按"非法形式传给其他玩家"永久绑定。
+     * 等待自动同步（任务6）并记日志告警。
+     *
+     * <p>★ 转移物品不锁 SN（2026-10-03 用户口径）：归属转移只留痕，
+     * 不再 bindIllegal——否则物品转一圈物归原主后，原主人会被永久锁定
+     * 无法使用/注销/补发。</p>
      */
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onPickup(EntityPickupItemEvent e) {
@@ -976,8 +980,10 @@ public class SnManager implements Listener {
                 String detail = "登记主=" + owner + " 实际拾取=" + p.getName();
                 enqueue("pickup_mismatch", sn, p.getName(), detail);
                 logSn(sn, type, "pickup_mismatch", p.getName(), detail);
-                bindIllegal(sn, "非法转移给 " + p.getName()
-                        + "（原登记主 " + owner + "）");
+                // ★ 转移物品不锁 SN（2026-10-03 用户口径）：只留痕告警，
+                //   不再 bindIllegal——否则物归原主后原主人无法使用。
+                p.sendMessage("§7[SN] 该" + typeName(type) + "的登记主是 §e"
+                        + owner + " §f，转移不改变归属");
             }
         } catch (Throwable t) {
             throttleErr("pickup:" + t.getMessage());
@@ -1336,7 +1342,8 @@ public class SnManager implements Listener {
      * 雪球菜单等管控物品一经机器发射即视为"已使用 / 分解"——永久锁定该 SN：
      * <ul>
      *   <li>不再发放：findActive 把 illegal 计入有效登记，同种类无法再申领；</li>
-     *   <li>不支持注销 / 补发：doCancel、doReissue 对 illegal 直接拒绝。</li>
+     *   <li>非强制不支持注销 / 补发：doCancel、doReissue 对 illegal 仅在
+     *       force=0 时拒绝；管理员强制可最终处置（解锁被卡死的名额）。</li>
      * </ul>
      * BlockDispenseEvent 在发射器与投掷器上都会触发（投掷器走同一条 dispense 逻辑）。
      */
@@ -2299,8 +2306,10 @@ public class SnManager implements Listener {
         Map<String, Object> row = getSn(sn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
-        // ★ 永久锁定的 SN（发射器发射消耗等）：不支持注销（2026-10-03）
-        if (ST_ILLEGAL.equals(str(row.get("status")))) {
+        // ★ 永久锁定的 SN（发射器发射消耗等）：非强制不支持注销（2026-10-03）。
+        //   管理员「强制注销」(force) 放行——否则被锁名额会把玩家永久卡死
+        //   （无法注销 / 补发 / 同种类再签发），强制操作按定义拥有最终处置权。
+        if (ST_ILLEGAL.equals(str(row.get("status"))) && !force) {
             logSn(sn, str(row.get("item_type")), "cancel_deny", player,
                     "SN已永久锁定（视为已使用/分解），不支持注销");
             return "该SN已被永久锁定（视为已使用/分解），不支持注销";
@@ -2340,8 +2349,9 @@ public class SnManager implements Listener {
         Map<String, Object> row = getSn(oldSn);
         if (row == null) return "SN不存在";
         String owner = str(row.get("owner"));
-        // ★ 永久锁定的 SN（发射器发射消耗等）：不支持补发（2026-10-03）
-        if (ST_ILLEGAL.equals(str(row.get("status")))) {
+        // ★ 永久锁定的 SN（发射器发射消耗等）：非强制不支持补发（2026-10-03）；
+        //   管理员强制补发放行（理由同 doCancel：强制=最终处置权，解锁死锁名额）
+        if (ST_ILLEGAL.equals(str(row.get("status"))) && !force) {
             logSn(oldSn, itemType, "reissue_deny", player,
                     "SN已永久锁定（视为已使用/分解），不支持补发");
             return "该SN已被永久锁定（视为已使用/分解），不支持补发";
@@ -2816,7 +2826,8 @@ public class SnManager implements Listener {
         return df.format(new Date(ms));
     }
 
-    private String statusCn(String s) {
+    /** SN 状态中文名（管理端回执、领地选区校验提示共用） */
+    public String statusCn(String s) {
         if (s == null) return "";
         if (ST_ACTIVE.equals(s)) return "有效";
         if (ST_DESTROYED.equals(s)) return "已销毁解绑";
