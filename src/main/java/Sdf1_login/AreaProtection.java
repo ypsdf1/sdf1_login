@@ -9940,9 +9940,17 @@ public class AreaProtection implements Listener {
         }
     }
 
+    /**
+     * ★ 两阶段执行：
+     *   阶段1（主线程）：只做 Bukkit 侧判定（封禁表 / 在线状态），不碰 DB；
+     *   阶段2（异步）：userExists 判定 + deleteAreaFromDb 落库 + 触发 PHP 同步（含 HTTP）。
+     *   上报要遍历在线玩家，回主线程。
+     */
     private void sweepBannedOwnerLands() {
         if (areas.isEmpty()) return;
-        DatabaseManager dbMgr = plugin.getDb();
+
+        // ---- 阶段1（主线程，纯 Bukkit 只读判定）----
+        final List<Object[]> candidates = new ArrayList<>();
         for (AreaConfig ac : new ArrayList<>(areas.values())) {
             if (ac == null || ac.owner == null || ac.owner.isEmpty()) continue;
             // 快照遍历期间已被删除/重载的跳过
@@ -9964,31 +9972,55 @@ public class AreaProtection implements Listener {
                 }
             } catch (Exception ignored) {}
 
-            // 3) 账户已注销（在线领主一律跳过，避免误删）
             if (reason == null) {
-                if (dbMgr == null) continue;
+                // 3) 账户已注销（在线领主一律跳过，避免误删）—— 在线判定是 Bukkit API
                 Player ownerOnline = Bukkit.getPlayerExact(ac.owner);
                 if (ownerOnline != null && ownerOnline.isOnline()) continue;
-                try {
-                    if (!dbMgr.userExists(ac.owner)) {
-                        reason = "账户已注销";
-                    }
-                } catch (Exception ignored) {}
             }
-
-            if (reason == null) continue;
-
-            // 不退款、不注销账号，直接强制删除
-            cancelPendingDelete(ac.name);
-            deleteAreaFromDb(ac.name);
-            areas.remove(ac.name);
-            String coord = ac.world + " " + ac.x1 + "," + ac.z1 + " ~ " + ac.x2 + "," + ac.z2;
-            plugin.getLogger().warning("[防护] 自动清理领地 " + ac.name + "：领主 " + ac.owner
-                    + " 因" + reason + "，已强制删除（不退款）坐标 " + coord);
-            reportLandRemovalToAdmins("§6§l[防护-自动清理] §f领主 §e" + ac.owner
-                    + " §f因§c" + reason + " §f已自动删除其领地 §e" + ac.name
-                    + " §7(不退款) [" + coord + "]");
+            // reason 为 null = 还需异步阶段用 DB 判定是否注销
+            candidates.add(new Object[]{ac, reason});
         }
+        if (candidates.isEmpty()) return;
+
+        final DatabaseManager dbMgr = plugin.getDb();
+        // ---- 阶段2（异步：DB 判定 + 删除落库 + PHP 同步）----
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            final List<String> reports = new ArrayList<>();
+            try {
+                for (Object[] o : candidates) {
+                    AreaConfig ac = (AreaConfig) o[0];
+                    String reason = (String) o[1];
+                    if (reason == null) {
+                        if (dbMgr == null) continue;
+                        try {
+                            if (!dbMgr.userExists(ac.owner)) {
+                                reason = "账户已注销";
+                            }
+                        } catch (Exception ignored) {}
+                        if (reason == null) continue;
+                    }
+                    if (areas.get(ac.name) != ac) continue;
+
+                    // 不退款、不注销账号，直接强制删除
+                    cancelPendingDelete(ac.name);
+                    deleteAreaFromDb(ac.name);
+                    areas.remove(ac.name);
+                    String coord = ac.world + " " + ac.x1 + "," + ac.z1 + " ~ " + ac.x2 + "," + ac.z2;
+                    plugin.getLogger().warning("[防护] 自动清理领地 " + ac.name + "：领主 " + ac.owner
+                            + " 因" + reason + "，已强制删除（不退款）坐标 " + coord);
+                    reports.add("§6§l[防护-自动清理] §f领主 §e" + ac.owner
+                            + " §f因§c" + reason + " §f已自动删除其领地 §e" + ac.name
+                            + " §7(不退款) [" + coord + "]");
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[防护] 领地自动清理(异步阶段)异常: " + e.getMessage());
+            }
+            if (reports.isEmpty()) return;
+            // ---- 阶段3（回主线程上报：遍历在线玩家 + OP/管理员判定）----
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                for (String m : reports) reportLandRemovalToAdmins(m);
+            });
+        });
     }
 
     /**

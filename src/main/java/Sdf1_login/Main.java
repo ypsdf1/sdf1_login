@@ -532,13 +532,22 @@ public class Main extends JavaPlugin
         radio.startMainRadio();
         new BukkitRunnable() {
             public void run() {
-                if (questTracker == null) return;
+                final QuestTracker qt = questTracker;
+                if (qt == null) return;
+                // ★ QuestStorage.getCondition 是同步 SELECT（SQLITE_BUSY 时
+                //   会在调用线程 sleep 重试）-> 主线程只攒名单，DB 全部下沉异步
+                final List<String> names = new ArrayList<>();
                 for (Player p :
                         Bukkit.getOnlinePlayers()) {
                     if (!isFrozen(p))
-                        questTracker.onPlayTime(
-                                p.getName(), 30000L);
+                        names.add(p.getName());
                 }
+                if (names.isEmpty()) return;
+                Bukkit.getScheduler()
+                        .runTaskAsynchronously(Main.this, () -> {
+                            for (String n : names)
+                                qt.onPlayTime(n, 30000L);
+                        });
             }
         }.runTaskTimer(this, 600L, 600L);
 // [新增] Printer 文件清理（每小时检测一次）
@@ -547,7 +556,8 @@ public class Main extends JavaPlugin
                 if (bondPrinter != null)
                     bondPrinter.cleanupOldFiles();
             }
-        }.runTaskTimer(this, 1200L, 72000L);
+            // ★ 纯文件 listFiles/delete -> 异步，不占主线程
+        }.runTaskTimerAsynchronously(this, 1200L, 72000L);
 
         // 12 ===PVP===
         pvpManager = new PVPManager(this);
@@ -670,7 +680,8 @@ public class Main extends JavaPlugin
         // 这里简单采用「每小时检测一次，命中当天 0 点窗口即清理」过于繁琐，
         // 故改为每日定时：延迟 1 小时后启动，之后每 24 小时执行一次。
         long dayTicks = 24L * 60L * 60L * 20L;
-        getServer().getScheduler().runTaskTimer(this,
+        // ★ 纯 DB 清理 + 日志，主线程跑会随保留数据量增长而卡顿 -> 异步
+        getServer().getScheduler().runTaskTimerAsynchronously(this,
                 () -> {
                     try {
                         long cutoff = System.currentTimeMillis()
@@ -1009,8 +1020,11 @@ public class Main extends JavaPlugin
     private void startLoginReminder() {
         new BukkitRunnable() {
             public void run() {
+                // ★ 主线程只做 Bukkit 操作（踢出/自动登录/在线判定），
+                //   db.userExists 是同步 DB → 攒名单异步查，回主线程发提示
                 Iterator<UUID> it =
                         joinTime.keySet().iterator();
+                final List<String> needCheck = new ArrayList<>();
                 while (it.hasNext()) {
                     UUID uuid = it.next();
                     Player p = Bukkit.getPlayer(uuid);
@@ -1033,13 +1047,28 @@ public class Main extends JavaPlugin
                         continue;
                     }
 
-                    // 已注册→提示登录，未注册→提示注册
-                    if (db.userExists(p.getName()))
-                        p.sendMessage(config.msg(
-                                "not_logged_in"));
-                    else
-                        p.sendMessage(config.msg(
-                                "not_registered"));
+                    // 已注册→提示登录，未注册→提示注册（DB 查询下沉到异步）
+                    needCheck.add(p.getName());
+                }
+
+                if (!needCheck.isEmpty()) {
+                    Bukkit.getScheduler().runTaskAsynchronously(Main.this, () -> {
+                        final Map<String, Boolean> existsMap = new LinkedHashMap<>();
+                        for (String n : needCheck) {
+                            existsMap.put(n, db.userExists(n));
+                        }
+                        Bukkit.getScheduler().runTask(Main.this, () -> {
+                            for (Map.Entry<String, Boolean> e : existsMap.entrySet()) {
+                                Player pl = Bukkit.getPlayerExact(e.getKey());
+                                if (pl == null || !pl.isOnline()) continue;
+                                if (loggedIn.contains(pl.getName())) continue;
+                                pl.sendMessage(config.msg(
+                                        Boolean.TRUE.equals(e.getValue())
+                                                ? "not_logged_in"
+                                                : "not_registered"));
+                            }
+                        });
+                    });
                 }
             }
         }.runTaskTimer(this, 200L, 200L);
@@ -1067,10 +1096,13 @@ public class Main extends JavaPlugin
     private void startTicketAutoProcess() {
         new BukkitRunnable() {
             public void run() {
-                if (ticket != null)
-                    ticket.autoProcessCompleted();
+                // ★ autoProcessCompleted 是「多轮同步 DB 查询 + 写回」
+                //   -> 整体异步；内部所有 Bukkit 操作自行回主线程
+                final TicketManager tk = ticket;
+                if (tk != null)
+                    tk.autoProcessCompleted();
             }
-        }.runTaskTimer(this, 6000L, 6000L);
+        }.runTaskTimerAsynchronously(this, 6000L, 6000L);
     }
 
     // ===== Utils =====
@@ -1281,6 +1313,33 @@ public class Main extends JavaPlugin
         return t.contains(":");
     }
 
+    /**
+     * ★ 注册校验：封禁目标必须在 login.db 的 users 表中已注册，
+     *   未注册直接中止并告知执行者「玩家不存在」。
+     *   IP 目标（isIpTarget）不参与校验；DB 未就绪或查询异常时放行（只告警）。
+     * 返回 true = 放行；false = 已提示，调用方应直接 return。
+     */
+    private boolean ensureRegistered(CommandSender sender, String target) {
+        if (target == null || target.isEmpty()) return true;
+        if (isIpTarget(target)) return true;   // 纯 IP 不是玩家名
+        DatabaseManager d = getDb();
+        if (d == null) return true;            // DB 未就绪不阻断封禁
+        boolean exists;
+        try {
+            exists = d.userExistsIgnoreCase(target);
+        } catch (Exception ex) {
+            getLogger().warning("[封禁防护] 注册校验异常(放行): "
+                    + ex.getMessage());
+            return true;
+        }
+        if (!exists) {
+            sender.sendMessage(
+                    "§c§l[封禁] §f玩家不存在: §e" + target);
+            return false;
+        }
+        return true;
+    }
+
     /** 统一封禁入口：根据目标自动选择 NAME / IP 封禁名单 */
     private void applyBan(CommandSender sender, String target,
                           String reason, Long expireMs) {
@@ -1416,6 +1475,8 @@ public class Main extends JavaPlugin
             return;
         }
         String target = args[0];
+        // ★ 安全防护：目标必须已注册，否则直接返回「玩家不存在」
+        if (!ensureRegistered(sender, target)) return;
         String durStr = args[1];
         StringBuilder reason = new StringBuilder();
         for (int i = 2; i < args.length; i++) {
@@ -1473,6 +1534,8 @@ public class Main extends JavaPlugin
             return;
         }
         String target = args[0];
+        // ★ 安全防护：目标必须已注册，否则直接返回「玩家不存在」
+        if (!ensureRegistered(sender, target)) return;
         int reasonStart = 1;
         if (args.length > 1
                 && (args[1].equals("永久")
@@ -3394,6 +3457,203 @@ public class Main extends JavaPlugin
     public void onServerCommand(org.bukkit.event.server.ServerCommandEvent e) {
         if (e.isCancelled()) return;
         handleBanCommand(e.getCommand().trim());
+    }
+
+    // =========================================================
+    // ★ 任务50：无感切换 —— 服务端接管聊天栏 "/指令"
+    //   · 命中服务器指令（含原版 + 插件）→ 直接执行
+    //   · 指令名大小写不敏感（/SDF1_login 与 /sdf1_login 等价）
+    //   · 未命中 → 取消事件（压制原生 "Unknown command"），
+    //     按普通聊天经插件聊天管道转发公屏
+    //   优先级 MONITOR：晚于 HIGHEST 的冻结守卫，
+    //   未登录玩家的未知命令已先被拦下，不会绕过登录变成聊天。
+    // =========================================================
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onSeamlessCommandSwitch(
+            org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
+        if (e.isCancelled()) return;
+        Player p = e.getPlayer();
+        String msg = e.getMessage().trim();
+        if (msg.isEmpty() || msg.charAt(0) != '/') return;
+        String body = msg.substring(1).trim();
+        if (body.isEmpty()) return;
+
+        org.bukkit.command.CommandMap cm = getCommandMapSafe();
+        if (cm == null) return;   // 拿不到命令映射 -> 维持原行为
+
+        String label = body.split(" ", 2)[0];
+        String lowerLabel = label.toLowerCase(java.util.Locale.ROOT);
+        // 命中判定统一用小写：SimpleCommandMap 的 key 本身就是小写
+        org.bukkit.command.Command hit = cm.getCommand(lowerLabel);
+        if (hit == null) hit = cm.getCommand("minecraft:" + lowerLabel);
+
+        if (hit != null) {
+            // ★ 指令大小写不敏感：原样 label 查不到但小写查得到
+            //   -> 取消原事件，用小写 label 重新分发一次
+            if (!label.equals(lowerLabel)
+                    && cm.getCommand(label) == null) {
+                e.setCancelled(true);
+                String rest = body.substring(label.length());
+                try {
+                    Bukkit.dispatchCommand(p, lowerLabel + rest);
+                } catch (Throwable t) {
+                    getLogger().warning("[无感切换] 指令分发失败: "
+                            + t.getMessage());
+                }
+            }
+            return;   // 命中 -> 直接执行，交还原版流程
+        }
+
+        // ★ 未命中：压制原生 "Unknown command"，转普通聊天
+        e.setCancelled(true);
+        forwardAsChat(p, body);
+    }
+
+    /**
+     * 反射取命令映射（Bukkit.getCommandMap 为 Paper API，
+     * 反射可同时兼容 Spigot / CraftServer 实现）。拿不到返回 null。
+     */
+    private org.bukkit.command.CommandMap getCommandMapSafe() {
+        try {
+            java.lang.reflect.Method m =
+                    Bukkit.class.getMethod("getCommandMap");
+            Object cm = m.invoke(null);
+            if (cm instanceof org.bukkit.command.CommandMap)
+                return (org.bukkit.command.CommandMap) cm;
+        } catch (Throwable ignored) {
+        }
+        try {
+            java.lang.reflect.Method m = Bukkit.getServer().getClass()
+                    .getMethod("getCommandMap");
+            Object cm = m.invoke(Bukkit.getServer());
+            if (cm instanceof org.bukkit.command.CommandMap)
+                return (org.bukkit.command.CommandMap) cm;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 把「未命中指令」的文本当作玩家聊天，走插件既有聊天管道
+     * （验证码 / 敏感词过滤 / 自定义格式 / 其它插件监听）。
+     */
+    private void forwardAsChat(Player p, String text) {
+        if (text == null || text.isEmpty()) return;
+        try {
+            java.util.Set<Player> rcpt =
+                    new java.util.HashSet<>(Bukkit.getOnlinePlayers());
+            org.bukkit.event.player.AsyncPlayerChatEvent ev =
+                    new org.bukkit.event.player.AsyncPlayerChatEvent(
+                            false, p, text, rcpt);
+            Bukkit.getPluginManager().callEvent(ev);
+            if (ev.isCancelled()) return;
+            String fmt = ev.getFormat();
+            // 新版 API 中 recipients 可能为空 -> 兜底全服
+            java.util.Set<Player> rs = ev.getRecipients();
+            if (rs == null || rs.isEmpty())
+                rs = new java.util.HashSet<>(Bukkit.getOnlinePlayers());
+            for (Player r : rs) {
+                r.sendMessage(String.format(fmt,
+                        p.getDisplayName(), ev.getMessage()));
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 转发聊天失败: "
+                    + t.getMessage());
+            Bukkit.broadcastMessage(p.getDisplayName() + "§r: " + text);
+        }
+    }
+
+    // =========================================================
+    // ★ 任务48：改判系统 + 注册校验（原版 /ban 执行前拦截）
+    //   优先级 HIGH —— 早于 MONITOR 的 handleBanCommand，
+    //   取消后原版命令根本不执行 => 天然压制 MC 原生提示。
+    // =========================================================
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onPlayerBanGuard(
+            org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
+        if (e.isCancelled()) return;
+        String msg = e.getMessage().trim();
+        if (msg.isEmpty() || msg.charAt(0) != '/') return;
+        if (!guardVanillaBan(e.getPlayer(), msg.substring(1)))
+            e.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onConsoleBanGuard(
+            org.bukkit.event.server.ServerCommandEvent e) {
+        if (e.isCancelled()) return;
+        if (!guardVanillaBan(e.getSender(), e.getCommand().trim()))
+            e.setCancelled(true);
+    }
+
+    /**
+     * 原版 /ban、/ban-ip 前置守卫。
+     * 返回 true = 放行交回原版；false = 已处理/已拒绝（调用方取消事件）。
+     */
+    private boolean guardVanillaBan(CommandSender sender,
+                                    String rawCommand) {
+        if (rawCommand == null || rawCommand.isEmpty()) return true;
+        String lower = rawCommand.toLowerCase();
+        // 兼容 minecraft:ban / minecraft:ban-ip 形式
+        if (lower.startsWith("minecraft:")) {
+            rawCommand = rawCommand.substring(10);
+            lower = lower.substring(10);
+        }
+        boolean isNameBan = lower.equals("ban")
+                || lower.startsWith("ban ");
+        boolean isIpBan = lower.equals("ban-ip")
+                || lower.startsWith("ban-ip ")
+                || lower.equals("banip")
+                || lower.startsWith("banip ");
+        if (!isNameBan && !isIpBan) return true;   // 非封禁命令放行
+
+        String[] parts = rawCommand.split("\\s+");
+        if (parts.length < 2) return true;          // 参数不足交回原版提示
+        String target = parts[1];
+        if (isIpTarget(target)) return true;        // 纯 IP 目标不校验注册
+
+        // 无权限玩家直接交回原版（原版自行拒绝），不泄露注册信息
+        if (sender instanceof Player && !isPrivileged(sender)
+                && !sender.hasPermission("minecraft:ban")
+                && !sender.hasPermission("minecraft:op")) {
+            return true;
+        }
+
+        // ---- 1) 注册校验：未注册 -> 拒绝并提示 ----
+        if (!ensureRegistered(sender, target)) return false;
+
+        // ---- 2) 改判：目标处于「生效中的临时封禁」时，
+        //         原版 /ban 直接改判为永久封禁 ----
+        if (isNameBan) {
+            try {
+                org.bukkit.BanEntry<?> old =
+                        Bukkit.getBanList(org.bukkit.BanList.Type.NAME)
+                                .getBanEntry(target);
+                java.util.Date exp = old == null
+                        ? null : old.getExpiration();
+                if (exp != null
+                        && exp.getTime() > System.currentTimeMillis()) {
+                    StringBuilder rb = new StringBuilder();
+                    for (int i = 2; i < parts.length; i++) {
+                        if (rb.length() > 0) rb.append(' ');
+                        rb.append(parts[i]);
+                    }
+                    String reason = rb.length() > 0 ? rb.toString()
+                            : "违反服务器规则（临时封禁改判为永久）";
+                    // 取消原版执行 -> 原生 "Banned player ..." 不再出现
+                    applyBan(sender, target, reason, null);
+                    sender.sendMessage(
+                            "§6§l[改判] §f目标 §e" + target
+                                    + " §f正处于临时封禁中，"
+                                    + "§c已直接改判为永久封禁");
+                    return false;
+                }
+            } catch (Exception ex) {
+                getLogger().warning("[改判] 读取封禁条目异常: "
+                        + ex.getMessage());
+            }
+        }
+        return true;
     }
 
     private void handleBanCommand(String rawCommand) {

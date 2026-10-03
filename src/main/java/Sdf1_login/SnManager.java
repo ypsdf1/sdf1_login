@@ -1416,14 +1416,33 @@ public class SnManager implements Listener {
      */
     private void startAutoSweepTask() {
         try {
+            // ★ autoSweep 必须主线程（读写玩家背包），且内部含多次 SQLite 点查。
+            //   原实现一 tick 内清点「全部」在线玩家，人数一多就是主线程尖峰 ->
+            //   改为「每 tick 只清点 1 名玩家」的轮转分片，仍保持约 60 秒一轮：
+            //   单 tick 成本 = 1 名玩家，而非全服。
+            final int[] cursor = {0};
+            final long[] roundStart =
+                    {System.currentTimeMillis()};
             Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
                 @Override
                 public void run() {
+                    long now = System.currentTimeMillis();
+                    // 每 60 秒重开一轮
+                    if (now - roundStart[0] >= 60_000L) {
+                        cursor[0] = 0;
+                        roundStart[0] = now;
+                    }
                     List<Player> online =
                             new ArrayList<>(Bukkit.getOnlinePlayers());
-                    for (Player p : online) autoSweep(p, false);
+                    if (online.isEmpty()) {
+                        cursor[0] = 0;
+                        return;
+                    }
+                    if (cursor[0] >= online.size()) return; // 本轮已清点完
+                    Player p = online.get(cursor[0]++);
+                    autoSweep(p, false);
                 }
-            }, 200L, 1200L);
+            }, 200L, 1L);
         } catch (Throwable t) {
             throttleErr("sweeptimer:" + t.getMessage());
         }
@@ -1438,7 +1457,9 @@ public class SnManager implements Listener {
      */
     private void startCustodySweepTask() {
         try {
-            Bukkit.getScheduler().runTaskTimer(plugin, new Runnable() {
+            // ★ sweepCustody 是纯 DB（UPDATE + SELECT），改异步定时器
+            //   内部 lostReported 是 ConcurrentHashMap、日志线程安全
+            Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, new Runnable() {
                 @Override
                 public void run() {
                     sweepCustody();

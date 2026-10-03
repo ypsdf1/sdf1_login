@@ -600,6 +600,29 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * ★ 封禁防护用：大小写不敏感的注册校验。
+     * 返回 false 仅表示「确认未注册」；SQL 异常时返回 true 并告警
+     * （宁可放行，也不因 DB 抖动误拒正常的封禁操作）。
+     */
+    public boolean userExistsIgnoreCase(String name) {
+        if (name == null || name.isEmpty()) return false;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM users "
+                            + "WHERE player_name=? "
+                            + "COLLATE NOCASE");
+            ps.setString(1, name);
+            boolean r = ps.executeQuery().next();
+            ps.close();
+            return r;
+        } catch (SQLException e) {
+            logger.warning("[封禁防护] 注册校验查询失败(放行): "
+                    + e.getMessage());
+            return true;
+        }
+    }
+
     public void createUser(String name, String hash,
                            String salt) {
         try {

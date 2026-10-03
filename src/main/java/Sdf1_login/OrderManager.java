@@ -1340,10 +1340,22 @@ public class OrderManager implements Listener {
             } if (cur != null && cur.uuid != null) orders.add(cur); br.close();
         } catch (Exception e) { plugin.getLogger().warning("[Order]加载失败: " + e.getMessage()); }
     }
+    /** 写盘互斥锁：与 orders 锁分离，避免持 orders 锁做文件 IO（异步清理写盘时主线程 add 会被卡） */
+    private final Object saveLock = new Object();
+
     private void saveOrders() {
+        // ★ 先在 orders 锁内取快照（极快），再持 saveLock 写盘
+        //   ① 主线程 recordOrder 的 add 不会被慢速写盘阻塞
+        //   ② 主线程与异步清理任务不会同时写 orders.dat 互相截断
+        final List<OrderRecord> snap;
+        synchronized (orders) { snap = new ArrayList<>(orders); }
+        synchronized (saveLock) { saveOrdersTo(snap); }
+    }
+
+    private void saveOrdersTo(List<OrderRecord> snap) {
         File f = new File(plugin.getDataFolder(), "orders.dat");
         try { PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8));
-            synchronized (orders) { for (OrderRecord r : orders) { pw.println("==");
+            { for (OrderRecord r : snap) { pw.println("==");
                 pw.println("id=" + r.orderId); pw.println("uuid=" + r.uuid); pw.println("player=" + r.player);
                 pw.println("totalOriginal=" + r.totalOriginal); pw.println("totalPaid=" + r.totalPaid);
                 pw.println("discount=" + r.discount); pw.println("discountType=" + nn(r.discountType));
@@ -1355,7 +1367,9 @@ public class OrderManager implements Listener {
             } } pw.flush(); pw.close();
         } catch (Exception e) { plugin.getLogger().warning("[Order]保存失败: " + e.getMessage()); }
     }
-    private void startCleanupTask() { new BukkitRunnable() { public void run() { synchronized (orders) { if (orders.removeIf(OrderManager.this::isExpired)) saveOrders(); } } }.runTaskTimer(plugin, 36000L, 36000L); }
+    // ★ 过期清理 = 遍历 + 全量落盘（文件 IO）→ 异步定时器；
+    //   removeIf 在 orders 锁内完成即释放，写盘走 saveLock，不长期占着 orders 锁
+    private void startCleanupTask() { new BukkitRunnable() { public void run() { boolean changed; synchronized (orders) { changed = orders.removeIf(OrderManager.this::isExpired); } if (changed) saveOrders(); } }.runTaskTimerAsynchronously(plugin, 36000L, 36000L); }
     /**
      * 将小票书塞入潜影盒
      */

@@ -3460,33 +3460,44 @@ public class WebManager {
 
     /**
      * 4. 注册账号到Web端
+     * ★ 内部异步：调用点在主线程（Web注册回调 runTask 里），
+     *   HTTP 同步（token + register.php POST，10s 超时）会卡死 tick。
      */
     public void syncRegistration(String playerName, String passwordHash, String salt, String email, String ip) {
         if (!enabled) return;
 
-        try {
-            String token = generateAndSyncToken(playerName, "register");
+        // 参数在 lambda 内只读，effectively final；email/ip 可能为 null，先落地
+        final String fPlayer = playerName;
+        final String fHash = passwordHash;
+        final String fSalt = salt;
+        final String fEmail = email != null ? email : "";
+        final String fIp = ip != null ? ip : "";
 
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("player", playerName);
-            body.put("password_hash", passwordHash);
-            body.put("salt", salt);
-            body.put("email", email != null ? email : "");
-            body.put("ip", ip != null ? ip : "");
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                String token = generateAndSyncToken(fPlayer, "register");
 
-            String response = httpPostWithToken("api/register.php?action=register", token, body);
-            if (response != null) {
-                Map<String, Object> result = parseJson(response);
-                Boolean success = (Boolean) result.get("success");
-                if (Boolean.TRUE.equals(success)) {
-                    plugin.getLogger().info("[Web通信] 注册同步成功: " + playerName);
-                } else {
-                    plugin.getLogger().warning("[Web通信] 注册同步失败: " + result.get("message"));
+                Map<String, Object> body = new LinkedHashMap<>();
+                body.put("player", fPlayer);
+                body.put("password_hash", fHash);
+                body.put("salt", fSalt);
+                body.put("email", fEmail);
+                body.put("ip", fIp);
+
+                String response = httpPostWithToken("api/register.php?action=register", token, body);
+                if (response != null) {
+                    Map<String, Object> result = parseJson(response);
+                    Boolean success = (Boolean) result.get("success");
+                    if (Boolean.TRUE.equals(success)) {
+                        plugin.getLogger().info("[Web通信] 注册同步成功: " + fPlayer);
+                    } else {
+                        plugin.getLogger().warning("[Web通信] 注册同步失败: " + result.get("message"));
+                    }
                 }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[Web通信] 注册同步异常: " + e.getMessage());
             }
-        } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 注册同步异常: " + e.getMessage());
-        }
+        });
     }
 
     /**
@@ -6608,11 +6619,12 @@ public class WebManager {
                 // 标记为已处理
                 processedWebLoginRequests.put(reqId, System.currentTimeMillis());
 
-                // 在主线程验证密码
+                // ★ 异步验证密码：handleWebPasswordVerify 是纯 DB（login.db），
+                //   原来 runTask 到主线程跑同步查询，数据量涨起来会顶 tick
                 final String fReqId = reqId;
                 final String fName = playerName;
                 final String fPwd = password;
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
                         String result = plugin.handleWebPasswordVerify(fName, fPwd);
                         plugin.getLogger().info("[Web密码验证] 结果: player=" + fName + " result=" + result);
@@ -6926,7 +6938,9 @@ public class WebManager {
                         // 现在：拉取→立即ack（写confirmed表）→处理→confirm（保险）
                         ackTransaction(txId, type);
 
-                        // 在主线程处理交易
+                        // 在主线程处理交易（Bukkit 发货/背包操作必须主线程）
+                        // ★ 交易内的 HTTP（confirm/refund）已由 confirmTransaction/
+                        //   writeRefundTransaction 改为异步投递，主线程不再等待网络。
                         final String fTxId = txId;
                         final String fName = playerName;
                         final String fType = type;
@@ -7645,7 +7659,15 @@ public class WebManager {
     }
 
     /**
-     * 确认交易已处理（同步调用，确保PHP收到确认后才返回，防止重启后重复发货）
+     * 确认交易已处理。
+     *
+     * <p>★ 2026-10-03 主线程零HTTP改造：本地去重标记仍然同步写入，
+     * 但上报 PHP 的 doPost（HttpClient.send，10 秒超时）改丢异步线程。
+     * 原实现被 processWebTransaction 调用，而后者是被
+     * Bukkit.getScheduler().runTask 派回主线程执行的 —— 后端一慢，
+     * 主线程就被 cfHttpClient.send 卡满 10 秒，触发
+     * "The server has not responded for 10 seconds" 线程转储（线上报错根因）。
+     * 重启防重不受影响：confirmedTxIds 同步写入 + 拉取阶段 ackTransaction 已先行落库。
      */
     private void confirmTransaction(String txId) {
         try {
@@ -7653,9 +7675,27 @@ public class WebManager {
             String bodyJson = "{\"tx_id\":\"" + txId + "\"}";
             String postUrl = webBaseUrl + "/api/sync.php?action=confirm_transaction&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            doPost(postUrl, bodyJson);
+            postAsyncFireAndForget("[Web交易] 确认交易 " + txId, postUrl, bodyJson);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易] 确认交易 " + txId + " 失败（已标记本地已确认，不会重复处理）: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 异步 POST 上报（fire-and-forget）：结果只用于记日志的场合，
+     * 绝不在主线程同步等待 HTTP。
+     */
+    private void postAsyncFireAndForget(final String tag, final String url, final String body) {
+        try {
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    doPost(url, body);
+                } catch (Exception e) {
+                    plugin.getLogger().warning(tag + " 异步上报失败: " + e.getMessage());
+                }
+            });
+        } catch (Throwable t) {
+            plugin.getLogger().warning(tag + " 无法投递异步上报: " + t.getMessage());
         }
     }
 
@@ -7663,17 +7703,25 @@ public class WebManager {
      * 写入退款记录到 PHP 端（通过 sync.php），让 PHP 自动退款+恢复库存。
      * 用于购物车发货部分/全部失败时的整单退款。
      */
-    private void writeRefundTransaction(String playerName, int amount, String origTxId, String reason, String payMode) {
+    private void writeRefundTransaction(final String playerName, final int amount, final String origTxId,
+                                        final String reason, final String payMode) {
         try {
-            String bodyJson = "{\"player_name\":\"" + playerName
+            final String bodyJson = "{\"player_name\":\"" + playerName
                     + "\",\"amount\":" + amount
                     + ",\"orig_tx_id\":\"" + origTxId
                     + "\",\"reason\":\"" + reason.replace("\"", "'")
                     + "\",\"pay_mode\":\"" + (payMode != null ? payMode : "bond") + "\"}";
-            String postUrl = webBaseUrl + "/api/sync.php?action=write_shop_refund&secret="
+            final String postUrl = webBaseUrl + "/api/sync.php?action=write_shop_refund&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
-            String resp = doPost(postUrl, bodyJson);
-            plugin.getLogger().info("[Web交易] 已写入退款记录: 玩家=" + playerName + " 金额=" + amount + " 原交易#" + origTxId + " 响应=" + resp);
+            // ★ 主线程零HTTP：退款上报同样丢异步（结果仅记日志，不影响发货流程）
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    String resp = doPost(postUrl, bodyJson);
+                    plugin.getLogger().info("[Web交易] 已写入退款记录: 玩家=" + playerName + " 金额=" + amount + " 原交易#" + origTxId + " 响应=" + resp);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易] 写入退款记录失败: " + e.getMessage());
+                }
+            });
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易] 写入退款记录失败: " + e.getMessage());
         }
@@ -7919,15 +7967,21 @@ public class WebManager {
      * 直接写入 PHP shop_config 表（secret 认证），随后由 pullShopConfig 定时器刷新本地缓存
      */
     public void pushShopConfig(String key, String value) {
-        try {
-            String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_config&secret="
-                    + java.net.URLEncoder.encode(secretKey, "UTF-8")
-                    + "&key=" + java.net.URLEncoder.encode(key, "UTF-8")
-                    + "&value=" + java.net.URLEncoder.encode(value, "UTF-8");
-            doGet(urlStr);
-        } catch (Exception e) {
-            plugin.getLogger().warning("[配置推送] 保存商店配置失败: " + e.getMessage());
-        }
+        // ★ 调用点在命令处理（主线程）：doGet 有 10s 超时，同步执行会卡死 tick
+        //   沿用项目惯例走 submitWebTask（webExecutor），熔断打开时静默跳过
+        final String fKey = key;
+        final String fValue = value;
+        submitWebTask("pushShopConfig-" + fKey, () -> {
+            try {
+                String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_config&secret="
+                        + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                        + "&key=" + java.net.URLEncoder.encode(fKey, "UTF-8")
+                        + "&value=" + java.net.URLEncoder.encode(fValue, "UTF-8");
+                doGet(urlStr);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[配置推送] 保存商店配置失败: " + e.getMessage());
+            }
+        });
     }
 
     /**
@@ -8442,7 +8496,8 @@ public class WebManager {
 
                 plugin.getLogger().info("[Web注册] 处理Web注册请求: " + playerName + " (ID:" + reqId + ")");
 
-                // 在主线程创建游戏账号
+                // ★ 异步创建游戏账号：主体是 DB 写 + HTTP 同步，
+                //   只有"在线玩家自动登录"必须回主线程（Bukkit API）
                 final String fReqId = reqId;
                 final String fName = playerName;
                 final String fHash = passwordHash;
@@ -8450,7 +8505,7 @@ public class WebManager {
                 final String fEmail = email != null ? email : "";
                 final String fIp = ipAddress != null ? ipAddress : "";
 
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
                         // 检查玩家是否已注册
                         DatabaseManager dbMgr = plugin.getDb();
@@ -8485,19 +8540,19 @@ public class WebManager {
                             dbMgr.setField(fName, "register_ip", fIp);
                         }
 
-                        // ★ 如果玩家当前在线，自动登录
-                        Player onlinePlayer = Bukkit.getPlayer(fName);
-                        if (onlinePlayer != null && onlinePlayer.isOnline()) {
-                            plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前在线，执行自动登录");
-                            Bukkit.getScheduler().runTask(plugin, () -> {
+                        // ★ 如果玩家当前在线，自动登录 —— Bukkit API 必须主线程
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            Player onlinePlayer = Bukkit.getPlayer(fName);
+                            if (onlinePlayer != null && onlinePlayer.isOnline()) {
+                                plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前在线，执行自动登录");
                                 plugin.autoLogin(onlinePlayer, "web_register");
                                 onlinePlayer.sendMessage("§a[Sdf1_login] §fWeb注册成功，已自动登录！");
-                            });
-                        } else {
-                            plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前不在线");
-                        }
+                            } else {
+                                plugin.getLogger().info("[Web注册] 玩家 " + fName + " 当前不在线");
+                            }
+                        });
 
-                        // 同步注册到Web端
+                        // 同步注册到Web端（方法内部已异步）
                         syncRegistration(fName, fHash, fSalt, fIp, fEmail);
 
                         // 同步密码凭证到Web端（通过DB队列）
@@ -8591,7 +8646,8 @@ public class WebManager {
 
                 plugin.getLogger().info("[Web注册] 发现未同步用户: " + fName + "，正在补全到本地数据库");
 
-                Bukkit.getScheduler().runTask(plugin, () -> {
+                // ★ 异步补全：DB 写 + HTTP 同步；自动登录回主线程
+                Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
                     try {
                         dbMgr.createUser(fName, fHash, fSalt);
                         plugin.getLogger().info("[Web注册] 补全成功: " + fName);
@@ -8602,13 +8658,13 @@ public class WebManager {
                             dbMgr.setField(fName, "register_ip", fIp);
                         }
 
-                        Player onlinePlayer = Bukkit.getPlayer(fName);
-                        if (onlinePlayer != null && onlinePlayer.isOnline()) {
-                            Bukkit.getScheduler().runTask(plugin, () -> {
+                        Bukkit.getScheduler().runTask(plugin, () -> {
+                            Player onlinePlayer = Bukkit.getPlayer(fName);
+                            if (onlinePlayer != null && onlinePlayer.isOnline()) {
                                 plugin.autoLogin(onlinePlayer, "web_register");
                                 onlinePlayer.sendMessage("§a[Sdf1_login] §fWeb注册成功，已自动登录！");
-                            });
-                        }
+                            }
+                        });
 
                         syncRegistration(fName, fHash, fSalt, fIp, fEmail);
                         submitDbTask("补全-pushWebLoginCredentials", () -> pushWebLoginCredentials());

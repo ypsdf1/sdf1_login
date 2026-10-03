@@ -70,11 +70,18 @@ public class InventoryAutoBackup {
             return;
         }
 
-        int level = p.getLevel();
-        double experience = p.getExp(); // 当前等级进度 0.0~1.0
-        plugin.getDb().saveAutoBackup(
-                name, contentsB64, armorB64, extraB64,
-                level, experience);
-        plugin.getLogger().info("[自动备份] " + name + " 背包已备份");
+        final int level = p.getLevel();
+        final double experience = p.getExp(); // 当前等级进度 0.0~1.0
+        // ★ 读背包/等级必须主线程；落库是阻塞 DB 写 -> 投递异步执行
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                plugin.getDb().saveAutoBackup(
+                        name, contentsB64, armorB64, extraB64,
+                        level, experience);
+                plugin.getLogger().info("[自动备份] " + name + " 背包已备份");
+            } catch (Throwable t) {
+                plugin.getLogger().warning("[自动备份] 落库失败 (" + name + "): " + t.getMessage());
+            }
+        });
     }
 }

@@ -173,41 +173,56 @@ public class GarbageManager {
     }
 
     private void doCleanup() {
-        // 删除过期轮次的物品
-        int deleteRound =
+        // ★ 过期轮次删除是阻塞 DB -> 先异步执行；
+        //   轮次递增 / 实体收集 / 广播 必须主线程 -> 异步完成后回主线程
+        final int deleteRound =
                 currentRound - maxRounds;
-        if (deleteRound >= 0) {
-            int deleted = deleteOldItems(
-                    deleteRound);
-            if (deleted > 0) {
-                broadcast("§7[垃圾站] §f永久清理了 §e"
-                        + deleted + " §f个过期物品");
-            }
-        }
+        Bukkit.getScheduler().runTaskAsynchronously(
+                plugin, () -> {
+                    final int deleted =
+                            deleteRound >= 0
+                                    ? deleteOldItems(deleteRound)
+                                    : 0;
+                    Bukkit.getScheduler().runTask(
+                            plugin, () -> {
+                                if (deleted > 0) {
+                                    broadcast("§7[垃圾站] §f永久清理了 §e"
+                                            + deleted + " §f个过期物品");
+                                }
 
-        // 递增轮次
-        currentRound++;
-        setConfigValue("round",
-                String.valueOf(currentRound));
+                                // 递增轮次
+                                currentRound++;
+                                final int roundNow =
+                                        currentRound;
+                                // ★ 轮次落库是 DB -> 异步
+                                Bukkit.getScheduler()
+                                        .runTaskAsynchronously(
+                                                plugin, () ->
+                                                        setConfigValue("round",
+                                                                String.valueOf(roundNow)));
 
-        // 收集当前掉落物
-        int count = collectItems();
-        broadcast("§a§l[垃圾站] §f清理完成，"
-                + "共清理 §e" + count
-                + " §f个掉落物，存入回收站");
+                                // 收集当前掉落物
+                                // （实体移除必须主线程，落库已在内部转异步）
+                                int count = collectItems();
+                                broadcast("§a§l[垃圾站] §f清理完成，"
+                                        + "共清理 §e" + count
+                                        + " §f个掉落物，存入回收站");
 
-        // 打印下次清理时间
-        long nextMs = System.currentTimeMillis()
-                + (long) cleanupInterval * 1000L;
-        String nextTime =
-                new SimpleDateFormat("HH:mm:ss")
-                        .format(new Date(nextMs));
-        broadcast("§e§l[垃圾站] §f下次清理时间: §a"
-                + nextTime);
+                                // 打印下次清理时间
+                                long nextMs = System.currentTimeMillis()
+                                        + (long) cleanupInterval * 1000L;
+                                String nextTime =
+                                        new SimpleDateFormat("HH:mm:ss")
+                                                .format(new Date(nextMs));
+                                broadcast("§e§l[垃圾站] §f下次清理时间: §a"
+                                        + nextTime);
+                            });
+                });
     }
 
     public int collectItems() {
         int count = 0;
+        List<ItemStack> picked = new ArrayList<>();
         for (org.bukkit.World w :
                 Bukkit.getWorlds()) {
             Collection<Item> items =
@@ -219,10 +234,20 @@ public class GarbageManager {
                         || stack.getType()
                         == Material.AIR)
                     continue;
-                saveItem(stack);
+                // ★ 先取快照再移除实体（实体移除必须主线程）
+                picked.add(stack.clone());
                 item.remove();
                 count++;
             }
+        }
+        // ★ 落库是阻塞 DB（含 SN 脱管登记）-> 丢异步批量写
+        if (!picked.isEmpty()) {
+            final List<ItemStack> toSave = picked;
+            Bukkit.getScheduler()
+                    .runTaskAsynchronously(plugin, () -> {
+                        for (ItemStack s : toSave)
+                            saveItem(s);
+                    });
         }
         return count;
     }

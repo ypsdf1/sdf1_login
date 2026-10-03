@@ -125,7 +125,15 @@ public class QuickBack implements Listener, CommandExecutor, TabCompleter {
     private void recordLocation(Player player) {
         Location loc = player.getLocation();
         lastKnownLocations.put(player.getName(), loc);
-        saveToDB(player.getName(), loc);
+        // ★ 读坐标/更新内存缓存留主线程；写库是阻塞 DB 操作 -> 异步
+        final String name = player.getName();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                saveToDB(name, loc);
+            } catch (Throwable t) {
+                plugin.getLogger().warning("[快捷返回] 坐标落库失败 (" + name + "): " + t.getMessage());
+            }
+        });
     }
 
     public Location getLastKnownLocation(Player player) {

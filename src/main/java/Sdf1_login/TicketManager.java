@@ -704,6 +704,11 @@ public class TicketManager {
                 "§e§l===================");
     }
 
+    /**
+     * ★ 由异步定时器调用（Main.startTicketAutoProcess）。
+     *   DB 查询/写回留在当前（异步）线程；
+     *   取玩家 / 发消息 / 备份背包 / 踢人 一律经 sync() 回主线程。
+     */
     public void autoProcessCompleted() {
         long timeoutMs = 10 * 60 * 1000L;
 
@@ -737,25 +742,26 @@ public class TicketManager {
                         .getUnconfirmedCompleted(
                                 timeoutMs);
         for (Map<String, Object> t : list) {
-            int id = nv(t, "id");
+            final int id = nv(t, "id");
             plugin.getDb().confirmTicket(id, 3);
-            Player rp = Bukkit.getPlayer(
-                    sv(t, "requester"));
-            if (rp != null && rp.isOnline())
-                rp.sendMessage(
-                        "§e§l[工单] §f工单 #"
-                                + id + " 已自动完结");
-            String assigned =
-                    sv(t, "assigned_to");
-            if (!assigned.isEmpty()) {
-                Player pp =
-                        Bukkit.getPlayer(assigned);
-                if (pp != null && pp.isOnline())
-                    pp.sendMessage(
+            final String req = sv(t, "requester");
+            final String asg = sv(t, "assigned_to");
+            sync(() -> {
+                Player rp = Bukkit.getPlayer(req);
+                if (rp != null && rp.isOnline())
+                    rp.sendMessage(
                             "§e§l[工单] §f工单 #"
-                                    + id
-                                    + " 已自动完结");
-            }
+                                    + id + " 已自动完结");
+                if (!asg.isEmpty()) {
+                    Player pp =
+                            Bukkit.getPlayer(asg);
+                    if (pp != null && pp.isOnline())
+                        pp.sendMessage(
+                                "§e§l[工单] §f工单 #"
+                                        + id
+                                        + " 已自动完结");
+                }
+            });
             settleTicket(id);
         }
 
@@ -765,14 +771,16 @@ public class TicketManager {
                         .getRepliedStaleTickets(
                                 timeoutMs);
         for (Map<String, Object> t : stale) {
-            int id = nv(t, "id");
+            final int id = nv(t, "id");
             plugin.getDb().confirmTicket(id, 3);
-            Player rp = Bukkit.getPlayer(
-                    sv(t, "requester"));
-            if (rp != null && rp.isOnline())
-                rp.sendMessage(
-                        "§e§l[工单] §f工单 #"
-                                + id + " 超时自动完结");
+            final String req = sv(t, "requester");
+            sync(() -> {
+                Player rp = Bukkit.getPlayer(req);
+                if (rp != null && rp.isOnline())
+                    rp.sendMessage(
+                            "§e§l[工单] §f工单 #"
+                                    + id + " 超时自动完结");
+            });
             settleTicket(id);
         }
     }
@@ -1266,13 +1274,23 @@ public class TicketManager {
 
     // ========== 私有 ==========
 
+    /**
+     * 把 Bukkit 操作切回主线程执行。
+     * 已在主线程时立即执行（保持原调用方的同步语义）。
+     * 供异步定时器路径（autoProcessCompleted / settleTicket / processDeleteAccount）使用。
+     */
+    private void sync(Runnable r) {
+        if (Bukkit.isPrimaryThread()) r.run();
+        else Bukkit.getScheduler().runTask(plugin, r);
+    }
+
     private void settleTicket(int tid) {
         Map<String, Object> t =
                 plugin.getDb().getTicket(tid);
         if (t == null) return;
-        String requester =
+        final String requester =
                 sv(t, "requester");
-        String assigned =
+        final String assigned =
                 sv(t, "assigned_to");
         int reward = nv(t, "reward_amount");
         int score = nv(t, "score");
@@ -1285,14 +1303,16 @@ public class TicketManager {
                     requester, reward,
                     BondManager.TX_TICKET_REWARD, "",
                     "System", "工单 #" + tid + " 奖励");
-            Player rp = Bukkit.getPlayer(
-                    requester);
-            if (rp != null && rp.isOnline()) {
-                rp.sendMessage(
-                        "§e§l[工单] §f获得 "
-                                + reward
-                                + " 债券奖励");
-            }
+            sync(() -> {
+                Player rp = Bukkit.getPlayer(
+                        requester);
+                if (rp != null && rp.isOnline()) {
+                    rp.sendMessage(
+                            "§e§l[工单] §f获得 "
+                                    + reward
+                                    + " 债券奖励");
+                }
+            });
         }
 
         // ★ 服务商获得债券奖励
@@ -1307,17 +1327,20 @@ public class TicketManager {
                                 + " 服务奖励(评分"
                                 + score + ")");
             }
-            Player pp =
-                    Bukkit.getPlayer(assigned);
-            if (pp != null && pp.isOnline()) {
-                pp.sendMessage(
-                        "§a§l[工单] §f工单 #"
-                                + tid
-                                + " 确认完结");
-                if (bondReward > 0)
-                    pp.sendMessage("§7债券: §e"
-                            + bondReward + " 枚");
-            }
+            final int br = bondReward;
+            sync(() -> {
+                Player pp =
+                        Bukkit.getPlayer(assigned);
+                if (pp != null && pp.isOnline()) {
+                    pp.sendMessage(
+                            "§a§l[工单] §f工单 #"
+                                    + tid
+                                    + " 确认完结");
+                    if (br > 0)
+                        pp.sendMessage("§7债券: §e"
+                                + br + " 枚");
+                }
+            });
         }
     }
 
@@ -1405,31 +1428,34 @@ public class TicketManager {
      */
     public void processDeleteAccount(int tid,
                                      Map<String, Object> t) {
-        String requester = sv(t, "requester");
+        final String requester = sv(t, "requester");
         plugin.getDb().updateTicketStatus(
                 tid, "resolved");
         plugin.getDb().updateTicketField(tid,
                 "admin_confirmed", 1);
-        Player target =
-                Bukkit.getPlayerExact(requester);
-        if (target != null && target.isOnline()) {
-            plugin.backupInventory(target);
-            target.sendMessage(
-                    "§a§l[工单] §f您的删号请求已通过");
-            target.sendMessage(
-                    "§7物品已备份，下次登录可取回");
-            target.kickPlayer(
-                    "§a删号成功，物品已备份。\n"
-                            + "请等待5分钟后重新注册取回物品。");
-        } else {
-            // 离线：仅标记，不操作数据库
-            plugin.getLogger().info(
-                    "[Sdf1_login] " + requester
-                            + " 删号工单已通过，等待上线执行");
-        }
-        // 延迟执行删号
+        // ★ 备份背包 / 发消息 / 踢人 必须主线程
+        sync(() -> {
+            Player target =
+                    Bukkit.getPlayerExact(requester);
+            if (target != null && target.isOnline()) {
+                plugin.backupInventory(target);
+                target.sendMessage(
+                        "§a§l[工单] §f您的删号请求已通过");
+                target.sendMessage(
+                        "§7物品已备份，下次登录可取回");
+                target.kickPlayer(
+                        "§a删号成功，物品已备份。\n"
+                                + "请等待5分钟后重新注册取回物品。");
+            } else {
+                // 离线：仅标记，不操作数据库
+                plugin.getLogger().info(
+                        "[Sdf1_login] " + requester
+                                + " 删号工单已通过，等待上线执行");
+            }
+        });
+        // 延迟执行删号（DB 写 -> 异步，不占主线程）
         final String name = requester;
-        Bukkit.getScheduler().runTaskLater(
+        Bukkit.getScheduler().runTaskLaterAsynchronously(
                 plugin, () -> {
                     int deleted =
                             plugin.getDb().deleteUser(name);
