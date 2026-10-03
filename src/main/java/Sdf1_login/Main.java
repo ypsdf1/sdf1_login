@@ -3505,20 +3505,29 @@ public class Main extends JavaPlugin
         String body = msg.substring(1).trim();
         if (body.isEmpty()) return;
 
+        getLogger().info("[无感切换] 事件触发: " + body);
+
         org.bukkit.command.CommandMap cm = getCommandMapSafe();
-        if (cm == null) return;   // 拿不到命令映射 -> 维持原行为
+        if (cm == null) {
+            getLogger().warning("[无感切换] CommandMap 获取失败!");
+            return;   // 拿不到命令映射 -> 维持原行为
+        }
 
         String label = body.split(" ", 2)[0];
         String lowerLabel = label.toLowerCase(java.util.Locale.ROOT);
+        getLogger().info("[无感切换] label=" + label + " lower=" + lowerLabel);
         // 命中判定统一用小写：SimpleCommandMap 的 key 本身就是小写
         org.bukkit.command.Command hit = cm.getCommand(lowerLabel);
+        getLogger().info("[无感切换] hit=" + (hit != null ? hit.getName() : "null"));
         if (hit == null) hit = cm.getCommand("minecraft:" + lowerLabel);
+        getLogger().info("[无感切换] hit2=" + (hit != null ? hit.getName() : "null"));
 
         if (hit != null) {
             // ★ 指令大小写不敏感：原样 label 查不到但小写查得到
             //   -> 取消原事件，用小写 label 重新分发一次
             if (!label.equals(lowerLabel)
                     && cm.getCommand(label) == null) {
+                getLogger().info("[无感切换] 大小写重分发: " + lowerLabel);
                 e.setCancelled(true);
                 String rest = body.substring(label.length());
                 try {
@@ -3532,6 +3541,7 @@ public class Main extends JavaPlugin
         }
 
         // ★ 未命中：压制原生 "Unknown command"，转普通聊天
+        getLogger().info("[无感切换] 未命中，转聊天: " + body);
         e.setCancelled(true);
         forwardAsChat(p, body);
     }
@@ -3541,6 +3551,14 @@ public class Main extends JavaPlugin
      * 反射可同时兼容 Spigot / CraftServer 实现）。拿不到返回 null。
      */
     private org.bukkit.command.CommandMap getCommandMapSafe() {
+        // Paper API: Bukkit.getCommandMap()
+        try {
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm != null) return cm;
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] Paper API 失败: " + t.getMessage());
+        }
+        // 反射兜底
         try {
             java.lang.reflect.Method m =
                     Bukkit.class.getMethod("getCommandMap");
