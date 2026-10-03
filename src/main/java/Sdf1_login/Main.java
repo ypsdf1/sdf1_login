@@ -3733,9 +3733,10 @@ public class Main extends JavaPlugin
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onUnknownCommand(
             org.bukkit.event.command.UnknownCommandEvent e) {
+        // ★ 控制台与玩家走同一条 finishParsing -> callEvent 路径，
+        //   这里不做 sender 类型限制，两者都要接管。
         org.bukkit.command.CommandSender sender = e.getSender();
-        // ★ 控制台不接管
-        if (!(sender instanceof Player)) return;
+        if (sender == null) return;
 
         String body = e.getCommandLine();
         if (body == null) return;
@@ -3744,10 +3745,16 @@ public class Main extends JavaPlugin
         if (body.charAt(0) == '/') body = body.substring(1).trim();
         if (body.isEmpty()) return;
 
-        Player p = (Player) sender;
+        // ---- 0) 诊断日志：确认本处理器是否真的被触发 ----
+        boolean isPlayer = sender instanceof Player;
+        String senderTag = isPlayer
+                ? ("玩家/" + ((Player) sender).getName())
+                : sender.getClass().getSimpleName();
 
         // ---- 1) 命中我们 4 插件的指令 -> 大小写不敏感直接执行 ----
-        if (dispatchOwnCommand(p, body)) {
+        if (dispatchOwnCommand(sender, body)) {
+            getLogger().info("[无感切换] 已接管并执行: \"" + body
+                    + "\"  来源=" + senderTag);
             suppressUnknown(e);
             return;
         }
@@ -3756,15 +3763,18 @@ public class Main extends JavaPlugin
         //    （服务端已判定"未命中"才走到本事件；若玩家输的是别人的指令，
         //      说明那个插件没注册 or 权限不足，本插件不应插手。）
         // ---- 3) 啥都没命中 -> 压制 unknown + 回我们的指令清单 ----
+        getLogger().info("[无感切换] 未命中自有插件指令: \"" + body
+                + "\"  来源=" + senderTag + " -> 回指令清单");
         suppressUnknown(e);
-        sendOwnCommandList(p, body);
+        sendOwnCommandList(sender, body);
     }
 
     /**
      * 把 body 首段在【我们 4 个插件】的命令映射里小写复核，
      * 命中则分发执行。返回 true 表示已接管。
      */
-    private boolean dispatchOwnCommand(Player p, String body) {
+    private boolean dispatchOwnCommand(
+            org.bukkit.command.CommandSender sender, String body) {
         try {
             int sp = body.indexOf(' ');
             String label = sp < 0 ? body : body.substring(0, sp);
@@ -3777,9 +3787,21 @@ public class Main extends JavaPlugin
             final String rest = sp < 0 ? "" : body.substring(sp + 1);
             final String dispatch = lower
                     + (rest.isEmpty() ? "" : " " + rest);
+            // 控制台不可用调度器异步分发，改为主线程同步分发
+            final boolean isConsole =
+                    !(sender instanceof Player);
+            if (isConsole) {
+                try {
+                    Bukkit.dispatchCommand(sender, dispatch);
+                } catch (Throwable t) {
+                    getLogger().warning("[无感切换] 控制台分发失败: "
+                            + t.getMessage());
+                }
+                return true;
+            }
             Bukkit.getScheduler().runTask(this, () -> {
                 try {
-                    Bukkit.dispatchCommand(p, dispatch);
+                    Bukkit.dispatchCommand(sender, dispatch);
                 } catch (Throwable t) {
                     getLogger().warning("[无感切换] 指令分发失败: "
                             + t.getMessage());
@@ -3826,12 +3848,27 @@ public class Main extends JavaPlugin
         return null;
     }
 
-    /** 压制 "Unknown or incomplete command" 的最终输出 */
+    /**
+     * 压制 "Unknown or incomplete command" 的最终输出。
+     *
+     * ★ 关键：必须用 {@code message(null)} 而不是 {@code setMessage("")}。
+     *   Paper 26.2 的 finishParsing 字节码是
+     *       311: message()
+     *       314: ifnull 330      <-- 只有 null 才跳过输出
+     *       327: sendFailure(...)
+     *   而 setMessage("") 会把空串反序列化成「空组件」（非 null），
+     *   ifnull 不成立，原样报错照样打出来 —— 这就是上一轮"改了没效果"的隐藏根因。
+     */
     private void suppressUnknown(
             org.bukkit.event.command.UnknownCommandEvent e) {
         try {
-            e.setMessage("");
-        } catch (Throwable ignored) {
+            e.message(null);
+        } catch (Throwable t1) {
+            // 兜底：老 API 才有的 setMessage
+            try {
+                e.setMessage("");
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -3839,7 +3876,8 @@ public class Main extends JavaPlugin
      * 把「我们 4 插件」的指令清单发给玩家（去重、按长度排序、按插件分组）。
      * 让玩家自己挑一个手动执行，而不是原样甩 unknown。
      */
-    private void sendOwnCommandList(Player p, String typed) {
+    private void sendOwnCommandList(
+            org.bukkit.command.CommandSender sender, String typed) {
         java.util.LinkedHashMap<String, java.util.List<String>> byPlugin =
                 new java.util.LinkedHashMap<>();
         int total = 0;
@@ -3888,17 +3926,17 @@ public class Main extends JavaPlugin
                 return Integer.compare(a.length(), b.length());
             });
 
-        p.sendMessage("§8§m                    ");
-        p.sendMessage("§e§l你输入的 §f" + typed
+        sender.sendMessage("§8§m                    ");
+        sender.sendMessage("§e§l你输入的 §f" + typed
                 + " §e§l不是有效指令");
-        p.sendMessage("§7可用指令如下（§f请手动输入，勿加 §7/"
+        sender.sendMessage("§7可用指令如下（§f请手动输入，勿加 §7/"
                 + "§f开头）§7：");
         for (java.util.Map.Entry<String, java.util.List<String>> en
                 : byPlugin.entrySet()) {
-            p.sendMessage("§8[§b" + en.getKey() + "§8] §f"
+            sender.sendMessage("§8[§b" + en.getKey() + "§8] §f"
                     + String.join(" §7| §f", en.getValue()));
         }
-        p.sendMessage("§8§m                    ");
+        sender.sendMessage("§8§m                    ");
     }
 
 
