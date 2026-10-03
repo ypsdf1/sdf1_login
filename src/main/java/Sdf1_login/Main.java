@@ -3759,14 +3759,185 @@ public class Main extends JavaPlugin
             return;
         }
 
-        // ---- 2) 命中别人插件 / 原版 -> 完全不干预 ----
-        //    （服务端已判定"未命中"才走到本事件；若玩家输的是别人的指令，
-        //      说明那个插件没注册 or 权限不足，本插件不应插手。）
-        // ---- 3) 啥都没命中 -> 压制 unknown + 回我们的指令清单 ----
-        getLogger().info("[无感切换] 未命中自有插件指令: \"" + body
-                + "\"  来源=" + senderTag + " -> 回指令清单");
+        // ---- 2) 啥都没命中，按来源分流 ----
         suppressUnknown(e);
-        sendOwnCommandList(sender, body);
+
+        if (isPlayer) {
+            // 玩家端：出相似指令建议（像搜索引擎的"你是不是找 xxx"）
+            getLogger().info("[无感切换] 玩家未命中: \"" + body
+                    + "\" -> 出相似建议");
+            sendSimilarHint((Player) sender, body);
+        } else {
+            // 控制台：未命中就当作普通聊天广播出去
+            getLogger().info("[无感切换] 控制台未命中: \"" + body
+                    + "\" -> 转发为聊天");
+            broadcastAsChat(sender, body);
+        }
+    }
+
+    /**
+     * 控制台未命中指令时，把这行文本当普通聊天广播到全服。
+     * 控制台本身不会触发聊天事件，所以这里直接 broadcast。
+     */
+    private void broadcastAsChat(
+            org.bukkit.command.CommandSender sender, String text) {
+        try {
+            String who = (sender instanceof Player)
+                    ? ((Player) sender).getName()
+                    : "Console";
+            net.kyori.adventure.text.Component msg =
+                    net.kyori.adventure.text.Component.text(who + "§7: §f" + text)
+                            .color(net.kyori.adventure.text.format.NamedTextColor.WHITE);
+            Bukkit.broadcast(msg);
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 控制台转发聊天失败: "
+                    + t.getMessage());
+            sender.sendMessage("§f" + text);
+        }
+    }
+
+    /** 编辑距离（Levenshtein），用于相似指令匹配 */
+    private static int levenshtein(String a, String b) {
+        int n = a.length(), m = b.length();
+        if (n == 0) return m;
+        if (m == 0) return n;
+        int[] prev = new int[m + 1];
+        int[] cur = new int[m + 1];
+        for (int j = 0; j <= m; j++) prev[j] = j;
+        for (int i = 1; i <= n; i++) {
+            cur[0] = i;
+            for (int j = 1; j <= m; j++) {
+                int cost = (a.charAt(i - 1) == b.charAt(j - 1)) ? 0 : 1;
+                cur[j] = Math.min(Math.min(cur[j - 1] + 1, prev[j] + 1),
+                        prev[j - 1] + cost);
+            }
+            int[] t = prev; prev = cur; cur = t;
+        }
+        return prev[m];
+    }
+
+    /**
+     * 玩家未命中任何指令时，给出最相似的几条自有插件指令。
+     * 完全不命中（相似度太低）才退回完整清单。
+     */
+    private void sendSimilarHint(Player p, String typed) {
+        int sp = typed.indexOf(' ');
+        String label = (sp < 0 ? typed : typed.substring(0, sp))
+                .toLowerCase(java.util.Locale.ROOT);
+        String rest = sp < 0 ? "" : typed.substring(sp + 1).trim();
+
+        // 收集自有插件指令（去重）
+        java.util.LinkedHashMap<String, String> own = collectOwnCommands();
+        if (own.isEmpty()) return;
+
+        // 打分：编辑距离越小越好；完全相等优先
+        java.util.List<java.util.Map.Entry<Integer, String>> scored =
+                new java.util.ArrayList<>();
+        for (String cmd : own.keySet()) {
+            int d = levenshtein(label, cmd);
+            // 长度差惩罚，避免短指令乱匹配
+            scored.add(new java.util.AbstractMap.SimpleEntry<>(d, cmd));
+        }
+        scored.sort((a, b) -> a.getKey() - b.getKey());
+
+        final int LIMIT = 5;
+        final int MAX_DIST = Math.max(2, label.length() / 2 + 1);
+
+        java.util.List<String> picked = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<Integer, String> en : scored) {
+            if (picked.size() >= LIMIT) break;
+            if (en.getKey() > MAX_DIST) break;
+            picked.add(en.getValue());
+        }
+
+        p.sendMessage("§8§m                    ");
+        if (picked.isEmpty()) {
+            // 一个都不像 -> 给完整清单
+            p.sendMessage("§e§l你输入的 §f" + typed + " §e§l不是有效指令");
+            sendCommandListBody(p, own);
+        } else {
+            p.sendMessage("§e§l你是不是想输入：");
+            for (String c : picked) {
+                p.sendMessage("§8  §f/" + c
+                        + (rest.isEmpty() ? "" : " " + rest));
+            }
+            p.sendMessage("§7完整指令清单：§f/help"
+                    + " §7或§f/sdf1_login");
+        }
+        p.sendMessage("§8§m                    ");
+    }
+
+    /** 收集 4 插件指令：label(小写) -> 显示用 label */
+    private java.util.LinkedHashMap<String, String> collectOwnCommands() {
+        java.util.LinkedHashMap<String, String> map =
+                new java.util.LinkedHashMap<>();
+        try {
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return map;
+            java.util.Map<String, org.bukkit.command.Command> known =
+                    cm.getKnownCommands();
+            if (known == null) return map;
+            for (java.util.Map.Entry<String, org.bukkit.command.Command> en
+                    : known.entrySet()) {
+                String label = en.getKey();
+                org.bukkit.command.Command c = en.getValue();
+                if (label == null || label.isEmpty() || c == null) continue;
+                if (label.indexOf(':') >= 0) continue;
+                Plugin owner = resolveCommandPlugin(c);
+                if (owner == null) continue;
+                String pn = owner.getName()
+                        .toLowerCase(java.util.Locale.ROOT);
+                if (!OWN_PLUGIN_NAMES.contains(pn)) continue;
+                String show = (c.getLabel() != null && !c.getLabel().isEmpty())
+                        ? c.getLabel() : label;
+                map.putIfAbsent(show.toLowerCase(java.util.Locale.ROOT), show);
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 收集指令失败: "
+                    + t.getMessage());
+        }
+        return map;
+    }
+
+    /** 打印分组清单（供完整清单模式使用） */
+    private void sendCommandListBody(Player p,
+            java.util.LinkedHashMap<String, String> own) {
+        // 复用旧逻辑：按插件分组
+        try {
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return;
+            java.util.Map<String, org.bukkit.command.Command> known =
+                    cm.getKnownCommands();
+            if (known == null) return;
+            java.util.LinkedHashMap<String, java.util.List<String>> byPlugin =
+                    new java.util.LinkedHashMap<>();
+            for (java.util.Map.Entry<String, org.bukkit.command.Command> en
+                    : known.entrySet()) {
+                String label = en.getKey();
+                org.bukkit.command.Command c = en.getValue();
+                if (label == null || label.isEmpty() || c == null) continue;
+                if (label.indexOf(':') >= 0) continue;
+                Plugin owner = resolveCommandPlugin(c);
+                if (owner == null) continue;
+                String pn = owner.getName()
+                        .toLowerCase(java.util.Locale.ROOT);
+                if (!OWN_PLUGIN_NAMES.contains(pn)) continue;
+                String show = (c.getLabel() != null && !c.getLabel().isEmpty())
+                        ? c.getLabel() : label;
+                byPlugin.computeIfAbsent(owner.getName(),
+                        k -> new java.util.ArrayList<>()).add(show);
+            }
+            for (java.util.List<String> lst : byPlugin.values())
+                lst.sort(java.util.Comparator.comparingInt(String::length));
+            for (java.util.Map.Entry<String, java.util.List<String>> en
+                    : byPlugin.entrySet()) {
+                p.sendMessage("§8[§b" + en.getKey() + "§8] §f"
+                        + String.join(" §7| §f", en.getValue()));
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 清单打印失败: "
+                    + t.getMessage());
+        }
     }
 
     /**
@@ -3876,68 +4047,6 @@ public class Main extends JavaPlugin
      * 把「我们 4 插件」的指令清单发给玩家（去重、按长度排序、按插件分组）。
      * 让玩家自己挑一个手动执行，而不是原样甩 unknown。
      */
-    private void sendOwnCommandList(
-            org.bukkit.command.CommandSender sender, String typed) {
-        java.util.LinkedHashMap<String, java.util.List<String>> byPlugin =
-                new java.util.LinkedHashMap<>();
-        int total = 0;
-        try {
-            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
-            if (cm == null) return;
-            // ★ CommandMap.getKnownCommands() 返回 Map<String, Command>
-            //   （26.2 实测签名），直接遍历即可拿到全部已注册指令。
-            java.util.Map<String, org.bukkit.command.Command> known =
-                    cm.getKnownCommands();
-            if (known == null || known.isEmpty()) return;
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (java.util.Map.Entry<String, org.bukkit.command.Command> en
-                    : known.entrySet()) {
-                String label = en.getKey();
-                org.bukkit.command.Command c = en.getValue();
-                if (label == null || label.isEmpty() || c == null) continue;
-                if (label.indexOf(':') >= 0) continue;  // 跳过 minecraft: 前缀项
-                Plugin owner = resolveCommandPlugin(c);
-                if (owner == null) continue;
-                String pn = owner.getName().toLowerCase(java.util.Locale.ROOT);
-                if (!OWN_PLUGIN_NAMES.contains(pn)) continue;
-                java.util.List<String> lst =
-                        byPlugin.computeIfAbsent(owner.getName(),
-                                k -> new java.util.ArrayList<>());
-                String show = (c.getLabel() != null && !c.getLabel().isEmpty())
-                        ? c.getLabel() : label;
-                if (seen.add(pn + "::" + show)) {
-                    lst.add("/" + show);
-                    total++;
-                }
-            }
-        } catch (Throwable t) {
-            getLogger().warning("[无感切换] 收集指令清单失败: "
-                    + t.getMessage());
-            return;
-        }
-        if (byPlugin.isEmpty()) return;
-
-        // 排序：短的前面，中文在后
-        for (java.util.List<String> lst : byPlugin.values())
-            lst.sort((a, b) -> {
-                boolean za = a.matches(".*[\\u4e00-\\u9fff].*");
-                boolean zb = b.matches(".*[\\u4e00-\\u9fff].*");
-                if (za != zb) return za ? 1 : -1;
-                return Integer.compare(a.length(), b.length());
-            });
-
-        sender.sendMessage("§8§m                    ");
-        sender.sendMessage("§e§l你输入的 §f" + typed
-                + " §e§l不是有效指令");
-        sender.sendMessage("§7可用指令如下（§f请手动输入，勿加 §7/"
-                + "§f开头）§7：");
-        for (java.util.Map.Entry<String, java.util.List<String>> en
-                : byPlugin.entrySet()) {
-            sender.sendMessage("§8[§b" + en.getKey() + "§8] §f"
-                    + String.join(" §7| §f", en.getValue()));
-        }
-        sender.sendMessage("§8§m                    ");
-    }
 
 
     private void handleBanCommand(String rawCommand) {
