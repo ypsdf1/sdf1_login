@@ -1505,6 +1505,33 @@ public class Main extends JavaPlugin
                 ? reason.toString()
                 : "您已被服务器封禁，效期至: "
                 + DurationParser.formatExpire(expireMs);
+
+        // ★ 改判（反向）：目标已被永久封禁 -> tempban 改判有期徒刑
+        if (!isIpTarget(target)) {
+            try {
+                org.bukkit.BanEntry<?> oldBan =
+                        Bukkit.getBanList(org.bukkit.BanList.Type.NAME)
+                                .getBanEntry(target);
+                if (oldBan != null && oldBan.getExpiration() == null) {
+                    // 永久封禁 -> 改判为临时封禁
+                    applyBan(sender, target, r, expireMs);
+                    sender.sendMessage(
+                            "§6§l[改判] §f目标 §e" + target
+                                    + " §f原已被永久封禁，"
+                                    + "§a已改判为有期徒刑 §e"
+                                    + DurationParser.formatExpire(expireMs));
+                    // 踢出在线玩家
+                    org.bukkit.entity.Player tp =
+                            Bukkit.getPlayerExact(target);
+                    if (tp != null) tp.kickPlayer("§c§l" + r);
+                    return;
+                }
+            } catch (Exception ex) {
+                getLogger().warning("[改判] 反向改判检查异常: "
+                        + ex.getMessage());
+            }
+        }
+
         applyBan(sender, target, r, expireMs);
         sender.sendMessage("§a已封禁 " + target
                 + " 至 " + DurationParser.formatExpire(expireMs)
@@ -3465,10 +3492,10 @@ public class Main extends JavaPlugin
     //   · 指令名大小写不敏感（/SDF1_login 与 /sdf1_login 等价）
     //   · 未命中 → 取消事件（压制原生 "Unknown command"），
     //     按普通聊天经插件聊天管道转发公屏
-    //   优先级 MONITOR：晚于 HIGHEST 的冻结守卫，
-    //   未登录玩家的未知命令已先被拦下，不会绕过登录变成聊天。
+    //   优先级 LOWEST：必须在服务端处理命令之前拦截，
+    //   MONITOR 太晚（命令已执行/已返回 unknown）。
     // =========================================================
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = true)
     public void onSeamlessCommandSwitch(
             org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
         if (e.isCancelled()) return;
