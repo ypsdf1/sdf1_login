@@ -3703,7 +3703,8 @@ public class Main extends JavaPlugin
     //   · 控制台未命中分两类（2026-10-04 刷屏修复）：
     //       ① 首词是已注册指令根（execute/say/...）= 命令尝试
     //          -> 绝不广播，保留原声报错，同一条 5 分钟只放行一次
-    //       ② 否则 = 运维手打的话 -> 按普通聊天广播（/conmsg 署名）
+    //       ② 否则（中文 / 原生 JSON：title·tellraw 等）
+    //          -> 按普通聊天广播（/conmsg 署名）；与 & 色码写法并存互不替代
     // =========================================================
 
 
@@ -3867,10 +3868,26 @@ public class Main extends JavaPlugin
      * 依据：首词（去掉命名空间前缀后）在命令映射里能查到 --
      * 说明指令根是存在的，只是参数不完整/子命令没命中，
      * 这是命令执行失败，绝不能当聊天广播。
-     * 反之（中文、JSON 通知等）才是运维手打的话。
+     * 反之（中文、<b>原生 JSON</b> 通知等）才是运维手打的话。
+     *
+     * <p><b>★ 原生 JSON 永远会放行（2026-10-04 用户定案，勿删）：</b>
+     *   MC 原生 title / tellraw / bossbar message 本来就吃 JSON 文本组件，
+     *   运维把一整段原生 JSON 直接扔控制台必须原样解析发送；
+     *   <b>& 色码是并存的另一套简易写法，不是 JSON 的替代品</b>
+     *   （也就是说不用拆成一个个手工 &a&b）。
      */
     private boolean looksLikeCommandAttempt(String body) {
         try {
+            if (body == null || body.isEmpty()) return false;
+
+            // ★ 原生 JSON 快速通道（2026-10-04 用户定案，勿删）：
+            //   原生 title/tellraw/bossbar 的 JSON 恰以 { 或 [ 开头，
+            //   而任何指令根都不会以它们开头 -> 直接判“非命令”，
+            //   交给 broadcastAsChat -> parseBody 的 Gson 层原样解析发送。
+            //   这条前置也保证了 & 色码与 JSON 两套写法并存。
+            char c0 = body.charAt(0);
+            if (c0 == '{' || c0 == '[') return false;
+
             int sp = body.indexOf(' ');
             String label = (sp < 0 ? body : body.substring(0, sp)).trim();
             if (label.isEmpty()) return false;
