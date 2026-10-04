@@ -76,6 +76,8 @@ public class UserGroupManager {
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN join_price INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN auto_renew INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN renew_price INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 领地增益效果上限（2026-10-04 任务3）：默认5个，<=0=不限
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_effects INTEGER DEFAULT 5"); } catch (Exception ignored) {}
             // duration_minutes已有(旧列)，复用
 
             st.close();
@@ -106,6 +108,8 @@ public class UserGroupManager {
                 cfg.autoRenew = rs.getInt("auto_renew") == 1;
                 cfg.renewPrice = rs.getInt("renew_price");
                 cfg.durationMinutes = rs.getLong("duration_minutes");
+                cfg.maxEffects = rs.getInt("max_effects");
+                if (rs.wasNull()) cfg.maxEffects = 5;
                 if (cfg.name != null && !cfg.name.isEmpty()) {
                     groupConfigs.put(cfg.name, cfg);
                 }
@@ -126,8 +130,9 @@ public class UserGroupManager {
                     "INSERT OR REPLACE INTO user_group_config "
                             + "(group_name, display_name, display_color,"
                             + " priority, land_price_per_sqm, max_lands, default_perms,"
-                            + " home_limit, join_price, auto_renew, renew_price, duration_minutes)"
-                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + " home_limit, join_price, auto_renew, renew_price, duration_minutes,"
+                            + " max_effects)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
             ps.setString(1, cfg.name);
             ps.setString(2, cfg.displayName);
             ps.setString(3, cfg.displayColor);
@@ -140,6 +145,7 @@ public class UserGroupManager {
             ps.setInt(10, cfg.autoRenew ? 1 : 0);
             ps.setInt(11, cfg.renewPrice);
             ps.setLong(12, cfg.durationMinutes);
+            ps.setInt(13, cfg.maxEffects);
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
@@ -961,6 +967,20 @@ public class UserGroupManager {
     }
 
     /**
+     * ★ 领地增益效果数量上限（2026-10-04 任务3）
+     * 普通玩家（无用户组）走 globalDefault=5；用户组按组配置；
+     * 组配置 <=0 表示不限。
+     * @return >0=上限数量；Integer.MAX_VALUE=不限
+     */
+    public int getPlayerMaxEffects(String player, int globalDefault) {
+        if (player == null || player.isEmpty()) return globalDefault;
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null) return globalDefault;
+        if (cfg.maxEffects <= 0) return Integer.MAX_VALUE;
+        return cfg.maxEffects;
+    }
+
+    /**
      * 获取玩家的默认领地权限 JSON
      * 返回：组默认权限 或 空JSON "{}"
      */
@@ -1139,6 +1159,7 @@ public class UserGroupManager {
         // 领地相关
         public int landPricePerSqm = -1;   // -1 = 使用全局
         public int maxLands = -1;          // -1 = 使用全局
+        public int maxEffects = 5;         // 领地增益效果上限，<=0=不限
         public String defaultPerms = "{}"; // JSON
         // Home相关
         public int homeLimit = 0;          // 0=跟随全局, >0=独立限制, -1=无限

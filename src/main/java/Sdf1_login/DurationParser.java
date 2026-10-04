@@ -16,6 +16,11 @@ import java.util.regex.Pattern;
  *  2) 中文日期（绝对）：          2026年7月9日
  *  3) ISO 日期（绝对）：          2025-07-09
  *  4) 相对时长（中文/英文单位）：  1秒 / 1s / 1年 / 1年2月3天 / 2天12小时
+ *  5) 英文数字词（2026-10-04 新增，供 /cypay freeze 用）：
+ *     one min / two hours / twenty days / twenty one minutes
+ *
+ * <p>注意：纯数字仍按「Unix 秒时间戳」处理（如 0000000000）；
+ * 过期时间戳由调用方自行判定（/cypay freeze 视为永久冻结）。
  *
  * 解析规则优先级：纯数字 → 时间戳；含「年/月/日」且为完整日期格式 → 绝对日期；
  * 否则按「数字+单位」逐段累加为相对时长。
@@ -64,7 +69,8 @@ public class DurationParser {
             throws IllegalArgumentException {
         if (input == null || input.trim().isEmpty())
             throw new IllegalArgumentException("时长为空");
-        String s = input.trim().replace(" ", "");
+        // ★ 先把英文数字词换成阿拉伯数字（one min -> 1 min）
+        String s = normalizeEnglishNumber(input.trim()).replace(" ", "");
 
         // 1) 纯数字 → Unix 秒时间戳
         if (s.matches("\\d+")) {
@@ -99,6 +105,71 @@ public class DurationParser {
         throw new IllegalArgumentException("无法解析时长: " + input);
     }
 
+    /** 英文数字词 -> 阿拉伯数字（zero..ninety，支持 twenty one / twenty-one 连写） */
+    private static String normalizeEnglishNumber(String in) {
+        try {
+            String[] words = {"zero", "one", "two", "three", "four",
+                    "five", "six", "seven", "eight", "nine", "ten",
+                    "eleven", "twelve", "thirteen", "fourteen",
+                    "fifteen", "sixteen", "seventeen", "eighteen",
+                    "nineteen", "twenty", "thirty", "forty", "fifty",
+                    "sixty", "seventy", "eighty", "ninety"};
+            StringBuilder alt = new StringBuilder();
+            for (int i = 0; i < words.length; i++) {
+                if (i > 0) alt.append('|');
+                alt.append(words[i]);
+            }
+            Pattern p = Pattern.compile(
+                    "(?i)\\b(" + alt + ")(?:[\\s-]+(" + alt + "))?\\b");
+            Matcher m = p.matcher(in);
+            StringBuffer sb = new StringBuffer();
+            while (m.find()) {
+                int v = enWordValue(m.group(1));
+                if (m.group(2) != null) v += enWordValue(m.group(2));
+                m.appendReplacement(sb, Matcher.quoteReplacement(
+                        String.valueOf(v)));
+            }
+            m.appendTail(sb);
+            return sb.toString();
+        } catch (Exception e) {
+            return in;   // 归一化失败就原样返回
+        }
+    }
+
+    private static int enWordValue(String w) {
+        switch (w.toLowerCase(java.util.Locale.ROOT)) {
+            case "zero": return 0;
+            case "one": return 1;
+            case "two": return 2;
+            case "three": return 3;
+            case "four": return 4;
+            case "five": return 5;
+            case "six": return 6;
+            case "seven": return 7;
+            case "eight": return 8;
+            case "nine": return 9;
+            case "ten": return 10;
+            case "eleven": return 11;
+            case "twelve": return 12;
+            case "thirteen": return 13;
+            case "fourteen": return 14;
+            case "fifteen": return 15;
+            case "sixteen": return 16;
+            case "seventeen": return 17;
+            case "eighteen": return 18;
+            case "nineteen": return 19;
+            case "twenty": return 20;
+            case "thirty": return 30;
+            case "forty": return 40;
+            case "fifty": return 50;
+            case "sixty": return 60;
+            case "seventy": return 70;
+            case "eighty": return 80;
+            case "ninety": return 90;
+            default: return 0;
+        }
+    }
+
     private static long parseRelative(String s) {
         // 按「数字 + 单位」逐段匹配并累加
         StringBuilder units = new StringBuilder();
@@ -108,7 +179,7 @@ public class DurationParser {
             units.append(Pattern.quote(u));
         }
         Pattern p = Pattern.compile(
-                "([0-9零一二两三四五六七八九十百千万]+)(" + units + ")");
+                "([0-9零〇一二两三四五六七八九十百千万壹贰叁肆伍陆柒捌玖]+)(" + units + ")");
         Matcher m = p.matcher(s);
         long total = 0;
         int found = 0;

@@ -1534,9 +1534,16 @@ public class AreaGUIManager implements Listener {
                     if (ge[0].equals(effName)) { alreadyExists = true; break; }
                 }
                 if (!alreadyExists) {
-                    land.giveEffects.add(new String[]{effName, "1", "300"});
-                    areaProtect.saveAreaToDb(land);
-                    p.sendMessage("§a§l[效果管理] §f已添加增益效果: §a" + effName + " Lv1 300秒");
+                    // ★ 数量上限（2026-10-04 任务3）
+                    int maxEff = areaProtect.getMaxGiveEffects(land.owner);
+                    if (land.giveEffects.size() >= maxEff) {
+                        p.sendMessage("§c§l[效果管理] §f增益效果已达上限 §e"
+                                + maxEff + " §f个（按用户组配置），请先移除再添加");
+                    } else {
+                        land.giveEffects.add(new String[]{effName, "1", "300"});
+                        areaProtect.saveAreaToDb(land);
+                        p.sendMessage("§a§l[效果管理] §f已添加增益效果: §a" + effName + " Lv1 300秒");
+                    }
                 } else {
                     p.sendMessage("§c§l[效果管理] §f该增益效果已存在: §e" + effName);
                 }

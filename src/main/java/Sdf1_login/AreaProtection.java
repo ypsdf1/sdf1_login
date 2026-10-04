@@ -4890,6 +4890,21 @@ public class AreaProtection implements Listener {
     }
 
     /** 获取所有用户组名（tab补全用） */
+    /**
+     * ★ 领地增益效果数量上限（2026-10-04 任务3）。
+     * 普通玩家 5 个；用户组配置 max_effects 可覆盖（<=0=不限）。
+     * @return >0=上限数量；Integer.MAX_VALUE=不限
+     */
+    public int getMaxGiveEffects(String ownerName) {
+        try {
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm != null) {
+                return ugm.getPlayerMaxEffects(ownerName, 5);
+            }
+        } catch (Exception ignored) {}
+        return 5;
+    }
+
     public List<String> getUserGroupNames() {
         List<String> names = new ArrayList<>();
         UserGroupManager ugm = plugin.getUserGroup();
@@ -10662,6 +10677,31 @@ public class AreaProtection implements Listener {
             // 复合字段（JSON 数组或管道格式 → List）
             case "give_effects":
                 ac.giveEffects = parseEffectsString(value);
+                // ★ 2026-10-04 任务3：数量上限截断 + 等级原版封顶(1~255)
+                try {
+                    int maxEff = getMaxGiveEffects(ac.owner);
+                    if (ac.giveEffects.size() > maxEff) {
+                        plugin.getLogger().warning("[防护] 领地 "
+                                + ac.name + " 增益效果 "
+                                + ac.giveEffects.size() + " 个超出上限 "
+                                + maxEff + "，已截断保留前 "
+                                + maxEff + " 个");
+                        ac.giveEffects = new java.util.ArrayList<>(
+                                ac.giveEffects.subList(0, maxEff));
+                    }
+                    for (String[] ef : ac.giveEffects) {
+                        if (ef.length >= 2) {
+                            try {
+                                int lv = Integer.parseInt(ef[1]);
+                                if (lv > 255) ef[1] = "255";
+                                else if (lv < 1) ef[1] = "1";
+                            } catch (NumberFormatException ignored) {}
+                        }
+                    }
+                } catch (Exception ex) {
+                    plugin.getLogger().warning("[防护] give_effects 上限校验异常: "
+                            + ex.getMessage());
+                }
                 break;
             case "clear_effects":
                 ac.clearEffects.clear();
@@ -11144,6 +11184,13 @@ public class AreaProtection implements Listener {
                     p.sendMessage("§e§l[添加增益效果] §f增益 §e" + effName + " §f已存在，先移除旧的再添加");
                     return true;
                 }
+            }
+            // ★ 数量上限（2026-10-04 任务3）：普通玩家 5 个，用户组可覆盖
+            int maxEffCnt = getMaxGiveEffects(land.owner);
+            if (land.giveEffects.size() >= maxEffCnt) {
+                p.sendMessage("§c§l[添加增益效果] §f该领地增益效果已达上限 §e"
+                        + maxEffCnt + " §f个（按用户组配置），请先移除再添加");
+                return true;
             }
             String[] effRecord = {effName, String.valueOf(effLv), String.valueOf(effDur)};
             land.giveEffects.add(effRecord);

@@ -65,17 +65,24 @@ public class BondManager {
             Statement st = db.createStatement();
             st.execute("PRAGMA journal_mode=WAL");
 
-            // 债券余额（含冻结状态）
+            // 债券余额（含冻结状态 + 冻结到期时间）
             st.execute("CREATE TABLE IF NOT EXISTS bonds ("
                     + "player_name TEXT PRIMARY KEY,"
                     + "amount INTEGER DEFAULT 0,"
-                    + "status TEXT DEFAULT 'normal')");
+                    + "status TEXT DEFAULT 'normal',"
+                    + "freeze_until INTEGER DEFAULT 0)");
 
             // 兼容旧表
             try {
                 st.execute("ALTER TABLE bonds "
                         + "ADD COLUMN status "
                         + "TEXT DEFAULT 'normal'");
+            } catch (SQLException ignored) {}
+            // ★ 2026-10-04：冻结到期时间（Unix 毫秒，0=永久冻结）
+            try {
+                st.execute("ALTER TABLE bonds "
+                        + "ADD COLUMN freeze_until "
+                        + "INTEGER DEFAULT 0");
             } catch (SQLException ignored) {}
 
             // 旧流水（保留兼容）
@@ -122,47 +129,111 @@ public class BondManager {
 
     // ======================== 账户状态 ========================
 
+    /**
+     * 账户是否处于冻结状态。
+     *
+     * <p>★ 2026-10-04 支持临时冻结：status='frozen' 且
+     * {@code freeze_until>0} 时，到期自动解冻并回写 status='normal'；
+     * {@code freeze_until=0} 表示永久冻结。
+     */
     public boolean isFrozen(String player) {
+        boolean frozen = false;
+        long until = 0L;
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT status FROM bonds "
+                    "SELECT status, freeze_until FROM bonds "
                             + "WHERE player_name=?");
             ps.setString(1, player);
             ResultSet rs = ps.executeQuery();
             if (rs.next()) {
-                String s = rs.getString("status");
-                rs.close(); ps.close();
-                return "frozen".equals(s);
+                frozen = "frozen".equals(rs.getString("status"));
+                until = rs.getLong("freeze_until");
             }
             rs.close(); ps.close();
-        } catch (SQLException ignored) {}
-        return false;
+        } catch (SQLException ignored) {
+            return false;
+        }
+        if (!frozen) return false;
+        if (until > 0L && until <= System.currentTimeMillis()) {
+            unfreezeAccount(player);   // 临时冻结到期 -> 自动解冻
+            return false;
+        }
+        return true;
+    }
+
+    /** 冻结到期时间（Unix 毫秒）；0=永久冻结；-1=未冻结 */
+    public long getFreezeUntil(String player) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT status, freeze_until FROM bonds "
+                            + "WHERE player_name=?");
+            ps.setString(1, player);
+            ResultSet rs = ps.executeQuery();
+            long until = -1L;
+            if (rs.next()) {
+                if (!"frozen".equals(rs.getString("status"))) {
+                    rs.close(); ps.close();
+                    return -1L;
+                }
+                until = rs.getLong("freeze_until");
+            }
+            rs.close(); ps.close();
+            if (until > 0L && until <= System.currentTimeMillis()) {
+                unfreezeAccount(player);
+                return -1L;
+            }
+            return until;
+        } catch (SQLException ignored) {
+            return -1L;
+        }
     }
 
     public String getAccountStatus(String player) {
+        String s = "normal";
+        long until = 0L;
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "SELECT status FROM bonds "
+                    "SELECT status, freeze_until FROM bonds "
                             + "WHERE player_name=?");
             ps.setString(1, player);
             ResultSet rs = ps.executeQuery();
             if (rs.next()) {
-                String s = rs.getString("status");
-                rs.close(); ps.close();
-                return s != null ? s : "normal";
+                s = rs.getString("status");
+                until = rs.getLong("freeze_until");
+                if (s == null) s = "normal";
             }
             rs.close(); ps.close();
-        } catch (SQLException ignored) {}
-        return "normal";
+        } catch (SQLException ignored) {
+            return "normal";
+        }
+        if ("frozen".equals(s)
+                && until > 0L
+                && until <= System.currentTimeMillis()) {
+            unfreezeAccount(player);   // 到期自动解冻
+            return "normal";
+        }
+        return s;
     }
 
+    /** 永久冻结 */
     public void freezeAccount(String player) {
+        freezeAccount(player, 0L);
+    }
+
+    /**
+     * 冻结账户（★ 2026-10-04 支持到期时间）。
+     *
+     * @param expireMs Unix 毫秒到期时间；{@code <=0} 表示永久冻结
+     */
+    public void freezeAccount(String player, long expireMs) {
         ensureAccount(player);
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "UPDATE bonds SET status='frozen' "
+                    "UPDATE bonds SET status='frozen', "
+                            + "freeze_until=? "
                             + "WHERE player_name=?");
-            ps.setString(1, player);
+            ps.setLong(1, expireMs > 0L ? expireMs : 0L);
+            ps.setString(2, player);
             ps.executeUpdate(); ps.close();
         } catch (SQLException e) { e.printStackTrace(); }
     }
@@ -171,7 +242,8 @@ public class BondManager {
         ensureAccount(player);
         try {
             PreparedStatement ps = db.prepareStatement(
-                    "UPDATE bonds SET status='normal' "
+                    "UPDATE bonds SET status='normal', "
+                            + "freeze_until=0 "
                             + "WHERE player_name=?");
             ps.setString(1, player);
             ps.executeUpdate(); ps.close();
@@ -398,6 +470,31 @@ public class BondManager {
                                String operator,
                                String reason) {
         if (isFrozen(player)) return false;
+        return deductBondsInternal(player, amount,
+                type, targetPlayer, operator, reason);
+    }
+
+    // ===== 冻结豁免通道（★ 2026-10-04 冻结规则定案） =====
+    // 冻结期间「仅允许 PHP 后端动账 + 管理员手动 give/remove」，
+    // 玩家主动消费（商城/领地/商店）与他人转账一律被上面的
+    // isFrozen 拦掉；只有走下面两个豁免方法的调用方才能动账。
+
+    /** 管理员/PHP 后台加款：冻结期也放行（只记流水，不查冻结） */
+    public int addBondsAdmin(String player, int amount,
+                             String type,
+                             String targetPlayer,
+                             String operator,
+                             String reason) {
+        return addBondsInternal(player, amount,
+                type, targetPlayer, operator, reason);
+    }
+
+    /** 管理员/PHP 后台扣款：冻结期也放行（管理员手动 remove） */
+    public boolean deductBondsAdmin(String player, int amount,
+                                    String type,
+                                    String targetPlayer,
+                                    String operator,
+                                    String reason) {
         return deductBondsInternal(player, amount,
                 type, targetPlayer, operator, reason);
     }

@@ -67,9 +67,7 @@ public class CypayCommand
                             + " 余额: §a" + bonds);
             sender.sendMessage(
                     "§e§l[债券] §f状态: "
-                            + ("frozen".equals(status)
-                            ? "§c冻结中"
-                            : "§a正常"));
+                            + freezeText(name));
             return true;
         }
 
@@ -95,8 +93,10 @@ public class CypayCommand
             return true;
         }*/
 
-        // ===== /cypay freeze =====
-        if (args.length == 2
+        // ===== /cypay freeze <玩家> [时长] =====
+        // ★ 2026-10-04 改版：时长可选，硬编封顶 30 天，
+        //   不传时长 = 永久冻结；支持 1分钟/壹分钟/one min/时间戳
+        if (args.length >= 2
                 && "freeze".equalsIgnoreCase(
                 args[0])) {
             if (!hasAdminPerm(sender)) {
@@ -104,20 +104,57 @@ public class CypayCommand
                 return true;
             }
             String target = args[1];
-            if (plugin.getBonds().isFrozen(target)) {
-                sender.sendMessage("§c" + target
-                        + " 已处于冻结状态");
-                return true;
+            long until = 0L;                 // 0 = 永久冻结
+            String durNote = "永久";
+            if (args.length >= 3) {
+                String durStr = String.join(" ",
+                        Arrays.copyOfRange(args, 2,
+                                args.length));
+                long expireMs;
+                try {
+                    expireMs = DurationParser
+                            .parseToExpireMs(durStr);
+                } catch (IllegalArgumentException ex) {
+                    sender.sendMessage("§c时长格式无法解析: "
+                            + ex.getMessage());
+                    sender.sendMessage("§7可用写法: 30分钟 / "
+                            + "壹小时 / one min / 7天 / "
+                            + "253402271999(时间戳)");
+                    sender.sendMessage("§7不传时长 = 永久冻结，"
+                            + "时长封顶 30 天");
+                    return true;
+                }
+                long now = System.currentTimeMillis();
+                long MAX_MS =
+                        30L * 24 * 3600 * 1000L;  // 封顶30天
+                if (expireMs <= now) {
+                    // 过期/为零的时间戳（如 0000000000）-> 永久
+                    sender.sendMessage("§7该时间点已过期，"
+                            + "按 §c永久冻结 §7处理");
+                    until = 0L;
+                } else if (expireMs - now > MAX_MS) {
+                    until = now + MAX_MS;
+                    sender.sendMessage("§7时长超过 30 天，"
+                            + "已按封顶 §e30天 §7处理");
+                } else {
+                    until = expireMs;
+                }
+                durNote = until <= 0L ? "永久"
+                        : "至 " + DurationParser
+                                .formatExpire(until);
             }
-            plugin.getBonds().freezeAccount(target);
+            plugin.getBonds().freezeAccount(target, until);
             sender.sendMessage("§a已冻结 " + target
-                    + " 的债券账户");
+                    + " 的债券账户（" + durNote + "）");
             Player tp = plugin.getServer()
                     .getPlayerExact(target);
             if (tp != null)
                 tp.sendMessage(
-                        "§c§l[系统] 你的债券账户"
-                                + "已被管理员冻结");
+                        "§c§l[系统] 你的债券账户已被管理员冻结"
+                                + (until <= 0L ? ""
+                                : "，到期时间: "
+                                + DurationParser
+                                .formatExpire(until)));
             return true;
         }
 
@@ -182,9 +219,7 @@ public class CypayCommand
                     + plugin.getBonds()
                     .getBonds(target)
                     + "  §f状态: "
-                    + (plugin.getBonds()
-                    .isFrozen(target)
-                    ? "§c冻结" : "§a正常"));
+                    + freezeText(target));
 
             if (txs.isEmpty()) {
                 sender.sendMessage("§7  (暂无记录)");
@@ -276,7 +311,8 @@ public class CypayCommand
                                     : "管理员扣除");
 
                     if ("give".equals(action)) {
-                        plugin.getBonds().addBonds(
+                        // ★ 冻结期豁免：管理员手动 give 允许动账
+                        plugin.getBonds().addBondsAdmin(
                                 target, amount,
                                 txType, "",
                                 opName, reason);
@@ -292,8 +328,10 @@ public class CypayCommand
                                             + amount
                                             + " 债券");
                     } else {
+                        // ★ 冻结期豁免：管理员手动 remove
+                        //   允许动账（deductBondsAdmin 不查冻结）
                         if (plugin.getBonds()
-                                .deductBonds(target,
+                                .deductBondsAdmin(target,
                                         amount,
                                         txType, "",
                                         opName,
@@ -315,8 +353,7 @@ public class CypayCommand
                         } else {
                             sender.sendMessage(
                                     "§c" + target
-                                            + " 债券不足"
-                                            + "或账户冻结");
+                                            + " 债券不足");
                         }
                     }
                 } catch (NumberFormatException e) {
@@ -393,10 +430,7 @@ public class CypayCommand
                                 + bonds);
                 sender.sendMessage(
                         "§e§l[债券] §f状态: "
-                                + ("frozen".equals(
-                                status)
-                                ? "§c冻结中"
-                                : "§a正常"));
+                                + freezeText(target));
             } else {
                 int bonds = plugin.getBonds()
                         .getBonds(
@@ -410,6 +444,19 @@ public class CypayCommand
 
         showHelp(sender);
         return true;
+    }
+
+    // ===== 冻结状态文案（含到期时间） =====
+
+    /** 正常 / 冻结中(永久) / 冻结中(至 yyyy年M月d日 HH:mm) */
+    private String freezeText(String target) {
+        if (!plugin.getBonds().isFrozen(target))
+            return "§a正常";
+        long until = plugin.getBonds()
+                .getFreezeUntil(target);
+        if (until <= 0L) return "§c冻结中(永久)";
+        return "§c冻结中(至 "
+                + DurationParser.formatExpire(until) + ")";
     }
 
     // ===== 流水行格式化 =====
@@ -489,7 +536,8 @@ public class CypayCommand
             sender.sendMessage(
                     "§e/cypay import <文件> §7- 导入CDK");
             sender.sendMessage(
-                    "§e/cypay freeze <玩家> §7- 冻结");
+                    "§e/cypay freeze <玩家> [时长] §7- 冻结"
+                            + "（不填=永久，封顶30天）");
             sender.sendMessage(
                     "§e/cypay unfreeze <玩家> §7- 解冻");
             sender.sendMessage(
@@ -559,6 +607,15 @@ public class CypayCommand
 
         if (args.length == 3) {
             String first = args[0].toLowerCase();
+            if ("freeze".equals(first)) {
+                list.add("10分钟");
+                list.add("1小时");
+                list.add("one min");
+                list.add("7天");
+                list.add("30天");
+                return filter(list,
+                        args[2].toLowerCase());
+            }
             if ("give".equals(first)
                     || "remove".equals(first)) {
                 list.add("10");

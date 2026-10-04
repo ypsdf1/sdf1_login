@@ -3738,6 +3738,7 @@ public class WebManager {
                         gs.append("\"priority\":").append(cfg.priority).append(",");
                         gs.append("\"land_price_per_sqm\":").append(cfg.landPricePerSqm).append(",");
                         gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
+                        gs.append("\"max_effects\":").append(cfg.maxEffects).append(",");
                         gs.append("\"home_limit\":").append(cfg.homeLimit).append(",");
                         gs.append("\"join_price\":").append(cfg.joinPrice).append(",");
                         gs.append("\"auto_renew\":").append(cfg.autoRenew ? 1 : 0).append(",");
@@ -4131,6 +4132,11 @@ public class WebManager {
             if (!priceStr.isEmpty()) try { cfg.landPricePerSqm = Integer.parseInt(priceStr); } catch (Exception ignored) {}
             String maxStr = extractJsonField(obj, "max_lands");
             if (!maxStr.isEmpty()) try { cfg.maxLands = Integer.parseInt(maxStr); } catch (Exception ignored) {}
+            String maxEffStr = extractJsonField(obj, "max_effects");
+            if (!maxEffStr.isEmpty()) {
+                try { cfg.maxEffects = Integer.parseInt(maxEffStr); }
+                catch (Exception ignored) { cfg.maxEffects = 5; }
+            }
             String homeLimStr = extractJsonField(obj, "home_limit");
             if (!homeLimStr.isEmpty()) try { cfg.homeLimit = Integer.parseInt(homeLimStr); } catch (Exception ignored) {}
             String joinStr = extractJsonField(obj, "join_price");
@@ -7239,7 +7245,8 @@ public class WebManager {
             } else if (type.equals("recharge") || type.equals("pay_recharge")) {
                 // 在线支付充值（债券在线充值平台）：增加债券
                 int balBefore = plugin.getBondManager().getBonds(playerName);
-                plugin.getBondManager().addBonds(playerName, amount, "pay_recharge", "", "支付平台", "在线充值");
+                // ★ 冻结期豁免：PHP 后端发起的充值允许动账（addBondsAdmin 不查冻结）
+                plugin.getBondManager().addBondsAdmin(playerName, amount, "pay_recharge", "", "支付平台", "在线充值");
                 int balAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " 在线充值，金额: " + amount + " 债券");
                 // 通知在线玩家
@@ -7253,7 +7260,8 @@ public class WebManager {
             } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("admin_give")) {
                 // 管理员充值：增加债券（充值不受冻结限制）
                 int balBefore = plugin.getBondManager().getBonds(playerName);
-                plugin.getBondManager().addBonds(playerName, amount, "web_recharge", "", "Web后台", "管理员充值");
+                // ★ 冻结期豁免：PHP 后台充值允许动账（注释早就写了「不受冻结限制」，之前实际被拦）
+                plugin.getBondManager().addBondsAdmin(playerName, amount, "web_recharge", "", "Web后台", "管理员充值");
                 int balAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " 管理员充值，金额: " + amount);
                 // ★ 通知在线玩家
@@ -7266,6 +7274,7 @@ public class WebManager {
                 confirmTransaction(txId);
             } else if (type.equals("admin_deduct") || type.equals("admin_add")) {
                 // 管理员扣减/增加债券（Web后台操作）
+                // ★ 冻结期豁免：PHP 后端/管理员手动操作（含手动 remove）走 setBonds，本就不查冻结
                 int currentBalance = plugin.getBondManager().getBonds(playerName);
                 // ★ 从PHP的detail字段读取PHP计算的新余额（PHP和Java本地余额可能不同步）
                 int newBalance = -1;
@@ -7310,7 +7319,8 @@ public class WebManager {
             } else if (type.equals("cdk_redeem")) {
                 // CDK兑换：增加债券（本地CDK由PHP标记used，远程CDK由sdf1标记）
                 int balanceBefore = plugin.getBondManager().getBonds(playerName);
-                plugin.getBondManager().addBonds(playerName, amount, "web_cdk", "", "Web商城", "CDK兑换");
+                // ★ 冻结期豁免：CDK 是 PHP 后端交易（入账类），放行避免吞码假成功
+                plugin.getBondManager().addBondsAdmin(playerName, amount, "web_cdk", "", "Web商城", "CDK兑换");
                 int balanceAfter = plugin.getBondManager().getBonds(playerName);
                 plugin.getLogger().info("[Web交易] 玩家 " + playerName + " CDK兑换，金额: " + amount);
 

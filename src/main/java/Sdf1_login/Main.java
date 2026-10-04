@@ -1488,27 +1488,45 @@ public class Main extends JavaPlugin
             sender.sendMessage("§c权限不足");
             return;
         }
-        if (args.length < 2) {
+        // ★ 2026-10-04 改版：必填 1 个（玩家名/IP），选填 2 个
+        //   args[1] 时长可省略 -> 默认 10 分钟；args[2..] 理由可省略
+        //   -> 默认「你已被此服务器封禁」
+        if (args.length < 1) {
             sender.sendMessage("§e/" + label
-                    + " <玩家名/IP> <时长> [理由]");
-            sender.sendMessage("§7时长示例: 1秒 / 1s / 1年 / 2026年7月9日 / 253402271999");
+                    + " <玩家名/IP> [时长] [理由]");
+            sender.sendMessage("§7时长不填默认封 §e10 分钟§7，"
+                    + "理由不填默认 §e你已被此服务器封禁");
+            sender.sendMessage("§7时长示例: 10分钟 / 壹小时 / 1s / 1年 / 2026年7月9日 / 253402271999");
             return;
         }
         String target = args[0];
         // ★ 安全防护：目标必须已注册，否则直接返回「玩家不存在」
         if (!ensureRegistered(sender, target)) return;
-        String durStr = args[1];
+        long DEFAULT_MS = 10L * 60 * 1000L;   // 默认封禁 10 分钟
         StringBuilder reason = new StringBuilder();
         for (int i = 2; i < args.length; i++) {
             if (reason.length() > 0) reason.append(" ");
             reason.append(args[i]);
         }
         long expireMs;
-        try {
-            expireMs = DurationParser.parseToExpireMs(durStr);
-        } catch (IllegalArgumentException ex) {
-            sender.sendMessage("§c时长格式无法解析: " + ex.getMessage());
-            return;
+        if (args.length < 2) {
+            // ① 只给目标 -> 默认 10 分钟 + 默认理由
+            expireMs = System.currentTimeMillis() + DEFAULT_MS;
+        } else {
+            String durStr = args[1];
+            try {
+                expireMs = DurationParser.parseToExpireMs(durStr);
+            } catch (IllegalArgumentException ex) {
+                // ② 第 2 个参数不是合法时长 -> 降级为「理由」，时长仍取默认 10 分钟
+                expireMs = System.currentTimeMillis() + DEFAULT_MS;
+                reason = new StringBuilder();
+                for (int i = 1; i < args.length; i++) {
+                    if (reason.length() > 0) reason.append(" ");
+                    reason.append(args[i]);
+                }
+                sender.sendMessage("§7「" + durStr + "」不是合法时长，"
+                        + "已按默认 §e10 分钟§7 封禁，并将该参数作为理由。");
+            }
         }
         long durMs = expireMs - System.currentTimeMillis();
         long MIN = 1000L;
@@ -1521,10 +1539,10 @@ public class Main extends JavaPlugin
             sender.sendMessage("§c封禁时长最长 10 年");
             return;
         }
+        // ★ 2026-10-04 改版：默认理由固定为「你已被此服务器封禁」
         String r = reason.length() > 0
                 ? reason.toString()
-                : "您已被服务器封禁，效期至: "
-                + DurationParser.formatExpire(expireMs);
+                : "你已被此服务器封禁";
 
         // ★ 改判（反向）：目标已被永久封禁 -> tempban 改判有期徒刑
         if (!isIpTarget(target)) {

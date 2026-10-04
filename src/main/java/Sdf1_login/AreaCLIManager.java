@@ -1649,10 +1649,10 @@ public class AreaCLIManager {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
             return;
         }
-        // 验证等级
+        // 验证等级（★ 2026-10-04 任务3：受原版增益效果封顶 1~255）
         int level = 1;
         try { level = Integer.parseInt(levelStr); } catch (Exception ignored) {}
-        level = Math.max(1, level);
+        level = Math.max(1, Math.min(level, 255));
 
         // 验证秒数
         int duration = 999;
@@ -1665,6 +1665,14 @@ public class AreaCLIManager {
                 p.sendMessage(Component.text("§c该效果已存在于增益列表中: §f" + existing[0]));
                 return;
             }
+        }
+
+        // ★ 数量上限（2026-10-04 任务3）：普通玩家 5 个，用户组可覆盖
+        int maxEff = areaProtect.getMaxGiveEffects(land.owner);
+        if (land.giveEffects.size() >= maxEff) {
+            p.sendMessage(Component.text("§c该领地增益效果已达上限 "
+                    + maxEff + " 个（按用户组配置），请先移除再添加"));
+            return;
         }
 
         land.giveEffects.add(new String[]{effName, String.valueOf(level), String.valueOf(duration)});
