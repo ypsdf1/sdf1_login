@@ -97,6 +97,176 @@ public class WebManager {
     private String secretKey = "sdf1_web_comm_2026_ypshidifu";
     private int callbackPort = 9090; // PHP回调端口
 
+    // ==================== 配置热重载（2026-10-04 用户要求）====================
+    // ★ 需求原话：「启动时加载一次配置就不管了，如果返回密钥验证失败就再读一次配置的密钥文件。
+    //   同时，开关状态也做到热重载。不再依赖 reload。reload 保留作为手动重载更新的一种方式。」
+    //
+    // 三条独立的生效通道，任意一条都能让配置生效，不再依赖 reload 命令：
+    //  1) 热重载：5 个合并定时器每轮开头比对 插件设置.txt 的指纹（lastModified + length），
+    //     变了就重新解析「启用开关 / 地址 / 密钥 / 三个数值项」，改完下一轮即生效；
+    //  2) 密钥自愈：PHP 返回「密钥验证失败」时立刻重读配置文件里的密钥并重试该请求。
+    //     运维在服务器上直接改 txt 就能救活，不用重启、不用 reload；
+    //  3) isEnabled() 实时读文件，改开关下一毫秒生效。
+    // 手动 reloadWebConfig() 保留，但不再是「生效的唯一途径」。
+    private static final long HOT_RELOAD_CHECK_INTERVAL_MS = 3000;  // 文件检查节流（5 个定时器共用一个闸）
+    private static final long SECRET_HEAL_COOLDOWN_MS = 30000;      // 密钥自愈冷却（防刷日志/防死循环）
+    private volatile long lastHotReloadCheckAt = 0;
+    private volatile long lastSecretHealAt = 0;
+    private volatile long settingsFileStamp = -1L;   // 已加载配置的指纹（-1 = 强制重载）
+    private volatile String lastLoadedSecret = "";   // 内存中当前生效的密钥（诊断用）
+    private volatile String lastLoadedUrl = "";      // 内存中当前生效的地址（诊断用）
+    private final Object configLock = new Object();
+
+    /**
+     * 检查配置文件是否变化，变了就热重载（启用开关 / 地址 / 密钥 / 数值项）。
+     * 由 5 个定时器每轮开头调用；纯只读、绝不抛异常。
+     *
+     * ★ 为什么必须放在 enabled 守卫【之前】：
+     *   开关关着时定时器走的是「自调度后 return」分支，若把热重载放在守卫后面，
+     *   开关关着时就永远感知不到「运维把开关改回 true」→ 又得靠 reload。两处必须同时存在。
+     *   文件指纹做闸：文件没动时连磁盘都不读；5 个定时器共用 3 秒节流，不会压 IO。
+     */
+    private void hotReloadIfChanged() {
+        long now = System.currentTimeMillis();
+        if (now - lastHotReloadCheckAt < HOT_RELOAD_CHECK_INTERVAL_MS) return;
+        synchronized (configLock) {
+            lastHotReloadCheckAt = now;
+        }
+        try {
+            File file = new File(plugin.getDataFolder(), "插件设置.txt");
+            if (!file.exists()) return;
+            long stamp = file.lastModified() * 1000000L + file.length();
+            if (stamp == settingsFileStamp) return;   // 文件没动 → 什么都不做
+
+            String newUrl = getConfigValue("web通信-地址", webBaseUrl);
+            String newSecret = getConfigValue("web通信-密钥", secretKey);
+            boolean newEnabledFlag = Boolean.parseBoolean(getConfigValue("web通信-启用", "false"));
+            String newInterval = getConfigValue("web通信-同步间隔分钟", String.valueOf(syncIntervalMinutes));
+            String newTokenExpire = getConfigValue("web通信-Token有效期秒", String.valueOf(tokenExpireSeconds));
+            String newPort = getConfigValue("web通信-回调端口", String.valueOf(callbackPort));
+
+            boolean urlChanged = !newUrl.equals(webBaseUrl);
+            boolean secretChanged = !newSecret.equals(secretKey);
+            boolean enableChanged = newEnabledFlag != enabled;
+            boolean othersChanged = false;
+            try {
+                othersChanged = Integer.parseInt(newInterval.trim()) != syncIntervalMinutes
+                        || Integer.parseInt(newTokenExpire.trim()) != tokenExpireSeconds
+                        || Integer.parseInt(newPort.trim()) != callbackPort;
+            } catch (NumberFormatException ignore) {
+                othersChanged = true;   // 写了非数字 → 走下面的兜底（保持旧值）
+            }
+
+            settingsFileStamp = stamp;
+
+            if (!urlChanged && !secretChanged && !enableChanged && !othersChanged) {
+                return;   // 文件动了但 Web 段没变（如改了别的模块）→ 安静走人
+            }
+            synchronized (configLock) {
+                webBaseUrl = newUrl;
+                secretKey = newSecret;
+                enabled = newEnabledFlag;
+                try { syncIntervalMinutes = Integer.parseInt(newInterval.trim()); } catch (Exception ignore) { }
+                try { tokenExpireSeconds = Integer.parseInt(newTokenExpire.trim()); } catch (Exception ignore) { }
+                try { callbackPort = Integer.parseInt(newPort.trim()); } catch (Exception ignore) { }
+            }
+            lastLoadedSecret = newSecret;
+            lastLoadedUrl = newUrl;
+            plugin.getLogger().info("[Web通信] ★ 配置已热重载（自动感知 插件设置.txt 变更）: 地址="
+                    + webBaseUrl + " 启用=" + enabled + " 密钥长度=" + secretKey.length()
+                    + (secretChanged ? " [密钥已更新]" : "")
+                    + (urlChanged ? " [地址已更新]" : "")
+                    + (enableChanged ? (enabled ? " [开关已开启]" : " [开关已关闭]") : ""));
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 配置热重载失败（沿用旧配置）: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * PHP 返回「密钥验证失败」时调用：立刻重读配置文件里的密钥。
+     *
+     * @return true = 密钥已更新、值得重试；false = 文件里就是当前值（不是配置漂移），别再试
+     */
+    private boolean healSecretOnAuthFailure() {
+        long now = System.currentTimeMillis();
+        synchronized (configLock) {
+            if (now - lastSecretHealAt < SECRET_HEAL_COOLDOWN_MS) {
+                return false;   // 冷却中：不重复读盘、不刷日志
+            }
+            lastSecretHealAt = now;
+        }
+        String fileSecret;
+        try {
+            fileSecret = getConfigValue("web通信-密钥", null);
+        } catch (Exception e) {
+            return false;
+        }
+        String current = secretKey;
+        if (fileSecret == null || fileSecret.isEmpty() || fileSecret.equals(current)) {
+            return false;   // 文件里就是当前这个值 → 重读没用，问题在 PHP 侧或网络侧
+        }
+        synchronized (configLock) {
+            secretKey = fileSecret;
+            settingsFileStamp = -1L;   // 强制下一轮做完整比对，避免指纹与实际不一致
+        }
+        lastLoadedSecret = fileSecret;
+        plugin.getLogger().warning("[Web通信] ★ 密钥验证失败 → 已自动重读 插件设置.txt 的 web通信-密钥: "
+                + "旧(长度" + current.length() + ") → 新(长度" + fileSecret.length() + ")，本请求将自动重试");
+        return true;
+    }
+
+    /**
+     * 判断响应体是否为「密钥验证失败」。
+     * PHP 端 error('密钥验证失败', 403) → {"success":false,"message":"密钥验证失败"}
+     * 另有 land_api.php / core.php 用「认证失败」文案，内嵌回调用 invalid_secret，一并覆盖。
+     */
+    private static boolean isSecretAuthFailure(String body) {
+        if (body == null) return false;
+        return body.contains("密钥验证失败")
+                || body.contains("认证失败")
+                || body.contains("invalid_secret");
+    }
+
+    /**
+     * 所有出网请求的统一后处理：发现密钥失效就自动重读配置并重试一次。
+     *
+     * ★ 本次改动的核心价值：把「运维改 txt → 忘了 reload / 没重启 → 永久 403」
+     *   变成「运维改 txt → 下一个请求自己发现并自愈」（密钥错配事故的直接对策）。
+     *
+     * @param call 出网执行体；自愈重试时会【再调用一次】，故必须是可重复执行的纯请求动作
+     */
+    private String withSecretAutoHeal(java.util.concurrent.Callable<String> call) {
+        String resp = null;
+        try {
+            resp = call.call();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 请求执行异常: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+        if (!isSecretAuthFailure(resp)) {
+            return resp;   // 与密钥无关的响应，原样返回
+        }
+        plugin.getLogger().warning("[Web通信] PHP 返回「密钥验证失败」");
+        if (!healSecretOnAuthFailure()) {
+            return resp;   // 文件里的密钥没变 → 改不了，如实返回，不做无意义重试
+        }
+        try {
+            String retry = call.call();
+            if (retry != null && !isSecretAuthFailure(retry)) {
+                plugin.getLogger().info("[Web通信] ★ 密钥自动修复生效，重试成功（本请求已同步）");
+                return retry;
+            }
+            plugin.getLogger().warning("[Web通信] ★ 密钥已重读但重试仍失败，请核对 "
+                    + "插件设置.txt 的 web通信-密钥 与 PHP config.php 的 SECRET_KEY 是否一字不差");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 密钥自愈重试异常: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        return resp;
+    }
+
     // ★ 统一HTTP客户端（绕过HttpsURLConnection的TLS时序问题，原生支持ALPN/SNI/HTTP2）
     private HttpClient cfHttpClient;
     
@@ -634,13 +804,17 @@ public class WebManager {
                 sslDowngraded = false;  // 恢复正常HTTPS
                 String body = resp.body();
                 detectPhpBusy(body);  // ★ 锁库检测
-                return body;
+                return withSecretAutoHeal(() -> body);   // ★ 密钥自愈（PHP 可能 200 也带失败信息）
             }
             // ★ 4xx/5xx也返回body（PHP的error()返回有用的JSON错误信息）
             String shortUrl = urlStr.length() > 120 ? urlStr.substring(0, 120) + "..." : urlStr;
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            if (isSecretAuthFailure(body)) {
+                // ★ 密钥错配是唯一值得立即自愈 + 重试的 4xx（其余 4xx 重试无意义）
+                return withSecretAutoHeal(() -> doGet(urlStr));
+            }
             // 返回body让调用方可以解析PHP错误信息
             if (body != null && !body.isEmpty()) {
                 return body;
@@ -723,6 +897,10 @@ public class WebManager {
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            if (isSecretAuthFailure(body)) {
+                // ★ 密钥错配是唯一值得立即自愈 + 重试的 4xx（其余 4xx 重试无意义）
+                return withSecretAutoHeal(() -> doPostWithoutFallback(urlStr, jsonBody));
+            }
             if (body != null && !body.isEmpty()) {
                 return body;
             }
@@ -767,6 +945,10 @@ public class WebManager {
             String body = resp.body();
             String shortBody = (body != null && body.length() > 200) ? body.substring(0, 200) : body;
             plugin.getLogger().warning("[Web通信] POST HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
+            if (isSecretAuthFailure(body)) {
+                // ★ 密钥错配是唯一值得立即自愈 + 重试的 4xx（其余 4xx 重试无意义）
+                return withSecretAutoHeal(() -> doPostWithSslFallback(urlStr, jsonBody));
+            }
             if (body != null && !body.isEmpty()) {
                 return body;
             }
@@ -846,6 +1028,10 @@ public class WebManager {
                     detectPhpBusy(body);  // ★ 锁库检测
                     return body;
                 }
+                if (isSecretAuthFailure(resp.body())) {
+                    // ★ 密钥错配不是网络问题，重试 3 次也没用 → 直接走自愈通道（内部只重试一次）
+                    return withSecretAutoHeal(() -> doPostWithRetry(urlStr, jsonBody, maxRetries));
+                }
                 if (attempt < maxRetries) {
                     plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + " HTTP " + resp.statusCode());
                     try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
@@ -876,7 +1062,16 @@ public class WebManager {
         syncIntervalMinutes = Integer.parseInt(getConfigValue("web通信-同步间隔分钟", "5"));
         callbackPort = Integer.parseInt(getConfigValue("web通信-回调端口", "9090"));
         secretKey = getConfigValue("web通信-密钥", secretKey);
-        plugin.getLogger().info("[Web通信] 后端地址: " + webBaseUrl + " | 启用: " + enabled);
+        // ★ 记录已加载指纹，供热重载判定「文件是否变化」；同时留一份内存副本供诊断
+        lastLoadedSecret = secretKey;
+        lastLoadedUrl = webBaseUrl;
+        try {
+            File f = new File(plugin.getDataFolder(), "插件设置.txt");
+            settingsFileStamp = f.exists() ? (f.lastModified() * 1000000L + f.length()) : -1L;
+        } catch (Exception ignore) { }
+        plugin.getLogger().info("[Web通信] 后端地址: " + webBaseUrl + " | 启用: " + enabled
+                + " | 密钥长度: " + (secretKey != null ? secretKey.length() : 0)
+                + "（后续改配置将自动热重载，无需 reload）");
     }
 
     /**
@@ -884,8 +1079,11 @@ public class WebManager {
      */
     public void reloadWebConfig() {
         boolean wasEnabled = enabled;
+        // ★ 强制清掉文件指纹，确保手动 reload 一定重新解析文件（否则会被指纹命中跳过）
+        synchronized (configLock) { settingsFileStamp = -1L; }
         loadConfig();
-        plugin.getLogger().info("[Web通信] Web后端配置已重载: 地址=" + webBaseUrl + " 启用=" + enabled + " 密钥=" + secretKey);
+        plugin.getLogger().info("[Web通信] Web后端配置已重载: 地址=" + webBaseUrl + " 启用=" + enabled
+                + " 密钥长度=" + (secretKey != null ? secretKey.length() : 0));
 
         // ★★★ 运行时启停：根据enabled状态动态启动/停止轮询定时器
         // 1) 已禁用：定时器内部已有 !enabled 守卫，下一轮自动跳过HTTP请求（无需手动取消）
@@ -1818,6 +2016,10 @@ public class WebManager {
 
                 // ★★★ Web通信未启用时跳过所有轮询（支持运行时通过重载配置关闭）
                 // 修复bug：之前仅在start()判断enabled，重载配置为false后定时器仍持续请求web配置地址
+                // ★ 配置热重载：每轮开头自动感知 插件设置.txt 变更（启用开关 / 地址 / 密钥）
+                //   放在 enabled 守卫【之前】：开关关着时也要能感知「运维把开关改回 true」
+                hotReloadIfChanged();
+
                 if (!enabled) {
                     scheduleTimerA(calcStaggeredDelay(TIMER_A, 3, 5));
                     return;
@@ -1925,6 +2127,10 @@ public class WebManager {
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_B] = now; }
 
                 // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                // ★ 配置热重载：每轮开头自动感知 插件设置.txt 变更（启用开关 / 地址 / 密钥）
+                //   放在 enabled 守卫【之前】：开关关着时也要能感知「运维把开关改回 true」
+                hotReloadIfChanged();
+
                 if (!enabled) {
                     scheduleTimerB(calcStaggeredDelay(TIMER_B, 0, 10));
                     return;
@@ -1989,6 +2195,10 @@ public class WebManager {
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_C] = now; }
 
                 // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                // ★ 配置热重载：每轮开头自动感知 插件设置.txt 变更（启用开关 / 地址 / 密钥）
+                //   放在 enabled 守卫【之前】：开关关着时也要能感知「运维把开关改回 true」
+                hotReloadIfChanged();
+
                 if (!enabled) {
                     scheduleTimerC(calcStaggeredDelay(TIMER_C, 10, 20));
                     return;
@@ -2063,6 +2273,10 @@ public class WebManager {
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_D] = now; }
 
                 // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                // ★ 配置热重载：每轮开头自动感知 插件设置.txt 变更（启用开关 / 地址 / 密钥）
+                //   放在 enabled 守卫【之前】：开关关着时也要能感知「运维把开关改回 true」
+                hotReloadIfChanged();
+
                 if (!enabled) {
                     scheduleTimerD(calcStaggeredDelay(TIMER_D, 15, 25));
                     return;
@@ -2104,6 +2318,10 @@ public class WebManager {
                 synchronized (scheduleLock) { lastRunTimestamps[TIMER_E] = now; }
 
                 // ★★★ Web通信未启用时跳过所有轮询（支持运行时关闭）
+                // ★ 配置热重载：每轮开头自动感知 插件设置.txt 变更（启用开关 / 地址 / 密钥）
+                //   放在 enabled 守卫【之前】：开关关着时也要能感知「运维把开关改回 true」
+                hotReloadIfChanged();
+
                 if (!enabled) {
                     scheduleTimerE(calcStaggeredDelay(TIMER_E, 20, 30));
                     return;
@@ -6306,7 +6524,19 @@ public class WebManager {
 
     // ==================== Getter ====================
 
+    /**
+     * Web通信是否启用。
+     * ★ 2026-10-04：改为【实时读文件】而不是返回内存字段。
+     *   这样「运维改 txt → 下一毫秒生效」，完全不需要 reload / 重启。
+     *   文件不可读时回退到内存值，避免因文件临时不可读而误判为未启用。
+     */
     public boolean isEnabled() {
+        try {
+            File file = new File(plugin.getDataFolder(), "插件设置.txt");
+            if (file.exists()) {
+                return Boolean.parseBoolean(getConfigValue("web通信-启用", "false"));
+            }
+        } catch (Exception ignore) { }
         return enabled;
     }
 
