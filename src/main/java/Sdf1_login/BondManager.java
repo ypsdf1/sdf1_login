@@ -870,6 +870,36 @@ public class BondManager {
     }
 
     /**
+     * 交易流水总笔数（用于开服与PHP对账）
+     */
+    public long getTxCount() {
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM bond_transaction");
+            long n = rs.next() ? rs.getLong(1) : 0L;
+            rs.close(); st.close();
+            return n;
+        } catch (SQLException e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 交易流水最大序列号（bond_transaction.id 自增主键，即对账用的「交易序列号」）
+     */
+    public long getMaxTxId() {
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery("SELECT COALESCE(MAX(id), 0) FROM bond_transaction");
+            long n = rs.next() ? rs.getLong(1) : 0L;
+            rs.close(); st.close();
+            return n;
+        } catch (SQLException e) {
+            return 0L;
+        }
+    }
+
+    /**
      * 获取指定时间之后的所有交易记录（用于Web同步）
      */
     public List<Map<String, Object>> getTransactionsAfterTime(long afterTime) {

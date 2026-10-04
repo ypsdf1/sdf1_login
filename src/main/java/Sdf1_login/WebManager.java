@@ -1317,8 +1317,8 @@ public class WebManager {
                 long fullSyncStart = System.currentTimeMillis();
                 plugin.getLogger().info("[Web通信] ===== 开始首次全量同步 ===== 地址=" + webBaseUrl
                         + " 密钥长度=" + (secretKey != null ? secretKey.length() : 0));
-                // ★ 关键修复：归零流水水位线，否则 Web 端被清空/全新部署时历史流水永久丢失
-                resetTxWatermarkForFullSync();
+                // ★ 先与 PHP 对账流水：两边一致就完全跳过补推，对不上才补（避免每次开服全量重推）
+                alignTxWatermarkOnBoot();
                 // 登录相关操作高优先级
                 submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
                 fullSyncStep("注册用户数据");
@@ -5301,6 +5301,18 @@ public class WebManager {
      */
     private volatile long lastSyncedTxTime = 0;
 
+    // ★ 交易推送改为「节流 + 两边点验」（2026-10-04）
+    //   1) 不再盲目全量重推：开服先与 PHP 对账，对得上就完全跳过；
+    //   2) 推进过程异步逐批进行，每批之间让出线程 → DB 工作线程不会被占死，其他同步任务不受影响；
+    //   3) 每批推之前先问 PHP「这批序列号你有了吗」，只补缺的那几笔，已有的一律不重推。
+    private final AtomicBoolean txBatchRunning = new AtomicBoolean(false);
+    private volatile boolean txRescanRequested = false;
+    private volatile boolean txAlignmentPending = false;
+
+    /** 节流：纯对账（不推送）的批次走短间隔；真正推了 PHP 的批次走长间隔，别把 PHP 压太狠 */
+    private static final long TX_SYNC_VERIFY_STEP_MS = 400;
+    private static final long TX_SYNC_PUSH_STEP_MS = 1500;
+
     public void syncBondTransactions() {
         if (!enabled) return;
 
@@ -5309,6 +5321,19 @@ public class WebManager {
             return;
         }
 
+        // ★ 启动对账没做成（当时 PHP 无响应）：先补做一次，对齐前不碰历史数据
+        if (txAlignmentPending) {
+            txAlignmentPending = false;
+            alignTxWatermarkOnBoot();
+        }
+
+        // ★ 已有推进在跑：不打断、不重复起跑，只标记「跑完再扫一轮」
+        if (!txBatchRunning.compareAndSet(false, true)) {
+            txRescanRequested = true;
+            return;
+        }
+
+        boolean handedOff = false;
         try {
             BondManager bondMgr = plugin.getBonds();
             if (bondMgr == null) return;
@@ -5320,32 +5345,212 @@ public class WebManager {
             List<Map<String, Object>> txs = bondMgr.getTransactionsAfterTime(lastSyncedTxTime);
             if (txs.isEmpty()) return;
 
-            // ★ 关键修复（2026-10-04）：分批推送，每批最多 TX_SYNC_BATCH_SIZE 笔。
-            //   历史补推时可能有数千笔，一次性组大 JSON 容易超 PHP post_max_size /
-            //   单请求超时 → 整批丢失且水位线还照推。分批后失败只丢当批。
-            int total = txs.size();
-            int okCount = 0;
-            int batchNo = 0;
-            for (int from = 0; from < total; from += TX_SYNC_BATCH_SIZE) {
-                batchNo++;
-                int to = Math.min(from + TX_SYNC_BATCH_SIZE, total);
-                List<Map<String, Object>> batch = txs.subList(from, to);
-                if (!pushTxBatch(batch, total, batchNo, (total + TX_SYNC_BATCH_SIZE - 1) / TX_SYNC_BATCH_SIZE)) {
-                    // ★ 本批失败：立即中止，不推进水位线 → 下轮从同一位置重试
-                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批失败，已中止推送，"
-                            + "剩余 " + (total - okCount) + " 笔将在下轮重试（不丢数据）");
-                    return;
-                }
-                okCount += batch.size();
-            }
-            plugin.getLogger().info("[Web交易同步] 推送完成: " + okCount + "/" + total + "笔交易到PHP");
+            // ★ 整轮推进丢给异步调度，DB 工作线程立刻返回（不阻塞其他同步任务）
+            startTxBatchRun(txs);
+            handedOff = true;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易同步] 异常: " + e.getMessage());
+        } finally {
+            if (!handedOff) finishTxBatchRun();
         }
     }
 
 
-    /** 单批交易同步返回列表中的最大时间（毫秒），无有效值返回 0 */
+    /**
+     * 启动一轮逐批推进：每批之间异步让出 + 节流，绝不长时间占住 DB 工作线程
+     */
+    private void startTxBatchRun(List<Map<String, Object>> txs) {
+        final List<Map<String, Object>> queue = new ArrayList<>(txs);
+        final int total = queue.size();
+        final int batchCount = (total + TX_SYNC_BATCH_SIZE - 1) / TX_SYNC_BATCH_SIZE;
+
+        new BukkitRunnable() {
+            int index = 0;
+            int batchNo = 0;
+            int okCount = 0;
+            int pushedCount = 0;
+
+            @Override
+            public void run() {
+                // 开关被关 / 插件正在关闭：直接收尾，别把线程挂住
+                if (!enabled || !txBatchRunning.get()) {
+                    finishTxBatchRun();
+                    return;
+                }
+
+                if (index >= queue.size()) {
+                    plugin.getLogger().info("[Web交易同步] 本轮核对完成: " + okCount + "/" + total
+                            + " 笔已对齐（实际补推 " + pushedCount + " 笔）");
+                    finishTxBatchRun();
+                    return;
+                }
+
+                batchNo++;
+                List<Map<String, Object>> batch =
+                        queue.subList(index, Math.min(index + TX_SYNC_BATCH_SIZE, queue.size()));
+
+                boolean ok;
+                int pushed;
+                try {
+                    int[] r = syncTxBatch(batch, total, batchNo, batchCount);
+                    ok = (r[0] == 1);
+                    pushed = r[1];
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批 异常: " + e.getMessage());
+                    ok = false;
+                    pushed = 0;
+                }
+
+                if (!ok) {
+                    // ★ 本批失败：立即中止，不推进水位线 → 下轮从同一位置重试
+                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批失败，已中止推送，"
+                            + "剩余 " + (total - okCount) + " 笔将在下轮重试（不丢数据）");
+                    finishTxBatchRun();
+                    return;
+                }
+
+                okCount += batch.size();
+                pushedCount += pushed;
+                index += TX_SYNC_BATCH_SIZE;
+
+                // ★ 悠着点推：真推了 PHP 的批次多等一会儿，纯对账跳过的批次快些过去
+                scheduleTxStep(this, pushed > 0 ? TX_SYNC_PUSH_STEP_MS : TX_SYNC_VERIFY_STEP_MS);
+            }
+        }.runTaskLaterAsynchronously(plugin, 1L);
+    }
+
+
+    /** 调度下一批（延时让出线程，插件关闭时静默收尾） */
+    private void scheduleTxStep(Runnable step, long delayMs) {
+        try {
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    step.run();
+                }
+            }.runTaskLaterAsynchronously(plugin, Math.max(1L, delayMs));
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 批次调度失败，本轮中止: " + e.getMessage());
+            finishTxBatchRun();
+        }
+    }
+
+
+    /** 一轮推进结束：释放运行标志；期间有新交易到达则延时再扫一轮 */
+    private void finishTxBatchRun() {
+        txBatchRunning.set(false);
+        if (txRescanRequested) {
+            txRescanRequested = false;
+            plugin.getLogger().info("[Web交易同步] 推进期间产生新交易，200 毫秒后补扫一轮");
+            try {
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        syncBondTransactions();
+                    }
+                }.runTaskLaterAsynchronously(plugin, 200L);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+
+    /**
+     * 处理一批交易：先与 PHP 点验这批序列号，只补推缺失部分，成功后推进水位线
+     * 返回 int[]{ 成功?(1:0), 实际补推笔数 }
+     */
+    private int[] syncTxBatch(List<Map<String, Object>> batch, int total, int batchNo, int batchCount) {
+        List<Long> ids = new ArrayList<>(batch.size());
+        for (Map<String, Object> tx : batch) {
+            Object iv = tx.get("id");
+            if (iv instanceof Number) ids.add(((Number) iv).longValue());
+        }
+
+        // ★ 两边点一遍：问 PHP 这批序列号缺哪些（null = 对账不可用，按整批推送处理）
+        Set<Long> missing = fetchMissingTxIds(ids);
+
+        List<Map<String, Object>> toPush = batch;
+        if (missing != null) {
+            if (missing.isEmpty()) {
+                // PHP 已经全都有 → 一笔都不推，只推进水位线（本批只花 1 次轻量对账请求）
+                advanceTxWatermark(batch);
+                plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+                        + "批 PHP 已齐全（" + batch.size() + " 笔），跳过推送");
+                return new int[]{1, 0};
+            }
+            if (missing.size() < batch.size()) {
+                toPush = new ArrayList<>(missing.size());
+                for (Map<String, Object> tx : batch) {
+                    Object iv = tx.get("id");
+                    if (iv instanceof Number && missing.contains(((Number) iv).longValue())) {
+                        toPush.add(tx);
+                    }
+                }
+                plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+                        + "批 仅缺 " + toPush.size() + "/" + batch.size() + " 笔，只补推缺失部分");
+            }
+        }
+
+        if (!pushTxBatch(toPush, total, batchNo, batchCount)) {
+            return new int[]{0, 0};
+        }
+        advanceTxWatermark(batch);
+        return new int[]{1, toPush.size()};
+    }
+
+
+    /**
+     * 问 PHP 缺哪些交易序列号（交易序列号 = 本机 bond_transaction.id）
+     * 返回 null  = 本次对账不可用（网络/PHP 异常），调用方按「整批推送」处理
+     * 返回空集合 = PHP 全部已有，无需补推
+     */
+    private Set<Long> fetchMissingTxIds(List<Long> ids) {
+        if (ids.isEmpty()) return new LinkedHashSet<>();
+        try {
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("ids", ids);
+
+            String response = httpPostWithToken("api/sync.php?action=check_tx_alignment", token, body);
+            if (response == null) return null;
+
+            Map<String, Object> result = parseJson(response);
+            if (!Boolean.TRUE.equals(result.get("success"))) return null;
+            Object dataObj = result.get("data");
+            if (!(dataObj instanceof Map)) return null;
+            Object missingObj = ((Map<?, ?>) dataObj).get("missing");
+            if (!(missingObj instanceof List)) return null;
+
+            Set<Long> missing = new LinkedHashSet<>();
+            for (Object o : (List<?>) missingObj) {
+                if (o instanceof Number) missing.add(((Number) o).longValue());
+            }
+            return missing;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 对账失败（本批按整批推送）: " + e.getMessage());
+            return null;
+        }
+    }
+
+
+    /** 批次成功后推进水位线（只增不减，异常回退不会导致重复全量） */
+    private void advanceTxWatermark(List<Map<String, Object>> batch) {
+        long maxTime = lastSyncedTxTime;
+        for (Map<String, Object> tx : batch) {
+            Object tv = tx.get("time");
+            if (tv instanceof Number) {
+                long t = ((Number) tv).longValue();
+                if (t > maxTime) maxTime = t;
+            }
+        }
+        if (maxTime > lastSyncedTxTime) {
+            lastSyncedTxTime = maxTime;
+            saveLastSyncedTxTime(maxTime);
+        }
+    }
+
+
+    /** 单批交易同步的最大笔数 */
     private static final int TX_SYNC_BATCH_SIZE = 300;
 
     /** 首次全量同步：每提交一项打一行进度，便于用户实时观察 */
@@ -5374,21 +5579,9 @@ public class WebManager {
                 return false;
             }
 
-            // 成功后才推进水位线
-            long maxTime = lastSyncedTxTime;
-            for (Map<String, Object> tx : batch) {
-                Object tv = tx.get("time");
-                if (tv instanceof Number) {
-                    long t = ((Number) tv).longValue();
-                    if (t > maxTime) maxTime = t;
-                }
-            }
-            if (maxTime > lastSyncedTxTime) {
-                lastSyncedTxTime = maxTime;
-                saveLastSyncedTxTime(maxTime);
-            }
-            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 已同步 "
-                    + batch.size() + "笔（累计 " + totalAll + " 笔待推）");
+            // ★ 水位线由调用方 advanceTxWatermark 统一推进（对账跳过时也要推进）
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 已推送 "
+                    + batch.size() + " 笔（本轮共 " + totalAll + " 笔）");
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批 异常: " + e.getMessage());
@@ -5399,27 +5592,94 @@ public class WebManager {
 
 
     /**
-     * ★ 首次全量同步前强制归零流水水位线（2026-10-04 修复）
+     * ★ 启动对账（2026-10-04，替代旧版「无条件归零水位线全量重推」）
      *
-     * 背景：水位线 last_synced_tx_time 的语义是"我以为 PHP 已经有这些流水了"。
-     * 但当 Web 端被清空（全新部署 / 隔离测试目录重置 / 从低版本插件首次升级上 PHP），
-     * PHP 端其实一条都没有，而 Java 端水位线还停在老位置 → getTransactionsAfterTime
-     * 几乎取不到数据 → 历史流水永久丢失且无法自愈。
+     * 旧逻辑的问题：每次开服都把水位线归零，于是几万笔历史流水被全量重推一遍。
+     * 既拖慢启动、又无谓地打扰 PHP，日志还写成「累计 N 笔待推」，看着像在补丢数据。
      *
-     * 全量同步的语义本来就是"把所有数据重新推一遍"，所以这里必须先归零。
+     * 新逻辑：开服时先跟 PHP 点一遍数据——
+     *   · 两边笔数与最大序列号都吻合 → 判定数据已是最新，一笔都不推；
+     *   · 对不上 → 才归零水位线进入补推，且补推时逐批只推 PHP 真正缺的序列号；
+     *   · PHP 问不到（网络/密钥问题）→ 标记待对齐，下一轮同步时重试，绝不盲目全量重推。
      */
-    private void resetTxWatermarkForFullSync() {
-        lastSyncedTxTime = 0;
+    private void alignTxWatermarkOnBoot() {
+        try {
+            BondManager bondMgr = plugin.getBonds();
+            if (bondMgr == null) return;
+            long localMax = bondMgr.getMaxTxId();
+            long localCount = bondMgr.getTxCount();
+            if (localMax <= 0 || localCount <= 0) {
+                plugin.getLogger().info("[Web交易同步] 启动对齐：本机暂无交易流水，无需补推");
+                return;
+            }
+
+            Map<String, Object> php = fetchPhpTxAlignmentStats();
+            if (php == null) {
+                txAlignmentPending = true;
+                plugin.getLogger().warning("[Web交易同步] 启动对齐：PHP 无响应，本轮不推历史，下轮同步时重试对齐");
+                return;
+            }
+
+            long phpMax = toLong(php.get("php_max_id"));
+            long phpCount = toLong(php.get("php_count"));
+            if (phpMax >= localMax && phpCount >= localCount) {
+                plugin.getLogger().info("[Web交易同步] ★ 启动对齐通过：两边一致（PHP " + phpCount
+                        + " 笔/最大序列号 " + phpMax + "，本机 " + localCount + " 笔/最大序列号 "
+                        + localMax + "），无需补推");
+                return;
+            }
+
+            plugin.getLogger().info("[Web交易同步] 启动对齐发现缺口（PHP " + phpCount
+                    + " 笔/最大序列号 " + phpMax + "，本机 " + localCount + " 笔/最大序列号 "
+                    + localMax + "）→ 进入补推，只补 PHP 缺失的序列号");
+            setTxWatermark(0);
+        } catch (Exception e) {
+            txAlignmentPending = true;
+            plugin.getLogger().warning("[Web交易同步] 启动对齐异常（本轮跳过补推判定）: " + e.getMessage());
+        }
+    }
+
+
+    /** 取 PHP 端 game_transactions 的总笔数与最大 java_id；取不到返回 null */
+    private Map<String, Object> fetchPhpTxAlignmentStats() {
+        try {
+            String token = generateAndSyncToken("system", "sync");
+            String response = httpPostWithToken("api/sync.php?action=check_tx_alignment",
+                    token, new LinkedHashMap<>());
+            if (response == null) return null;
+            Map<String, Object> result = parseJson(response);
+            if (!Boolean.TRUE.equals(result.get("success"))) return null;
+            Object dataObj = result.get("data");
+            if (!(dataObj instanceof Map)) return null;
+            return (Map<String, Object>) dataObj;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+
+    private static long toLong(Object v) {
+        return (v instanceof Number) ? ((Number) v).longValue() : 0L;
+    }
+
+
+    /** 写入流水水位线（含归零） */
+    private void setTxWatermark(long time) {
+        lastSyncedTxTime = time;
+        if (time > 0) {
+            saveLastSyncedTxTime(time);
+            return;
+        }
         try {
             File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
+            st.execute("PRAGMA busy_timeout=8000");
             st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
             st.execute("DELETE FROM sync_state WHERE key = 'last_synced_tx_time'");
             st.close(); conn.close();
-            plugin.getLogger().info("[Web通信] ★ 首次全量同步：流水水位线已归零，将重推全部历史交易（防历史流水丢失）");
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web通信] 重置流水水位线失败（将尝试全量重推）: " + e.getMessage());
+            plugin.getLogger().warning("[Web通信] 重置流水水位线失败: " + e.getMessage());
         }
     }
 
@@ -5431,6 +5691,7 @@ public class WebManager {
             if (!dbFile.exists()) return;
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
+            st.execute("PRAGMA busy_timeout=8000");
             st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
             java.sql.ResultSet rs = st.executeQuery("SELECT value FROM sync_state WHERE key='last_synced_tx_time'");
             if (rs.next()) {
@@ -5447,6 +5708,7 @@ public class WebManager {
             File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
+            st.execute("PRAGMA busy_timeout=8000");
             st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
             java.sql.PreparedStatement ps = conn.prepareStatement(
                     "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_synced_tx_time', ?)");
