@@ -1304,37 +1304,60 @@ public class WebManager {
         // 清理过期Token
         cleanExpiredTokens();
 
-        // ★ 启动后延迟30秒执行首次全量同步（通过DB队列串行化）
-        // 每个任务之间加入随机延迟（2-4秒），避免瞬时堆叠导致DB队列等待过久
+        // ★ 启动后延迟10秒执行首次全量同步（通过DB队列串行化）
+        // ★ 2026-10-04 修复：间隔由 6~14 秒缩短为 1.5~3.5 秒（原总耗时 72~168 秒，
+        //   用户"等了3分钟没数据"就是这个串行 sleep 造成的），并在前后打汇总日志。
         new BukkitRunnable() {
             @Override
             public void run() {
-                plugin.getLogger().info("[Web通信] 开始首次全量同步（通过DB队列串行化）...");
+                if (!isEnabled()) {
+                    plugin.getLogger().info("[Web通信] 首次全量同步已跳过（web通信-启用=false）");
+                    return;
+                }
+                long fullSyncStart = System.currentTimeMillis();
+                plugin.getLogger().info("[Web通信] ===== 开始首次全量同步 ===== 地址=" + webBaseUrl
+                        + " 密钥长度=" + (secretKey != null ? secretKey.length() : 0));
+                // ★ 关键修复：归零流水水位线，否则 Web 端被清空/全新部署时历史流水永久丢失
+                resetTxWatermarkForFullSync();
                 // 登录相关操作高优先级
                 submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("注册用户数据");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
-                // 普通同步操作低优先级（每个任务间随机间隔2-4秒，避免PHP端DB锁）
+                fullSyncStep("密码凭证");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                // 普通同步操作低优先级（错峰提交，避免PHP端DB锁竞争）
                 submitDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("在线玩家");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("商城商品");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pushShopCatalog", () -> pushShopCatalog());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("商城目录");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("债券余额");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("交易流水（已分批，历史全量重推）");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("玩家IP");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("服务商");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
-                try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                fullSyncStep("领地数据");
+                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
+                fullSyncStep("管理员改动");
                 initialSyncComplete = true;  // 首次全量同步提交完成
                 allowLoginPolling = true;  // 允许登录轮询
+                plugin.getLogger().info("[Web通信] ===== 首次全量同步 12 项已全部提交，耗时 "
+                        + (System.currentTimeMillis() - fullSyncStart) / 1000
+                        + " 秒；随后由DB队列逐项执行，若某项失败会在日志打【失败/无响应】并下轮重试 =====");
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
 
@@ -3547,7 +3570,7 @@ public class WebManager {
             // ★ 无变化静默：对比商品数量和内容hash
             String currentHash = items.size() + ":" + items.hashCode();
             if (currentHash.equals(lastShopDataHash)) return; // 无变化，跳过
-            lastShopDataHash = currentHash;
+            // ★ 关键修复：hash 成功后才提交（防假成功，见 syncUserRegistrations 注释）
 
             // 构建请求数据
             Map<String, Object> body = new LinkedHashMap<>();
@@ -3560,12 +3583,13 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
+                    lastShopDataHash = currentHash; // ← 成功后才落 hash
                     plugin.getLogger().info("[Web通信] 商城数据变更，已同步: " + items.size() + "个商品");
                 } else {
                     plugin.getLogger().warning("[Web通信] 商城同步失败: " + result.get("message"));
                 }
             } else {
-                plugin.getLogger().warning("[Web通信] 商城同步请求失败");
+                plugin.getLogger().warning("[Web通信] 商城同步请求失败（下轮将重试）");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 商城同步异常: " + e.getMessage());
@@ -5236,7 +5260,7 @@ public class WebManager {
             // ★ 无变化静默：对比债券数据hash
             String currentHash = bonds.size() + ":" + bonds.hashCode();
             if (currentHash.equals(lastBondBalanceHash)) return; // 无变化，跳过
-            lastBondBalanceHash = currentHash;
+            // ★ 关键修复：hash 成功后才提交（防假成功，见 syncUserRegistrations 注释）
 
             String token = generateAndSyncToken("system", "sync");
             Map<String, Object> body = new LinkedHashMap<>();
@@ -5247,6 +5271,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
+                    lastBondBalanceHash = currentHash; // ← 成功后才落 hash
                     plugin.getLogger().info("[Web通信] 债券余额变更，已同步: " + bonds.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 债券同步失败: " + result.get("message"));
@@ -5285,45 +5310,109 @@ public class WebManager {
             List<Map<String, Object>> txs = bondMgr.getTransactionsAfterTime(lastSyncedTxTime);
             if (txs.isEmpty()) return;
 
-            // 生成同步token
-            String token = generateAndSyncToken("system", "sync");
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("transactions", txs);
-
-            String response = httpPostWithToken("api/sync.php?action=sync_transactions", token, body);
-            if (response != null) {
-                Map<String, Object> result = parseJson(response);
-                Boolean success = (Boolean) result.get("success");
-                if (Boolean.TRUE.equals(success)) {
-                    // 更新已同步的最晚时间
-                    long maxTime = lastSyncedTxTime;
-                    for (Map<String, Object> tx : txs) {
-                        long t = ((Number) tx.get("time")).longValue();
-                        if (t > maxTime) maxTime = t;
-                    }
-                    if (maxTime > lastSyncedTxTime) {
-                        lastSyncedTxTime = maxTime;
-                        saveLastSyncedTxTime(maxTime);
-                    }
-                    int synced = txs.size();
-                    Object dataObj = result.get("data");
-                    if (dataObj instanceof Map) {
-                        Object syncedVal = ((Map<?, ?>) dataObj).get("synced");
-                        if (syncedVal instanceof Number) {
-                            synced = ((Number) syncedVal).intValue();
-                        }
-                    }
-                    plugin.getLogger().info("[Web交易同步] 推送" + synced + "笔交易到PHP");
-                } else {
-                    plugin.getLogger().warning("[Web交易同步] 失败: " + result.get("message"));
+            // ★ 关键修复（2026-10-04）：分批推送，每批最多 TX_SYNC_BATCH_SIZE 笔。
+            //   历史补推时可能有数千笔，一次性组大 JSON 容易超 PHP post_max_size /
+            //   单请求超时 → 整批丢失且水位线还照推。分批后失败只丢当批。
+            int total = txs.size();
+            int okCount = 0;
+            int batchNo = 0;
+            for (int from = 0; from < total; from += TX_SYNC_BATCH_SIZE) {
+                batchNo++;
+                int to = Math.min(from + TX_SYNC_BATCH_SIZE, total);
+                List<Map<String, Object>> batch = txs.subList(from, to);
+                if (!pushTxBatch(batch, total, batchNo, (total + TX_SYNC_BATCH_SIZE - 1) / TX_SYNC_BATCH_SIZE)) {
+                    // ★ 本批失败：立即中止，不推进水位线 → 下轮从同一位置重试
+                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批失败，已中止推送，"
+                            + "剩余 " + (total - okCount) + " 笔将在下轮重试（不丢数据）");
+                    return;
                 }
-            } else {
-                plugin.getLogger().warning("[Web交易同步] PHP响应为空");
+                okCount += batch.size();
             }
+            plugin.getLogger().info("[Web交易同步] 推送完成: " + okCount + "/" + total + "笔交易到PHP");
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易同步] 异常: " + e.getMessage());
         }
     }
+
+
+    /** 单批交易同步返回列表中的最大时间（毫秒），无有效值返回 0 */
+    private static final int TX_SYNC_BATCH_SIZE = 300;
+
+    /** 首次全量同步：每提交一项打一行进度，便于用户实时观察 */
+    private void fullSyncStep(String what) {
+        plugin.getLogger().info("[Web通信]   首次全量同步 → 已排队: " + what);
+    }
+
+    /**
+     * 推送一批交易到 PHP，成功则推进水位线，失败返回 false（调用方负责中止并保留水位线）
+     */
+    private boolean pushTxBatch(List<Map<String, Object>> batch, int totalAll, int batchNo, int batchCount) {
+        try {
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("transactions", batch);
+
+            String response = httpPostWithToken("api/sync.php?action=sync_transactions", token, body);
+            if (response == null) {
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 PHP响应为空");
+                return false;
+            }
+            Map<String, Object> result = parseJson(response);
+            Boolean success = (Boolean) result.get("success");
+            if (!Boolean.TRUE.equals(success)) {
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 失败: " + result.get("message"));
+                return false;
+            }
+
+            // 成功后才推进水位线
+            long maxTime = lastSyncedTxTime;
+            for (Map<String, Object> tx : batch) {
+                Object tv = tx.get("time");
+                if (tv instanceof Number) {
+                    long t = ((Number) tv).longValue();
+                    if (t > maxTime) maxTime = t;
+                }
+            }
+            if (maxTime > lastSyncedTxTime) {
+                lastSyncedTxTime = maxTime;
+                saveLastSyncedTxTime(maxTime);
+            }
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 已同步 "
+                    + batch.size() + "笔（累计 " + totalAll + " 笔待推）");
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批 异常: " + e.getMessage());
+            return false;
+        }
+    }
+
+
+
+    /**
+     * ★ 首次全量同步前强制归零流水水位线（2026-10-04 修复）
+     *
+     * 背景：水位线 last_synced_tx_time 的语义是"我以为 PHP 已经有这些流水了"。
+     * 但当 Web 端被清空（全新部署 / 隔离测试目录重置 / 从低版本插件首次升级上 PHP），
+     * PHP 端其实一条都没有，而 Java 端水位线还停在老位置 → getTransactionsAfterTime
+     * 几乎取不到数据 → 历史流水永久丢失且无法自愈。
+     *
+     * 全量同步的语义本来就是"把所有数据重新推一遍"，所以这里必须先归零。
+     */
+    private void resetTxWatermarkForFullSync() {
+        lastSyncedTxTime = 0;
+        try {
+            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+            java.sql.Statement st = conn.createStatement();
+            st.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value INTEGER DEFAULT 0)");
+            st.execute("DELETE FROM sync_state WHERE key = 'last_synced_tx_time'");
+            st.close(); conn.close();
+            plugin.getLogger().info("[Web通信] ★ 首次全量同步：流水水位线已归零，将重推全部历史交易（防历史流水丢失）");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 重置流水水位线失败（将尝试全量重推）: " + e.getMessage());
+        }
+    }
+
 
     private void loadLastSyncedTxTime() {
         if (lastSyncedTxTime > 0) return;
@@ -5388,9 +5477,9 @@ public class WebManager {
             // ★ 无变化静默：对比MD5 hash，避免无效网络请求
             String currentHash = syncData.toString().hashCode() + "_" + syncData.size();
             if (currentHash.equals(lastUserRegistrationHash)) return; // 无变化，跳过
-            lastUserRegistrationHash = currentHash;
-
-            // ★ 同步前不打印任何日志，只有失败时才打印warning
+            // ★ 关键修复：hash 不在这里提交！只有【PHP 明确返回 success=true】才提交。
+            //   否则密钥错/网络断/500 时 hash 已被写脏，这份数据永远不会重推，
+            //   表现为"日志显示已同步 N 人，PHP 端却是 0 条"的假成功（2026-10-04 实测）。
 
             String token = generateAndSyncToken("system", "sync");
             Map<String, Object> body = new LinkedHashMap<>();
@@ -5401,12 +5490,14 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
+                    lastUserRegistrationHash = currentHash; // ← 成功后才落 hash
                     plugin.getLogger().info("[Web通信] 用户注册数据变更，已同步: " + syncData.size() + "人");
                 } else {
+                    // ★ 失败：不清 hash（本次未提交），下一轮周期会重试
                     plugin.getLogger().warning("[Web通信] 用户注册同步失败: " + response);
                 }
             } else {
-                plugin.getLogger().warning("[Web通信] 用户注册同步无响应");
+                plugin.getLogger().warning("[Web通信] 用户注册同步无响应（下轮将重试）");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 注册同步异常: " + e.getMessage());
