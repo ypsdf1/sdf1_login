@@ -216,6 +216,33 @@ public class WebManager {
         return true;
     }
 
+    // ★★★ Web通信关闭闸（2026-10-04 热重载 bug 修复）★★★
+    // 现象：开关已关闭后，日志里仍出现「已同步」「推送成功」——
+    //   原因一：约 22 个同步方法（pushShopCatalog/syncServiceProviders/syncPermissions 等）
+    //           压根没有 !enabled 守卫；
+    //   原因二：有守卫的方法也拦不住「开关还是 true 时就已 submitDbTask 入队」的任务，
+    //           db-worker 单线程排队轮到它时开关早已关闭。
+    //
+    // 修法：在【出网最后一公里】统一拦。doGet 是 46 处调用的唯一总出口，
+    //   所以只要在这几个 HTTP 收口方法开头加闸，所有 GET/POST 路径一次覆盖，零遗漏。
+    //   逻辑复用 isEnabled()（它现在实时读配置文件，改开关下一毫秒生效）。
+    private static final String WEB_DISABLED_HINT =
+            "[Web通信] 已关闭(web通信-启用=false)，请求已跳过（改回 true 会自动恢复，无需 reload）";
+    // ★ 「已关闭」提示的节流时间戳：关闭状态下每 60 秒最多打一条，避免刷爆控制台
+    private volatile long lastWebDisabledLogAt = 0;
+
+    /**
+     * 关闭状态下按节流打一条提示（60 秒一条）。
+     * 用途：出网闸/队列闸都是静默 return，运维可能以为插件卡死；
+     * 这里保证「偶尔能看到一句『因为开关关着所以没发』」，且不会刷屏。
+     */
+    private void noteWebDisabledOnce(String where) {
+        long now = System.currentTimeMillis();
+        if (now - lastWebDisabledLogAt < 60000L) return;
+        lastWebDisabledLogAt = now;
+        plugin.getLogger().info(WEB_DISABLED_HINT + "（最近触发点: " + where + "）");
+    }
+
     /**
      * 判断响应体是否为「密钥验证失败」。
      * PHP 端 error('密钥验证失败', 403) → {"success":false,"message":"密钥验证失败"}
@@ -394,6 +421,13 @@ public class WebManager {
                     if (waitMs > 10000) {
                         plugin.getLogger().warning("[DB队列] 等待过久: " + task.name + " 等待=" + waitMs + "ms");
                     }
+                    // ★ Web通信关闭闸（执行时点复查）：任务可能是在「开关还是 true 时」入队的，
+                    //   排队期间运维把 web通信-启用 改成 false，轮到执行时必须再拦一次。
+                    //   这里【静默跳过】而不打 WARN —— 关闭开关后每轮几十个任务全打日志会刷爆控制台；
+                    //   真正的开关变化已由 hotReloadIfChanged 打了一行「[开关已关闭]」，信息不会丢。
+                    if (!isEnabled()) {
+                        continue;
+                    }
                     task.run();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -454,6 +488,12 @@ public class WebManager {
      * 提交任务（支持bypassSslCheck：关键任务如syncOnlinePlayers不应被SSL断路器阻断）
      */
     private void submitDbTask(int priority, String name, Runnable action, boolean bypassSslCheck) {
+        // ★ Web通信关闭闸（入队前）：开关关闭时不再往队列里塞任务，避免队列堆积。
+        //   注意不能只靠这一处 —— 已入队的存量任务由 startDbWorker 执行时的复查兜底。
+        if (!isEnabled()) {
+            noteWebDisabledOnce(name);
+            return;
+        }
         // ★ SSL断路器：断路期间跳过所有HTTP相关任务（除非指定绕过）
         if (!bypassSslCheck && isCircuitOpen()) {
             plugin.getLogger().warning("[DB队列] SSL断路器开启，跳过任务: " + name);
@@ -638,6 +678,8 @@ public class WebManager {
      * 降级后的HTTP GET请求（使用不带SSL的HttpClient）
      */
     private String doGetHttpFallback(String urlStr) {
+        // ★ Web通信关闭闸（降级路径同样不能出网）
+        if (!isEnabled()) return null;
         if (plainHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HTTP降级客户端未初始化");
             return null;
@@ -677,6 +719,8 @@ public class WebManager {
      */
     private void submitWebTask(String name, Runnable action) {
         if (isCircuitOpen()) return;
+        // ★ Web通信关闭闸（入队前拦一道，webExecutor 队列同样可能有存量任务）
+        if (!isEnabled()) return;
         webExecutor.submit(() -> {
             try {
                 action.run();
@@ -781,6 +825,10 @@ public class WebManager {
      * ★ 包含SSL降级逻辑：连续失败3次后降级到HTTP
      */
     private String doGet(String urlStr) {
+        // ★ Web通信关闭闸：开关关闭后一律不出网（doGet 是全部 GET 路径的唯一出口）
+        if (!isEnabled()) {
+            return null;
+        }
         if (cfHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
             return null;
@@ -840,6 +888,8 @@ public class WebManager {
      * GET请求 - 返回状态码
      */
     private int doGetStatus(String urlStr) {
+        // ★ Web通信关闭闸
+        if (!isEnabled()) return -1;
         if (cfHttpClient == null) return -1;
         // ★ SSL断路器：断路期间直接返回，避免无意义请求
         if (isCircuitOpen()) {
@@ -872,6 +922,8 @@ public class WebManager {
      * 供不需要降级的特殊POST使用
      */
     private String doPostWithoutFallback(String urlStr, String jsonBody) {
+        // ★ Web通信关闭闸
+        if (!isEnabled()) return null;
         if (cfHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
             return null;
@@ -917,6 +969,8 @@ public class WebManager {
      * POST请求 - 返回响应体，失败返回null（含SSL降级逻辑）
      */
     private String doPostWithSslFallback(String urlStr, String jsonBody) {
+        // ★ Web通信关闭闸
+        if (!isEnabled()) return null;
         if (cfHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HttpClient未初始化");
             return null;
@@ -973,6 +1027,8 @@ public class WebManager {
      * 降级后的HTTP POST请求（使用不带SSL的HttpClient）
      */
     private String doPostHttpFallback(String urlStr, String jsonBody) {
+        // ★ Web通信关闭闸（降级路径同样不能出网）
+        if (!isEnabled()) return null;
         if (plainHttpClient == null) {
             plugin.getLogger().warning("[Web通信] HTTP降级客户端未初始化");
             return null;
@@ -1009,6 +1065,8 @@ public class WebManager {
      * POST请求带重试（处理SSL/网络异常）
      */
     private String doPostWithRetry(String urlStr, String jsonBody, int maxRetries) {
+        // ★ Web通信关闭闸
+        if (!isEnabled()) return null;
         // ★ SSL断路器：断路期间直接返回，避免无意义重试
         if (isCircuitOpen()) {
             return null;
