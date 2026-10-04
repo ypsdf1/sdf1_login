@@ -4985,10 +4985,11 @@ public class AreaProtection implements Listener {
             case "瞬间治疗": case "治疗": case "instant_health": case "INSTANT_HEALTH": case "HEAL":
             case "瞬间伤害": case "伤害": case "instant_damage": case "INSTANT_DAMAGE": case "HARM":
             case "缓慢": case "slowness": case "SLOWNESS":
-            case "挖掘疲劳": case "mining_fatigue": case "MINING_FATIGUE":
             case "中毒": case "poison": case "POISON":
             case "生命恢复": case "再生": case "回复": case "regeneration": case "REGENERATION":
                 return 2;   // 各药水均可用发光石粉升至 II
+            case "挖掘疲劳": case "mining_fatigue": case "MINING_FATIGUE":
+                return 3;   // 无药水；远古守卫者固定给 III（Wiki：natural effect level is III）
             // ===== 生存只有单一来源、等级恒为 1 =====
             case "海豚的恩惠": case "海豚恩惠": case "dolphins_grace": case "DOLPHINS_GRACE":
                 return 1;   // 仅潮涌能量块 / 海豚馈赠，无等级区分
@@ -5021,19 +5022,24 @@ public class AreaProtection implements Listener {
             case "飘浮": case "悬浮": case "levitation": case "LEVITATION":
                 return 1;   // 潜影弹，固定 I
             case "不祥之兆": case "bad_omen": case "BAD_OMEN":
+                return 5;   // 不祥之兆瓶 I–V（1.16 起上限 5），进村转袭击之兆时等级保留
             case "试炼之兆": case "trial_omen": case "TRIAL_OMEN":
             case "袭击之兆": case "raid_omen": case "RAID_OMEN":
+                return 5;   // 均由不祥之兆转化而来，等级沿用，故同为 5
+            case "村庄英雄": case "hero_of_the_village": case "HERO_OF_THE_VILLAGE":
+                return 5;   // JE 袭击全歼后按袭击等级给 I–V（Wiki：potency I–V）
             case "蓄风": case "wind_charged": case "WIND_CHARGED":
             case "盘丝": case "weaving": case "WEAVING":
             case "渗浆": case "oozing": case "OOZING":
             case "寄生": case "infested": case "INFESTED":
-            case "村庄英雄": case "hero_of_the_village": case "HERO_OF_THE_VILLAGE":
                 return 1;   // 均为事件触发，无等级区分
             case "鹦鹉螺之息": case "breath_of_the_nautilus": case "BREATH_OF_THE_NAUTILUS":
                 return 1;
             // ===== 生存无来源，仅命令/插件可得 =====
             case "生命提升": case "health_boost": case "HEALTH_BOOST":
+                return 1;   // Wiki：Health Boost 仅能靠 /effect 获得
             case "伤害吸收": case "absorption": case "ABSORPTION":
+                return 4;   // 附魔金苹果给 IV（金苹果/图腾只给 I/II），Wiki 1.9 起 IV
             case "饱和": case "saturation": case "SATURATION":
             case "幸运": case "luck": case "LUCK":
             case "霉运": case "unluck": case "UNLUCK":
