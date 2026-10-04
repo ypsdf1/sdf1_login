@@ -1777,10 +1777,11 @@ function getSurvivalMaxLevel($name) {
         case '瞬间治疗': case '治疗': case 'instant_health': case 'INSTANT_HEALTH': case 'HEAL':
         case '瞬间伤害': case '伤害': case 'instant_damage': case 'INSTANT_DAMAGE': case 'HARM':
         case '缓慢': case 'slowness': case 'SLOWNESS':
-        case '挖掘疲劳': case 'mining_fatigue': case 'MINING_FATIGUE':
         case '中毒': case 'poison': case 'POISON':
         case '生命恢复': case '再生': case '回复': case 'regeneration': case 'REGENERATION':
             return 2;
+        case '挖掘疲劳': case 'mining_fatigue': case 'MINING_FATIGUE':
+            return 3;   // 无药水；远古守卫者固定给 III
         // ===== 生存只有单一来源、等级恒为 1 =====
         case '海豚的恩惠': case '海豚恩惠': case 'dolphins_grace': case 'DOLPHINS_GRACE':
         case '潮涌能量': case 'conduit_power': case 'CONDUIT_POWER':
@@ -1797,18 +1798,23 @@ function getSurvivalMaxLevel($name) {
         case '黑暗': case 'darkness': case 'DARKNESS':
         case '发光': case 'glowing': case 'GLOWING':
         case '飘浮': case '悬浮': case 'levitation': case 'LEVITATION':
+            return 1;   // 潜影弹，固定 I
+        // ===== 不祥类：与袭击等级联动，最高 5 =====
         case '不祥之兆': case 'bad_omen': case 'BAD_OMEN':
         case '试炼之兆': case 'trial_omen': case 'TRIAL_OMEN':
         case '袭击之兆': case 'raid_omen': case 'RAID_OMEN':
+        case '村庄英雄': case 'hero_of_the_village': case 'HERO_OF_THE_VILLAGE':
+            return 5;   // 不祥之兆瓶 I–V；村庄英雄按袭击等级给 I–V
         case '蓄风': case 'wind_charged': case 'WIND_CHARGED':
         case '盘丝': case 'weaving': case 'WEAVING':
         case '渗浆': case 'oozing': case 'OOZING':
         case '寄生': case 'infested': case 'INFESTED':
-        case '村庄英雄': case 'hero_of_the_village': case 'HERO_OF_THE_VILLAGE':
         case '鹦鹉螺之息': case 'breath_of_the_nautilus': case 'BREATH_OF_THE_NAUTILUS':
         // ===== 生存无来源，仅命令/插件可得 =====
         case '生命提升': case 'health_boost': case 'HEALTH_BOOST':
+            return 1;   // 仅 /effect 可得
         case '伤害吸收': case 'absorption': case 'ABSORPTION':
+            return 4;   // 附魔金苹果 IV
         case '饱和': case 'saturation': case 'SATURATION':
         case '幸运': case 'luck': case 'LUCK':
         case '霉运': case 'unluck': case 'UNLUCK':
