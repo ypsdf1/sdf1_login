@@ -2935,11 +2935,20 @@ public class AreaProtection implements Listener {
         }
 
         // 3) 访客豁免（该玩家没有任何 per-player 显式配置时才生效）
+        //    ★ 2026-10-04 修复：denyMove 不再对访客豁免。
+        //      原因：领地 GUI 的"移动"开关读的是 ac.denyMove（领地默认），
+        //      而访客在此处被无条件 return false，实际畅通无阻 —— 显示与行为脱节。
+        //      访客若无 per-player 显式 denyMove（第 2 步未命中），就继续落到第 4 步，
+        //      按领地默认 denyMove 判定，与"移动 已禁用"的显示保持一致。
+        //      其余 deny* 权限的访客豁免语义保持不变。
         if (level == PermissionLevel.VISITOR) {
-            return false;
+            if (!"denyMove".equals(permName)) {
+                return false;
+            }
         }
 
         // 4) 回退到领地默认权限
+        //    ★ level==null（纯路人：无白名单、无权限行）本就走这里，行为正确，未改动。
         return getLandDefaultDeny(ac, permName);
     }
 
@@ -3650,18 +3659,16 @@ public class AreaProtection implements Listener {
             int landId = getLandIdFromDb(ac.name);
             PermRow row = landId > 0 ? findPermRow(landId, p.getName()) : null;
             String name = p.getName();
-         /*   plugin.getLogger().info("[防护][移动豁免诊断] 场景=" + scene
+            plugin.getLogger().info("[防护][移动豁免诊断] 场景=" + scene
                     + " 领地=" + ac.name
                     + " 玩家=" + name
-                    + " 码点=" + java.util.Arrays.toString(name.codePoints().toArray())
-                    + " normName=" + normName(name)
                     + " level=" + lvl
                     + " 全局管理员=" + isAreaAdmin(p)
                     + " 领地主=" + (ac.owner != null && samePlayer(name, ac.owner))
                     + " 白名单=" + isPlayerWhitelisted(name, ac)
                     + " 访客行=" + (row == null ? "无"
                         : (row.playerName + "/" + row.role + "/exp=" + row.expiresAt + "/" + row.permissions))
-                    + " 领地默认denyMove=" + ac.denyMove);*/
+                    + " 领地默认denyMove=" + ac.denyMove);
         } catch (Exception ignored) {
         }
     }
