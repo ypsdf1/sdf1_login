@@ -3671,7 +3671,7 @@ public class Main extends JavaPlugin
     //        取消后服务端不再输出 "Unknown or incomplete command"。
     //
     //   · 命中指令（含原版 + 插件，大小写不敏感）-> 服务端自己执行，本插件不干预
-    //   · 未命中 -> 取消事件压制原生提示，按普通聊天经插件管道转发公屏
+    //   · 玩家未命中 -> 压制原生提示 + 相似指令建议；控制台未命中见下方任务50
     // =========================================================
 
 
@@ -3699,8 +3699,11 @@ public class Main extends JavaPlugin
     //     "Unknown or incomplete command"，压制原生 unknown。
     //
     //   · 命中指令（含原版 + 插件）-> 服务端自己执行，本插件不干预
-    //   · 未命中 -> 压制提示 + 按普通聊天经插件管道转发公屏
-    //   · 控制台不接管：控制台输错是运维操作，必须保留原声报错
+    //   · 玩家未命中 -> 压制提示 + 回相似指令建议（不广播）
+    //   · 控制台未命中分两类（2026-10-04 刷屏修复）：
+    //       ① 首词是已注册指令根（execute/say/...）= 命令尝试
+    //          -> 绝不广播，保留原声报错，同一条 5 分钟只放行一次
+    //       ② 否则 = 运维手打的话 -> 按普通聊天广播（/conmsg 署名）
     // =========================================================
 
 
@@ -3760,6 +3763,13 @@ public class Main extends JavaPlugin
     /** 控制台发言署名（/conmsg 设置），null=用默认"管理员" */
     private volatile String consoleName = null;
 
+    /** 控制台"命令尝试"的节流窗口：同一条 5 分钟内只提示一次 */
+    private static final long CONSOLE_MISS_WARN_MS = 5L * 60L * 1000L;
+
+    /** 命令行 -> 上次放行时间（防别的插件反复 dispatch 刷日志） */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long>
+            consoleMissWarnAt = new java.util.concurrent.ConcurrentHashMap<>();
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onUnknownCommand(
             org.bukkit.event.command.UnknownCommandEvent e) {
@@ -3790,24 +3800,99 @@ public class Main extends JavaPlugin
         }
 
         // ---- 2) 啥都没命中，按来源分流 ----
-        suppressUnknown(e);
-
         if (isPlayer) {
-            // 玩家端：出相似指令建议（像搜索引擎的"你是不是找 xxx"）
+            // 玩家端：压制原生提示 + 出相似指令建议
+            //（像搜索引擎的"你是不是找 xxx"），不广播
+            suppressUnknown(e);
             getLogger().info("[无感切换] 玩家未命中: \"" + body
                     + "\" -> 出相似建议");
             sendSimilarHint((Player) sender, body);
-        } else {
-            // 控制台：未命中就当作普通聊天广播出去
-            getLogger().info("[无感切换] 控制台未命中: \"" + body
-                    + "\" -> 转发为聊天");
+            return;
+        }
+
+        // 控制台端：分流逻辑独立成方法
+        //（2026-10-04 刷屏修复，详见 handleConsoleMiss 注释）
+        handleConsoleMiss(e, sender, body);
+    }
+
+    /**
+     * 控制台未命中的分流（2026-10-04 刷屏修复）。
+     *
+     * <p><b>★ 为什么要分两类：</b>控制台这行文本有两种完全不同的来源 --
+     * <ol>
+     *   <li><b>命令尝试</b>：别的插件/函数用 dispatchCommand 反复打
+     *       原生指令（生产服实测 247 条
+     *       {@code execute store result bossbar ...}，每条都被当聊天
+     *       Bukkit.broadcast 全服 -> 一直刷屏）。这类首词一定是
+     *       <b>已注册的指令根</b>，绝不能广播。</li>
+     *   <li><b>运维手打的话</b>：管理员在控制台敲一句中文/JSON 通知，
+     *       首词不是任何指令 -> 才是真正的"控制台发言"，
+     *       继续走 broadcastAsChat（/conmsg 署名）。</li>
+     * </ol>
+     *
+     * <p><b>★ 命令尝试侧再叠一层节流：</b>同一条指令 5 分钟内只放行一次。
+     *   放行时<b>故意不调用</b> suppressUnknown，让 Paper 原生
+     *   "Unknown or incomplete command" 原样打给运维看；
+     *   节流窗口内彻底静默，日志不再被同一条指令刷屏。
+     */
+    private void handleConsoleMiss(
+            org.bukkit.event.command.UnknownCommandEvent e,
+            org.bukkit.command.CommandSender sender, String body) {
+        if (!looksLikeCommandAttempt(body)) {
+            // ② 运维手打的话 -> 照旧转发为聊天（/conmsg 署名）
+            suppressUnknown(e);
+            getLogger().info("[无感切换] 控制台未命中(转发为聊天): \""
+                    + body + "\"");
             broadcastAsChat(sender, body);
+            return;
+        }
+
+        // ① 命令尝试 -> 绝不广播；同一条 5 分钟内只放行一次
+        long now = System.currentTimeMillis();
+        Long last = consoleMissWarnAt.get(body);
+        if (last != null && now - last < CONSOLE_MISS_WARN_MS) {
+            // 节流窗口内：压掉原生报错，不打日志 -> 彻底静默
+            suppressUnknown(e);
+            return;
+        }
+        if (consoleMissWarnAt.size() > 256) consoleMissWarnAt.clear();
+        consoleMissWarnAt.put(body, now);
+        // 放行：不 suppress -> 保留原声报错（运维手误仍看得见）
+        getLogger().info("[无感切换] 控制台命令尝试(未接管、未广播、已节流): \""
+                + body + "\"");
+    }
+
+    /**
+     * 判断控制台这行"未命中文本"是不是一次<b>命令尝试</b>。
+     * 依据：首词（去掉命名空间前缀后）在命令映射里能查到 --
+     * 说明指令根是存在的，只是参数不完整/子命令没命中，
+     * 这是命令执行失败，绝不能当聊天广播。
+     * 反之（中文、JSON 通知等）才是运维手打的话。
+     */
+    private boolean looksLikeCommandAttempt(String body) {
+        try {
+            int sp = body.indexOf(' ');
+            String label = (sp < 0 ? body : body.substring(0, sp)).trim();
+            if (label.isEmpty()) return false;
+            if (label.charAt(0) == '/') label = label.substring(1).trim();
+            label = label.toLowerCase(java.util.Locale.ROOT);
+            int colon = label.lastIndexOf(':');
+            if (colon >= 0 && colon < label.length() - 1)
+                label = label.substring(colon + 1);
+            if (label.isEmpty()) return false;
+            org.bukkit.command.CommandMap cm = Bukkit.getCommandMap();
+            if (cm == null) return false;
+            return cm.getCommand(label) != null
+                    || cm.getCommand("minecraft:" + label) != null;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
     /**
-     * 控制台未命中指令时，把这行文本当普通聊天广播到全服。
+     * 控制台手打的<b>非指令</b>文本 -> 当普通聊天广播到全服。
      * 控制台本身不会触发聊天事件，所以这里直接 broadcast。
+     * （命令尝试绝不会走到这里，见 handleConsoleMiss。）
      *
      * ★ 署名不写死 "Console"：低龄玩家只见过单人存档，
      *   单人存档里没有 Console/Server 这类词，直接暴露会吓到他们。
