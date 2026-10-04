@@ -3881,6 +3881,8 @@ public class WebManager {
                 hashBuilder.append(land.getOrDefault("mode_exempt", "")).append(":");
                 hashBuilder.append(land.getOrDefault("clear_effects", "")).append(":");
                 hashBuilder.append(land.getOrDefault("give_effects", "")).append(":");
+                // ★ 2026-10-04：负面效果拆出后也要进变更哈希，否则改了负面不会触发同步
+                hashBuilder.append(land.getOrDefault("bad_effects", "")).append(":");
                 hashBuilder.append(land.getOrDefault("clear_all_bad", 0)).append(":");
                 // 传送点
                 hashBuilder.append(land.getOrDefault("warp_x", 0)).append(":");

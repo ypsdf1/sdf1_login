@@ -1214,14 +1214,16 @@ public class AreaGUIManager implements Listener {
         }
 
         // 效果管理
-        if (title.startsWith("§b§l效果管理") || title.startsWith("§b§l单清效果") || title.startsWith("§b§l增益效果")) {
+        if (title.startsWith("§b§l效果管理") || title.startsWith("§b§l单清效果")
+                || title.startsWith("§b§l增益效果") || title.startsWith("§c§l负面效果")) {
             event.setCancelled(true);
             String landName = managingLand.get(p.getUniqueId());
             if (landName == null) return;
 
-            // 从标题提取subPage
+            // 从标题提取subPage（注意：负面效果标题含"效果"但不含"单清"，先判长的）
             int subPage = 1;
-            if (title.contains("单清效果")) subPage = 2;
+            if (title.contains("负面效果")) subPage = 4;
+            else if (title.contains("单清效果")) subPage = 2;
             else if (title.contains("增益效果")) subPage = 3;
 
             handleEffectsManagementClick(p, raw, subPage, landName);
@@ -1496,8 +1498,9 @@ public class AreaGUIManager implements Listener {
             return;
         }
 
-        // 效果选择列表
-        if (title.startsWith("§a§l选择效果 - ")) {
+        // 效果选择列表（增益 / 负面 / 单清 三种标题）
+        if (title.startsWith("§a§l选择效果 - ") || title.startsWith("§a§l选择增益效果 - ")
+                || title.startsWith("§a§l选择负面效果 - ")) {
             event.setCancelled(true);
             EffectSelectionState state = pendingEffectSelection.get(p.getUniqueId());
             if (state == null) return;
@@ -1511,8 +1514,8 @@ public class AreaGUIManager implements Listener {
 
             if (raw < 0 || raw >= 45) return;
 
-            // 获取效果名
-            String effName = getEffectNameBySlot(raw);
+            // 获取效果名（★ 必须按 type 走对应档位的槽位映射）
+            String effName = getEffectNameBySlot(raw, state.type);
             if (effName == null) return;
 
             AreaProtection.AreaConfig land = areaProtect.getLand(state.landName);
@@ -1527,6 +1530,28 @@ public class AreaGUIManager implements Listener {
                 } else {
                     p.sendMessage("§c§l[效果管理] §f该效果已在清除列表中: §e" + effName);
                 }
+            } else if ("bad".equals(state.type)) {
+                // 添加到负面效果列表（2026-10-04 从增益拆出）
+                boolean alreadyExists = false;
+                for (String[] be : land.badEffects) {
+                    if (be[0].equals(effName)) { alreadyExists = true; break; }
+                }
+                if (!alreadyExists) {
+                    // 负面效果与增益共用数量上限口径（都受用户组 max_effects 约束）
+                    int maxEff = areaProtect.getMaxGiveEffects(land.owner);
+                    if (land.giveEffects.size() + land.badEffects.size() >= maxEff) {
+                        p.sendMessage("§c§l[效果管理] §f效果已达上限 §e"
+                                + maxEff + " §f个（增益+负面合计，按用户组配置），请先移除再添加");
+                    } else {
+                        int cap = areaProtect.getEffectLevelCap(effName, land.owner);
+                        land.badEffects.add(new String[]{effName, "1", "300"});
+                        areaProtect.saveAreaToDb(land);
+                        p.sendMessage("§c§l[效果管理] §f已添加负面效果: §c" + effName + " Lv1 300秒"
+                                + " §7(等级上限 Lv" + cap + ")");
+                    }
+                } else {
+                    p.sendMessage("§c§l[效果管理] §f该负面效果已存在: §e" + effName);
+                }
             } else {
                 // 添加到增益效果列表
                 boolean alreadyExists = false;
@@ -1536,13 +1561,15 @@ public class AreaGUIManager implements Listener {
                 if (!alreadyExists) {
                     // ★ 数量上限（2026-10-04 任务3）
                     int maxEff = areaProtect.getMaxGiveEffects(land.owner);
-                    if (land.giveEffects.size() >= maxEff) {
-                        p.sendMessage("§c§l[效果管理] §f增益效果已达上限 §e"
-                                + maxEff + " §f个（按用户组配置），请先移除再添加");
+                    if (land.giveEffects.size() + land.badEffects.size() >= maxEff) {
+                        p.sendMessage("§c§l[效果管理] §f效果已达上限 §e"
+                                + maxEff + " §f个（增益+负面合计，按用户组配置），请先移除再添加");
                     } else {
+                        int cap = areaProtect.getEffectLevelCap(effName, land.owner);
                         land.giveEffects.add(new String[]{effName, "1", "300"});
                         areaProtect.saveAreaToDb(land);
-                        p.sendMessage("§a§l[效果管理] §f已添加增益效果: §a" + effName + " Lv1 300秒");
+                        p.sendMessage("§a§l[效果管理] §f已添加增益效果: §a" + effName + " Lv1 300秒"
+                                + " §7(等级上限 Lv" + cap + ")");
                     }
                 } else {
                     p.sendMessage("§c§l[效果管理] §f该增益效果已存在: §e" + effName);
@@ -1557,31 +1584,39 @@ public class AreaGUIManager implements Listener {
 
     /**
      * 根据槽位获取效果名
+     *
+     * <p>槽位编排必须和 {@link #openEffectsSelection} 里实际画出来的顺序<b>完全一致</b>，
+     * 否则会出现「点了 A 名字却存了 B」。两类页面各按自己的档位顺序算：</p>
+     * <ul>
+     *   <li>单清 / 负面：负面 → 中性 → 正面（负面页只画前两段）</li>
+     *   <li>增益：只画正面一段，槽位从 0 开始就是正面第 1 个</li>
+     * </ul>
      */
-    private String getEffectNameBySlot(int slot) {
-        String[][] allEffects = {
-                // 负面效果 (0-15)
-                {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
-                {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
-                {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
-                {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
-                {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"},
-                // 中性效果 (16-18)
-                {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"},
-                // 正面效果 (19-38)
-                {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
-                {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
-                {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
-                {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
-                {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
-                {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
-                {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
-        };
+    private String getEffectNameBySlot(int slot, String type) {
+        boolean isGive = "give".equals(type);
+        boolean isBad = "bad".equals(type);
 
-        if (slot >= 0 && slot < allEffects.length) {
-            return allEffects[slot][0];
+        if (isGive) {
+            if (slot >= 0 && slot < EFFECTS_GOOD.length) return EFFECTS_GOOD[slot][0];
+            return null;
         }
-        return null;
+        if (isBad) {
+            // 负面页：负面(16) + 中性(3)
+            int total = EFFECTS_BAD.length + EFFECTS_NEUTRAL.length;
+            if (slot >= 0 && slot < total) {
+                if (slot < EFFECTS_BAD.length) return EFFECTS_BAD[slot][0];
+                return EFFECTS_NEUTRAL[slot - EFFECTS_BAD.length][0];
+            }
+            return null;
+        }
+        // 单清：三种全列，顺序与 openEffectsSelection 一致
+        int nBad = EFFECTS_BAD.length;
+        int nNeu = EFFECTS_NEUTRAL.length;
+        int total = nBad + nNeu + EFFECTS_GOOD.length;
+        if (slot < 0 || slot >= total) return null;
+        if (slot < nBad) return EFFECTS_BAD[slot][0];
+        if (slot < nBad + nNeu) return EFFECTS_NEUTRAL[slot - nBad][0];
+        return EFFECTS_GOOD[slot - nBad - nNeu][0];
     }
 
     /**
@@ -2443,6 +2478,37 @@ public class AreaGUIManager implements Listener {
     // ==================== 效果管理 GUI ====================
 
     /**
+     * ★ 效果清单唯一来源（2026-10-04 用户要求拆分后集中）
+     *
+     * <p>此前 {@code openEffectsSelection} 与 {@code getEffectNameBySlot} 各写了一份数组，
+     * 两份一旦漂移就会出现「点了没反应 / 槽位对不上」。现统一到这两个常量。</p>
+     */
+    /** 负面效果：缓慢、中毒、凋零这类会拖垮玩家的效果（用户要求单独一个子菜单）。 */
+    private static final String[][] EFFECTS_BAD = {
+            {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
+            {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
+            {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
+            {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
+            {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"}
+    };
+
+    /** 中性效果：不吉不利也不算增益，单列一档。 */
+    private static final String[][] EFFECTS_NEUTRAL = {
+            {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"}
+    };
+
+    /** 增益效果：全部正面效果（用户要求「增益效果只归纳增益」）。 */
+    private static final String[][] EFFECTS_GOOD = {
+            {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
+            {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
+            {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
+            {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
+            {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
+            {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
+            {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
+    };
+
+    /**
      * 打开效果管理菜单
      */
     public void openEffectsManagement(Player p, String landName, int subPage) {
@@ -2458,7 +2524,10 @@ public class AreaGUIManager implements Listener {
         if (subPage == 1) {
             Inventory inv = Bukkit.createInventory(null, 54, "§b§l效果管理 - " + landName);
 
-            // 全清负面效果
+            // ★ 槽位布局（2026-10-04 修正）：原实现 11/13 各被两个按钮占用，
+            //   后写的「添加增益」「添加负面」把「清除所有负面」「禁止所有效果」直接覆盖掉了。
+            //   现在 11~15 连排五格，与 handleEffectsManagementClick 的分发一一对应。
+            // 11 全清负面效果
             Material clearAllMat = land.clearAllBadEffects ? Material.LIME_DYE : Material.GRAY_DYE;
             inv.setItem(11, createItem(clearAllMat, "§e§l清除所有负面效果",
                     "§7当前: " + (land.clearAllBadEffects ? "§a已开启" : "§c已关闭"),
@@ -2466,23 +2535,34 @@ public class AreaGUIManager implements Listener {
                     "",
                     "§e点击切换"));
 
-            // 禁止所有效果
+            // 12 禁止所有效果
             Material denyAllMat = land.denyAllEffects ? Material.RED_DYE : Material.GRAY_DYE;
-            inv.setItem(13, createItem(denyAllMat, "§e§l禁止所有效果",
+            inv.setItem(12, createItem(denyAllMat, "§e§l禁止所有效果",
                     "§7当前: " + (land.denyAllEffects ? "§a已开启" : "§c已关闭"),
                     "§7进入领地时禁止接收所有药水效果",
                     "",
                     "§e点击切换"));
 
-            // 单清效果列表
-            inv.setItem(15, createItem(Material.MAGMA_CREAM, "§b§l单清指定效果",
+            // 13 单清指定效果
+            inv.setItem(13, createItem(Material.MAGMA_CREAM, "§b§l单清指定效果",
                     "§7当前列表: §f" + land.clearEffects.size() + " 个效果",
+                    "§7进入领地时清除玩家身上的这些效果",
                     "",
                     "§e点击查看/编辑"));
 
-            // 添加增益效果
-            inv.setItem(17, createItem(Material.BREWING_STAND, "§a§l添加增益效果",
+            // 14 添加增益效果（只放正面效果）
+            inv.setItem(14, createItem(Material.BREWING_STAND, "§a§l添加增益效果",
                     "§7当前增益: §f" + land.giveEffects.size() + " 个",
+                    "§7只列正面效果（力量、抗性、跳跃提升…）",
+                    "§7等级上限按原版生存可获取档位封顶",
+                    "",
+                    "§e点击查看/编辑"));
+
+            // 15 添加负面效果（独立子菜单，2026-10-04 用户要求拆出）
+            inv.setItem(15, createItem(Material.WITHER_SKELETON_SKULL, "§c§l添加负面效果",
+                    "§7当前负面: §f" + land.badEffects.size() + " 个",
+                    "§7缓慢、中毒、凋零、虚弱、蓄风…",
+                    "§7含不祥之兆等中性效果，不与增益混排",
                     "",
                     "§e点击查看/编辑"));
 
@@ -2517,7 +2597,7 @@ public class AreaGUIManager implements Listener {
             p.openInventory(inv);
         }
 
-        // ========== 子菜单3：增益效果列表 ==========
+        // ========== 子菜单3：增益效果列表（只列正面效果） ==========
         else if (subPage == 3) {
             Inventory inv = Bukkit.createInventory(null, 54, "§b§l增益效果 - " + landName);
 
@@ -2532,39 +2612,41 @@ public class AreaGUIManager implements Listener {
                     String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " " + eff[2] + "秒" : "");
                     inv.setItem(i, createItem(Material.GOLDEN_CARROT, "§a" + desc,
                             "§7点击移除此增益效果",
-                            "§e序号: " + (i + 1)));
-                }
-            }
-
-            inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
-            inv.setItem(53, createItem(Material.BOOK, "§a§l添加效果",
-                    "§7点击选择要清除的效果"));
-
-            p.openInventory(inv);
-        }
-
-        // ========== 子菜单3：增益效果列表 ==========
-        else if (subPage == 3) {
-            Inventory inv = Bukkit.createInventory(null, 54, "§b§l增益效果 - " + landName);
-
-            if (land.giveEffects.isEmpty()) {
-                inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无增益效果",
-                        "§7使用快捷指令添加: /protect cli effectsaddadd <效果名> [等级] [秒数]",
-                        "",
-                        "§e示例: /protect cli effectsaddadd 力量 2 300"));
-            } else {
-                for (int i = 0; i < Math.min(land.giveEffects.size(), 36); i++) {
-                    String[] eff = land.giveEffects.get(i);
-                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " " + eff[2] + "秒" : "");
-                    inv.setItem(i, createItem(Material.GOLDEN_CARROT, "§a" + desc,
-                            "§7点击移除此增益效果",
-                            "§e序号: " + (i + 1)));
+                            "§e序号: " + (i + 1),
+                            "§7等级上限: §fLv" + areaProtect.getEffectLevelCap(eff[0], land.owner)));
                 }
             }
 
             inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
             inv.setItem(53, createItem(Material.BOOK, "§a§l添加增益",
                     "§7点击选择要添加的增益效果"));
+
+            p.openInventory(inv);
+        }
+
+        // ========== 子菜单4：负面效果列表（2026-10-04 从增益里拆出） ==========
+        else if (subPage == 4) {
+            Inventory inv = Bukkit.createInventory(null, 54, "§c§l负面效果 - " + landName);
+
+            if (land.badEffects.isEmpty()) {
+                inv.setItem(22, createItem(Material.BARRIER, "§7§l暂无负面效果",
+                        "§7使用快捷指令添加: /protect cli effectsbadadd <效果名> [等级] [秒数]",
+                        "",
+                        "§e示例: /protect cli effectsbadadd 缓慢 1 300"));
+            } else {
+                for (int i = 0; i < Math.min(land.badEffects.size(), 36); i++) {
+                    String[] eff = land.badEffects.get(i);
+                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " " + eff[2] + "秒" : "");
+                    inv.setItem(i, createItem(Material.WITHER_SKELETON_SKULL, "§c" + desc,
+                            "§7点击移除此负面效果",
+                            "§e序号: " + (i + 1),
+                            "§7等级上限: §fLv" + areaProtect.getEffectLevelCap(eff[0], land.owner)));
+                }
+            }
+
+            inv.setItem(48, createItem(Material.ARROW, "§c§l返回效果管理", ""));
+            inv.setItem(53, createItem(Material.BOOK, "§c§l添加负面",
+                    "§7点击选择要添加的负面效果"));
 
             p.openInventory(inv);
         }
@@ -2584,17 +2666,20 @@ public class AreaGUIManager implements Listener {
                 land.clearAllBadEffects = !land.clearAllBadEffects;
                 areaProtect.saveAreaToDb(land);
                 openEffectsManagement(p, landName, 1);
-            } else if (raw == 13) {
+            } else if (raw == 12) {
                 // 切换禁止所有效果
                 land.denyAllEffects = !land.denyAllEffects;
                 areaProtect.saveAreaToDb(land);
                 openEffectsManagement(p, landName, 1);
-            } else if (raw == 15) {
+            } else if (raw == 13) {
                 // 打开单清效果列表
                 openEffectsManagement(p, landName, 2);
-            } else if (raw == 17) {
-                // 打开增益效果列表
+            } else if (raw == 14) {
+                // 打开增益效果列表（只列正面效果）
                 openEffectsManagement(p, landName, 3);
+            } else if (raw == 15) {
+                // 打开负面效果列表（2026-10-04 从增益拆出）
+                openEffectsManagement(p, landName, 4);
             } else if (raw == 48) {
                 // 返回管理领地
                 openLandManage(p, landName);
@@ -2627,77 +2712,104 @@ public class AreaGUIManager implements Listener {
             } else if (raw == 48) {
                 openEffectsManagement(p, landName, 1);
             } else if (raw == 53) {
-                // 打开效果选择列表（与单清一致）
+                // 打开增益效果选择列表（只列正面效果）
                 openEffectsSelection(p, landName, "give", 3);
+            }
+        }
+        // 子菜单4：负面效果列表（2026-10-04 从增益拆出）
+        else if (subPage == 4) {
+            if (raw < land.badEffects.size()) {
+                // 移除负面效果
+                String[] removed = land.badEffects.remove(raw);
+                String desc = removed[0] + (removed.length > 1 ? " Lv" + removed[1] : "") + (removed.length > 2 ? " " + removed[2] + "秒" : "");
+                areaProtect.saveAreaToDb(land);
+                p.sendMessage("§c§l[效果管理] §f已移除负面效果: §c" + desc);
+                openEffectsManagement(p, landName, 4);
+            } else if (raw == 48) {
+                openEffectsManagement(p, landName, 1);
+            } else if (raw == 53) {
+                // 打开负面效果选择列表
+                openEffectsSelection(p, landName, "bad", 4);
             }
         }
     }
 
     /**
      * 打开效果选择列表（可点击选择）
-     * @param type "clear"=清除效果, "give"=增益效果
+     *
+     * <p>2026-10-04 用户要求：增益只列增益、负面单独一个子菜单，
+     * 原来三种混排在一页里，加错效果很难发现。现按 {@code type} 分类只列对应档位。</p>
+     *
+     * @param type "clear"=单清指定效果（负面+中性+正面全列）、
+     *             "give"=增益效果（只列正面）、
+     *             "bad"=负面效果（只列负面+中性）
      * @param returnSubPage 返回时的子菜单页码
      */
     private void openEffectsSelection(Player p, String landName, String type, int returnSubPage) {
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) return;
 
-        String title = "§a§l选择效果 - " + landName;
+        String title;
+        if ("bad".equals(type)) {
+            title = "§a§l选择负面效果 - " + landName;
+        } else if ("give".equals(type)) {
+            title = "§a§l选择增益效果 - " + landName;
+        } else {
+            title = "§a§l选择效果 - " + landName;
+        }
         Inventory inv = Bukkit.createInventory(null, 54, title);
 
-        // 负面效果
-        String[][] badEffects = {
-                {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
-                {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
-                {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
-                {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
-                {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"}
-        };
-
-        // 中性效果
-        String[][] neutralEffects = {
-                {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"}
-        };
-
-        // 正面效果
-        String[][] goodEffects = {
-                {"迅捷", "speed"}, {"急迫", "haste"}, {"力量", "strength"},
-                {"瞬间治疗", "instant_health"}, {"跳跃提升", "jump_boost"}, {"生命恢复", "regeneration"},
-                {"抗性提升", "resistance"}, {"抗火", "fire_resistance"}, {"水下呼吸", "water_breathing"},
-                {"隐身", "invisibility"}, {"夜视", "night_vision"}, {"发光", "glowing"},
-                {"生命提升", "health_boost"}, {"伤害吸收", "absorption"}, {"饱和", "saturation"},
-                {"幸运", "luck"}, {"村庄英雄", "hero_of_the_village"}, {"缓降", "slow_falling"},
-                {"潮涌能量", "conduit_power"}, {"海豚的恩惠", "dolphins_grace"}
-        };
+        // 按用途决定列出哪些档位
+        boolean isClear = "clear".equals(type);
+        boolean isGive = "give".equals(type);
+        boolean isBad = "bad".equals(type);
+        // 单清：三种都列（这是"移除指定效果"，语义与增益/负面无关，保持原样）
+        // 增益：只列正面；负面：列负面+中性
+        boolean showBad = isClear || isBad;
+        boolean showNeutral = isClear || isBad;
+        boolean showGood = isClear || isGive;
 
         int slot = 0;
+        String[][] badEffects = showBad ? EFFECTS_BAD : new String[0][];
+        String[][] neutralEffects = showNeutral ? EFFECTS_NEUTRAL : new String[0][];
+        String[][] goodEffects = showGood ? EFFECTS_GOOD : new String[0][];
+
         // 负面效果
         for (String[] eff : badEffects) {
             if (slot >= 45) break;
-            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            boolean alreadyInList = isClear && land.clearEffects.contains(eff[0]);
             Material mat = alreadyInList ? Material.GRAY_DYE : Material.RED_DYE;
             String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§c" + eff[0];
-            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            inv.setItem(slot, createItem(mat, name,
+                    isClear ? "§7点击添加到清除列表" : "§7点击添加到负面效果列表",
+                    "§e英文名: " + eff[1],
+                    "§7等级上限: §fLv" + areaProtect.getEffectLevelCap(eff[0], land.owner)));
             slot++;
         }
 
         // 中性效果
         for (String[] eff : neutralEffects) {
             if (slot >= 45) break;
-            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            boolean alreadyInList = isClear && land.clearEffects.contains(eff[0]);
             Material mat = alreadyInList ? Material.GRAY_DYE : Material.YELLOW_DYE;
             String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§e" + eff[0];
-            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            inv.setItem(slot, createItem(mat, name,
+                    isClear ? "§7点击添加到清除列表" : "§7点击添加到负面效果列表",
+                    "§e英文名: " + eff[1],
+                    "§7等级上限: §fLv" + areaProtect.getEffectLevelCap(eff[0], land.owner)));
             slot++;
         }
 
         // 正面效果
         for (String[] eff : goodEffects) {
             if (slot >= 45) break;
-            boolean alreadyInList = type.equals("clear") && land.clearEffects.contains(eff[0]);
+            boolean alreadyInList = isClear && land.clearEffects.contains(eff[0]);
             Material mat = alreadyInList ? Material.GRAY_DYE : Material.LIME_DYE;
             String name = alreadyInList ? "§7" + eff[0] + " (已添加)" : "§a" + eff[0];
-            inv.setItem(slot, createItem(mat, name, "§7点击添加到清除列表", "§e英文名: " + eff[1]));
+            inv.setItem(slot, createItem(mat, name,
+                    isClear ? "§7点击添加到清除列表" : "§7点击添加到增益效果列表",
+                    "§e英文名: " + eff[1],
+                    "§7等级上限: §fLv" + areaProtect.getEffectLevelCap(eff[0], land.owner)));
             slot++;
         }
 

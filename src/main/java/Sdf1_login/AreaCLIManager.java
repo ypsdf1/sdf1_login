@@ -1304,6 +1304,8 @@ public class AreaCLIManager {
         if (subPage == 1) {
             p.sendMessage(header("效果管理: " + landName));
             p.sendMessage(Component.text("§7清除所有负面效果: §f" + (land.clearAllBadEffects ? "§a开启" : "§c关闭")));
+            p.sendMessage(Component.text("§7当前增益: §a" + land.giveEffects.size()
+                    + " §f个  §7当前负面: §c" + land.badEffects.size() + " §f个"));
             p.sendMessage(Component.text("§7禁止所有效果: §f" + (land.denyAllEffects ? "§a开启" : "§c关闭")));
 
             // 全清负面
@@ -1331,6 +1333,8 @@ public class AreaCLIManager {
             p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli landmanage " + landName + " 1"));
             p.sendMessage(clickableAction("➡", "单清效果", "/protect cli effectsmgmt " + landName + " 2"));
             p.sendMessage(clickableAction("➡", "添加增益效果", "/protect cli effectsmgmt " + landName + " 3"));
+            // ★ 2026-10-04 用户要求：增益/负面拆开，负面独立入口
+            p.sendMessage(clickableAction("➡", "添加负面效果", "/protect cli effectsmgmt " + landName + " 6"));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
 
@@ -1511,6 +1515,105 @@ public class AreaCLIManager {
                     .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 3")));
             p.sendMessage(Component.text("§7§l───────────────────────────────"));
         }
+
+        // ========== 子菜单6：添加负面效果（2026-10-04 从增益拆出） ==========
+        else if (subPage == 6) {
+            p.sendMessage(header("添加负面效果: " + landName));
+            p.sendMessage(Component.text("§7当前负面效果列表:"));
+
+            if (land.badEffects.isEmpty()) {
+                p.sendMessage(Component.text("§7（空）"));
+            } else {
+                for (int i = 0; i < land.badEffects.size(); i++) {
+                    String[] eff = land.badEffects.get(i);
+                    String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "") + (eff.length > 2 ? " §f" + eff[2] + "秒" : "");
+                    String level = eff.length > 1 ? eff[1] : "1";
+                    String duration = eff.length > 2 ? eff[2] : "300";
+                    p.sendMessage(Component.empty()
+                            .append(Component.text("§c- " + desc + " "))
+                            .append(Component.text("§b[等级:" + level + "]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑等级")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsbadedit " + landName + " " + (i + 1) + " level")))
+                            .append(Component.text(" "))
+                            .append(Component.text("§d[时长:" + duration + "s]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§e点击编辑时长(秒)")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsbadedit " + landName + " " + (i + 1) + " duration")))
+                            .append(Component.text(" "))
+                            .append(Component.text("§c[x]")
+                                    .hoverEvent(HoverEvent.showText(Component.text("§c点击移除负面效果 '" + desc + "'")))
+                                    .clickEvent(ClickEvent.runCommand("/protect cli effectsbadremove " + landName + " " + (i + 1)))));
+                }
+            }
+
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("")
+                    .append(Component.text("§c[添加负面]"))
+                    .hoverEvent(HoverEvent.showText(Component.text("§e点击选择要添加的负面效果")))
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 7")));
+            p.sendMessage(Component.text("§a[◀ 返回管理菜单]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 1")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
+
+        // ========== 子菜单7：选择负面效果（负面 + 中性，不含正面） ==========
+        else if (subPage == 7) {
+            p.sendMessage(header("选择要添加的负面效果: " + landName));
+            p.sendMessage(Component.text("§7点击效果名称直接添加（默认等级1，持续300秒）"));
+            p.sendMessage(Component.text("§7高级: /protect cli effectsbadadd <效果名> [等级] [秒数]"));
+
+            // ★ 与 GUI 的 EFFECTS_BAD / EFFECTS_NEUTRAL 保持同一份口径
+            String[][] badList = {
+                    {"缓慢", "slowness"}, {"挖掘疲劳", "mining_fatigue"}, {"瞬间伤害", "instant_damage"},
+                    {"反胃", "nausea"}, {"失明", "blindness"}, {"饥饿", "hunger"},
+                    {"虚弱", "weakness"}, {"中毒", "poison"}, {"凋零", "wither"},
+                    {"飘浮", "levitation"}, {"霉运", "unluck"}, {"黑暗", "darkness"},
+                    {"蓄风", "wind_charged"}, {"盘丝", "weaving"}, {"渗浆", "oozing"}, {"寄生", "infested"}
+            };
+            p.sendMessage(Component.text("§c§l负面效果:"));
+            for (String[] eff : badList) {
+                boolean alreadyExists = false;
+                for (String[] be : land.badEffects) {
+                    if (be[0].equals(eff[0])) { alreadyExists = true; break; }
+                }
+                String prefix = alreadyExists ? "§7" : "§c";
+                String suffix = alreadyExists ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyExists) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text(
+                                    "§e点击添加负面效果: " + eff[0] + " Lv1 300秒"
+                                            + " §7(等级上限 Lv" + areaProtect.getEffectLevelCap(eff[0], land.owner) + ")")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsbadadd " + landName + " " + eff[0] + " 1 300"));
+                }
+                p.sendMessage(btn);
+            }
+
+            String[][] neutralList = {
+                    {"不祥之兆", "bad_omen"}, {"袭击之兆", "raid_omen"}, {"试炼之兆", "trial_omen"}
+            };
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§e§l中性效果（也算负面档）:"));
+            for (String[] eff : neutralList) {
+                boolean alreadyExists = false;
+                for (String[] be : land.badEffects) {
+                    if (be[0].equals(eff[0])) { alreadyExists = true; break; }
+                }
+                String prefix = alreadyExists ? "§7" : "§e";
+                String suffix = alreadyExists ? " §7(已添加)" : "";
+                Component btn = Component.text(prefix + "§l[+] " + eff[0] + suffix);
+                if (!alreadyExists) {
+                    btn = btn.hoverEvent(HoverEvent.showText(Component.text(
+                                    "§e点击添加负面效果: " + eff[0] + " Lv1 300秒"
+                                            + " §7(等级上限 Lv" + areaProtect.getEffectLevelCap(eff[0], land.owner) + ")")))
+                            .clickEvent(ClickEvent.runCommand("/protect cli effectsbadadd " + landName + " " + eff[0] + " 1 300"));
+                }
+                p.sendMessage(btn);
+            }
+
+            p.sendMessage(Component.text(""));
+            p.sendMessage(Component.text("§a[◀ 返回负面效果列表]")
+                    .clickEvent(ClickEvent.runCommand("/protect cli effectsmgmt " + landName + " 6")));
+            p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        }
     }
 
     /**
@@ -1668,10 +1771,11 @@ public class AreaCLIManager {
         }
 
         // ★ 数量上限（2026-10-04 任务3）：普通玩家 5 个，用户组可覆盖
+        //   2026-10-04 负面拆出后按「增益+负面合计」判，避免两边各占满一份
         int maxEff = areaProtect.getMaxGiveEffects(land.owner);
-        if (land.giveEffects.size() >= maxEff) {
-            p.sendMessage(Component.text("§c该领地增益效果已达上限 "
-                    + maxEff + " 个（按用户组配置），请先移除再添加"));
+        if (land.giveEffects.size() + land.badEffects.size() >= maxEff) {
+            p.sendMessage(Component.text("§c效果已达上限 " + maxEff
+                    + " 个（增益+负面合计，按用户组配置），请先移除再添加"));
             return;
         }
 
@@ -1679,6 +1783,93 @@ public class AreaCLIManager {
         String desc = effName + " Lv" + level + " " + duration + "秒";
         p.sendMessage(Component.text("§a已添加增益效果: §f" + desc));
         areaProtect.saveAreaToDb(land);
+    }
+
+    // ========== 负面效果（2026-10-04 从增益列表拆出，CLI 与 GUI 同步） ==========
+
+    /**
+     * 从负面效果列表中移除指定效果
+     */
+    public void removeBadEffect(Player p, String landName, int index) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        if (index < 1 || index > land.badEffects.size()) {
+            p.sendMessage(Component.text("§c索引超出范围"));
+            return;
+        }
+        String[] eff = land.badEffects.remove(index - 1);
+        String desc = eff[0] + (eff.length > 1 ? " Lv" + eff[1] : "");
+        p.sendMessage(Component.text("§a已移除负面效果: §f" + desc));
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * 向负面效果列表添加效果
+     * 参数: 效果名 [等级] [秒数]
+     *
+     * <p>与 {@link #addGiveEffect} 的区别：写入 {@code badEffects}，且数量上限
+     * 与增益<b>合计</b>计算（用户组 max_effects 是同一份预算）。</p>
+     */
+    public void addBadEffect(Player p, String landName, String effName, String levelStr, String durationStr) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        int level = 1;
+        try { level = Integer.parseInt(levelStr); } catch (Exception ignored) {}
+        level = Math.max(1, Math.min(level, 255));
+
+        int duration = 999;
+        try { duration = Integer.parseInt(durationStr); } catch (Exception ignored) {}
+        duration = Math.max(1, Math.min(duration, 3600));
+
+        for (String[] existing : land.badEffects) {
+            if (existing[0].equalsIgnoreCase(effName)) {
+                p.sendMessage(Component.text("§c该效果已存在于负面列表中: §f" + existing[0]));
+                return;
+            }
+        }
+
+        // ★ 数量上限：增益 + 负面合计（用户组 max_effects）
+        int maxEff = areaProtect.getMaxGiveEffects(land.owner);
+        if (land.giveEffects.size() + land.badEffects.size() >= maxEff) {
+            p.sendMessage(Component.text("§c效果已达上限 " + maxEff
+                    + " 个（增益+负面合计，按用户组配置），请先移除再添加"));
+            return;
+        }
+
+        land.badEffects.add(new String[]{effName, String.valueOf(level), String.valueOf(duration)});
+        String desc = effName + " Lv" + level + " " + duration + "秒";
+        p.sendMessage(Component.text("§a已添加负面效果: §f" + desc
+                + " §7(等级上限 Lv" + areaProtect.getEffectLevelCap(effName, land.owner) + ")"));
+        areaProtect.saveAreaToDb(land);
+    }
+
+    /**
+     * ★ 开始编辑负面效果的等级或时长（等待玩家输入）
+     */
+    public void startEditBadEffect(Player p, String landName, String indexStr, String editField) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) { p.sendMessage(Component.text("§c领地不存在")); return; }
+        int idx;
+        try { idx = Integer.parseInt(indexStr); } catch (Exception e) { p.sendMessage(Component.text("§c序号无效")); return; }
+        if (idx < 1 || idx > land.badEffects.size()) { p.sendMessage(Component.text("§c序号超出范围")); return; }
+        if (!editField.equals("level") && !editField.equals("duration")) {
+            p.sendMessage(Component.text("§c编辑类型必须是 level 或 duration"));
+            return;
+        }
+        // inputType 前缀用 editBad_，AreaProtection 侧按前缀分发回写
+        String inputType = "editBad_" + editField + "_" + idx;
+        areaProtect.setPendingEffectInput(p.getUniqueId(), landName, inputType, 6);
+        String fieldLabel = editField.equals("level") ? "等级" : "时长(秒)";
+        String[] eff = land.badEffects.get(idx - 1);
+        String current = editField.equals("level") ? (eff.length > 1 ? eff[1] : "1") : (eff.length > 2 ? eff[2] : "300");
+        p.sendMessage(Component.text("§e请输入新的" + fieldLabel + "（当前: " + current + "），输入取消"));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
     }
 
     // ==================== 领地公告管理 ====================

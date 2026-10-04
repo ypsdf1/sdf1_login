@@ -187,6 +187,8 @@ public class Main extends JavaPlugin
     public AreaProtection areaProtection;
     public AreaGUIManager areaGUIManager;
     public AreaCLIManager areaCLIManager;
+    /** ★ 药水类成就防作弊（2026-10-04）：插件给的效果一律打标记，靠插件拿到的原版成就立即撤销 */
+    public AchievementEffectGuard achievementEffectGuard;
     public LandRecordManager landRecordManager;
     public InventoryAutoBackup inventoryAutoBackup;
     private TeleportManager teleportMgr;
@@ -775,6 +777,13 @@ public class Main extends JavaPlugin
         // 配置文件 plugins/Sdf1_login/白名单.txt，登录/加入/退出时热重载
         getServer().getPluginManager().registerEvents(new MaintenanceManager(this), this);
         getCommand("back").setTabCompleter(quickBack);
+
+        // ===== 药水类成就防作弊 =====
+        // 插件给的效果必须打标记；玩家靠插件效果凑齐 nether/all_potions(17种) 或
+        // nether/all_effects(34种) 时，服务端立即撤销该成就——这两条必须手打。
+        achievementEffectGuard = new AchievementEffectGuard(this);
+        getServer().getPluginManager().registerEvents(achievementEffectGuard, this);
+        getLogger().info("[成就防作弊] 已启用：受管控成就 nether/all_potions、nether/all_effects");
         
         // 注册传送命令已在 onCommand 中通过条件分支完成
         

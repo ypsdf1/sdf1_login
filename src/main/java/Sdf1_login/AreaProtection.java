@@ -1250,6 +1250,7 @@ public class AreaProtection implements Listener {
                 try { ac.denySignEdit = rs.getInt("deny_sign_edit") == 1; } catch (Exception ignored) {}
                 try { ac.denySpawnEgg = rs.getInt("deny_spawn_egg") == 1; } catch (Exception ignored) {}
                 try { ac.denyWax = rs.getInt("deny_wax") == 1; } catch (Exception ignored) {}
+            try { ac.badEffects = parseEffectsString(rs.getString("bad_effects")); } catch (Exception ignored) { ac.badEffects = new ArrayList<>(); }
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1437,6 +1438,7 @@ public class AreaProtection implements Listener {
                             + "confiscate_items TEXT DEFAULT '',"
                             + "deny_use_items TEXT DEFAULT '',"
                             + "give_effects TEXT DEFAULT '',"
+                            + "bad_effects TEXT DEFAULT '',"
                             + "clear_effects TEXT DEFAULT '',"
                             + "clear_all_bad INTEGER DEFAULT 0,"
                             + "punish_commands TEXT DEFAULT '',"
@@ -1550,6 +1552,7 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_spawn_egg INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 涂蜡/刮蜡权限列（上级权限：破坏方块/放置方块）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_wax INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+        try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN bad_effects TEXT DEFAULT ''"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -3793,15 +3796,20 @@ public class AreaProtection implements Listener {
                         + " 效果配置数="
                         + (ac != null ? ac.giveEffects.size() : "null"));*/
 
-        if (ac == null || ac.giveEffects.isEmpty()) return;
-        if (ac.giveEffects.isEmpty()) return;
+        if (ac == null) return;
+        // ★ 2026-10-04：负面配置拆出后，不能再只判 giveEffects 为空就返回
+        boolean hasGive = ac.giveEffects != null && !ac.giveEffects.isEmpty();
+        boolean hasBad = ac.badEffects != null && !ac.badEffects.isEmpty();
+        if (!hasGive && !hasBad) return;
         // 查DB：该玩家在此区域是否已有效果记录
         List<String> dbEffects =
                 getPlayerEffectNames(uid, areaName);
 
         if (dbEffects.isEmpty()) {
             // 无记录 → 写入DB
-            for (String[] eff : ac.giveEffects) {
+            List<String[]> allForDb = new ArrayList<>(ac.giveEffects);
+            if (ac.badEffects != null) allForDb.addAll(ac.badEffects);
+            for (String[] eff : allForDb) {
                 PotionEffectType t =
                         resolveEffectType(eff[0]);
                 if (t == null) continue;
@@ -3819,8 +3827,11 @@ public class AreaProtection implements Listener {
         }
 
         // 给效果 + 贴标
+        //   ★ 2026-10-04：负面配置已拆到 badEffects，两边都要给
+        List<String[]> allCfg = new ArrayList<>(ac.giveEffects);
+        if (ac.badEffects != null) allCfg.addAll(ac.badEffects);
         List<PotionEffectType> applied = new ArrayList<>();
-        for (String[] eff : ac.giveEffects) {
+        for (String[] eff : allCfg) {
             try {
                 PotionEffectType type =
                         resolveEffectType(eff[0]);
@@ -3841,6 +3852,9 @@ public class AreaProtection implements Listener {
             } catch (Exception ignored) {
             }
         }
+
+        // ★ 成就防作弊贴标：这批是插件给的效果，必须登记
+        markPluginEffects(uid, applied);
 
         // 贴标
         // 新代码（合并，不覆盖）：
@@ -3884,11 +3898,17 @@ public class AreaProtection implements Listener {
         lastEffectHotUpdate.put(uid, now);
 
         // 领地无效果配置 → 跳过
-        if (ac.giveEffects == null || ac.giveEffects.isEmpty()) return;
+        //   ★ 2026-10-04：负面配置拆出后，不能只判 giveEffects
+        boolean hasGive = ac.giveEffects != null && !ac.giveEffects.isEmpty();
+        boolean hasBad = ac.badEffects != null && !ac.badEffects.isEmpty();
+        if (!hasGive && !hasBad) return;
 
-        // 1. 构建领地当前期望的效果集合
+        // 1. 构建领地当前期望的效果集合（增益 + 负面）
         Map<PotionEffectType, int[]> expectedEffects = new LinkedHashMap<>();
-        for (String[] eff : ac.giveEffects) {
+        List<String[]> allForHot = new ArrayList<>();
+        if (ac.giveEffects != null) allForHot.addAll(ac.giveEffects);
+        if (ac.badEffects != null) allForHot.addAll(ac.badEffects);
+        for (String[] eff : allForHot) {
             PotionEffectType type = resolveEffectType(eff[0]);
             if (type == null) continue;
             try {
@@ -3906,6 +3926,7 @@ public class AreaProtection implements Listener {
 
         // 3. 添加缺失的效果
         List<PotionEffectType> newMarked = new ArrayList<>(currentMarked);
+        List<PotionEffectType> hotApplied = new ArrayList<>();
         for (Map.Entry<PotionEffectType, int[]> entry : expectedEffects.entrySet()) {
             PotionEffectType type = entry.getKey();
             int lv = entry.getValue()[0];
@@ -3917,6 +3938,7 @@ public class AreaProtection implements Listener {
                 if (existing != null && existing.getAmplifier() < lv) {
                     // 等级提升 → 重新给效果
                     p.addPotionEffect(new PotionEffect(type, dur, lv));
+                    hotApplied.add(type);
                     plugin.getLogger().info("[防护-热更新] 等级提升: "
                             + type.getName() + " Lv" + (lv + 1)
                             + " 玩家=" + p.getName());
@@ -3929,11 +3951,15 @@ public class AreaProtection implements Listener {
             if (existing == null || existing.getAmplifier() < lv) {
                 p.addPotionEffect(new PotionEffect(type, dur, lv));
                 newMarked.add(type);
+                hotApplied.add(type);
                 plugin.getLogger().info("[防护-热更新] 新增效果: "
                         + type.getName() + " Lv" + (lv + 1) + " " + dur / 20 + "s"
                         + " 玩家=" + p.getName());
             }
         }
+
+        // ★ 成就防作弊贴标：热更新补上的效果同样是插件给的
+        markPluginEffects(uid, hotApplied);
 
         // 4. 移除多余的效果（领地不再给予的）
         List<PotionEffectType> toRemove = new ArrayList<>();
@@ -3994,6 +4020,12 @@ public class AreaProtection implements Listener {
                     }
                 }
 
+                // ★ 成就防作弊：离开领地后插件不再持有这些效果，标记要一并撤掉，
+                //   否则玩家之后自己喝药水凑齐 34 种时会被误判成作弊。
+                if (plugin.achievementEffectGuard != null) {
+                    plugin.achievementEffectGuard.clearPluginEffects(uid, null);
+                }
+
                 // 确认清空后清DB
                 removePlayerEffects(uid, areaName);
                 plugin.getLogger().info(
@@ -4034,10 +4066,18 @@ public class AreaProtection implements Listener {
         // 新区域的效果集合
         Set<PotionEffectType> newTypes = new HashSet<>();
         if (newAc != null) {
-            for (String[] eff : newAc.giveEffects) {
-                PotionEffectType t =
-                        resolveEffectType(eff[0]);
-                if (t != null) newTypes.add(t);
+            if (newAc.giveEffects != null) {
+                for (String[] eff : newAc.giveEffects) {
+                    PotionEffectType t = resolveEffectType(eff[0]);
+                    if (t != null) newTypes.add(t);
+                }
+            }
+            // ★ 2026-10-04：负面配置拆到 badEffects，跨区域比对必须一起算
+            if (newAc.badEffects != null) {
+                for (String[] eff : newAc.badEffects) {
+                    PotionEffectType t = resolveEffectType(eff[0]);
+                    if (t != null) newTypes.add(t);
+                }
             }
         }
 
@@ -4148,36 +4188,79 @@ public class AreaProtection implements Listener {
         }
     }
 
-    private void handleEnter(Player p, AreaConfig ac) {
-        UUID uid = p.getUniqueId();
+    /**
+     * ★ 贴标：把「这批效果是插件给的」登记到成就防作弊守卫。
+     *
+     * <p>2026-10-04 新增。原先只有 {@code playerMarkedEffects} 这份内部标记
+     * （用于离场清理），现在额外同步一份到 {@link AchievementEffectGuard}，
+     * 后者据此撤销 potion 类原版成就（all_potions / all_effects）。</p>
+     */
+    private void markPluginEffects(UUID uid, List<PotionEffectType> types) {
+        if (plugin.achievementEffectGuard == null || uid == null || types == null || types.isEmpty()) return;
+        try {
+            plugin.achievementEffectGuard.markPluginEffects(uid, types);
+        } catch (Throwable ignored) { }
+    }
 
-        // 清除负面效果
-        clearBadEffects(p, ac);
-
-        // 给予效果
+    /**
+     * 给予领地配置的全部效果（增益 giveEffects + 负面 badEffects）
+     *
+     * <p>2026-10-04：负面效果从 {@code giveEffects} 拆到 {@code badEffects}，
+     * 这里是两个列表的唯一合流点，改任何一处施加点都要记得带上 {@code badEffects}。</p>
+     *
+     * @return 实际施加成功（已解析出类型）的效果类型列表，供贴标使用
+     */
+    private List<PotionEffectType> giveRegionEffects(Player p, AreaConfig ac) {
         List<PotionEffectType> given = new ArrayList<>();
-        for (String[] parts : ac.giveEffects) {
+        if (ac == null) return given;
+        if (ac.giveEffects != null) given.addAll(applyEffectList(p, ac, ac.giveEffects));
+        if (ac.badEffects != null) given.addAll(applyEffectList(p, ac, ac.badEffects));
+        return given;
+    }
+
+    /**
+     * 施加一份效果列表（[名字, 等级, 秒数]），统一走等级封顶
+     */
+    private List<PotionEffectType> applyEffectList(Player p, AreaConfig ac, List<String[]> list) {
+        List<PotionEffectType> applied = new ArrayList<>();
+        if (list == null) return applied;
+        for (String[] parts : list) {
+            if (parts == null || parts.length < 1 || parts[0] == null || parts[0].isEmpty()) continue;
             String effName = parts[0];
             int level = 1;
             int duration = 999;
             try { level = Integer.parseInt(parts[1]); }
-            catch (NumberFormatException ignored) {}
+            catch (Exception ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
-            catch (NumberFormatException ignored) {}
+            catch (Exception ignored) {}
             // ★ 药效等级封顶（2026-10-04 任务4）：按该效果的生存可获取上限 + 用户组配置
             level = clampEffectLevel(level, effName, ac.owner);
             PotionEffectType type = resolveEffectType(effName);
             if (type != null) {
                 p.addPotionEffect(new PotionEffect(
                         type, duration * 20, level - 1));
-                given.add(type);
+                applied.add(type);
             }
         }
+        return applied;
+    }
+
+    private void handleEnter(Player p, AreaConfig ac) {
+        UUID uid = p.getUniqueId();
+
+        // ★ 2026-10-04 关键顺序修正：负面配置拆到 badEffects 后，
+        //   clearBadEffects 会把 badEffects 里配的负面一并清掉。
+        //   所以「先给效果、再按配置清负面」——否则新增的负面效果子菜单等于白配。
+        List<PotionEffectType> given = giveRegionEffects(p, ac);
+
+        // 清除负面效果（clearAllBadEffects / peaceMode / clearEffects / denyRaid）
+        clearBadEffects(p, ac);
+
+        // ★ 贴标：这些效果是插件给的，不是玩家自己喝出来的。
+        //   成就防作弊（撤销 nether/all_effects 等）完全依赖这份标记。
+        markPluginEffects(uid, given);
 
         removePlayerEffects(uid, ac.name);
-        if (!given.isEmpty()) {
-          //  savePlayerEffects(uid, p.getName(), ac.name, given);
-        }
 
         // 白名单检查（最先执行）
         if (hasPermission(p, ac, PermissionLevel.OWNER)) return;
@@ -5271,7 +5354,10 @@ public class AreaProtection implements Listener {
 
 
     private void applyEffects(Player p, AreaConfig ac) {
-        for (String[] parts : ac.giveEffects) {
+        // ★ 2026-10-04：负面效果从 giveEffects 拆到 badEffects，两边都要给
+        List<String[]> all = new ArrayList<>(ac.giveEffects);
+        if (ac.badEffects != null) all.addAll(ac.badEffects);
+        for (String[] parts : all) {
             String effName = parts[0];
             int level = 1;
             int duration = 999;
@@ -7200,6 +7286,41 @@ public class AreaProtection implements Listener {
                         break;
                     }
                     plugin.areaCLIManager.startEditGiveEffect(p, args[2], args[3], args[4]);
+                    break;
+                case "effectsbadremove":
+                    // ★ 移除指定负面效果（2026-10-04 从增益拆出）
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsbadremove <领地名> <序号>");
+                        break;
+                    }
+                    int badIdx = 1;
+                    try { badIdx = Integer.parseInt(args[3]); } catch (Exception ignored) {}
+                    plugin.areaCLIManager.removeBadEffect(p, args[2], badIdx);
+                    // 刷新：回到负面效果列表(subPage 6)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 6);
+                    break;
+                case "effectsbadadd":
+                    // ★ 添加负面效果: 效果名 [等级] [秒数]
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli effectsbadadd <领地名> <效果名> [等级] [秒数]");
+                        break;
+                    }
+                    String badEffName = args[3];
+                    String badEffLevel = "1";
+                    String badEffDuration = "999";
+                    if (args.length >= 5) badEffLevel = args[4];
+                    if (args.length >= 6) badEffDuration = args[5];
+                    plugin.areaCLIManager.addBadEffect(p, args[2], badEffName, badEffLevel, badEffDuration);
+                    // 刷新：回到负面效果列表(subPage 6)
+                    plugin.areaCLIManager.showEffectsManagement(p, args[2], 6);
+                    break;
+                case "effectsbadedit":
+                    // ★ 编辑负面效果等级或时长: 序号 level|duration
+                    if (args.length < 5) {
+                        p.sendMessage("§c用法: /protect cli effectsbadedit <领地主> <序号> <level|duration>");
+                        break;
+                    }
+                    plugin.areaCLIManager.startEditBadEffect(p, args[2], args[3], args[4]);
                     break;
                 case "announcement":
                     // ★ 领地公告管理
@@ -10337,8 +10458,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -10351,7 +10472,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -10425,6 +10546,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(70, ac.createCost);
             stmt.setInt(71, ac.denySpawnEgg ? 1 : 0);
             stmt.setInt(72, ac.denyWax ? 1 : 0);
+            stmt.setString(73, effectsToString(ac.badEffects));
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -10633,7 +10755,7 @@ public class AreaProtection implements Listener {
         try {
             // 白名单校验字段名（防SQL注入）
             java.util.Set<String> allowedFields = new java.util.HashSet<>(java.util.Arrays.asList(
-                "give_effects", "clear_effects", "clear_all_bad", "deny_all_effects",
+                "give_effects", "bad_effects", "clear_effects", "clear_all_bad", "deny_all_effects",
                 "deny_block_place", "deny_block_break", "deny_pvp", "deny_fall_damage",
                 "deny_hunger", "deny_all_damage", "deny_drop", "deny_mount", "deny_ender_pearl",
                 "deny_bow", "deny_potion", "deny_explosion", "deny_raid", "deny_fire_spread",
@@ -10852,22 +10974,26 @@ public class AreaProtection implements Listener {
             case "confiscate_msg":      ac.confiscateMsg = value; break;
             case "enforce_game_mode":   ac.enforceGameMode = value; break;
             // 复合字段（JSON 数组或管道格式 → List）
+            //   ★ 2026-10-04：负面效果拆到 bad_effects，PHP 推来的字段名同样是 bad_effects
             case "give_effects":
-                ac.giveEffects = parseEffectsString(value);
-                // ★ 2026-10-04 任务3：数量上限截断 + 等级原版封顶(1~255)
+            case "bad_effects": {
+                boolean isBad = "bad_effects".equals(field);
+                List<String[]> parsed = parseEffectsString(value);
+                // ★ 数量上限截断：增益与负面共用同一份 max_effects 预算（按合计算）
                 try {
                     int maxEff = getMaxGiveEffects(ac.owner);
-                    if (ac.giveEffects.size() > maxEff) {
+                    int otherCount = isBad ? ac.giveEffects.size() : ac.badEffects.size();
+                    int room = Math.max(0, maxEff - otherCount);
+                    if (parsed.size() > room) {
                         plugin.getLogger().warning("[防护] 领地 "
-                                + ac.name + " 增益效果 "
-                                + ac.giveEffects.size() + " 个超出上限 "
-                                + maxEff + "，已截断保留前 "
-                                + maxEff + " 个");
-                        ac.giveEffects = new java.util.ArrayList<>(
-                                ac.giveEffects.subList(0, maxEff));
+                                + ac.name + (isBad ? " 负面效果 " : " 增益效果 ")
+                                + parsed.size() + " 个超出上限 "
+                                + maxEff + "（另一类已占 " + otherCount
+                                + "），已截断保留前 " + room + " 个");
+                        parsed = new java.util.ArrayList<>(parsed.subList(0, room));
                     }
                     // ★ 药效等级封顶（2026-10-04 任务4）：逐个效果按「生存可获取上限 + 用户组配置」
-                    for (String[] ef : ac.giveEffects) {
+                    for (String[] ef : parsed) {
                         if (ef.length >= 2) {
                             try {
                                 int lv = Integer.parseInt(ef[1]);
@@ -10881,10 +11007,16 @@ public class AreaProtection implements Listener {
                         }
                     }
                 } catch (Exception ex) {
-                    plugin.getLogger().warning("[防护] give_effects 上限校验异常: "
+                    plugin.getLogger().warning("[防护] " + field + " 上限校验异常: "
                             + ex.getMessage());
                 }
+                if (isBad) {
+                    ac.badEffects = parsed;
+                } else {
+                    ac.giveEffects = parsed;
+                }
                 break;
+            }
             case "clear_effects":
                 ac.clearEffects.clear();
                 if (value != null && !value.isEmpty()) {
@@ -11371,10 +11503,11 @@ public class AreaProtection implements Listener {
                 }
             }
             // ★ 数量上限（2026-10-04 任务3）：普通玩家 5 个，用户组可覆盖
+            //   2026-10-04 负面拆出后，增益与负面共用同一份 max_effects 预算，故按合计判
             int maxEffCnt = getMaxGiveEffects(land.owner);
-            if (land.giveEffects.size() >= maxEffCnt) {
-                p.sendMessage("§c§l[添加增益效果] §f该领地增益效果已达上限 §e"
-                        + maxEffCnt + " §f个（按用户组配置），请先移除再添加");
+            if (land.giveEffects.size() + land.badEffects.size() >= maxEffCnt) {
+                p.sendMessage("§c§l[添加增益效果] §f效果已达上限 §e"
+                        + maxEffCnt + " §f个（增益+负面合计，按用户组配置），请先移除再添加");
                 return true;
             }
             String[] effRecord = {effName, String.valueOf(effLv), String.valueOf(effDur)};
@@ -11428,6 +11561,54 @@ public class AreaProtection implements Listener {
             }
             saveAreaToDb(land);
             if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 3);
+        } else if (inputType.startsWith("editBad_")) {
+            // ★ 编辑负面效果等级/时长: editBad_level_3 或 editBad_duration_3
+            //   （2026-10-04 负面从增益拆出，回写落到 badEffects 而不是 giveEffects）
+            String[] parts = inputType.split("_");
+            if (parts.length < 3) return true;
+            String editField = parts[1]; // level 或 duration
+            int idx;
+            try { idx = Integer.parseInt(parts[2]); } catch (Exception e) { return true; }
+            if (idx < 1 || idx > land.badEffects.size()) {
+                p.sendMessage("§c序号超出范围");
+                return true;
+            }
+            if (message.trim().equalsIgnoreCase("取消")) {
+                p.sendMessage("§7已取消编辑");
+                if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 6);
+                return true;
+            }
+            String[] eff = land.badEffects.get(idx - 1);
+            if ("level".equals(editField)) {
+                int newLevel;
+                try { newLevel = Integer.parseInt(message.trim()); } catch (Exception e) {
+                    p.sendMessage("§c请输入有效数字");
+                    return true;
+                }
+                int maxLvEdit = getEffectLevelCap(eff[0], land.owner);
+                if (newLevel < 1 || newLevel > maxLvEdit) {
+                    p.sendMessage("§c等级范围 1~" + maxLvEdit);
+                    p.sendMessage("§7上限说明: " + eff[0] + " 生存模式最高可获得 "
+                            + getSurvivalMaxLevel(eff[0]) + " 级");
+                    p.sendMessage("§7你当前领地可用上限 " + maxLvEdit + " 级（受用户组配置约束）");
+                    return true;
+                }
+                if (eff.length < 2) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, eff.length); eff = tmp; land.badEffects.set(idx - 1, eff); }
+                eff[1] = String.valueOf(newLevel);
+                p.sendMessage("§c§l[编辑负面] §f已将 §e" + eff[0] + " §f等级修改为 " + newLevel);
+            } else {
+                int newDur;
+                try { newDur = Integer.parseInt(message.trim()); } catch (Exception e) {
+                    p.sendMessage("§c请输入有效数字");
+                    return true;
+                }
+                if (newDur < 1 || newDur > 86400) { p.sendMessage("§c时长范围1~86400秒"); return true; }
+                if (eff.length < 3) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, Math.min(eff.length, 3)); eff = tmp; land.badEffects.set(idx - 1, eff); }
+                eff[2] = String.valueOf(newDur);
+                p.sendMessage("§c§l[编辑负面] §f已将 §e" + eff[0] + " §f时长修改为 " + newDur + "秒");
+            }
+            saveAreaToDb(land);
+            if (plugin.areaCLIManager != null) plugin.areaCLIManager.showEffectsManagement(p, landName, 6);
         } else if ("rename_land".equals(inputType)) {
             // ★ 领地改名输入处理
             if (message.trim().equals("取消") || message.trim().equals("0")) {
@@ -13050,6 +13231,14 @@ public class AreaProtection implements Listener {
         public List<String> clearEffects = new ArrayList<>();     // 清除单个效果名
         public boolean clearAllBadEffects = false;                // 清除所有负面+中性
         public List<String[]> giveEffects = new ArrayList<>();    // [效果名, 等级, 秒数]
+        /**
+         * ★ 负面效果独立列表（2026-10-04 用户要求从增益里拆出来）
+         *
+         * <p>结构同 {@link #giveEffects}：[效果名, 等级, 秒数]。原实现把所有效果
+         * （含缓慢/中毒/凋零等负面）全塞在 {@code giveEffects} 里，GUI 上也只能一把选，
+         * 负面与正面混排。拆开后 GUI 分两个子菜单、CLI 分两套指令、上限口径也各归各。</p>
+         */
+        public List<String[]> badEffects = new ArrayList<>();    // [效果名, 等级, 秒数]
         public List<String> punishCommands = new ArrayList<>();
         public boolean denyBlockPlace = false;
         public boolean denyBlockBreak = false;
