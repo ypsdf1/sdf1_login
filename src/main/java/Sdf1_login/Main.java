@@ -4119,9 +4119,170 @@ public class Main extends JavaPlugin
                 b.append(Component.newline());
                 b.append(hint);
             }
+
+            // 最后补一行「看得懂的实例」（权限门见 buildExampleLine）
+            Component example = buildExampleLine(e, rootLabel);
+            if (example != null) {
+                b.append(Component.newline());
+                b.append(example);
+            }
             return b.build();
         } catch (Throwable t) {
             getLogger().info("[命令报错] 中文化失败，降级为原版: " + t);
+            return null;
+        }
+    }
+
+
+    // =========================================================
+    // ★ 2026-10-04 第二轮：报错里补「最小标准实例 + 一句话用法」
+    //
+    //   用户原话：干巴巴的参数提示看不懂，
+    //   要的是 /title @a title {"text":"你好世界"} 向所有人发送一个大标题
+    //   这种「示例 + 一句话」的写法。
+    //
+    //   ★ 权限门（用户定案，别改）：
+    //     · 控制台  -> **无条件**展示
+    //     · 玩家    -> **必须 OP**（或显式授权
+    //                   sdf1.command.usageexample），否则普通玩家
+    //                   照着示例就能学走 give/op/execute 这类命令的
+    //                   完整写法，麻烦就大了
+    //     · 命令方块 -> 一律不给（它不是"管理员"）
+    // ========================================================= */
+
+    /** 指令根(小写、无命名空间) -> {最小标准示例, 一句话用法} */
+    private static final Map<String, String[]> CMD_EXAMPLES =
+            new HashMap<>();
+
+    static {
+        cmdExample("title",
+                "/title @a title {\"text\":\"你好世界\"}",
+                "向所有人显示一条大标题；类型可换 subtitle(副标题)、actionbar(操作栏)、times(时长)");
+        cmdExample("tellraw",
+                "/tellraw @a {\"text\":\"你好世界\"}",
+                "向所有人发送一条 JSON 文本消息，不带聊天框的说话人前缀");
+        cmdExample("execute",
+                "/execute as @a run say 你好",
+                "先把执行者换成 @a 再跑命令：as=由谁执行，run=执行什么，判断条件写 if/unless");
+        cmdExample("bossbar",
+                "/bossbar add demo:bar 100 {\"text\":\"血量\"}",
+                "新建一条满值 100 的 BOSS 血条，后面可用 set/remove/value 调整");
+        cmdExample("give", "/give @s diamond 64",
+                "给自己 64 个钻石，最后那个数字是数量");
+        cmdExample("summon", "/summon zombie ~ ~ ~",
+                "在脚下坐标生成一只僵尸，末尾还能接 NBT 数据");
+        cmdExample("effect", "/effect give @s speed 30 1",
+                "给自己 30 秒的速度 II；最后的数字是等级减 1，填 0 就是 I 级");
+        cmdExample("gamemode", "/gamemode creative @s",
+                "把自己切换成创造模式（survival / adventure / spectator 同理）");
+        cmdExample("tp", "/tp @s ~ ~10 ~",
+                "把自己传送到正上方 10 格，~ 表示相对当前坐标的偏移");
+        cmdExample("teleport", "/teleport @s ~ ~10 ~",
+                "把自己传送到正上方 10 格，~ 表示相对当前坐标的偏移");
+        cmdExample("setblock", "/setblock ~ ~ ~ stone",
+                "把自己所在位置的方块替换成石头");
+        cmdExample("fill", "/fill ~ ~ ~ ~ ~3 ~ stone",
+                "把自己到上方 3 格的这一长条区域全部填成石头");
+        cmdExample("kill", "/kill @e[type=zombie]",
+                "杀掉所有僵尸；@e 是全部实体，用 type= 只挑某一类");
+        cmdExample("time", "/time set day",
+                "把时间改成白天（night / midnight 同理）");
+        cmdExample("weather", "/weather clear",
+                "把天气改成晴天（rain 下雨、thunder 打雷）");
+        cmdExample("difficulty", "/difficulty easy",
+                "把难度改成简单（peaceful / normal / hard）");
+        cmdExample("gamerule", "/gamerule doDaylightCycle false",
+                "关掉昼夜自动更替，填 true 就是恢复");
+        cmdExample("scoreboard",
+                "/scoreboard objectives add demo dummy \"演示\"",
+                "新建一个名叫 demo 的计分项，dummy 表示只能手动加减");
+        cmdExample("team", "/team add 红队",
+                "新建一个名叫「红队」的队伍");
+        cmdExample("function", "/function demo:init",
+                "一次性执行数据包里 demo:init 这个函数里的全部命令");
+        cmdExample("particle", "/particle happy_villager ~ ~1 ~ 0 0 0 0.1 20",
+                "在头顶撒 20 个粒子；后面依次是 位置、扩散范围、速度、数量");
+        cmdExample("playsound",
+                "/playsound entity.player.levelup master @s ~ ~ ~ 1 1",
+                "给自己播一段升级音效，最后两个数字是音量和音调");
+        cmdExample("xp", "/xp add @s 100 levels",
+                "给自己加 100 级经验（写 points 加的才是经验条）");
+        cmdExample("experience", "/experience add @s 100 levels",
+                "给自己加 100 级经验（写 points 加的才是经验条）");
+        cmdExample("enchant", "/enchant @s sharpness 5",
+                "给手上拿着的武器附魔锋利 V");
+        cmdExample("clear", "/clear @s",
+                "清空自己的背包，后面可以只清某一类物品");
+        cmdExample("spawnpoint", "/spawnpoint @s ~ ~ ~",
+                "把自己的重生点设在当前位置");
+        cmdExample("worldborder", "/worldborder set 1000",
+                "把世界边界设成边长 1000 格");
+        cmdExample("msg", "/msg Steve 你好",
+                "私聊 Steve，只有他自己看得到");
+        cmdExample("tell", "/tell Steve 你好",
+                "私聊 Steve，只有他自己看得到");
+        cmdExample("kick", "/kick Steve 先休息一下",
+                "把 Steve 踢出服务器，后面那段字是踢人原因");
+        cmdExample("data", "/data get entity @s",
+                "读取自己的实体数据，后面还能跟字段路径取具体值");
+        cmdExample("tag", "/tag @s add 试用",
+                "给自己打一个名叫「试用」的标签");
+        cmdExample("damage", "/damage @s 4",
+                "让自己受到 4 点伤害，后面的数字是伤害值");
+        cmdExample("op", "/op Steve",
+                "把 Steve 提升成 OP 管理员");
+        cmdExample("item",
+                "/item replace entity @s weapon.mainhand with diamond",
+                "把主手上的物品直接换成钻石");
+    }
+
+    private static void cmdExample(String cmd, String example, String desc) {
+        CMD_EXAMPLES.put(cmd, new String[]{example, desc});
+    }
+
+    /**
+     * 「标准示例 + 一句话用法」这一行。
+     *
+     * <p><b>★ 权限门（2026-10-04 用户定案，勿改）：</b>
+     * <ul>
+     *   <li><b>控制台 = 无条件展示</b>（RCON 同理）</li>
+     *   <li><b>玩家 = 必须 OP</b>，或者显式拿到
+     *       {@code sdf1.command.usageexample} 权限 —— 否则普通玩家
+     *       照着示例就能学走 give / op / execute 的完整写法，麻烦大了</li>
+     *   <li><b>命令方块 = 一律不给</b>，它不是管理员</li>
+     * </ul>
+     *
+     * <p>没收录进 {@link #CMD_EXAMPLES} 的指令返回 null，
+     * 那种情况仍由「后面可填」那一行兜底。
+     */
+    private Component buildExampleLine(
+            org.bukkit.event.command.UnknownCommandEvent e, String rootLabel) {
+        try {
+            if (rootLabel == null || rootLabel.isEmpty()) return null;
+            String[] ex = CMD_EXAMPLES.get(
+                    rootLabel.toLowerCase(java.util.Locale.ROOT));
+            if (ex == null || ex.length < 2) return null;
+
+            org.bukkit.command.CommandSender sender = e.getSender();
+            boolean allowed;
+            if (sender instanceof Player) {
+                allowed = sender.isOp()
+                        || sender.hasPermission("minecraft.command.op")
+                        || sender.hasPermission("sdf1.command.usageexample");
+            } else if (sender instanceof org.bukkit.command.BlockCommandSender) {
+                allowed = false; // 命令方块不算管理员
+            } else {
+                allowed = true;  // 控制台 / RCON：无条件
+            }
+            if (!allowed) return null;
+
+            return Component.text()
+                    .append(Component.text("标准示例: ", NamedTextColor.GOLD))
+                    .append(Component.text(ex[0], NamedTextColor.WHITE))
+                    .append(Component.text("   " + ex[1],
+                            NamedTextColor.GRAY))
+                    .build();
+        } catch (Throwable t) {
             return null;
         }
     }
