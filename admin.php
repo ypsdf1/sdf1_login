@@ -3105,12 +3105,17 @@ function showAddUserGroup() {
                 <input id="ugMaxLands" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
             <div>
-                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果上限(5=普通玩家, &lt;=0=不限)</label>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果数量上限(5=普通玩家, &lt;=0=不限)</label>
                 <input id="ugMaxEffects" type="number" value="5" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">药效等级上限(默认256=原版)</label>
+                <input id="ugMaxEffectLevel" type="number" value="256" min="1" max="256" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
         </div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:10px">药效强度原版范围 1~256，普通玩家（未加入任何用户组）固定按 256 封顶，严禁超限。</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
             <div>
                 <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=跟随默认)</label>
@@ -3150,6 +3155,7 @@ async function doAddUserGroup() {
     const price = document.getElementById('ugPrice')?.value || '-1';
     const maxLands = document.getElementById('ugMaxLands')?.value || '-1';
     const maxEffects = document.getElementById('ugMaxEffects')?.value || '5';
+    const maxEffectLevel = document.getElementById('ugMaxEffectLevel')?.value || '256';
     const homeLimit = document.getElementById('ugHomeLimit')?.value || '0';
     const joinPrice = document.getElementById('ugJoinPrice')?.value || '0';
     const renewPrice = document.getElementById('ugRenewPrice')?.value || '0';
@@ -3164,7 +3170,7 @@ async function doAddUserGroup() {
     try {
         const res = await apiCall('update_user_group', {
             name, display_name: displayName, display_color: color,
-            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects,
+            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects, max_effect_level: maxEffectLevel,
             home_limit: homeLimit, join_price: joinPrice, renew_price: renewPrice,
             duration_minutes: duration, auto_renew: autoRenew,
             default_perms: '{}'
@@ -3211,9 +3217,12 @@ async function showEditUserGroup(groupName) {
             <input id="eugMaxLands" type="number" value="${g.max_lands}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
         html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果上限(&lt;=0=不限)</label>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果数量上限(&lt;=0=不限)</label>
             <input id="eugMaxEffects" type="number" value="${g.max_effects ?? 5}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">药效等级上限(默认256=原版)</label>
+            <input id="eugMaxEffectLevel" type="number" min="1" max="256" value="${(g.max_effect_level > 0 ? g.max_effect_level : 256)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
+        html += `<div style="font-size:11px;color:var(--dim);margin:-4px 0 12px 0">说明：药效强度原版范围 1~256，普通玩家（未加入任何用户组）固定按 256 封顶，严禁超限。加入本组后按上面的值封顶，填 256 即不额外限制。</div>`;
         html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=默认)</label>
             <input id="eugHomeLimit" type="number" value="${g.home_limit || 0}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
@@ -3259,6 +3268,7 @@ async function doEditUserGroup(groupName) {
     const price = document.getElementById('eugPrice')?.value || '-1';
     const maxLands = document.getElementById('eugMaxLands')?.value || '-1';
     const maxEffects = document.getElementById('eugMaxEffects')?.value || '5';
+    const maxEffectLevel = document.getElementById('eugMaxEffectLevel')?.value || '256';
     const homeLimit = document.getElementById('eugHomeLimit')?.value || '0';
     const duration = document.getElementById('eugDuration')?.value || '0';
     const joinPrice = document.getElementById('eugJoinPrice')?.value || '0';
@@ -3274,7 +3284,7 @@ async function doEditUserGroup(groupName) {
     try {
         const res = await apiCall('update_user_group', {
             name: groupName, display_name: displayName, display_color: color,
-            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects,
+            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects, max_effect_level: maxEffectLevel,
             home_limit: homeLimit, duration_minutes: duration,
             join_price: joinPrice, renew_price: renewPrice, auto_renew: autoRenew,
             default_perms: JSON.stringify(perms)

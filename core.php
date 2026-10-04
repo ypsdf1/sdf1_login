@@ -645,6 +645,7 @@ function initTables(SQLite3 $db) {
             land_price_per_sqm INTEGER DEFAULT -1,
             max_lands INTEGER DEFAULT -1,
             max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
             home_limit INTEGER DEFAULT 0,
             join_price INTEGER DEFAULT 0,
             auto_renew INTEGER DEFAULT 0,

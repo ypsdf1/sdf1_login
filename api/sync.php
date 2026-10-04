@@ -914,6 +914,7 @@ function syncUserGroups() {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -936,6 +937,7 @@ function syncUserGroups() {
         'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
+        'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -946,10 +948,10 @@ function syncUserGroups() {
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
-         land_price_per_sqm, max_lands, max_effects, home_limit, join_price, auto_renew,
+         land_price_per_sqm, max_lands, max_effects, max_effect_level, home_limit, join_price, auto_renew,
          renew_price, duration_minutes, default_perms, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
-                :price, :maxlands, :maxeffects, :homelimit, :joinprice, :autorenew,
+                :price, :maxlands, :maxeffects, :maxeffectlevel, :homelimit, :joinprice, :autorenew,
                 :renewprice, :duration, :perms, :synced)");
     $count = 0;
     foreach ($groups as $g) {
@@ -961,6 +963,10 @@ function syncUserGroups() {
         $stmt->bindValue(':price', (int)($g['land_price_per_sqm'] ?? -1), SQLITE3_INTEGER);
         $stmt->bindValue(':maxlands', (int)($g['max_lands'] ?? -1), SQLITE3_INTEGER);
         $stmt->bindValue(':maxeffects', (int)($g['max_effects'] ?? 5), SQLITE3_INTEGER);
+        // ★ 药效等级上限（2026-10-04 任务4）：<=0 归一到原版上限 256
+        $mel = (int)($g['max_effect_level'] ?? 256);
+        if ($mel <= 0 || $mel > 256) $mel = 256;
+        $stmt->bindValue(':maxeffectlevel', $mel, SQLITE3_INTEGER);
         $stmt->bindValue(':homelimit', (int)($g['home_limit'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':joinprice', (int)($g['join_price'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':autorenew', (int)($g['auto_renew'] ?? 0), SQLITE3_INTEGER);

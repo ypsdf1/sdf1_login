@@ -1680,6 +1680,7 @@ function getLandMaxEffects($db, $land) {
             land_price_per_sqm INTEGER DEFAULT -1,
             max_lands INTEGER DEFAULT -1,
             max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
             home_limit INTEGER DEFAULT 0,
             join_price INTEGER DEFAULT 0,
             auto_renew INTEGER DEFAULT 0,
@@ -1706,6 +1707,33 @@ function getLandMaxEffects($db, $land) {
         if ($row && $row['max_effects'] !== null) {
             $v = (int)$row['max_effects'];
             return $v <= 0 ? PHP_INT_MAX : $v;
+        }
+    } catch (\Throwable $e) { /* 表缺失等 */ }
+    return $fallback;
+}
+
+/**
+ * ★ 领地增益【药效等级上限】（2026-10-04 任务4）
+ * 取领地所有者所属最高优先级用户组的 max_effect_level，默认 256（原版最大药效强度）。
+ * <=0 或非法值一律归一到 256 —— 原版 /effect 的 amplifier 硬上限是 255（= 强度256），
+ * 任何情况下都不允许突破原版。
+ */
+function getLandMaxEffectLevel($db, $land) {
+    $fallback = 256;
+    $owner = $land['owner'] ?? '';
+    if (empty($owner)) return $fallback;
+    try {
+        $st = $db->prepare("SELECT g.max_effect_level FROM web_user_group_members m
+            LEFT JOIN web_user_groups g ON m.group_name = g.group_name
+            WHERE m.player_name = :p AND (m.expiry_time = 0 OR m.expiry_time > :now)
+            ORDER BY g.priority DESC LIMIT 1");
+        $st->bindValue(':p', $owner, SQLITE3_TEXT);
+        $st->bindValue(':now', time(), SQLITE3_INTEGER);
+        $row = $st->execute()->fetchArray(SQLITE3_ASSOC);
+        if ($row && $row['max_effect_level'] !== null) {
+            $v = (int)$row['max_effect_level'];
+            if ($v <= 0 || $v > $fallback) return $fallback;
+            return $v;
         }
     } catch (\Throwable $e) { /* 表缺失等 */ }
     return $fallback;
@@ -1772,18 +1800,20 @@ function handleUpdateLandField($db, $playerName, $post) {
         $arr = json_decode($value, true);
         if (is_array($arr)) {
             if ($field === 'give_effects') {
-                // ★ 2026-10-04 任务3：数量上限（按领地所有者用户组 max_effects，默认5）+ 等级封顶1~255
+                // ★ 2026-10-04 任务3：数量上限（按领地所有者用户组 max_effects，默认5）
+                // ★ 2026-10-04 任务4：等级封顶（按 max_effect_level，普通玩家=原版256）
                 $maxEff = getLandMaxEffects($db, $land);
                 if (count($arr) > $maxEff) {
                     $arr = array_slice($arr, 0, $maxEff);
                 }
+                $maxLv = getLandMaxEffectLevel($db, $land);
                 // [["夜视","1","99999"]] → "夜视:1:99999"
                 $parts = [];
                 foreach ($arr as $e) {
                     if (is_array($e)) {
                         if (isset($e[1]) && $e[1] !== '') {
                             $lv = (int)$e[1];
-                            $e[1] = (string)max(1, min(255, $lv));
+                            $e[1] = (string)max(1, min($maxLv, $lv));
                         }
                         $parts[] = implode(':', $e);
                     } else {
@@ -2371,6 +2401,7 @@ function handleListUserGroups($db) {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2392,6 +2423,7 @@ function handleListUserGroups($db) {
         'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
+        'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -2430,6 +2462,7 @@ function handleUpdateUserGroup($db, $data) {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2446,6 +2479,9 @@ function handleUpdateUserGroup($db, $data) {
     $pricePerSqm = (int)($data['land_price_per_sqm'] ?? -1);
     $maxLands = (int)($data['max_lands'] ?? -1);
     $maxEffects = (int)($data['max_effects'] ?? 5);   // 领地增益效果上限，<=0=不限
+    // ★ 药效等级上限：<=0 或超过原版 256 一律归一到 256
+    $maxEffectLevel = (int)($data['max_effect_level'] ?? 256);
+    if ($maxEffectLevel <= 0 || $maxEffectLevel > 256) $maxEffectLevel = 256;
     $homeLimit = (int)($data['home_limit'] ?? 0);
     $joinPrice = (int)($data['join_price'] ?? 0);
     $renewPrice = (int)($data['renew_price'] ?? 0);
@@ -2455,9 +2491,9 @@ function handleUpdateUserGroup($db, $data) {
 
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
-         land_price_per_sqm, max_lands, max_effects, home_limit, join_price, auto_renew, renew_price, duration_minutes, default_perms, synced_at)
+         land_price_per_sqm, max_lands, max_effects, max_effect_level, home_limit, join_price, auto_renew, renew_price, duration_minutes, default_perms, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
-                :price, :maxlands, :maxEffects, :homeLimit, :joinPrice, :autoRenew, :renewPrice, :duration, :perms, :synced)");
+                :price, :maxlands, :maxEffects, :maxEffectLevel, :homeLimit, :joinPrice, :autoRenew, :renewPrice, :duration, :perms, :synced)");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':display', $displayName, SQLITE3_TEXT);
     $stmt->bindValue(':color', $displayColor, SQLITE3_TEXT);
@@ -2466,6 +2502,7 @@ function handleUpdateUserGroup($db, $data) {
     $stmt->bindValue(':price', $pricePerSqm, SQLITE3_INTEGER);
     $stmt->bindValue(':maxlands', $maxLands, SQLITE3_INTEGER);
     $stmt->bindValue(':maxEffects', $maxEffects, SQLITE3_INTEGER);
+    $stmt->bindValue(':maxEffectLevel', $maxEffectLevel, SQLITE3_INTEGER);
     $stmt->bindValue(':homeLimit', $homeLimit, SQLITE3_INTEGER);
     $stmt->bindValue(':joinPrice', $joinPrice, SQLITE3_INTEGER);
     $stmt->bindValue(':autoRenew', $autoRenew, SQLITE3_INTEGER);
@@ -2654,6 +2691,7 @@ function handleGetPlayerGroups($db, $player) {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2673,6 +2711,7 @@ function handleGetPlayerGroups($db, $player) {
         'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
+        'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -2697,6 +2736,7 @@ function handleGetPlayerGroups($db, $player) {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2733,6 +2773,7 @@ function handleListAvailableGroups($db) {
         land_price_per_sqm INTEGER DEFAULT -1,
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
+        max_effect_level INTEGER DEFAULT 256,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2750,6 +2791,7 @@ function handleListAvailableGroups($db) {
         'renew_price' => 'ALTER TABLE web_user_groups ADD COLUMN renew_price INTEGER DEFAULT 0',
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
+        'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
