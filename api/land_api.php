@@ -1714,9 +1714,11 @@ function getLandMaxEffects($db, $land) {
 
 /**
  * ★ 领地增益【药效等级上限】（2026-10-04 任务4）
- * 取领地所有者所属最高优先级用户组的 max_effect_level，默认 256（原版最大药效强度）。
- * <=0 或非法值一律归一到 256 —— 原版 /effect 的 amplifier 硬上限是 255（= 强度256），
- * 任何情况下都不允许突破原版。
+ * 取领地所有者所属最高优先级用户组的 max_effect_level（用户组软顶），默认 256。
+ * <=0 或非法值一律归一到 256。
+ * ★ 注意：本函数只是「用户组软顶」，单个效果的真正封顶还要叠加
+ *   getSurvivalMaxLevel() 的生存可获取上限（例：海豚的恩惠最多 1 级），
+ *   组合逻辑见 getEffectLevelCap()。
  */
 function getLandMaxEffectLevel($db, $land) {
     $fallback = 256;
@@ -1738,6 +1740,98 @@ function getLandMaxEffectLevel($db, $land) {
     } catch (\Throwable $e) { /* 表缺失等 */ }
     return $fallback;
 }
+
+/**
+ * ★ 生存模式可获取的最大等级（2026-10-04 任务4 用户纠正）
+ *
+ * 口径：不是 /effect 的作弊上限（amplifier 255 = 强度 256），
+ *      而是生存模式下正常探索、合成、建造能拿到的最大等级。
+ *      例：抗性提升靠信标最高 2 级；海豚的恩惠只有潮涌能量块一个来源，最高 1 级。
+ *
+ * 与 Java 端 AreaProtection.getSurvivalMaxLevel() 逐项一致，改动请同步。
+ *
+ * @param string $name 效果名（中文名或英文 ID）
+ * @return int 生存可获取的最大等级，未知效果返回 1（宁可少给）
+ */
+function getSurvivalMaxLevel($name) {
+    if ($name === null) return 1;
+    $clean = trim($name);
+    $clean = preg_replace('/^[\s"\'\\\\]+|[\s"\'\\\\]+$/', '', $clean);
+    if (mb_substr($clean, -6) === '效果') {
+        $clean = mb_substr($clean, 0, mb_strlen($clean) - 6);
+    }
+    if ($clean === '') return 1;
+    switch ($clean) {
+        // ===== 信标类主效果：4级金字塔可选「提升至II」→ 2；无药水的固定 1 =====
+        case '迅捷': case '速度': case 'speed': case 'SPEED':
+            return 2;
+        case '急迫': case 'haste': case 'HASTE':
+            return 2;
+        case '抗性提升': case '抗性': case 'resistance': case 'RESISTANCE':
+            return 2;
+        case '跳跃提升': case '跳跃': case 'jump_boost': case 'JUMP_BOOST': case 'JUMP':
+            return 2;
+        case '力量': case 'strength': case 'STRENGTH': case 'INCREASE_DAMAGE':
+            return 2;
+        // ===== 有药水且可升 II =====
+        case '瞬间治疗': case '治疗': case 'instant_health': case 'INSTANT_HEALTH': case 'HEAL':
+        case '瞬间伤害': case '伤害': case 'instant_damage': case 'INSTANT_DAMAGE': case 'HARM':
+        case '缓慢': case 'slowness': case 'SLOWNESS':
+        case '挖掘疲劳': case 'mining_fatigue': case 'MINING_FATIGUE':
+        case '中毒': case 'poison': case 'POISON':
+        case '生命恢复': case '再生': case '回复': case 'regeneration': case 'REGENERATION':
+            return 2;
+        // ===== 生存只有单一来源、等级恒为 1 =====
+        case '海豚的恩惠': case '海豚恩惠': case 'dolphins_grace': case 'DOLPHINS_GRACE':
+        case '潮涌能量': case 'conduit_power': case 'CONDUIT_POWER':
+        case '抗火': case 'fire_resistance': case 'FIRE_RESISTANCE':
+        case '水下呼吸': case 'water_breathing': case 'WATER_BREATHING':
+        case '隐身': case 'invisibility': case 'INVISIBILITY':
+        case '夜视': case 'night_vision': case 'NIGHT_VISION':
+        case '缓降': case 'slow_falling': case 'SLOW_FALLING':
+        case '虚弱': case 'weakness': case 'WEAKNESS':
+        case '反胃': case '恶心': case 'nausea': case 'NAUSEA':
+        case '饥饿': case 'hunger': case 'HUNGER':
+        case '凋零': case 'wither': case 'WITHER':
+        case '失明': case 'blindness': case 'BLINDNESS':
+        case '黑暗': case 'darkness': case 'DARKNESS':
+        case '发光': case 'glowing': case 'GLOWING':
+        case '飘浮': case '悬浮': case 'levitation': case 'LEVITATION':
+        case '不祥之兆': case 'bad_omen': case 'BAD_OMEN':
+        case '试炼之兆': case 'trial_omen': case 'TRIAL_OMEN':
+        case '袭击之兆': case 'raid_omen': case 'RAID_OMEN':
+        case '蓄风': case 'wind_charged': case 'WIND_CHARGED':
+        case '盘丝': case 'weaving': case 'WEAVING':
+        case '渗浆': case 'oozing': case 'OOZING':
+        case '寄生': case 'infested': case 'INFESTED':
+        case '村庄英雄': case 'hero_of_the_village': case 'HERO_OF_THE_VILLAGE':
+        case '鹦鹉螺之息': case 'breath_of_the_nautilus': case 'BREATH_OF_THE_NAUTILUS':
+        // ===== 生存无来源，仅命令/插件可得 =====
+        case '生命提升': case 'health_boost': case 'HEALTH_BOOST':
+        case '伤害吸收': case 'absorption': case 'ABSORPTION':
+        case '饱和': case 'saturation': case 'SATURATION':
+        case '幸运': case 'luck': case 'LUCK':
+        case '霉运': case 'unluck': case 'UNLUCK':
+        default:
+            return 1;
+    }
+}
+
+/**
+ * ★ 单个效果的最终封顶：min(生存可获取上限, 该领地用户组配置的全局上限)
+ *
+ * @param string $name   效果名
+ * @param array  $land   领地行
+ * @param SQLite3 $db
+ * @return int 药效强度上限，恒 >=1
+ */
+function getEffectLevelCap($db, $land, $name) {
+    $survival = getSurvivalMaxLevel($name);
+    $group = getLandMaxEffectLevel($db, $land);
+    if ($group < $survival) return $group < 1 ? 1 : $group;
+    return $survival;
+}
+
 
 function handleUpdateLandField($db, $playerName, $post) {
     $name = $post['name'] ?? '';
@@ -1806,13 +1900,14 @@ function handleUpdateLandField($db, $playerName, $post) {
                 if (count($arr) > $maxEff) {
                     $arr = array_slice($arr, 0, $maxEff);
                 }
-                $maxLv = getLandMaxEffectLevel($db, $land);
                 // [["夜视","1","99999"]] → "夜视:1:99999"
                 $parts = [];
                 foreach ($arr as $e) {
                     if (is_array($e)) {
                         if (isset($e[1]) && $e[1] !== '') {
                             $lv = (int)$e[1];
+                            // ★ 逐个效果封顶：min(生存可获取上限, 用户组上限)
+                            $maxLv = getEffectLevelCap($db, $land, isset($e[0]) ? $e[0] : '');
                             $e[1] = (string)max(1, min($maxLv, $lv));
                         }
                         $parts[] = implode(':', $e);

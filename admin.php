@@ -3115,7 +3115,7 @@ function showAddUserGroup() {
                 <input id="ugMaxEffectLevel" type="number" value="256" min="1" max="256" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
         </div>
-        <div style="font-size:11px;color:var(--dim);margin-bottom:10px">药效强度原版范围 1~256，普通玩家（未加入任何用户组）固定按 256 封顶，严禁超限。</div>
+        <div style="font-size:11px;color:var(--dim);margin-bottom:10px">普通玩家按各效果的生存可获取上限封顶（如抗性提升最高 2 级、海豚的恩惠最高 1 级），严禁超限。填 256 表示不额外限制。</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
             <div>
                 <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=跟随默认)</label>
@@ -3222,7 +3222,7 @@ async function showEditUserGroup(groupName) {
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">药效等级上限(默认256=原版)</label>
             <input id="eugMaxEffectLevel" type="number" min="1" max="256" value="${(g.max_effect_level > 0 ? g.max_effect_level : 256)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
-        html += `<div style="font-size:11px;color:var(--dim);margin:-4px 0 12px 0">说明：药效强度原版范围 1~256，普通玩家（未加入任何用户组）固定按 256 封顶，严禁超限。加入本组后按上面的值封顶，填 256 即不额外限制。</div>`;
+        html += `<div style="font-size:11px;color:var(--dim);margin:-4px 0 12px 0">说明：普通玩家（未加入任何用户组）按各效果的<b>生存可获取上限</b>封顶，严禁超限（如抗性提升最高 2 级、海豚的恩惠最高 1 级）。加入本组后可在此基础上放宽，填 256 表示不额外限制，但仍不会突破生存上限。</div>`;
         html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=默认)</label>
             <input id="eugHomeLimit" type="number" value="${g.home_limit || 0}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
