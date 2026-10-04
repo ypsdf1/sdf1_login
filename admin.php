@@ -2255,7 +2255,7 @@ async function viewAdminTicket(id) {
             <div style="font-size:13px;color:var(--dim);margin-bottom:12px">
                 类型: ${typeMap[t.type]||t.type} | 提交者: ${escAdmHtml(t.requester)} | 处理人: ${t.assigned_to ? escAdmHtml(t.assigned_to) : '未分配'} | 时间: ${date}
             </div>
-            <div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6">${adminRenderMd(t.description || '无描述')}</div>`;
+            <div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px;line-height:1.6">${adminRenderMd(applyTicketImgs(t.description || '无描述', t.images))}</div>`;
 
         // 驳回原因
         if (t.reject_reason) {
@@ -2380,6 +2380,12 @@ function adminCreateTicketUI() {
             <textarea id="admNewDesc" rows="4" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px;resize:vertical;font-family:monospace" placeholder="工单描述"></textarea>
         </div>
         <div style="margin-bottom:10px">
+            <label style="font-size:12px;color:var(--dim)">附件图片（最多 3 张，png/jpg，≤2048K）</label>
+            <input type="file" id="admNewImg" accept=".png,.jpg,image/png,image/jpeg" multiple onchange="adminUploadTicketImage(this)" style="font-size:12px;margin-top:4px">
+            <div id="admImgList" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"></div>
+            <p id="admImgMsg" style="color:var(--red);font-size:11px;margin-top:4px"></p>
+        </div>
+        <div style="margin-bottom:10px">
             <label style="font-size:12px;color:var(--dim)">派发服务商（可选）</label>
             <input id="admNewProvider" style="width:100%;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:13px;margin-top:4px" placeholder="服务商玩家名（留空则进入抢单大厅）">
         </div>
@@ -2392,6 +2398,64 @@ function adminCreateTicketUI() {
     c.innerHTML = html;
 }
 
+// ===== 管理端创建工单附件图（session 认证，无需 token）=====
+let admImages = [];
+
+async function adminUploadTicketImage(input) {
+    const msg = document.getElementById('admImgMsg');
+    if (!input.files || !input.files.length) return;
+    const files = Array.from(input.files);
+    input.value = '';
+    for (const file of files) {
+        if (admImages.length >= 3) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '最多只能上传 3 张图片'; } break; }
+        const ext = (file.name.split('.').pop() || '').toLowerCase();
+        if (ext !== 'png' && ext !== 'jpg') { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '仅支持 png / jpg：' + file.name; } continue; }
+        if (file.size > 2048 * 1024) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '超过 2048K：' + file.name; } continue; }
+        if (msg) { msg.style.color = 'var(--dim)'; msg.textContent = '上传中… ' + file.name; }
+        try {
+            const url = new URL('api/ticket.php', location.href);
+            url.searchParams.set('action', 'upload_image');
+            const fd = new FormData();
+            fd.append('image', file, file.name);
+            const res = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+            const data = await res.json();
+            if (!data.success) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = data.message; } continue; }
+            admImages.push(data.data.url);
+            renderAdmImgs();
+            const fi = document.getElementById('admNewImg');
+            if (fi) fi.disabled = admImages.length >= 3;
+            if (msg) { msg.style.color = 'var(--green)'; msg.textContent = '已上传 ' + admImages.length + '/3 张'; }
+        } catch (e) {
+            if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '上传失败: ' + e.message; }
+        }
+    }
+}
+
+function renderAdmImgs() {
+    const box = document.getElementById('admImgList');
+    if (!box) return;
+    box.innerHTML = admImages.map((u, i) =>
+        `<div style="position:relative;width:64px;height:64px;border:1px solid var(--border);border-radius:4px;overflow:hidden">
+            <img src="${escAdmHtml(u)}" style="width:100%;height:100%;object-fit:cover">
+            <span style="position:absolute;left:0;bottom:0;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 4px">图片${i + 1}</span>
+        </div>`).join('');
+}
+
+// 详情渲染：[图片N] 占位符 -> markdown 图片；未被引用的图片补在末尾
+function applyTicketImgs(desc, images) {
+    let out = String(desc || '');
+    if (!images || !images.length) return out;
+    const used = new Array(images.length).fill(false);
+    out = out.replace(/\[图片(\d+)\]/g, function(m, n) {
+        const i = parseInt(n, 10) - 1;
+        if (i >= 0 && i < images.length && !used[i]) { used[i] = true; return '![](' + images[i] + ')'; }
+        return m;
+    });
+    const left = images.filter(function(u, k) { return !used[k]; });
+    if (left.length) out += (out ? '\n\n' : '') + left.map(function(u) { return '![](' + u + ')'; }).join('\n\n');
+    return out;
+}
+
 async function adminSubmitCreateTicket() {
     const type = document.getElementById('admNewType').value;
     const title = document.getElementById('admNewTitle').value.trim();
@@ -2402,9 +2466,13 @@ async function adminSubmitCreateTicket() {
     try {
         const url = new URL('api/ticket.php', location.href);
         url.searchParams.set('action', 'admin_create');
-        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({type, title, description: desc, provider})});
+        const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, credentials:'same-origin', body: JSON.stringify({type, title, description: desc, provider, images: admImages})});
         const data = await res.json();
-        if (data.success) { loadTicketList(document.getElementById('C')); } else { errEl.textContent = data.message; }
+        if (data.success) {
+            admImages = [];                                   // 已创建，附件清空
+            const fi = document.getElementById('admNewImg'); if (fi) fi.disabled = false;
+            loadTicketList(document.getElementById('C'));
+        } else { errEl.textContent = data.message; }
     } catch (e) { errEl.textContent = '创建失败: ' + e.message; }
 }
 

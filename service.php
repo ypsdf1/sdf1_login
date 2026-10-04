@@ -274,6 +274,21 @@ async function loadMyProviderTickets() {
     } catch (e) { el.innerHTML = `<p style="color:var(--red)">加载失败: ${e.message}</p>`; }
 }
 
+// 详情渲染：[图片N] 占位符 -> markdown 图片；未被引用的图片补在末尾
+function applyTicketImgs(desc, images) {
+    let out = String(desc || '');
+    if (!images || !images.length) return out;
+    const used = new Array(images.length).fill(false);
+    out = out.replace(/\[图片(\d+)\]/g, function(m, n) {
+        const i = parseInt(n, 10) - 1;
+        if (i >= 0 && i < images.length && !used[i]) { used[i] = true; return '![](' + images[i] + ')'; }
+        return m;
+    });
+    const left = images.filter(function(u, k) { return !used[k]; });
+    if (left.length) out += (out ? '\n\n' : '') + left.map(function(u) { return '![](' + u + ')'; }).join('\n\n');
+    return out;
+}
+
 async function viewSPTicket(id, from) {
     const el = document.getElementById('spContent');
     el.innerHTML = '<p style="color:var(--dim)">加载中...</p>';
@@ -305,7 +320,7 @@ async function viewSPTicket(id, from) {
             </div>
             <div style="background:rgba(63,185,80,0.05);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px">
                 <div style="color:var(--dim);font-size:11px;margin-bottom:4px">描述</div>
-                <div class="md-content">${spRenderMd(t.description || '无描述')}</div>
+                <div class="md-content">${spRenderMd(applyTicketImgs(t.description || '无描述', t.images))}</div>
             </div>`;
 
         if (t.reject_reason) {

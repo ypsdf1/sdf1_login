@@ -612,6 +612,7 @@ function initTables(SQLite3 $db) {
             assigned_to TEXT DEFAULT '',
             title TEXT NOT NULL,
             description TEXT DEFAULT '',
+            images TEXT DEFAULT '[]',
             reject_reason TEXT DEFAULT '',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
@@ -628,6 +629,11 @@ function initTables(SQLite3 $db) {
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_status ON web_tickets(status)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_tickets_assigned ON web_tickets(assigned_to)");
         $db->exec("CREATE INDEX IF NOT EXISTS idx_web_ticket_replies_ticket ON web_ticket_replies(ticket_id)");
+
+        // ★ 迁移：确保web_tickets有images列（工单附件图URL数组JSON，2026-10-04 新增）
+        try {
+            $db->exec("ALTER TABLE web_tickets ADD COLUMN images TEXT DEFAULT '[]'");
+        } catch (Exception $e) { /* 列已存在 */ }
 
         // ★ 用户组相关表（从handler函数中提取到这里统一创建，避免并发请求锁竞争）
         $db->exec("CREATE TABLE IF NOT EXISTS web_user_groups (

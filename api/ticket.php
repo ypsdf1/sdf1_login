@@ -25,6 +25,8 @@ register_shutdown_function(function() {
 });
 
 require_once __DIR__ . '/../core.php';
+// 工单附件图：兰空图床客户端（本文件不含敏感值，凭据在 lsky_keys.php）
+require_once __DIR__ . '/../lsky.php';
 
 if (session_status() === PHP_SESSION_NONE) { session_start(); }
 
@@ -55,6 +57,7 @@ switch ($action) {
     case 'complete':    ticketProviderComplete(); break;
 
     // ===== 通用 =====
+    case 'upload_image': ticketUploadImage(); break;
     case 'providers':   ticketProviders(); break;
     case 'provider_check': ticketProviderCheck(); break;
 
@@ -148,6 +151,93 @@ function getServiceProviderRole($playerName) {
     }
 }
 
+// ★ 单张工单附件图上限
+define('TICKET_MAX_IMAGES', 3);
+
+/**
+ * 读取并校验请求里的 images 参数（数组或 JSON 字符串均可），返回 URL 列表。
+ * 每个 URL 必须以自家图床前缀开头（LSKY_ALLOWED_HOST_PREFIX），最多 3 张。
+ */
+function normalizeTicketImages() {
+    $raw = getParam('images', []);
+    if (is_string($raw)) $raw = json_decode($raw, true);
+    if ($raw === null || $raw === '') $raw = [];
+    if (!is_array($raw)) error('images 参数格式错误');
+    $prefix = LSKY_ALLOWED_HOST_PREFIX;
+    $out = [];
+    foreach ($raw as $u) {
+        if (!is_string($u)) error('图片地址格式错误');
+        $u = trim($u);
+        if ($u === '') continue;
+        if (strpos($u, $prefix) !== 0) error('不支持的图片地址（仅接受自家图床）');
+        $out[] = $u;
+        if (count($out) >= TICKET_MAX_IMAGES) break;
+    }
+    return $out;
+}
+
+function encodeTicketImages(array $list) {
+    return json_encode(array_values($list), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+function decodeTicketImages($raw) {
+    if (!is_string($raw) || $raw === '') return [];
+    $d = json_decode($raw, true);
+    return is_array($d) ? $d : [];
+}
+
+/**
+ * 上传工单附件图片：转存自家兰空图床，返回可直接引用的 URL。
+ * 认证：管理后台 session 或用户 token（getAuthUser）。
+ * 限制：仅 png/jpg、单张 ≤2048K、内容必须与后缀一致；同会话每分钟最多 12 次（防刷）。
+ */
+function ticketUploadImage() {
+    getAuthUser();
+
+    // 简单限流：同一会话 1 分钟内最多 12 张
+    $now = time();
+    $slot = isset($_SESSION['lsky_up']) && is_array($_SESSION['lsky_up']) ? $_SESSION['lsky_up'] : ['t' => 0, 'n' => 0];
+    if ($now - (int)$slot['t'] > 60) $slot = ['t' => $now, 'n' => 0];
+    if ((int)$slot['n'] >= 12) error('图片上传太频繁，请稍后再试');
+    $slot['n']++;
+    $_SESSION['lsky_up'] = $slot;
+
+    if (empty($_FILES) || empty($_FILES['image'])) {
+        error('未收到图片文件（表单字段名必须是 image）');
+    }
+    $f = $_FILES['image'];
+    if ((int)$f['error'] !== UPLOAD_ERR_OK) {
+        $msgs = [
+            UPLOAD_ERR_INI_SIZE   => '图片超过服务器单文件大小上限',
+            UPLOAD_ERR_FORM_SIZE  => '图片超过表单大小上限',
+            UPLOAD_ERR_PARTIAL    => '图片上传中断，请重试',
+            UPLOAD_ERR_NO_FILE    => '未选择文件',
+            UPLOAD_ERR_NO_TMP_DIR => '服务器临时目录缺失',
+            UPLOAD_ERR_CANT_WRITE => '服务器写入临时文件失败',
+        ];
+        $m = isset($msgs[$f['error']]) ? $msgs[$f['error']] : ('上传错误码 ' . $f['error']);
+        error($m);
+    }
+    // 后缀：仅 png / jpg
+    $orig = basename((string)$f['name']);
+    $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
+    if ($ext !== 'png' && $ext !== 'jpg') error('仅支持 png / jpg 格式');
+    // 大小：≤2048K
+    if ((int)$f['size'] > 2048 * 1024) error('图片不能超过 2048K');
+    if (!is_uploaded_file($f['tmp_name'])) error('非法上传');
+    // 内容真实校验：防伪造后缀上传任意文件
+    $info = @getimagesize($f['tmp_name']);
+    if ($info === false) error('无法识别的图片内容');
+    $itype = (int)$info[2];
+    if ($ext === 'png' && $itype !== IMAGETYPE_PNG) error('文件内容与 .png 后缀不符');
+    if ($ext === 'jpg' && $itype !== IMAGETYPE_JPEG) error('文件内容与 .jpg 后缀不符');
+
+    $r = lskyUploadFile($f['tmp_name'], $orig);
+    if (empty($r['ok'])) error('图片上传失败: ' . (isset($r['msg']) && $r['msg'] !== '' ? $r['msg'] : '未知错误'));
+
+    success(['url' => $r['url'], 'thumbnail' => isset($r['thumb']) ? $r['thumb'] : $r['url']], '上传成功');
+}
+
 function ticketCreate() {
     $info = requireWebToken();
     $player = $info['player'];
@@ -164,16 +254,19 @@ function ticketCreate() {
     $validTypes = ['bug', 'help', 'report', 'apply', 'other'];
     if (!in_array($type, $validTypes)) error('无效的工单类型');
     
+    $images = normalizeTicketImages();   // 附件图（≤3，必须来自自家图床）
+
     $db = getDB();
     $now = time();
     
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $stmt = $db->prepare("INSERT INTO web_tickets (type, status, requester, title, description, created_at, updated_at) VALUES (:type, 'submitted', :player, :title, :desc, :now, :now)");
+        $stmt = $db->prepare("INSERT INTO web_tickets (type, status, requester, title, description, images, created_at, updated_at) VALUES (:type, 'submitted', :player, :title, :desc, :images, :now, :now)");
         $stmt->bindValue(':type', $type, SQLITE3_TEXT);
         $stmt->bindValue(':player', $player, SQLITE3_TEXT);
         $stmt->bindValue(':title', $title, SQLITE3_TEXT);
         $stmt->bindValue(':desc', $description, SQLITE3_TEXT);
+        $stmt->bindValue(':images', encodeTicketImages($images), SQLITE3_TEXT);
         $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
         $stmt->execute();
         $ticketId = $db->lastInsertRowID();
@@ -252,6 +345,8 @@ function ticketDetail() {
     $replies = getTicketReplies($id);
 
     $row['replies'] = $replies;
+    // 附件图：老库/老工单没有 images 列时兜底为空数组
+    $row['images'] = decodeTicketImages(isset($row['images']) ? $row['images'] : null);
     success($row);
 }
 
@@ -347,10 +442,15 @@ function ticketListAll() {
             assigned_to TEXT DEFAULT '',
             title TEXT NOT NULL,
             description TEXT DEFAULT '',
+            images TEXT DEFAULT '[]',
             reject_reason TEXT DEFAULT '',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         )");
+        // ★ 迁移：老库补 images 列（工单附件图 URL 数组 JSON）
+        try {
+            $db->exec("ALTER TABLE web_tickets ADD COLUMN images TEXT DEFAULT '[]'");
+        } catch (Exception $e) { /* 列已存在 */ }
         $db->exec("CREATE TABLE IF NOT EXISTS web_ticket_replies (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ticket_id INTEGER NOT NULL,
@@ -550,16 +650,19 @@ function ticketAdminCreate() {
         error("$provider 不是服务商");
     }
 
+    $images = normalizeTicketImages();   // 附件图（≤3，必须来自自家图床）
+
     $db = getDB();
     $now = time();
 
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $stmt = $db->prepare("INSERT INTO web_tickets (type, status, requester, assigned_to, title, description, created_at, updated_at) VALUES (:type, 'replied', 'admin', :provider, :title, :desc, :now, :now)");
+        $stmt = $db->prepare("INSERT INTO web_tickets (type, status, requester, assigned_to, title, description, images, created_at, updated_at) VALUES (:type, 'replied', 'admin', :provider, :title, :desc, :images, :now, :now)");
         $stmt->bindValue(':type', $type, SQLITE3_TEXT);
         $stmt->bindValue(':provider', $provider, SQLITE3_TEXT);
         $stmt->bindValue(':title', $title, SQLITE3_TEXT);
         $stmt->bindValue(':desc', $description, SQLITE3_TEXT);
+        $stmt->bindValue(':images', encodeTicketImages($images), SQLITE3_TEXT);
         $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
         $stmt->execute();
         $ticketId = $db->lastInsertRowID();

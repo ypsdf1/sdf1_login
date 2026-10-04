@@ -2764,7 +2764,7 @@ if ($currentVersion !== $BUILD_VERSION) {
     }
 
     // ===== 工单系统 =====
-    let ticketState = { view: 'list', filter: 'all' };
+    let ticketState = { view: 'list', filter: 'all', images: [] };   // images=附件图暂存(URL列表)
 
     async function renderTicket(el) {
         if (IS_PREVIEW || !AUTHENTICATED) {
@@ -2842,6 +2842,11 @@ if ($currentVersion !== $BUILD_VERSION) {
                 <input id="ticketTitle" placeholder="简要描述您的问题" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px"></div>
             <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">详细描述</label>
                 <textarea id="ticketDesc" rows="6" placeholder="详细描述您的问题，支持Markdown格式" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;resize:vertical;font-family:monospace"></textarea></div>
+            <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">附件图片（最多 3 张）</label>
+                <input type="file" id="ticketImg" accept=".png,.jpg,image/png,image/jpeg" multiple onchange="uploadTicketImage(this)" style="font-size:13px">
+                <p style="color:var(--dim);font-size:12px;margin-top:4px">仅支持 png / jpg，单张 ≤ 2048K；选中即上传，并在上方描述光标处插入 [图片N] 占位符</p>
+                <div id="ticketImgList" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
+                <p id="ticketImgMsg" style="color:var(--red);font-size:12px;margin-top:4px"></p></div>
             <p style="color:var(--dim);font-size:12px;margin-bottom:12px">💡 支持标准Markdown语法：**粗体**、*斜体*、\`代码\`、列表、标题等</p>
             <div style="display:flex;gap:8px">
                 <button class="btn btn-primary" onclick="submitTicket()">提交工单</button>
@@ -2849,6 +2854,91 @@ if ($currentVersion !== $BUILD_VERSION) {
             </div>
             <p id="ticketError" style="color:var(--red);margin-top:8px;font-size:13px"></p>
         </div>`;
+        renderTicketImgs();
+        syncTicketImgInput();
+    }
+
+    // ===== 工单附件图：选择即上传图床 -> 暂存 -> 光标处插占位符（滚动计数）=====
+    async function uploadTicketImage(input) {
+        const msg = document.getElementById('ticketImgMsg');
+        if (!input.files || !input.files.length) return;
+        const files = Array.from(input.files);
+        input.value = '';
+        for (const file of files) {
+            if ((ticketState.images || []).length >= 3) { setImgMsg(msg, '最多只能上传 3 张图片', true); break; }
+            const ext = (file.name.split('.').pop() || '').toLowerCase();
+            if (ext !== 'png' && ext !== 'jpg') { setImgMsg(msg, '仅支持 png / jpg：' + file.name, true); continue; }
+            if (file.size > 2048 * 1024) { setImgMsg(msg, '超过 2048K：' + file.name, true); continue; }
+            setImgMsg(msg, '上传中… ' + file.name, false);
+            try {
+                const url = new URL(API + 'ticket.php', location.href);
+                url.searchParams.set('action', 'upload_image');
+                url.searchParams.set('token', TOKEN);
+                const fd = new FormData();
+                fd.append('image', file, file.name);
+                const res = await fetch(url, { method: 'POST', body: fd });
+                const data = await res.json();
+                if (!data.success) { setImgMsg(msg, data.message, true); continue; }
+                ticketState.images.push(data.data.url);
+                insertTicketPh('[图片' + ticketState.images.length + ']');
+                renderTicketImgs();
+                syncTicketImgInput();
+                setImgMsg(msg, '已上传 ' + ticketState.images.length + '/3 张', false);
+            } catch (e) {
+                setImgMsg(msg, '上传失败: ' + e.message, true);
+            }
+        }
+        syncTicketImgInput();
+    }
+
+    function setImgMsg(el, text, isErr) {
+        if (!el) return;
+        el.style.color = isErr ? 'var(--red)' : 'var(--dim)';
+        el.textContent = text;
+    }
+
+    // 在描述框光标位置插入占位符（没有光标则追加到末尾）
+    function insertTicketPh(ph) {
+        const ta = document.getElementById('ticketDesc');
+        if (!ta) return;
+        const s = ta.selectionStart ?? ta.value.length;
+        const e = ta.selectionEnd ?? s;
+        ta.value = ta.value.slice(0, s) + ph + ta.value.slice(e);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = s + ph.length;
+    }
+
+    // 已传缩略图列表（编号贴在图角）
+    function renderTicketImgs() {
+        const box = document.getElementById('ticketImgList');
+        if (!box) return;
+        const imgs = ticketState.images || [];
+        box.innerHTML = imgs.map((u, i) =>
+            `<div style="position:relative;width:76px;height:76px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+                <img src="${escHtml(u)}" style="width:100%;height:100%;object-fit:cover">
+                <span style="position:absolute;left:0;bottom:0;background:rgba(0,0,0,.6);color:#fff;font-size:10px;padding:1px 5px;border-radius:0 4px 0 0">图片${i + 1}</span>
+            </div>`).join('');
+    }
+
+    // 3 张用满则禁用选择器
+    function syncTicketImgInput() {
+        const fi = document.getElementById('ticketImg');
+        if (fi) fi.disabled = (ticketState.images || []).length >= 3;
+    }
+
+    // 详情渲染：把描述里的 [图片N] 占位符换成 markdown 图片；没被引用的图片补在末尾
+    function applyTicketImgs(desc, images) {
+        let out = String(desc || '');
+        if (!images || !images.length) return out;
+        const used = new Array(images.length).fill(false);
+        out = out.replace(/\[图片(\d+)\]/g, function(m, n) {
+            const i = parseInt(n, 10) - 1;
+            if (i >= 0 && i < images.length && !used[i]) { used[i] = true; return '![](' + images[i] + ')'; }
+            return m;
+        });
+        const left = images.filter(function(u, k) { return !used[k]; });
+        if (left.length) out += (out ? '\n\n' : '') + left.map(function(u) { return '![](' + u + ')'; }).join('\n\n');
+        return out;
     }
 
     async function submitTicket() {
@@ -2866,10 +2956,11 @@ if ($currentVersion !== $BUILD_VERSION) {
             const res = await fetch(url, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({type, title, description: desc})
+                body: JSON.stringify({type, title, description: desc, images: ticketState.images || []})
             });
             const data = await res.json();
             if (data.success) {
+                ticketState.images = [];     // 已提交，附件暂存清空
                 ticketState.view = 'list';
                 renderTicket(document.getElementById('content'));
             } else {
@@ -2913,7 +3004,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             // 描述
             html += `<div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
                 <div style="color:var(--dim);font-size:12px;margin-bottom:8px">描述</div>
-                <div style="font-size:14px;line-height:1.6">${renderMarkdown(t.description || '无描述')}</div>
+                <div style="font-size:14px;line-height:1.6">${renderMarkdown(applyTicketImgs(t.description || '无描述', t.images))}</div>
             </div>`;
 
             // 驳回原因
