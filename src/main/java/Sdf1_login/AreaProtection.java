@@ -3825,8 +3825,8 @@ public class AreaProtection implements Listener {
                 PotionEffectType type =
                         resolveEffectType(eff[0]);
                 if (type == null) continue;
-                // ★ 药效等级封顶（2026-10-04 任务4）：普通玩家按原版256，用户组按组配置
-                int lv = clampGiveEffectLevel(Integer.parseInt(eff[1]), ac.owner) - 1;
+                // ★ 药效等级封顶（2026-10-04 任务4）：按该效果的生存可获取上限 + 用户组配置
+                int lv = clampEffectLevel(Integer.parseInt(eff[1]), eff[0], ac.owner) - 1;
                 int dur = Integer.parseInt(eff[2]) * 20;
 
                 PotionEffect existing =
@@ -3893,7 +3893,7 @@ public class AreaProtection implements Listener {
             if (type == null) continue;
             try {
                 // ★ 药效等级封顶（2026-10-04 任务4），与首次给予同一口径
-                int lv = clampGiveEffectLevel(Integer.parseInt(eff[1]), ac.owner) - 1;  // MC amplifier从0开始
+                int lv = clampEffectLevel(Integer.parseInt(eff[1]), eff[0], ac.owner) - 1;  // MC amplifier从0开始
                 int dur = Integer.parseInt(eff[2]) * 20;  // 秒→tick
                 expectedEffects.put(type, new int[]{lv, dur});
             } catch (NumberFormatException ignored) {}
@@ -4164,8 +4164,8 @@ public class AreaProtection implements Listener {
             catch (NumberFormatException ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
             catch (NumberFormatException ignored) {}
-            // ★ 药效等级封顶（2026-10-04 任务4）
-            level = clampGiveEffectLevel(level, ac.owner);
+            // ★ 药效等级封顶（2026-10-04 任务4）：按该效果的生存可获取上限 + 用户组配置
+            level = clampEffectLevel(level, effName, ac.owner);
             PotionEffectType type = resolveEffectType(effName);
             if (type != null) {
                 p.addPotionEffect(new PotionEffect(
@@ -4941,10 +4941,135 @@ public class AreaProtection implements Listener {
      *
      * @param rawLevel 配置里写的原始药效强度
      * @param ownerName 领地所有者
-     * @return 夹紧后的药效强度（1~256，且 <= 该领地用户组上限）
+     * @return 夹紧后的药效强度
      */
     public int clampGiveEffectLevel(int rawLevel, String ownerName) {
         int cap = getMaxGiveEffectLevel(ownerName);
+        if (rawLevel < 1) return 1;
+        return rawLevel > cap ? cap : rawLevel;
+    }
+
+    /**
+     * ★ 生存模式可获取的最大等级（2026-10-04 任务4 用户纠正）。
+     *
+     * <p>口径：<b>不是</b> /effect 命令的作弊上限（amplifier 255 = 强度 256），
+     * 而是<b>生存模式下正常探索、合成、建造能拿到的最大等级</b>。
+     * 例：抗性提升靠信标最高 2 级；海豚的恩惠只有潮涌能量块一个来源，最高 1 级。</p>
+     *
+     * <p>取值来源：Minecraft 中文维基「状态效果」「信标」逐项核对，
+     * 效果清单与 paper-api 的 39 个 PotionEffectType 完全对齐。</p>
+     *
+     * <p>默认返回 1：未知效果一律按最低档处理，宁可少给也不超发。</p>
+     */
+    private static int getSurvivalMaxLevel(String effectName) {
+        if (effectName == null) return 1;
+        String clean = effectName.trim()
+                .replaceAll("^[\\s\"'\\\\]+|[\\s\"'\\\\]+$", "");
+        if (clean.endsWith("效果")) {
+            clean = clean.substring(0, clean.length() - 2);
+        }
+        if (clean.isEmpty()) return 1;
+        switch (clean) {
+            // ===== 信标类主效果：4级金字塔可选「提升至II」→ 2；无药水的固定 1 =====
+            case "迅捷": case "速度": case "speed": case "SPEED":
+                return 2;   // 迅捷药水(增强版) II；信标 I+II
+            case "急迫": case "haste": case "HASTE":
+                return 2;   // 无药水，仅信标；4级金字塔可升 II
+            case "抗性提升": case "抗性": case "resistance": case "RESISTANCE":
+                return 2;   // 抗性药水 II；信标 I+II
+            case "跳跃提升": case "跳跃": case "jump_boost": case "JUMP_BOOST": case "JUMP":
+                return 2;   // 跳跃药水(增强版) II；信标 I+II
+            case "力量": case "strength": case "STRENGTH": case "INCREASE_DAMAGE":
+                return 2;   // 力量药水 II；信标 I+II
+            // ===== 有药水且可升 II 的效果 =====
+            case "瞬间治疗": case "治疗": case "instant_health": case "INSTANT_HEALTH": case "HEAL":
+            case "瞬间伤害": case "伤害": case "instant_damage": case "INSTANT_DAMAGE": case "HARM":
+            case "缓慢": case "slowness": case "SLOWNESS":
+            case "挖掘疲劳": case "mining_fatigue": case "MINING_FATIGUE":
+            case "中毒": case "poison": case "POISON":
+            case "生命恢复": case "再生": case "回复": case "regeneration": case "REGENERATION":
+                return 2;   // 各药水均可用发光石粉升至 II
+            // ===== 生存只有单一来源、等级恒为 1 =====
+            case "海豚的恩惠": case "海豚恩惠": case "dolphins_grace": case "DOLPHINS_GRACE":
+                return 1;   // 仅潮涌能量块 / 海豚馈赠，无等级区分
+            case "潮涌能量": case "conduit_power": case "CONDUIT_POWER":
+                return 1;
+            case "抗火": case "fire_resistance": case "FIRE_RESISTANCE":
+                return 1;   // 抗火药水无升级配方
+            case "水下呼吸": case "water_breathing": case "WATER_BREATHING":
+                return 1;   // 水肺药水无升级配方
+            case "隐身": case "invisibility": case "INVISIBILITY":
+                return 1;   // 隐身药水无升级配方
+            case "夜视": case "night_vision": case "NIGHT_VISION":
+                return 1;   // 夜视药水无升级配方
+            case "缓降": case "slow_falling": case "SLOW_FALLING":
+                return 1;   // 缓降药水无升级配方
+            case "虚弱": case "weakness": case "WEAKNESS":
+                return 1;   // 虚弱药水无升级配方
+            case "反胃": case "恶心": case "nausea": case "NAUSEA":
+                return 1;   // 河豚等食物，固定 I
+            case "饥饿": case "hunger": case "HUNGER":
+                return 1;   // 生肉/腐肉，固定 I
+            case "凋零": case "wither": case "WITHER":
+                return 1;   // 凋灵之首施加，固定 I
+            case "失明": case "blindness": case "BLINDNESS":
+                return 1;
+            case "黑暗": case "darkness": case "DARKNESS":
+                return 1;   // 监守者等施加，固定 I
+            case "发光": case "glowing": case "GLOWING":
+                return 1;   // 光灵箭，固定 I
+            case "飘浮": case "悬浮": case "levitation": case "LEVITATION":
+                return 1;   // 潜影弹，固定 I
+            case "不祥之兆": case "bad_omen": case "BAD_OMEN":
+            case "试炼之兆": case "trial_omen": case "TRIAL_OMEN":
+            case "袭击之兆": case "raid_omen": case "RAID_OMEN":
+            case "蓄风": case "wind_charged": case "WIND_CHARGED":
+            case "盘丝": case "weaving": case "WEAVING":
+            case "渗浆": case "oozing": case "OOZING":
+            case "寄生": case "infested": case "INFESTED":
+            case "村庄英雄": case "hero_of_the_village": case "HERO_OF_THE_VILLAGE":
+                return 1;   // 均为事件触发，无等级区分
+            case "鹦鹉螺之息": case "breath_of_the_nautilus": case "BREATH_OF_THE_NAUTILUS":
+                return 1;
+            // ===== 生存无来源，仅命令/插件可得 =====
+            case "生命提升": case "health_boost": case "HEALTH_BOOST":
+            case "伤害吸收": case "absorption": case "ABSORPTION":
+            case "饱和": case "saturation": case "SATURATION":
+            case "幸运": case "luck": case "LUCK":
+            case "霉运": case "unluck": case "UNLUCK":
+                return 1;
+            default:
+                return 1;   // 未知效果：宁可少给
+        }
+    }
+
+    /**
+     * ★ 单个效果的最终封顶：min(生存可获取上限, 该领地用户组配置的全局上限)。
+     *
+     * <p>两层含义同时生效，缺一不可：
+     * <ol>
+     *   <li><b>生存上限</b>（硬顶）：该效果在正常玩法里根本拿不到更高等级，
+     *       例如海豚的恩惠最多 1 级，配 255 也只给 1 级。</li>
+     *   <li><b>用户组上限</b>（软顶）：组里配多少就是多少，
+     *       但同样不得突破上面那条生存上限。</li>
+     * </ol></p>
+     *
+     * @param effectName 效果名（支持中文名与英文 ID）
+     * @param ownerName  领地所有者（决定用户组上限）
+     * @return 药效强度上限，恒 >=1
+     */
+    public int getEffectLevelCap(String effectName, String ownerName) {
+        int survival = getSurvivalMaxLevel(effectName);
+        int group = getMaxGiveEffectLevel(ownerName);
+        if (group < survival) return group < 1 ? 1 : group;
+        return survival;
+    }
+
+    /**
+     * 按效果名封顶（各应用点统一走这里）。
+     */
+    public int clampEffectLevel(int rawLevel, String effectName, String ownerName) {
+        int cap = getEffectLevelCap(effectName, ownerName);
         if (rawLevel < 1) return 1;
         return rawLevel > cap ? cap : rawLevel;
     }
@@ -5148,8 +5273,8 @@ public class AreaProtection implements Listener {
             catch (NumberFormatException ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
             catch (NumberFormatException ignored) {}
-            // ★ 药效等级封顶（2026-10-04 任务4）
-            level = clampGiveEffectLevel(level, ac.owner);
+            // ★ 药效等级封顶（2026-10-04 任务4）：按该效果的生存可获取上限 + 用户组配置
+            level = clampEffectLevel(level, effName, ac.owner);
 
             PotionEffectType type = resolveEffectType(effName);
             plugin.getLogger().info("[防护调试] 给予: "
@@ -10735,14 +10860,17 @@ public class AreaProtection implements Listener {
                         ac.giveEffects = new java.util.ArrayList<>(
                                 ac.giveEffects.subList(0, maxEff));
                     }
-                    // ★ 药效等级按该领地用户组上限封顶（2026-10-04 任务4）
-                    int maxLv = getMaxGiveEffectLevel(ac.owner);
+                    // ★ 药效等级封顶（2026-10-04 任务4）：逐个效果按「生存可获取上限 + 用户组配置」
                     for (String[] ef : ac.giveEffects) {
                         if (ef.length >= 2) {
                             try {
                                 int lv = Integer.parseInt(ef[1]);
-                                if (lv > maxLv) ef[1] = String.valueOf(maxLv);
-                                else if (lv < 1) ef[1] = "1";
+                                int capped = clampEffectLevel(lv, ef[0], ac.owner);
+                                if (capped != lv) {
+                                    plugin.getLogger().info("[防护] 领地 " + ac.name + " 效果 "
+                                            + ef[0] + " 等级 " + lv + " 超出上限，已封顶为 " + capped);
+                                    ef[1] = String.valueOf(capped);
+                                }
                             } catch (NumberFormatException ignored) {}
                         }
                     }
@@ -11210,11 +11338,12 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c§l[添加增益效果] §f等级和秒数必须是数字");
                 return true;
             }
-            // ★ 验证等级和秒数范围（等级上限按用户组配置，2026-10-04 任务4）
-            int maxLvAdd = getMaxGiveEffectLevel(land.owner);
+            // ★ 验证等级和秒数范围（等级上限按「该效果生存可获取上限 + 用户组配置」，2026-10-04 任务4）
+            int maxLvAdd = getEffectLevelCap(effName, land.owner);
             if (effLv < 1 || effLv > maxLvAdd) {
-                p.sendMessage("§c§l[添加增益效果] §f等级范围: 1~" + maxLvAdd);
-                p.sendMessage("§7上限说明: 普通玩家为原版上限 256，你当前可用的上限是 " + maxLvAdd);
+                p.sendMessage("§c§l[添加增益效果] §f§e" + effName + " §f等级范围: 1~" + maxLvAdd);
+                p.sendMessage("§7上限说明: " + effName + " 生存模式最高可获得 " + getSurvivalMaxLevel(effName) + " 级");
+                p.sendMessage("§7你当前领地可用上限 " + maxLvAdd + " 级（受用户组配置约束）");
                 return true;
             }
             if (effDur < 1 || effDur > 3600) {
@@ -11269,10 +11398,12 @@ public class AreaProtection implements Listener {
                     p.sendMessage("§c请输入有效数字");
                     return true;
                 }
-                int maxLvEdit = getMaxGiveEffectLevel(land.owner);
+                int maxLvEdit = getEffectLevelCap(eff[0], land.owner);
                 if (newLevel < 1 || newLevel > maxLvEdit) {
-                    p.sendMessage("§c等级范围1~" + maxLvEdit);
-                    p.sendMessage("§7上限说明: 普通玩家为原版上限 256，你当前可用的上限是 " + maxLvEdit);
+                    p.sendMessage("§c等级范围 1~" + maxLvEdit);
+                    p.sendMessage("§7上限说明: " + eff[0] + " 生存模式最高可获得 "
+                            + getSurvivalMaxLevel(eff[0]) + " 级");
+                    p.sendMessage("§7你当前领地可用上限 " + maxLvEdit + " 级（受用户组配置约束）");
                     return true;
                 }
                 if (eff.length < 2) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, eff.length); eff = tmp; land.giveEffects.set(idx - 1, eff); }
