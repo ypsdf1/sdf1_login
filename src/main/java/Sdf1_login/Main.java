@@ -50,6 +50,20 @@ import net.kyori.adventure.text.JoinConfiguration;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.TextComponent;
+import net.kyori.adventure.text.format.TextDecoration;
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.ParseResults;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.context.ContextChain;
+import com.mojang.brigadier.context.ParsedCommandNode;
+import com.mojang.brigadier.exceptions.BuiltInExceptionProvider;
+import com.mojang.brigadier.exceptions.CommandExceptionType;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.tree.ArgumentCommandNode;
+import com.mojang.brigadier.tree.CommandNode;
+import com.mojang.brigadier.tree.LiteralCommandNode;
+import io.papermc.paper.command.brigadier.CommandSourceStack;
 
 
 public class Main extends JavaPlugin
@@ -3771,6 +3785,13 @@ public class Main extends JavaPlugin
     private final java.util.concurrent.ConcurrentHashMap<String, Long>
             consoleMissWarnAt = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /**
+     * Brigadier 命令分发器（Paper 26.x 唯一能拿到「指令树」的入口）。
+     * 反射 NMS 取，取不到则「中文友好报错」整体降级为原生报错。
+     */
+    private volatile CommandDispatcher<CommandSourceStack> brigDispatcher;
+    private volatile boolean brigDispatcherResolved;
+
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onUnknownCommand(
             org.bukkit.event.command.UnknownCommandEvent e) {
@@ -3800,7 +3821,32 @@ public class Main extends JavaPlugin
             return;
         }
 
-        // ---- 2) 啥都没命中，按来源分流 ----
+        // ---- 2) 指令根存在，但参数不全/语法写错 -> 中文友好报错 ----
+        //（2026-10-04 新功能，详见 buildFriendlySyntaxError 注释）
+        if (looksLikeCommandAttempt(body)) {
+            Component friendly = buildFriendlySyntaxError(e, body);
+            if (friendly != null) {
+                if (isPlayer) {
+                    e.message(friendly);
+                    getLogger().info("[无感切换] 玩家参数报错(已中文化): \""
+                            + body + "\"");
+                    return;
+                }
+                // 控制台：同一条 5 分钟只提示一次，
+                // 防别的插件反复 dispatchCommand 把日志刷爆
+                if (consoleMissAllowed(body)) {
+                    e.message(friendly);
+                    getLogger().info("[无感切换] 控制台参数报错(已中文化、已节流): \""
+                            + body + "\"");
+                } else {
+                    suppressUnknown(e);
+                }
+                return;
+            }
+            // 分发器没拿到 -> 降级，继续走下面的原生分支
+        }
+
+        // ---- 3) 啥都没命中，按来源分流 ----
         if (isPlayer) {
             // 玩家端：压制原生提示 + 出相似指令建议
             //（像搜索引擎的"你是不是找 xxx"），不广播
@@ -3849,15 +3895,11 @@ public class Main extends JavaPlugin
         }
 
         // ① 命令尝试 -> 绝不广播；同一条 5 分钟内只放行一次
-        long now = System.currentTimeMillis();
-        Long last = consoleMissWarnAt.get(body);
-        if (last != null && now - last < CONSOLE_MISS_WARN_MS) {
+        if (!consoleMissAllowed(body)) {
             // 节流窗口内：压掉原生报错，不打日志 -> 彻底静默
             suppressUnknown(e);
             return;
         }
-        if (consoleMissWarnAt.size() > 256) consoleMissWarnAt.clear();
-        consoleMissWarnAt.put(body, now);
         // 放行：不 suppress -> 保留原声报错（运维手误仍看得见）
         getLogger().info("[无感切换] 控制台命令尝试(未接管、未广播、已节流): \""
                 + body + "\"");
@@ -3903,6 +3945,387 @@ public class Main extends JavaPlugin
                     || cm.getCommand("minecraft:" + label) != null;
         } catch (Throwable t) {
             return false;
+        }
+    }
+
+
+    /**
+     * 控制台「命令尝试」的 5 分钟节流闸门。
+     *
+     * @return true = 本次允许提示；false = 还在窗口内，调用方应彻底静默
+     */
+    private boolean consoleMissAllowed(String body) {
+        long now = System.currentTimeMillis();
+        Long last = consoleMissWarnAt.get(body);
+        if (last != null && now - last < CONSOLE_MISS_WARN_MS) return false;
+        if (consoleMissWarnAt.size() > 256) consoleMissWarnAt.clear();
+        consoleMissWarnAt.put(body, now);
+        return true;
+    }
+
+    // =========================================================
+    // ★ 2026-10-04 新功能：命令「参数不全 / 语法写错」的中文友好报错
+    //
+    //   【为什么需要】
+    //   原生 finishParsing 只会甩一句 Unknown command
+    //   + 一个 execute<---[HERE] 指针，玩家根本看不懂到底缺什么。
+    //   尤其 execute / title 这种多参数指令，输一半必然报错。
+    //
+    //   【怎么做的】
+    //   拿 Brigadier 的分发器把命令行**再 parse 一次**，
+    //   判定顺序 100% 复刻 Paper 的 Commands.finishParsing：
+    //     validateParseResults（reader 还有字 -> exceptions/range 判定）
+    //     -> context.build -> ContextChain.tryFlatten（返回空 = 指令没写完）
+    //   拿到精确的 CommandSyntaxException 后：
+    //     · 用 ex.getType() **身份比对** BUILT_IN_EXCEPTIONS 的单例
+    //       -> 得到中文原因（不靠字符串匹配，稳）
+    //     · ex.getInput()/getCursor() -> 复刻原版 <--[HERE] 指针
+    //     · 解析出的最深节点/出错节点 -> 「后面还能填什么」
+    //
+    //   【铁律】
+    //   任何一步失败都返回 null -> 调用方保持原生报错，
+    //   绝不因为这个增强功能把报错弄丢。
+    // =========================================================
+
+    /**
+     * 取 Brigadier 分发器（NMS 反射，只取一次）。
+     * CraftServer#console (DedicatedServer)
+     *   -> MinecraftServer#getCommands() -> Commands#getDispatcher()
+     */
+    private synchronized CommandDispatcher<CommandSourceStack>
+            resolveBrigDispatcher() {
+        if (brigDispatcherResolved) return brigDispatcher;
+        brigDispatcherResolved = true;
+        try {
+            java.lang.reflect.Field f = Bukkit.getServer().getClass()
+                    .getDeclaredField("console");
+            f.setAccessible(true);
+            Object dedicated = f.get(Bukkit.getServer());
+            Object commands = dedicated.getClass()
+                    .getMethod("getCommands").invoke(dedicated);
+            Object disp = commands.getClass()
+                    .getMethod("getDispatcher").invoke(commands);
+            @SuppressWarnings("unchecked")
+            CommandDispatcher<CommandSourceStack> d =
+                    (CommandDispatcher<CommandSourceStack>) disp;
+            brigDispatcher = d;
+            getLogger().info("[命令报错] Brigadier 分发器就绪，"
+                    + "参数不全/语法错会输出中文提示");
+        } catch (Throwable t) {
+            getLogger().warning("[命令报错] 取 Brigadier 分发器失败，"
+                    + "报错保持原版样式: " + t);
+        }
+        return brigDispatcher;
+    }
+
+    /** 在 dispatcher 根节点下找指令根（兼容命名空间前缀） */
+    private CommandNode<CommandSourceStack> findRootNode(
+            CommandDispatcher<CommandSourceStack> disp, String label) {
+        if (label == null || label.isEmpty()) return null;
+        CommandNode<CommandSourceStack> n = disp.getRoot().getChild(label);
+        if (n != null) return n;
+        n = disp.getRoot().getChild("minecraft:" + label);
+        if (n != null) return n;
+        for (CommandNode<CommandSourceStack> c : disp.getRoot().getChildren()) {
+            String nm = c.getName();
+            if (nm != null && nm.endsWith(":" + label)) return c;
+        }
+        return null;
+    }
+
+    /**
+     * 把「指令存在但参数有问题」翻译成中文报错组件。
+     *
+     * @return null = 放弃增强，调用方保持原生报错
+     */
+    private Component buildFriendlySyntaxError(
+            org.bukkit.event.command.UnknownCommandEvent e, String body) {
+        try {
+            // spigot.yml 的 unknown-command 被清空 = 运维明确要求不出提示，不越权
+            if (e.message() == null) return null;
+
+            CommandSourceStack css = e.getCommandSource();
+            if (css == null) return null;
+            CommandDispatcher<CommandSourceStack> disp = resolveBrigDispatcher();
+            if (disp == null) return null;
+
+            // ---- 0) 指令根必须存在，且当前来源有权限用 ----
+            //      没权限时原版是「未知命令」，我们保持一致，不泄露指令存在性
+            String rootLabel = body;
+            int sp0 = rootLabel.indexOf(' ');
+            if (sp0 >= 0) rootLabel = rootLabel.substring(0, sp0);
+            rootLabel = rootLabel.trim().toLowerCase(java.util.Locale.ROOT);
+            CommandNode<CommandSourceStack> rootNode =
+                    findRootNode(disp, rootLabel);
+            if (rootNode == null) return null;
+            if (!rootNode.canUse(css)) return null;
+
+            // ---- 1) 复刻 finishParsing，拿到精确异常 ----
+            ParseResults<CommandSourceStack> pr = disp.parse(body, css);
+            CommandSyntaxException ex = null;
+            boolean incomplete = false;
+            if (pr.getReader().canRead()) {
+                if (pr.getExceptions().size() == 1) {
+                    ex = pr.getExceptions().values().iterator().next();
+                } else if (pr.getContext().getRange().isEmpty()) {
+                    ex = CommandSyntaxException.BUILT_IN_EXCEPTIONS
+                            .dispatcherUnknownCommand()
+                            .createWithContext(pr.getReader());
+                } else {
+                    ex = CommandSyntaxException.BUILT_IN_EXCEPTIONS
+                            .dispatcherUnknownArgument()
+                            .createWithContext(pr.getReader());
+                }
+            } else {
+                CommandContext<CommandSourceStack> ctx =
+                        pr.getContext().build(body);
+                if (!ContextChain.tryFlatten(ctx).isPresent()) {
+                    incomplete = true;
+                    ex = CommandSyntaxException.BUILT_IN_EXCEPTIONS
+                            .dispatcherUnknownCommand()
+                            .createWithContext(pr.getReader());
+                }
+            }
+            if (ex == null) return null; // 其实是合法命令，本不该走到这
+
+            // ---- 2) 中文原因（认不出类型才回退到原生那行）----
+            String reason = explainSyntaxByType(ex, incomplete);
+            boolean typed = reason != null;
+            if (reason == null) reason = explainSyntaxFallback(ex);
+            if (reason == null) reason = "参数写法有误";
+
+            TextComponent.Builder b = Component.text();
+            b.append(Component.text("✗ 命令用法有误 ", NamedTextColor.RED)
+                    .decorate(TextDecoration.BOLD));
+            b.append(Component.text(reason, NamedTextColor.YELLOW));
+
+            // 类型没识别出来时，把原生那行补上（客户端会自己本地化，信息不丢）
+            if (!typed) {
+                Component origin = nativeReasonLine(e);
+                if (origin != null) {
+                    b.append(Component.newline());
+                    b.append(origin);
+                }
+            }
+
+            Component ptr = renderPointer(ex.getInput(), ex.getCursor());
+            if (ptr != null) {
+                b.append(Component.newline());
+                b.append(ptr);
+            }
+
+            Component hint = buildNextHint(pr, css);
+            if (hint != null) {
+                b.append(Component.newline());
+                b.append(hint);
+            }
+            return b.build();
+        } catch (Throwable t) {
+            getLogger().info("[命令报错] 中文化失败，降级为原版: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * 按异常类型**身份比对**（BUILT_IN_EXCEPTIONS 返回的是单例）
+     * 得到中文原因。认不出来返回 null，交给调用方用原生文案。
+     */
+    private String explainSyntaxByType(CommandSyntaxException ex,
+                                       boolean incomplete) {
+        try {
+            BuiltInExceptionProvider b =
+                    CommandSyntaxException.BUILT_IN_EXCEPTIONS;
+            CommandExceptionType t = ex.getType();
+            if (t == null) return null;
+            if (t == b.dispatcherUnknownCommand())
+                return incomplete
+                        ? "指令不完整，后面还必须继续跟参数或子命令"
+                        : "指令不存在，或者写法不对";
+            if (t == b.dispatcherUnknownArgument())
+                return "这一段参数不符合该指令要求的格式";
+            if (t == b.dispatcherExpectedArgumentSeparator())
+                return "参数之间要用空格隔开，这里有识别不了的多余内容";
+            if (t == b.literalIncorrect())
+                return "这个位置只能填固定的子命令";
+            if (t == b.readerExpectedInt() || t == b.readerExpectedLong())
+                return "这里要填一个整数";
+            if (t == b.readerExpectedFloat() || t == b.readerExpectedDouble())
+                return "这里要填一个小数";
+            if (t == b.readerExpectedBool())
+                return "这里要填 true 或 false";
+            if (t == b.readerInvalidInt() || t == b.readerInvalidLong())
+                return "这个值不是有效的整数";
+            if (t == b.readerInvalidFloat() || t == b.readerInvalidDouble())
+                return "这个值不是有效的小数";
+            if (t == b.readerInvalidBool())
+                return "真假值只能写 true 或 false";
+            if (t == b.readerExpectedStartOfQuote())
+                return "文本要用英文双引号 \" 包起来";
+            if (t == b.readerExpectedEndOfQuote())
+                return "英文双引号没有闭合";
+            if (t == b.readerInvalidEscape())
+                return "转义符写法有误";
+            if (t == b.readerExpectedSymbol())
+                return "缺了必要的符号或参数";
+            if (t == b.dispatcherParseException())
+                return "参数解析失败（多半是 JSON 写错了）";
+            if (t == b.integerTooLow() || t == b.integerTooHigh()
+                    || t == b.longTooLow() || t == b.longTooHigh()
+                    || t == b.floatTooLow() || t == b.floatTooHigh()
+                    || t == b.doubleTooLow() || t == b.doubleTooHigh())
+                return "数值超出了允许范围";
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /**
+     * 类型没识别出来时的兜底：从原生错误文本里认 JSON 类错误。
+     * 典型场景：title/tellraw/bossbar 的文本组件 JSON 写错。
+     */
+    private String explainSyntaxFallback(CommandSyntaxException ex) {
+        try {
+            String raw = ex.getRawMessage() == null
+                    ? null : ex.getRawMessage().getString();
+            String low = raw == null ? ""
+                    : raw.toLowerCase(java.util.Locale.ROOT);
+            if (low.contains("json") || low.contains("gson")
+                    || low.contains("component") || low.contains("malformed")
+                    || low.contains("begin_object") || low.contains("begin_array")
+                    || low.contains("end of input")) {
+                return "JSON 格式错误，文本组件写法不对";
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 取原生 message 里的「原因」那一行（结构 = [原因, 换行, 指针]） */
+    private Component nativeReasonLine(
+            org.bukkit.event.command.UnknownCommandEvent e) {
+        try {
+            Component m = e.message();
+            if (m == null) return null;
+            List<Component> kids = m.children();
+            if (kids == null || kids.isEmpty()) return null;
+            Component kid = kids.get(0);
+            if (kid == null) return null;
+            return Component.text().color(NamedTextColor.RED)
+                    .append(kid).build();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 复刻原版 finishParsing 的出错指针（灰底 + 红色下划线 + &lt;--[HERE]）。
+     * 这行是语言无关的，玩家一眼能看出断在哪。
+     */
+    private Component renderPointer(String input, int cursor) {
+        try {
+            if (input == null || cursor < 0) return null;
+            int shown = Math.min(input.length(), cursor);
+            TextComponent.Builder line = Component.text();
+            line.color(NamedTextColor.GRAY);
+            if (shown > 10) line.append(Component.text("…"));
+            line.append(Component.text(
+                    input.substring(Math.max(0, shown - 10), shown)));
+            if (shown < input.length()) {
+                line.append(Component.text(input.substring(shown))
+                        .color(NamedTextColor.RED)
+                        .decorate(TextDecoration.UNDERLINED));
+            }
+            line.append(Component.text("<--[HERE]")
+                    .color(NamedTextColor.RED)
+                    .decorate(TextDecoration.ITALIC));
+            return line.build();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 「下一步还能填什么」—— 这才是玩家真正需要的信息。
+     * ① 有精确出错节点 -> 直接说这个位置该填什么（带示例）
+     * ② 指令本身没写完 -> 列出后面可接的子命令/参数
+     */
+    private Component buildNextHint(ParseResults<CommandSourceStack> pr,
+                                    CommandSourceStack css) {
+        try {
+            // ① 出错节点
+            if (pr.getExceptions().size() == 1) {
+                CommandNode<CommandSourceStack> bad =
+                        pr.getExceptions().keySet().iterator().next();
+                if (bad instanceof LiteralCommandNode) {
+                    return Component.text()
+                            .append(Component.text("这里只能填子命令: ",
+                                    NamedTextColor.GRAY))
+                            .append(Component.text(bad.getName(),
+                                    NamedTextColor.WHITE))
+                            .build();
+                }
+                if (bad instanceof ArgumentCommandNode) {
+                    ArgumentCommandNode<?, ?> an =
+                            (ArgumentCommandNode<?, ?>) bad;
+                    TextComponent.Builder hb = Component.text();
+                    hb.append(Component.text("这里需要参数 ",
+                            NamedTextColor.GRAY));
+                    hb.append(Component.text(an.getUsageText(),
+                            NamedTextColor.WHITE));
+                    Collection<String> examples = an.getExamples();
+                    if (examples != null && !examples.isEmpty()) {
+                        List<String> sample = new ArrayList<>();
+                        for (String s : examples) {
+                            if (s == null || s.isEmpty()) continue;
+                            sample.add(s);
+                            if (sample.size() >= 4) break;
+                        }
+                        if (!sample.isEmpty()) {
+                            hb.append(Component.text("，例如 ",
+                                    NamedTextColor.GRAY));
+                            hb.append(Component.text(
+                                    String.join(" / ", sample),
+                                    NamedTextColor.WHITE));
+                        }
+                    }
+                    return hb.build();
+                }
+            }
+
+            // ② 指令没写完 -> 列后面可接的
+            List<ParsedCommandNode<CommandSourceStack>> nodes =
+                    pr.getContext().getNodes();
+            if (nodes == null || nodes.isEmpty()) return null;
+            CommandNode<CommandSourceStack> deepest =
+                    nodes.get(nodes.size() - 1).getNode();
+            if (deepest == null) return null;
+
+            List<String> names = new ArrayList<>();
+            int total = 0;
+            for (CommandNode<CommandSourceStack> c : deepest.getChildren()) {
+                if (c == null) continue;
+                total++;
+                if (!c.canUse(css)) continue;
+                if (names.size() >= 6) continue;
+                String ut = c.getUsageText();
+                if (ut == null || ut.isEmpty()) continue;
+                names.add(ut);
+            }
+            if (names.isEmpty()) return null;
+
+            TextComponent.Builder hb = Component.text();
+            hb.append(Component.text("后面可填: ", NamedTextColor.GRAY));
+            for (int i = 0; i < names.size(); i++) {
+                if (i > 0) hb.append(Component.text(" | ",
+                        NamedTextColor.DARK_GRAY));
+                hb.append(Component.text(names.get(i), NamedTextColor.WHITE));
+            }
+            if (total > names.size()) {
+                hb.append(Component.text(" | ...", NamedTextColor.DARK_GRAY));
+            }
+            return hb.build();
+        } catch (Throwable t) {
+            return null;
         }
     }
 
