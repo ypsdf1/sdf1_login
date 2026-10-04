@@ -278,6 +278,9 @@ switch ($action) {
     case 'sync_transactions':
         syncTransactions();
         break;
+    case 'check_tx_alignment':
+        checkTxAlignment();
+        break;
     case 'check_pending_transactions':
         checkPendingTransactions();
         break;
@@ -1061,6 +1064,104 @@ function syncBonds() {
     success(['synced' => $count], "同步了{$count}个玩家余额");
 }
 
+// ===== 交易流水对账（Java 开服/分批推送时调用）=====
+/**
+ * 与 Java 端「点一遍数据」：
+ *   · 不传 ids → 返回 PHP 侧总笔数与最大 java_id，供 Java 判断两边是否已一致；
+ *   · 传 ids   → 返回这些序列号里 PHP 还没有的（missing），Java 只补推这部分。
+ * 交易序列号 = Java 侧 bond_transaction.id（PHP 侧存为 game_transactions.java_id）。
+ */
+function checkTxAlignment() {
+    try {
+        // ★ 认证与 syncTransactions 完全一致（token 或 SECRET_KEY）
+        $token = getParam('token');
+        $secret = getParam('secret');
+        if ($token) {
+            $tokenInfo = validateToken($token);
+            if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+                if (!($secret && $secret === SECRET_KEY)) {
+                    error('同步需要管理权限token或SECRET_KEY');
+                }
+            }
+        } elseif ($secret) {
+            if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+        } else {
+            error('同步需要token或SECRET_KEY');
+        }
+
+        $db = getDB();
+        $db->exec('PRAGMA busy_timeout=10000');
+        ensureGameTransactionsTable($db);
+
+        $phpCount = (int)$db->querySingle("SELECT COUNT(*) FROM game_transactions");
+        $phpMax   = (int)$db->querySingle("SELECT COALESCE(MAX(java_id),0) FROM game_transactions");
+
+        $missing = null;
+        $ids = getParam('ids');
+        if (is_array($ids) && count($ids) > 0) {
+            $clean = [];
+            foreach ($ids as $v) {
+                $iv = (int)$v;
+                if ($iv > 0) $clean[] = $iv;
+            }
+            $clean = array_values(array_unique($clean));
+            if (!empty($clean)) {
+                $in = implode(',', $clean);
+                $res = $db->query("SELECT java_id FROM game_transactions WHERE java_id IN ($in)");
+                $have = [];
+                while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                    $have[(int)$row['java_id']] = true;
+                }
+                $res->finalize();
+                $missing = [];
+                foreach ($clean as $iv) {
+                    if (!isset($have[$iv])) $missing[] = $iv;
+                }
+            } else {
+                $missing = [];
+            }
+        }
+
+        debugLog("check_tx_alignment: 对账", [
+            'php_count' => $phpCount,
+            'php_max_id' => $phpMax,
+            'checked' => is_array($ids) ? count($ids) : 0,
+            'missing' => $missing === null ? -1 : count($missing)
+        ]);
+
+        success([
+            'php_count' => $phpCount,
+            'php_max_id' => $phpMax,
+            'checked' => is_array($ids) ? count($ids) : 0,
+            'missing' => $missing
+        ], 'ok');
+    } catch (\Throwable $e) {
+        @error_log("[checkTxAlignment] EXCEPTION: " . $e->getMessage());
+        error('checkTxAlignment异常: ' . $e->getMessage());
+    }
+}
+
+/** game_transactions 建表 + 索引（syncTransactions 与对账共用） */
+function ensureGameTransactionsTable($db) {
+    $db->exec("CREATE TABLE IF NOT EXISTS game_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        java_id INTEGER NOT NULL,
+        player_name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        target_player TEXT DEFAULT '',
+        operator TEXT DEFAULT '',
+        reason TEXT DEFAULT '',
+        balance_before INTEGER DEFAULT 0,
+        balance_after INTEGER DEFAULT 0,
+        tx_time INTEGER NOT NULL,
+        synced_at INTEGER NOT NULL,
+        UNIQUE(java_id)
+    )");
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (\Throwable $e) {}
+    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (\Throwable $e) {}
+}
+
 // ===== 插件推送游戏内交易记录 =====
 function syncTransactions() {
     try {
@@ -1097,26 +1198,8 @@ function syncTransactions() {
     // ★ 设置busy_timeout防止database is locked
     $db->exec('PRAGMA busy_timeout=10000');
 
-    // 创建game_transactions表，用于存储游戏内交易记录
-    $db->exec("CREATE TABLE IF NOT EXISTS game_transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        java_id INTEGER NOT NULL,
-        player_name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        amount INTEGER NOT NULL,
-        target_player TEXT DEFAULT '',
-        operator TEXT DEFAULT '',
-        reason TEXT DEFAULT '',
-        balance_before INTEGER DEFAULT 0,
-        balance_after INTEGER DEFAULT 0,
-        tx_time INTEGER NOT NULL,
-        synced_at INTEGER NOT NULL,
-        UNIQUE(java_id)
-    )");
-
-    // 索引用于查询加速
-    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (\Throwable $e) {}
-    try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (\Throwable $e) {}
+    // 创建/补齐 game_transactions 表与索引（与对账接口共用同一份 DDL）
+    ensureGameTransactionsTable($db);
 
     $now = time();
     $count = 0;
