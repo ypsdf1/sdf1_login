@@ -2843,7 +2843,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">详细描述</label>
                 <textarea id="ticketDesc" rows="6" placeholder="详细描述您的问题，支持Markdown格式" style="width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:14px;resize:vertical;font-family:monospace"></textarea></div>
             <div style="margin-bottom:12px"><label style="color:var(--dim);font-size:13px;display:block;margin-bottom:4px">附件图片（最多 3 张）</label>
-                <input type="file" id="ticketImg" accept=".png,.jpg,image/png,image/jpeg" multiple onchange="uploadTicketImage(this)" style="font-size:13px">
+                <input type="file" id="ticketImg" accept=".png,.jpg,.jpeg,image/png,image/jpeg" multiple onchange="uploadTicketImage(this)" style="font-size:13px">
                 <p style="color:var(--dim);font-size:12px;margin-top:4px">仅支持 png / jpg，单张 ≤ 2048K；选中即上传，并在上方描述光标处插入 [图片N] 占位符</p>
                 <div id="ticketImgList" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
                 <p id="ticketImgMsg" style="color:var(--red);font-size:12px;margin-top:4px"></p></div>
@@ -2866,8 +2866,14 @@ if ($currentVersion !== $BUILD_VERSION) {
         input.value = '';
         for (const file of files) {
             if ((ticketState.images || []).length >= 3) { setImgMsg(msg, '最多只能上传 3 张图片', true); break; }
-            const ext = (file.name.split('.').pop() || '').toLowerCase();
-            if (ext !== 'png' && ext !== 'jpg') { setImgMsg(msg, '仅支持 png / jpg：' + file.name, true); continue; }
+            // ★ 2026-10-04 修复：不再用文件名后缀判类型
+            //   （.jpeg / 全角句点 / 无后缀的真实 png、jpg 曾被误拦）
+            //   只有明显不是图片类型（.gif/.webp/.heic/文档等）才提前拦下，
+            //   其余一律上传，由服务端按图片真实内容判定。
+            const ext = (file.name.split('.').pop() || '').toLowerCase().trim();
+            const okExt = ['', 'png', 'jpg', 'jpeg', 'jpe', 'jfif'];
+            if (!okExt.includes(ext)) { setImgMsg(msg, '仅支持 png / jpg（.jpeg 也算）：' + file.name, true); continue; }
+            if (file.type && !file.type.startsWith('image/')) { setImgMsg(msg, '这不是图片文件：' + file.name, true); continue; }
             if (file.size > 2048 * 1024) { setImgMsg(msg, '超过 2048K：' + file.name, true); continue; }
             setImgMsg(msg, '上传中… ' + file.name, false);
             try {

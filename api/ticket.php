@@ -189,8 +189,50 @@ function decodeTicketImages($raw) {
 /**
  * 上传工单附件图片：转存自家兰空图床，返回可直接引用的 URL。
  * 认证：管理后台 session 或用户 token（getAuthUser）。
- * 限制：仅 png/jpg、单张 ≤2048K、内容必须与后缀一致；同会话每分钟最多 12 次（防刷）。
+ * 限制：仅 png/jpg（★ 2026-10-04 起按图片真实内容判定，不看文件名后缀）、单张 ≤2048K；同会话每分钟最多 12 次（防刷）。
  */
+/**
+ * ★ 清洗上传文件名（2026-10-04 任务4）
+ * 全角句点→半角、零宽字符剔除、去老浏览器带的完整路径、去首尾空白。
+ */
+function sanitizeImageFileName($name) {
+    // 全角/非法字符 -> 半角合法字符（Windows 会拒收含全角字符的文件名）
+    $name = str_replace(array(
+        "\xe3\x80\x8e",   // 全角句点
+        "\xef\xbd\xa1",   // 半角浊点
+        "\xe3\x80\x8f",   // 全角斜线
+        "\xe2\x80\x8b",   // 零宽空格
+        "\xe2\x80\x8c",   // 零宽非连接符
+        "\xe2\x80\x8d",   // 零宽连接符
+        "\xef\xbb\xbf",   // BOM
+        "\xef\xbc\x8c",   // 全角 小于号
+        "\xef\xbc\x9e",   // 全角 大于号
+        "\xef\xbc\x9a",   // 全角 冒号
+        "\xef\xbc\x9f",   // 全角 问号
+        "\xef\xbc\x8a",   // 全角 星号
+        "\xef\xbc\x87",   // 全角 双引号
+        "\xef\xbc\x9c",   // 全角 竖线
+        "\xef\xbc\xa0",   // 全角空格
+    ), array(
+        '.', '.', '/', '', '', '', '',
+        '_', '_', '_', '_', '_', '_', '_', ' ',
+    ), $name);
+    // 老浏览器会带完整路径 C:\fakepath\a.png
+    $name = str_replace('\\', '/', $name);
+    $pos = strrpos($name, '/');
+    if ($pos !== false) $name = substr($name, $pos + 1);
+    return trim($name);
+}
+
+/** 后缀归一：jpeg / jpe / jfif -> jpg，其余转小写去点 */
+function normalizeImageExt($ext) {
+    $ext = strtolower(trim((string)$ext));
+    $ext = str_replace('.', '', $ext);
+    if (in_array($ext, array('jpeg', 'jpe', 'jfif', 'jif'), true)) return 'jpg';
+    return $ext;
+}
+
+
 function ticketUploadImage() {
     getAuthUser();
 
@@ -218,19 +260,27 @@ function ticketUploadImage() {
         $m = isset($msgs[$f['error']]) ? $msgs[$f['error']] : ('上传错误码 ' . $f['error']);
         error($m);
     }
-    // 后缀：仅 png / jpg
-    $orig = basename((string)$f['name']);
-    $ext = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
-    if ($ext !== 'png' && $ext !== 'jpg') error('仅支持 png / jpg 格式');
+    // 文件名清洗：全角句点→半角、去零宽字符、去首尾空白
+    $orig = sanitizeImageFileName(basename((string)$f['name']));
     // 大小：≤2048K
     if ((int)$f['size'] > 2048 * 1024) error('图片不能超过 2048K');
     if (!is_uploaded_file($f['tmp_name'])) error('非法上传');
-    // 内容真实校验：防伪造后缀上传任意文件
+    // ★ 2026-10-04 修复：判定「是什么图」只看图片真实内容，不看文件名后缀。
+    //   旧逻辑用 pathinfo 后缀判类型，导致 .jpeg / 全角句点 / 尾部空格 /
+    //   无后缀的真实 png、jpg 全被误判成「不是 png/jpg 图片」。
+    //   这里 getimagesize 认真实格式，防伪造后缀的安全目的依然成立。
     $info = @getimagesize($f['tmp_name']);
-    if ($info === false) error('无法识别的图片内容');
+    if ($info === false) error('无法识别的图片内容（请确认文件确实是 png 或 jpg）');
     $itype = (int)$info[2];
-    if ($ext === 'png' && $itype !== IMAGETYPE_PNG) error('文件内容与 .png 后缀不符');
-    if ($ext === 'jpg' && $itype !== IMAGETYPE_JPEG) error('文件内容与 .jpg 后缀不符');
+    if ($itype === IMAGETYPE_PNG)       $realExt = 'png';
+    elseif ($itype === IMAGETYPE_JPEG) $realExt = 'jpg';
+    else error('仅支持 png / jpg 格式');
+    // 后缀归一：jpeg/jpe/jfif 一律当 jpg
+    $ext = normalizeImageExt(pathinfo($orig, PATHINFO_EXTENSION));
+    // 用真实后缀重命名，去掉 .jpeg / 空格 / 全角点等乱七八糟的原名
+    $base = pathinfo($orig, PATHINFO_FILENAME);
+    if ($base === '') $base = 'ticket_image';
+    $orig = mb_substr($base, 0, 60) . '.' . $realExt;
 
     $r = lskyUploadFile($f['tmp_name'], $orig);
     if (empty($r['ok'])) error('图片上传失败: ' . (isset($r['msg']) && $r['msg'] !== '' ? $r['msg'] : '未知错误'));

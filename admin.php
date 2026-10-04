@@ -3107,6 +3107,12 @@ function showAddUserGroup() {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
             <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果上限(5=普通玩家, &lt;=0=不限)</label>
+                <input id="ugMaxEffects" type="number" value="5" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
                 <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=跟随默认)</label>
                 <input id="ugHomeLimit" type="number" value="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
@@ -3143,6 +3149,7 @@ async function doAddUserGroup() {
     const priority = document.getElementById('ugPriority')?.value || '0';
     const price = document.getElementById('ugPrice')?.value || '-1';
     const maxLands = document.getElementById('ugMaxLands')?.value || '-1';
+    const maxEffects = document.getElementById('ugMaxEffects')?.value || '5';
     const homeLimit = document.getElementById('ugHomeLimit')?.value || '0';
     const joinPrice = document.getElementById('ugJoinPrice')?.value || '0';
     const renewPrice = document.getElementById('ugRenewPrice')?.value || '0';
@@ -3157,7 +3164,7 @@ async function doAddUserGroup() {
     try {
         const res = await apiCall('update_user_group', {
             name, display_name: displayName, display_color: color,
-            priority, land_price_per_sqm: price, max_lands: maxLands,
+            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects,
             home_limit: homeLimit, join_price: joinPrice, renew_price: renewPrice,
             duration_minutes: duration, auto_renew: autoRenew,
             default_perms: '{}'
@@ -3204,6 +3211,10 @@ async function showEditUserGroup(groupName) {
             <input id="eugMaxLands" type="number" value="${g.max_lands}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
         html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">领地增益效果上限(&lt;=0=不限)</label>
+            <input id="eugMaxEffects" type="number" value="${g.max_effects ?? 5}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">Home上限(0=默认)</label>
             <input id="eugHomeLimit" type="number" value="${g.home_limit || 0}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">有效期(分钟, 0=永久)</label>
@@ -3247,6 +3258,7 @@ async function doEditUserGroup(groupName) {
     const priority = document.getElementById('eugPriority')?.value || '0';
     const price = document.getElementById('eugPrice')?.value || '-1';
     const maxLands = document.getElementById('eugMaxLands')?.value || '-1';
+    const maxEffects = document.getElementById('eugMaxEffects')?.value || '5';
     const homeLimit = document.getElementById('eugHomeLimit')?.value || '0';
     const duration = document.getElementById('eugDuration')?.value || '0';
     const joinPrice = document.getElementById('eugJoinPrice')?.value || '0';
@@ -3262,7 +3274,7 @@ async function doEditUserGroup(groupName) {
     try {
         const res = await apiCall('update_user_group', {
             name: groupName, display_name: displayName, display_color: color,
-            priority, land_price_per_sqm: price, max_lands: maxLands,
+            priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects,
             home_limit: homeLimit, duration_minutes: duration,
             join_price: joinPrice, renew_price: renewPrice, auto_renew: autoRenew,
             default_perms: JSON.stringify(perms)
