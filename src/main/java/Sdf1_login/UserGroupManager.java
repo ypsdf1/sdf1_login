@@ -52,7 +52,8 @@ public class UserGroupManager {
                     + "max_lands INTEGER DEFAULT -1,"             // -1 = 使用全局值
                     + "default_perms TEXT DEFAULT '{}',"          // JSON: 默认deny_*标志
                     + "is_permanent INTEGER DEFAULT 1,"           // 保留兼容
-                    + "duration_minutes INTEGER DEFAULT 0"        // 保留兼容
+                    + "duration_minutes INTEGER DEFAULT 0,"       // 保留兼容
+                    + "max_effect_level INTEGER DEFAULT 256"      // 药效等级上限，<=0=按原版256
                     + ")");
 
             // 玩家↔用户组关联
@@ -78,6 +79,8 @@ public class UserGroupManager {
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN renew_price INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 领地增益效果上限（2026-10-04 任务3）：默认5个，<=0=不限
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_effects INTEGER DEFAULT 5"); } catch (Exception ignored) {}
+            // ★ 药效等级上限（2026-10-04 任务4）：默认256=原版最大药效强度，<=0=按原版
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_effect_level INTEGER DEFAULT 256"); } catch (Exception ignored) {}
             // duration_minutes已有(旧列)，复用
 
             st.close();
@@ -110,6 +113,8 @@ public class UserGroupManager {
                 cfg.durationMinutes = rs.getLong("duration_minutes");
                 cfg.maxEffects = rs.getInt("max_effects");
                 if (rs.wasNull()) cfg.maxEffects = 5;
+                cfg.maxEffectLevel = rs.getInt("max_effect_level");
+                if (rs.wasNull()) cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL;
                 if (cfg.name != null && !cfg.name.isEmpty()) {
                     groupConfigs.put(cfg.name, cfg);
                 }
@@ -131,8 +136,8 @@ public class UserGroupManager {
                             + "(group_name, display_name, display_color,"
                             + " priority, land_price_per_sqm, max_lands, default_perms,"
                             + " home_limit, join_price, auto_renew, renew_price, duration_minutes,"
-                            + " max_effects)"
-                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + " max_effects, max_effect_level)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             ps.setString(1, cfg.name);
             ps.setString(2, cfg.displayName);
             ps.setString(3, cfg.displayColor);
@@ -146,6 +151,7 @@ public class UserGroupManager {
             ps.setInt(11, cfg.renewPrice);
             ps.setLong(12, cfg.durationMinutes);
             ps.setInt(13, cfg.maxEffects);
+            ps.setInt(14, cfg.maxEffectLevel);
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
@@ -981,6 +987,30 @@ public class UserGroupManager {
     }
 
     /**
+     * ★ 药效等级上限（2026-10-04 任务4）。
+     * 普通玩家（无用户组）严格按原版最大药效强度 256 封顶；
+     * 用户组玩家按组配置 max_effect_level，配置多少就是多少。
+     * 组配置 <=0 视为「不额外限制」，仍受原版 256 硬上限约束。
+     *
+     * @param player        玩家名
+     * @param globalDefault 无组时的全局默认（原版上限 256）
+     * @return 药效强度上限，恒 >=1 且 <=256
+     */
+    public int getPlayerMaxEffectLevel(String player, int globalDefault) {
+        int cap = DEFAULT_MAX_EFFECT_LEVEL;
+        if (globalDefault > 0 && globalDefault < cap) {
+            cap = globalDefault;
+        }
+        if (player != null && !player.isEmpty()) {
+            UserGroupConfig cfg = getHighestGroup(player);
+            if (cfg != null && cfg.maxEffectLevel > 0 && cfg.maxEffectLevel < cap) {
+                cap = cfg.maxEffectLevel;
+            }
+        }
+        return cap;
+    }
+
+    /**
      * 获取玩家的默认领地权限 JSON
      * 返回：组默认权限 或 空JSON "{}"
      */
@@ -1151,6 +1181,14 @@ public class UserGroupManager {
 
     // ==================== 配置类 ====================
 
+    /**
+     * ★ 原版最大药效强度（2026-10-04 任务4）。
+     * Minecraft 药效强度范围 1~256，amplifier = 强度 - 1，即 0~255，
+     * /effect 命令的 amplifier 参数硬上限就是 255。
+     * 普通玩家（无用户组）一律以此为上限，严禁超限。
+     */
+    public static final int DEFAULT_MAX_EFFECT_LEVEL = 256;
+
     public static class UserGroupConfig {
         public String name;
         public String displayName = "";
@@ -1160,6 +1198,7 @@ public class UserGroupManager {
         public int landPricePerSqm = -1;   // -1 = 使用全局
         public int maxLands = -1;          // -1 = 使用全局
         public int maxEffects = 5;         // 领地增益效果上限，<=0=不限
+        public int maxEffectLevel = DEFAULT_MAX_EFFECT_LEVEL; // 药效等级上限，<=0=按原版256
         public String defaultPerms = "{}"; // JSON
         // Home相关
         public int homeLimit = 0;          // 0=跟随全局, >0=独立限制, -1=无限

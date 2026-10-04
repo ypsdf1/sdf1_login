@@ -4039,6 +4039,7 @@ public class WebManager {
                         gs.append("\"land_price_per_sqm\":").append(cfg.landPricePerSqm).append(",");
                         gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
                         gs.append("\"max_effects\":").append(cfg.maxEffects).append(",");
+                        gs.append("\"max_effect_level\":").append(cfg.maxEffectLevel).append(",");
                         gs.append("\"home_limit\":").append(cfg.homeLimit).append(",");
                         gs.append("\"join_price\":").append(cfg.joinPrice).append(",");
                         gs.append("\"auto_renew\":").append(cfg.autoRenew ? 1 : 0).append(",");
@@ -4437,6 +4438,13 @@ public class WebManager {
                 try { cfg.maxEffects = Integer.parseInt(maxEffStr); }
                 catch (Exception ignored) { cfg.maxEffects = 5; }
             }
+            // ★ 药效等级上限（2026-10-04 任务4）
+            String maxEffLvStr = extractJsonField(obj, "max_effect_level");
+            if (!maxEffLvStr.isEmpty()) {
+                try { cfg.maxEffectLevel = Integer.parseInt(maxEffLvStr); }
+                catch (Exception ignored) { cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL; }
+            }
+            if (cfg.maxEffectLevel <= 0) cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL;
             String homeLimStr = extractJsonField(obj, "home_limit");
             if (!homeLimStr.isEmpty()) try { cfg.homeLimit = Integer.parseInt(homeLimStr); } catch (Exception ignored) {}
             String joinStr = extractJsonField(obj, "join_price");

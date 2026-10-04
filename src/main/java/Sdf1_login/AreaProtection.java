@@ -3825,7 +3825,8 @@ public class AreaProtection implements Listener {
                 PotionEffectType type =
                         resolveEffectType(eff[0]);
                 if (type == null) continue;
-                int lv = Integer.parseInt(eff[1]) - 1;
+                // ★ 药效等级封顶（2026-10-04 任务4）：普通玩家按原版256，用户组按组配置
+                int lv = clampGiveEffectLevel(Integer.parseInt(eff[1]), ac.owner) - 1;
                 int dur = Integer.parseInt(eff[2]) * 20;
 
                 PotionEffect existing =
@@ -3891,7 +3892,8 @@ public class AreaProtection implements Listener {
             PotionEffectType type = resolveEffectType(eff[0]);
             if (type == null) continue;
             try {
-                int lv = Integer.parseInt(eff[1]) - 1;  // MC amplifier从0开始
+                // ★ 药效等级封顶（2026-10-04 任务4），与首次给予同一口径
+                int lv = clampGiveEffectLevel(Integer.parseInt(eff[1]), ac.owner) - 1;  // MC amplifier从0开始
                 int dur = Integer.parseInt(eff[2]) * 20;  // 秒→tick
                 expectedEffects.put(type, new int[]{lv, dur});
             } catch (NumberFormatException ignored) {}
@@ -4162,6 +4164,8 @@ public class AreaProtection implements Listener {
             catch (NumberFormatException ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
             catch (NumberFormatException ignored) {}
+            // ★ 药效等级封顶（2026-10-04 任务4）
+            level = clampGiveEffectLevel(level, ac.owner);
             PotionEffectType type = resolveEffectType(effName);
             if (type != null) {
                 p.addPotionEffect(new PotionEffect(
@@ -4912,6 +4916,39 @@ public class AreaProtection implements Listener {
         return 5;
     }
 
+    /**
+     * ★ 领地增益【药效等级上限】（2026-10-04 任务4）。
+     * 普通玩家（无用户组）严格按原版最大药效强度 256 封顶；
+     * 用户组玩家按组配置 max_effect_level，组里配多少就是多少。
+     *
+     * @param ownerName 领地所有者（上限跟随领地所有者所属用户组，与数量上限一致口径）
+     * @return 药效强度上限，恒在 1~256 之间
+     */
+    public int getMaxGiveEffectLevel(String ownerName) {
+        try {
+            UserGroupManager ugm = plugin.getUserGroup();
+            if (ugm != null) {
+                return ugm.getPlayerMaxEffectLevel(ownerName,
+                        UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL);
+            }
+        } catch (Exception ignored) {}
+        return UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL;
+    }
+
+    /**
+     * 把领地配置里的药效等级夹到该领地的合法上限内。
+     * 所有写入/应用入口都必须过这一刀。
+     *
+     * @param rawLevel 配置里写的原始药效强度
+     * @param ownerName 领地所有者
+     * @return 夹紧后的药效强度（1~256，且 <= 该领地用户组上限）
+     */
+    public int clampGiveEffectLevel(int rawLevel, String ownerName) {
+        int cap = getMaxGiveEffectLevel(ownerName);
+        if (rawLevel < 1) return 1;
+        return rawLevel > cap ? cap : rawLevel;
+    }
+
     public List<String> getUserGroupNames() {
         List<String> names = new ArrayList<>();
         UserGroupManager ugm = plugin.getUserGroup();
@@ -5111,6 +5148,8 @@ public class AreaProtection implements Listener {
             catch (NumberFormatException ignored) {}
             try { duration = Integer.parseInt(parts[2]); }
             catch (NumberFormatException ignored) {}
+            // ★ 药效等级封顶（2026-10-04 任务4）
+            level = clampGiveEffectLevel(level, ac.owner);
 
             PotionEffectType type = resolveEffectType(effName);
             plugin.getLogger().info("[防护调试] 给予: "
@@ -10696,11 +10735,13 @@ public class AreaProtection implements Listener {
                         ac.giveEffects = new java.util.ArrayList<>(
                                 ac.giveEffects.subList(0, maxEff));
                     }
+                    // ★ 药效等级按该领地用户组上限封顶（2026-10-04 任务4）
+                    int maxLv = getMaxGiveEffectLevel(ac.owner);
                     for (String[] ef : ac.giveEffects) {
                         if (ef.length >= 2) {
                             try {
                                 int lv = Integer.parseInt(ef[1]);
-                                if (lv > 255) ef[1] = "255";
+                                if (lv > maxLv) ef[1] = String.valueOf(maxLv);
                                 else if (lv < 1) ef[1] = "1";
                             } catch (NumberFormatException ignored) {}
                         }
@@ -11169,9 +11210,11 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§c§l[添加增益效果] §f等级和秒数必须是数字");
                 return true;
             }
-            // ★ 验证等级和秒数范围
-            if (effLv < 1 || effLv > 255) {
-                p.sendMessage("§c§l[添加增益效果] §f等级范围: 1~255");
+            // ★ 验证等级和秒数范围（等级上限按用户组配置，2026-10-04 任务4）
+            int maxLvAdd = getMaxGiveEffectLevel(land.owner);
+            if (effLv < 1 || effLv > maxLvAdd) {
+                p.sendMessage("§c§l[添加增益效果] §f等级范围: 1~" + maxLvAdd);
+                p.sendMessage("§7上限说明: 普通玩家为原版上限 256，你当前可用的上限是 " + maxLvAdd);
                 return true;
             }
             if (effDur < 1 || effDur > 3600) {
@@ -11226,7 +11269,12 @@ public class AreaProtection implements Listener {
                     p.sendMessage("§c请输入有效数字");
                     return true;
                 }
-                if (newLevel < 1 || newLevel > 255) { p.sendMessage("§c等级范围1~255"); return true; }
+                int maxLvEdit = getMaxGiveEffectLevel(land.owner);
+                if (newLevel < 1 || newLevel > maxLvEdit) {
+                    p.sendMessage("§c等级范围1~" + maxLvEdit);
+                    p.sendMessage("§7上限说明: 普通玩家为原版上限 256，你当前可用的上限是 " + maxLvEdit);
+                    return true;
+                }
                 if (eff.length < 2) { String[] tmp = new String[3]; System.arraycopy(eff, 0, tmp, 0, eff.length); eff = tmp; land.giveEffects.set(idx - 1, eff); }
                 eff[1] = String.valueOf(newLevel);
                 p.sendMessage("§a§l[编辑增益] §f已将 §e" + eff[0] + " §f等级修改为 " + newLevel);
