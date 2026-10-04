@@ -43,6 +43,30 @@ function convertEffectsForFrontend($row) {
             $row['give_effects'] = convertPipeEffectsToFrontend($raw);
         }
     }
+    // ★ 2026-10-04：负面效果独立字段，前端同样按 [名字,等级,秒数] 数组渲染
+    if (!empty($row['bad_effects'])) {
+        $rawBad = $row['bad_effects'];
+        if ($rawBad[0] === '[') {
+            $decodedBad = json_decode($rawBad, true);
+            if (is_array($decodedBad)) {
+                $arrBad = [];
+                foreach ($decodedBad as $e) {
+                    if (is_array($e) && count($e) >= 2) {
+                        $arrBad[] = array_map('strval', $e);
+                    } elseif (is_string($e)) {
+                        $arrBad[] = [$e, '1', '300'];
+                    }
+                }
+                $row['bad_effects'] = json_encode($arrBad, JSON_UNESCAPED_UNICODE);
+            } else {
+                $row['bad_effects'] = convertPipeEffectsToFrontend($rawBad);
+            }
+        } else {
+            $row['bad_effects'] = convertPipeEffectsToFrontend($rawBad);
+        }
+    } else {
+        $row['bad_effects'] = '[]';
+    }
     if (!empty($row['clear_effects']) && $row['clear_effects'][0] !== '[') {
         $names = array_filter(explode(',', $row['clear_effects']), function($n) { return !empty(trim($n)); });
         $row['clear_effects'] = json_encode(array_values(array_map('trim', $names)));
@@ -611,6 +635,8 @@ function initLandTables($db) {
     // ★ 效果管理字段迁移（兼容已有表）
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN give_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    // ★ 2026-10-04：负面效果从 give_effects 拆出，负面对应独立字段
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN bad_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     // ★ 管理变更标记
@@ -827,7 +853,7 @@ function handleSyncLands($db, $post) {
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max,
          area_size, created_at, synced_at,
-         confiscate_items, deny_use_items, give_effects, clear_effects, clear_all_bad,
+         confiscate_items, deny_use_items, give_effects, bad_effects, clear_effects, clear_all_bad,
          punish_commands, deny_block_place, deny_block_break, deny_sign_edit, deny_pvp, deny_fall_damage,
          deny_hunger, deny_all_damage, deny_drop, deny_mount, deny_ender_pearl,
          deny_bow, deny_potion, deny_explosion, deny_raid, deny_fire_spread,
@@ -843,7 +869,7 @@ function handleSyncLands($db, $post) {
          enable_announce, announce_template, txt_content, deny_fluid, is_public_building, allow_visitor_teleport)
         VALUES (:id, :name, :owner, :world, :x1, :z1, :x2, :z2, :ymin, :ymax,
                 :size, :created, :synced,
-                :confiscate_items, :deny_use_items, :give_effects, :clear_effects, :clear_all_bad,
+                :confiscate_items, :deny_use_items, :give_effects, :bad_effects, :clear_effects, :clear_all_bad,
                 :punish_commands, :deny_block_place, :deny_block_break, :deny_sign_edit, :deny_pvp, :deny_fall_damage,
                 :deny_hunger, :deny_all_damage, :deny_drop, :deny_mount, :deny_ender_pearl,
                 :deny_bow, :deny_potion, :deny_explosion, :deny_raid, :deny_fire_spread,
@@ -876,6 +902,8 @@ function handleSyncLands($db, $post) {
         $stmt->bindValue(':confiscate_items', $land['confiscate_items'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':deny_use_items', $land['deny_use_items'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':give_effects', $land['give_effects'] ?? '', SQLITE3_TEXT);
+        // ★ 2026-10-04：负面效果独立存储
+        $stmt->bindValue(':bad_effects', $land['bad_effects'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':clear_effects', $land['clear_effects'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':clear_all_bad', (int)($land['clear_all_bad'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':punish_commands', $land['punish_commands'] ?? '', SQLITE3_TEXT);
@@ -1852,7 +1880,8 @@ function handleUpdateLandField($db, $playerName, $post) {
     // 允许的字段白名单（与Java端 updateLandFieldFromWeb 白名单完全对齐）
     $allowedFields = [
         // 效果管理
-        'clear_effects', 'give_effects', 'clear_all_bad', 'deny_all_effects',
+        // ★ 2026-10-04：负面效果从 give_effects 拆出，负面对应 bad_effects
+        'clear_effects', 'give_effects', 'bad_effects', 'clear_all_bad', 'deny_all_effects',
         // 基础权限（与Java GUI访客权限列表一致）
         'deny_move', 'deny_block_place', 'deny_block_break', 'deny_sign_edit', 'deny_entity_interact',
         'deny_container', 'deny_pvp', 'deny_mount', 'deny_ender_pearl',
@@ -1896,15 +1925,30 @@ function handleUpdateLandField($db, $playerName, $post) {
 
     // ★ 将JSON数组转回Java格式再存储
     $storeValue = $value;
-    if (($field === 'give_effects' || $field === 'clear_effects') && !empty($value) && $value[0] === '[') {
+    if (($field === 'give_effects' || $field === 'bad_effects' || $field === 'clear_effects')
+        && !empty($value) && $value[0] === '[') {
         $arr = json_decode($value, true);
         if (is_array($arr)) {
-            if ($field === 'give_effects') {
+            if ($field === 'give_effects' || $field === 'bad_effects') {
                 // ★ 2026-10-04 任务3：数量上限（按领地所有者用户组 max_effects，默认5）
                 // ★ 2026-10-04 任务4：等级封顶（按 max_effect_level，普通玩家=原版256）
+                // ★ 2026-10-04 负面拆出后，增益与负面<b>共用同一份 max_effects 预算</b>，
+                //   所以这里要把对方列表的长度一并算进去，避免两边各占满一份。
                 $maxEff = getLandMaxEffects($db, $land);
-                if (count($arr) > $maxEff) {
-                    $arr = array_slice($arr, 0, $maxEff);
+                $otherCount = 0;
+                $otherField = ($field === 'give_effects') ? 'bad_effects' : 'give_effects';
+                $otherRaw = $land[$otherField] ?? '';
+                if (!empty($otherRaw)) {
+                    if ($otherRaw[0] === '[') {
+                        $otherArr = json_decode($otherRaw, true);
+                        $otherCount = is_array($otherArr) ? count($otherArr) : 0;
+                    } else {
+                        $otherCount = count(array_filter(explode('|', $otherRaw), function($x) { return trim($x) !== ''; }));
+                    }
+                }
+                $room = max(0, $maxEff - $otherCount);
+                if (count($arr) > $room) {
+                    $arr = array_slice($arr, 0, $room);
                 }
                 // [["夜视","1","99999"]] → "夜视:1:99999"
                 $parts = [];

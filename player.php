@@ -3466,8 +3466,11 @@ async function renderLandDetail(el, landName) {
         // ★★★ 效果管理 ★★★
         let clearEffects = [];
         let giveEffects = [];
+        // ★ 2026-10-04：负面效果从 give_effects 拆到 bad_effects（独立子菜单）
+        let badEffects = [];
         try { clearEffects = land.clear_effects ? JSON.parse(land.clear_effects) : []; } catch(e) { clearEffects = []; }
         try { giveEffects = land.give_effects ? JSON.parse(land.give_effects) : []; } catch(e) { giveEffects = []; }
+        try { badEffects = land.bad_effects ? JSON.parse(land.bad_effects) : []; } catch(e) { badEffects = []; }
         const clearAllBad = !!parseInt(land.clear_all_bad || 0);
         const denyAll = !!parseInt(land.deny_all_effects || 0);
 
@@ -3525,6 +3528,31 @@ async function renderLandDetail(el, landName) {
                 html += `<span style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--fg)">
                     ${escHtml(effName)}${effLevel}${effDur}
                     <span onclick="removeLandEffect('${escHtml(land.name)}','give_effects','${escHtml(Array.isArray(eff) ? JSON.stringify(eff) : eff)}')" style="cursor:pointer;color:var(--red);margin-left:4px">✕</span>
+                </span>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+
+        // ★ 负面效果列表（2026-10-04 从增益里拆出，独立子菜单）
+        //   注意：负面与增益共用同一份 max_effects 数量预算（服务端会按合计截断）
+        html += `<div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="color:var(--fg);font-size:13px;font-weight:500">负面效果 (${badEffects.length})</span>
+                <button class="btn" style="font-size:11px;padding:2px 8px" onclick="addBadEffect('${escHtml(land.name)}')">+ 添加</button>
+            </div>
+            <p style="color:var(--dim);font-size:11px;margin:0 0 6px">与增益共用数量上限（当前 ${giveEffects.length}+${badEffects.length} 个）</p>`;
+        if (badEffects.length === 0) {
+            html += `<p style="color:var(--dim);font-size:12px">暂无负面效果</p>`;
+        } else {
+            html += `<div style="display:flex;gap:6px;flex-wrap:wrap">`;
+            for (const eff of badEffects) {
+                const effName = Array.isArray(eff) ? eff[0] : eff;
+                const effLevel = Array.isArray(eff) && eff[1] ? ' Lv' + eff[1] : '';
+                const effDur = Array.isArray(eff) && eff[2] ? ' ' + eff[2] + 's' : '';
+                html += `<span style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:3px 10px;font-size:12px;color:var(--fg)">
+                    ${escHtml(effName)}${effLevel}${effDur}
+                    <span onclick="removeLandEffect('${escHtml(land.name)}','bad_effects','${escHtml(Array.isArray(eff) ? JSON.stringify(eff) : eff)}')" style="cursor:pointer;color:var(--red);margin-left:4px">✕</span>
                 </span>`;
             }
             html += `</div>`;
@@ -3919,40 +3947,61 @@ async function addClearEffect(landName) {
     }
 }
 
-async function addGiveEffect(landName) {
-    // MC药水效果列表
-    const EFFECTS = [
-        {value:'SPEED',label:'🏃 速度',desc:'SPEED - 提升移动速度'},
-        {value:'SLOWNESS',label:'🐌 缓慢',desc:'SLOWNESS - 降低移动速度'},
-        {value:'HASTE',label:'⛏️ 急迫',desc:'HASTE - 提升挖掘和攻击速度'},
-        {value:'MINING_FATIGUE',label:'🔧 疲劳',desc:'MINING_FATIGUE - 降低挖掘速度'},
-        {value:'STRENGTH',label:'💪 力量',desc:'STRENGTH - 提升近战伤害'},
-        {value:'JUMP_BOOST',label:'🦘 跳跃提升',desc:'JUMP_BOOST - 提升跳跃高度'},
-        {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
-        {value:'REGENERATION',label:'❤️ 再生',desc:'REGENERATION - 缓慢恢复生命'},
-        {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
-        {value:'FIRE_RESISTANCE',label:'🔥 抗火',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
-        {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
-        {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
-        {value:'BLINDNESS',label:'🌑 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
-        {value:'NIGHT_VISION',label:'🦉 夜视',desc:'NIGHT_VISION - 黑暗中看清一切'},
-        {value:'WEAKNESS',label:'😵 虚弱',desc:'WEAKNESS - 降低近战伤害'},
-        {value:'POISON',label:'☠️ 中毒',desc:'POISON - 持续失去生命'},
-        {value:'WITHER',label:'💀 凋零',desc:'WITHER - 持续失去生命（更严重）'},
-        {value:'HEALTH_BOOST',label:'💖 生命提升',desc:'HEALTH_BOOST - 增加最大生命值'},
-        {value:'ABSORPTION',label:'🥇 吸收',desc:'ABSORPTION - 提供额外黄色生命值'},
-        {value:'SATURATION',label:'🍖 饱和',desc:'SATURATION - 恢复饥饿值'},
-        {value:'GLOWING',label:'✨ 发光',desc:'GLOWING - 对所有人高亮显示'},
-        {value:'LEVITATION',label:'🎈 漂浮',desc:'LEVITATION - 向上飘浮'},
-        {value:'SLOW_FALLING',label:'🪂 缓降',desc:'SLOW_FALLING - 下落速度减慢'},
-        {value:'LUCK',label:'🍀 幸运',desc:'LUCK - 提升战利品品质'},
-        {value:'UNLUCK',label:'🤕 厄运',desc:'UNLUCK - 降低战利品品质'},
-        {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳'},
-        {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
-        {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
-        {value:'HERO_OF_THE_VILLAGE',label:'🏆 村庄英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折'}
-    ];
+// ★ 效果英文ID → 中文名映射（Java端 resolveEffectType 走中文→英文，两边必须对齐）
+const LAND_EFFECT_EN2CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'抗火',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'村庄英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗',INFESTED:'寄生',OOZING:'渗浆',WEAVING:'盘丝',WIND_CHARGED:'蓄风',RAID_OMEN:'袭击之兆',TRIAL_OMEN:'试炼之兆',HUNGER:'饥饿',BREATH_OF_THE_NAUTILUS:'潮涌能量'};
 
+// 负面 + 中性效果档（2026-10-04 从增益里拆出，与 Java 端 EFFECTS_BAD/EFFECTS_NEUTRAL 同口径）
+const LAND_EFFECTS_BAD = [
+    {value:'SLOWNESS',label:'🐌 缓慢',desc:'SLOWNESS - 降低移动速度'},
+    {value:'MINING_FATIGUE',label:'🔧 挖掘疲劳',desc:'MINING_FATIGUE - 降低挖掘速度'},
+    {value:'INSTANT_DAMAGE',label:'💥 瞬间伤害',desc:'INSTANT_DAMAGE - 立即受到伤害'},
+    {value:'NAUSEA',label:'🤢 反胃',desc:'NAUSEA - 视角扭曲'},
+    {value:'BLINDNESS',label:'🌑 失明',desc:'BLINDNESS - 屏幕全黑，无法看到远处'},
+    {value:'HUNGER',label:'🍽️ 饥饿',desc:'HUNGER - 无法进食、饥饿值持续下降'},
+    {value:'WEAKNESS',label:'😵 虚弱',desc:'WEAKNESS - 降低近战伤害'},
+    {value:'POISON',label:'☠️ 中毒',desc:'POISON - 持续失去生命'},
+    {value:'WITHER',label:'💀 凋零',desc:'WITHER - 持续失去生命（更严重）'},
+    {value:'LEVITATION',label:'🎈 飘浮',desc:'LEVITATION - 向上飘浮'},
+    {value:'UNLUCK',label:'🤕 霉运',desc:'UNLUCK - 降低战利品品质'},
+    {value:'DARKNESS',label:'🌑 黑暗',desc:'DARKNESS - 视野逐渐被黑暗吞没'},
+    {value:'WIND_CHARGED',label:'🌪️ 蓄风',desc:'WIND_CHARGED - 可蓄力跃起'},
+    {value:'WEAVING',label:'🕸️ 盘丝',desc:'WEAVING - 可生成蛛网'},
+    {value:'OOZING',label:'🟢 渗浆',desc:'OOZING - 可放置经验球'},
+    {value:'INFESTED',label:'🐛 寄生',desc:'INFESTED - 可召唤恼鬼'}
+];
+const LAND_EFFECTS_NEUTRAL = [
+    {value:'BAD_OMEN',label:'💀 不祥之兆',desc:'BAD_OMEN - 进入村庄触发袭击'},
+    {value:'RAID_OMEN',label:'⚔️ 袭击之兆',desc:'RAID_OMEN - 袭击进行中'},
+    {value:'TRIAL_OMEN',label:'🏛️ 试炼之兆',desc:'TRIAL_OMEN - 试炼厅已激活'}
+];
+const LAND_EFFECTS_GOOD = [
+    {value:'SPEED',label:'🏃 迅捷',desc:'SPEED - 提升移动速度'},
+    {value:'HASTE',label:'⛏️ 急迫',desc:'HASTE - 提升挖掘和攻击速度'},
+    {value:'STRENGTH',label:'💪 力量',desc:'STRENGTH - 提升近战伤害'},
+    {value:'INSTANT_HEALTH',label:'❤️ 瞬间治疗',desc:'INSTANT_HEALTH - 立即恢复生命'},
+    {value:'JUMP_BOOST',label:'🦘 跳跃提升',desc:'JUMP_BOOST - 提升跳跃高度'},
+    {value:'REGENERATION',label:'💚 生命恢复',desc:'REGENERATION - 缓慢恢复生命'},
+    {value:'RESISTANCE',label:'🛡️ 抗性提升',desc:'RESISTANCE - 减少受到的伤害'},
+    {value:'FIRE_RESISTANCE',label:'🔥 抗火',desc:'FIRE_RESISTANCE - 免疫火焰伤害'},
+    {value:'WATER_BREATHING',label:'🐠 水下呼吸',desc:'WATER_BREATHING - 水下不消耗氧气'},
+    {value:'INVISIBILITY',label:'👻 隐身',desc:'INVISIBILITY - 对其他玩家隐身'},
+    {value:'NIGHT_VISION',label:'🦉 夜视',desc:'NIGHT_VISION - 黑暗中看清一切'},
+    {value:'GLOWING',label:'✨ 发光',desc:'GLOWING - 对所有人高亮显示'},
+    {value:'HEALTH_BOOST',label:'💖 生命提升',desc:'HEALTH_BOOST - 增加最大生命值'},
+    {value:'ABSORPTION',label:'🥇 伤害吸收',desc:'ABSORPTION - 提供额外黄色生命值'},
+    {value:'SATURATION',label:'🍖 饱和',desc:'SATURATION - 恢复饥饿值'},
+    {value:'LUCK',label:'🍀 幸运',desc:'LUCK - 提升战利品品质'},
+    {value:'HERO_OF_THE_VILLAGE',label:'🏆 村庄英雄',desc:'HERO_OF_THE_VILLAGE - 村民打折（生存上限 Lv5）'},
+    {value:'SLOW_FALLING',label:'🪂 缓降',desc:'SLOW_FALLING - 下落速度减慢'},
+    {value:'CONDUIT_POWER',label:'🔷 潮涌能量',desc:'CONDUIT_POWER - 水下夜视+呼吸+速掘'},
+    {value:'DOLPHINS_GRACE',label:'🐬 海豚的恩惠',desc:'DOLPHINS_GRACE - 水下加速游泳（生存上限 Lv1）'}
+];
+
+/**
+ * 通用：给领地添加一个效果（增益/负面共用的同一套流程）
+ * @param field 'give_effects' | 'bad_effects'
+ */
+async function landEffectAdd(landName, field, pool, title) {
     try {
         const detailUrl = new URL(API + 'land_api.php', location.href);
         detailUrl.searchParams.set('action', 'land_detail');
@@ -3962,18 +4011,17 @@ async function addGiveEffect(landName) {
         const detailData = await detailRes.json();
         if (!detailData.success) { glassAlert(detailData.error); return; }
         let current = [];
-        try { current = detailData.land.give_effects ? JSON.parse(detailData.land.give_effects) : []; } catch(e) { current = []; }
+        try { current = detailData.land[field] ? JSON.parse(detailData.land[field]) : []; } catch(e) { current = []; }
 
-        // 过滤掉已添加的效果（兼容中文名和英文名）
-        const EN_TO_CN = {SPEED:'速度',SLOWNESS:'缓慢',HASTE:'急迫',MINING_FATIGUE:'挖掘疲劳',STRENGTH:'力量',JUMP_BOOST:'跳跃提升',NAUSEA:'反胃',REGENERATION:'再生',RESISTANCE:'抗性提升',FIRE_RESISTANCE:'抗火',WATER_BREATHING:'水下呼吸',INVISIBILITY:'隐身',BLINDNESS:'失明',NIGHT_VISION:'夜视',WEAKNESS:'虚弱',POISON:'中毒',WITHER:'凋零',HEALTH_BOOST:'生命提升',ABSORPTION:'吸收',SATURATION:'饱和',GLOWING:'发光',LEVITATION:'漂浮',SLOW_FALLING:'缓降',LUCK:'幸运',UNLUCK:'厄运',DOLPHINS_GRACE:'海豚的恩惠',CONDUIT_POWER:'潮涌能量',BAD_OMEN:'不祥之兆',HERO_OF_THE_VILLAGE:'村庄英雄',INSTANT_HEALTH:'瞬间治疗',INSTANT_DAMAGE:'瞬间伤害',WORLD_BORDER:'边界',DARKNESS:'黑暗'};
+        // 过滤掉已添加的效果（兼容中文名和英文名两种写法）
         const existingNames = current.map(e => Array.isArray(e) ? e[0] : e);
-        const available = EFFECTS.filter(e => !existingNames.includes(e.value) && !existingNames.includes(EN_TO_CN[e.value]));
+        const available = pool.filter(e => !existingNames.includes(e.value) && !existingNames.includes(LAND_EFFECT_EN2CN[e.value]));
         if (available.length === 0) { glassAlert('所有效果都已添加'); return; }
 
-        const eff = await glassSelect('选择要添加的增益效果', available, '点击选择效果');
+        const eff = await glassSelect(title, available, '点击选择效果');
         if (!eff || eff === false) return;
 
-        const levelStr = await glassPrompt('等级 (1-255)', '1', '默认1级，管理员最高255级');
+        const levelStr = await glassPrompt('等级 (1-255)', '1', '默认1级；超出原版生存档位会被服务端封顶');
         if (levelStr === null || levelStr === false) return;
         const level = parseInt(levelStr) || 1;
 
@@ -3982,7 +4030,7 @@ async function addGiveEffect(landName) {
         const duration = parseInt(durStr) || 300;
 
         // ★ 存储中文效果名（Java端resolveEffectType使用中文→英文映射）
-        const cnName = EN_TO_CN[eff] || eff;
+        const cnName = LAND_EFFECT_EN2CN[eff] || eff;
         current.push([cnName, Math.min(Math.max(level,1),255), Math.min(Math.max(duration,1),3600)]);
 
         const url = new URL(API + 'land_api.php', location.href);
@@ -3990,7 +4038,7 @@ async function addGiveEffect(landName) {
         url.searchParams.set('token', TOKEN);
         const body = new URLSearchParams();
         body.set('name', landName);
-        body.set('field', 'give_effects');
+        body.set('field', field);
         body.set('value', JSON.stringify(current));
         const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body.toString() });
         const data = await res.json();
@@ -4003,6 +4051,14 @@ async function addGiveEffect(landName) {
     } catch (e) {
         glassAlert('操作失败: ' + e.message);
     }
+}
+
+async function addGiveEffect(landName) {
+    await landEffectAdd(landName, 'give_effects', LAND_EFFECTS_GOOD, '选择要添加的增益效果');
+}
+
+async function addBadEffect(landName) {
+    await landEffectAdd(landName, 'bad_effects', LAND_EFFECTS_BAD.concat(LAND_EFFECTS_NEUTRAL), '选择要添加的负面效果');
 }
 
 async function removeLandEffect(landName, field, effValue) {

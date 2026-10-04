@@ -477,6 +477,8 @@ function syncLands() {
     // ★ 效果迁移
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN give_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
+    // ★ 2026-10-04：负面效果从 give_effects 拆出，负面对应独立字段
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN bad_effects TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_all_effects INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN admin_changed INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
@@ -505,7 +507,7 @@ function syncLands() {
          enter_msg, leave_msg, confiscate_msg, enable_announce, announce_template, txt_content,
          deny_block_break, deny_block_place, deny_sign_edit, deny_fluid, deny_pvp, deny_fire_spread, deny_all_effects,
          deny_item_frame, deny_entity_interact, deny_move, deny_pickup, deny_drop, deny_explosion, deny_fall_damage, deny_hunger,
-         deny_all_damage, clear_effects, give_effects, clear_all_bad,
+         deny_all_damage, clear_effects, give_effects, bad_effects, clear_all_bad,
          admin_changed, deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction,
          deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, deny_spawn_egg, deny_wax,
          warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world,
@@ -517,7 +519,7 @@ function syncLands() {
                 :enter_msg, :leave_msg, :confiscate_msg, :announce, :announce_tpl, :txt_content,
                 :deny_block_break, :deny_block_place, :deny_sign_edit, :deny_fluid, :deny_pvp, :deny_fire_spread, :deny_all_effects,
                 :deny_item_frame, :deny_entity_interact, :deny_move, :deny_pickup, :deny_drop, :deny_explosion, :deny_fall_damage, :deny_hunger,
-                :deny_all_damage, :clear_effects, :give_effects, :clear_all_bad,
+                :deny_all_damage, :clear_effects, :give_effects, :bad_effects, :clear_all_bad,
                 :admin_changed, :deny_thrown_projectiles, :deny_glowing, :deny_redstone_interaction, :deny_door_interaction,
                 :deny_noteblock_jukebox, :deny_lead, :deny_crop_harvest, :deny_wool_shear, :deny_animal_feeding, :deny_spawn_egg, :deny_wax,
                 :warp_x, :warp_y, :warp_z, :warp_yaw, :warp_pitch, :warp_world,
@@ -568,6 +570,8 @@ function syncLands() {
         $stmt->bindValue(':deny_all_damage', (int)($land['deny_all_damage'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':clear_effects', $land['clear_effects'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':give_effects', $land['give_effects'] ?? '', SQLITE3_TEXT);
+        // ★ 2026-10-04：负面效果独立存储
+        $stmt->bindValue(':bad_effects', $land['bad_effects'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':clear_all_bad_effects', (int)($land['clear_all_bad_effects'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':deny_all_effects', (int)($land['deny_all_effects'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':admin_changed', (int)($land['admin_changed'] ?? 0), SQLITE3_INTEGER);
