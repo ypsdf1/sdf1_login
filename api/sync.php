@@ -284,6 +284,9 @@ switch ($action) {
     case 'pull_tx':
         pullTx();
         break;
+    case 'check_alignment':
+        checkAlignment();
+        break;
     case 'check_pending_transactions':
         checkPendingTransactions();
         break;
@@ -1268,6 +1271,265 @@ function ensureGameTransactionsTable($db) {
     )");
     try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_player ON game_transactions(player_name, tx_time)"); } catch (\Throwable $e) {}
     try { $db->exec("CREATE INDEX IF NOT EXISTS idx_gt_type ON game_transactions(type)"); } catch (\Throwable $e) {}
+}
+
+// ==================== ★ 通用双向对账（多退少补，2026-10-05） ====================
+/**
+ * Java 每轮同步前先与 PHP「两边点一遍数据」。本接口只读不写，15 秒内必定返回 JSON。
+ *
+ * 入参 cat     = 数据类别（users/credentials/shop/bonds/ips/providers/admins/bans）
+ * 入参 records = [{k: 主键串, h: 内容指纹}, ...] —— Java 侧全量，只发指纹不发正文
+ *
+ * 出参 missing = Java 有、PHP 没有          → Java 补回去
+ *      changed = 两边都有但内容不同          → Java 按「上次交换后谁改过」决定推还是收
+ *      extra   = PHP 有、Java 没有          → Java 收回来
+ *      rows    = changed∪extra 在 PHP 侧的完整行（字段名已换成 Java 侧叫法）
+ *      php_count = PHP 侧总行数
+ *
+ * missing/changed/extra 全空 ⇒ 两边完全一致 ⇒ Java 一条数据都不发。
+ *
+ * ★ 指纹算法两端必须一模一样（Java 的 alignRowHash ↔ PHP 的 alignmentRowHash）：
+ *   按 hashcols 顺序取值 → 整数统一十进制字符串、毫秒时间戳一律折成秒 → 以 chr(31) 连接 → md5
+ */
+function alignmentCatConfig($cat) {
+    static $cfgs = null;
+    if ($cfgs === null) {
+        $cfgs = array(
+            'users' => array(
+                'table' => 'users',
+                'keycols' => array('player_name'),
+                'map' => array(),
+                'cols' => array('player_name', 'register_time', 'last_login_time', 'email', 'points', 'gift_stage', 'total_online_time'),
+                'hashcols' => array('player_name', 'register_time', 'last_login_time', 'email', 'points', 'gift_stage', 'total_online_time'),
+                'intcols' => array('register_time', 'last_login_time', 'points', 'gift_stage', 'total_online_time'),
+                'pull' => 1,
+            ),
+            'credentials' => array(
+                'table' => 'weblogin_credentials',
+                'keycols' => array('player_name'),
+                // ★ PHP 列名 -> Java(users 表)列名：rows 交出去时字段名必须是 Java 侧叫法
+                'map' => array('salt' => 'password_salt', 'temp_password_hash' => 'temp_password'),
+                'cols' => array('player_name', 'password_hash', 'salt', 'temp_password_hash', 'temp_pw_expire'),
+                'hashcols' => array('player_name', 'password_hash', 'salt', 'temp_password_hash', 'temp_pw_expire'),
+                'intcols' => array('temp_pw_expire'),
+                'pull' => 1,
+            ),
+            // ★ 库存/销量由 Web 端独立变动，不参与指纹，否则每轮都判「变了」
+            'shop' => array(
+                'table' => 'shop_items',
+                'keycols' => array('id'),
+                'map' => array(),
+                'cols' => array('id', 'category', 'display_name', 'material', 'buy_price', 'sell_price', 'stock', 'hourly_sales', 'total_sales'),
+                'hashcols' => array('id', 'category', 'display_name', 'material', 'buy_price', 'sell_price'),
+                'intcols' => array('buy_price', 'sell_price'),
+                'pull' => 0,
+            ),
+            'bonds' => array(
+                'table' => 'bond_cache',
+                'keycols' => array('player_name'),
+                'map' => array(),
+                'cols' => array('player_name', 'amount'),
+                'hashcols' => array('player_name', 'amount'),
+                'intcols' => array('amount'),
+                'pull' => 1,
+            ),
+            'ips' => array(
+                'table' => 'player_ip_changes',
+                'keycols' => array('player_name'),
+                'map' => array('player_name' => 'name', 'new_ip' => 'ip'),
+                'cols' => array('player_name', 'new_ip'),
+                'hashcols' => array('player_name', 'new_ip'),
+                'intcols' => array(),
+                'pull' => 1,
+            ),
+            'providers' => array(
+                'table' => 'web_service_providers',
+                'keycols' => array('player_name'),
+                'map' => array(),
+                'cols' => array('player_name', 'role', 'active', 'join_time'),
+                'hashcols' => array('player_name', 'role', 'active', 'join_time'),
+                'intcols' => array('active', 'join_time'),
+                'pull' => 0,
+            ),
+            'admins' => array(
+                'table' => 'web_plugin_admins',
+                'keycols' => array('player_name'),
+                'map' => array(),
+                'cols' => array('player_name'),
+                'hashcols' => array('player_name'),
+                'intcols' => array(),
+                'pull' => 0,
+            ),
+            'bans' => array(
+                'table' => 'web_player_bans',
+                'keycols' => array('target', 'ban_type'),
+                'map' => array('ban_type' => 'type', 'expire_time' => 'expire'),
+                'cols' => array('target', 'ban_type', 'reason', 'source', 'expire_time'),
+                'hashcols' => array('target', 'ban_type', 'reason', 'source', 'expire_time'),
+                'intcols' => array('expire_time'),
+                'pull' => 0,
+            ),
+            // ★ 在线玩家：login_time 每次推送都变，不进指纹，只比「谁在线」
+            'online' => array(
+                'table' => 'online_players',
+                'keycols' => array('player_name'),
+                'map' => array(),
+                'cols' => array('player_name'),
+                'hashcols' => array('player_name'),
+                'intcols' => array(),
+                'pull' => 0,
+                // PHP 侧 sync_online_players 是「整表重建」：PHP 比 Java 多出的行
+                // （玩家已下线但没推过）必须靠一次全量推送才能清掉，所以 extra 要触发推送
+                'push_on_extra' => 1,
+            ),
+        );
+    }
+    return isset($cfgs[$cat]) ? $cfgs[$cat] : null;
+}
+
+/** DB 列名 → Java 侧字段名（没有映射就原样） */
+function alignmentJavaField($cfg, $dbCol) {
+    return (isset($cfg['map'][$dbCol]) && $cfg['map'][$dbCol] !== '') ? $cfg['map'][$dbCol] : $dbCol;
+}
+
+/** 主键串：按 keycols 顺序用 | 连接（Java 侧必须按同样顺序拼） */
+function alignmentKeyOf($cfg, $row) {
+    $parts = array();
+    foreach ($cfg['keycols'] as $c) {
+        $v = isset($row[$c]) ? (string)$row[$c] : '';
+        if ($v === '') return '';
+        $parts[] = $v;
+    }
+    return implode('|', $parts);
+}
+
+/** 规范化：整数统一十进制字符串；毫秒时间戳一律折成秒（两端必须一模一样） */
+function alignmentCanonVal($v, $isInt) {
+    // ★ null + 整数列归一为 "0"：Java 行可能整个缺 key（=null），PHP 库可能是 NULL 或 0，
+    //   三种形态必须归一，否则 credentials 无临时密码时每轮都判 changed（2026-10-05）
+    if ($v === null) return $isInt ? '0' : '';
+    if ($isInt) {
+        $n = (int)$v;
+        if ($n > 1000000000000 || $n < -1000000000000) $n = (int)($n / 1000);
+        return (string)$n;
+    }
+    return (string)$v;
+}
+
+/** 行内容指纹（与 Java 的 alignRowHash 严格一致） */
+function alignmentRowHash($cfg, $row) {
+    $parts = array();
+    foreach ($cfg['hashcols'] as $c) {
+        $isInt = in_array($c, $cfg['intcols'], true);
+        $parts[] = alignmentCanonVal(isset($row[$c]) ? $row[$c] : null, $isInt);
+    }
+    return md5(implode(chr(31), $parts));
+}
+
+function checkAlignment() {
+    // ★ 15 秒必答复：与 syncTransactions 同款，超时就地中断，Java 按「无答复」重试
+    @set_time_limit(13);
+    try {
+        // 认证与 syncTransactions 完全一致（token 或 SECRET_KEY）
+        $token = getParam('token');
+        $secret = getParam('secret');
+        if ($token) {
+            $tokenInfo = validateToken($token);
+            if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+                if (!($secret && $secret === SECRET_KEY)) {
+                    error('同步需要管理权限token或SECRET_KEY');
+                }
+            }
+        } elseif ($secret) {
+            if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+        } else {
+            error('同步需要token或SECRET_KEY');
+        }
+
+        $cat = (string)getParam('cat', '');
+        $cfg = alignmentCatConfig($cat);
+        if ($cfg === null) error('未知的对账类别: ' . $cat);
+
+        // ---- Java 报上来的本机 key + 指纹 ----
+        $javaHash = array();
+        $records = getParam('records');
+        if (is_array($records)) {
+            foreach ($records as $r) {
+                if (!is_array($r)) continue;
+                $k = isset($r['k']) ? (string)$r['k'] : '';
+                if ($k === '') $k = alignmentKeyOf($cfg, $r);
+                if ($k === '') continue;
+                $javaHash[$k] = (string)($r['h'] === null ? '' : $r['h']);
+            }
+        }
+
+        // ---- PHP 侧全量 key + 指纹（表还没建就当空表）----
+        $phpHash = array();
+        $phpRows = array();
+        $db = getDB();
+        $db->exec('PRAGMA busy_timeout=6000');
+        try {
+            $res = $db->query('SELECT * FROM ' . $cfg['table']);
+            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                $k = alignmentKeyOf($cfg, $row);
+                if ($k === '') continue;
+                $phpHash[$k] = alignmentRowHash($cfg, $row);
+                $phpRows[$k] = $row;
+            }
+            $res->finalize();
+        } catch (\Throwable $e) {
+            // 表还不存在 → 视为 PHP 侧为空
+        }
+
+        // ---- 三个差集 ----
+        $missing = array();
+        $changed = array();
+        foreach ($javaHash as $k => $h) {
+            if (!isset($phpHash[$k])) {
+                $missing[] = $k;
+            } elseif ($phpHash[$k] !== $h) {
+                $changed[] = $k;
+            }
+        }
+        $extra = array();
+        foreach ($phpHash as $k => $h) {
+            if (!isset($javaHash[$k])) $extra[] = $k;
+        }
+
+        // ---- 把这些 key 在 PHP 侧的完整行交出去（字段名换成 Java 侧叫法）----
+        $rows = array();
+        $want = array_merge($changed, $extra);
+        if (count($want) > 3000) $want = array_slice($want, 0, 3000);
+        foreach ($want as $k) {
+            if (!isset($phpRows[$k])) continue;
+            $one = array();
+            foreach ($cfg['cols'] as $c) {
+                $one[alignmentJavaField($cfg, $c)] = isset($phpRows[$k][$c]) ? $phpRows[$k][$c] : null;
+            }
+            $rows[$k] = $one;
+        }
+
+        debugLog("check_alignment: 双向对账", array(
+            'cat' => $cat,
+            'java_count' => count($javaHash),
+            'php_count' => count($phpHash),
+            'missing' => count($missing),
+            'changed' => count($changed),
+            'extra' => count($extra),
+        ));
+
+        success(array(
+            'cat' => $cat,
+            'missing' => $missing,
+            'changed' => $changed,
+            'extra' => $extra,
+            'rows' => $rows,
+            'php_count' => count($phpHash),
+        ), '对账完成');
+    } catch (\Throwable $e) {
+        @error_log("[checkAlignment] EXCEPTION: " . $e->getMessage());
+        error('checkAlignment异常: ' . $e->getMessage());
+    }
 }
 
 // ===== 插件推送游戏内交易记录 =====
@@ -2938,9 +3200,17 @@ function pushWebCredentials() {
 
         storeWebLoginCredentials($name, $hash, $salt);
 
-        // ★ 如果有临时密码，单独存储
+        // ★ 如果有临时密码，单独存储；没有就清掉 PHP 侧残留——
+        //   否则 Java 每次只推「有临时密码」的玩家，旧 temp 永远留着，
+        //   双向对账会每一轮都判「changed」，变成永远在推（改造要消灭的正是这个）。
         if (!empty($tempHash) && !empty($tempExpire)) {
             storeTempPassword($name, $tempHash, $tempExpire);
+        } else {
+            try {
+                $clr = $db->prepare("UPDATE weblogin_credentials SET temp_password_hash = '', temp_pw_expire = 0 WHERE player_name = :n");
+                $clr->bindValue(':n', $name, SQLITE3_TEXT);
+                $clr->execute();
+            } catch (\Throwable $e) { /* 表未建等，忽略 */ }
         }
 
         $count++;
@@ -4724,8 +4994,10 @@ function syncAdmins() {
     )");
 
     $now = time();
-    // 先清空旧数据再全量写入
-    $db->exec("DELETE FROM web_plugin_admins");
+    // ★ 只增改、不整表删除（2026-10-05 对账改造）：
+    //   Java 端只收集得到【在线】管理员，整表 DELETE 会把离线管理员一条条抹掉。
+    //   改为 upsert 后：Java 有的补进去；PHP 多出的（离线管理员）保留不动。
+    //   取消管理员的场景由 Java 端对账 extra 日志暴露，不再静默丢数据。
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_plugin_admins (player_name, synced_at) VALUES (:name, :now)");
     foreach ($admins as $name) {
         if (empty($name)) continue;
