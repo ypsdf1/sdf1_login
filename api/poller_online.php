@@ -114,20 +114,15 @@ function getPlatformDB() {
         $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'hbye3AezRNk4r7YA';
         $pass   = defined('PAY_MYSQL_PASS')   ? PAY_MYSQL_PASS   : '5HtD7Rn3seRAn2BE';
 
-        debugLog('[poller] 正在连接平台MySQL...', [
-            'host' => $host,
-            'db'   => $dbname,
-            'user' => $user,
-        ]);
+        // ★ 2026-10-05 日志收敛：连接过程（正在连接/DSN/连接成功）属于每次轮询的
+        //   常规路径，一律不写日志——补单器约 20 秒跑一次，这 3 行是 debug.log
+        //   膨胀的元凶之一。只有下面 catch 的"连接失败"（报错）才写日志。
         $start = microtime(true);
         $dsn = "mysql:host=$host;dbname=$dbname;charset=utf8mb4";
-        debugLog('[poller] MySQL DSN: ' . $dsn);
         $pdo = new PDO($dsn, $user, $pass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_TIMEOUT => 15,
         ]);
-        $elapsed = round((microtime(true) - $start) * 1000);
-        debugLog("[poller] MySQL连接成功", ['elapsed_ms' => $elapsed]);
         return $pdo;
     } catch (\Throwable $e) {
         $elapsed = round((microtime(true) - ($start ?? microtime(true))) * 1000);
@@ -172,7 +167,8 @@ function pollerAcquireLock() {
 function pollPaidOrders() {
     global $PLATFORM_DB_PREFIX;
     $startTime = microtime(true);
-    debugLog('[poller] 补单开始');
+    // ★ 2026-10-05 日志收敛：不再无条件写"补单开始"。没有合适订单时下面直接
+    //   静默 return（只回 JSON，不写日志）；只有真正补到单（成功）或出错才写。
 
     // 并发保护：已有补单进程在跑则直接跳过，杜绝重复补单
     if (!pollerAcquireLock()) {
@@ -320,7 +316,11 @@ function pollPaidOrders() {
     }
 
     $elapsed = round((microtime(true) - $startTime) * 1000);
-    debugLog('[poller] 补单完成', ['processed' => $processed, 'skipped' => $skipped, 'elapsed_ms' => $elapsed]);
+    // ★ 2026-10-05 日志收敛：只在本轮真正补到单（processed > 0）时写"补单完成"；
+    //   没有实际补单动作则静默，不再每轮刷一条。
+    if ($processed > 0) {
+        debugLog('[poller] 补单完成', ['processed' => $processed, 'skipped' => $skipped, 'elapsed_ms' => $elapsed]);
+    }
 
     echo json_encode([
         'result'   => 'ok',

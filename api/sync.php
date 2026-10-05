@@ -2390,7 +2390,12 @@ function checkWebLoginConfirmations() {
             unset($conf);
         }
 
-        debugLog("checkWebLoginConfirmations: 轮询", ['count' => count($confirmations), 'players' => $playerNames]);
+        // ★ 2026-10-05 日志收敛：count=0（没有待处理的确认数据）时静默返回，不写日志。
+        //   该接口被 Java 每 4 秒轮询一次，count=0 占绝大多数，是 debug.log 膨胀主因之一。
+        //   只有真有待处理的确认记录（= 有数据可消费）或出错才写日志。
+        if (!empty($confirmations)) {
+            debugLog("checkWebLoginConfirmations: 轮询", ['count' => count($confirmations), 'players' => $playerNames]);
+        }
 
         // 标记为已消费（一次性）
         if (!empty($playerNames)) {
@@ -2399,6 +2404,7 @@ function checkWebLoginConfirmations() {
             $db->exec("DELETE FROM web_login_confirmations WHERE consumed = 1 AND confirmed_at < " . (time() - 1800));
         }
     } catch (\Throwable $e) {
+        debugLog("checkWebLoginConfirmations: 错误", ['error' => $e->getMessage()]);
         @error_log("[checkWebLoginConfirmations] error: " . $e->getMessage());
     }
 
@@ -2415,7 +2421,7 @@ function checkWebLoginVerified() {
     }
 
     $playerName = getParam('player_name');
-    debugLog("check_web_login_verified: 插件查询Web验证记录", ['player_name' => $playerName]);
+    // ★ 2026-10-05 日志收敛："插件查询Web验证记录"只是进查询、还没有数据，不再写日志。
 
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
@@ -2443,9 +2449,8 @@ function checkWebLoginVerified() {
             $delStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
             $delStmt->execute();
             debugLog("check_web_login_verified: 找到验证记录并消费", ['player_name' => $playerName, 'verified_at' => $row['verified_at']]);
-        } else {
-            debugLog("check_web_login_verified: 未找到验证记录", ['player_name' => $playerName]);
         }
+        // ★ 2026-10-05 日志收敛：未找到验证记录 = 没有合适数据，静默（不写日志）。
     } else {
         // 批量获取所有验证记录（用于轮询）
         $stmt = $db->prepare("SELECT player_name, verified_at FROM web_login_verified WHERE verified_at >= :expire");
@@ -2458,14 +2463,14 @@ function checkWebLoginVerified() {
         if (!empty($verified)) {
             $db->exec("DELETE FROM web_login_verified WHERE verified_at >= " . $expireTime);
             debugLog("check_web_login_verified: 批量消费验证记录", ['count' => count($verified), 'players' => array_column($verified, 'player_name')]);
-        } else {
-            debugLog("check_web_login_verified: 无验证记录", []);
         }
+        // ★ 2026-10-05 日志收敛：无验证记录 = 没有合适数据，静默（不写日志）。
     }
 
     $db->exec("COMMIT");
     } catch (\Throwable $e) {
         try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
+        debugLog("check_web_login_verified: 错误", ['error' => $e->getMessage()]);
     }
 
     success($verified);
@@ -2685,6 +2690,8 @@ function checkPendingWebLogins() {
     try {
         $db->exec("DELETE FROM web_login_requests WHERE request_time < " . (time() - 600));
     } catch (\Throwable $e) {
+        // ★ 2026-10-05 日志收敛：报错（清理失败）写日志
+        debugLog("checkPendingWebLogins: 清理过期请求失败", ['error' => $e->getMessage()]);
         @error_log("[checkPendingWebLogins] cleanup error: " . $e->getMessage());
     }
 
@@ -2697,7 +2704,12 @@ function checkPendingWebLogins() {
         $requests[] = $row;
     }
 
-    debugLog("checkPendingWebLogins: 轮询", ['count' => count($requests), 'players' => array_column($requests, 'player_name')]);
+    // ★ 2026-10-05 日志收敛：count=0（没有待处理的密码登录请求）时静默，不写日志；
+    //   该接口被 Java 每 4 秒轮询一次，count=0 是常态，是 debug.log 膨胀主因之一。
+    //   只有真有待处理请求（有数据）或出错才写日志。
+    if (!empty($requests)) {
+        debugLog("checkPendingWebLogins: 轮询", ['count' => count($requests), 'players' => array_column($requests, 'player_name')]);
+    }
     success($requests);
 }
 
