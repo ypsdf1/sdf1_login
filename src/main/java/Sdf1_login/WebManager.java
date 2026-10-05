@@ -1388,7 +1388,7 @@ public class WebManager {
                 fullSyncStep("债券余额");
                 try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
-                fullSyncStep("交易流水（已分批，历史全量重推）");
+                fullSyncStep("交易流水（先双向对账，多退少补）");
                 try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
                 fullSyncStep("玩家IP");
@@ -3233,6 +3233,58 @@ public class WebManager {
             return doPostWithRetry(urlStr.toString(), json, maxRetries);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] POST+Token请求最终失败: " + endpoint + " - " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * ★ 阶段E：交易对账/推送专用「单次请求」——15 秒超时、不内部重试。
+     *   PHP 必须在 15 秒内给答复（成功 / 失败 / 报错都算答复）；拿不到 body 才算「无答复」。
+     *   2xx 与非 2xx 一律把 body 交回调用方解析：PHP 的 JSON 就是回执，不装哑巴。
+     */
+    private String doPostOnce(String urlStr, String jsonBody) {
+        if (!isEnabled()) return null;
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(urlStr))
+                    .timeout(Duration.ofSeconds(TX_SYNC_HTTP_TIMEOUT_S))
+                    .header("User-Agent", "Sdf1-WebManager/2.9")
+                    .header("Content-Type", "application/json; charset=UTF-8")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                    .build();
+            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            String body = resp.body();
+            detectPhpBusy(body);
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                plugin.getLogger().warning("[Web交易同步] PHP 答复 HTTP " + resp.statusCode()
+                        + "（" + (body == null ? 0 : body.length()) + " 字节），交由上层解析判定");
+            }
+            return body;
+        } catch (java.net.http.HttpTimeoutException te) {
+            plugin.getLogger().warning("[Web交易同步] ★ " + TX_SYNC_HTTP_TIMEOUT_S
+                    + " 秒内没有答复（请求超时）→ 按无答复处理");
+            return null;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] ★ 无答复（" + e.getClass().getSimpleName()
+                    + "）: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 单次 POST + Token（15 秒必答复，见 doPostOnce），交易对账/推送/收回统一走这里 */
+    private String httpPostWithTokenOnce(String endpoint, Map<String, Object> data) {
+        try {
+            String token = generateAndSyncToken("system", "sync");
+            StringBuilder urlStr = new StringBuilder(webBaseUrl + "/" + endpoint);
+            urlStr.append(urlStr.indexOf("?") >= 0 ? "&" : "?");
+            urlStr.append("token=").append(java.net.URLEncoder.encode(token, "UTF-8"));
+            Map<String, Object> bodyWithSecret = new LinkedHashMap<>(data);
+            bodyWithSecret.put("secret", secretKey);
+            String json = mapToJson(bodyWithSecret);
+            plugin.getLogger().info("[Web交易同步] 单次请求: " + endpoint + ", body长度=" + json.length());
+            return doPostOnce(urlStr.toString(), json);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 单次请求构造失败: " + e.getMessage());
             return null;
         }
     }
@@ -5379,6 +5431,20 @@ public class WebManager {
     /** 同一批连续重试上限（15s × 20 ≈ 5 分钟），超限才中止本轮，下轮从原位置继续 */
     private static final int TX_SYNC_MAX_BATCH_RETRIES = 20;
 
+    // ===== 阶段E（2026-10-05）：15 秒必答复 + 轮次自愈 =====
+    /** 交易对账/推送走单次请求：15 秒内 PHP 必须给答复（成功/失败/报错都算），否则视为无答复 */
+    private static final int TX_SYNC_HTTP_TIMEOUT_S = 15;
+    /** 轮次看门狗：距上次进度超过这么久视为卡死，热重载/reload 时可强制作废旧轮 */
+    private static final long TX_BATCH_STALE_MS = 90000;
+    /** 当前推进轮次 ID：延迟任务带上它，旧轮被作废后自动失效（防旧轮复活） */
+    private volatile int txBatchRunId = 0;
+    private final java.util.concurrent.atomic.AtomicInteger txBatchRunSeq =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    /** 最近一次批次进度时间（每进一次批次刷新），卡死判定依据 */
+    private volatile long txBatchLastProgress = 0;
+    /** 对账发现两边有缺口 → 本轮取全量逐批点验，只补 PHP 真正缺的（不再靠归零水位线盲推） */
+    private volatile boolean txFullScanPending = false;
+
     public void syncBondTransactions() {
         if (!enabled) return;
 
@@ -5393,11 +5459,10 @@ public class WebManager {
             alignTxWatermarkOnBoot();
         }
 
-        // ★ 已有推进在跑：不打断、不重复起跑，只标记「跑完再扫一轮」
-        if (!txBatchRunning.compareAndSet(false, true)) {
-            txRescanRequested = true;
-            return;
-        }
+        // ★ 已有推进在跑：不打断、不重复起跑，只标记「跑完再扫一轮」；
+        //   但上一轮若已超过 90 秒毫无进度（卡死），强制作废重启——
+        //   否则热重载/reload 之后永远起不了新轮，只能靠手动 reload 才恢复。
+        if (!claimTxBatchRun()) return;
 
         boolean handedOff = false;
         try {
@@ -5407,9 +5472,17 @@ public class WebManager {
             // 读取上次同步的最晚时间
             loadLastSyncedTxTime();
 
-            // 获取增量交易记录
-            List<Map<String, Object>> txs = bondMgr.getTransactionsAfterTime(lastSyncedTxTime);
-            if (txs.isEmpty()) return;
+            // 获取交易记录：
+            //   常规 = 水位线之后的增量；
+            //   对账发现缺口（txFullScanPending）= 取全部，由逐批「两边点验」只补 PHP 真正缺的，
+            //   绝不靠归零水位线盲推（多退少补：PHP 有的不重推，PHP 缺的才推）。
+            List<Map<String, Object>> txs = txFullScanPending
+                    ? bondMgr.getTransactionsAfterTime(0)
+                    : bondMgr.getTransactionsAfterTime(lastSyncedTxTime);
+            if (txs.isEmpty()) {
+                txFullScanPending = false;
+                return;
+            }
 
             // ★ 整轮推进丢给异步调度，DB 工作线程立刻返回（不阻塞其他同步任务）
             startTxBatchRun(txs);
@@ -5423,30 +5496,68 @@ public class WebManager {
 
 
     /**
+     * 抢占一轮推进的执行权。
+     * 无条件抢占失败时再看「上一轮是不是卡死了」——超过 TX_BATCH_STALE_MS 毫秒没有进度
+     * 就把旧轮作废（txBatchRunId 递增，旧的延迟任务醒来后自动退出）后重抢，
+     * 这样热重载/reload 之后不必手动 reload 也能自己恢复。
+     */
+    private boolean claimTxBatchRun() {
+        if (txBatchRunning.compareAndSet(false, true)) {
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        long idle = now - txBatchLastProgress;
+        if (txBatchLastProgress > 0 && idle > TX_BATCH_STALE_MS) {
+            plugin.getLogger().warning("[Web交易同步] ★ 上一轮已 " + (idle / 1000)
+                    + " 秒没有任何进度（疑似卡死），强制作废旧轮并重启本轮");
+            txBatchRunId = txBatchRunSeq.incrementAndGet();   // 作废旧轮
+            txBatchRunning.set(false);
+            if (txBatchRunning.compareAndSet(false, true)) {
+                return true;
+            }
+        }
+        txRescanRequested = true;
+        return false;
+    }
+
+
+    /**
      * 启动一轮逐批推进：每批之间异步让出 + 节流，绝不长时间占住 DB 工作线程
      */
     private void startTxBatchRun(List<Map<String, Object>> txs) {
         final List<Map<String, Object>> queue = new ArrayList<>(txs);
         final int total = queue.size();
         final int batchCount = (total + TX_SYNC_BATCH_SIZE - 1) / TX_SYNC_BATCH_SIZE;
+        final int myRunId = txBatchRunSeq.incrementAndGet();
+        txBatchRunId = myRunId;
+        txBatchLastProgress = System.currentTimeMillis();
+        plugin.getLogger().info("[Web交易同步] ▶ 启动本轮推进: 共 " + total + " 笔 / "
+                + batchCount + " 批（先点验后补推，多退少补）");
 
         new BukkitRunnable() {
             int index = 0;
             int okCount = 0;
             int pushedCount = 0;
-            /** 当前批的连续失败次数（收到回执推进后清零） */
+            /** 当前批的连续失败次数（拿到回执推进后清零） */
             int batchRetries = 0;
 
             @Override
             public void run() {
+                // ★ 本轮已被作废（卡死重启 / 新一轮已启动）：静默退出，绝不碰共享状态
+                if (myRunId != txBatchRunId) return;
+
                 // 开关被关 / 插件正在关闭：直接收尾，别把线程挂住
                 if (!enabled || !txBatchRunning.get()) {
                     finishTxBatchRun();
                     return;
                 }
 
+                // ★ 心跳：每次进入批次都刷新进度时间，卡死判定的依据
+                txBatchLastProgress = System.currentTimeMillis();
+
                 if (index >= queue.size()) {
-                    plugin.getLogger().info("[Web交易同步] 本轮核对完成: " + okCount + "/" + total
+                    txFullScanPending = false;
+                    plugin.getLogger().info("[Web交易同步] ✓ 本轮核对完成: " + okCount + "/" + total
                             + " 笔已对齐（实际补推 " + pushedCount + " 笔）");
                     finishTxBatchRun();
                     return;
@@ -5456,6 +5567,10 @@ public class WebManager {
                 final int batchNo = index / TX_SYNC_BATCH_SIZE + 1;
                 List<Map<String, Object>> batch =
                         queue.subList(index, Math.min(index + TX_SYNC_BATCH_SIZE, queue.size()));
+
+                plugin.getLogger().info("[Web交易同步] ● 第" + batchNo + "/" + batchCount
+                        + "批开始（" + batch.size() + " 笔，索引 " + index + "/" + total
+                        + "，本批已重试 " + batchRetries + "/" + TX_SYNC_MAX_BATCH_RETRIES + "）");
 
                 boolean ok;
                 int pushed;
@@ -5470,20 +5585,20 @@ public class WebManager {
                 }
 
                 if (!ok) {
-                    // ★ 没收到 PHP 回执（500 / 超时 / 锁库）：不中止、不推进水位线，
+                    // ★ 没拿到 PHP 回执（15 秒内无答复 / PHP 明确答复失败）：不中止、不推进水位线，
                     //   等 15 秒后重试【同一批】；连续超限才收尾，剩余笔数下轮继续（不丢数据）
                     batchRetries++;
                     if (batchRetries > TX_SYNC_MAX_BATCH_RETRIES) {
-                        plugin.getLogger().warning("[Web交易同步] 第" + batchNo
-                                + "批连续 " + TX_SYNC_MAX_BATCH_RETRIES + " 次未收到回执，本轮中止，剩余 "
+                        plugin.getLogger().warning("[Web交易同步] ✗ 第" + batchNo
+                                + "批连续 " + TX_SYNC_MAX_BATCH_RETRIES + " 次没拿到回执，本轮中止，剩余 "
                                 + (total - okCount) + " 笔将在下轮重试（不丢数据）");
                         finishTxBatchRun();
                         return;
                     }
-                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批未收到 PHP 回执，"
+                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批没拿到回执，"
                             + (TX_SYNC_RECEIPT_RETRY_MS / 1000) + " 秒后重试同一批（第 "
                             + batchRetries + "/" + TX_SYNC_MAX_BATCH_RETRIES + " 次）");
-                    scheduleTxStep(this, TX_SYNC_RECEIPT_RETRY_MS);
+                    scheduleTxStep(this, TX_SYNC_RECEIPT_RETRY_MS, myRunId);
                     return;
                 }
 
@@ -5494,29 +5609,42 @@ public class WebManager {
 
                 // ★ 回执节奏：HTTP success 即回执，收到才推下一批；
                 //   真推了 PHP 的批次再冷却 15 秒让 PHP 消化，纯对账跳过的批次走短间隔
-                scheduleTxStep(this, pushed > 0 ? TX_SYNC_RECEIPT_STEP_MS : TX_SYNC_VERIFY_STEP_MS);
+                long stepMs = pushed > 0 ? TX_SYNC_RECEIPT_STEP_MS : TX_SYNC_VERIFY_STEP_MS;
+                plugin.getLogger().info("[Web交易同步] 第" + batchNo + "批回执已收到（补推 "
+                        + pushed + " 笔），" + (stepMs / 1000) + " 秒后继续下一批");
+                scheduleTxStep(this, stepMs, myRunId);
             }
         }.runTaskLaterAsynchronously(plugin, 1L);
     }
 
 
-    /** 调度下一批（延时让出线程，插件关闭时静默收尾；PHP 锁库退避窗口内不硬闯） */
-    private void scheduleTxStep(Runnable step, long delayMs) {
+    /**
+     * 调度下一批。
+     * ★ 关键修正（2026-10-05 阶段E）：runTaskLaterAsynchronously 第二个参数单位是
+     *   tick（1 tick = 50ms），旧代码把 delayMs 直接当 tick 传 → 15 秒被排成
+     *   15000 tick = 12.5 分钟，表现就是「回执收到了却一直不推下一批、也不报错」。
+     *   这里统一按 毫秒/50 换算，并带上 runId 防旧轮复活。
+     */
+    private void scheduleTxStep(Runnable step, long delayMs, int runId) {
         long wait = Math.max(1L, delayMs);
         long busyLeft = phpBusyUntil - System.currentTimeMillis();
         if (busyLeft > 0) {
             wait = Math.max(wait, busyLeft + 2000);
         }
+        long ticks = Math.max(1L, wait / 50L);
         try {
             new BukkitRunnable() {
                 @Override
                 public void run() {
+                    if (runId != txBatchRunId) return;   // 本轮已作废：不再往下推
                     step.run();
                 }
-            }.runTaskLaterAsynchronously(plugin, wait);
+            }.runTaskLaterAsynchronously(plugin, ticks);
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web交易同步] 批次调度失败，本轮中止: " + e.getMessage());
-            finishTxBatchRun();
+            if (runId == txBatchRunId) {
+                plugin.getLogger().warning("[Web交易同步] 批次调度失败，本轮中止: " + e.getMessage());
+                finishTxBatchRun();
+            }
         }
     }
 
@@ -5533,7 +5661,7 @@ public class WebManager {
                     public void run() {
                         syncBondTransactions();
                     }
-                }.runTaskLaterAsynchronously(plugin, 200L);
+                }.runTaskLaterAsynchronously(plugin, 4L);   // 200ms = 4 tick
             } catch (Exception ignored) {
             }
         }
@@ -5551,29 +5679,32 @@ public class WebManager {
             if (iv instanceof Number) ids.add(((Number) iv).longValue());
         }
 
-        // ★ 两边点一遍：问 PHP 这批序列号缺哪些（null = 对账不可用，按整批推送处理）
+        // ★ 两边点一遍：问 PHP 这批序列号缺哪些
+        //   null = 15 秒内没拿到答复 / PHP 明确答复失败 → 本批按失败处理，
+        //   等 15 秒重试同一批（绝不拿「没答复」当「全都缺」硬推一遍）
         Set<Long> missing = fetchMissingTxIds(ids);
+        if (missing == null) {
+            return new int[]{0, 0};
+        }
 
         List<Map<String, Object>> toPush = batch;
-        if (missing != null) {
-            if (missing.isEmpty()) {
-                // PHP 已经全都有 → 一笔都不推，只推进水位线（本批只花 1 次轻量对账请求）
-                advanceTxWatermark(batch);
-                plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
-                        + "批 PHP 已齐全（" + batch.size() + " 笔），跳过推送");
-                return new int[]{1, 0};
-            }
-            if (missing.size() < batch.size()) {
-                toPush = new ArrayList<>(missing.size());
-                for (Map<String, Object> tx : batch) {
-                    Object iv = tx.get("id");
-                    if (iv instanceof Number && missing.contains(((Number) iv).longValue())) {
-                        toPush.add(tx);
-                    }
+        if (missing.isEmpty()) {
+            // PHP 已经全都有 → 一笔都不推，只推进水位线（本批只花 1 次轻量对账请求）
+            advanceTxWatermark(batch);
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+                    + "批 PHP 已齐全（" + batch.size() + " 笔），跳过推送");
+            return new int[]{1, 0};
+        }
+        if (missing.size() < batch.size()) {
+            toPush = new ArrayList<>(missing.size());
+            for (Map<String, Object> tx : batch) {
+                Object iv = tx.get("id");
+                if (iv instanceof Number && missing.contains(((Number) iv).longValue())) {
+                    toPush.add(tx);
                 }
-                plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
-                        + "批 仅缺 " + toPush.size() + "/" + batch.size() + " 笔，只补推缺失部分");
             }
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+                    + "批 仅缺 " + toPush.size() + "/" + batch.size() + " 笔，只补推缺失部分");
         }
 
         if (!pushTxBatch(toPush, total, batchNo, batchCount)) {
@@ -5592,19 +5723,27 @@ public class WebManager {
     private Set<Long> fetchMissingTxIds(List<Long> ids) {
         if (ids.isEmpty()) return new LinkedHashSet<>();
         try {
-            String token = generateAndSyncToken("system", "sync");
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("ids", ids);
+            // ★ 多退少补：带上本机最大序列号，PHP 里比它大的就是「它有我没有」→ 下面收回来
+            BondManager bondMgr = plugin.getBonds();
+            body.put("java_max_id", bondMgr == null ? 0 : bondMgr.getMaxTxId());
 
-            String response = httpPostWithToken("api/sync.php?action=check_tx_alignment", token, body);
-            if (response == null) return null;
+            String response = httpPostWithTokenOnce("api/sync.php?action=check_tx_alignment", body);
+            if (response == null) return null;   // 15 秒内无答复
 
             Map<String, Object> result = parseJson(response);
-            if (!Boolean.TRUE.equals(result.get("success"))) return null;
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                plugin.getLogger().warning("[Web交易同步] 对账 PHP 明确答复失败: " + result.get("message"));
+                return null;
+            }
             Object dataObj = result.get("data");
             if (!(dataObj instanceof Map)) return null;
             Object missingObj = ((Map<?, ?>) dataObj).get("missing");
             if (!(missingObj instanceof List)) return null;
+
+            // ★ 多退少补的「补」：PHP 有而本机没有的流水，先收回来（只补记录，不触发业务）
+            pullExtraTxsFromPhp((Map<String, Object>) dataObj);
 
             Set<Long> missing = new LinkedHashSet<>();
             for (Object o : (List<?>) missingObj) {
@@ -5612,8 +5751,51 @@ public class WebManager {
             }
             return missing;
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web交易同步] 对账失败（本批按整批推送）: " + e.getMessage());
+            plugin.getLogger().warning("[Web交易同步] 对账失败（本批按无答复处理，15 秒后重试）: " + e.getMessage());
             return null;
+        }
+    }
+
+
+    /**
+     * ★ 多退少补的「补」：PHP 返回 extra_ids（它有、本机没有的流水序列号）时，
+     *   拉完整数据导入本地 bond_transaction。
+     *   只补流水记录：INSERT OR IGNORE，不改余额、不触发交易事件、不发货。
+     */
+    @SuppressWarnings("unchecked")
+    private void pullExtraTxsFromPhp(Map<String, Object> data) {
+        Object extraObj = data.get("extra_ids");
+        if (!(extraObj instanceof List) || ((List<?>) extraObj).isEmpty()) return;
+        List<Long> want = new ArrayList<>();
+        for (Object o : (List<?>) extraObj) {
+            if (o instanceof Number) want.add(((Number) o).longValue());
+        }
+        if (want.isEmpty()) return;
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("java_ids", want);
+            String response = httpPostWithTokenOnce("api/sync.php?action=pull_tx", body);
+            if (response == null) {
+                plugin.getLogger().warning("[Web交易同步] ★ 要收回 " + want.size()
+                        + " 笔本机缺失流水，但 15 秒内无答复 → 下轮再收");
+                return;
+            }
+            Map<String, Object> result = parseJson(response);
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                plugin.getLogger().warning("[Web交易同步] ★ 收回流水 PHP 答复失败: " + result.get("message"));
+                return;
+            }
+            Object dataObj = result.get("data");
+            if (!(dataObj instanceof Map)) return;
+            Object txsObj = ((Map<?, ?>) dataObj).get("transactions");
+            if (!(txsObj instanceof List)) return;
+            BondManager bondMgr = plugin.getBonds();
+            if (bondMgr == null) return;
+            int imported = bondMgr.importTransactionsFromWeb((List<Map<String, Object>>) txsObj);
+            plugin.getLogger().info("[Web交易同步] ★ 多退少补：PHP 有本机没有的流水 " + want.size()
+                    + " 笔，已收回导入 " + imported + " 笔（只补记录，不改余额不发货）");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] ★ 收回流水异常: " + e.getMessage());
         }
     }
 
@@ -5648,25 +5830,26 @@ public class WebManager {
      */
     private boolean pushTxBatch(List<Map<String, Object>> batch, int totalAll, int batchNo, int batchCount) {
         try {
-            String token = generateAndSyncToken("system", "sync");
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("transactions", batch);
 
-            String response = httpPostWithToken("api/sync.php?action=sync_transactions", token, body);
+            // ★ 单次请求、15 秒超时：PHP 必须在窗口内给答复
+            String response = httpPostWithTokenOnce("api/sync.php?action=sync_transactions", body);
             if (response == null) {
-                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 PHP响应为空");
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount
+                        + "批 ★ 15 秒内没有答复（超时/网络），不算成功也不算失败 → 等 15 秒重试同一批");
                 return false;
             }
             Map<String, Object> result = parseJson(response);
-            Boolean success = (Boolean) result.get("success");
-            if (!Boolean.TRUE.equals(success)) {
-                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 失败: " + result.get("message"));
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount
+                        + "批 ★ PHP 明确答复失败: " + result.get("message"));
                 return false;
             }
 
             // ★ 水位线由调用方 advanceTxWatermark 统一推进（对账跳过时也要推进）
             plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 已推送 "
-                    + batch.size() + " 笔（本轮共 " + totalAll + " 笔）");
+                    + batch.size() + " 笔（本轮共 " + totalAll + " 笔），回执=" + result.get("message"));
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批 异常: " + e.getMessage());
@@ -5698,26 +5881,38 @@ public class WebManager {
                 return;
             }
 
-            Map<String, Object> php = fetchPhpTxAlignmentStats();
+            Map<String, Object> php = fetchPhpTxAlignmentStats(bondMgr, localMax, localCount);
             if (php == null) {
                 txAlignmentPending = true;
-                plugin.getLogger().warning("[Web交易同步] 启动对齐：PHP 无响应，本轮不推历史，下轮同步时重试对齐");
+                plugin.getLogger().warning("[Web交易同步] 启动对齐：15 秒内没拿到 PHP 答复，本轮不推历史，下轮同步时重试对齐");
                 return;
             }
+
+            // ★ 多退少补的「补」：PHP 有而本机没有的流水先收回来（只补记录，不触发业务）
+            pullExtraTxsFromPhp(php);
+            localMax = bondMgr.getMaxTxId();
+            localCount = bondMgr.getTxCount();
 
             long phpMax = toLong(php.get("php_max_id"));
             long phpCount = toLong(php.get("php_count"));
-            if (phpMax >= localMax && phpCount >= localCount) {
+            Object missingObj = php.get("missing");
+            boolean phpMissingSome = missingObj instanceof List && !((List<?>) missingObj).isEmpty();
+
+            if (!phpMissingSome && phpMax >= localMax && phpCount >= localCount) {
                 plugin.getLogger().info("[Web交易同步] ★ 启动对齐通过：两边一致（PHP " + phpCount
                         + " 笔/最大序列号 " + phpMax + "，本机 " + localCount + " 笔/最大序列号 "
-                        + localMax + "），无需补推");
+                        + localMax + "），PHP 有的本机都有、本机有的 PHP 都有 → 一笔都不推");
+                txFullScanPending = false;
                 return;
             }
 
-            plugin.getLogger().info("[Web交易同步] 启动对齐发现缺口（PHP " + phpCount
+            // ★ 有缺口 → 取全量逐批点验，只补 PHP 真正缺的；
+            //   不再归零水位线盲推（那样 PHP 已有的会全部重推一遍）
+            txFullScanPending = true;
+            plugin.getLogger().info("[Web交易同步] 对账有缺口（PHP " + phpCount
                     + " 笔/最大序列号 " + phpMax + "，本机 " + localCount + " 笔/最大序列号 "
-                    + localMax + "）→ 进入补推，只补 PHP 缺失的序列号");
-            setTxWatermark(0);
+                    + localMax + "，PHP 缺 " + (phpMissingSome ? ((List<?>) missingObj).size() : 0)
+                    + " 笔）→ 多退少补：本机取全量逐批点验，PHP 已有的一笔不推");
         } catch (Exception e) {
             txAlignmentPending = true;
             plugin.getLogger().warning("[Web交易同步] 启动对齐异常（本轮跳过补推判定）: " + e.getMessage());
@@ -5725,19 +5920,34 @@ public class WebManager {
     }
 
 
-    /** 取 PHP 端 game_transactions 的总笔数与最大 java_id；取不到返回 null */
-    private Map<String, Object> fetchPhpTxAlignmentStats() {
+    /**
+     * 取 PHP 端 game_transactions 的总笔数与最大 java_id，并带上本机全量序列号做双向点验；
+     * 返回的 data 里含 missing（PHP 缺的）与 extra_ids（PHP 有本机没有的）；拿不到答复返回 null。
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> fetchPhpTxAlignmentStats(BondManager bondMgr, long localMax, long localCount) {
         try {
-            String token = generateAndSyncToken("system", "sync");
-            String response = httpPostWithToken("api/sync.php?action=check_tx_alignment",
-                    token, new LinkedHashMap<>());
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("java_max_id", localMax);
+            body.put("java_count", localCount);
+            // 全量序列号：量太大就不传（PHP 改用 java_max_id 判「它有我没有」）
+            if (localCount > 0 && localCount <= 20000) {
+                List<Long> ids = bondMgr.getAllTxIds();
+                body.put("ids", ids);
+                body.put("full_scan", 1);
+            }
+            String response = httpPostWithTokenOnce("api/sync.php?action=check_tx_alignment", body);
             if (response == null) return null;
             Map<String, Object> result = parseJson(response);
-            if (!Boolean.TRUE.equals(result.get("success"))) return null;
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                plugin.getLogger().warning("[Web交易同步] 启动对账 PHP 答复失败: " + result.get("message"));
+                return null;
+            }
             Object dataObj = result.get("data");
             if (!(dataObj instanceof Map)) return null;
             return (Map<String, Object>) dataObj;
         } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 启动对账异常: " + e.getMessage());
             return null;
         }
     }

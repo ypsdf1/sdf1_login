@@ -931,4 +931,84 @@ public class BondManager {
         }
         return transactions;
     }
+
+
+    /**
+     * ★ 阶段E 多退少补：本机全部流水序列号（开服与 PHP 双向点验用）
+     */
+    public List<Long> getAllTxIds() {
+        List<Long> ids = new ArrayList<>();
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery(
+                    "SELECT id FROM bond_transaction ORDER BY id ASC");
+            while (rs.next()) ids.add(rs.getLong(1));
+            rs.close();
+            st.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return ids;
+    }
+
+
+    /**
+     * ★ 阶段E 多退少补：把「PHP 有、本机没有」的流水收回本地。
+     *   只补流水记录（INSERT OR IGNORE 指定主键）：
+     *   不改余额、不触发交易事件、不发货，纯对账补记录。
+     *   PHP 的 tx_time 是秒级、本地 time 是毫秒 → 超过 1e12 视为毫秒，否则乘 1000。
+     *
+     * @param rows PHP pull_tx 返回的交易数组
+     * @return 实际新写入的笔数
+     */
+    public int importTransactionsFromWeb(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) return 0;
+        int imported = 0;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "INSERT OR IGNORE INTO bond_transaction "
+                            + "(id, player_name, type, amount,"
+                            + " target_player, operator,"
+                            + " reason, balance_before,"
+                            + " balance_after, time)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?)");
+            for (Map<String, Object> row : rows) {
+                Object idv = row.get("id");
+                if (!(idv instanceof Number)) continue;
+                long txId = ((Number) idv).longValue();
+                if (txId <= 0) continue;
+
+                long time = 0L;
+                Object tv = row.get("time");
+                if (tv instanceof Number) {
+                    time = ((Number) tv).longValue();
+                    if (time > 0 && time < 1000000000000L) time *= 1000L;
+                }
+
+                ps.setLong(1, txId);
+                ps.setString(2, row.get("player_name") == null ? ""
+                        : String.valueOf(row.get("player_name")));
+                ps.setString(3, row.get("type") == null ? ""
+                        : String.valueOf(row.get("type")));
+                ps.setInt(4, row.get("amount") instanceof Number
+                        ? ((Number) row.get("amount")).intValue() : 0);
+                ps.setString(5, row.get("target_player") == null ? ""
+                        : String.valueOf(row.get("target_player")));
+                ps.setString(6, row.get("operator") == null ? ""
+                        : String.valueOf(row.get("operator")));
+                ps.setString(7, row.get("reason") == null ? ""
+                        : String.valueOf(row.get("reason")));
+                ps.setInt(8, row.get("balance_before") instanceof Number
+                        ? ((Number) row.get("balance_before")).intValue() : 0);
+                ps.setInt(9, row.get("balance_after") instanceof Number
+                        ? ((Number) row.get("balance_after")).intValue() : 0);
+                ps.setLong(10, time);
+                imported += ps.executeUpdate();
+            }
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return imported;
+    }
 }
