@@ -2577,6 +2577,38 @@ public class DatabaseManager {
         return list;
     }
 
+    /**
+     * 全量服务商名单（含 active=0 的停用记录）。
+     * 对账必须拿到与 PHP 完全相同的集合：只查 active=1 会让停用记录在 PHP 侧永远是 extra，
+     * 进而被「整表 DELETE」的推送一条条抹掉。
+     */
+    public List<Map<String, Object>>
+    getAllServiceProvidersFull() {
+        List<Map<String, Object>> list =
+                new ArrayList<>();
+        try {
+            Statement st = db.createStatement();
+            ResultSet rs = st.executeQuery(
+                    "SELECT * FROM service_providers");
+            while (rs.next()) {
+                Map<String, Object> row =
+                        new LinkedHashMap<>();
+                for (int i = 1; i <= rs.getMetaData()
+                        .getColumnCount(); i++) {
+                    row.put(rs.getMetaData()
+                                    .getColumnName(i),
+                            rs.getObject(i));
+                }
+                list.add(row);
+            }
+            rs.close();
+            st.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
     // ==================== 领地方块/容器记录 ====================
 
     /** 记录领地方块破坏/放置 */

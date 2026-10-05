@@ -3677,6 +3677,536 @@ public class WebManager {
         return item;
     }
 
+    // ==================== 双向对账：多退少补（2026-10-05） ====================
+    //
+    // 改造前：全量同步每一轮都把各类数据整包推给 PHP；内存里的 lastXxxHash 一重启就失忆，
+    //         于是「开服 12 项全推、每轮周期同步再推一遍」，PHP 端还叠着整表 DELETE 覆盖。
+    // 改造后：每类数据先与 PHP「点一遍」——两边各算 key + 内容指纹，
+    //             missing = Java 有 PHP 无        → Java 补推
+    //             changed = 两边都有但内容不同    → 按「上次交换后谁改过」决定推还是收
+    //             extra   = PHP 有 Java 无        → Java 收回来（pull 类别）
+    //         三个差集全空 ⇒ 一条数据都不发。
+    //
+    // ★ 指纹算法必须与 PHP 的 alignmentRowHash() 逐字一致：
+    //       按 hashcols 顺序取值 → 整数列统一成十进制字符串、绝对值超过 1e12 的时间戳一律折成秒
+    //       → 用 chr(31)（ASCII 31 分隔符）连接 → md5
+    //   （折秒这一条是关键：Java 存毫秒、PHP 存秒，不折就永远对不上，变成每轮都在推。）
+    //
+    // ★ 「谁改过」的判据 alignSeen（上次交换后已知一致的指纹）**必须落盘**：
+    //   放内存里一重启就全丢，首轮会把所有 changed 误判成「Java 改过」，
+    //   于是把 PHP 端刚改的密码 / 积分 / 余额反过来覆盖掉。
+
+    /** 单个类别的对账配置（与 PHP alignmentCatConfig() 严格对应） */
+    private static final class AlignCfg {
+        final String cat;
+        final String[] keycols;     // 主键列（DB 列名）
+        final String[] hashcols;    // 参与指纹的列（DB 列名，顺序即优先级）
+        final String[] intcols;     // 其中的整数列（要折秒/十进制化）
+        final Map<String, String> map;   // DB 列名 -> Java 侧字段名
+        final boolean pull;         // PHP 侧的行可否写回本地
+        final boolean pushOnExtra;  // extra 是否也触发推送（PHP 侧「整表重建」的类别必须开）
+
+        AlignCfg(String cat, String[] keycols, String[] hashcols, String[] intcols,
+                 Map<String, String> map, boolean pull, boolean pushOnExtra) {
+            this.cat = cat;
+            this.keycols = keycols;
+            this.hashcols = hashcols;
+            this.intcols = intcols;
+            this.map = map;
+            this.pull = pull;
+            this.pushOnExtra = pushOnExtra;
+        }
+
+        /** DB 列名 -> Java 行里的字段名（没映射就原样） */
+        String jf(String dbCol) {
+            String m = map.get(dbCol);
+            return (m == null || m.isEmpty()) ? dbCol : m;
+        }
+
+        boolean isIntCol(String dbCol) {
+            for (String c : intcols) if (c.equals(dbCol)) return true;
+            return false;
+        }
+    }
+
+    private static Map<String, String> alignMap(String... kv) {
+        Map<String, String> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+
+    private static final Map<String, AlignCfg> ALIGN_CFGS = new LinkedHashMap<>();
+
+    static {
+        // —— 注册用户（PHP users）——
+        ALIGN_CFGS.put("users", new AlignCfg("users",
+                new String[]{"player_name"},
+                new String[]{"player_name", "register_time", "last_login_time", "email",
+                        "points", "gift_stage", "total_online_time"},
+                new String[]{"register_time", "last_login_time", "points", "gift_stage", "total_online_time"},
+                alignMap(), true, false));
+        // —— 密码凭证（PHP weblogin_credentials，列名与 Java users 表不同）——
+        ALIGN_CFGS.put("credentials", new AlignCfg("credentials",
+                new String[]{"player_name"},
+                new String[]{"player_name", "password_hash", "salt", "temp_password_hash", "temp_pw_expire"},
+                new String[]{"temp_pw_expire"},
+                alignMap("salt", "password_salt", "temp_password_hash", "temp_password"), true, false));
+        // —— 商城商品：库存/销量由 Web 端独立变动，绝不进指纹（否则每轮都判「变了」）——
+        ALIGN_CFGS.put("shop", new AlignCfg("shop",
+                new String[]{"id"},
+                new String[]{"id", "category", "display_name", "material", "buy_price", "sell_price"},
+                new String[]{"buy_price", "sell_price"},
+                alignMap(), false, false));
+        // —— 债券余额 ——
+        ALIGN_CFGS.put("bonds", new AlignCfg("bonds",
+                new String[]{"player_name"},
+                new String[]{"player_name", "amount"},
+                new String[]{"amount"},
+                alignMap(), true, false));
+        // —— 玩家 IP（PHP player_ip_changes，列名叫 new_ip，Java 侧叫 ip）——
+        ALIGN_CFGS.put("ips", new AlignCfg("ips",
+                new String[]{"player_name"},
+                new String[]{"player_name", "new_ip"},
+                new String[]{},
+                alignMap("player_name", "name", "new_ip", "ip"), true, false));
+        // —— 服务商（Java 权威名单，PHP 多出来的先留着不覆盖本地）——
+        ALIGN_CFGS.put("providers", new AlignCfg("providers",
+                new String[]{"player_name"},
+                new String[]{"player_name", "role", "active", "join_time"},
+                new String[]{"active", "join_time"},
+                alignMap(), false, false));
+        // —— 插件管理员（PHP 端已改为只增改不删，PHP 多出的多为离线管理员，保留）——
+        ALIGN_CFGS.put("admins", new AlignCfg("admins",
+                new String[]{"player_name"},
+                new String[]{"player_name"},
+                new String[]{},
+                alignMap(), false, false));
+        // —— 封禁名单（Web 后台加的封禁要拉回游戏内生效）——
+        ALIGN_CFGS.put("bans", new AlignCfg("bans",
+                new String[]{"target", "ban_type"},
+                new String[]{"target", "ban_type", "reason", "source", "expire_time"},
+                new String[]{"expire_time"},
+                alignMap("ban_type", "type", "expire_time", "expire"), true, false));
+        // —— 在线玩家：PHP 端是「整表重建」，PHP 比 Java 多的行（人已下线）必须靠一次推送清掉
+        //    所以 extra 也要触发推送；指纹只比「谁在线」，login_time 每次都变不能进指纹 ——
+        ALIGN_CFGS.put("online", new AlignCfg("online",
+                new String[]{"player_name"},
+                new String[]{"player_name"},
+                new String[]{},
+                alignMap(), false, true));
+    }
+    /** 上次交换后已知「两边一致」的指纹：cat -> (key -> hash)。落盘，重启不丢。 */
+    private final Map<String, Map<String, String>> alignSeen = new ConcurrentHashMap<>();
+    private volatile boolean alignSeenLoaded = false;
+    private volatile long alignSeenDirtyAt = 0;
+    private volatile long alignSeenLastWrite = 0;
+
+    private File alignSeenFile() {
+        return new File(plugin.getDataFolder(), "align_seen.json");
+    }
+
+    /** 落盘读取（只读一次；文件损坏一律当作「首轮」，宁可多推一次也不崩） */
+    private void loadAlignSeen() {
+        if (alignSeenLoaded) return;
+        alignSeenLoaded = true;
+        try {
+            File f = alignSeenFile();
+            if (!f.exists()) return;
+            String txt = new String(java.nio.file.Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            Map<String, Map<String, String>> loaded = new Gson().fromJson(txt,
+                    new com.google.gson.reflect.TypeToken<Map<String, Map<String, String>>>() {}.getType());
+            if (loaded != null) {
+                for (Map.Entry<String, Map<String, String>> e : loaded.entrySet()) {
+                    if (e.getValue() != null) alignSeen.put(e.getKey(), new ConcurrentHashMap<>(e.getValue()));
+                }
+                int n = 0;
+                for (Map<String, String> m : alignSeen.values()) n += m.size();
+                plugin.getLogger().info("[对账] 已载入上次一致指纹 " + alignSeen.size() + " 类 / " + n + " 条");
+            }
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[对账] 载入 align_seen.json 失败（按首轮处理）: " + t.getMessage());
+        }
+    }
+
+    /** 落盘写入（合并 5 秒内的连续变更，避免每轮对账都刷盘） */
+    private void saveAlignSeen(boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force) {
+            if (alignSeenDirtyAt == 0 || now - alignSeenDirtyAt < 5000) return;
+            if (now - alignSeenLastWrite < 5000) return;
+        }
+        alignSeenLastWrite = now;
+        alignSeenDirtyAt = 0;
+        try {
+            Map<String, Map<String, String>> snapshot = new LinkedHashMap<>();
+            for (Map.Entry<String, Map<String, String>> e : alignSeen.entrySet()) {
+                snapshot.put(e.getKey(), new LinkedHashMap<>(e.getValue()));
+            }
+            File f = alignSeenFile();
+            File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            java.nio.file.Files.write(f.toPath(),
+                    new Gson().toJson(snapshot).getBytes(StandardCharsets.UTF_8));
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[对账] 写 align_seen.json 失败: " + t.getMessage());
+        }
+    }
+
+    /** 主键串：按 keycols 顺序用 | 连接（PHP alignmentKeyOf 同款：任一段为空即整行作废） */
+    private static String alignKeyOf(AlignCfg cfg, Map<String, Object> row) {
+        StringBuilder sb = new StringBuilder();
+        for (String c : cfg.keycols) {
+            Object v = row.get(cfg.jf(c));
+            String sv = v == null ? "" : String.valueOf(v);
+            if (sv.isEmpty()) return "";
+            if (sb.length() > 0) sb.append('|');
+            sb.append(sv);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 规范化单个值（PHP alignmentCanonVal 同款）：
+     * 整数列统一十进制字符串，绝对值超过 1e12 的按毫秒时间戳折成秒。
+     * 解析不出来时返回 "0"——PHP 的 (int)"abc" 也是 0，两端必须一致。
+     */
+    private static String alignCanonVal(Object v, boolean isInt) {
+        // ★ null + 整数列归一为 "0"：与 PHP alignmentCanonVal 严格一致——
+        //   本地行缺 key、PHP 库 NULL、PHP 库 0 三种形态必须归一，否则每轮判 changed
+        if (v == null) return isInt ? "0" : "";
+        if (!isInt) return String.valueOf(v);
+        long n;
+        if (v instanceof Number) {
+            n = ((Number) v).longValue();
+        } else {
+            String t = String.valueOf(v).trim();
+            try {
+                n = Long.parseLong(t);
+            } catch (NumberFormatException e1) {
+                try {
+                    n = (long) Double.parseDouble(t);
+                } catch (NumberFormatException e2) {
+                    return "0";
+                }
+            }
+        }
+        if (n > 1000000000000L || n < -1000000000000L) n = n / 1000;
+        return String.valueOf(n);
+    }
+    /** 行内容指纹（PHP alignmentRowHash 同款：chr(31) 连接后 md5） */
+    private static String alignRowHash(AlignCfg cfg, Map<String, Object> row) {
+        StringBuilder sb = new StringBuilder();
+        for (String c : cfg.hashcols) {
+            if (sb.length() > 0) sb.append((char) 31);
+            sb.append(alignCanonVal(row.get(cfg.jf(c)), cfg.isIntCol(c)));
+        }
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("MD5").digest(
+                    sb.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** 一次对账的结论 */
+    private static final class AlignResult {
+        boolean ok;                      // PHP 是否给了有效答复
+        final List<String> missing = new ArrayList<>();
+        final List<String> changed = new ArrayList<>();
+        final List<String> extra = new ArrayList<>();
+        final Map<String, Map<String, Object>> rows = new LinkedHashMap<>();  // PHP 侧行（字段名已是 Java 叫法）
+        final Set<String> pushKeys = new LinkedHashSet<>();
+        final Set<String> pullKeys = new LinkedHashSet<>();
+        int phpCount;
+        int pulled;                      // 实际写回本地的条数
+
+        /** 是否有需要 Java 补推的数据 */
+        boolean needPush() { return !pushKeys.isEmpty(); }
+    }
+
+    /**
+     * 调 PHP 的 check_alignment 拿三个差集。
+     * 返回 null 表示「对账没做成」（PHP 无答复/报错）——调用方按原有逻辑继续，绝不因此停摆。
+     */
+    private AlignResult callCheckAlignment(AlignCfg cfg, Map<String, String> javaHash) {
+        try {
+            List<Map<String, Object>> records = new ArrayList<>();
+            for (Map.Entry<String, String> e : javaHash.entrySet()) {
+                Map<String, Object> r = new LinkedHashMap<>();
+                r.put("k", e.getKey());
+                r.put("h", e.getValue());
+                records.add(r);
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("cat", cfg.cat);
+            body.put("records", records);
+            body.put("secret", secretKey);
+
+            String token = generateAndSyncToken("system", "sync");
+            String url = webBaseUrl + "/api/sync.php?action=check_alignment&token="
+                    + java.net.URLEncoder.encode(token, "UTF-8");
+            String resp = doPostOnce(url, mapToJson(body));
+            if (resp == null) return null;
+
+            Map<String, Object> res = parseJson(resp);
+            if (!Boolean.TRUE.equals(res.get("success"))) {
+                String msg = res.get("message") != null ? String.valueOf(res.get("message")) : resp;
+                plugin.getLogger().warning("[对账] " + cfg.cat + " PHP 拒绝对账: "
+                        + (msg.length() > 200 ? msg.substring(0, 200) : msg));
+                return null;
+            }
+            Object dataObj = res.get("data");
+            if (!(dataObj instanceof Map)) return null;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = (Map<String, Object>) dataObj;
+
+            AlignResult ar = new AlignResult();
+            ar.ok = true;
+            ar.missing.addAll(asStringList(data.get("missing")));
+            ar.changed.addAll(asStringList(data.get("changed")));
+            ar.extra.addAll(asStringList(data.get("extra")));
+            Object pc = data.get("php_count");
+            if (pc instanceof Number) ar.phpCount = ((Number) pc).intValue();
+            Object rowsObj = data.get("rows");
+            if (rowsObj instanceof Map) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> rawRows = (Map<String, Object>) rowsObj;
+                for (Map.Entry<String, Object> e : rawRows.entrySet()) {
+                    if (e.getValue() instanceof Map) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> one = (Map<String, Object>) e.getValue();
+                        ar.rows.put(e.getKey(), one);
+                    }
+                }
+            }
+            return ar;
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[对账] " + cfg.cat + " 对账异常: " + t.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> asStringList(Object v) {
+        List<String> out = new ArrayList<>();
+        if (v instanceof List) {
+            for (Object o : (List<Object>) v) if (o != null) out.add(String.valueOf(o));
+        }
+        return out;
+    }
+    /**
+     * 对账网关：拿本地全量数据与 PHP 点一遍，裁决出「该补推的」和「该拉回的」，并把该拉回的写进本地。
+     *
+     * @param cat       类别（必须在 ALIGN_CFGS 里）
+     * @param localRows 本地全量行（字段名用 Java 侧叫法）
+     * @return 对账结论；返回 null 表示对账没做成（PHP 无答复），调用方按原逻辑继续
+     */
+    private AlignResult alignGate(String cat, List<Map<String, Object>> localRows) {
+        AlignCfg cfg = ALIGN_CFGS.get(cat);
+        if (cfg == null) return null;
+        loadAlignSeen();
+
+        // 本地全量指纹
+        Map<String, String> javaHash = new LinkedHashMap<>();
+        for (Map<String, Object> row : localRows) {
+            String k = alignKeyOf(cfg, row);
+            if (k.isEmpty()) continue;
+            String h = alignRowHash(cfg, row);
+            if (h.isEmpty()) continue;
+            javaHash.put(k, h);
+        }
+
+        AlignResult ar = callCheckAlignment(cfg, javaHash);
+        if (ar == null || !ar.ok) return null;
+
+        Map<String, String> seen = alignSeen.get(cat);
+        if (seen == null) {
+            seen = new ConcurrentHashMap<>();
+            alignSeen.put(cat, seen);
+        }
+
+        // —— 三个差集 → 推 / 收 ——
+        for (String k : ar.missing) {
+            if (javaHash.containsKey(k)) ar.pushKeys.add(k);           // Java 有 PHP 无 → 补推
+        }
+        for (String k : ar.changed) {
+            String jh = javaHash.get(k);
+            if (jh == null) continue;
+            String last = seen.get(k);
+            if (last == null || !last.equals(jh)) {
+                ar.pushKeys.add(k);                                     // 交换之后 Java 改过 → 推
+            } else if (cfg.pull) {
+                ar.pullKeys.add(k);                                     // 只有 PHP 改过 → 收
+            }
+            // pull=false 的类别（PHP 改的）：既不推也不收，保持 Java 权威
+        }
+        for (String k : ar.extra) {
+            if (cfg.pull) {
+                ar.pullKeys.add(k);                                     // PHP 多的 → 收回来
+            } else if (cfg.pushOnExtra) {
+                ar.pushKeys.add(k);                                     // PHP 整表重建类：要推一次才能清掉
+            }
+        }
+
+        // —— 拉回写本地 ——
+        for (String k : ar.pullKeys) {
+            Map<String, Object> row = ar.rows.get(k);
+            if (row == null) continue;
+            if (applyPulledRow(cat, row)) {
+                ar.pulled++;
+                // 收完两边就一致了：记 PHP 的指纹，下轮不再判「PHP 改过」
+                seen.put(k, alignRowHash(cfg, row));
+            }
+        }
+
+        // —— 完全一致的 key：把「已知一致」的指纹记下来（推/收没成功的那些绝不动，
+        //    否则下一轮会判成「Java 改过」而漏推，或者判成「PHP 改过」而漏收）——
+        boolean touched = false;
+        for (Map.Entry<String, String> e : javaHash.entrySet()) {
+            String k = e.getKey();
+            if (ar.missing.contains(k) || ar.changed.contains(k) || ar.extra.contains(k)) continue;
+            if (!e.getValue().equals(seen.get(k))) {
+                seen.put(k, e.getValue());
+                touched = true;
+            }
+        }
+        // 上一轮成功推过的 key，这一轮会出现在「一致」里，指纹自然就更新了
+
+        if (touched || ar.pulled > 0) {
+            alignSeenDirtyAt = System.currentTimeMillis();
+            saveAlignSeen(false);
+        }
+
+        if (!ar.pushKeys.isEmpty() || !ar.pullKeys.isEmpty()) {
+            plugin.getLogger().info("[对账] " + cat + ": PHP共" + ar.phpCount
+                    + " 本地" + javaHash.size()
+                    + " → 补推" + ar.pushKeys.size()
+                    + " 收回" + ar.pullKeys.size()
+                    + "（实际写入本地 " + ar.pulled + " 条）");
+        }
+        return ar;
+    }
+    /**
+     * 把 PHP 侧的行写回本地（pull=1 的类别）。
+     * @return 是否真的写进去了
+     */
+    private boolean applyPulledRow(String cat, Map<String, Object> row) {
+        try {
+            switch (cat) {
+                case "users": {
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr == null) return false;
+                    String name = strOf(row.get("player_name"));
+                    if (name.isEmpty()) return false;
+                    if (!dbMgr.userExists(name)) {
+                        // PHP 端（网页）注册的新用户：先建骨架，密码由 credentials 类别拉回补上
+                        dbMgr.createUser(name, "", "");
+                    }
+                    dbMgr.setField(name, "register_time", longOf(row.get("register_time")));
+                    dbMgr.setField(name, "last_login_time", longOf(row.get("last_login_time")));
+                    dbMgr.setField(name, "email", strOf(row.get("email")));
+                    dbMgr.setField(name, "points", intOf(row.get("points")));
+                    dbMgr.setField(name, "gift_stage", intOf(row.get("gift_stage")));
+                    dbMgr.setField(name, "total_online_time", intOf(row.get("total_online_time")));
+                    return true;
+                }
+                case "credentials": {
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr == null) return false;
+                    String name = strOf(row.get("player_name"));
+                    String hash = strOf(row.get("password_hash"));
+                    String salt = strOf(row.get("password_salt"));
+                    if (name.isEmpty() || hash.isEmpty() || salt.isEmpty()) return false;
+                    if (!dbMgr.userExists(name)) dbMgr.createUser(name, hash, salt);
+                    else dbMgr.updatePassword(name, hash, salt);
+                    String tmpHash = strOf(row.get("temp_password"));
+                    long tmpExpire = longOf(row.get("temp_pw_expire"));
+                    if (!tmpHash.isEmpty() && tmpExpire > 0) {
+                        dbMgr.setField(name, "temp_password", tmpHash);
+                        dbMgr.setField(name, "temp_pw_expire", tmpExpire);
+                    } else {
+                        dbMgr.setField(name, "temp_password", "");
+                        dbMgr.setField(name, "temp_pw_expire", 0L);
+                    }
+                    return true;
+                }
+                case "bonds": {
+                    BondManager bondMgr = plugin.getBonds();
+                    if (bondMgr == null) return false;
+                    String name = strOf(row.get("player_name"));
+                    if (name.isEmpty()) return false;
+                    int amount = intOf(row.get("amount"));
+                    if (bondMgr.getBonds(name) == amount) return false;   // 没变就别动，避免无谓写库
+                    bondMgr.setBonds(name, amount);
+                    return true;
+                }
+                case "ips": {
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr == null) return false;
+                    String name = strOf(row.get("name"));
+                    String ip = strOf(row.get("ip"));
+                    if (name.isEmpty() || ip.isEmpty()) return false;
+                    if (!dbMgr.userExists(name)) return false;   // 用户还没拉回来，等 users 类别处理
+                    dbMgr.setField(name, "ip_address", ip);
+                    return true;
+                }
+                case "bans": {
+                    String target = strOf(row.get("target"));
+                    if (target.isEmpty()) return false;
+                    boolean isIp = "ip".equalsIgnoreCase(strOf(row.get("type")));
+                    org.bukkit.BanList.Type bt = isIp ? org.bukkit.BanList.Type.IP : org.bukkit.BanList.Type.NAME;
+                    org.bukkit.BanList<org.bukkit.BanEntry<?>> banList = Bukkit.getBanList(bt);
+                    if (banList.isBanned(target)) return false;   // 本地已有，不重复封
+                    String reason = strOf(row.get("reason"));
+                    if (reason.isEmpty()) reason = "Web后台封禁";
+                    String source = strOf(row.get("source"));
+                    if (source.isEmpty()) source = "Web";
+                    long expire = longOf(row.get("expire"));
+                    // 真实签名：addBan(target, reason, expires, source)
+                    // Date 必须全限定——本文件同时 import 了 java.sql.* 与 java.util.*
+                    banList.addBan(target, reason,
+                            expire > 0 ? new java.util.Date(expire) : null, source);
+                    plugin.getLogger().info("[对账] 已收回 Web 端封禁: " + (isIp ? "IP " : "") + target);
+                    return true;
+                }
+                default:
+                    return false;   // shop/providers/admins/online 等 pull=false 的类别不会走到这里
+            }
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[对账] 写回本地失败 cat=" + cat + ": " + t.getMessage());
+            return false;
+        }
+    }
+
+    /** 把 Bukkit 的一条封禁转成对账行（字段名必须与 PHP 侧 map 之后的叫法一致） */
+    private static Map<String, Object> banRowOf(org.bukkit.BanEntry<?> entry, String type) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("target", entry.getTarget());
+        r.put("type", type);
+        r.put("reason", entry.getReason() != null ? entry.getReason() : "");
+        r.put("source", entry.getSource() != null ? entry.getSource() : "");
+        r.put("expire", entry.getExpiration() != null ? entry.getExpiration().getTime() : 0L);
+        return r;
+    }
+
+    private static String strOf(Object v) { return v == null ? "" : String.valueOf(v); }
+
+    private static int intOf(Object v) {
+        if (v instanceof Number) return ((Number) v).intValue();
+        try { return Integer.parseInt(String.valueOf(v).trim()); } catch (Exception e) { return 0; }
+    }
+
+    private static long longOf(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        try { return Long.parseLong(String.valueOf(v).trim()); } catch (Exception e) { return 0; }
+    }
+
     // ==================== 业务功能 ====================
 
     /**
@@ -3702,6 +4232,12 @@ public class WebManager {
                 List<Map<String, Object>> catItems = parseMdShopFile(mdFile, categoryName);
                 items.addAll(catItems);
             }
+
+            // ★ 双向对账（多退少补）：商品目录与 PHP 一致就不发。
+            //   指纹刻意不含库存/销量（Web 端会独立改动，含了就每轮都判「变了」）；
+            //   PHP 端管理员改的价格也不触发推送——pull=false，只有 Java 改过才推。
+            AlignResult arAlign = alignGate("shop", items);
+            if (arAlign != null && !arAlign.needPush()) return;
 
             if (items.isEmpty()) return;
 
@@ -3739,7 +4275,8 @@ public class WebManager {
         try {
             String token = generateAndSyncToken("system", "sync");
             List<Map<String, Object>> providers = new ArrayList<>();
-            for (Map<String, Object> sp : plugin.getDb().getAllServiceProviders()) {
+            // ★ 用全量（含 active=0）：只取启用中的会让停用服务商在 PHP 侧永远是 extra
+            for (Map<String, Object> sp : plugin.getDb().getAllServiceProvidersFull()) {
                 Map<String, Object> p = new LinkedHashMap<>();
                 p.put("player_name", sp.get("player_name"));
                 p.put("role", sp.get("role"));
@@ -3747,6 +4284,11 @@ public class WebManager {
                 p.put("join_time", sp.get("join_time"));
                 providers.add(p);
             }
+
+            // ★ 双向对账（多退少补）：名单与 PHP 一致就不发。
+            //   pull=false —— PHP 多出来的先留着，不覆盖游戏内权威名单
+            AlignResult arAlign = alignGate("providers", providers);
+            if (arAlign != null && !arAlign.needPush()) return;
 
             if (providers.isEmpty()) return;
 
@@ -4244,6 +4786,16 @@ public class WebManager {
                 }
             }
 
+            // ★ 双向对账（多退少补）：管理员名单与 PHP 一致就不发
+            List<Map<String, Object>> adminRows = new ArrayList<>();
+            for (String nm0 : adminNames) {
+                Map<String, Object> r0 = new LinkedHashMap<>();
+                r0.put("player_name", nm0);
+                adminRows.add(r0);
+            }
+            AlignResult arAlign = alignGate("admins", adminRows);
+            if (arAlign != null && !arAlign.needPush()) return;
+
             String currentHash = adminNames.stream().sorted().collect(Collectors.joining("|"));
             if (currentHash.equals(lastAdminsHash)) {
                 plugin.getLogger().fine("[防护-sync] 管理员列表无变化，跳过");
@@ -4323,6 +4875,19 @@ public class WebManager {
                   .append("\",\"expire\":").append(expireDate).append("}");
                 hashBuilder.append("i:").append(target).append(":").append(reason).append(":").append(expireDate).append("|");
             }
+
+            // ★ 双向对账（多退少补）：封禁名单与 PHP 一致就不发；
+            //   Web 后台加的封禁（PHP 多的）拉回游戏内生效
+            List<Map<String, Object>> banRows = new ArrayList<>();
+            @SuppressWarnings("unchecked")
+            Set<org.bukkit.BanEntry<?>> nb0 = (Set<org.bukkit.BanEntry<?>>) (Set<?>) nameBanList.getEntries();
+            for (org.bukkit.BanEntry<?> e0 : nb0) banRows.add(banRowOf(e0, "name"));
+            @SuppressWarnings("unchecked")
+            Set<org.bukkit.BanEntry<?>> ib0 = (Set<org.bukkit.BanEntry<?>>) (Set<?>) ipBanList.getEntries();
+            for (org.bukkit.BanEntry<?> e0 : ib0) banRows.add(banRowOf(e0, "ip"));
+            AlignResult arAlign = alignGate("bans", banRows);
+            if (arAlign != null && !arAlign.needPush()) return;   // 零发送
+            if (arAlign != null && arAlign.pulled > 0) return;    // 本轮只收不发
 
             sb.append("]");
             String currentHash = hashBuilder.toString();
@@ -5398,11 +5963,26 @@ public class WebManager {
             if (bondMgr == null) return;
 
             List<String> allPlayers = bondMgr.getAllPlayerNames();
-            if (allPlayers.isEmpty()) return;
 
             Map<String, Object> bonds = new LinkedHashMap<>();
             for (String name : allPlayers) {
                 bonds.put(name, bondMgr.getBonds(name));
+            }
+
+            // ★ 双向对账（多退少补）：余额与 PHP 一致就不发；
+            //   网页/CDK/后台改过的余额先拉回本地
+            List<Map<String, Object>> bondRows = new ArrayList<>();
+            for (Map.Entry<String, Object> be : bonds.entrySet()) {
+                Map<String, Object> r0 = new LinkedHashMap<>();
+                r0.put("player_name", be.getKey());
+                r0.put("amount", be.getValue());
+                bondRows.add(r0);
+            }
+            AlignResult arAlign = alignGate("bonds", bondRows);
+            if (arAlign != null && !arAlign.needPush()) return;
+            if (arAlign != null && arAlign.pulled > 0) {
+                // 本轮只收不发：避免拿对账前的旧余额把刚收回来的余额推回去
+                return;
             }
 
             // ★ 无变化静默：对比债券数据hash
@@ -6056,7 +6636,7 @@ public class WebManager {
             if (dbMgr == null) return;
 
             List<Map<String, Object>> users = dbMgr.getAllUsers();
-            if (users.isEmpty()) return;
+            // （不再「空列表直接 return」：Java 空、PHP 有数据时也要走对账把数据收回来）
 
             List<Map<String, Object>> syncData = new ArrayList<>();
             for (Map<String, Object> user : users) {
@@ -6069,6 +6649,17 @@ public class WebManager {
                 u.put("gift_stage", user.get("gift_stage"));
                 u.put("total_online_time", user.get("total_online_time"));
                 syncData.add(u);
+            }
+
+            // ★ 双向对账（多退少补）：先与 PHP 点一遍，三差集全空就一条都不发
+            AlignResult arAlign = alignGate("users", syncData);
+            if (arAlign != null && !arAlign.needPush()) {
+                return;   // 两边一致 / 只做了拉回 → 零发送
+            }
+            if (arAlign != null && arAlign.pulled > 0) {
+                // 本轮只收不发：本地刚被 PHP 的数据改过，若继续推送就会用
+                // 对账前的旧值把它覆盖回去。下一轮（60~90 秒后）自然会补齐缺口。
+                return;
             }
 
             // ★ 无变化静默：对比MD5 hash，避免无效网络请求
@@ -6545,6 +7136,17 @@ public class WebManager {
                 playersData.add(playerInfo);
             }
 
+            // ★ 双向对账（多退少补）：在线名单与 PHP 完全一致就一条都不发。
+            //   指纹只比「谁在线」——login_time 每次都变，进指纹就永远对不上。
+            List<Map<String, Object>> onlineRows = new ArrayList<>();
+            for (Map<String, Object> p0 : playersData) {
+                Map<String, Object> r0 = new LinkedHashMap<>();
+                r0.put("player_name", p0.get("name"));
+                onlineRows.add(r0);
+            }
+            AlignResult arAlign = alignGate("online", onlineRows);
+            if (arAlign != null && !arAlign.needPush()) return;   // 零发送
+
             String playersJson = buildPlayersJsonArray(playersData);
             // ★ 无变化静默：仅在在线人数或玩家列表变化时才打印日志
             String currentHash = playersData.size() + ":" + loggedInPlayers;
@@ -6740,6 +7342,29 @@ public class WebManager {
         List<Map<String, Object>> allUsers = dbMgr.getAllUsers();
         if (allUsers.isEmpty()) return;
 
+        // ★ 双向对账（多退少补）：IP 清单与 PHP 一致就一条都不发
+        List<Map<String, Object>> ipRows = new ArrayList<>();
+        for (Map<String, Object> row0 : allUsers) {
+            String nm0 = (String) row0.get("player_name");
+            if (nm0 == null || nm0.isEmpty()) continue;
+            Object ipObj0 = dbMgr.getField(nm0, "ip_address");
+            String ip0 = ipObj0 != null ? String.valueOf(ipObj0) : null;
+            if (ip0 == null || ip0.isEmpty()) ip0 = (String) row0.get("register_ip");
+            if (ip0 == null || ip0.isEmpty()) continue;
+            Map<String, Object> r0 = new LinkedHashMap<>();
+            r0.put("name", nm0);
+            r0.put("ip", ip0);
+            ipRows.add(r0);
+        }
+        AlignResult arAlign = alignGate("ips", ipRows);
+        if (arAlign != null && !arAlign.needPush()) return;
+        if (arAlign != null && arAlign.pulled > 0) return;   // 本轮只收不发
+        // 有缺口 → 本轮推全量（跳过 ipCache 增量过滤）；needSync 不能重新赋值，
+        // 它被后面的匿名内部类引用，必须保持 effectively final
+        final boolean forceFullIpPush = (arAlign != null && arAlign.needPush());
+
+
+
         // 收集需要同步的玩家
         List<Map<String, Object>> needSync = new ArrayList<>();
         ConcurrentHashMap<String, String> newSnapshot = new ConcurrentHashMap<>();
@@ -6765,8 +7390,8 @@ public class WebManager {
             if (currentIp.isEmpty()) continue;
 
             String[] cached = ipCache.get(name);
-            if (cached != null && "0".equals(cached[1]) && currentIp.equals(cached[0])) {
-                // IP已同步且未变化，跳过
+            if (!forceFullIpPush && cached != null && "0".equals(cached[1]) && currentIp.equals(cached[0])) {
+                // IP已同步且未变化，跳过（对账发现缺口时不吃这个缓存，直接全量推）
                 continue;
             }
 
@@ -6851,7 +7476,6 @@ public class WebManager {
             if (dbMgr == null) return;
 
             List<Map<String, Object>> allUsers = dbMgr.getAllUsers();
-            if (allUsers.isEmpty()) return;
 
             List<Map<String, Object>> credentials = new ArrayList<>();
             for (Map<String, Object> user : allUsers) {
@@ -6874,6 +7498,15 @@ public class WebManager {
                     }
                     credentials.add(cred);
                 }
+            }
+
+            // ★ 双向对账（多退少补）：凭证与 PHP 一致就不发；
+            //   PHP 端改过密码（网页改密/重置）时把新凭证收回来
+            AlignResult arAlign = alignGate("credentials", credentials);
+            if (arAlign != null && !arAlign.needPush()) return;
+            if (arAlign != null && arAlign.pulled > 0) {
+                // 本轮只收不发，防止用对账前的旧密码把刚收回来的新密码覆盖掉
+                return;
             }
 
             if (credentials.isEmpty()) return;
