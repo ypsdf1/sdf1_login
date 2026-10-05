@@ -5,6 +5,8 @@
  * 规则（两条同时满足才算干净，达成任一条超标即触发清理）：
  *   1. 只保留最近 3 天的日志行（按行首 [Y-m-d H:i:s] 时间戳判断）；
  *   2. 文件总大小 ≤ 5MB。
+ *   清理时大小目标压到 4.5MB 水位线（90%），留 0.5MB 缓冲——否则压到 5MB 上限后
+ *   下一条日志写入即再次超标，会造成「每次写入都全量重建」的 I/O 放大。
  *
  * 设计要点：
  *   - 自包含：不依赖 core.php / config.php（captcha_guard、poller 等独立入口都能用）；
@@ -79,14 +81,17 @@ function logMaintainRebuild($fh, $logFile, $maxBytes, $cutoff) {
     fclose($out);
     clearstatcache(true, $tmp);
 
-    // ===== 第二步：剩余仍超 5MB → 从最旧端按整行丢弃到 ≤ maxBytes =====
-    $skipBytes = ($kept > $maxBytes) ? ($kept - $maxBytes) : 0;
+    // ===== 第二步：剩余仍超水位线 → 从最旧端按整行丢弃到 ≤ 90% maxBytes =====
+    // 水位线（4.5MB）留 0.5MB 缓冲：若压到 5MB 上限，下一条日志写入即再次超标，
+    // 会导致「每次写入都全量重建」的 I/O 放大；留缓冲后常态每 ~2500 条日志才重建一次。
+    $target = (int) ($maxBytes * 9 / 10);
+    $skipBytes = ($kept > $target) ? ($kept - $target) : 0;
 
     $in = @fopen($tmp, 'rb');
     if (!$in) { @unlink($tmp); return false; }
     if ($skipBytes > 0) {
         $acc = 0;
-        // 逐行累计丢弃；按整行丢，最终大小 kept-acc 必 ≤ maxBytes
+        // 逐行累计丢弃；按整行丢，最终大小 kept-acc 必 ≤ target
         while ($acc < $skipBytes && ($line = fgets($in)) !== false) {
             $acc += strlen($line);
         }
