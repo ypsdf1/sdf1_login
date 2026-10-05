@@ -177,6 +177,14 @@ public class WebManager {
                     + (secretChanged ? " [密钥已更新]" : "")
                     + (urlChanged ? " [地址已更新]" : "")
                     + (enableChanged ? (enabled ? " [开关已开启]" : " [开关已关闭]") : ""));
+
+            // ★ 2026-10-05 与 reloadWebConfig 对齐：开关打开或地址切换时，
+            //   同样补一次全量同步（含流水对齐），避免「改配置生效了但数据没同步」。
+            //   仅密钥变化不触发——密钥自愈路径本来就会重放当前请求，无需全量重推。
+            if (enabled && (enableChanged || urlChanged)) {
+                plugin.getLogger().info("[Web通信] ★ 配置热重载后排一次全量同步（含流水对齐），10 秒后开始");
+                scheduleFirstFullSync("配置热重载");
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 配置热重载失败（沿用旧配置）: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -1152,6 +1160,15 @@ public class WebManager {
         } else if (!enabled && wasEnabled) {
             plugin.getLogger().info("[Web通信] ★ 重载后检测到已禁用，定时器将在下一轮自动停止请求Web后端");
         }
+
+        // ★ 2026-10-05 修复「reload 后不做全量同步」：
+        //   旧版 reloadWebConfig() 只重启定时器，12 项全量同步与 alignTxWatermarkOnBoot()
+        //   只在 start() 里跑一次 → reload 后历史流水永远不补推，必须 stop 重启才恢复。
+        //   现在 reload 同样排一次全量同步（含与 PHP 的流水对齐）。
+        if (enabled) {
+            plugin.getLogger().info("[Web通信] ★ 重载后排一次全量同步（含流水对齐），10 秒后开始");
+            scheduleFirstFullSync("reload");
+        }
         plugin.getLogger().warning("\n" +
                 "                                          _                                                                          \n" +
                 "                                         | |                                                                         \n" +
@@ -1307,15 +1324,46 @@ public class WebManager {
         // ★ 启动后延迟10秒执行首次全量同步（通过DB队列串行化）
         // ★ 2026-10-04 修复：间隔由 6~14 秒缩短为 1.5~3.5 秒（原总耗时 72~168 秒，
         //   用户"等了3分钟没数据"就是这个串行 sleep 造成的），并在前后打汇总日志。
+        // ★ 2026-10-05 抽成 scheduleFirstFullSync()：reloadWebConfig() 复用同一套流程，
+        //   否则「热重载/reload 后不会做全量同步」（历史流水对齐也一并补做）。
+        scheduleFirstFullSync("启动");
+
+        // ★ 启动嵌入式HTTP服务器接收PHP回调
+        startCallbackServer();
+
+        // ★ 初始化全量同步调度时间（由合并定时器C在到达nextSyncTime时触发）
+        scheduleNextSync();
+
+        // ★ 启动3个合并定时器（替代原来的6个独立定时器，自动错峰≥5秒）
+        startMergedPolling();
+    }
+
+    /** 首次全量同步是否已在执行（防止 reload 与启动两条路径重叠跑两遍） */
+    private final java.util.concurrent.atomic.AtomicBoolean fullSyncRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * 排一次「首次全量同步」：先与 PHP 对账流水（alignTxWatermarkOnBoot），再按优先级排队 12 项。
+     * 由 start()（启动 10 秒后）与 reloadWebConfig()（reload 当场）共同调用。
+     *
+     * @param trigger 触发来源，仅用于日志区分「启动」/「reload」
+     */
+    private void scheduleFirstFullSync(String trigger) {
+        // ★ 每次间隔 1.5~3.5 秒由 run() 内部自己 sleep；这里只决定延迟起跑时间
         new BukkitRunnable() {
             @Override
             public void run() {
                 if (!isEnabled()) {
-                    plugin.getLogger().info("[Web通信] 首次全量同步已跳过（web通信-启用=false）");
+                    plugin.getLogger().info("[Web通信] 全量同步已跳过（web通信-启用=false）, 来源=" + trigger);
                     return;
                 }
+                // ★ 与另一条路径互斥：已经在跑就不再起第二遍（12 项排队 + 水位线对齐只做一次）
+                if (!fullSyncRunning.compareAndSet(false, true)) {
+                    plugin.getLogger().info("[Web通信] 已有全量同步在执行，本次(" + trigger + ")跳过");
+                    return;
+                }
+                try {
                 long fullSyncStart = System.currentTimeMillis();
-                plugin.getLogger().info("[Web通信] ===== 开始首次全量同步 ===== 地址=" + webBaseUrl
+                plugin.getLogger().info("[Web通信] ===== 开始全量同步（来源：" + trigger + "）===== 地址=" + webBaseUrl
                         + " 密钥长度=" + (secretKey != null ? secretKey.length() : 0));
                 // ★ 先与 PHP 对账流水：两边一致就完全跳过补推，对不上才补（避免每次开服全量重推）
                 alignTxWatermarkOnBoot();
@@ -1355,20 +1403,15 @@ public class WebManager {
                 fullSyncStep("管理员改动");
                 initialSyncComplete = true;  // 首次全量同步提交完成
                 allowLoginPolling = true;  // 允许登录轮询
-                plugin.getLogger().info("[Web通信] ===== 首次全量同步 12 项已全部提交，耗时 "
+                plugin.getLogger().info("[Web通信] ===== 全量同步 12 项已全部提交（来源：" + trigger + "），耗时 "
                         + (System.currentTimeMillis() - fullSyncStart) / 1000
                         + " 秒；随后由DB队列逐项执行，若某项失败会在日志打【失败/无响应】并下轮重试 =====");
+                } finally {
+                    // ★ 无论排队成功与否都要放行，否则一次异常会让后续 reload 永远拿不到锁
+                    fullSyncRunning.set(false);
+                }
             }
         }.runTaskLaterAsynchronously(plugin, 20L * 10);
-
-        // ★ 启动嵌入式HTTP服务器接收PHP回调
-        startCallbackServer();
-
-        // ★ 初始化全量同步调度时间（由合并定时器C在到达nextSyncTime时触发）
-        scheduleNextSync();
-
-        // ★ 启动3个合并定时器（替代原来的6个独立定时器，自动错峰≥5秒）
-        startMergedPolling();
     }
 
     public void shutdown() {
@@ -3454,6 +3497,19 @@ public class WebManager {
         if (value.startsWith("[") && value.endsWith("]")) {
             List<Object> list = parseJsonArray(value);
             map.put(key, list);
+            return;
+        }
+
+        // ★ JSON嵌套对象 → 递归解析成 Map（2026-10-05 修复）
+        //   缺陷：这里原本只有 [ 数组分支、漏了 { 对象分支，于是 {"data":{...}}
+        //   的 data 被当字符串塞进结果 → 调用方 instanceof Map 恒 false。
+        //   后果：fetchPhpTxAlignmentStats()/fetchMissingTxIds() 永远返回 null，
+        //   启动对齐每次判「PHP 无响应」、水位线永不归零 → 历史流水永远补推不了，
+        //   只能推水位线之后的实时交易（与 2026-10-05 测试服现象完全吻合）。
+        //   注意：数组元素侧的 parseJsonArrayItem 早就有这个分支，只有顶层 value 漏了。
+        if (value.startsWith("{") && value.endsWith("}")) {
+            Map<String, Object> nested = parseJson(value);
+            map.put(key, nested);
             return;
         }
 
