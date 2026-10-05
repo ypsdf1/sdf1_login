@@ -5367,7 +5367,17 @@ public class WebManager {
 
     /** 节流：纯对账（不推送）的批次走短间隔；真正推了 PHP 的批次走长间隔，别把 PHP 压太狠 */
     private static final long TX_SYNC_VERIFY_STEP_MS = 400;
-    private static final long TX_SYNC_PUSH_STEP_MS = 1500;
+
+    // ★ 回执窗口（2026-10-05 阶段D）：大笔数推流时 PHP 可能还在处理上一批，
+    //   连续硬推会吃 500（database is locked）。改为——
+    //   推一批 → 等 PHP 回执（HTTP success 即回执）→ 收到才推下一批并再等 15 秒；
+    //   没收到回执则等 15 秒后重试【同一批】（不推进水位线，不丢数据）。
+    /** 真推了 PHP 且收到回执：下一批前的冷却窗口 */
+    private static final long TX_SYNC_RECEIPT_STEP_MS = 15000;
+    /** 没收到回执：等这么久后重试同一批 */
+    private static final long TX_SYNC_RECEIPT_RETRY_MS = 15000;
+    /** 同一批连续重试上限（15s × 20 ≈ 5 分钟），超限才中止本轮，下轮从原位置继续 */
+    private static final int TX_SYNC_MAX_BATCH_RETRIES = 20;
 
     public void syncBondTransactions() {
         if (!enabled) return;
@@ -5422,9 +5432,10 @@ public class WebManager {
 
         new BukkitRunnable() {
             int index = 0;
-            int batchNo = 0;
             int okCount = 0;
             int pushedCount = 0;
+            /** 当前批的连续失败次数（收到回执推进后清零） */
+            int batchRetries = 0;
 
             @Override
             public void run() {
@@ -5441,7 +5452,8 @@ public class WebManager {
                     return;
                 }
 
-                batchNo++;
+                // ★ 批号由 index 推导：重试同一批时批号保持不变，日志不虚增
+                final int batchNo = index / TX_SYNC_BATCH_SIZE + 1;
                 List<Map<String, Object>> batch =
                         queue.subList(index, Math.min(index + TX_SYNC_BATCH_SIZE, queue.size()));
 
@@ -5458,33 +5470,50 @@ public class WebManager {
                 }
 
                 if (!ok) {
-                    // ★ 本批失败：立即中止，不推进水位线 → 下轮从同一位置重试
-                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批失败，已中止推送，"
-                            + "剩余 " + (total - okCount) + " 笔将在下轮重试（不丢数据）");
-                    finishTxBatchRun();
+                    // ★ 没收到 PHP 回执（500 / 超时 / 锁库）：不中止、不推进水位线，
+                    //   等 15 秒后重试【同一批】；连续超限才收尾，剩余笔数下轮继续（不丢数据）
+                    batchRetries++;
+                    if (batchRetries > TX_SYNC_MAX_BATCH_RETRIES) {
+                        plugin.getLogger().warning("[Web交易同步] 第" + batchNo
+                                + "批连续 " + TX_SYNC_MAX_BATCH_RETRIES + " 次未收到回执，本轮中止，剩余 "
+                                + (total - okCount) + " 笔将在下轮重试（不丢数据）");
+                        finishTxBatchRun();
+                        return;
+                    }
+                    plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批未收到 PHP 回执，"
+                            + (TX_SYNC_RECEIPT_RETRY_MS / 1000) + " 秒后重试同一批（第 "
+                            + batchRetries + "/" + TX_SYNC_MAX_BATCH_RETRIES + " 次）");
+                    scheduleTxStep(this, TX_SYNC_RECEIPT_RETRY_MS);
                     return;
                 }
 
+                batchRetries = 0;
                 okCount += batch.size();
                 pushedCount += pushed;
                 index += TX_SYNC_BATCH_SIZE;
 
-                // ★ 悠着点推：真推了 PHP 的批次多等一会儿，纯对账跳过的批次快些过去
-                scheduleTxStep(this, pushed > 0 ? TX_SYNC_PUSH_STEP_MS : TX_SYNC_VERIFY_STEP_MS);
+                // ★ 回执节奏：HTTP success 即回执，收到才推下一批；
+                //   真推了 PHP 的批次再冷却 15 秒让 PHP 消化，纯对账跳过的批次走短间隔
+                scheduleTxStep(this, pushed > 0 ? TX_SYNC_RECEIPT_STEP_MS : TX_SYNC_VERIFY_STEP_MS);
             }
         }.runTaskLaterAsynchronously(plugin, 1L);
     }
 
 
-    /** 调度下一批（延时让出线程，插件关闭时静默收尾） */
+    /** 调度下一批（延时让出线程，插件关闭时静默收尾；PHP 锁库退避窗口内不硬闯） */
     private void scheduleTxStep(Runnable step, long delayMs) {
+        long wait = Math.max(1L, delayMs);
+        long busyLeft = phpBusyUntil - System.currentTimeMillis();
+        if (busyLeft > 0) {
+            wait = Math.max(wait, busyLeft + 2000);
+        }
         try {
             new BukkitRunnable() {
                 @Override
                 public void run() {
                     step.run();
                 }
-            }.runTaskLaterAsynchronously(plugin, Math.max(1L, delayMs));
+            }.runTaskLaterAsynchronously(plugin, wait);
         } catch (Exception e) {
             plugin.getLogger().warning("[Web交易同步] 批次调度失败，本轮中止: " + e.getMessage());
             finishTxBatchRun();
