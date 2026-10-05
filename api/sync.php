@@ -508,7 +508,11 @@ function syncLands() {
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN deny_use_items TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN punish_commands TEXT DEFAULT ''"); } catch (\Throwable $e) {}
     try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN clear_all_bad INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
-
+    // ★ 2026-10-05：老库建表早于 y_min/y_max/synced_at 引入，CREATE TABLE IF NOT EXISTS 不会补齐老表，
+    //   而 INSERT OR REPLACE 却要用这三列 → 领地同步 500 (table web_area_lands has no column named y_min)。迁移必须显式补列。
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN y_min INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN y_max INTEGER DEFAULT 255"); } catch (\Throwable $e) {}
+    try { $db->exec("ALTER TABLE web_area_lands ADD COLUMN synced_at INTEGER DEFAULT 0"); } catch (\Throwable $e) {}
     $now = time();
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_area_lands
         (id, name, owner, world, x1, z1, x2, z2, y_min, y_max, area_size, created_at, synced_at,
