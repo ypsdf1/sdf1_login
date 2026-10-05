@@ -4,9 +4,14 @@
 //       不带/带错令牌一律返回 nginx 原生 404 页（与文件不存在时完全一致）。
 //       注意必须放在 secGatePage() 之前 —— 令牌层先判（两层现已统一返回 nginx 404，
 //       但顺序仍要保持：引导模式下令牌层放行、页面层负责跳配置页）。
+//   ★ boot 恢复模式（2026-10-05）：令牌层也认 boot 令牌 —— 否则被锁在外面的运维
+//       敲 admin.php?boot=<引导令牌> 会在令牌层就吃 404，连"送回引导配置页"的
+//       恢复路由（secGatePage 里）都到不了。放行令牌层后，下面的 secGatePage()
+//       会把非白名单的 boot 持有者 302 到 admin_2fa_setup.php 去把自己加白，
+//       页面本身对非白名单 IP 依旧不渲染（白名单校验没有被绕过）。
 //   第二层 IP 白名单 —— 页面本身也只对白名单 IP 开放。
 require_once __DIR__ . '/security.php';
-secTokenGate();
+secTokenGate(true);
 secGatePage();
 // 令牌在 URL 上，禁止页面内任何外链通过 Referer 把它带走
 header('Referrer-Policy: no-referrer');

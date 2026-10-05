@@ -150,6 +150,14 @@ function secBootSessionActive() {
  */
 function secBootAuthenticate() {
     if (secBootToken() === '') return false;
+    // ★ 先看"有没有凭据可验"，再决定要不要开会话（2026-10-05）。
+    //   secGatePage / secTokenGate 现在会为所有被白名单挡住的请求调用本函数做恢复路由，
+    //   若无条件 session_start()，扫目录的匿名流量会每次刷出一个 session 文件。
+    //   URL 没带 boot、浏览器也没带会话 cookie、当前也没有活动会话 → 无凭据可验，直接失败。
+    $hasParam = isset($_GET['boot']) || isset($_POST['boot']);
+    if (!$hasParam && session_status() !== PHP_SESSION_ACTIVE && empty($_COOKIE[session_name()])) {
+        return false;
+    }
     secEnsureSession();
     $t = '';
     if (isset($_GET['boot'])) $t = (string)$_GET['boot'];
@@ -370,9 +378,43 @@ function secIsBootstrapped() {
 // ======================================================================
 
 /**
- * 页面级闸门。$allowBoot=true 时接受 boot 令牌解锁（仅配置页使用）。
+ * boot 恢复模式的落点（2026-10-05）。
+ *
+ * 背景（线上 db/security.log 实录）：运维被锁在外面 → 拿 boot 令牌解锁成功
+ * （boot_unlock）→ 紧接着去开 admin.php?token=... → 依旧 ip_block_page 404。
+ * 也就是说旧逻辑只在 admin_2fa_setup.php 这一个点上豁免了白名单，从其它任何
+ * 管理页进来的 boot 持有者都会撞 404 死胡同，**根本到不了那个唯一豁免页**，
+ * 结果还是被锁在外面（当天 09:42 只能靠宝塔手工改 config.php 才脱困）。
+ *
+ * 现在：持有有效 boot 凭据（?boot= 令牌 或 已建立的 boot 会话）却仍不在白名单
+ * → 不丢 404，一律 302 送回引导配置页（唯一能把自己 IP 加白的页面）。
+ *
+ * 信息透露边界不变：没 boot 凭据的试探者照旧拿到与"文件不存在"完全一致的
+ * nginx 404，本函数根本不会被调用；能走到这里的人本就读得到 config.php
+ * （= 已经握有 ADMIN_PASS / SECRET_KEY / 2FA 密钥），路由给他没有新增暴露面。
+ */
+function secBootRecoveryRedirect() {
+    $path = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-';
+    secLog('boot_route', 'path=' . $path);
+    // URL 上还带着 ?boot= 就原样带上：会话一旦失效（换网络/清 cookie）还能自愈，
+    // 不必让运维再手抄一次令牌。
+    $q = '';
+    if (isset($_GET['boot'])) {
+        $t = (string)$_GET['boot'];
+        if ($t !== '' && hash_equals(secBootToken(), $t)) {
+            $q = '?boot=' . rawurlencode($t);
+        }
+    }
+    header('Location: admin_2fa_setup.php' . $q);
+    exit;
+}
+
+/**
+ * 页面级闸门。$allowBoot=true 时接受 boot 令牌解锁（引导配置页 / 2FA 页使用）。
  * - 已引导 且 不在 IP 白名单 → nginx 原生 404（不是 403：403 会告诉探测者
  *   "这个文件确实存在"，与最小化信息透露原则冲突）；
+ * - 【boot 恢复模式（2026-10-05）】不在白名单 但 持有效 boot 凭据 → 不返回 404，
+ *   改 302 到引导配置页把自己加白（详见 secBootRecoveryRedirect 注释）；
  * - 未引导（全新部署第一次访问）→ 放行；后台主入口 admin.php 不直接渲染，
  *   改跳到 admin_2fa_setup.php 完成白名单 / 令牌 / 2FA 的首次配置。
  */
@@ -392,6 +434,12 @@ function secGatePage($allowBoot = false) {
             exit;
         }
         return;
+    }
+
+    // ★ boot 恢复模式：$allowBoot=false 的页面（admin.php / admin_login.php 等）
+    //   不渲染，但持有 boot 凭据的人不能被丢去 404 —— 送到唯一豁免页去加白名单。
+    if (secBootAuthenticate()) {
+        secBootRecoveryRedirect();
     }
 
     // 已引导且不在白名单 → nginx 原生 404（绝不回 403：403 等于承认文件存在）。

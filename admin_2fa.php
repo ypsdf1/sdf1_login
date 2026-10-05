@@ -9,6 +9,15 @@ secEnsureSession();
 // IP 白名单闸门；boot 引导会话（配置流程中转）也放行
 secGatePage(true);
 
+// ★ boot 恢复模式（2026-10-05）：持有 boot 凭据但 IP 不在白名单 → 直接送回引导配置页。
+//   不加这一跳的话，下面的链路对非白名单 IP 全是 404 死胡同：
+//   未登录 → 跳 admin_login.php → 404；已登录已过2FA → 跳 admin.php?token= → 404
+//   （线上 09:35:58 boot_unlock 后 1 秒就吃了 admin.php 的 ip_block，实录见 db/security.log）。
+//   白名单校验本身没有被绕过 —— 本页对非白名单 IP 依旧不渲染，只是不再把人丢去 404。
+if (!secIpAllowed() && secBootAuthenticate()) {
+    secBootRecoveryRedirect();
+}
+
 $enabled = defined('SEC_2FA_ENABLED') && SEC_2FA_ENABLED;
 $err = '';
 

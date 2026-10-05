@@ -271,6 +271,12 @@ if (file_exists($secLogPath)) {
     $all = @file($secLogPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     if (is_array($all)) $logLines = array_slice($all, -8);
 }
+
+// ===== boot 恢复视角下"我的 IP 是否已被白名单接受" =====
+// secIpAllowed() 读的是请求开始时定义的 ADMIN_IP_WHITELIST 常量 —— 本页刚点过
+// 「保存白名单」时它还是旧值（secWriteConfig 只改磁盘）。不补判一次的话：刚把 IP
+// 加进去、页面上的恢复提示横幅却还在说"你不在白名单"，运维会以为根本没保存成功。
+$wlAllowsMe = secIpAllowed() || secIpInWhitelist($myIp, $whitelist);
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -333,13 +339,27 @@ if (file_exists($secLogPath)) {
         <div>
             <?php if ($mode === 'boot'): ?><span class="badge b-boot">引导模式（boot 令牌）</span><?php endif; ?>
             <?php if ($mode === 'init'): ?><span class="badge b-boot">首次初始化</span><?php endif; ?>
-            <?php if (!$needInit): ?><a href="<?php echo $twoFaOn ? 'admin_2fa.php' : htmlspecialchars(secTokenUrl('admin.php'), ENT_QUOTES, 'UTF-8'); ?>">← 返回</a><?php endif; ?>
+            <?php
+            // "← 返回"指向 admin_2fa.php / admin.php?token= —— 两者对非白名单 IP 都是 404。
+            // boot 恢复模式下你的 IP 正是不在白名单才进来的，藏掉这个会把人直接弹回死胡同。
+            if (!$needInit && ($mode !== 'boot' || $wlAllowsMe)):
+            ?><a href="<?php echo $twoFaOn ? 'admin_2fa.php' : htmlspecialchars(secTokenUrl('admin.php'), ENT_QUOTES, 'UTF-8'); ?>">← 返回</a><?php endif; ?>
         </div>
     </div>
     <div class="sub">第一层：TOTP 二次验证（6 位动态码）　|　第二层：管理面 IP 白名单（未配置时仅本机可访问）</div>
 
     <?php if ($err !== ''): ?><span class="msg err">❌ <?php echo $err; ?></span><?php endif; ?>
     <?php if ($ok !== ''): ?><span class="msg ok">✅ <?php echo $ok; ?></span><?php endif; ?>
+
+    <?php if ($mode === 'boot' && !$wlAllowsMe): ?>
+    <!-- boot 恢复模式的唯一正事：把当前 IP 加进白名单。其它管理页对你一律 404，这是设计如此。 -->
+    <span class="msg" style="background:rgba(210,153,34,0.10);border:1px solid rgba(210,153,34,0.40);color:#d29922">
+        🛟 引导恢复模式：你的 IP <b style="font-family:monospace"><?php echo htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8'); ?></b>
+        不在 IP 白名单里，所以后台其它页面对你一律返回 404（最小化信息透露，属正常表现）。<br>
+        请到下方「🚪 第二层 · IP 白名单」把它加进去并点 <b>保存白名单</b> ——
+        保存成功后立刻就能正常打开后台，不需要再去宝塔改 config.php。
+    </span>
+    <?php endif; ?>
 
     <?php if ($needInit): ?>
     <!-- ===== 首次初始化：管理密码还是占位符时，本页唯一的入口 ===== -->
@@ -403,6 +423,10 @@ if (file_exists($secLogPath)) {
                 <div class="hint">🔖 后台唯一入口（请收藏这一条，不带 token 访问 admin.php 一律返回 404）：<br><code><?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?></code>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($adminUrl, ENT_QUOTES, 'UTF-8'); ?>', this)">复制地址</button>
                 <button type="submit" class="btn btn-gray" style="margin-left:6px" onclick="return rotateConfirm()">重新生成令牌</button></div>
+                <?php if ($mode === 'boot' && !$wlAllowsMe): ?>
+                <div class="hint" style="color:#f85149">⚠️ 你的 IP 还没加进白名单，现在打开上面这个入口<b>会是 404</b> ——
+                    请先在下方「IP 白名单」里保存，再访问它。</div>
+                <?php endif; ?>
                 <div class="hint">恢复访问地址：<code><?php echo htmlspecialchars($recoverUrl, ENT_QUOTES, 'UTF-8'); ?></code>
                 <button type="button" class="copy" onclick="copyText('<?php echo htmlspecialchars($recoverUrl, ENT_QUOTES, 'UTF-8'); ?>', this)">复制</button></div>
             </div>
