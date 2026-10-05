@@ -185,6 +185,10 @@ public class WebManager {
                 plugin.getLogger().info("[Web通信] ★ 配置热重载后排一次全量同步（含流水对齐），10 秒后开始");
                 scheduleFirstFullSync("配置热重载");
             }
+            // ★ 开关 false→true 时确保回调服务器在监听（开服绑定失败过则此处重试；已启动则幂等返回）
+            if (enabled && enableChanged) {
+                startCallbackServer();
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 配置热重载失败（沿用旧配置）: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -1161,6 +1165,12 @@ public class WebManager {
             plugin.getLogger().info("[Web通信] ★ 重载后检测到已禁用，定时器将在下一轮自动停止请求Web后端");
         }
 
+        // ★ 回调服务器幂等补启：开服时若绑定失败（端口占用），reload 可重试；
+        //   已启动时 compareAndSet 直接返回，不会重复绑端口
+        if (enabled) {
+            startCallbackServer();
+        }
+
         // ★ 2026-10-05 修复「reload 后不做全量同步」：
         //   旧版 reloadWebConfig() 只重启定时器，12 项全量同步与 alignTxWatermarkOnBoot()
         //   只在 start() 里跑一次 → reload 后历史流水永远不补推，必须 stop 重启才恢复。
@@ -1293,11 +1303,18 @@ public class WebManager {
     }
 
     public void start() {
-        if (!enabled) {
-            plugin.getLogger().info("[Web通信] 未启用，在插件设置.txt中设置 web通信-启用=true");
-            return;
+        // ★ 2026-10-05 修复「开关关着时改配置永远无法热重载」（18:21 改文件、18:23 控台仍安静的根因）：
+        //   旧版这里 !enabled 直接 return → startMergedPolling() 没执行 → 5 个合并定时器压根不存在
+        //   → 每轮开头的 hotReloadIfChanged() 无人调用 → 运维把 插件设置.txt 的启用 false→true
+        //   永远感知不到，只能手动 reload。与 hotReloadIfChanged 上方「开关关着时也要能感知改回 true」
+        //   的设计注释直接矛盾——注释写对了，但 start() 把定时器掐死在了门外。
+        //   现在无论开关状态都启动合并定时器：关着时每轮只做「热重载检查 + 自调度」，零 HTTP 请求。
+        if (enabled) {
+            plugin.getLogger().info("[Web通信] 已启用，地址: " + webBaseUrl);
+        } else {
+            plugin.getLogger().info("[Web通信] 未启用（web通信-启用=false），"
+                    + "轮询定时器仍会启动用于自动感知配置变更，改回 true 无需 reload");
         }
-        plugin.getLogger().info("[Web通信] 已启用，地址: " + webBaseUrl);
 
         // 初始化sync_requests表和加载SQLite驱动
         try {
@@ -1321,20 +1338,23 @@ public class WebManager {
         // 清理过期Token
         cleanExpiredTokens();
 
-        // ★ 启动后延迟10秒执行首次全量同步（通过DB队列串行化）
-        // ★ 2026-10-04 修复：间隔由 6~14 秒缩短为 1.5~3.5 秒（原总耗时 72~168 秒，
-        //   用户"等了3分钟没数据"就是这个串行 sleep 造成的），并在前后打汇总日志。
-        // ★ 2026-10-05 抽成 scheduleFirstFullSync()：reloadWebConfig() 复用同一套流程，
-        //   否则「热重载/reload 后不会做全量同步」（历史流水对齐也一并补做）。
-        scheduleFirstFullSync("启动");
+        // ★ 首次全量同步：仅启用时排（关闭态改 true 后由 hotReloadIfChanged 补排，见其末尾分支）
+        if (enabled) {
+            scheduleFirstFullSync("启动");
+        }
 
         // ★ 启动嵌入式HTTP服务器接收PHP回调
+        //   ★ 2026-10-05：无论开关状态都启动（内部幂等）。旧版只在 start() 且 enabled 时启动，
+        //     「开服关闭 → 运行时改 true」后 PHP 的 notify_sync/validate_player 回调没人监听，
+        //     与本次「定时器掐死在门外」是同一类根因。
         startCallbackServer();
 
         // ★ 初始化全量同步调度时间（由合并定时器C在到达nextSyncTime时触发）
         scheduleNextSync();
 
-        // ★ 启动3个合并定时器（替代原来的6个独立定时器，自动错峰≥5秒）
+        // ★ 启动5个合并定时器（自动错峰≥5秒）
+        //   ★ 2026-10-05：无条件启动 —— 它们每轮开头的 hotReloadIfChanged() 是「开关关着时
+        //     也能感知 改回 true」的唯一载体，enabled=false 时不能不启动（否则热重载永远不触发）
         startMergedPolling();
     }
 
@@ -1438,6 +1458,10 @@ public class WebManager {
      * 启动嵌入式HTTP服务器接收PHP回调
      */
     private void startCallbackServer() {
+        // ★ 幂等闸：start() 与 reloadWebConfig 都可能调用，端口只能绑一次（否则 BindException）
+        if (!callbackServerStarted.compareAndSet(false, true)) {
+            return;
+        }
         new Thread(() -> {
             try {
                 callbackServer = new java.net.ServerSocket(callbackPort);
@@ -1455,10 +1479,16 @@ public class WebManager {
                     }).start();
                 }
             } catch (IOException e) {
+                // ★ 绑定失败（端口占用等）放开闸，允许下次 reload 重试
+                callbackServerStarted.set(false);
                 plugin.getLogger().warning("[Web通信] 回调服务器启动失败: " + e.getMessage());
             }
         }, "web-callback-server").start();
     }
+
+    /** 回调服务器是否已启动（幂等闸，防止重复绑端口） */
+    private final java.util.concurrent.atomic.AtomicBoolean callbackServerStarted =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
      * 处理PHP回调请求
@@ -2078,7 +2108,7 @@ public class WebManager {
             if (phpBusyUntil > now) {
                 delayMs = Math.max(delayMs, phpBusyUntil - now + 2000);
             }
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {   // ★ 2026-10-05 修复：原来写 4，漏了 TIMER_E(id=4)，E 与其他4个不定错峰
                 if (i == timerId) continue;
                 long otherLast = lastRunTimestamps[i];
                 if (otherLast == 0) continue;
