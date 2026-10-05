@@ -26,6 +26,12 @@ function debugLog($message, $context = []) {
     }
 
     file_put_contents($logFile, $logEntry, FILE_APPEND | LOCK_EX);
+
+    // ★ 保留策略（2026-10-05）：只留最近3天 + ≤5MB，任一超标即清理到两条件同时满足
+    if (is_file(__DIR__ . '/log_maintain.php')) {
+        @require_once __DIR__ . '/log_maintain.php';
+        if (function_exists('logMaintain')) { @logMaintain($logFile); }
+    }
 }
 
 // ===== 数据库初始化 =====

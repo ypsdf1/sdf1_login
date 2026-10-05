@@ -119,7 +119,13 @@ function cgLog($msg) {
     }
     $dir = __DIR__ . '/db';
     if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
-    @file_put_contents($dir . '/debug.log', $line, FILE_APPEND | LOCK_EX);
+    $f = $dir . '/debug.log';
+    @file_put_contents($f, $line, FILE_APPEND | LOCK_EX);
+    // ★ 保留策略（2026-10-05）：只留最近3天 + ≤5MB，任一超标即清理到两条件同时满足
+    if (is_file(__DIR__ . '/log_maintain.php')) {
+        @require_once __DIR__ . '/log_maintain.php';
+        if (function_exists('logMaintain')) { @logMaintain($f); }
+    }
 }
 
 // ====================================================================

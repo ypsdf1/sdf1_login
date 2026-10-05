@@ -15,7 +15,13 @@ set_error_handler(function($errno, $errstr, $errfile, $errline) {
         // core.php may not be loaded yet, define minimal debugLog
         if (!function_exists('debugLog')) {
             function debugLog($msg) {
-                @file_put_contents(__DIR__ . '/db/debug.log', "[" . date('Y-m-d H:i:s') . "] [orders.php] $msg\n", FILE_APPEND | LOCK_EX);
+                $lf = __DIR__ . '/db/debug.log';
+                @file_put_contents($lf, "[" . date('Y-m-d H:i:s') . "] [orders.php] $msg\n", FILE_APPEND | LOCK_EX);
+                // ★ 保留策略（2026-10-05）：只留最近3天 + ≤5MB，任一超标即清理到两条件同时满足
+                if (is_file(__DIR__ . '/log_maintain.php')) {
+                    @require_once __DIR__ . '/log_maintain.php';
+                    if (function_exists('logMaintain')) { @logMaintain($lf); }
+                }
             }
         }
         debugLog("[orders.php] PHP {$type}: {$errstr} in {$errfile}:{$errline}");
