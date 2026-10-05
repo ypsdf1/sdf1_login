@@ -281,6 +281,9 @@ switch ($action) {
     case 'check_tx_alignment':
         checkTxAlignment();
         break;
+    case 'pull_tx':
+        pullTx();
+        break;
     case 'check_pending_transactions':
         checkPendingTransactions();
         break;
@@ -1071,7 +1074,19 @@ function syncBonds() {
  *   · 传 ids   → 返回这些序列号里 PHP 还没有的（missing），Java 只补推这部分。
  * 交易序列号 = Java 侧 bond_transaction.id（PHP 侧存为 game_transactions.java_id）。
  */
+// ===== 交易流水对账（Java 开服/分批推送时调用）=====
+/**
+ * 与 Java 端「两边点一遍数据」（阶段E 2026-10-05 改为双向）：
+ *   · 不传 ids → 返回 PHP 侧总笔数与最大 java_id；
+ *   · 传 ids   → missing = 这些序列号里 PHP 还没有的（Java 只补推这部分）；
+ *   · extra_ids = PHP 有、Java 没有的序列号（Java 收回去导入本地）——
+ *       full_scan=1（Java 传了全量序列号）时按「不在 ids 里」判；
+ *       否则按 java_id > java_max_id 判。
+ *   无论成功失败报错，15 秒内必定返回 JSON，绝不哑巴。
+ * 交易序列号 = Java 侧 bond_transaction.id（PHP 侧存为 game_transactions.java_id）。
+ */
 function checkTxAlignment() {
+    @set_time_limit(13);
     try {
         // ★ 认证与 syncTransactions 完全一致（token 或 SECRET_KEY）
         $token = getParam('token');
@@ -1090,54 +1105,147 @@ function checkTxAlignment() {
         }
 
         $db = getDB();
-        $db->exec('PRAGMA busy_timeout=10000');
+        $db->exec('PRAGMA busy_timeout=6000');
         ensureGameTransactionsTable($db);
 
         $phpCount = (int)$db->querySingle("SELECT COUNT(*) FROM game_transactions");
         $phpMax   = (int)$db->querySingle("SELECT COALESCE(MAX(java_id),0) FROM game_transactions");
 
-        $missing = null;
+        // ---- Java 传来的本机序列号（可选）----
         $ids = getParam('ids');
-        if (is_array($ids) && count($ids) > 0) {
-            $clean = [];
+        $clean = [];
+        if (is_array($ids)) {
             foreach ($ids as $v) {
                 $iv = (int)$v;
                 if ($iv > 0) $clean[] = $iv;
             }
             $clean = array_values(array_unique($clean));
-            if (!empty($clean)) {
-                $in = implode(',', $clean);
-                $res = $db->query("SELECT java_id FROM game_transactions WHERE java_id IN ($in)");
-                $have = [];
-                while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-                    $have[(int)$row['java_id']] = true;
-                }
-                $res->finalize();
-                $missing = [];
-                foreach ($clean as $iv) {
-                    if (!isset($have[$iv])) $missing[] = $iv;
-                }
-            } else {
-                $missing = [];
+        }
+        $javaMax  = (int)getParam('java_max_id', 0);
+        $fullScan = (int)getParam('full_scan', 0);
+
+        // ---- PHP 缺的（Java 要补推的）----
+        $missing = null;
+        if (!empty($clean)) {
+            $in = implode(',', $clean);
+            $have = [];
+            $res = $db->query("SELECT java_id FROM game_transactions WHERE java_id IN ($in)");
+            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                $have[(int)$row['java_id']] = true;
             }
+            $res->finalize();
+            $missing = [];
+            foreach ($clean as $iv) {
+                if (!isset($have[$iv])) $missing[] = $iv;
+            }
+        } elseif (is_array($ids)) {
+            $missing = [];
+        }
+
+        // ---- PHP 多的（Java 要收回去的）----
+        $extraIds = [];
+        if ($fullScan && !empty($clean)) {
+            $in = implode(',', $clean);
+            $res = $db->query("SELECT java_id FROM game_transactions WHERE java_id NOT IN ($in)"
+                . " ORDER BY java_id ASC LIMIT 1000");
+            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                $extraIds[] = (int)$row['java_id'];
+            }
+            $res->finalize();
+        } elseif ($javaMax > 0) {
+            $res = $db->query("SELECT java_id FROM game_transactions WHERE java_id > {$javaMax}"
+                . " ORDER BY java_id ASC LIMIT 1000");
+            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                $extraIds[] = (int)$row['java_id'];
+            }
+            $res->finalize();
         }
 
         debugLog("check_tx_alignment: 对账", [
             'php_count' => $phpCount,
             'php_max_id' => $phpMax,
             'checked' => is_array($ids) ? count($ids) : 0,
-            'missing' => $missing === null ? -1 : count($missing)
+            'missing' => $missing === null ? -1 : count($missing),
+            'extra' => count($extraIds),
+            'java_max_id' => $javaMax,
+            'full_scan' => $fullScan
         ]);
 
         success([
             'php_count' => $phpCount,
             'php_max_id' => $phpMax,
             'checked' => is_array($ids) ? count($ids) : 0,
-            'missing' => $missing
+            'missing' => $missing,
+            'extra_ids' => $extraIds
         ], 'ok');
     } catch (\Throwable $e) {
         @error_log("[checkTxAlignment] EXCEPTION: " . $e->getMessage());
         error('checkTxAlignment异常: ' . $e->getMessage());
+    }
+}
+
+/**
+ * ★ 阶段E 多退少补的「补」：Java 报上它缺的序列号，PHP 把这些流水的完整数据交还，
+ *   由 Java 导入本地 bond_transaction（只补记录、不触发业务）。
+ * 只读操作；15 秒内必定返回 JSON。
+ */
+function pullTx() {
+    @set_time_limit(13);
+    try {
+        $token = getParam('token');
+        $secret = getParam('secret');
+        if ($token) {
+            $tokenInfo = validateToken($token);
+            if (!$tokenInfo || ($tokenInfo['purpose'] !== 'admin' && $tokenInfo['purpose'] !== 'all' && $tokenInfo['purpose'] !== 'sync')) {
+                if (!($secret && $secret === SECRET_KEY)) error('同步需要管理权限token或SECRET_KEY');
+            }
+        } elseif ($secret) {
+            if ($secret !== SECRET_KEY) error('密钥验证失败', 403);
+        } else {
+            error('同步需要token或SECRET_KEY');
+        }
+
+        $want = getParam('java_ids');
+        if (!is_array($want) || count($want) === 0) error('缺少java_ids');
+        $clean = [];
+        foreach ($want as $v) {
+            $iv = (int)$v;
+            if ($iv > 0) $clean[] = $iv;
+        }
+        $clean = array_values(array_unique($clean));
+        if (count($clean) > 1000) $clean = array_slice($clean, 0, 1000);
+        if (empty($clean)) error('java_ids 无效');
+
+        $db = getDB();
+        $db->exec('PRAGMA busy_timeout=6000');
+        ensureGameTransactionsTable($db);
+
+        $in = implode(',', $clean);
+        $txs = [];
+        $res = $db->query("SELECT java_id, player_name, type, amount, target_player, operator,"
+            . " reason, balance_before, balance_after, tx_time"
+            . " FROM game_transactions WHERE java_id IN ($in) ORDER BY java_id ASC");
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $txs[] = [
+                'id' => (int)$row['java_id'],
+                'player_name' => $row['player_name'],
+                'type' => $row['type'],
+                'amount' => (int)$row['amount'],
+                'target_player' => $row['target_player'],
+                'operator' => $row['operator'],
+                'reason' => $row['reason'],
+                'balance_before' => (int)$row['balance_before'],
+                'balance_after' => (int)$row['balance_after'],
+                'time' => (int)$row['tx_time'] * 1000   // PHP 秒级 → Java 毫秒
+            ];
+        }
+        $res->finalize();
+
+        debugLog("pull_tx: 交还游戏交易记录", ['want' => count($clean), 'returned' => count($txs)]);
+        success(['transactions' => $txs, 'count' => count($txs)], '返回' . count($txs) . '笔流水');
+    } catch (\Throwable $e) {
+        @error_log("[pullTx] EXCEPTION: " . $e->getMessage());
+        error('pullTx异常: ' . $e->getMessage());
     }
 }
 
@@ -1164,6 +1272,8 @@ function ensureGameTransactionsTable($db) {
 
 // ===== 插件推送游戏内交易记录 =====
 function syncTransactions() {
+    // ★ 15 秒必答复：限制执行时间，锁等太久就地中断，Java 按「无答复」等 15 秒重试
+    @set_time_limit(13);
     try {
         // ★ 支持token或SECRET_KEY认证
         $token = getParam('token');
@@ -1196,7 +1306,7 @@ function syncTransactions() {
 
     $db = getDB();
     // ★ 设置busy_timeout防止database is locked
-    $db->exec('PRAGMA busy_timeout=10000');
+    $db->exec('PRAGMA busy_timeout=6000');
 
     // 创建/补齐 game_transactions 表与索引（与对账接口共用同一份 DDL）
     ensureGameTransactionsTable($db);
