@@ -2268,6 +2268,10 @@ public class WebManager {
             awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
             awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
+            // ★ 充值回执对账（2026-10-06）：一式两份、多退少补，随全量同步一起热同步。
+            //   放在 pullPendingTransactions（上面）之后：刚拉到的新充值先落镜像，再点差集。
+            submitNormalDbTask("周期-syncWebTxReceipts", () -> syncWebTxReceipts());
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             // ★ syncLandData已由Timer D独立定时器处理（15~25秒），不再放批处理队列防SQL锁
             submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
 
@@ -4168,6 +4172,19 @@ public class WebManager {
                 new String[]{"player_name"},
                 new String[]{},
                 alignMap(), false, true));
+        // —— 充值回执（PHP web_transactions，一式两份的 Java 那一份）——
+        //   2026-10-06：充值流水原本只有 PHP 单向持有，运行中清空 PHP 数据后
+        //   Java 不会回补（poller 又被本地 pay_orders.status 挡住）→ 充值记录凭空消失。
+        //   现在 Java 持镜像表 web_tx_receipts，两边按 tx_id 点差集、多退少补：
+        //     missing（Java 有 PHP 无）→ 补推重建，status 直接写 processed（这些流水
+        //         Java 早就处理过了，绝不能写成 pending，否则 Java 会再拉一次重复发货）
+        //     extra（PHP 有 Java 无）→ 收回镜像补齐基线，只补记录、不动钱
+        //   指纹不含 status/created_at：pending→processed 这类状态流转不该每轮判「变了」。
+        ALIGN_CFGS.put("webtx", new AlignCfg("webtx",
+                new String[]{"id"},
+                new String[]{"player_name", "type", "amount", "detail"},
+                new String[]{"amount"},
+                alignMap(), true, false));
     }
     /** 上次交换后已知「两边一致」的指纹：cat -> (key -> hash)。落盘，重启不丢。 */
     private final Map<String, Map<String, String>> alignSeen = new ConcurrentHashMap<>();
@@ -4570,12 +4587,96 @@ public class WebManager {
                     plugin.getLogger().info("[对账] 已收回 Web 端封禁: " + (isIp ? "IP " : "") + target);
                     return true;
                 }
+                case "webtx": {
+                    // 充值回执：PHP 有、Java 没有的那条 → 收回镜像补齐基线。
+                    // ★ 只补记录，绝不触发业务：不加钱、不发货、不确认交易。
+                    //   这些流水在 PHP 侧早已是 processed，Java 收回只是为了
+                    //   让下一轮对账两边相等，避免每轮都在「多退少补」里空转。
+                    DatabaseManager dbMgr = plugin.getDb();
+                    if (dbMgr == null) return false;
+                    long txId = longOf(row.get("id"));
+                    if (txId <= 0) return false;
+                    if (dbMgr.webTxReceiptExists(txId)) return false;   // 已有，指纹不一致也算没变化
+                    String playerName = strOf(row.get("player_name"));
+                    String txType = strOf(row.get("type"));
+                    int txAmount = intOf(row.get("amount"));
+                    String txDetail = strOf(row.get("detail"));
+                    long createdAt = longOf(row.get("created_at"));
+                    dbMgr.upsertWebTxReceipt(txId, playerName, txType, txAmount, txDetail, createdAt);
+                    return true;
+                }
                 default:
                     return false;   // shop/providers/admins/online 等 pull=false 的类别不会走到这里
             }
         } catch (Throwable t) {
             plugin.getLogger().warning("[对账] 写回本地失败 cat=" + cat + ": " + t.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * ★ 2026-10-06 充值回执对账（一式两份 · 多退少补）
+     *
+     * 充值流水 PHP 持 web_transactions(type=recharge)、Java 持 web_tx_receipts，
+     * 两边按 tx_id 点差集：
+     *   missing（Java 有 PHP 无）→ 补推重建流水（运行中清空 PHP 数据的自愈路径）
+     *   extra  （PHP 有 Java 无）→ alignGate 内部已收回镜像补齐基线
+     *
+     * 挂在「运行中的全量同步调度器」周期批次里，随其他类别一起热同步。
+     * 补推的行一律带 status=processed —— 这些流水 Java 早已确认处理过，
+     * 写成 pending 会让 Java 下轮再拉一次、重复发货/重复加钱。
+     */
+    public void syncWebTxReceipts() {
+        if (!enabled) return;
+        DatabaseManager dbMgr = plugin.getDb();
+        if (dbMgr == null) return;
+        try {
+            List<Map<String, Object>> local = dbMgr.getAllWebTxReceipts();
+            AlignResult ar = alignGate("webtx", local);
+            if (ar == null) return;   // 对账没做成（PHP 无答复）→ 下轮重试，不硬推
+            if (ar.pulled > 0) {
+                plugin.getLogger().info("[充值回执] 从 PHP 收回 " + ar.pulled + " 条补齐本地镜像");
+            }
+            if (!ar.needPush()) return;   // 两边一致 → 零发送
+
+            AlignCfg cfg = ALIGN_CFGS.get("webtx");
+            Map<String, Map<String, Object>> byKey = new LinkedHashMap<>();
+            for (Map<String, Object> row : local) {
+                String k = alignKeyOf(cfg, row);
+                if (!k.isEmpty()) byKey.put(k, row);
+            }
+
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            int pushed = 0;
+            for (String k : ar.pushKeys) {
+                Map<String, Object> row = byKey.get(k);
+                if (row == null) continue;
+                if (!first) sb.append(",");
+                first = false;
+                sb.append("{\"id\":").append(longOf(row.get("id")))
+                        .append(",\"player_name\":\"").append(escapeJson(strOf(row.get("player_name"))))
+                        .append("\",\"type\":\"").append(escapeJson(strOf(row.get("type"))))
+                        .append("\",\"amount\":").append(intOf(row.get("amount")))
+                        .append(",\"detail\":\"").append(escapeJson(strOf(row.get("detail"))))
+                        .append("\",\"created_at\":").append(longOf(row.get("created_at")))
+                        .append("}");
+                pushed++;
+            }
+            sb.append("]");
+            if (pushed == 0) return;
+
+            String json = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"receipts\":" + sb + "}";
+            String resp = httpPost("api/sync.php?action=sync_webtx_receipts", json);
+            if (resp != null && resp.contains("\"success\":true")) {
+                plugin.getLogger().info("[充值回执] 补推 " + pushed + "/" + local.size()
+                        + " 条到 PHP（PHP 侧缺失已重建）: " + resp);
+            } else {
+                plugin.getLogger().warning("[充值回执] 补推失败（" + pushed + " 条，下轮重试）: "
+                        + (resp == null ? "null" : resp.substring(0, Math.min(200, resp.length()))));
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[充值回执] 对账异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 
@@ -7540,7 +7641,18 @@ public class WebManager {
                 onlineRows.add(r0);
             }
             AlignResult arAlign = alignGate("online", onlineRows);
-            if (arAlign != null && !arAlign.needPush()) return;   // 零发送
+            if (arAlign != null && !arAlign.needPush()) {
+                // ★ 2026-10-06 名单一致 → 数据一条不发（省流量、避免整表重建），
+                //   但【必须刷心跳】：PHP admin 后台显示在线人数前要检查
+                //   online_player_hb（120 秒内才算新鲜），而这个心跳只在
+                //   sync_online_players 真正执行时才更新。
+                //   旧逻辑在这里直接 return → 玩家稳定在线、名单不变时 PHP 永远收不到
+                //   推送 → 心跳超期 → 后台强制显示 0 人；而清表动作也在 sync_online_players
+                //   里，表没清 → 下轮对账仍判一致 → 仍然不发 → 永不自愈。
+                //   （对账超时 alignTimeout 走的也是这个分支，链路活着时一并保活。）
+                sendOnlineHeartbeat();
+                return;
+            }
 
             String playersJson = buildPlayersJsonArray(playersData);
             // ★ 无变化静默：仅在在线人数或玩家列表变化时才打印日志
@@ -7586,6 +7698,45 @@ public class WebManager {
                 String playersJson = buildPlayersJsonArray(new ArrayList<>());
                 tryPostSync(playersJson, 0);
             } catch (Exception ignored) {}
+        }
+    }
+
+    /** 上次「在线心跳失败」日志时间（限频，避免刷屏） */
+    private volatile long lastOnlineHeartbeatFailLog = 0;
+
+    /**
+     * ★ 2026-10-06 在线保活心跳（轻量端点）
+     *
+     * 用途：在线名单与 PHP 对账完全一致、本轮一条数据都不发时，改发这个极轻的请求，
+     *      只为刷新 PHP 端 online_player_hb 的 last_seen。
+     *
+     * 为什么非发不可：PHP admin 后台展示在线人数前会校验
+     *      (now - last_seen) <= 120 秒，超了就强制返回空列表（显示 0 人）。
+     *      这个心跳过去只由 sync_online_players 更新，而对账「零发送」路径把它掐断了。
+     *
+     * 请求体刻意做到最小（GET + secret，不带 players），不会触发 URL 过长 404，
+     * 也不参与在线数据的语义 —— 名单有没有变化仍由对账裁决。
+     */
+    private void sendOnlineHeartbeat() {
+        try {
+            String url = webBaseUrl + "/api/sync.php?action=online_heartbeat"
+                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String resp = doGet(url);
+            boolean ok = resp != null && resp.contains("\"success\":true");
+            if (!ok) {
+                long now = System.currentTimeMillis();
+                if (now - lastOnlineHeartbeatFailLog > LOG_INTERVAL) {
+                    lastOnlineHeartbeatFailLog = now;
+                    plugin.getLogger().warning("[Web通信] 在线心跳失败（名单一致但保活没送上）: "
+                            + (resp == null ? "null" : resp.substring(0, Math.min(200, resp.length()))));
+                }
+            }
+        } catch (Exception e) {
+            long now = System.currentTimeMillis();
+            if (now - lastOnlineHeartbeatFailLog > LOG_INTERVAL) {
+                lastOnlineHeartbeatFailLog = now;
+                plugin.getLogger().warning("[Web通信] 在线心跳异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            }
         }
     }
 
@@ -9258,6 +9409,17 @@ public class WebManager {
                 }
                 txSuccess = true;
                 confirmTransaction(txId);
+                // ★ 2026-10-06 充值回执：处理成功即在 Java 侧落一份（一式两份的第二份）。
+                //   运行中 PHP 的 web_transactions 被清空时，靠这份镜像补推回去。
+                //   放在这里（confirm 之后）是因为只有确认过的流水才有资格按 processed
+                //   补推 —— 补推成 pending 会让 Java 下轮又拉一次、重复加钱。
+                try {
+                    long txIdNum = Long.parseLong(txId.trim());
+                    plugin.getDb().upsertWebTxReceipt(txIdNum, playerName, type, amount, detail,
+                            System.currentTimeMillis() / 1000);
+                } catch (Exception recEx) {
+                    plugin.getLogger().warning("[充值回执] 落镜像失败 tx=" + txId + ": " + recEx.getMessage());
+                }
             } else if (type.equals("admin_recharge") || type.equals("bond_recharge") || type.equals("admin_give")) {
                 // 管理员充值：增加债券（充值不受冻结限制）
                 int balBefore = plugin.getBondManager().getBonds(playerName);

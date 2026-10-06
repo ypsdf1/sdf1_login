@@ -391,6 +391,22 @@ public class DatabaseManager {
                     + "save_time INTEGER DEFAULT 0"
                     + ")");
 
+            // ★ 充值回执镜像表（2026-10-06，Bug「清空PHP后充值记录回不来」的修复）
+            //   充值流水一式两份：PHP 持 web_transactions(type=recharge) 一份，
+            //   Java 持这里一份。每轮全量同步时双方点差集、多退少补：
+            //     PHP 缺 → Java 补推重建流水（只补记录，绝不重复加钱）
+            //     Java 缺 → 收回来补齐基线（同样只补记录）
+            //   tx_id = PHP web_transactions.id，作为两边共同的主键。
+            st.execute("CREATE TABLE IF NOT EXISTS "
+                    + "web_tx_receipts ("
+                    + "tx_id INTEGER PRIMARY KEY,"
+                    + "player_name TEXT NOT NULL DEFAULT '',"
+                    + "type TEXT NOT NULL DEFAULT '',"
+                    + "amount INTEGER NOT NULL DEFAULT 0,"
+                    + "detail TEXT NOT NULL DEFAULT '',"
+                    + "created_at INTEGER NOT NULL DEFAULT 0"
+                    + ")");
+
             // 注：传送请求不再落库，仅驻留内存（配置项才落库），故不再建 teleport_requests 表
             st.close();
             logger.info("[Sdf1_login] 数据库初始化完成");
@@ -471,6 +487,65 @@ public class DatabaseManager {
 
     public Connection getConnection() {
         return db;
+    }
+
+    // ==================== 充值回执镜像（web_tx_receipts，2026-10-06） ====================
+    // 充值流水一式两份：PHP 持 web_transactions(type=recharge)，Java 持本表。
+    // 两边按 tx_id 点差集、多退少补，任何一边被清空都能从另一边补回来。
+
+    /** 写入/更新一条回执（主键 tx_id = PHP web_transactions.id） */
+    public void upsertWebTxReceipt(long txId, String playerName, String type,
+                                   int amount, String detail, long createdAt) {
+        try (java.sql.PreparedStatement ps = db.prepareStatement(
+                     "INSERT OR REPLACE INTO web_tx_receipts "
+                             + "(tx_id, player_name, type, amount, detail, created_at) "
+                             + "VALUES (?, ?, ?, ?, ?, ?)")) {
+            ps.setLong(1, txId);
+            ps.setString(2, playerName == null ? "" : playerName);
+            ps.setString(3, type == null ? "" : type);
+            ps.setInt(4, amount);
+            ps.setString(5, detail == null ? "" : detail);
+            ps.setLong(6, createdAt);
+            ps.executeUpdate();
+        } catch (Exception e) {
+            logger.warning("[回执镜像] 写入失败 tx_id=" + txId + ": " + e.getMessage());
+        }
+    }
+
+    /** 取全部回执（对账用，字段名与 PHP web_transactions 对齐） */
+    public List<Map<String, Object>> getAllWebTxReceipts() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (java.sql.PreparedStatement ps = db.prepareStatement(
+                "SELECT tx_id, player_name, type, amount, detail, created_at "
+                        + "FROM web_tx_receipts ORDER BY tx_id ASC");
+             java.sql.ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getLong("tx_id"));
+                row.put("player_name", rs.getString("player_name"));
+                row.put("type", rs.getString("type"));
+                row.put("amount", rs.getInt("amount"));
+                row.put("detail", rs.getString("detail"));
+                row.put("created_at", rs.getLong("created_at"));
+                out.add(row);
+            }
+        } catch (Exception e) {
+            logger.warning("[回执镜像] 读取失败: " + e.getMessage());
+        }
+        return out;
+    }
+
+    /** 是否已有某条回执 */
+    public boolean webTxReceiptExists(long txId) {
+        try (java.sql.PreparedStatement ps = db.prepareStatement(
+                "SELECT 1 FROM web_tx_receipts WHERE tx_id = ? LIMIT 1")) {
+            ps.setLong(1, txId);
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ==================== UI偏好 ====================
