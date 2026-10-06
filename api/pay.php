@@ -21,6 +21,10 @@ ob_start();
 require_once __DIR__ . '/../core.php';
 ob_end_clean();
 
+// ★ 订单前缀 / 订单号生成（读 config.php 的 PAY_ORDER_PREFIX）
+//   创单端与三个补单脚本必须共用这一份，前缀才不会两边对不上。
+require_once __DIR__ . '/pay_config.php';
+
 // ===== 非机密常量（可安全提交） =====
 // 彩虹易支付 下单网关
 define('PAY_GATEWAY', 'https://zf.ypshidifu.cn/api/pay/submit');
@@ -353,7 +357,12 @@ function createOrder($token, $productId = 0) {
         }
     }
 
-    $outTradeNo = 'RE' . date('YmdHis') . sprintf('%04d', mt_rand(0, 9999));
+    // ★ 订单号格式（2026-10-06）：前缀 + 年月日时分秒 + 4位随机校验码 + 玩家名
+    //   例：RE20261006171418Q101youpaishidifu
+    //   前缀读 config.php 的 PAY_ORDER_PREFIX（多服隔离，不再写死 'RE'）；
+    //   加玩家名是为了在共用的平台 pay_order 表里一眼看出这单属于谁。
+    //   长度护栏与玩家名净化见 pay_config.php 的 payMakeOrderNo()。
+    $outTradeNo = payMakeOrderNo($player);
 
     // 构造提交参数（原始值，不做 urlencode；sign 在原始值上计算）
     $params = [
@@ -631,10 +640,16 @@ function queryOrder($token) {
 
     // ★ 本地订单不存在 → 双路查询（MySQL + 官方API），如果平台已支付则同步到本地
     if (!$row) {
-        // ★ 2026-10-02 归属校验：本方订单号只可能是 createOrder 生成的 RE 前缀。
-        //   不是 RE 开头 = 平台其他商户/项目的订单 → 一概不查平台、不建本地单、不写流水。
-        if (strncmp((string)$outTradeNo, 'RE', 2) !== 0) {
-            debugLog('[queryOrder] 非本方订单号，拒绝查询平台', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
+        // ★ 2026-10-02 归属校验：本方订单号只可能是 createOrder 生成的配置前缀订单。
+        //   不是本方前缀 = 平台其他商户/项目的订单 → 一概不查平台、不建本地单、不写流水。
+        // ★ 2026-10-06：前缀改为读 config.php 的 PAY_ORDER_PREFIX（原来写死 'RE'，
+        //   测试服改成别的前缀后，这行不跟着改就会把自己的单也拒绝掉）。
+        if (!payOrderIsOurs($outTradeNo)) {
+            debugLog('[queryOrder] 非本方订单号，拒绝查询平台', [
+                'out_trade_no' => $outTradeNo,
+                'expect_prefix' => payOrderPrefix(),
+                'player' => $info['player'],
+            ]);
             error('订单不存在，请确认订单号是否正确');
         }
         debugLog('[queryOrder] 本地订单不存在，尝试双路查询同步', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);

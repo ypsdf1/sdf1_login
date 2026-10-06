@@ -16,6 +16,9 @@ if (@is_file($secretsFile) && @is_readable($secretsFile)) {
     @require_once $secretsFile;
 }
 
+// ★ 订单前缀读配置（2026-10-06 多服隔离）：与 pay.php 创单端共用同一份 PAY_ORDER_PREFIX
+require_once __DIR__ . '/pay_config.php';
+
 /**
  * 获取平台MySQL数据库连接（集中凭据管理）
  * 注意：poller_online.php 也有同名函数，此处用不同名称避免 redeclare 冲突
@@ -296,9 +299,14 @@ function handleSyncFromPlatform() {
 
         // ★ 2026-10-02 只查后端自己的订单：平台 MySQL 是多商户共用库，整表拉 200 条
         //   会把其他商户/项目的单（纯数字单号）也同步成本地充值单，凭空造出
-        //   玩家=unknown 的垃圾订单。本方单号固定 RE 前缀（pay.php createOrder 生成），
-        //   平台侧据此过滤，PHP 侧再兜底校验；平台其他订单一概不碰。
-        $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE out_trade_no LIKE 'RE%' AND status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
+        //   玩家=unknown 的垃圾订单。本方单号前缀取自 config.php 的 PAY_ORDER_PREFIX
+        //   （pay.php createOrder 用同一个值生成），平台侧据此过滤，PHP 侧再兜底校验；
+        //   平台其他订单一概不碰。
+        // ★ 2026-10-06：前缀改为读配置（原来写死 'RE'，测试服改前缀后这里不跟着改
+        //   就会把生产服的单同步进来）。
+        $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE out_trade_no LIKE :pfx AND status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
+        $stmt->bindValue(':pfx', payOrderPrefixLike(), PDO::PARAM_STR);
+        $stmt->execute();
         $platformOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $synced = 0;
@@ -309,13 +317,17 @@ function handleSyncFromPlatform() {
 
         foreach ($platformOrders as $po) {
             $outTradeNo = $po['out_trade_no'];
-            if (strncmp((string)$outTradeNo, 'RE', 2) !== 0) {
+            // ★ 兜底校验：与创单端读同一份 PAY_ORDER_PREFIX
+            if (!payOrderIsOurs($outTradeNo)) {
                 $foreign++;   // 非本方订单：不建单、不写流水
                 continue;
             }
             $player = $po['param'] ?? 'unknown';
             $tradeNo = $po['trade_no'] ?? '';
             $money = (string)$po['money'];
+            // ★ 债券换算保持原始行为（2026-10-06 用户指示：代码不干预换算比例，
+            //   金额→券数由后台「面板-充值商店配置」决定，运维自行调整）。
+            //   本行仅在本地无档位记录时作兜底估算，公式与改造前完全一致。
             $bonds = ($money >= '1.0') ? (int)($money * 10) : max(1, (int)($money * 100));
 
             // 查本地是否已有

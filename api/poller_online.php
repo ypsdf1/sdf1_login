@@ -27,6 +27,12 @@ $secretsFile = __DIR__ . '/pay_secrets.php';
 if (@is_file($secretsFile) && @is_readable($secretsFile)) {
     @require_once $secretsFile;
 }
+
+// ★ 订单前缀读配置（2026-10-06 多服隔离）：创单端 pay.php 用什么前缀，这里就扫什么前缀。
+//   此前写死 'RE'，测试服与生产服共用一个前缀 → 互相捡单串数据。
+//   ★★ 改前缀时，pay.php / poller_online.php / pay_poller.php / recharge_orders_api.php
+//      四个文件必须一起改（它们现在都读同一个 PAY_ORDER_PREFIX，只要 config.php 改了就同步生效）。
+require_once __DIR__ . '/pay_config.php';
 $PLATFORM_DB_HOST = defined('PAY_MYSQL_HOST') ? PAY_MYSQL_HOST : '127.0.0.1';
 $PLATFORM_DB_NAME = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
 $PLATFORM_DB_USER = defined('PAY_MYSQL_USER') ? PAY_MYSQL_USER : 'hbye3AezRNk4r7YA';
@@ -203,12 +209,17 @@ function pollPaidOrders() {
     //   绝大多数是其他商户/项目的单（纯数字单号）。以前不加过滤整表拉，平台每来一单
     //   就被我们"捡走"、凭空写进本地 pay_orders + web_transactions，产生玩家=unknown
     //   的垃圾充值单（Java 每次拉交易都刷屏处理它们），还顺手把别人的订单 notify
-    //   改成 1 —— 纯属多管闲事。本方单号由 pay.php createOrder 生成、固定 RE 前缀，
+    //   改成 1 —— 纯属多管闲事。本方单号由 pay.php createOrder 生成，前缀取自
+    //   config.php 的 PAY_ORDER_PREFIX（生产 'RE' / 测试服 'RT' 等，各部署各配），
     //   平台侧据此过滤，PHP 侧再兜底校验一次；平台其他订单一概不读不写。
     //   仍不过滤 notify：平台可能已标记 notify=1 但本地 DB 未更新（HTTP 回调被
     //   CF WAF 拦截），是否补单以本地 pay_orders 状态为准。
     $prefix = $PLATFORM_DB_PREFIX;
-    $stmt = $pdo->query("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE out_trade_no LIKE 'RE%' AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
+    // ★ 2026-10-06：扫描前缀改为读 config.php 的 PAY_ORDER_PREFIX（原来写死 'RE'）
+    $orderPrefix = payOrderPrefix();
+    $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE out_trade_no LIKE :pfx AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
+    $stmt->bindValue(':pfx', $orderPrefix . '%', PDO::PARAM_STR);
+    $stmt->execute();
     $allOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($allOrders)) {
@@ -216,12 +227,12 @@ function pollPaidOrders() {
         return;
     }
 
-    // 只保留本方订单（RE 前缀兜底校验），再过滤掉本地已处理(paid)的
+    // 只保留本方订单（前缀兜底校验，与创单端同一份配置），再过滤掉本地已处理(paid)的
     $orders = [];
     $foreign = 0;
     foreach ($allOrders as $o) {
         $outNo = (string)$o['out_trade_no'];
-        if (strncmp($outNo, 'RE', 2) !== 0) {
+        if (!payOrderIsOurs($outNo)) {
             $foreign++;   // 非本方订单：不建单、不写流水、不改它的 notify
             continue;
         }

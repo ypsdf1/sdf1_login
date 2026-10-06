@@ -118,6 +118,16 @@ switch ($action) {
     case 'sync_online_players':
         syncOnlinePlayers();
         break;
+    // ★ 2026-10-06 在线保活心跳：名单无变化时 Java 走这条轻量出口刷 last_seen，
+    //   否则 admin 后台会因为心跳超 120 秒而强制显示 0 人。
+    case 'online_heartbeat':
+        onlineHeartbeat();
+        break;
+    // ★ 2026-10-06 充值回执补推（一式两份 · 多退少补）：Java 发现 PHP 侧 web_transactions
+    //   缺了它手上的镜像流水时，POST 这里重建。跟随全量同步调度器热同步。
+    case 'sync_webtx_receipts':
+        syncWebTxReceipts();
+        break;
     case 'sync_daily_logins':
         syncDailyLogins();
         break;
@@ -1386,6 +1396,23 @@ function alignmentCatConfig($cat) {
                 // （玩家已下线但没推过）必须靠一次全量推送才能清掉，所以 extra 要触发推送
                 'push_on_extra' => 1,
             ),
+            // ★ 充值回执（2026-10-06 一式两份）：Java 侧持 web_tx_receipts 镜像。
+            //   两边按 id 点差集、多退少补：
+            //     PHP 缺（missing）→ Java 补推重建流水，解决「运行中清空 PHP 后充值记录回不来」
+            //     PHP 多（extra）  → 收回给 Java 补齐基线
+            // ★ where 限定与 Java 侧写镜像的范围【必须完全一致】（recharge/pay_recharge 两种）：
+            //   范围不一致会导致补推的行永远落在对账集合之外 → 每轮都判 missing → 无限补推。
+            //   不能对账的类型（cdk/shop_refund 等）本就不归充值回执管，各走各的链路。
+            'webtx' => array(
+                'table' => 'web_transactions',
+                'keycols' => array('id'),
+                'map' => array(),
+                'cols' => array('id', 'player_name', 'type', 'amount', 'detail', 'created_at'),
+                'hashcols' => array('player_name', 'type', 'amount', 'detail'),
+                'intcols' => array('amount'),
+                'pull' => 1,
+                'where' => "type IN ('recharge','pay_recharge')",
+            ),
         );
     }
     return isset($cfgs[$cat]) ? $cfgs[$cat] : null;
@@ -1454,6 +1481,24 @@ function checkAlignment() {
         $cfg = alignmentCatConfig($cat);
         if ($cfg === null) error('未知的对账类别: ' . $cat);
 
+        // ★ 2026-10-06 心跳兜底：Java 端对「online」类别的对账请求，本身就证明
+        //   插件活着、且它手上那份在线名单刚刚跟 PHP 点过一遍。既然点过了，
+        //   就同步刷新 online_player_hb —— 这样即使专门的心跳请求丢了，
+        //   只要对账链路通，后台也不会因为 120 秒无 sync_online_players 而归零。
+        //   （只对 online 类刷：别的类别跟在线数据无关，不该顺手改它的语义。）
+        if ($cat === 'online') {
+            try {
+                $hbDb = getDB();
+                $hbDb->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+                $hbStmt = $hbDb->prepare("INSERT OR REPLACE INTO online_player_hb (id, last_seen) VALUES (1, :t)");
+                $hbStmt->bindValue(':t', time(), SQLITE3_INTEGER);
+                $hbStmt->execute();
+            } catch (\Throwable $e) {
+                @error_log("[checkAlignment] online心跳兜底刷新失败: " . $e->getMessage());
+                // 失败不影响对账本身
+            }
+        }
+
         // ---- Java 报上来的本机 key + 指纹 ----
         $javaHash = array();
         $records = getParam('records');
@@ -1473,7 +1518,11 @@ function checkAlignment() {
         $db = getDB();
         $db->exec('PRAGMA busy_timeout=6000');
         try {
-            $res = $db->query('SELECT * FROM ' . $cfg['table']);
+            // ★ where 仅来自 alignmentCatConfig 的硬编码常量（非用户输入），可直接拼接。
+            //   没配 where 的类别行为与改造前完全一致。
+            $sql = 'SELECT * FROM ' . $cfg['table'];
+            if (!empty($cfg['where'])) $sql .= ' WHERE ' . $cfg['where'];
+            $res = $db->query($sql);
             while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
                 $k = alignmentKeyOf($cfg, $row);
                 if ($k === '') continue;
@@ -2086,6 +2135,177 @@ function syncOnlinePlayers() {
     @error_log("[syncOnlinePlayers] Synced $synced/$playerCount, DB now has " . ($verifyRow['cnt'] ?? 0) . " records");
 
     success(['synced' => $synced, 'server_time' => $now], "同步了" . $synced . "个在线玩家");
+}
+
+// ===== 在线心跳（2026-10-06 新增，Java 轻量保活端点）=====
+/**
+ * 背景：admin 后台显示在线人数前会检查 online_player_hb（120 秒内才算新鲜），
+ *      而这个心跳**只在 sync_online_players 被调用时**才更新。
+ *      2026-10-06 起 Java 端 syncOnlinePlayers() 走了「双向对账」：在线名单与 PHP
+ *      完全一致时一条数据都不发就 return —— 于是玩家稳定在线、名单不变时，PHP 永远
+ *      收不到 sync_online_players → 心跳停在 120 秒前 → 后台强制显示 0 人，
+ *      而 online_players 表里的人还在（清表动作本身也在 sync_online_players 里），
+ *      所以下一轮对账仍判「一致」→ 仍然不发 → **永不自愈**。
+ *
+ * 本端点就是给那条「零发送」路径用的保活出口：只刷心跳时间戳，绝不改 online_players
+ * 的数据（名单没变本来就不该动），请求体极小（GET + secret），不会被 URL 长度限制打回。
+ *
+ * 心跳语义 = 「Java 插件还活着、且它手上的在线名单与 PHP 一致」，
+ * 因此收到心跳即认为在线数据可信，admin 侧照常展示 online_players 现有内容。
+ */
+function onlineHeartbeat() {
+    $secret = getParam('secret');
+    $token  = getParam('token');
+    // 与 syncOnlinePlayers 同款认证：SECRET_KEY 或 sync 用途 token 都接受
+    $authed = false;
+    if ($secret && $secret === SECRET_KEY) {
+        $authed = true;
+    } elseif ($token) {
+        $info = validateToken($token);
+        if ($info && ($info['purpose'] === 'admin' || $info['purpose'] === 'all' || $info['purpose'] === 'sync')) {
+            $authed = true;
+        }
+    }
+    if (!$authed) error('认证失败');
+
+    $now = time();
+    $fresh = 0;
+    $count = 0;
+    try {
+        $db = getDB();
+        $db->exec('PRAGMA busy_timeout=5000');
+        $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER NOT NULL)");
+        $db->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+
+        // ★ 只刷新心跳，不动 online_players：名单是否变化由 Java 端对账裁决，
+        //   这里插手反而会把「Java 报的人数」和「对账结果」搅在一起。
+        $hb = $db->prepare("INSERT OR REPLACE INTO online_player_hb (id, last_seen) VALUES (1, :t)");
+        $hb->bindValue(':t', $now, SQLITE3_INTEGER);
+        $hb->execute();
+
+        $r = $db->query("SELECT COUNT(*) AS cnt FROM online_players");
+        $row = $r ? $r->fetchArray(SQLITE3_ASSOC) : null;
+        $count = (int)($row['cnt'] ?? 0);
+        $fresh = $now;
+    } catch (\Throwable $e) {
+        @error_log("[onlineHeartbeat] 刷新失败: " . $e->getMessage());
+        // 心跳失败不致命：Java 下轮仍会重试
+        error('心跳写入失败: ' . $e->getMessage());
+    }
+
+    success([
+        'last_seen'   => $fresh,
+        'server_time' => $now,
+        'online_count'=> $count,
+        // 供 Java 端判断自己是否已超过 PHP 的新鲜阈值（120 秒）
+        'hb_ttl'      => 120,
+    ], 'ok');
+}
+
+// ===== 充值回执补推（Java插件 → PHP，一式两份 · 多退少补） =====
+/**
+ * ★ 2026-10-06 Bug1 热同步的 PHP 接收端。
+ *
+ * 背景：充值流水一式两份 —— PHP 持 web_transactions(type=recharge/pay_recharge)，
+ * Java 持 web_tx_receipts 镜像。运行中 PHP 后台数据被清空时，Java 侧对账点出差集
+ * （PHP 缺、Java 有）后把缺的行 POST 到这里重建，实现「多退少补」的热回补。
+ *
+ * 三条铁律（改动前先读完）：
+ *  1. status 一律写死 'processed'。这些流水 Java 早已 confirm 过（镜像只在 confirm
+ *     之后落），写成 pending 会被 pull_pending_transactions 再拉一次 → 重复发货/重复加钱。
+ *  2. INSERT OR REPLACE 按主键 id 幂等：重复补推、并发补推都不会产生重复流水。
+ *     注意 web_transactions.id 是显式主键（非 AUTOINCREMENT 语义冲突），Java 推来的
+ *     id 就是原行 id，直接带上即可；id 与现存行撞车时整行替换 —— 指纹哈希已保证
+ *     撞车行在对账口径下就是同一条。
+ *  3. 只收 type IN ('recharge','pay_recharge')：与 alignmentCatConfig('webtx') 的 where
+ *     严格一致。收了别的类型，该行永远落在对账集合之外 → 下轮仍判 missing → 无限补推。
+ *
+ * 认证与 syncDailyLogins 同款（SECRET_KEY），请求体 {"secret":...,"receipts":[...]}。
+ */
+function syncWebTxReceipts() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $receipts = getParam('receipts');
+    if ($receipts === null) {
+        // POST body 走 php://input（与 syncDailyLogins 同款双通道）
+        $raw = file_get_contents('php://input');
+        if ($raw) {
+            $decoded = json_decode($raw, true);
+            if (isset($decoded['receipts'])) $receipts = $decoded['receipts'];
+        }
+    }
+    if ($receipts === null || !is_array($receipts)) {
+        error('缺少receipts数据');
+    }
+    if (count($receipts) === 0) {
+        success(['inserted' => 0, 'skipped' => 0], '无需补推');
+        return;
+    }
+
+    $db = getDB();
+    $db->exec('PRAGMA busy_timeout=6000');
+    // 表随数据一起被清掉/删表的极端情况：先确保表在，再谈补推
+    $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
+    // processed_at 列可能在旧库缺失（历史 ALTER 迁移路径），补齐防 INSERT 报错
+    $hasProcessedAt = false;
+    $pr = $db->query("PRAGMA table_info(web_transactions)");
+    while ($pr && ($c = $pr->fetchArray(SQLITE3_ASSOC))) {
+        if (isset($c['name']) && $c['name'] === 'processed_at') { $hasProcessedAt = true; break; }
+    }
+    if ($pr) $pr->finalize();
+    if (!$hasProcessedAt) {
+        try { $db->exec("ALTER TABLE web_transactions ADD COLUMN processed_at INTEGER"); }
+        catch (\Throwable $e) { /* 并发下另一请求已加过，忽略 */ }
+    }
+
+    $now = time();
+    $inserted = 0;
+    $skipped = 0;
+    $db->exec("BEGIN IMMEDIATE");
+    try {
+        $stmt = $db->prepare("INSERT OR REPLACE INTO web_transactions (id, player_name, type, amount, operator, reason, detail, status, created_at, processed_at) VALUES (:id, :player, :type, :amount, :operator, :reason, :detail, 'processed', :ctime, :ptime)");
+        foreach ($receipts as $r) {
+            if (!is_array($r)) { $skipped++; continue; }
+            $id     = (int)($r['id'] ?? 0);
+            $player = trim((string)($r['player_name'] ?? ''));
+            $type   = (string)($r['type'] ?? '');
+            $amount = (int)($r['amount'] ?? 0);
+            $detail = (string)($r['detail'] ?? '');
+            $ctime  = (int)($r['created_at'] ?? $now);
+
+            // 铁律3：类型必须落在 webtx 对账 where 里，否则补了也白补（还会无限补推）
+            if ($id <= 0 || $player === '' || !in_array($type, array('recharge', 'pay_recharge'), true)) {
+                $skipped++;
+                continue;
+            }
+            if ($ctime <= 0) $ctime = $now;
+
+            $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+            $stmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $stmt->bindValue(':type', $type, SQLITE3_TEXT);
+            $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
+            // operator/reason 是 Java 镜像没有的展示字段：按正常充值流水的口径补默认值，
+            // 不参与指纹（hashcols 只含 player_name/type/amount/detail），不影响对账。
+            $stmt->bindValue(':operator', 'Java回执补推', SQLITE3_TEXT);
+            $stmt->bindValue(':reason', '充值流水回补(一式两份)', SQLITE3_TEXT);
+            $stmt->bindValue(':detail', $detail, SQLITE3_TEXT);
+            $stmt->bindValue(':ctime', $ctime, SQLITE3_INTEGER);
+            $stmt->bindValue(':ptime', $now, SQLITE3_INTEGER);
+            $stmt->execute();
+            $inserted++;
+        }
+        $db->exec("COMMIT");
+    } catch (\Throwable $e) {
+        try { $db->exec("ROLLBACK"); } catch (\Throwable $e2) {}
+        @error_log("[syncWebTxReceipts] Error: " . $e->getMessage());
+        error('回执补推失败: ' . $e->getMessage());
+    }
+
+    if ($inserted > 0) {
+        @error_log("[syncWebTxReceipts] Java补推充值流水 " . $inserted . " 条（跳过 " . $skipped . " 条），status 均为 processed");
+    }
+    success(['inserted' => $inserted, 'skipped' => $skipped], "补推{$inserted}条充值流水");
 }
 
 // ===== 同步每日登录记录（Java插件推送） =====

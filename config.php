@@ -27,6 +27,29 @@ define('DB_PATH', __DIR__ . '/db/web.db');
 //   订单记录纯属 PHP 收银台自己的数据，Java 永不读写此库
 define('ORDERS_DB_PATH', __DIR__ . '/db/orders.db');
 
+// ===== 收银台订单号（2026-10-06 多服隔离）=====
+// ★ 平台 MySQL 的 pay_order 是多商户/多服务器共用表。以前创单和补单脚本都把 'RE'
+//   写死在代码里，结果生产服和测试服用同一个前缀 —— 测试服的补单器每 20 秒轮询一次，
+//   就把生产服的已支付单也捡走补进了测试库（互相串数据）。
+// ★ 现在创单(pay.php)与三个补单脚本(poller_online / pay_poller / recharge_orders_api)
+//   统一读下面这个常量：前缀一致才互认，各部署各改各的即可隔离。
+// ★ 注意：改前缀只影响「新订单」与「补单器还认哪些单」，历史订单数据不受影响；
+//   若某次改了前缀，改动前已生成、尚未补单的订单将不再被本端补单器匹配（按需保留）。
+define('PAY_ORDER_PREFIX', 'RE');   // 生产服 'RE'，测试服请改成例如 'RT'
+
+// ★ 订单号格式（pay.php createOrder）：
+//     前缀 + 年月日时分秒 + 4位随机校验码 + 玩家名
+//     例：RE20261006171418Q101youpaishidifu
+//   加玩家名是为了在共用的 pay_order 表里一眼看出这单属于谁，排查串服问题时最快。
+//   只允许字母/数字/下划线（Minecraft 用户名规则），其余字符会被剔除。
+// ★ PAY_ORDER_MAX_LEN：平台 out_trade_no 字段长度护栏（彩虹易支付标准为 varchar(64)）。
+//   超长时自动裁短玩家名段，绝不截断前缀/时间戳/校验码 —— 前缀被截会导致补单器再也认不出这单。
+define('PAY_ORDER_MAX_LEN', 64);
+
+// ★ 债券换算不在这里配：金额→债券完全由后台「面板-充值商店配置」（shop_configs.bond_reward）
+//   决定，代码不干预比例；仅在本地订单记录缺失时才用 poller_online.php 里的兜底估算公式。
+//   运维想改成 1 元 10 券还是 1 元 100 券，直接在后台充值商店里调即可。
+
 // ===== 管理员认证 =====
 define('ADMIN_USER', 'admin');
 define('ADMIN_PASS', 'REPLACE_ME_ADMIN_PASSWORD');  // 管理员密码
