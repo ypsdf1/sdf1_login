@@ -6556,6 +6556,16 @@ public class WebManager {
     /** 对账发现两边有缺口 → 本轮取全量逐批点验，只补 PHP 真正缺的（不再靠归零水位线盲推） */
     private volatile boolean txFullScanPending = false;
 
+    /**
+     * ★ 周期对账节流（2026-10-06）：交易流水原本只在开服时点一次账，
+     *   PHP 端 web.db 在运行期被重载/清空后，本机水位线仍停在最新 →
+     *   每轮只推增量，历史流水永远补不回去，日志却显示「已对齐」（假对齐）。
+     *   每隔这个间隔重新点一次账，发现 PHP 真丢了数据就转入全量点验。
+     */
+    private static final long TX_RECONCILE_INTERVAL_MS = 5 * 60 * 1000L;
+    /** 上次周期对账时间（0=还没对过；无论成败都占位，避免给 DB 队列加压） */
+    private volatile long lastTxReconcileAt = 0L;
+
     public void syncBondTransactions() {
         if (!enabled) return;
 
@@ -6582,6 +6592,12 @@ public class WebManager {
 
             // 读取上次同步的最晚时间
             loadLastSyncedTxTime();
+
+            // ★ 周期对账：本轮若还没有全量点验在排队，先跟 PHP 核一次账，
+            //   发现「PHP 缺的比本机待推的还多」→ 说明 PHP 运行期丢了历史，转全量点验补回
+            if (!txFullScanPending) {
+                maybePeriodicTxReconcile(bondMgr);
+            }
 
             // 获取交易记录：
             //   常规 = 水位线之后的增量；
@@ -7027,6 +7043,76 @@ public class WebManager {
         } catch (Exception e) {
             txAlignmentPending = true;
             plugin.getLogger().warning("[Web交易同步] 启动对齐异常（本轮跳过补推判定）: " + e.getMessage());
+        }
+    }
+
+
+    /**
+     * ★ 周期对账（2026-10-06）：给交易流水补上「运行期自愈」通道。
+     *
+     * 背景：开服对齐只跑一次。之后 PHP 端 web.db 若被重载/重置（删站、站点恢复等），
+     *   game_transactions 会被清空，而本机水位线仍停在最新——每轮只推「水位线之后的增量」，
+     *   历史流水再也补不回去；日志里那句「N/N 笔已对齐」指的是本轮增量，不是全库，
+     *   看起来一切正常，实际两边差着几百笔（假对齐）。
+     *   对比：充值回执等 8 类走 ALIGN_CFGS 周期对账，PHP 清零后能自愈，唯独流水不能。
+     *
+     * 判据（轻量，只取 PHP 的笔数与最大序列号，不带全量序列号）：
+     *   缺口 = 本机笔数 - PHP 笔数；
+     *   水位线之后还没推的笔数 = 正常待推增量；
+     *   缺口 > 待推增量 ⇒ 多出来的部分是 PHP 运行期丢的历史 → 转入全量逐批点验，
+     *   由既有的「两边点验」只补 PHP 真正缺的（已有的不重推）。
+     */
+    @SuppressWarnings("unchecked")
+    private void maybePeriodicTxReconcile(BondManager bondMgr) {
+        long now = System.currentTimeMillis();
+        if (lastTxReconcileAt > 0 && now - lastTxReconcileAt < TX_RECONCILE_INTERVAL_MS) {
+            return;
+        }
+        // 先占位：即便这次没答复，也等下个周期再来，不给 DB 队列加压
+        lastTxReconcileAt = now;
+
+        long localCount = bondMgr.getTxCount();
+        long localMax = bondMgr.getMaxTxId();
+        if (localCount <= 0 || localMax <= 0) return;
+
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("java_max_id", localMax);
+            body.put("java_count", localCount);
+            String response = httpPostWithTokenOnce("api/sync.php?action=check_tx_alignment", body);
+            if (response == null) {
+                plugin.getLogger().info("[Web交易同步] 周期对账：15 秒内无答复，本轮跳过（下个周期再点）");
+                return;
+            }
+            Map<String, Object> result = parseJson(response);
+            if (!Boolean.TRUE.equals(result.get("success"))) {
+                plugin.getLogger().warning("[Web交易同步] 周期对账 PHP 答复失败: " + result.get("message"));
+                return;
+            }
+            Object dataObj = result.get("data");
+            if (!(dataObj instanceof Map)) return;
+            Map<String, Object> data = (Map<String, Object>) dataObj;
+
+            // 多退少补的「补」：PHP 有、本机没有的流水先收回来（只补记录，不改余额不发货）
+            pullExtraTxsFromPhp(data);
+            localCount = bondMgr.getTxCount();
+            localMax = bondMgr.getMaxTxId();
+
+            long pendingPush = bondMgr.countTransactionsAfterTime(lastSyncedTxTime);
+            if (pendingPush < 0) return;               // 本地查不出待推笔数，本轮不做判定
+            long phpCount = toLong(data.get("php_count"));
+            long phpMax = toLong(data.get("php_max_id"));
+            long gap = localCount - phpCount;          // 本机有、PHP 没有的总缺口
+            if (gap <= pendingPush) return;            // 缺口 = 正常待推增量，两边关系正常
+
+            txFullScanPending = true;
+            plugin.getLogger().warning("[Web交易同步] ★ 周期对账发现 PHP 流水在运行期丢失：PHP "
+                    + phpCount + " 笔/最大序列号 " + phpMax + "，本机 " + localCount
+                    + " 笔/最大序列号 " + localMax + "，待推增量 " + pendingPush
+                    + " 笔，缺口 " + gap + " 笔（超出 " + (gap - pendingPush)
+                    + " 笔）→ 转入全量逐批点验，只补 PHP 真正缺的");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web交易同步] 周期对账异常（本轮跳过）: " + e.getMessage());
         }
     }
 

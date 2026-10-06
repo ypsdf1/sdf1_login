@@ -934,6 +934,28 @@ public class BondManager {
 
 
     /**
+     * ★ 周期对账：水位线之后「还没推给 PHP」的笔数（只 COUNT，不拉行）。
+     *   用来区分 PHP 的缺口是「正常的待推增量」还是「运行期被清空的历史」。
+     *
+     * @return 待推笔数；本地查不出来时返回 -1，调用方跳过本轮判定
+     */
+    public long countTransactionsAfterTime(long afterTime) {
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT COUNT(*) FROM bond_transaction WHERE time > ?");
+            ps.setLong(1, afterTime);
+            ResultSet rs = ps.executeQuery();
+            long n = rs.next() ? rs.getLong(1) : 0L;
+            rs.close();
+            ps.close();
+            return n;
+        } catch (SQLException e) {
+            return -1L;
+        }
+    }
+
+
+    /**
      * ★ 阶段E 多退少补：本机全部流水序列号（开服与 PHP 双向点验用）
      */
     public List<Long> getAllTxIds() {
