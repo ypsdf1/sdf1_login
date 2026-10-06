@@ -371,6 +371,7 @@ public class WebManager {
     private static final long HTTP_HARD_TIMEOUT_MS = 10000;  // 门口硬等待上限：10秒
     private static final long HTTP_SIDE_WAIT_MS = 30000;     // 移交旁路后再等的上限：30秒
     private static final long DB_TASK_BUDGET_MS = 10000;     // 单个DB任务总预算：10秒
+    private static final long QUEUE_WAIT_WARN_MS = 15000;    // 入队→执行超过15秒才告警（10秒是单任务硬预算）
 
     // 旁路线程池：超时的HTTP请求挪到这里继续等，不占DB队列的门（最多8个慢请求同时挂着）
     private final java.util.concurrent.ExecutorService httpSideExecutor =
@@ -387,6 +388,8 @@ public class WebManager {
     private static final ThreadLocal<Boolean> onDbWorkerThread = ThreadLocal.withInitial(() -> Boolean.FALSE);
     // 当前DB任务的截止时间戳（10秒预算），仅db-worker线程有值
     private static final ThreadLocal<Long> dbTaskDeadline = new ThreadLocal<>();
+    // 自上次清理以来本线程是否撞上过HTTP硬超时（对账据此判断「PHP没答复=链路慢」）
+    private static final ThreadLocal<Boolean> hardTimeoutHit = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     /** 10秒硬超时异常：门口等待超限，请求已移交旁路线程，调用方按“无响应”处理即可 */
     private static class HttpHardTimeoutException extends Exception {
@@ -410,6 +413,7 @@ public class WebManager {
         if (deadline != null) {
             long remainMs = deadline - now;
             if (remainMs <= 0) {
+                hardTimeoutHit.set(Boolean.TRUE);
                 throw new HttpHardTimeoutException(tag + " " + maskSecret(req.uri().toString()) + " 任务10秒预算已耗尽，快速让位");
             }
             waitMs = Math.min(waitMs, remainMs);
@@ -419,6 +423,7 @@ public class WebManager {
         try {
             side = httpSideExecutor.submit(() -> client.send(req, HttpResponse.BodyHandlers.ofString()));
         } catch (java.util.concurrent.RejectedExecutionException re) {
+            hardTimeoutHit.set(Boolean.TRUE);
             throw new HttpHardTimeoutException(desc + " 旁路线程池已满(8)，放弃本次");
         }
         try {
@@ -426,6 +431,7 @@ public class WebManager {
         } catch (java.util.concurrent.TimeoutException te) {
             plugin.getLogger().warning("[HTTP硬超时] " + desc + " " + (waitMs / 1000)
                     + "秒未返回 → 移交旁路线程继续等待，放行DB队列");
+            hardTimeoutHit.set(Boolean.TRUE);
             throw new HttpHardTimeoutException(desc + " " + (waitMs / 1000) + "秒硬超时，已移交旁路线程");
         } catch (java.util.concurrent.ExecutionException ee) {
             Throwable cause = ee.getCause();
@@ -457,6 +463,20 @@ public class WebManager {
             ms = Math.min(ms, remainMs);
         }
         try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
+
+    /**
+     * ★ 等 DB 队列排空（最多 maxWaitMs）再提交下一批任务。
+     *   队列深度始终 ≤1 → 入队等待 ≈ 上一个任务的剩余时间（≤单任务10秒预算），
+     *   不再出现十几个任务叠在一起的连环「等待过久」。
+     *   队列本来就是空的 → 立即返回（比旧的固定 sleep 只会更快，不会更慢）。
+     */
+    private void awaitDbQueueIdle(long maxWaitMs) {
+        long deadline = System.currentTimeMillis() + maxWaitMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (dbTaskQueue.isEmpty()) return;
+            try { Thread.sleep(200); } catch (InterruptedException ignored) { return; }
+        }
     }
 
     // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
@@ -526,14 +546,21 @@ public class WebManager {
      */
     private void startDbWorker() {
         dbWorkerRunning.set(true);
-        onDbWorkerThread.set(Boolean.TRUE); // 本线程是DB队列工作者 → HTTP走10秒硬超时+旁路放行
         dbWorkerThread = new Thread(() -> {
+            // ★ 必须在 worker 线程【体内】设置：ThreadLocal 不继承，写在 startDbWorker 的
+            //   调用线程（构造 WebManager 的主线程）上等于没设 → 硬超时/旁路放行对 DB 队列
+            //   线程完全失效，任务照旧按原生超时（15/30秒）堵门。
+            //   2026-10-06 实测根因：syncUserRegistrations 跑到 16.7 秒。
+            onDbWorkerThread.set(Boolean.TRUE);
             while (dbWorkerRunning.get()) {
                 try {
                     DbTask task = dbTaskQueue.take();
                     long waitMs = System.currentTimeMillis() - task.createdAt;
-                    if (waitMs > 10000) {
-                        plugin.getLogger().warning("[DB队列] 等待过久: " + task.name + " 等待=" + waitMs + "ms");
+                    // 单任务硬预算10秒：上一个任务吃满预算时，等待到10秒出头属正常；
+                    // 超过15秒才说明队列真积压了≥2层 → 阈值10→15秒，别拿正常等待刷告警
+                    if (waitMs > QUEUE_WAIT_WARN_MS) {
+                        plugin.getLogger().warning("[DB队列] 等待过久: " + task.name + " 等待=" + waitMs
+                                + "ms（队列积压≥2层；单任务硬预算" + (DB_TASK_BUDGET_MS / 1000) + "秒）");
                     }
                     // ★ Web通信关闭闸（执行时点复查）：任务可能是在「开关还是 true 时」入队的，
                     //   排队期间运维把 web通信-启用 改成 false，轮到执行时必须再拦一次。
@@ -546,6 +573,7 @@ public class WebManager {
                     //   sleep不再睡 —— 单个任务占用大门≈10秒封顶，别堵门让其它人先走
                     long execStart = System.currentTimeMillis();
                     dbTaskDeadline.set(execStart + DB_TASK_BUDGET_MS);
+                    hardTimeoutHit.set(Boolean.FALSE);
                     try {
                         task.run();
                     } finally {
@@ -1535,35 +1563,35 @@ public class WebManager {
                 // 登录相关操作高优先级
                 submitDbTask("首次-syncUserRegistrations", () -> syncUserRegistrations());
                 fullSyncStep("注册用户数据");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitDbTask("首次-pushWebLoginCredentials", () -> pushWebLoginCredentials());
                 fullSyncStep("密码凭证");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 // 普通同步操作低优先级（错峰提交，避免PHP端DB锁竞争）
                 submitDbTask("首次-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
                 fullSyncStep("在线玩家");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncShopData", () -> syncShopData());
                 fullSyncStep("商城商品");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-pushShopCatalog", () -> pushShopCatalog());
                 fullSyncStep("商城目录");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncBondBalances", () -> syncBondBalances());
                 fullSyncStep("债券余额");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
                 fullSyncStep("交易流水（先双向对账，多退少补）");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
                 fullSyncStep("玩家IP");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncServiceProviders", () -> syncServiceProviders());
                 fullSyncStep("服务商");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncLandData", () -> syncLandData());
                 fullSyncStep("领地数据");
-                try { Thread.sleep(1500 + (long)(Math.random() * 2000)); } catch (InterruptedException ignored) {}
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-pollAdminChanges", () -> pollAdminChanges());
                 fullSyncStep("管理员改动");
                 initialSyncComplete = true;  // 首次全量同步提交完成
@@ -2043,22 +2071,22 @@ public class WebManager {
                     if (hasRequest) {
                         plugin.getLogger().info("[合并C] 收到即时同步请求: " + players);
                         submitDbTask("即时-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitDbTask("即时-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitDbTask("即时-syncUserRegistrations", () -> syncUserRegistrations());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-pullPendingTransactions", () -> pullPendingTransactions());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-pullShopStock", () -> pullShopStock());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-pullShopPrices", () -> pullShopPrices());
                         submitNormalDbTask("即时-pullShopConfig", () -> pullShopConfig());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
-                        try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-syncServiceProviders", () -> syncServiceProviders());
                     }
                 }
@@ -2079,20 +2107,20 @@ public class WebManager {
                     lastSyncDone = true;
                     lastOnlineCheckTime = System.currentTimeMillis();
                     submitDbTask("末轮-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitDbTask("末轮-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitDbTask("末轮-syncUserRegistrations", () -> syncUserRegistrations());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitDbTask("末轮-syncBondTransactions", () -> syncBondTransactions());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitNormalDbTask("末轮-pullPendingTransactions", () -> pullPendingTransactions());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitNormalDbTask("末轮-pullShopStock", () -> pullShopStock());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitNormalDbTask("末轮-pullShopPrices", () -> pullShopPrices());
                     submitNormalDbTask("末轮-pullShopConfig", () -> pullShopConfig());
-                    try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+                    awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                     submitNormalDbTask("末轮-pullBondChanges", () -> pullBondChanges());
                     plugin.getLogger().info("[合并C] 全员下线超60秒，末轮同步已执行");
                 }
@@ -2112,27 +2140,27 @@ public class WebManager {
 
             // 玩家在线：全量批处理
             submitDbTask("周期-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitDbTask("周期-syncUserRegistrations", () -> syncUserRegistrations());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitDbTask("周期-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitDbTask("周期-syncBondTransactions", () -> syncBondTransactions());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-pullPendingTransactions", () -> pullPendingTransactions());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-pullShopStock", () -> pullShopStock());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-pullShopPrices", () -> pullShopPrices());
             submitNormalDbTask("周期-pullShopConfig", () -> pullShopConfig());
             submitNormalDbTask("周期-pushShopCatalog", () -> pushShopCatalog());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-pullBondChanges", () -> pullBondChanges());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-syncAllPlayerIps", () -> syncAllPlayerIps());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             submitNormalDbTask("周期-syncServiceProviders", () -> syncServiceProviders());
-            try { Thread.sleep(6000 + (long)(Math.random() * 8000)); } catch (InterruptedException ignored) {}
+            awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             // ★ syncLandData已由Timer D独立定时器处理（15~25秒），不再放批处理队列防SQL锁
             submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
 
@@ -3268,8 +3296,8 @@ public class WebManager {
      * 将本地生成的Token批量注册到PHP数据库
      * 使用SECRET_KEY认证，不需要token（解决鸡生蛋问题）
      */
-    private void syncTokensToWeb(List<String[]> tokens) {
-        if (tokens == null || tokens.isEmpty()) return;
+    private boolean syncTokensToWeb(List<String[]> tokens) {
+        if (tokens == null || tokens.isEmpty()) return false;
         // 同步执行，确保token注册到PHP后端
         try {
             StringBuilder jsonArr = new StringBuilder("[");
@@ -3289,13 +3317,21 @@ public class WebManager {
             String jsonBody = "{\"secret\":\"" + escapeJson(secretKey) + "\",\"tokens\":" + jsonArr + "}";
 
             String resp = doPost(webBaseUrl + "/api/sync.php?action=receive_token", jsonBody);
-            if (resp != null) {
+            // ★ 只有 PHP 明确 success=true 才算注册成功（供 system/sync token 复用判定，防假成功）
+            boolean ok = resp != null && resp.contains("\"success\":true");
+            if (ok) {
                 plugin.getLogger().info("[Web通信] Token注册成功");
             }
+            return ok;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] Token注册失败: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            return false;
         }
     }
+
+    /** system/sync 复用 token（见 generateAndSyncToken 注释）：只对 sync.php 系列动作安全 */
+    private volatile String cachedSystemSyncToken;
+    private volatile long cachedSystemSyncTokenUntil;
 
     /**
      * 包装方法：生成token并自动同步到Web
@@ -3303,10 +3339,27 @@ public class WebManager {
      * @return 生成的token
      */
     private String generateAndSyncToken(String playerName, String purpose) {
+        // ★ system/sync 专用 token 复用：sync.php 系列动作只 validateToken、不消耗 token
+        //   （PHP 端 consume 只在 shop/cdk/balance/register 等玩家用途上），
+        //   同一枚在有效期内可反复用。一次同步任务里「对账 + 推送」原本要打 2 次 receive_token，
+        //   慢链路（CF 25% 请求 >10s）下这 2 次就能吃掉整个 10 秒预算。
+        //   ★ 只缓存 system/sync；玩家用途（cdk/bond/register/webshop）是一次性消耗的，绝不缓存。
+        if ("system".equals(playerName) && "sync".equals(purpose)) {
+            String cached = cachedSystemSyncToken;
+            if (cached != null && System.currentTimeMillis() < cachedSystemSyncTokenUntil) {
+                return cached;
+            }
+        }
         String token = generateToken(playerName, purpose);
         List<String[]> batch = new ArrayList<>();
         batch.add(new String[]{token, playerName, purpose});
-        syncTokensToWeb(batch);
+        boolean pushed = syncTokensToWeb(batch);
+        if (pushed && "system".equals(playerName) && "sync".equals(purpose)) {
+            // TTL 取 token 有效期的 40%（默认600秒 → 60秒），给 PHP/Java 时钟偏差留余量
+            cachedSystemSyncToken = token;
+            cachedSystemSyncTokenUntil = System.currentTimeMillis()
+                    + Math.min(60000L, (long) tokenExpireSeconds * 1000L * 4 / 10);
+        }
         return token;
     }
 
@@ -4071,6 +4124,7 @@ public class WebManager {
         final Set<String> pullKeys = new LinkedHashSet<>();
         int phpCount;
         int pulled;                      // 实际写回本地的条数
+        boolean alignTimeout;            // 对账请求硬超时（本轮不推不收，也不回退全量硬推）
 
         /** 是否有需要 Java 补推的数据 */
         boolean needPush() { return !pushKeys.isEmpty(); }
@@ -4081,6 +4135,7 @@ public class WebManager {
      * 返回 null 表示「对账没做成」（PHP 无答复/报错）——调用方按原有逻辑继续，绝不因此停摆。
      */
     private AlignResult callCheckAlignment(AlignCfg cfg, Map<String, String> javaHash) {
+        hardTimeoutHit.set(Boolean.FALSE);   // 只看本次对账自身的硬超时，不受同任务早前请求影响
         try {
             List<Map<String, Object>> records = new ArrayList<>();
             for (Map.Entry<String, String> e : javaHash.entrySet()) {
@@ -4098,7 +4153,18 @@ public class WebManager {
             String url = webBaseUrl + "/api/sync.php?action=check_alignment&token="
                     + java.net.URLEncoder.encode(token, "UTF-8");
             String resp = doPostOnce(url, mapToJson(body));
-            if (resp == null) return null;
+            if (resp == null) {
+                if (Boolean.TRUE.equals(hardTimeoutHit.get())) {
+                    // 10 秒硬超时仍没答复 = 链路慢。本轮放弃对账且【绝不回退成全量硬推】，
+                    // 否则每一轮都会变成用户看到的「无脑推」；下一轮（60~90秒后）再对账。
+                    AlignResult to = new AlignResult();
+                    to.ok = true;
+                    to.alignTimeout = true;
+                    return to;
+                }
+                plugin.getLogger().warning("[对账] " + cfg.cat + " 无响应 → 本轮回退全量推送（兼容旧行为）");
+                return null;
+            }
 
             Map<String, Object> res = parseJson(resp);
             if (!Boolean.TRUE.equals(res.get("success"))) {
@@ -4169,6 +4235,11 @@ public class WebManager {
         }
 
         AlignResult ar = callCheckAlignment(cfg, javaHash);
+        if (ar != null && ar.alignTimeout) {
+            plugin.getLogger().warning("[对账] " + cfg.cat
+                    + " 对账硬超时（10秒内无答复）→ 本轮不推不收，下轮重试，不再回退全量硬推");
+            return ar;   // needPush()==false → 调用方现有判断会直接 return
+        }
         if (ar == null || !ar.ok) return null;
 
         Map<String, String> seen = alignSeen.get(cat);
@@ -9746,6 +9817,9 @@ public class WebManager {
         });
     }
 
+    /** 上次成功推送的商品目录指纹（内容没变就不重复整包推） */
+    private volatile String lastShopCatalogHash;
+
     /**
      * 推送游戏内完整商品目录到 PHP（商城定时同步：游戏内增删分类/商品 → Web 端镜像）
      * 安全护栏：目录为空时不推送，避免误清空 PHP 端商品表。
@@ -9758,11 +9832,19 @@ public class WebManager {
                 return;
             }
             String json = sm.buildCatalogJson();
+            // ★ 无变化静默：目录只由 Java 写（PHP 的 set_shop_catalog 只 upsert 目录字段，
+            //   库存/管理员价走独立列），内容没变就别每轮整包硬推 —— 这是「无脑推」大户之一。
+            String catalogHash = json.length() + ":" + json.hashCode();
+            if (catalogHash.equals(lastShopCatalogHash)) return;
             String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_catalog&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             String resp = doPost(urlStr, json);
             plugin.getLogger().info("[商品同步] 已推送游戏内商品目录到PHP"
                     + (resp != null ? " 响应:" + resp : "（无响应）"));
+            // ★ PHP 明确 success 才提交指纹（防假成功，同 syncUserRegistrations 的规矩）
+            if (resp != null && resp.contains("\"success\":true")) {
+                lastShopCatalogHash = catalogHash;
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[商品同步] 推送商品目录失败: " + e.getMessage());
         }
