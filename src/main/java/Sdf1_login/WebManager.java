@@ -4795,8 +4795,9 @@ public class WebManager {
 
             // ★ 无变化静默
             String currentHash = providers.size() + ":" + providers.hashCode();
-            if (currentHash.equals(lastServiceProviderHash)) return;
-            lastServiceProviderHash = currentHash;
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
+            boolean alignNeedsPushSp = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushSp && currentHash.equals(lastServiceProviderHash)) return;
 
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("data", providers);
@@ -4807,6 +4808,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
+                    lastServiceProviderHash = currentHash; // ← 成功后才落 hash
                     plugin.getLogger().info("[Web通信] 服务商数据变更，已同步: " + providers.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 服务商同步失败: " + result.get("message"));
@@ -5098,7 +5100,9 @@ public class WebManager {
                 return;
             }
             plugin.getLogger().info("[防护-sync] hash变化: lands=" + lands.size() + " config=" + cfgForHash.size() + "项，开始同步");
-            lastLandDataHash = currentHash;
+            // ★ 关键修复：hash 不在这里提交，等下面 sync_lands 明确 success 才提交。
+            //   404 期间这里已提交 → 之后 hash 永远相等 → web_area_lands 永久 0 行
+            //   （2026-10-06 灾备实测，与 syncUserRegistrations 同一类假成功）。
 
             // 1. 同步领地列表（全字段）——用POST避免GET URL长度限制
             if (!lands.isEmpty()) {
@@ -5112,6 +5116,16 @@ public class WebManager {
                 String jsonBody = "{\"action\":\"sync_lands\",\"secret\":\"" + escapeJson(secretKey) + "\",\"lands\":" + sb.toString() + "}";
                 String resp = httpPost("api/sync.php", jsonBody);
                 plugin.getLogger().fine("[防护-sync] 领地同步: " + resp);
+                // ★ 关键修复：sync_lands 明确 success 才提交 hash（防 404/500 假成功）
+                if (resp != null && resp.contains("\"success\":true")) {
+                    lastLandDataHash = currentHash;
+                } else {
+                    plugin.getLogger().warning("[防护-sync] 领地同步未确认成功，hash 不提交，下轮重试: "
+                            + (resp == null ? "null" : resp.substring(0, Math.min(160, resp.length()))));
+                }
+            } else {
+                // 本地已无领地可推（领地全删）→ 无需网络确认，直接提交 hash 免得空转
+                lastLandDataHash = currentHash;
             }
 
             // 2. 同步权限商店数据
@@ -5298,11 +5312,14 @@ public class WebManager {
             if (arAlign != null && !arAlign.needPush()) return;
 
             String currentHash = adminNames.stream().sorted().collect(Collectors.joining("|"));
-            if (currentHash.equals(lastAdminsHash)) {
+            // ★ 对账明说 PHP 缺数据时，本地 hash 绝不能拦截（2026-10-06 灾备实测）：
+            //   PHP 库被清空后 currentHash 仍等于上次成功推送的值 → 旧逻辑在这里永久短路，
+            //   表现为日志每轮打「补推1」却永远发不出去，web_plugin_admins 永远 0 行。
+            boolean alignNeedsPush = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPush && currentHash.equals(lastAdminsHash)) {
                 plugin.getLogger().fine("[防护-sync] 管理员列表无变化，跳过");
                 return;
             }
-            lastAdminsHash = currentHash;
 
             // 构建JSON数组
             StringBuilder sb = new StringBuilder("[");
@@ -5320,6 +5337,13 @@ public class WebManager {
             body.put("admins", sb.toString());
             String resp = httpPost("api/sync.php?action=sync_admins", mapToJson(body));
             plugin.getLogger().info("[防护-sync] 管理员列表同步: " + adminNames.size() + "人 → " + resp);
+            // ★ 关键修复：hash 成功后才提交（同 syncUserRegistrations 的规矩）。
+            //   404/500 时若已提交 hash，这份数据就永远不会重推（2026-10-06 灾备实测）。
+            if (resp != null && resp.contains("\"success\":true")) {
+                lastAdminsHash = currentHash;
+            } else {
+                plugin.getLogger().warning("[防护-sync] 管理员列表同步未确认成功，下轮重试（hash 不提交）");
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
         }
@@ -5392,11 +5416,12 @@ public class WebManager {
 
             sb.append("]");
             String currentHash = hashBuilder.toString();
-            if (currentHash.equals(lastBansHash)) {
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
+            boolean alignNeedsPushBans = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushBans && currentHash.equals(lastBansHash)) {
                 plugin.getLogger().fine("[防护-sync] 封禁名单无变化，跳过");
                 return;
             }
-            lastBansHash = currentHash;
 
             // ★ 封禁IP → 顺手推给Web黑名单（web_ip_blacklist）
             //   Web端据此拦截被封IP的访问，除非该IP持有游戏内 /web 签发的token
@@ -5423,6 +5448,12 @@ public class WebManager {
             String resp = httpPost("api/sync.php?action=sync_bans", mapToJson(body));
             plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size())
                     + "条(IP黑名单 " + ipOnlyEntries.size() + "个) → " + resp);
+            // ★ 关键修复：hash 成功后才提交（防 404 时把 hash 写脏 → 永久漏推，2026-10-06）
+            if (resp != null && resp.contains("\"success\":true")) {
+                lastBansHash = currentHash;
+            } else {
+                plugin.getLogger().warning("[防护-sync] 封禁名单同步未确认成功，下轮重试（hash 不提交）");
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 封禁名单同步异常: " + e.getMessage());
         }
@@ -8154,8 +8185,9 @@ public class WebManager {
 
             // ★ 无变化静默
             String currentHash = credentials.size() + ":" + credentials.hashCode();
-            if (currentHash.equals(lastPushCredentialsHash)) return;
-            lastPushCredentialsHash = currentHash;
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
+            boolean alignNeedsPushCred = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushCred && currentHash.equals(lastPushCredentialsHash)) return;
 
             String secretKey = this.secretKey;
             Map<String, Object> body = new LinkedHashMap<>();
@@ -8168,6 +8200,7 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
+                    lastPushCredentialsHash = currentHash; // ← 成功后才落 hash
                     plugin.getLogger().info("[Web通信] 密码凭证变更，已同步: " + credentials.size() + "人");
                 } else {
                     plugin.getLogger().warning("[Web通信] 密码凭证同步失败: " + response);
