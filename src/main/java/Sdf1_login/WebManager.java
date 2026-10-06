@@ -358,6 +358,107 @@ public class WebManager {
                 return t;
             });
 
+    // ★ 10秒硬超时 + 慢请求旁路系统（2026-10-06）
+    //   背景：DB队列是单线程（sdf1-db-worker），同步任务在队列线程里直接做HTTP，
+    //   实测经 Cloudflare 的链路 25% 请求超过 10 秒 → 一次HTTP卡门 → 后面任务连环「等待过久」。
+    //   规则（用户定）：
+    //     ① 请求10秒内有返回 → 不动，照常处理；
+    //     ② 10秒内没返回 → 把这个请求移交旁路线程继续等（最多HTTP_SIDE_WAIT_MS=30秒），
+    //        DB工作者立刻放行去取下一个任务 —— 别堵门让其它人先走；
+    //     ③ 每个DB任务另有10秒总预算：预算耗尽后任务内新的HTTP快速失败、sleep不再睡，
+    //        单个任务占用大门的时间≈10秒封顶。
+    //   注意：Cloudflare 代理保持原样不绕开 —— 它是源站SSL过期时的兜底（用户明确要求保留）。
+    private static final long HTTP_HARD_TIMEOUT_MS = 10000;  // 门口硬等待上限：10秒
+    private static final long HTTP_SIDE_WAIT_MS = 30000;     // 移交旁路后再等的上限：30秒
+    private static final long DB_TASK_BUDGET_MS = 10000;     // 单个DB任务总预算：10秒
+
+    // 旁路线程池：超时的HTTP请求挪到这里继续等，不占DB队列的门（最多8个慢请求同时挂着）
+    private final java.util.concurrent.ExecutorService httpSideExecutor =
+            new java.util.concurrent.ThreadPoolExecutor(0, 8, 30L, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.SynchronousQueue<>(),
+                    r -> {
+                        Thread t = new Thread(r, "sdf1-http-side");
+                        t.setDaemon(true);
+                        return t;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+
+    // 当前线程是否是DB队列工作者（只有它需要10秒硬超时放行）
+    private static final ThreadLocal<Boolean> onDbWorkerThread = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    // 当前DB任务的截止时间戳（10秒预算），仅db-worker线程有值
+    private static final ThreadLocal<Long> dbTaskDeadline = new ThreadLocal<>();
+
+    /** 10秒硬超时异常：门口等待超限，请求已移交旁路线程，调用方按“无响应”处理即可 */
+    private static class HttpHardTimeoutException extends Exception {
+        HttpHardTimeoutException(String msg) { super(msg); }
+    }
+
+    /**
+     * ★ 统一HTTP发送入口（10秒硬超时）：
+     * - 非DB队列线程（webExecutor轮询、Bukkit异步等）：直接发，请求自身超时兜底，行为与旧版一致；
+     * - DB队列线程：真正的send交给旁线程池执行，本线程最多等10秒（且不超过任务预算剩余）；
+     *   10秒内返回 → 原样返回（不动）；超时 → 抛HttpHardTimeoutException立即放行队列，
+     *   请求本身留在旁线程继续等（去旁边等），排在后面的任务先走。
+     */
+    private HttpResponse<String> sendHard(String tag, HttpRequest req, java.net.http.HttpClient client) throws Exception {
+        if (!Boolean.TRUE.equals(onDbWorkerThread.get())) {
+            return client.send(req, HttpResponse.BodyHandlers.ofString());
+        }
+        Long deadline = dbTaskDeadline.get();
+        long now = System.currentTimeMillis();
+        long waitMs = HTTP_HARD_TIMEOUT_MS;
+        if (deadline != null) {
+            long remainMs = deadline - now;
+            if (remainMs <= 0) {
+                throw new HttpHardTimeoutException(tag + " " + maskSecret(req.uri().toString()) + " 任务10秒预算已耗尽，快速让位");
+            }
+            waitMs = Math.min(waitMs, remainMs);
+        }
+        final String desc = tag + " " + maskSecret(req.uri().toString());
+        java.util.concurrent.Future<HttpResponse<String>> side;
+        try {
+            side = httpSideExecutor.submit(() -> client.send(req, HttpResponse.BodyHandlers.ofString()));
+        } catch (java.util.concurrent.RejectedExecutionException re) {
+            throw new HttpHardTimeoutException(desc + " 旁路线程池已满(8)，放弃本次");
+        }
+        try {
+            return side.get(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            plugin.getLogger().warning("[HTTP硬超时] " + desc + " " + (waitMs / 1000)
+                    + "秒未返回 → 移交旁路线程继续等待，放行DB队列");
+            throw new HttpHardTimeoutException(desc + " " + (waitMs / 1000) + "秒硬超时，已移交旁路线程");
+        } catch (java.util.concurrent.ExecutionException ee) {
+            Throwable cause = ee.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            if (cause instanceof Error) throw (Error) cause;
+            throw ee;
+        } catch (InterruptedException ie) {
+            side.cancel(true); // 插件停用中断时，顺手掐掉旁路请求
+            Thread.currentThread().interrupt();
+            throw ie;
+        }
+    }
+
+    /** URL里的secret打码（日志防泄漏） */
+    private static String maskSecret(String url) {
+        String s = url.replaceAll("secret=[^&]*", "secret=***");
+        return s.length() > 100 ? s.substring(0, 100) + "..." : s;
+    }
+
+    /**
+     * ★ 预算感知sleep：DB任务10秒预算耗尽后立即返回（不再睡在门口堵队列）；
+     *   非DB队列线程没有预算 → 与旧 Thread.sleep 行为完全一致。
+     */
+    private static void budgetSleep(long ms) {
+        Long deadline = dbTaskDeadline.get();
+        if (deadline != null) {
+            long remainMs = deadline - System.currentTimeMillis();
+            if (remainMs <= 0) return;
+            ms = Math.min(ms, remainMs);
+        }
+        try { Thread.sleep(ms); } catch (InterruptedException ignored) {}
+    }
+
     // ★ SSL断路器：连续失败超过阈值后暂停轮询，避免DB队列积压
     private static final int SSL_CIRCUIT_THRESHOLD = 5;  // 连续失败5次触发断路
     private static final long SSL_CIRCUIT_BASE_COOLDOWN_MS = 60000; // 断路基础冷却60秒
@@ -425,6 +526,7 @@ public class WebManager {
      */
     private void startDbWorker() {
         dbWorkerRunning.set(true);
+        onDbWorkerThread.set(Boolean.TRUE); // 本线程是DB队列工作者 → HTTP走10秒硬超时+旁路放行
         dbWorkerThread = new Thread(() -> {
             while (dbWorkerRunning.get()) {
                 try {
@@ -440,7 +542,20 @@ public class WebManager {
                     if (!isEnabled()) {
                         continue;
                     }
-                    task.run();
+                    // ★ 10秒硬预算：给任务10秒执行预算，预算耗尽后任务内新的HTTP快速失败、
+                    //   sleep不再睡 —— 单个任务占用大门≈10秒封顶，别堵门让其它人先走
+                    long execStart = System.currentTimeMillis();
+                    dbTaskDeadline.set(execStart + DB_TASK_BUDGET_MS);
+                    try {
+                        task.run();
+                    } finally {
+                        dbTaskDeadline.remove();
+                        long execMs = System.currentTimeMillis() - execStart;
+                        if (execMs > DB_TASK_BUDGET_MS) {
+                            plugin.getLogger().warning("[DB队列] 任务执行超过10秒硬预算: "
+                                    + task.name + " 耗时=" + execMs + "ms（HTTP已按预算让位）");
+                        }
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
@@ -704,7 +819,7 @@ public class WebManager {
                     .header("Accept", "application/json")
                     .GET()
                     .build();
-            HttpResponse<String> resp = plainHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("GET-HTTP降级", req, plainHttpClient);
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 // HTTP成功 → 重置SSL计数，恢复正常
                 sslConsecutiveFailures = 0;
@@ -719,6 +834,11 @@ public class WebManager {
             triggerCircuitBreaker(true);
             return null;
         } catch (Exception e) {
+            if (e instanceof HttpHardTimeoutException) {
+                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
+                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
             plugin.getLogger().warning("[Web通信] HTTP降级异常: " + e.getMessage());
             triggerCircuitBreaker(true);
             return null;
@@ -857,7 +977,7 @@ public class WebManager {
                     .header("Accept", "application/json")
                     .GET()
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("GET", req, cfHttpClient);
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0; // 成功 → 重置断路器
                 sslCircuitOpenCount = 0;    // 重置退避计数
@@ -881,6 +1001,11 @@ public class WebManager {
             }
             return null;
         } catch (Exception e) {
+            if (e instanceof HttpHardTimeoutException) {
+                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
+                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
             // ★ 降级到HTTP：连续失败3次
@@ -914,7 +1039,7 @@ public class WebManager {
                     .header("User-Agent", "Sdf1-WebManager/2.8")
                     .GET()
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("GET状态", req, cfHttpClient);
             return resp.statusCode();
         } catch (Exception e) {
             return -1;
@@ -952,7 +1077,7 @@ public class WebManager {
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("POST无降级", req, cfHttpClient);
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 return resp.body();
             }
@@ -970,6 +1095,11 @@ public class WebManager {
             }
             return null;
         } catch (Exception e) {
+            if (e instanceof HttpHardTimeoutException) {
+                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
+                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
             plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -999,7 +1129,7 @@ public class WebManager {
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("POST", req, cfHttpClient);
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0;
                 sslCircuitOpenCount = 0;    // 重置退避计数
@@ -1020,6 +1150,11 @@ public class WebManager {
             }
             return null;
         } catch (Exception e) {
+            if (e instanceof HttpHardTimeoutException) {
+                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
+                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
             // ★ 降级到HTTP：连续失败3次
@@ -1053,7 +1188,7 @@ public class WebManager {
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = plainHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("POST-HTTP降级", req, plainHttpClient);
             if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                 sslConsecutiveFailures = 0;
                 sslCircuitOpenCount = 0;    // 重置退避计数
@@ -1067,6 +1202,11 @@ public class WebManager {
             triggerCircuitBreaker(true);
             return null;
         } catch (Exception e) {
+            if (e instanceof HttpHardTimeoutException) {
+                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
+                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
             plugin.getLogger().warning("[Web通信] HTTP降级POST异常: " + e.getMessage());
             triggerCircuitBreaker(true);
             return null;
@@ -1092,7 +1232,7 @@ public class WebManager {
                         .header("Content-Type", "application/json; charset=UTF-8")
                         .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                         .build();
-                HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> resp = sendHard("POST重试", req, cfHttpClient);
                 if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
                     String body = resp.body();
                     detectPhpBusy(body);  // ★ 锁库检测
@@ -1104,15 +1244,20 @@ public class WebManager {
                 }
                 if (attempt < maxRetries) {
                     plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + " HTTP " + resp.statusCode());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                    budgetSleep(2000L * attempt);
                 } else {
                     return resp.body();
                 }
             } catch (Exception e) {
                 if (attempt < maxRetries) {
                     plugin.getLogger().info("[Web通信] POST重试 " + attempt + "/" + maxRetries + ": " + e.getClass().getSimpleName());
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ie) {}
+                    budgetSleep(2000L * attempt);
                 } else {
+                    if (e instanceof HttpHardTimeoutException) {
+                        // ★ 10秒硬超时是「让位放行」：不计入断路器
+                        plugin.getLogger().warning("[Web通信] 硬超时让位(重试路径): " + e.getMessage());
+                        return null;
+                    }
                     plugin.getLogger().warning("[Web通信] POST最终失败: " + e.getMessage());
                     // ★ SSL断路器：跟踪连续失败（最终失败时计数）
                     sslConsecutiveFailures++;
@@ -1439,6 +1584,7 @@ public class WebManager {
         stopDbWorker();
         // ★ 关闭Web线程池
         webExecutor.shutdownNow();
+        httpSideExecutor.shutdownNow(); // 旁路线程池一并关停（daemon线程，不关也能退出）
         // 关闭回调服务器
         if (callbackServer != null) {
             try {
@@ -3282,7 +3428,7 @@ public class WebManager {
                     .header("Content-Type", "application/json; charset=UTF-8")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                     .build();
-            HttpResponse<String> resp = cfHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = sendHard("POST交易", req, cfHttpClient);
             String body = resp.body();
             detectPhpBusy(body);
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
@@ -7231,10 +7377,7 @@ public class WebManager {
 
         for (int i = 0; i < total; i++) {
             // 每个请求前随机等待0-2秒，与正在进行的任务拉开时间差
-            try {
-                long delayMs = (long) (Math.random() * 2000); // 0-2秒
-                Thread.sleep(delayMs);
-            } catch (InterruptedException ignored) {}
+            budgetSleep((long) (Math.random() * 2000)); // 0-2秒（10秒预算耗尽后不再睡）
             
             List<Map<String, Object>> batch = new ArrayList<>();
             batch.add(playersData.get(i));
@@ -8451,7 +8594,7 @@ public class WebManager {
                     String json = doGet(urlStr);
                     if (json == null) {
                         plugin.getLogger().warning("[Web交易] GET失败，3秒后重试...");
-                        try { Thread.sleep(3000); } catch (InterruptedException ie) {}
+                        budgetSleep(3000);
                         // 重试一次
                         json = doGet(urlStr);
                         if (json == null) {
