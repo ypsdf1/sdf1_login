@@ -372,6 +372,13 @@ public class WebManager {
     private static final long HTTP_SIDE_WAIT_MS = 30000;     // 移交旁路后再等的上限：30秒
     private static final long DB_TASK_BUDGET_MS = 10000;     // 单个DB任务总预算：10秒
     private static final long QUEUE_WAIT_WARN_MS = 15000;    // 入队→执行超过15秒才告警（10秒是单任务硬预算）
+    // ★ 2026-10-06 快速握手 + 超时降噪
+    //   实测 10 次握手：TCP 连接稳定 0.2 秒，TLS 握手却约 20% 概率挂到 20 秒以上才断；
+    //   JDK 的 connectTimeout 覆盖 TCP+TLS 握手（用「收下连接但不回握手」的服务端实测验证过），
+    //   所以把 10 秒压到 4 秒 → 挂起的握手 4 秒判死 → 调用方立刻换连接重试 → 10 秒硬预算内拿到结果。
+    private static final int HTTP_CONNECT_TIMEOUT_S = 4;     // 连接（含TLS握手）超时秒数
+    private static final int GET_REQUEST_TIMEOUT_S = 15;     // GET 响应超时（原30秒：链路挂起时白等30秒还刷屏）
+    private static final int CONNECT_RETRY_MAX = 1;          // 连接阶段失败后的立即重试次数
 
     // 旁路线程池：超时的HTTP请求挪到这里继续等，不占DB队列的门（最多8个慢请求同时挂着）
     private final java.util.concurrent.ExecutorService httpSideExecutor =
@@ -429,7 +436,7 @@ public class WebManager {
         try {
             return side.get(waitMs, java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (java.util.concurrent.TimeoutException te) {
-            plugin.getLogger().warning("[HTTP硬超时] " + desc + " " + (waitMs / 1000)
+            warnSlow("HTTP硬超时", "[HTTP硬超时] " + desc + " " + (waitMs / 1000)
                     + "秒未返回 → 移交旁路线程继续等待，放行DB队列");
             hardTimeoutHit.set(Boolean.TRUE);
             throw new HttpHardTimeoutException(desc + " " + (waitMs / 1000) + "秒硬超时，已移交旁路线程");
@@ -449,6 +456,83 @@ public class WebManager {
     private static String maskSecret(String url) {
         String s = url.replaceAll("secret=[^&]*", "secret=***");
         return s.length() > 100 ? s.substring(0, 100) + "..." : s;
+    }
+
+    // ==================== 超时日志节流 + 对账统计（2026-10-06） ====================
+    //   背景：慢链路下一次请求会级联打出 3~5 条 WARN（门口超时 → 调用方让位 → 任务超预算 →
+    //   下一个请求又让位），实测 74 分钟刷了 400+ 条，把真正有用的日志淹没了。
+    //   同一 key 在窗口内只放行 1 条，放行那条上追加「另有 N 条同类已省略」—— 信息不丢，控制台不炸。
+    private static final long LOG_THROTTLE_MS = 120000L;      // 一般异常：2 分钟窗口
+    private static final long LOG_THROTTLE_SLOW_MS = 300000L; // 高频级联噪声：5 分钟窗口
+    private final Object logThrottleLock = new Object();
+    private final java.util.Map<String, Long> logThrottleLast = new java.util.HashMap<>();
+    private final java.util.Map<String, Long> logThrottleHidden = new java.util.HashMap<>();
+
+    private void warnThrottled(String key, String msg) { warnThrottled(key, msg, LOG_THROTTLE_MS); }
+
+    /** 节流 WARN（5 分钟窗口）：给高频超时噪声用 */
+    private void warnSlow(String key, String msg) { warnThrottled(key, msg, LOG_THROTTLE_SLOW_MS); }
+
+    /** 节流 WARN：同 key 在 windowMs 内只打 1 条，被吞掉的条数附在下一条后面 */
+    private void warnThrottled(String key, String msg, long windowMs) {
+        long now = System.currentTimeMillis();
+        String tail = "";
+        synchronized (logThrottleLock) {
+            Long prev = logThrottleLast.get(key);
+            if (prev != null && now - prev < windowMs) {
+                Long h = logThrottleHidden.get(key);
+                logThrottleHidden.put(key, h == null ? 1L : h + 1L);
+                return;
+            }
+            if (logThrottleLast.size() > 200) { logThrottleLast.clear(); logThrottleHidden.clear(); }
+            logThrottleLast.put(key, now);
+            Long h = logThrottleHidden.remove(key);
+            if (h != null && h > 0) tail = "（另有 " + h + " 条同类已省略）";
+        }
+        plugin.getLogger().warning(msg + tail);
+    }
+
+    /** 节流 INFO：用于「预期中的让位/重试」这类本来就不算故障的记录 */
+    private void infoThrottled(String key, String msg) {
+        long now = System.currentTimeMillis();
+        synchronized (logThrottleLock) {
+            Long prev = logThrottleLast.get(key);
+            if (prev != null && now - prev < LOG_THROTTLE_SLOW_MS) return;
+            logThrottleLast.put(key, now);
+        }
+        plugin.getLogger().info(msg);
+    }
+
+    /**
+     * 是否「连接建立阶段」就失败了（TLS 握手挂起 / 连接被拒 / 连接被重置）。
+     * 这类失败意味着请求【还没发到 PHP】，因此对 POST 重发也安全；
+     * 与之相对，请求超时（HttpTimeoutException 非 ConnectTimeout）说明 body 已经发出去，
+     * POST 重发可能重复执行 —— 一律不自动重试。
+     */
+    private static boolean isConnectStageFailure(Throwable e) {
+        return e instanceof java.net.http.HttpConnectTimeoutException
+                || e instanceof java.net.ConnectException;
+    }
+
+    // —— 对账结果统计：5 分钟一条汇总，替代「每轮一条对账 WARN」 ——
+    private final java.util.concurrent.atomic.AtomicInteger alignOkCount = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger alignNoRespCount = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger alignRejectCount = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile long alignStatFlushAt = 0;
+
+    /** ok=拿到有效答复；noresp=HTTP 层没答复（本轮不推不收）；reject=PHP 明确拒绝对账 */
+    private void countAlign(String kind) {
+        if ("ok".equals(kind)) alignOkCount.incrementAndGet();
+        else if ("reject".equals(kind)) alignRejectCount.incrementAndGet();
+        else alignNoRespCount.incrementAndGet();
+        long now = System.currentTimeMillis();
+        if (now < alignStatFlushAt) return;
+        alignStatFlushAt = now + 300000L;   // 5 分钟一报
+        int ok = alignOkCount.getAndSet(0);
+        int no = alignNoRespCount.getAndSet(0);
+        int rej = alignRejectCount.getAndSet(0);
+        if (ok + no + rej == 0) return;
+        plugin.getLogger().info("[对账] 近5分钟：成功 " + ok + " 次，无答复 " + no + " 次，PHP拒绝 " + rej + " 次");
     }
 
     /**
@@ -580,7 +664,7 @@ public class WebManager {
                         dbTaskDeadline.remove();
                         long execMs = System.currentTimeMillis() - execStart;
                         if (execMs > DB_TASK_BUDGET_MS) {
-                            plugin.getLogger().warning("[DB队列] 任务执行超过10秒硬预算: "
+                            warnSlow("DB预算超时", "[DB队列] 任务执行超过10秒硬预算: "
                                     + task.name + " 耗时=" + execMs + "ms（HTTP已按预算让位）");
                         }
                     }
@@ -864,7 +948,7 @@ public class WebManager {
         } catch (Exception e) {
             if (e instanceof HttpHardTimeoutException) {
                 // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
-                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
                 return null;
             }
             plugin.getLogger().warning("[Web通信] HTTP降级异常: " + e.getMessage());
@@ -929,7 +1013,7 @@ public class WebManager {
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .sslParameters(sslParams)
-                    .connectTimeout(Duration.ofSeconds(10))
+                    .connectTimeout(Duration.ofSeconds(HTTP_CONNECT_TIMEOUT_S))
                     .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
@@ -952,7 +1036,7 @@ public class WebManager {
             cfHttpClient = HttpClient.newBuilder()
                     .sslContext(sc)
                     .sslParameters(sslParams)
-                    .connectTimeout(Duration.ofSeconds(10))
+                    .connectTimeout(Duration.ofSeconds(HTTP_CONNECT_TIMEOUT_S))
                     .version(HttpClient.Version.HTTP_1_1)
                     .followRedirects(HttpClient.Redirect.NORMAL)
                     .build();
@@ -968,7 +1052,7 @@ public class WebManager {
     private void initPlainHttpClient() {
         try {
             plainHttpClient = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
+                    .connectTimeout(Duration.ofSeconds(HTTP_CONNECT_TIMEOUT_S))
                     .version(HttpClient.Version.HTTP_1_1)
                     .followRedirects(HttpClient.Redirect.ALWAYS)
                     .build();
@@ -997,10 +1081,11 @@ public class WebManager {
         if (isCircuitOpen()) {
             return null;
         }
+        for (int attempt = 1; attempt <= 1 + CONNECT_RETRY_MAX; attempt++) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(30))  // ★ 2026-07-15 增加到30秒，确保poller有足够时间连接MySQL
+                    .timeout(Duration.ofSeconds(GET_REQUEST_TIMEOUT_S))  // ★ 2026-10-06 30→15秒：链路挂起时白等30秒，既慢又刷屏
                     .header("User-Agent", "Sdf1-WebManager/2.9")
                     .header("Accept", "application/json")
                     .GET()
@@ -1030,9 +1115,21 @@ public class WebManager {
             return null;
         } catch (Exception e) {
             if (e instanceof HttpHardTimeoutException) {
-                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
-                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                // ★ 硬超时是「让位放行」不是网络故障：不计入断路器；sendHard 已打过节流日志，这里不重复刷屏
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
                 return null;
+            }
+            // ★ 换连接重试一次（GET 幂等，重发绝对安全）：
+            //   ① 连接阶段失败（TLS 握手挂起/连接被拒）—— 实测经 CF 握手约 20% 概率挂到 20 秒以上，
+            //      4 秒判死再试一次即可恢复；
+            //   ② 请求超时 —— 多半是复用了 CF 已经关掉的 keep-alive 连接（FIN 丢了就一直干等），
+            //      换一条新连接立刻就能通。两种情况都不计入 SSL 断路器/降级。
+            //   两次都失败才计数上报；最坏耗时 2×15 秒 = 原来单次 30 秒，不更慢。
+            if (attempt < 1 + CONNECT_RETRY_MAX
+                    && (e instanceof java.net.http.HttpTimeoutException || e instanceof java.net.ConnectException)) {
+                infoThrottled("GET重试", "[Web通信] GET 第" + attempt + "次无响应("
+                        + e.getClass().getSimpleName() + ")，换连接重试");
+                continue;
             }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
@@ -1044,9 +1141,11 @@ public class WebManager {
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
                 triggerCircuitBreaker(false);
             }
-            plugin.getLogger().warning("[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            warnSlow("GET异常", "[Web通信] GET异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
+        }
+        return null;
     }
 
     /**
@@ -1125,12 +1224,12 @@ public class WebManager {
         } catch (Exception e) {
             if (e instanceof HttpHardTimeoutException) {
                 // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
-                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
                 return null;
             }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
-            plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            warnSlow("POST异常", "[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
@@ -1149,6 +1248,7 @@ public class WebManager {
         if (isCircuitOpen()) {
             return null;
         }
+        for (int attempt = 1; attempt <= 1 + CONNECT_RETRY_MAX; attempt++) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
@@ -1179,9 +1279,14 @@ public class WebManager {
             return null;
         } catch (Exception e) {
             if (e instanceof HttpHardTimeoutException) {
-                // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
-                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                // ★ 硬超时是「让位放行」不是网络故障：不计入断路器；sendHard 已打过节流日志
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
                 return null;
+            }
+            // ★ 连接阶段失败 → 请求还没发出去，换连接重试一次（POST 也安全，body 未发出）
+            if (attempt < 1 + CONNECT_RETRY_MAX && isConnectStageFailure(e)) {
+                infoThrottled("连接重试", "[Web通信] 连接阶段失败(" + e.getClass().getSimpleName() + ")，换连接重试");
+                continue;
             }
             // ★ SSL断路器：跟踪连续失败（所有连接异常都计数）
             sslConsecutiveFailures++;
@@ -1193,9 +1298,11 @@ public class WebManager {
             if (sslConsecutiveFailures >= SSL_CIRCUIT_THRESHOLD) {
                 triggerCircuitBreaker(false);
             }
-            plugin.getLogger().warning("[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            warnSlow("POST异常", "[Web通信] POST异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
+        }
+        return null;
     }
 
     /**
@@ -1232,7 +1339,7 @@ public class WebManager {
         } catch (Exception e) {
             if (e instanceof HttpHardTimeoutException) {
                 // ★ 10秒硬超时是「让位放行」不是SSL/网络故障：不计入断路器与降级，按无响应处理
-                plugin.getLogger().warning("[Web通信] 硬超时让位: " + e.getMessage());
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
                 return null;
             }
             plugin.getLogger().warning("[Web通信] HTTP降级POST异常: " + e.getMessage());
@@ -1283,7 +1390,7 @@ public class WebManager {
                 } else {
                     if (e instanceof HttpHardTimeoutException) {
                         // ★ 10秒硬超时是「让位放行」：不计入断路器
-                        plugin.getLogger().warning("[Web通信] 硬超时让位(重试路径): " + e.getMessage());
+                        infoThrottled("硬超时让位", "[Web通信] 硬超时让位(重试路径): " + e.getMessage());
                         return null;
                     }
                     plugin.getLogger().warning("[Web通信] POST最终失败: " + e.getMessage());
@@ -2205,7 +2312,7 @@ public class WebManager {
                         plugin.getLogger().warning("[快速补单] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");*/
                     }
                 } else {
-                    plugin.getLogger().warning("[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms");
+                    warnSlow("快速补单", "[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms");
                 }
             } catch (Exception ignored) {
                 // 补单失败不影响交易拉取，静默忽略
@@ -2220,7 +2327,7 @@ public class WebManager {
                 txPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[合并B-交易] GET失败 (连续失败" + txPollFailCount + "次)");
+                    warnSlow("合并B交易", "[合并B-交易] GET失败 (连续失败" + txPollFailCount + "次)");
                     lastTxPollLogTime = now;
                 }
                 return;
@@ -2876,7 +2983,7 @@ public class WebManager {
             if (resp == null) {
                 long now = System.currentTimeMillis();
                 if (now - lastTxPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[合并B-库存] GET失败 (连续失败" + shopStockPollFailCount + "次)");
+                    warnSlow("合并B库存", "[合并B-库存] GET失败 (连续失败" + shopStockPollFailCount + "次)");
                     lastTxPollLogTime = now;
                 }
                 shopStockPollFailCount++;
@@ -3331,7 +3438,10 @@ public class WebManager {
 
     /** system/sync 复用 token（见 generateAndSyncToken 注释）：只对 sync.php 系列动作安全 */
     private volatile String cachedSystemSyncToken;
-    private volatile long cachedSystemSyncTokenUntil;
+    private volatile long cachedSystemSyncTokenUntil;      // 软到期：到点就该换新，但旧的 PHP 仍然认
+    private volatile long cachedSystemSyncTokenHardUntil;  // 硬到期：PHP 端真的过期了，必须同步取新的
+    private final java.util.concurrent.atomic.AtomicBoolean syncTokenRefreshing =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
      * 包装方法：生成token并自动同步到Web
@@ -3344,10 +3454,19 @@ public class WebManager {
         //   同一枚在有效期内可反复用。一次同步任务里「对账 + 推送」原本要打 2 次 receive_token，
         //   慢链路（CF 25% 请求 >10s）下这 2 次就能吃掉整个 10 秒预算。
         //   ★ 只缓存 system/sync；玩家用途（cdk/bond/register/webshop）是一次性消耗的，绝不缓存。
+        //   ★ 2026-10-06 软/硬双到期：软到期只触发【异步】续期、手里的旧 token 继续用
+        //     （到硬到期前 PHP 仍认它）；只有硬到期才在当前线程同步取新。
+        //     这样 receive_token 永远不会在 DB 队列里吃掉 10 秒硬预算 ——
+        //     日志实证：receive_token 卡 9 秒 → 同任务的 check_alignment 只剩 1 秒 → 对账必失败。
         if ("system".equals(playerName) && "sync".equals(purpose)) {
             String cached = cachedSystemSyncToken;
-            if (cached != null && System.currentTimeMillis() < cachedSystemSyncTokenUntil) {
-                return cached;
+            long now = System.currentTimeMillis();
+            if (cached != null && now < cachedSystemSyncTokenUntil) {
+                return cached;                       // 新鲜，直接用
+            }
+            if (cached != null && now < cachedSystemSyncTokenHardUntil) {
+                scheduleSyncTokenRefresh();          // 异步补一张，别卡 DB 队列
+                return cached;                       // 旧的还没到 PHP 端过期时间，照样能用
             }
         }
         String token = generateToken(playerName, purpose);
@@ -3355,12 +3474,50 @@ public class WebManager {
         batch.add(new String[]{token, playerName, purpose});
         boolean pushed = syncTokensToWeb(batch);
         if (pushed && "system".equals(playerName) && "sync".equals(purpose)) {
-            // TTL 取 token 有效期的 40%（默认600秒 → 60秒），给 PHP/Java 时钟偏差留余量
-            cachedSystemSyncToken = token;
-            cachedSystemSyncTokenUntil = System.currentTimeMillis()
-                    + Math.min(60000L, (long) tokenExpireSeconds * 1000L * 4 / 10);
+            rememberSyncToken(token);
         }
         return token;
+    }
+
+    /**
+     * 记录 system/sync token 的两个到期点：
+     *   软到期 = 有效期 70%（默认600秒 → 420秒；原来是 60 秒，刷新频率直接降 7 倍）
+     *   硬到期 = 有效期 90%（540秒，给 PHP/Java 时钟偏差留 60 秒余量）
+     */
+    private void rememberSyncToken(String token) {
+        long lifeMs = (long) tokenExpireSeconds * 1000L;
+        long now = System.currentTimeMillis();
+        cachedSystemSyncToken = token;
+        cachedSystemSyncTokenUntil = now + Math.max(30000L, lifeMs * 7 / 10);
+        cachedSystemSyncTokenHardUntil = now + Math.max(60000L, lifeMs * 9 / 10);
+    }
+
+    /**
+     * 异步补一张 system/sync token —— 放在 webExecutor 里跑，绝不在 DB 队列线程上等。
+     * 刷新失败也无所谓：硬到期前旧 token 仍有效，下一轮会再补（syncTokenRefreshing 防并发重复刷）。
+     */
+    private void scheduleSyncTokenRefresh() {
+        if (!syncTokenRefreshing.compareAndSet(false, true)) return;
+        try {
+            webExecutor.execute(() -> {
+                try {
+                    if (!isEnabled()) return;
+                    String token = generateToken("system", "sync");
+                    List<String[]> batch = new ArrayList<>();
+                    batch.add(new String[]{token, "system", "sync"});
+                    if (syncTokensToWeb(batch)) {
+                        rememberSyncToken(token);
+                        plugin.getLogger().info("[Web通信] system/sync token 已异步续期");
+                    }
+                } catch (Throwable t) {
+                    // 刷新失败不影响本轮：手里的旧 token 到硬到期前都还能用
+                } finally {
+                    syncTokenRefreshing.set(false);
+                }
+            });
+        } catch (Throwable t) {
+            syncTokenRefreshing.set(false);
+        }
     }
 
     // ==================== HTTP请求 ====================
@@ -3473,6 +3630,7 @@ public class WebManager {
      */
     private String doPostOnce(String urlStr, String jsonBody) {
         if (!isEnabled()) return null;
+        for (int attempt = 1; attempt <= 1 + CONNECT_RETRY_MAX; attempt++) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
@@ -3490,14 +3648,31 @@ public class WebManager {
             }
             return body;
         } catch (java.net.http.HttpTimeoutException te) {
-            plugin.getLogger().warning("[Web交易同步] ★ " + TX_SYNC_HTTP_TIMEOUT_S
+            if (te instanceof java.net.http.HttpConnectTimeoutException
+                    && attempt < 1 + CONNECT_RETRY_MAX) {
+                // 握手没完成就断了 → 请求根本没发出去，换连接立刻重试
+                infoThrottled("连接重试", "[Web交易同步] 连接阶段失败，换连接重试");
+                continue;
+            }
+            warnSlow("交易无答复", "[Web交易同步] ★ " + TX_SYNC_HTTP_TIMEOUT_S
                     + " 秒内没有答复（请求超时）→ 按无答复处理");
             return null;
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web交易同步] ★ 无答复（" + e.getClass().getSimpleName()
+            if (e instanceof HttpHardTimeoutException) {
+                // 硬超时让位：sendHard 已打过节流日志
+                infoThrottled("硬超时让位", "[Web通信] 硬超时让位: " + e.getMessage());
+                return null;
+            }
+            if (attempt < 1 + CONNECT_RETRY_MAX && isConnectStageFailure(e)) {
+                infoThrottled("连接重试", "[Web交易同步] 连接阶段失败(" + e.getClass().getSimpleName() + ")，换连接重试");
+                continue;
+            }
+            warnSlow("交易无答复", "[Web交易同步] ★ 无答复（" + e.getClass().getSimpleName()
                     + "）: " + e.getMessage());
             return null;
         }
+        }
+        return null;
     }
 
     /** 单次 POST + Token（15 秒必答复，见 doPostOnce），交易对账/推送/收回统一走这里 */
@@ -4154,22 +4329,21 @@ public class WebManager {
                     + java.net.URLEncoder.encode(token, "UTF-8");
             String resp = doPostOnce(url, mapToJson(body));
             if (resp == null) {
-                if (Boolean.TRUE.equals(hardTimeoutHit.get())) {
-                    // 10 秒硬超时仍没答复 = 链路慢。本轮放弃对账且【绝不回退成全量硬推】，
-                    // 否则每一轮都会变成用户看到的「无脑推」；下一轮（60~90秒后）再对账。
-                    AlignResult to = new AlignResult();
-                    to.ok = true;
-                    to.alignTimeout = true;
-                    return to;
-                }
-                plugin.getLogger().warning("[对账] " + cfg.cat + " 无响应 → 本轮回退全量推送（兼容旧行为）");
-                return null;
+                // ★ 2026-10-06：HTTP 层没拿到答复（硬超时 / 连接失败 / 请求超时）一律「本轮不推不收」。
+                //   旧逻辑在这里回退成【全量硬推】—— 链路一抖动就变成用户看到的「无脑推」。
+                //   对账本身是幂等的全量比对，链路恢复后的第一轮就能把差集补齐，不需要靠硬推兜底。
+                countAlign("noresp");
+                AlignResult to = new AlignResult();
+                to.ok = true;
+                to.alignTimeout = true;
+                return to;
             }
 
             Map<String, Object> res = parseJson(resp);
             if (!Boolean.TRUE.equals(res.get("success"))) {
                 String msg = res.get("message") != null ? String.valueOf(res.get("message")) : resp;
-                plugin.getLogger().warning("[对账] " + cfg.cat + " PHP 拒绝对账: "
+                countAlign("reject");
+                warnThrottled("对账拒绝:" + cfg.cat, "[对账] " + cfg.cat + " PHP 拒绝对账: "
                         + (msg.length() > 200 ? msg.substring(0, 200) : msg));
                 return null;
             }
@@ -4197,9 +4371,11 @@ public class WebManager {
                     }
                 }
             }
+            countAlign("ok");
             return ar;
         } catch (Throwable t) {
-            plugin.getLogger().warning("[对账] " + cfg.cat + " 对账异常: " + t.getMessage());
+            countAlign("noresp");
+            warnThrottled("对账异常:" + cfg.cat, "[对账] " + cfg.cat + " 对账异常: " + t.getMessage());
             return null;
         }
     }
@@ -4236,8 +4412,10 @@ public class WebManager {
 
         AlignResult ar = callCheckAlignment(cfg, javaHash);
         if (ar != null && ar.alignTimeout) {
-            plugin.getLogger().warning("[对账] " + cfg.cat
-                    + " 对账硬超时（10秒内无答复）→ 本轮不推不收，下轮重试，不再回退全量硬推");
+            warnSlow("对账无答复:" + cfg.cat,
+                    "[对账] " + cfg.cat + " 无答复（"
+                    + (Boolean.TRUE.equals(hardTimeoutHit.get()) ? "10秒硬超时" : "连接失败/请求超时")
+                    + "）→ 本轮不推不收，下轮重试，不回退全量硬推");
             return ar;   // needPush()==false → 调用方现有判断会直接 return
         }
         if (ar == null || !ar.ok) return null;
@@ -6578,7 +6756,7 @@ public class WebManager {
             }
             return missing;
         } catch (Exception e) {
-            plugin.getLogger().warning("[Web交易同步] 对账失败（本批按无答复处理，15 秒后重试）: " + e.getMessage());
+            warnSlow("交易对账失败", "[Web交易同步] 对账失败（本批按无答复处理，15 秒后重试）: " + e.getMessage());
             return null;
         }
     }
@@ -6603,7 +6781,7 @@ public class WebManager {
             body.put("java_ids", want);
             String response = httpPostWithTokenOnce("api/sync.php?action=pull_tx", body);
             if (response == null) {
-                plugin.getLogger().warning("[Web交易同步] ★ 要收回 " + want.size()
+                warnSlow("交易收回无答复", "[Web交易同步] ★ 要收回 " + want.size()
                         + " 笔本机缺失流水，但 15 秒内无答复 → 下轮再收");
                 return;
             }
@@ -8241,7 +8419,7 @@ public class WebManager {
                 loginPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web登录确认轮询] ✗ GET失败 (连续失败" + loginPollFailCount + "次)");
+                    warnSlow("轮询登录确认", "[Web登录确认轮询] ✗ GET失败 (连续失败" + loginPollFailCount + "次)");
                     lastLoginPollLogTime = now;
                 }
                 return;
@@ -8388,7 +8566,7 @@ public class WebManager {
                 loginPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastLoginPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web密码验证轮询] GET失败 (连续失败" + loginPollFailCount + "次)");
+                    warnSlow("轮询密码验证", "[Web密码验证轮询] GET失败 (连续失败" + loginPollFailCount + "次)");
                     lastLoginPollLogTime = now;
                 }
                 return;
@@ -8654,7 +8832,7 @@ public class WebManager {
                                 plugin.getLogger().warning("[Web交易] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");
                             }
                         } else {
-                            plugin.getLogger().warning("[Web交易] 补单无响应(null)，耗时: " + pollerElapsed + "ms，继续拉取");
+                            warnSlow("交易补单", "[Web交易] 补单无响应(null)，耗时: " + pollerElapsed + "ms，继续拉取");
                         }
                     } catch (Exception pollerEx) {
                         plugin.getLogger().warning("[Web交易] 补单触发异常(忽略，继续拉取): " + pollerEx.getMessage());
@@ -10273,7 +10451,7 @@ public class WebManager {
                 registerPollFailCount++;
                 long now = System.currentTimeMillis();
                 if (now - lastRegisterPollLogTime > POLL_LOG_INTERVAL) {
-                    plugin.getLogger().warning("[Web注册轮询] GET失败 (连续失败" + registerPollFailCount + "次)");
+                    warnSlow("轮询注册", "[Web注册轮询] GET失败 (连续失败" + registerPollFailCount + "次)");
                     lastRegisterPollLogTime = now;
                 }
                 return;
