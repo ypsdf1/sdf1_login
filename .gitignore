@@ -119,3 +119,5 @@ test.*
 *.md
 # 过滤readme
 !readme.md
+# 临时屏蔽未开发功能的配置文件
+opwl.json
