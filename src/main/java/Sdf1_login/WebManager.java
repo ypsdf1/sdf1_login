@@ -1642,7 +1642,7 @@ public class WebManager {
     private final java.util.concurrent.atomic.AtomicBoolean fullSyncRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
-     * 排一次「首次全量同步」：先与 PHP 对账流水（alignTxWatermarkOnBoot），再按优先级排队 12 项。
+     * 排一次「首次全量同步」：先与 PHP 对账流水（alignTxWatermarkOnBoot），再按优先级排队 13 项。
      * 由 start()（启动 10 秒后）与 reloadWebConfig()（reload 当场）共同调用。
      *
      * @param trigger 触发来源，仅用于日志区分「启动」/「reload」
@@ -1656,7 +1656,7 @@ public class WebManager {
                     plugin.getLogger().info("[Web通信] 全量同步已跳过（web通信-启用=false）, 来源=" + trigger);
                     return;
                 }
-                // ★ 与另一条路径互斥：已经在跑就不再起第二遍（12 项排队 + 水位线对齐只做一次）
+                // ★ 与另一条路径互斥：已经在跑就不再起第二遍（13 项排队 + 水位线对齐只做一次）
                 if (!fullSyncRunning.compareAndSet(false, true)) {
                     plugin.getLogger().info("[Web通信] 已有全量同步在执行，本次(" + trigger + ")跳过");
                     return;
@@ -1690,6 +1690,11 @@ public class WebManager {
                 submitNormalDbTask("首次-syncBondTransactions", () -> syncBondTransactions());
                 fullSyncStep("交易流水（先双向对账，多退少补）");
                 awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
+                // ★ 充值回执对账（2026-10-06）：一式两份、多退少补。启动即点一次差集，
+                //   否则无人在线时只靠周期批次（需玩家上线触发），镜像与 PHP 永不收敛。
+                submitNormalDbTask("首次-syncWebTxReceipts", () -> syncWebTxReceipts());
+                fullSyncStep("充值回执（一式两份，多退少补）");
+                awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
                 submitNormalDbTask("首次-syncAllPlayerIps", () -> syncAllPlayerIps());
                 fullSyncStep("玩家IP");
                 awaitDbQueueIdle(10000);   // 等队列排空再提交下一项（原为固定1.5~3.5秒）
@@ -1703,7 +1708,7 @@ public class WebManager {
                 fullSyncStep("管理员改动");
                 initialSyncComplete = true;  // 首次全量同步提交完成
                 allowLoginPolling = true;  // 允许登录轮询
-                plugin.getLogger().info("[Web通信] ===== 全量同步 12 项已全部提交（来源：" + trigger + "），耗时 "
+                plugin.getLogger().info("[Web通信] ===== 全量同步 13 项已全部提交（来源：" + trigger + "），耗时 "
                         + (System.currentTimeMillis() - fullSyncStart) / 1000
                         + " 秒；随后由DB队列逐项执行，若某项失败会在日志打【失败/无响应】并下轮重试 =====");
                 } finally {
