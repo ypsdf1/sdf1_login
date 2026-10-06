@@ -7103,7 +7103,14 @@ public class WebManager {
             long phpCount = toLong(data.get("php_count"));
             long phpMax = toLong(data.get("php_max_id"));
             long gap = localCount - phpCount;          // 本机有、PHP 没有的总缺口
-            if (gap <= pendingPush) return;            // 缺口 = 正常待推增量，两边关系正常
+            if (gap <= pendingPush) {
+                // 两边账实相符：缺口正好等于还没推的增量（没有丢失）
+                plugin.getLogger().info("[Web交易同步] ★ 周期对账通过：PHP " + phpCount
+                        + " 笔/最大序列号 " + phpMax + "，本机 " + localCount + " 笔/最大序列号 "
+                        + localMax + "，缺口 " + Math.max(gap, 0) + " 笔 = 待推增量 "
+                        + pendingPush + " 笔 → 两边一致");
+                return;
+            }
 
             txFullScanPending = true;
             plugin.getLogger().warning("[Web交易同步] ★ 周期对账发现 PHP 流水在运行期丢失：PHP "
