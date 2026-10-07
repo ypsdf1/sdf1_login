@@ -43,3 +43,10 @@ pay_secrets.php
 # 屏蔽无用的db文件夹(仓库不需要db文件)
 db/
 /*.rar
+
+# 屏蔽所有md文件、python部署脚本
+*.md
+*.py
+# 例外：readme和pay.md
+!readme.md
+!pay.md
