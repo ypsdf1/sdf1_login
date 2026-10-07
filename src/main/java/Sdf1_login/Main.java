@@ -195,7 +195,7 @@ public class Main extends JavaPlugin
     private HomeManager homeMgr;
     private DeathReport deathReport;
     private QuickBack quickBack;
-    /** OP白名单（opwl 命令 + 15 秒增量热重载，仅控制台可用） */
+    /** OP白名单（opwl 命令 + 15秒文件热重载 + 整点定点扫描，仅控制台可用） */
     private OpWhiteListManager opWhiteListMgr;
 
 
@@ -779,7 +779,7 @@ public class Main extends JavaPlugin
         // 配置文件 plugins/Sdf1_login/白名单.txt，登录/加入/退出时热重载
         getServer().getPluginManager().registerEvents(new MaintenanceManager(this), this);
 
-        // ===== OP白名单（opwl，仅控制台；读不出配置时一次性卸载全部 OP）=====
+        // ===== OP白名单（opwl，仅控制台；15秒文件热重载 + 整点(:15/:30/:45)定点扫描）=====
         opWhiteListMgr = new OpWhiteListManager(this);
         getServer().getPluginManager().registerEvents(opWhiteListMgr, this);
         if (getCommand("opwl") != null) {
@@ -3524,6 +3524,32 @@ public class Main extends JavaPlugin
                 || body.startsWith("minecraft:help")) return;
         e.setCancelled(true);
         p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+    }
+
+    // ★ 拦截控制台 /op（及 /minecraft:op）：OP 白名单已接管原生 OP，
+    //   原生 /op 给的人若不在白名单，会在下个整点扫描被撤销 + 报警。
+    //   提示控制台改用 /opwl add <玩家> 或编辑 OP白名单/opwl.json（强制手段，不查注册）。
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onConsoleOpGuard(org.bukkit.event.server.ServerCommandEvent e) {
+        if (e.isCancelled()) return;
+        String raw = e.getCommand().trim();
+        if (raw.isEmpty()) return;
+        String lower = raw.toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("minecraft:")) {
+            raw = raw.substring(10);
+            lower = lower.substring(10);
+        }
+        // 仅拦「op <玩家>」；op 单独或 /op list 不拦（让原版自己处理）
+        if (!lower.equals("op") && !lower.startsWith("op ")) return;
+        String[] p = raw.split("\\s+", 2);
+        if (p.length < 2 || p[1].trim().isEmpty()) return; // 无参数，放行给原版
+        e.setCancelled(true);
+        CommandSender cs = e.getSender();
+        cs.sendMessage("§c§l[OP白名单] §f原生 /op 已被接管，请改用：");
+        cs.sendMessage("§f  · 控制台 §e/opwl add <玩家> §7（仅本服注册用户）");
+        cs.sendMessage("§f  · 直接编辑 §eplugins/Sdf1_login/OP白名单/opwl.json §7（强制手段，不查注册）");
+        cs.sendMessage("§715 秒内文件指纹变化自动热重载；整点(:15/:30/:45)定点扫描/补授");
+        getLogger().info("[OP白名单] 拦截控制台 /op " + p[1].trim() + " → 引导到 opwl add / 改 json");
     }
 
     // ★ 拦截原版 /ban、/ban-ip 命令，补充广播封禁警告（覆盖永久/临时封禁）
@@ -7246,10 +7272,14 @@ public class Main extends JavaPlugin
 
         String cmdName = cmd.getName().toLowerCase();
 
-        // ===== /opwl：OP白名单（仅控制台；玩家调用一律静默无响应）=====
+        // ===== /opwl：OP白名单（仅控制台；玩家调用给提示）=====
         if (cmdName.equals("opwl")) {
             if (!(sender instanceof Player) && opWhiteListMgr != null) {
                 opWhiteListMgr.onCommand(sender, args);
+            } else if (sender instanceof Player) {
+                sender.sendMessage("§7OP白名单仅控制台可用；玩家 §f/op §7已被插件接管，"
+                        + "需要授权请联系管理员在控制台执行 §f/opwl add <玩家>§7，"
+                        + "或直接编辑 §fOP白名单/opwl.json §7（强制手段，不查注册）");
             }
             return true;
         }

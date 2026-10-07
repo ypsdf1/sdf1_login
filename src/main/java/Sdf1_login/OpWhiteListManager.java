@@ -49,7 +49,9 @@ import java.util.regex.Matcher;
  *   - 读不出规则（无 json / JSON 语法错 / 必需字段类型错）→ 一次性卸载全部已知 OP，
  *     持续失败不重复执行，修复后自动恢复；
  *   - 启用状态=false → 功能休眠，不授权也不撤销；
- *   - 15 秒一次增量热重载：文件指纹（路径+lastModified+长度）变化才重解析并打日志；
+ *   - 白名单 json 改写不查注册（强制手段）；opwl add / addtime 子命令查本服注册用户；
+ *   - 15 秒一次文件指纹增量热重载：路径+lastModified+长度 变化才重解析并打日志；
+ *   - 整点(:15/:30/:45)定点扫描：每 15 分钟做一轮「撤销非法持有 + 补授白名单」；
  *   - opwl 命令仅限控台（Main 侧对玩家静默 return，连帮助都不给）。
  *
  * 所有授权/撤销都在主线程执行（scheduler + 命令 + join 事件），无并发问题。
@@ -102,8 +104,16 @@ public class OpWhiteListManager implements Listener {
         if (cfg != null) {
             importNativeOps();
         }
-        // 15 秒增量热重载 + 静默应用
-        Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 300L, 300L);
+        // 整点扫描（:15/:30/:45）：周期 9000 tick = 15 分钟
+        // 初始延迟 = 距下一个整点的 tick 数（ms/50）
+        // 同时保留 15s 文件指纹热重载：改写 json 后最迟 15s 生效
+        // 这里把两件事都调度起来：
+        //   a) 15s tick 只做 checkAndReload()（指纹变化才重载+打日志，无变化静默 apply）
+        //   b) 整点扫描做 checkAndReload() + apply()（撤销非法持有 + 补授权）
+        Bukkit.getScheduler().runTaskTimer(plugin, this::checkAndReload, 300L, 300L);
+        long delayMs = millisToNextQuarterPoint();
+        Bukkit.getScheduler().runTaskTimer(plugin, this::onQuarterPoint,
+                (long) delayMs / 50L, 9000L);
     }
 
     // ================= 配置读取 =================
@@ -161,6 +171,37 @@ public class OpWhiteListManager implements Listener {
         } catch (Exception e) {
             fail(f.getName() + " 解析失败：" + e.getMessage());
         }
+    }
+
+    /** 计算距下一个整点(:00/:15/:30/:45)的毫秒数（最小 1ms）。 */
+    private static long millisToNextQuarterPoint() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        int sec = c.get(java.util.Calendar.SECOND);
+        int min = c.get(java.util.Calendar.MINUTE);
+        int mod = min % 15;
+        // 本小时内的下一个整点分钟数
+        int nextMinute;
+        if (mod == 0) {
+            // 已经正好在整点上（秒数可能为 0..59）
+            if (sec == 0) {
+                // 正好在整点这一刻，下一个是 15 分钟后
+                nextMinute = min + 15;
+            } else {
+                nextMinute = min; // 本分钟（sec>0）就是整点，差 sec*1000
+            }
+        } else {
+            nextMinute = min - mod + 15;
+        }
+        long nowMs = System.currentTimeMillis();
+        // 算出本小时内的整点毫秒
+        long curHourStart = nowMs - (c.get(java.util.Calendar.HOUR_OF_DAY) * 3600_000L
+                + min * 60_000L + sec * 1000L + c.get(java.util.Calendar.MILLISECOND));
+        long target = curHourStart + nextMinute * 60_000L;
+        long delta = target - nowMs;
+        if (delta <= 0) {
+            delta += 15 * 60_000L; // 跨小时，取 15 分钟后
+        }
+        return delta;
     }
 
     /**
@@ -221,9 +262,12 @@ public class OpWhiteListManager implements Listener {
         lastStamp = f.lastModified() + f.length();
     }
 
-    // ================= 15 秒 tick =================
+    // ================= 整点扫描（15/30/45 定点） =================
+    // 文件指纹热重载保留在 checkAndReload() 内：每个扫描点先比指纹，
+    // 有变化才重新解析 + 打日志；没变化就静默应用。
 
-    private void tick() {
+    /** 检查文件指纹，有变化则重载，然后静默应用。 */
+    private void checkAndReload() {
         File f = pickJson();
         String p = f == null ? "" : f.getAbsolutePath();
         long st = f == null ? 0L : f.lastModified() + f.length();
@@ -233,14 +277,19 @@ public class OpWhiteListManager implements Listener {
             loadFrom(f, true); // 有变化：重新解析 + 打日志（含解析失败告警）
             updateStamp();
         }
-        // 无论有无变化都做一次静默应用（撤销非法持有 + 补授权），保持安静
+        // 无论有无变化都做一次静默应用（撤销非法持有 + 补授权）
         apply();
     }
 
-    /** 玩家上线：立即应用一次（白名单内马上拿到 OP，不等下个 15 秒） */
+    /** 每个整点（:15/:30/:45）执行一次扫描 + 补授。 */
+    private void onQuarterPoint() {
+        checkAndReload();
+    }
+
+    /** 玩家上线：立即检查指纹 + 应用一次（白名单内马上拿到 OP，不等下个扫描点） */
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
-        apply();
+        checkAndReload(); // 顺带一次指纹检查，改完 json 就上线立即生效
     }
 
     // ================= 接管：撤销非法持有 + 补授权 =================
@@ -487,10 +536,17 @@ public class OpWhiteListManager implements Listener {
         switch (sub) {
             case "add": {
                 if (args.length < 2) {
-                    sender.sendMessage("§e用法: §f/opwl add <玩家>");
+                    sender.sendMessage("§e用法: §f/opwl add <玩家> §7（被授权人须为本服注册用户；"
+                            + "非注册请直接改 §fOP白名单/opwl.json§7 强制授权）");
                     return;
                 }
                 String name = args[1].trim();
+                if (!isRegistered(name)) {
+                    sender.sendMessage("§c" + name + " 不是本服注册用户，拒绝授权");
+                    sender.sendMessage("§7强制授权：请直接编辑 §fOP白名单/opwl.json§7，"
+                            + "把名字加进「无固定期限授权列表」或「有固定期限授权列表」（json 为强制手段，不查注册）");
+                    return;
+                }
                 boolean moved = removeTimed(name);
                 if (!hasPermanent(name)) {
                     permanentList().add(new JsonPrimitive(name));
@@ -505,11 +561,18 @@ public class OpWhiteListManager implements Listener {
             }
             case "addtime": {
                 if (args.length < 2) {
-                    sender.sendMessage("§e用法: §f/opwl addtime <玩家> [时长] §7（缺省用默认时长 "
-                            + defaultDuration() + "）");
+                    sender.sendMessage("§e用法: §f/opwl addtime <玩家> [时长] §7（缺省 "
+                            + defaultDuration() + "；被授权人须为本服注册用户；"
+                            + "非注册请直接改 json 强制授权）");
                     return;
                 }
                 String name = args[1].trim();
+                if (!isRegistered(name)) {
+                    sender.sendMessage("§c" + name + " 不是本服注册用户，拒绝授权");
+                    sender.sendMessage("§7强制授权：请直接编辑 §fOP白名单/opwl.json§7，"
+                            + "在「有固定期限授权列表」里写 \"" + name + "\": \"<时长>\"（json 为强制手段，不查注册）");
+                    return;
+                }
                 String dur = args.length >= 3 ? joinFrom(args, 2) : defaultDuration();
                 long exp;
                 try {
@@ -652,6 +715,22 @@ public class OpWhiteListManager implements Listener {
         }
     }
 
+    // ================= 注册检查 =================
+
+    /** 查被授权人是不是本服务器注册用户（DatabaseManager.userExistsIgnoreCase）。
+     *  查不到 / db 未就绪 一律返回 false（保守拒绝，让运维改 json 兜底）。 */
+    private boolean isRegistered(String name) {
+        if (name == null || name.isEmpty()) return false;
+        DatabaseManager db = plugin.getDb();
+        if (db == null) return false;
+        try {
+            return db.userExistsIgnoreCase(name);
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[OP白名单] 注册检查异常: " + t.getMessage());
+            return false;
+        }
+    }
+
     // ================= 命令辅助 =================
 
     /** 立即授 OP；返回 false = 档案未知（上线时由 join 自动补授） */
@@ -703,7 +782,9 @@ public class OpWhiteListManager implements Listener {
         s.sendMessage("§f/opwl remove <玩家> §7- 移除授权并撤销其 OP");
         s.sendMessage("§f/opwl list [玩家] §7- 查看白名单 / 非法持有者 / 单人状态");
         s.sendMessage("§f/opwl reload §7- 重载配置");
-        s.sendMessage("§7配置目录: plugins/Sdf1_login/OP白名单/（独立目录，白名单 json 全在里面），15 秒自动热重载");
+        s.sendMessage("§7配置目录: plugins/Sdf1_login/OP白名单/（独立目录，白名单 json 全在里面）");
+        s.sendMessage("§7扫描节奏: 每 15 秒一次文件指纹热重载 + 整点(:15/:30/:45)定点扫描/补授权");
+        s.sendMessage("§7注册限制: /opwl add 只授权本服注册用户；非注册请改 json（强制手段，不查注册）");
         s.sendMessage("§7报警模板变量: §f{user}§7=玩家名 §f{time}§7=发现时间（中英文写法均可）");
         s.sendMessage("§d欢迎来到草原探险服务器，ip: mc2.ypshidifu.cn 端口(基岩版需要):30679");
     }
