@@ -40,7 +40,9 @@ import java.util.regex.Matcher;
  *     报警带 {user}/{time} 变量（支持 user/player/用户/玩家、time/时间，中英文写法都认）。
  *   - 白名单内的在线玩家缺 OP 时自动补授（原版 /op 给的人若不在白名单，15 秒内会被撤）。
  *
- * 配置：单文件 plugins/Sdf1_login/opwl.json（模板随 jar 释放，不再有子目录/附属文件）。
+ * 配置：独立目录 plugins/Sdf1_login/OP白名单/，内含白名单 json（任意 *.json 都认，
+ * 按字典序取首个；模板 opwl.json 随 jar 释放）。独立成目录是为了隔离——目录里可放
+ * 任意个 json 当配置，互不干扰；没有其它附属名单文件。
  * 该 json 同时是配置文件与说明书，除配置项外的其它字段一律忽略、写回时原样保留。
  *
  * 其他行为：
@@ -58,7 +60,9 @@ public class OpWhiteListManager implements Listener {
     private static final long WARN_COOLDOWN_MS = 60_000L;
 
     private final Main plugin;
-    private final File file;
+    private final File dir;
+    /** 当前被读的 json（pickJson 的结果，命令写回也写它） */
+    private File file;
     private final Gson gson = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     /** 当前白名单文件（= dataFolder/opwl.json） */
@@ -75,19 +79,19 @@ public class OpWhiteListManager implements Listener {
 
     public OpWhiteListManager(Main plugin) {
         this.plugin = plugin;
-        this.file = new File(plugin.getDataFolder(), "opwl.json");
-        File parent = file.getParentFile();
-        if (parent != null && !parent.exists()) {
-            parent.mkdirs();
+        this.dir = new File(plugin.getDataFolder(), "OP白名单");
+        if (!dir.exists()) {
+            dir.mkdirs();
         }
-        // 模板随 jar 释放（只在不存在时复制，绝不覆盖用户改过的文件）
-        if (!file.exists()) {
-            try (InputStream in = plugin.getResource("opwl.json")) {
+        // 模板随 jar 释放（只在目录里没有 json 时复制，绝不覆盖用户改过的文件）
+        File tpl = new File(dir, "opwl.json");
+        if (pickJson() == null && !tpl.exists()) {
+            try (InputStream in = plugin.getResource("OP白名单/opwl.json")) {
                 if (in != null) {
-                    Files.copy(in, file.toPath());
-                    plugin.getLogger().info("[OP白名单] 已释放配置模板: plugins/Sdf1_login/opwl.json");
+                    Files.copy(in, tpl.toPath());
+                    plugin.getLogger().info("[OP白名单] 已释放配置模板: OP白名单/" + tpl.getName());
                 } else {
-                    plugin.getLogger().warning("[OP白名单] jar 内未找到模板 opwl.json，请手工放置该文件");
+                    plugin.getLogger().warning("[OP白名单] jar 内未找到模板 OP白名单/opwl.json，请手工在目录里放一个 .json");
                 }
             } catch (Exception e) {
                 plugin.getLogger().warning("[OP白名单] 模板释放失败: " + e.getMessage());
@@ -104,7 +108,18 @@ public class OpWhiteListManager implements Listener {
 
     // ================= 配置读取 =================
 
+    /** 目录里任意一个 .json = 白名单文件；文件名按字典序取首个（确定性） */
+    private File pickJson() {
+        File[] fs = dir.listFiles((d, n) -> n.toLowerCase(Locale.ROOT).endsWith(".json"));
+        if (fs == null || fs.length == 0) {
+            return null;
+        }
+        Arrays.sort(fs, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        return fs[0];
+    }
+
     private void reloadInternal(boolean log, boolean importNative) {
+        file = pickJson();
         watched = file;
         loadFrom(file, log);
         updateStamp();
@@ -115,7 +130,7 @@ public class OpWhiteListManager implements Listener {
 
     private void loadFrom(File f, boolean log) {
         if (f == null || !f.exists()) {
-            fail("OP白名单配置文件不存在（plugins/Sdf1_login/opwl.json）");
+            fail("OP白名单目录里没有任何 .json 文件（plugins/Sdf1_login/OP白名单/）");
             return;
         }
         try {
@@ -144,7 +159,7 @@ public class OpWhiteListManager implements Listener {
                         + permanentList().size() + " 人，有固定期限 " + timedObject().size() + " 人");
             }
         } catch (Exception e) {
-            fail("opwl.json 解析失败：" + e.getMessage());
+            fail(f.getName() + " 解析失败：" + e.getMessage());
         }
     }
 
@@ -196,16 +211,26 @@ public class OpWhiteListManager implements Listener {
 
     /** 文件指纹：路径 + lastModified + 长度（任一变化都视为变更） */
     private void updateStamp() {
-        lastPath = file.getAbsolutePath();
-        lastStamp = file.exists() ? file.lastModified() + file.length() : 0L;
+        File f = pickJson();
+        if (f == null) {
+            lastPath = "";
+            lastStamp = 0L;
+            return;
+        }
+        lastPath = f.getAbsolutePath();
+        lastStamp = f.lastModified() + f.length();
     }
 
     // ================= 15 秒 tick =================
 
     private void tick() {
-        long st = file.exists() ? file.lastModified() + file.length() : 0L;
-        if (!lastPath.equals(file.getAbsolutePath()) || st != lastStamp) {
-            loadFrom(file, true); // 有变化：重新解析 + 打日志（含解析失败告警）
+        File f = pickJson();
+        String p = f == null ? "" : f.getAbsolutePath();
+        long st = f == null ? 0L : f.lastModified() + f.length();
+        if (!p.equals(lastPath) || st != lastStamp) {
+            file = f;
+            watched = f;
+            loadFrom(f, true); // 有变化：重新解析 + 打日志（含解析失败告警）
             updateStamp();
         }
         // 无论有无变化都做一次静默应用（撤销非法持有 + 补授权），保持安静
@@ -414,11 +439,12 @@ public class OpWhiteListManager implements Listener {
     /** 写回 json：保留配置项之外的所有说明书/混淆字段，只动配置项 */
     private void saveConfig() {
         try {
-            File parent = file.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
+            File target = (watched != null && watched.exists()) ? watched : pickJson();
+            if (target == null) {
+                target = new File(dir, "opwl.json");
+                watched = target;
             }
-            Files.write(file.toPath(), gson.toJson(cfg).getBytes(StandardCharsets.UTF_8));
+            Files.write(target.toPath(), gson.toJson(cfg).getBytes(StandardCharsets.UTF_8));
             updateStamp(); // 命令自己有回馈，抑制下个 tick 再打一次「已重载」
         } catch (Exception e) {
             plugin.getLogger().warning("[OP白名单] 配置写回失败: " + e.getMessage());
@@ -450,7 +476,7 @@ public class OpWhiteListManager implements Listener {
         }
         // 以下子命令需要配置可读
         if (cfg == null) {
-            sender.sendMessage("§c配置解析失败，先修复 plugins/Sdf1_login/opwl.json 再操作（或 /opwl reload）");
+            sender.sendMessage("§c配置解析失败，先修复 OP白名单/ 目录里的 json 再操作（或 /opwl reload）");
             return;
         }
         boolean readOnly = "list".equals(sub);
@@ -580,7 +606,8 @@ public class OpWhiteListManager implements Listener {
                     return;
                 }
                 sender.sendMessage("§e===== OP白名单（接管原生 OP） =====");
-                sender.sendMessage("§7配置: §fplugins/Sdf1_login/opwl.json §7| 状态: "
+                sender.sendMessage("§7配置: §fOP白名单/" + (watched != null ? watched.getName() : "?")
+                        + " §7| 状态: "
                         + (isEnabled() ? "§a启用" : "§c停用")
                         + " §7| 解析: " + (parseFailed ? "§c失败" : "§a正常"));
                 JsonArray pu = permanentList();
@@ -676,7 +703,7 @@ public class OpWhiteListManager implements Listener {
         s.sendMessage("§f/opwl remove <玩家> §7- 移除授权并撤销其 OP");
         s.sendMessage("§f/opwl list [玩家] §7- 查看白名单 / 非法持有者 / 单人状态");
         s.sendMessage("§f/opwl reload §7- 重载配置");
-        s.sendMessage("§7配置: plugins/Sdf1_login/opwl.json（单文件，白名单全在里面），15 秒自动热重载");
+        s.sendMessage("§7配置目录: plugins/Sdf1_login/OP白名单/（独立目录，白名单 json 全在里面），15 秒自动热重载");
         s.sendMessage("§7报警模板变量: §f{user}§7=玩家名 §f{time}§7=发现时间（中英文写法均可）");
         s.sendMessage("§d欢迎来到草原探险服务器，ip: mc2.ypshidifu.cn 端口(基岩版需要):30679");
     }
