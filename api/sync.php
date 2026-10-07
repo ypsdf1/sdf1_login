@@ -1355,6 +1355,8 @@ function alignmentCatConfig($cat) {
                 'hashcols' => array('player_name', 'new_ip'),
                 'intcols' => array(),
                 'pull' => 1,
+                // ★ 孤儿行清理（2026-10-06）：只在 keycols=player_name 的类别上开
+                'prune_orphans' => 1,
             ),
             'providers' => array(
                 'table' => 'web_service_providers',
@@ -1549,6 +1551,47 @@ function checkAlignment() {
             if (!isset($javaHash[$k])) $extra[] = $k;
         }
 
+        // ★ 2026-10-06 孤儿行清理（「多退少补」里的「退」）：
+        //   player_ip_changes 会残留「玩家已删除但行还在」的历史数据（线上实测 203 条：
+        //   这些 player_name 在 Java 的 users 表里没有，在 PHP 自己的 users 表里也没有）。
+        //   Java 侧没有对应的用户行、无处可收，于是每轮对账都空转一次
+        //   「收回N / 实际写入本地0条」，两边永远差着 N 条，对账永远收敛不到 0。
+        //   三重保险，缺一不可：
+        //     ① 只清 extra（Java 明确报了「我没有」的 key），missing/changed 一律不碰
+        //     ② 只清 PHP 自己 users 表里也不存在的玩家 —— 在世玩家 / 网页注册用户绝不动
+        //     ③ Java 一条记录都没报上来（count($javaHash)==0）时绝不动表，
+        //        防止 Java 库异常/被清空时把 PHP 的 IP 记录一锅端
+        //   table 名来自 alignmentCatConfig 的硬编码常量，非用户输入，可直接拼接。
+        $pruned = 0;
+        if (!empty($cfg['prune_orphans']) && count($extra) > 0 && count($javaHash) > 0) {
+            try {
+                $chkStmt = $db->prepare('SELECT 1 FROM users WHERE player_name = :n LIMIT 1');
+                $delStmt = $db->prepare('DELETE FROM ' . $cfg['table'] . ' WHERE player_name = :n');
+                $keep = array();
+                foreach ($extra as $k) {
+                    $chkStmt->bindValue(':n', $k, SQLITE3_TEXT);
+                    $chkRes = $chkStmt->execute();
+                    $alive = $chkRes ? $chkRes->fetchArray(SQLITE3_NUM) : null;
+                    if ($chkRes) $chkRes->finalize();
+                    if ($alive) {
+                        $keep[] = $k;          // 玩家还在 → 保留，交给 Java 的 users 类别收回
+                        continue;
+                    }
+                    $delStmt->bindValue(':n', $k, SQLITE3_TEXT);
+                    $delStmt->execute();
+                    if ($db->changes() > 0) {
+                        $pruned++;
+                        unset($phpHash[$k], $phpRows[$k]);
+                    } else {
+                        $keep[] = $k;
+                    }
+                }
+                $extra = $keep;
+            } catch (\Throwable $e) {
+                @error_log('[checkAlignment] prune orphans failed cat=' . $cat . ': ' . $e->getMessage());
+            }
+        }
+
         // ---- 把这些 key 在 PHP 侧的完整行交出去（字段名换成 Java 侧叫法）----
         $rows = array();
         $want = array_merge($changed, $extra);
@@ -1569,6 +1612,7 @@ function checkAlignment() {
             'missing' => count($missing),
             'changed' => count($changed),
             'extra' => count($extra),
+            'pruned_orphans' => $pruned,
         ));
 
         success(array(
