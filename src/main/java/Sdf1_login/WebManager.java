@@ -4584,6 +4584,15 @@ public class WebManager {
                     String source = strOf(row.get("source"));
                     if (source.isEmpty()) source = "Web";
                     long expire = longOf(row.get("expire"));
+                    // ★ 已过期的封禁（如风控5分钟临时封禁到点）绝不拉回：
+                    //   Bukkit 的 getEntries()/isBanned() 都不认过期封禁，加回去立刻就"不存在"，
+                    //   下一轮对账 PHP 仍报 extra=1 → 无限「收回1」死循环（2026-10-07 Swight 实测）。
+                    //   PHP 侧 checkAlignment 已把过期行排除出 extra，这里是第二道防线。
+                    if (expire > 0 && expire <= System.currentTimeMillis()) {
+                        plugin.getLogger().info("[对账] 跳过已过期的 Web 端封禁（不拉回）: "
+                                + (isIp ? "IP " : "") + target);
+                        return false;
+                    }
                     // 真实签名：addBan(target, reason, expires, source)
                     // Date 必须全限定——本文件同时 import 了 java.sql.* 与 java.util.*
                     banList.addBan(target, reason,
