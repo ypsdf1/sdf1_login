@@ -10375,13 +10375,17 @@ public class WebManager {
             //   对账没做成或目录行解析不出来 → 回退本地 hash，行为与改造前一致。
             List<Map<String, Object>> rows = buildShopCatalogRows(json);
             AlignResult arCat = rows.isEmpty() ? null : alignGate("shop", rows);
-            boolean alignNeedPushCat = arCat != null && arCat.needPush();
 
             // ★ 无变化静默：目录只由 Java 写（PHP 的 set_shop_catalog 只 upsert 目录字段，
             //   库存/管理员价走独立列），内容没变就别每轮整包硬推 —— 这是「无脑推」大户之一。
             //   对账明确要补推时本地 hash 不得短路（PHP 被清空后本地没变也要推，同 syncShopData）。
             String catalogHash = json.length() + ":" + json.hashCode();
-            if (!alignNeedPushCat && catalogHash.equals(lastShopCatalogHash)) return;
+            // ★ 对账已给出结论（needPush=false = 两边一致）→ 直接回，绝不再看本地 hash：
+            //   lastShopCatalogHash 是内存字段重启清零，用它兜底会把「对账说不用推」
+            //   翻案成整包推（2026-10-07 测试服实测：对账 961/961 changed=0 照推 975 项）。
+            if (arCat != null && !arCat.needPush()) return;
+            // 只有对账没做成（null）才回退本地 hash，行为与改造前一致
+            if (arCat == null && catalogHash.equals(lastShopCatalogHash)) return;
             String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_catalog&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             String resp = doPost(urlStr, json);
