@@ -1385,6 +1385,26 @@ function alignmentCatConfig($cat) {
                 'intcols' => array('expire_time'),
                 'pull' => 0,
             ),
+            // ★ 领地数据（2026-10-07 接入对账，多退少补）：游戏内 area_lands 为唯一权威。
+            //   pull=0 —— 后台的领地改动不回流 Java（与改造前一致）。
+            //   「少补」= missing → Java 整包 sync_lands（INSERT OR REPLACE）补上缺行；
+            //   「多退」= extra → Java 侧 pushOnExtra=1 触发一次整包推，由 syncLands() 的
+            //   「name NOT IN」退侧清掉 PHP 多出的行（游戏里已删/后台自建）→ 推一次即收敛。
+            //   ★ hashcols/intcols 必须与 Java AlignCfg("lands") 逐字一致（72/54 列）：
+            //     - 排除 synced_at/admin_changed/area_size/clear_all_bad_effects
+            //       （PHP 独有列，每轮写入都变 → 恒 changed）与 Java 独有的
+            //       create_cost/deny_farmland_trample/deny_ender_teleport（本表没有）；
+            //     - warp_x/y/z/yaw/pitch 是 REAL，但必须当整数列截断比对：
+            //       PHP (string)1.0="1" 而 Java String.valueOf(1.0)="1.0"，按文本比恒 changed。
+            'lands' => array(
+                'table' => 'web_area_lands',
+                'keycols' => array('id'),
+                'map' => array(),
+                'cols' => array('id', 'name', 'owner', 'world', 'x1', 'z1', 'x2', 'z2', 'y_min', 'y_max', 'confiscate_items', 'deny_use_items', 'give_effects', 'clear_effects', 'clear_all_bad', 'punish_commands', 'deny_block_place', 'deny_block_break', 'deny_container', 'deny_pvp', 'deny_fall_damage', 'deny_hunger', 'deny_all_damage', 'deny_drop', 'deny_mount', 'deny_ender_pearl', 'deny_bow', 'deny_potion', 'deny_explosion', 'deny_raid', 'deny_fire_spread', 'deny_all_effects', 'deny_item_frame', 'deny_move', 'deny_pickup', 'deny_fire', 'peace_mode', 'peace_mode_duration', 'peace_whitelist', 'enforce_game_mode', 'mode_exempt', 'enter_msg', 'leave_msg', 'confiscate_msg', 'enable_announce', 'announce_template', 'txt_content', 'created_at', 'deny_thrown_projectiles', 'deny_glowing', 'deny_redstone_interaction', 'deny_door_interaction', 'deny_noteblock_jukebox', 'deny_lead', 'deny_crop_harvest', 'deny_wool_shear', 'deny_animal_feeding', 'warp_x', 'warp_y', 'warp_z', 'warp_yaw', 'warp_pitch', 'warp_world', 'deny_mob_attack', 'is_public_building', 'deny_fluid', 'allow_visitor_teleport', 'deny_entity_interact', 'deny_sign_edit', 'deny_spawn_egg', 'deny_wax', 'bad_effects'),
+                'hashcols' => array('id', 'name', 'owner', 'world', 'x1', 'z1', 'x2', 'z2', 'y_min', 'y_max', 'confiscate_items', 'deny_use_items', 'give_effects', 'clear_effects', 'clear_all_bad', 'punish_commands', 'deny_block_place', 'deny_block_break', 'deny_container', 'deny_pvp', 'deny_fall_damage', 'deny_hunger', 'deny_all_damage', 'deny_drop', 'deny_mount', 'deny_ender_pearl', 'deny_bow', 'deny_potion', 'deny_explosion', 'deny_raid', 'deny_fire_spread', 'deny_all_effects', 'deny_item_frame', 'deny_move', 'deny_pickup', 'deny_fire', 'peace_mode', 'peace_mode_duration', 'peace_whitelist', 'enforce_game_mode', 'mode_exempt', 'enter_msg', 'leave_msg', 'confiscate_msg', 'enable_announce', 'announce_template', 'txt_content', 'created_at', 'deny_thrown_projectiles', 'deny_glowing', 'deny_redstone_interaction', 'deny_door_interaction', 'deny_noteblock_jukebox', 'deny_lead', 'deny_crop_harvest', 'deny_wool_shear', 'deny_animal_feeding', 'warp_x', 'warp_y', 'warp_z', 'warp_yaw', 'warp_pitch', 'warp_world', 'deny_mob_attack', 'is_public_building', 'deny_fluid', 'allow_visitor_teleport', 'deny_entity_interact', 'deny_sign_edit', 'deny_spawn_egg', 'deny_wax', 'bad_effects'),
+                'intcols' => array('id', 'x1', 'z1', 'x2', 'z2', 'y_min', 'y_max', 'clear_all_bad', 'deny_block_place', 'deny_block_break', 'deny_container', 'deny_pvp', 'deny_fall_damage', 'deny_hunger', 'deny_all_damage', 'deny_drop', 'deny_mount', 'deny_ender_pearl', 'deny_bow', 'deny_potion', 'deny_explosion', 'deny_raid', 'deny_fire_spread', 'deny_all_effects', 'deny_item_frame', 'deny_move', 'deny_pickup', 'deny_fire', 'peace_mode', 'peace_mode_duration', 'enable_announce', 'created_at', 'deny_thrown_projectiles', 'deny_glowing', 'deny_redstone_interaction', 'deny_door_interaction', 'deny_noteblock_jukebox', 'deny_lead', 'deny_crop_harvest', 'deny_wool_shear', 'deny_animal_feeding', 'warp_x', 'warp_y', 'warp_z', 'warp_yaw', 'warp_pitch', 'deny_mob_attack', 'is_public_building', 'deny_fluid', 'allow_visitor_teleport', 'deny_entity_interact', 'deny_sign_edit', 'deny_spawn_egg', 'deny_wax'),
+                'pull' => 0,
+            ),
             // ★ 在线玩家：login_time 每次推送都变，不进指纹，只比「谁在线」
             'online' => array(
                 'table' => 'online_players',
