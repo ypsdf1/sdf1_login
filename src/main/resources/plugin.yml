@@ -190,3 +190,9 @@ commands:
   cleartake:
     description: 清空DB队列中未回应的web同步任务（管理员）
     usage: /cleartake
+  opwl:
+    description: OP白名单管理（仅控制台可用，15秒自动热重载）
+    usage: /opwl <add|addtime|removetime|remove|list|reload|help>
+  opwl:
+    description: op白名单
+    usage: /opwl

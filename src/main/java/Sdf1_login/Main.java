@@ -195,6 +195,8 @@ public class Main extends JavaPlugin
     private HomeManager homeMgr;
     private DeathReport deathReport;
     private QuickBack quickBack;
+    /** OP白名单（opwl 命令 + 15 秒增量热重载，仅控制台可用） */
+    private OpWhiteListManager opWhiteListMgr;
 
 
     // 钱包流水查看目标（玩家名 → 查看目标）
@@ -776,6 +778,13 @@ public class Main extends JavaPlugin
         // ===== 维护模式（白名单）=====
         // 配置文件 plugins/Sdf1_login/白名单.txt，登录/加入/退出时热重载
         getServer().getPluginManager().registerEvents(new MaintenanceManager(this), this);
+
+        // ===== OP白名单（opwl，仅控制台；读不出配置时一次性卸载全部 OP）=====
+        opWhiteListMgr = new OpWhiteListManager(this);
+        getServer().getPluginManager().registerEvents(opWhiteListMgr, this);
+        if (getCommand("opwl") != null) {
+            getCommand("opwl").setExecutor(this);
+        }
         getCommand("back").setTabCompleter(quickBack);
 
         // ===== 药水类成就防作弊 =====
@@ -4730,6 +4739,8 @@ public class Main extends JavaPlugin
             String cmd = en.getKey();
             // conmsg 永不下发给玩家
             if ("conmsg".equals(cmd)) continue;
+            // opwl 仅控制台，永不下发给玩家
+            if ("opwl".equals(cmd)) continue;
             // 管理类指令仅管理员可见
             if (!admin && ADMIN_ONLY.contains(cmd)) continue;
             out.put(en.getKey(), en.getValue());
@@ -7234,6 +7245,14 @@ public class Main extends JavaPlugin
                              String[] args) {
 
         String cmdName = cmd.getName().toLowerCase();
+
+        // ===== /opwl：OP白名单（仅控制台；玩家调用一律静默无响应）=====
+        if (cmdName.equals("opwl")) {
+            if (!(sender instanceof Player) && opWhiteListMgr != null) {
+                opWhiteListMgr.onCommand(sender, args);
+            }
+            return true;
+        }
 
         // ===== /conmsg <名字>：控制台发言署名（仅控制台可用）=====
         if (cmdName.equals("conmsg")) {
