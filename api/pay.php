@@ -640,17 +640,19 @@ function queryOrder($token) {
 
     // ★ 本地订单不存在 → 双路查询（MySQL + 官方API），如果平台已支付则同步到本地
     if (!$row) {
-        // ★ 2026-10-02 归属校验：本方订单号只可能是 createOrder 生成的配置前缀订单。
-        //   不是本方前缀 = 平台其他商户/项目的订单 → 一概不查平台、不建本地单、不写流水。
-        // ★ 2026-10-06：前缀改为读 config.php 的 PAY_ORDER_PREFIX（原来写死 'RE'，
-        //   测试服改成别的前缀后，这行不跟着改就会把自己的单也拒绝掉）。
-        if (!payOrderIsOurs($outTradeNo)) {
-            debugLog('[queryOrder] 非本方订单号，拒绝查询平台', [
+        // ★ 2026-10-08 Round D（用户指示）：不再按「前缀码」判定归属。
+        //   创单时本端 payMakeOrderNo 生成的订单号原样入库 pay_orders，组合规则
+        //   (pay.md) 由使用者自定义，订单号形态任意（哪怕 123456、玩家名打头）。
+        //   补单/查询认「本地 pay_orders 是否已有该完整订单号」——本地存在即本端单；
+        //   若本地无记录，再用本端有效前缀做一次兜底（防拿他人平台的任意单号来查）。
+        //   两个平台不可能共用同一订单号，按完整订单号精确匹配即为安全网。
+        $hasPrefixOurs = payOrderIsOurs($outTradeNo);
+        if (!$hasPrefixOurs) {
+            debugLog('[queryOrder] 本地无此订单号且非本端前缀，仍放行平台直查（按完整订单号精确匹配）', [
                 'out_trade_no' => $outTradeNo,
                 'expect_prefix' => payOrderPrefix(),
                 'player' => $info['player'],
             ]);
-            error('订单不存在，请确认订单号是否正确');
         }
         debugLog('[queryOrder] 本地订单不存在，尝试双路查询同步', ['out_trade_no' => $outTradeNo, 'player' => $info['player']]);
 
