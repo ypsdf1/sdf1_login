@@ -221,8 +221,9 @@ function pollPaidOrders() {
     //   测试服脚本也只会查它自己本地活跃的订单号，抓不到生产服的单。
     $activeStmt = $sqlite->prepare("SELECT out_trade_no FROM pay_orders WHERE status != 'paid' AND out_trade_no IS NOT NULL AND out_trade_no != ''");
     $activeStmt->execute();
+    $activeRes = $activeStmt->getResult();
     $activeNos = array();
-    while ($a = $activeStmt->fetchArray(SQLITE3_ASSOC)) {
+    while ($activeRes && ($a = $activeRes->fetchArray(SQLITE3_ASSOC)) !== false) {
         $activeNos[] = (string)$a['out_trade_no'];
     }
     if (empty($activeNos)) {
@@ -250,7 +251,8 @@ function pollPaidOrders() {
         }
         $check = $sqlite->prepare("SELECT status FROM pay_orders WHERE out_trade_no = :no");
         $check->bindValue(':no', $outNo, SQLITE3_TEXT);
-        $row = $check->execute()->fetchArray(SQLITE3_ASSOC);
+        $checkRes = $check->execute()->getResult();
+        $row = $checkRes ? $checkRes->fetchArray(SQLITE3_ASSOC) : false;
         if (!$row || $row['status'] !== 'paid') {
             $orders[] = $o;
         }
@@ -274,7 +276,8 @@ function pollPaidOrders() {
         // 查本地 pay_orders（拿到正确的 bond_amount，创建订单时按档位设置）
         $check = $sqlite->prepare("SELECT status, bond_amount FROM pay_orders WHERE out_trade_no = :no");
         $check->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
-        $row = $check->execute()->fetchArray(SQLITE3_ASSOC);
+        $checkRes = $check->execute()->getResult();
+        $row = $checkRes ? $checkRes->fetchArray(SQLITE3_ASSOC) : false;
 
         if ($row && $row['status'] === 'paid') {
             $skipped++;
