@@ -51,7 +51,10 @@ import java.util.regex.Matcher;
  *   - 启用状态=false → 功能休眠，不授权也不撤销；
  *   - 白名单 json 改写不查注册（强制手段）；opwl add / addtime 子命令查本服注册用户；
  *   - 15 秒一次文件指纹增量热重载：路径+lastModified+长度 变化才重解析并打日志；
- *   - 整点(:15/:30/:45)定点扫描：每 15 分钟做一轮「撤销非法持有 + 补授白名单」；
+ *   - 整点(:15/:30/:45)定点扫描：每 15 分钟做一轮「撤销非法持有 + 补授白名单」+ 心跳日志；
+ *   - 2026-10-08：临时OP 存绝对到期时间（exp: 前缀），重载不再重算 → 修复「自动续期」；
+ *   - 2026-10-08：上下任提示当事人（在线直发、离线暂存上线补发）；
+ *   - 2026-10-08：新增 /opwl check <玩家>（仅注册校验，供 Main 侧 /op 放行判断）。
  *   - opwl 命令仅限控台（Main 侧对玩家静默 return，连帮助都不给）。
  *
  * 所有授权/撤销都在主线程执行（scheduler + 命令 + join 事件），无并发问题。
@@ -78,6 +81,8 @@ public class OpWhiteListManager implements Listener {
     private long lastStamp = Long.MIN_VALUE;
     /** 报警节流表：小写用户名 → 上次报警毫秒 */
     private final Map<String, Long> lastWarn = new HashMap<>();
+    /** 离线待投递提示：小写用户名 → 待发文案（上线时投递，最多留 2 条/人） */
+    private final Map<String, java.util.List<String>> pendingMsg = new HashMap<>();
 
     public OpWhiteListManager(Main plugin) {
         this.plugin = plugin;
@@ -165,7 +170,7 @@ public class OpWhiteListManager implements Listener {
             parseFailed = false;
             if (log) {
                 plugin.getLogger().info("[OP白名单] 已重载 opwl.json："
-                        + (isEnabled() ? "启用" : "停用") + "，无固定期限 "
+                        + (isWhitelistActive() ? "启用" : "停用") + "，无固定期限 "
                         + permanentList().size() + " 人，有固定期限 " + timedObject().size() + " 人");
             }
         } catch (Exception e) {
@@ -281,21 +286,45 @@ public class OpWhiteListManager implements Listener {
         apply();
     }
 
-    /** 每个整点（:15/:30/:45）执行一次扫描 + 补授。 */
+    /** 每个整点（:15/:30/:45）执行一次扫描 + 补授 + 心跳日志。 */
     private void onQuarterPoint() {
         checkAndReload();
+        plugin.getLogger().info("[OP白名单] 扫描点 " + nowHM()
+                + " | 无固定期限 " + (cfg == null ? "?" : String.valueOf(permanentList().size()))
+                + " | 有固定期限 " + (cfg == null ? "?" : String.valueOf(timedObject().size()))
+                + " | 持OP未入白 " + countIllegal());
     }
 
-    /** 玩家上线：立即检查指纹 + 应用一次（白名单内马上拿到 OP，不等下个扫描点） */
+    private static String nowHM() {
+        return new SimpleDateFormat("HH:mm").format(new Date());
+    }
+
+    /** 当前持 OP 但不在白名单的人数（只数不撤，供心跳日志） */
+    private int countIllegal() {
+        if (cfg == null || !isWhitelistActive()) {
+            return 0;
+        }
+        int n = 0;
+        for (OfflinePlayer op : Bukkit.getOperators()) {
+            String nm = op.getName();
+            if (nm != null && !nm.isEmpty() && op.isOp() && !isWhitelisted(nm)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** 玩家上线：立即检查指纹 + 应用一次 + 投递离线暂存的上下任提示 */
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         checkAndReload(); // 顺带一次指纹检查，改完 json 就上线立即生效
+        flushPendingMsgs(e.getPlayer());
     }
 
     // ================= 接管：撤销非法持有 + 补授权 =================
 
     private void apply() {
-        if (cfg == null || !isEnabled()) {
+        if (cfg == null || !isWhitelistActive()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -310,6 +339,8 @@ public class OpWhiteListManager implements Listener {
             }
             setOpByName(n, false);
             warnIllegal(n, now, describeIllegal(n));
+            // 卸任提示当事人（在线直发，离线暂存）
+            notifyOpChange(n, false, "自动撤销（不在白名单：" + describeIllegal(n) + "）");
         }
         // 2) 白名单内在线玩家补授（已是 OP 的跳过）
         for (Player p : Bukkit.getOnlinePlayers()) {
@@ -318,6 +349,10 @@ public class OpWhiteListManager implements Listener {
             }
             p.setOp(true);
             plugin.getLogger().info("[OP白名单] 已授权 " + p.getName() + " 获得 OP");
+            // 上任提示当事人
+            notifyOpChange(p.getName(), true,
+                    hasPermanent(p.getName()) ? "长期OP（无固定期限）"
+                            : "临时OP（到期 " + expDisplay(findTimed(p.getName())) + "）");
         }
     }
 
@@ -384,8 +419,14 @@ public class OpWhiteListManager implements Listener {
 
     // ================= 配置字段辅助 =================
 
-    private boolean isEnabled() {
+    /** 内部启用判断（配置有效且「启用状态」= true） */
+    private boolean isWhitelistActive() {
         return cfg != null && cfg.get("启用状态").getAsBoolean();
+    }
+
+    /** 公开：白名单是否启用（供 Main 侧 /op 拦截分支；解析失败/未配置 = false = 未接管） */
+    public boolean isEnabled() {
+        return isWhitelistActive();
     }
 
     private JsonArray permanentList() {
@@ -464,13 +505,33 @@ public class OpWhiteListManager implements Listener {
         return e > 0 && e > System.currentTimeMillis();
     }
 
-    /** 解析为绝对到期毫秒；解析失败返回 -1（调用方按「无效」保守处理） */
+    /** 解析为绝对到期毫秒；解析失败返回 -1（调用方按「无效」保守处理）。
+     *  2026-10-08 起新写入用「exp:<毫秒时间戳>」（绝对时间，重载不重算 → 不再自动续期）；
+     *  旧格式（相对时长「1m」、绝对日期「2026年7月9日」）仍按解析时刻重算。 */
     private long expireOf(String v) {
+        if (v != null && v.startsWith("exp:")) {
+            try {
+                return Long.parseLong(v.substring(4).trim());
+            } catch (NumberFormatException e) {
+                return -1L;
+            }
+        }
         try {
             return DurationParser.parseToExpireMs(v);
         } catch (Exception e) {
             return -1L;
         }
+    }
+
+    /** 把绝对到期毫秒序列化成存储值 */
+    private static String expStore(long ms) {
+        return "exp:" + ms;
+    }
+
+    /** 显示到期时间（人类可读） */
+    private String expDisplay(String v) {
+        long e = expireOf(v);
+        return e > 0 ? fmt(e) : "无法解析(" + v + ")";
     }
 
     private String defaultDuration() {
@@ -514,7 +575,7 @@ public class OpWhiteListManager implements Listener {
                 apply();
                 sender.sendMessage(cfg == null
                         ? "§c重载完成，但配置解析失败（详见控制台告警）"
-                        : "§a重载完成：§f" + (isEnabled() ? "启用" : "停用")
+                        : "§a重载完成：§f" + (isWhitelistActive() ? "启用" : "停用")
                         + "，无固定期限 " + permanentList().size()
                         + " 人，有固定期限 " + timedObject().size() + " 人");
                 sender.sendMessage("§7提示：原生 OP 只在插件【首次加载】时导入；之后请用 /opwl add 或改 json 加人");
@@ -529,7 +590,7 @@ public class OpWhiteListManager implements Listener {
             return;
         }
         boolean readOnly = "list".equals(sub);
-        if (!isEnabled() && !readOnly) {
+        if (!isWhitelistActive() && !readOnly) {
             sender.sendMessage("§cOP白名单已停用（「启用状态」= false），先启用再操作");
             return;
         }
@@ -554,6 +615,10 @@ public class OpWhiteListManager implements Listener {
                 saveConfig();
                 lastWarn.remove(name.toLowerCase(Locale.ROOT));
                 boolean ok = setOpNow(name);
+                if (ok) {
+                    notifyOpChange(name, true,
+                            moved ? "长期OP（原临时授权已转为永久）" : "长期OP（无固定期限）");
+                }
                 sender.sendMessage("§a已添加 §f" + name + " §a为无固定期限授权"
                         + (moved ? "（已把原临时授权转为永久）" : "")
                         + (ok ? "，OP 已授予" : "（玩家不在本机档案中，上线时自动授予）"));
@@ -586,12 +651,20 @@ public class OpWhiteListManager implements Listener {
                     return;
                 }
                 removePermanent(name);
-                timedObject().addProperty(timedKeyOf(name), dur);
+                // 2026-10-08 修复：存绝对到期时间（exp: 前缀），重载不再重算 → 不再自动续期
+                timedObject().addProperty(timedKeyOf(name), expStore(exp));
                 saveConfig();
                 lastWarn.remove(name.toLowerCase(Locale.ROOT));
+                boolean wasOp = isOpNow(name);
                 boolean ok = setOpNow(name);
-                sender.sendMessage("§a已给 §f" + name + " §a添加临时授权 §7（时长 " + dur
-                        + "，到期 " + fmt(exp) + "）" + (ok ? "，OP 已授予" : "，上线时自动授予"));
+                if (ok) {
+                    notifyOpChange(name, true,
+                            wasOp ? "临时OP（续期，到期 " + fmt(exp) + "）"
+                                  : "临时OP（新授予，到期 " + fmt(exp) + "）");
+                }
+                sender.sendMessage("§a已给 §f" + name + " §a添加临时OP §7（时长 " + dur
+                        + "，到期 " + fmt(exp) + "，已固化为绝对时间、不再续期）"
+                        + (ok ? "，OP 已授予" : "，上线时自动授予"));
                 return;
             }
             case "removetime": {
@@ -631,13 +704,16 @@ public class OpWhiteListManager implements Listener {
                 if (newExp <= System.currentTimeMillis()) {
                     removeTimed(name);
                     saveConfig();
-                    setOpByName(name, false);
-                    sender.sendMessage("§a扣减后 " + name + " 的授权已到期，条目已移除，OP 已撤销");
+                    if (isOpNow(name)) {
+                        setOpByName(name, false);
+                        notifyOpChange(name, false, "临时OP被扣减至到期，已撤销");
+                    }
+                    sender.sendMessage("§a扣减后 " + name + " 的临时OP已到期，条目已移除，OP 已撤销");
                 } else {
-                    String s = fmt(newExp);
-                    timedObject().addProperty(timedKeyOf(name), s);
+                    // 2026-10-08：扣减后写回 exp: 绝对时间（不再存解析后的日期字符串）
+                    timedObject().addProperty(timedKeyOf(name), expStore(newExp));
                     saveConfig();
-                    sender.sendMessage("§a" + name + " 到期时间已调整为 §f" + s
+                    sender.sendMessage("§a" + name + " 到期时间已调整为 §f" + fmt(newExp)
                             + " §7（剩余 " + human(newExp - System.currentTimeMillis()) + "）");
                 }
                 return;
@@ -653,6 +729,9 @@ public class OpWhiteListManager implements Listener {
                 saveConfig();
                 boolean wasOp = isOpNow(name);
                 setOpByName(name, false);
+                if (wasOp) {
+                    notifyOpChange(name, false, inTimed ? "临时OP被移除" : "长期OP被移除");
+                }
                 lastWarn.remove(name.toLowerCase(Locale.ROOT));
                 if (!inPerm && !inTimed && !wasOp) {
                     sender.sendMessage("§e" + name + " 本就不在白名单中，也没有 OP");
@@ -671,7 +750,7 @@ public class OpWhiteListManager implements Listener {
                 sender.sendMessage("§e===== OP白名单（接管原生 OP） =====");
                 sender.sendMessage("§7配置: §fOP白名单/" + (watched != null ? watched.getName() : "?")
                         + " §7| 状态: "
-                        + (isEnabled() ? "§a启用" : "§c停用")
+                        + (isWhitelistActive() ? "§a启用" : "§c停用")
                         + " §7| 解析: " + (parseFailed ? "§c失败" : "§a正常"));
                 JsonArray pu = permanentList();
                 StringBuilder sb = new StringBuilder("§e无固定期限(" + pu.size() + "): ");
@@ -710,8 +789,51 @@ public class OpWhiteListManager implements Listener {
                         + (illegal.isEmpty() ? "§a无" : "§c" + String.join("§7, §c", illegal)));
                 return;
             }
+            case "check": {
+                // 仅注册校验（不查白名单）：供 Main 侧 /op 放行判断
+                if (args.length < 2) {
+                    sender.sendMessage("§e用法: §f/opwl check <玩家> §7（仅查本服注册，不查白名单）");
+                    return;
+                }
+                String name = args[1].trim();
+                boolean reg = isRegistered(name);
+                sender.sendMessage((reg ? "§a" : "§c") + name + " "
+                        + (reg ? "是本服注册用户" : "不是本服注册用户（/op 放行将拦截）"));
+                return;
+            }
             default:
                 sendHelp(sender);
+        }
+    }
+
+    // ================= 上下任提示（当事人视角） =================
+
+    /** 提示当事人 OP 上任/卸任。在线直发；离线暂存 pendingMsg，上线时补发。 */
+    public void notifyOpChange(String name, boolean isGrant, String what) {
+        if (name == null || name.isEmpty()) return;
+        Player p = Bukkit.getPlayerExact(name);
+        String msg = isGrant
+                ? "§a[OP白名单] 你已获得 §f" + what + "§a。"
+                : "§c[OP白名单] 你的 §f" + what + " §c已撤销，OP 权限已收回。";
+        if (p != null) {
+            p.sendMessage(msg);
+        } else {
+            java.util.List<String> buf = pendingMsg.computeIfAbsent(
+                    name.toLowerCase(Locale.ROOT), k -> new java.util.ArrayList<>());
+            if (buf.size() >= 2) buf.remove(0);
+            buf.add(msg);
+            plugin.getLogger().info("[OP白名单] 离线暂存提示给 " + name + ": " + stripColor(msg));
+        }
+    }
+
+    /** 上线时投递暂存的提示 */
+    public void flushPendingMsgs(Player p) {
+        if (p == null) return;
+        java.util.List<String> buf =
+                pendingMsg.remove(p.getName().toLowerCase(Locale.ROOT));
+        if (buf == null || buf.isEmpty()) return;
+        for (String m : buf) {
+            p.sendMessage(m);
         }
     }
 
@@ -763,7 +885,8 @@ public class OpWhiteListManager implements Listener {
             long now = System.currentTimeMillis();
             if (e > 0) {
                 s.sendMessage("§7  类型: §f临时 §7到期 §f" + fmt(e)
-                        + (e > now ? " §7(剩 " + human(e - now) + ")" : " §c(已过期，OP 会被撤销)"));
+                        + (e > now ? " §7(剩 " + human(e - now) + ")" : " §c(已过期，OP 会被撤销)")
+                        + (t.startsWith("exp:") ? "" : " §8(旧格式，下次修改后固化为绝对时间)"));
             } else {
                 s.sendMessage("§7  类型: §f临时 §c（到期时间无法解析: " + t + "，OP 会被撤销）");
             }
@@ -782,6 +905,9 @@ public class OpWhiteListManager implements Listener {
         s.sendMessage("§f/opwl remove <玩家> §7- 移除授权并撤销其 OP");
         s.sendMessage("§f/opwl list [玩家] §7- 查看白名单 / 非法持有者 / 单人状态");
         s.sendMessage("§f/opwl reload §7- 重载配置");
+        s.sendMessage("§f/opwl check <玩家> §7- 仅查本服注册（/op 放行判断用，不查白名单）");
+        s.sendMessage("§7上下任提示: 临时/长期 OP 授予或撤销时当事人会收到提示（离线者上线时补发）");
+        s.sendMessage("§7临时OP 到期时间固化为绝对时间（exp: 前缀），重载不会续期");
         s.sendMessage("§7配置目录: plugins/Sdf1_login/OP白名单/（独立目录，白名单 json 全在里面）");
         s.sendMessage("§7扫描节奏: 每 15 秒一次文件指纹热重载 + 整点(:15/:30/:45)定点扫描/补授权");
         s.sendMessage("§7注册限制: /opwl add 只授权本服注册用户；非注册请改 json（强制手段，不查注册）");

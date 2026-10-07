@@ -3526,9 +3526,10 @@ public class Main extends JavaPlugin
         p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
     }
 
-    // ★ 拦截控制台 /op（及 /minecraft:op）：OP 白名单已接管原生 OP，
-    //   原生 /op 给的人若不在白名单，会在下个整点扫描被撤销 + 报警。
-    //   提示控制台改用 /opwl add <玩家> 或编辑 OP白名单/opwl.json（强制手段，不查注册）。
+    // ★ /op 拦截（2026-10-08 第四轮）：按「启用状态」分支
+    //   true  → 全拦（含已有 OP 玩家在游戏内 /op 给别人的直授路径），引导 opwl add / 改 json；
+    //   false → 放开 /op，只做注册用户真实性校验：目标不是本服注册用户就拦下
+    //           （防「后面这个玩家真的来了却自动获得 OP」），注册了就放行。
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onConsoleOpGuard(org.bukkit.event.server.ServerCommandEvent e) {
         if (e.isCancelled()) return;
@@ -3539,17 +3540,45 @@ public class Main extends JavaPlugin
             raw = raw.substring(10);
             lower = lower.substring(10);
         }
-        // 仅拦「op <玩家>」；op 单独或 /op list 不拦（让原版自己处理）
+        // 仅拦「op <玩家>」；op 单独（查列表）不拦
         if (!lower.equals("op") && !lower.startsWith("op ")) return;
         String[] p = raw.split("\\s+", 2);
         if (p.length < 2 || p[1].trim().isEmpty()) return; // 无参数，放行给原版
-        e.setCancelled(true);
-        CommandSender cs = e.getSender();
-        cs.sendMessage("§c§l[OP白名单] §f原生 /op 已被接管，请改用：");
-        cs.sendMessage("§f  · 控制台 §e/opwl add <玩家> §7（仅本服注册用户）");
-        cs.sendMessage("§f  · 直接编辑 §eplugins/Sdf1_login/OP白名单/opwl.json §7（强制手段，不查注册）");
-        cs.sendMessage("§715 秒内文件指纹变化自动热重载；整点(:15/:30/:45)定点扫描/补授");
-        getLogger().info("[OP白名单] 拦截控制台 /op " + p[1].trim() + " → 引导到 opwl add / 改 json");
+        String target = p[1].trim();
+
+        boolean enabled = opWhiteListMgr != null
+                && opWhiteListMgr.isEnabled();
+        if (enabled) {
+            // 启用：全拦，引导白名单通道
+            e.setCancelled(true);
+            CommandSender cs = e.getSender();
+            cs.sendMessage("§c§l[OP白名单] §f白名单已接管原生 OP，请改用：");
+            cs.sendMessage("§f  · 控制台 §e/opwl add <玩家> §7（仅本服注册用户）");
+            cs.sendMessage("§f  · 直接编辑 §eplugins/Sdf1_login/OP白名单/opwl.json §7（强制手段，不查注册）");
+            getLogger().info("[OP白名单] 拦截 /op " + target + " → 引导到 opwl add / 改 json");
+            return;
+        }
+        // 未启用：只做注册真实性校验
+        if (!isRegisteredPlayer(target)) {
+            e.setCancelled(true);
+            CommandSender cs = e.getSender();
+            cs.sendMessage("§c[OP校验] §f" + target + " §c不是本服注册用户，禁止授予 OP。");
+            cs.sendMessage("§7若其将来登录会触发注册，届时可再授权。");
+            getLogger().info("[OP校验] /op " + target + " 被拦：非本服注册用户");
+        }
+    }
+
+    /** 查目标是不是本服注册用户（OP 校验用；db 未就绪时保守返回 true 放行给原版处理） */
+    private boolean isRegisteredPlayer(String name) {
+        if (name == null || name.isEmpty()) return true;
+        try {
+            DatabaseManager db2 = getDb();
+            if (db2 == null) return true;
+            return db2.userExistsIgnoreCase(name);
+        } catch (Throwable t) {
+            getLogger().warning("[OP校验] 注册查询异常，放行: " + t.getMessage());
+            return true;
+        }
     }
 
     // ★ 拦截原版 /ban、/ban-ip 命令，补充广播封禁警告（覆盖永久/临时封禁）
