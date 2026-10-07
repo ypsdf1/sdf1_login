@@ -4744,7 +4744,11 @@ public class WebManager {
 
             // ★ 无变化静默：对比商品数量和内容hash
             String currentHash = items.size() + ":" + items.hashCode();
-            if (currentHash.equals(lastShopDataHash)) return; // 无变化，跳过
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）：
+            //   PHP 库被清空后 currentHash 仍等于上次成功推送的值 → 旧逻辑在这里永久短路，
+            //   表现为日志每轮打「补推N」却永远发不出去，shop_items 一直缺行。
+            boolean alignNeedsPushShop = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushShop && currentHash.equals(lastShopDataHash)) return; // 无变化，跳过
             // ★ 关键修复：hash 成功后才提交（防假成功，见 syncUserRegistrations 注释）
 
             // 构建请求数据
@@ -6519,7 +6523,9 @@ public class WebManager {
 
             // ★ 无变化静默：对比债券数据hash
             String currentHash = bonds.size() + ":" + bonds.hashCode();
-            if (currentHash.equals(lastBondBalanceHash)) return; // 无变化，跳过
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
+            boolean alignNeedsPushBonds = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushBonds && currentHash.equals(lastBondBalanceHash)) return; // 无变化，跳过
             // ★ 关键修复：hash 成功后才提交（防假成功，见 syncUserRegistrations 注释）
 
             String token = generateAndSyncToken("system", "sync");
@@ -7289,7 +7295,10 @@ public class WebManager {
 
             // ★ 无变化静默：对比MD5 hash，避免无效网络请求
             String currentHash = syncData.toString().hashCode() + "_" + syncData.size();
-            if (currentHash.equals(lastUserRegistrationHash)) return; // 无变化，跳过
+            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）：
+            //   PHP 库被清空后本地数据没变 → hash 相等 → 旧逻辑永久短路，永不补推。
+            boolean alignNeedsPushUsers = arAlign != null && arAlign.needPush();
+            if (!alignNeedsPushUsers && currentHash.equals(lastUserRegistrationHash)) return; // 无变化，跳过
             // ★ 关键修复：hash 不在这里提交！只有【PHP 明确返回 success=true】才提交。
             //   否则密钥错/网络断/500 时 hash 已被写脏，这份数据永远不会重推，
             //   表现为"日志显示已同步 N 人，PHP 端却是 0 条"的假成功（2026-10-04 实测）。
@@ -8029,50 +8038,30 @@ public class WebManager {
             ipRows.add(r0);
         }
         AlignResult arAlign = alignGate("ips", ipRows);
-        if (arAlign != null && !arAlign.needPush()) return;
-        if (arAlign != null && arAlign.pulled > 0) return;   // 本轮只收不发
-        // 有缺口 → 本轮推全量（跳过 ipCache 增量过滤）；needSync 不能重新赋值，
-        // 它被后面的匿名内部类引用，必须保持 effectively final
-        final boolean forceFullIpPush = (arAlign != null && arAlign.needPush());
-
-
-
-        // 收集需要同步的玩家
-        List<Map<String, Object>> needSync = new ArrayList<>();
-        ConcurrentHashMap<String, String> newSnapshot = new ConcurrentHashMap<>();
-
-        for (Map<String, Object> user : allUsers) {
-            String name = (String) user.get("player_name");
-            if (name == null || name.isEmpty()) continue;
-
-            String ip = (String) user.get("ip_address");
-            if (ip == null) ip = "";
-
-            // 获取玩家当前IP（从login.db的ip_address或register_ip）
-            // ip_address 是玩家登录后Java记录的最新IP
-            String currentIp = dbMgr.getField(name, "ip_address") != null ? String.valueOf(dbMgr.getField(name, "ip_address")) : null;
-            if (currentIp == null || currentIp.isEmpty()) {
-                // 如果 ip_address 为空，尝试 register_ip
-                currentIp = (String) user.get("register_ip");
-            }
-            if (currentIp == null || currentIp.isEmpty()) {
-                currentIp = "";
-            }
-            // 如果 IP 是空字符串，跳过
-            if (currentIp.isEmpty()) continue;
-
-            String[] cached = ipCache.get(name);
-            if (!forceFullIpPush && cached != null && "0".equals(cached[1]) && currentIp.equals(cached[0])) {
-                // IP已同步且未变化，跳过（对账发现缺口时不吃这个缓存，直接全量推）
-                continue;
-            }
-
-            Map<String, Object> pInfo = new LinkedHashMap<>();
-            pInfo.put("name", name);
-            pInfo.put("ip", currentIp);
-            needSync.add(pInfo);
+        if (arAlign == null) {
+            // ★ 对账没做成（PHP 无答复/报错）→ 本轮不推不收，下轮重试，绝不回退全量硬推
+            return;
         }
+        if (!arAlign.needPush()) return;   // 两边一致 → 零发送
+        if (arAlign.pulled > 0) return;    // 本轮只收不发
 
+        // ★ 2026-10-06 只推对账裁决出的差集（missing + 本机改过的 changed），绝不全量硬推。
+        //   旧版 forceFullIpPush 一旦发现缺口就跳过 ipCache 增量过滤、把本机全部 IP
+        //   整包重推给 PHP —— 这就是日志里「全量推送 ip」的来源（生产实测：missing=0、
+        //   changed=110 却推了 609 条）。对账本身就是全量比对，缺哪条补哪条即可。
+        AlignCfg ipsCfg = ALIGN_CFGS.get("ips");
+        Map<String, Map<String, Object>> ipsByKey = new LinkedHashMap<>();
+        if (ipsCfg != null) {
+            for (Map<String, Object> row : ipRows) {
+                String k = alignKeyOf(ipsCfg, row);
+                if (!k.isEmpty()) ipsByKey.put(k, row);
+            }
+        }
+        List<Map<String, Object>> needSync = new ArrayList<>();
+        for (String k : arAlign.pushKeys) {
+            Map<String, Object> row = ipsByKey.get(k);
+            if (row != null) needSync.add(row);
+        }
         if (needSync.isEmpty()) return;
 
         // 构建JSON并推送到PHP端
@@ -8092,7 +8081,8 @@ public class WebManager {
                 try {
                     String resp = doPost(webBaseUrl + "/api/sync.php?action=sync_player_ips", jsonBody);
                     if (resp != null && resp.contains("\"success\":true")) {
-                        plugin.getLogger().info("[Web通信] 全量同步" + needSync.size() + "个玩家IP到PHP端");
+                        plugin.getLogger().info("[Web通信] 对账补推 " + needSync.size() + "/" + ipRows.size()
+                                + " 个玩家IP到PHP端（PHP 侧共 " + arAlign.phpCount + " 条）");
                         // 标记为已同步
                         for (Map<String, Object> p : needSync) {
                             String name = (String) p.get("name");
