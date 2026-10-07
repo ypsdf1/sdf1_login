@@ -4169,6 +4169,44 @@ public class WebManager {
                 new String[]{"target", "ban_type", "reason", "source", "expire_time"},
                 new String[]{"expire_time"},
                 alignMap("ban_type", "type", "expire_time", "expire"), true, false));
+        // —— 领地数据（PHP web_area_lands；游戏内 area_lands 为唯一权威）——
+        //   pull=false：Web 后台的领地改动不回流 Java（与改造前一致）。
+        //   pushOnExtra=true：PHP 多出的行（游戏里已删 / 后台自建）→ 触发一次整包推，
+        //   由 sync_lands 的「name NOT IN」退侧清掉 → 完成「多退」；「少补」靠 missing。
+        //   ★ 指纹 = 两端列交集 72 列：排除 PHP 独有的 synced_at/admin_changed/area_size/
+        //     clear_all_bad_effects（PHP 每轮写入都会变 → 恒 changed）与 Java 独有的
+        //     create_cost/deny_farmland_trample/deny_ender_teleport（PHP 无此列）。
+        //   ★ warp_x/y/z/yaw/pitch 是 REAL，必须放进 intcols：Java String.valueOf(1.0)="1.0"
+        //     而 PHP (string)1.0="1" → 若按文本比对每轮恒 changed；两端都按整数截断
+        //     （alignCanonVal/alignmentCanonVal 双端同款）才严格一致，warp_world 是文本列。
+        ALIGN_CFGS.put("lands", new AlignCfg("lands",
+                new String[]{"id"},
+                new String[]{
+                "id", "name", "owner", "world", "x1", "z1",
+                "x2", "z2", "y_min", "y_max", "confiscate_items", "deny_use_items",
+                "give_effects", "clear_effects", "clear_all_bad", "punish_commands", "deny_block_place", "deny_block_break",
+                "deny_container", "deny_pvp", "deny_fall_damage", "deny_hunger", "deny_all_damage", "deny_drop",
+                "deny_mount", "deny_ender_pearl", "deny_bow", "deny_potion", "deny_explosion", "deny_raid",
+                "deny_fire_spread", "deny_all_effects", "deny_item_frame", "deny_move", "deny_pickup", "deny_fire",
+                "peace_mode", "peace_mode_duration", "peace_whitelist", "enforce_game_mode", "mode_exempt", "enter_msg",
+                "leave_msg", "confiscate_msg", "enable_announce", "announce_template", "txt_content", "created_at",
+                "deny_thrown_projectiles", "deny_glowing", "deny_redstone_interaction", "deny_door_interaction", "deny_noteblock_jukebox", "deny_lead",
+                "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding", "warp_x", "warp_y", "warp_z",
+                "warp_yaw", "warp_pitch", "warp_world", "deny_mob_attack", "is_public_building", "deny_fluid",
+                "allow_visitor_teleport", "deny_entity_interact", "deny_sign_edit", "deny_spawn_egg", "deny_wax", "bad_effects"
+                },
+                new String[]{
+                "id", "x1", "z1", "x2", "z2", "y_min",
+                "y_max", "clear_all_bad", "deny_block_place", "deny_block_break", "deny_container", "deny_pvp",
+                "deny_fall_damage", "deny_hunger", "deny_all_damage", "deny_drop", "deny_mount", "deny_ender_pearl",
+                "deny_bow", "deny_potion", "deny_explosion", "deny_raid", "deny_fire_spread", "deny_all_effects",
+                "deny_item_frame", "deny_move", "deny_pickup", "deny_fire", "peace_mode", "peace_mode_duration",
+                "enable_announce", "created_at", "deny_thrown_projectiles", "deny_glowing", "deny_redstone_interaction", "deny_door_interaction",
+                "deny_noteblock_jukebox", "deny_lead", "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding", "warp_x",
+                "warp_y", "warp_z", "warp_yaw", "warp_pitch", "deny_mob_attack", "is_public_building",
+                "deny_fluid", "allow_visitor_teleport", "deny_entity_interact", "deny_sign_edit", "deny_spawn_egg", "deny_wax"
+                },
+                alignMap(), false, true));
         // —— 在线玩家：PHP 端是「整表重建」，PHP 比 Java 多的行（人已下线）必须靠一次推送清掉
         //    所以 extra 也要触发推送；指纹只比「谁在线」，login_time 每次都变不能进指纹 ——
         ALIGN_CFGS.put("online", new AlignCfg("online",
@@ -5107,7 +5145,14 @@ public class WebManager {
             syncBans();
             syncAdmins();
 
-            if (currentHash.equals(lastLandDataHash)) {
+            // ★ 双向对账（多退少补）：PHP 数据齐全就不推 —— 消除「重启必整包推」
+            //   （lastLandDataHash 是内存字段，重启清零，旧逻辑每次开服必整包一次）。
+            //   对账无答复（alignTimeout）时 needPush()==false → 同样不推，符合「本轮不推不收」；
+            //   只有对账请求本身没做成（返回 null）才回退本地 hash 判断，行为与改造前一致。
+            AlignResult arLands = alignGate("lands", lands);
+            if (arLands != null && !arLands.needPush()) return;
+            // 走到这里：要么对账明确要求补推（本地 hash 相等也不得拦截），要么对账没做成
+            if (arLands == null && currentHash.equals(lastLandDataHash)) {
                 // ★ hash未变化，静默跳过（但首次运行或强制刷新时会同步）
                 return;
             }
@@ -10321,10 +10366,22 @@ public class WebManager {
                 return;
             }
             String json = sm.buildCatalogJson();
+
+            // ★ 双向对账（多退少补）：复用 "shop" 配置（同表 shop_items、同键 id、
+            //   同指纹列 id/category/display_name/material/buy_price/sell_price），与
+            //   syncShopData 共用一套对账状态 —— 两边同源于 shop/*.md，且 alignGate 的
+            //   changed 只在「Java 自己的指纹变过」时才推（pull=false），两个推送源
+            //   不会互相覆盖。PHP 齐全 → 不推（消除「重启必整包推」）；PHP 缺行 → 补推；
+            //   对账没做成或目录行解析不出来 → 回退本地 hash，行为与改造前一致。
+            List<Map<String, Object>> rows = buildShopCatalogRows(json);
+            AlignResult arCat = rows.isEmpty() ? null : alignGate("shop", rows);
+            boolean alignNeedPushCat = arCat != null && arCat.needPush();
+
             // ★ 无变化静默：目录只由 Java 写（PHP 的 set_shop_catalog 只 upsert 目录字段，
             //   库存/管理员价走独立列），内容没变就别每轮整包硬推 —— 这是「无脑推」大户之一。
+            //   对账明确要补推时本地 hash 不得短路（PHP 被清空后本地没变也要推，同 syncShopData）。
             String catalogHash = json.length() + ":" + json.hashCode();
-            if (catalogHash.equals(lastShopCatalogHash)) return;
+            if (!alignNeedPushCat && catalogHash.equals(lastShopCatalogHash)) return;
             String urlStr = webBaseUrl + "/api/sync.php?action=set_shop_catalog&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             String resp = doPost(urlStr, json);
@@ -10337,6 +10394,44 @@ public class WebManager {
         } catch (Exception e) {
             plugin.getLogger().warning("[商品同步] 推送商品目录失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 从商品目录 JSON 构造对账行（字段名必须与 "shop" 对账配置 / PHP shop_items 一致）。
+     * 解析不出来返回空列表 —— 调用方按「对账没做成」回退本地 hash，不误判。
+     */
+    private static List<Map<String, Object>> buildShopCatalogRows(String json) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        try {
+            Map<String, Object> root = parseJson(json);
+            Object cats = root.get("categories");
+            if (!(cats instanceof List)) return rows;
+            for (Object c : (List<?>) cats) {
+                if (!(c instanceof Map)) continue;
+                Map<?, ?> cat = (Map<?, ?>) c;
+                String catName = strOf(cat.get("name"));
+                if (catName.isEmpty()) continue;
+                Object items = cat.get("items");
+                if (!(items instanceof List)) continue;
+                for (Object o : (List<?>) items) {
+                    if (!(o instanceof Map)) continue;
+                    Map<?, ?> it = (Map<?, ?>) o;
+                    String id = strOf(it.get("id"));
+                    if (id.isEmpty()) continue;
+                    Map<String, Object> r = new LinkedHashMap<>();
+                    r.put("id", id);
+                    r.put("category", catName);
+                    r.put("display_name", strOf(it.get("display_name")));
+                    r.put("material", strOf(it.get("material")));
+                    r.put("buy_price", it.get("buy_price"));
+                    r.put("sell_price", it.get("sell_price"));
+                    rows.add(r);
+                }
+            }
+        } catch (Throwable t) {
+            // 解析失败 → 空列表，调用方回退本地 hash 判断
+        }
+        return rows;
     }
 
     /**
