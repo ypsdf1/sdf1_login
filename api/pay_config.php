@@ -168,10 +168,11 @@ if (!function_exists('payComposeOrderNo')) {
     function payComposeOrderNo($tpl, $codeLen, $name) {
         $tokens = preg_split('/[+\-\x{FF0B}\x{FF0D}]/u', (string)$tpl);
         if (!is_array($tokens) || count($tokens) === 0) return null;
-        $pre = '';
-        $post = '';
-        $hasName = false;
-        $seenName = false;
+        $pre = '';         // 玩家名之前的段落
+        $post = '';        // 玩家名之后的段落
+        $withName = false; // 组合里含玩家名变量（payGuardLen 据此裁剪）
+        $afterName = false; // 已越过玩家名位置
+        $valid = false;
         foreach ($tokens as $t) {
             $t = trim($t);
             if ($t === '') continue;
@@ -182,19 +183,21 @@ if (!function_exists('payComposeOrderNo')) {
                 $seg = date('YmdHis');
             } elseif (strpos($t, '验证码') !== false || strpos($t, '校验码') !== false || $tl === 'ordcode') {
                 $seg = payRandomCode($codeLen);
-            } elseif (!$seenName && (strpos($t, '玩家') !== false || strpos($t, '用户') !== false || $tl === 'username')) {
-                $seg = $name;
-                $seenName = true;
-                $hasName = true;
+            } elseif (!$afterName && !$withName
+                      && (strpos($t, '玩家') !== false || strpos($t, '用户') !== false || $tl === 'username')) {
+                // 玩家名段：本身由 payGuardLen 统一拼装，这里只切换分段状态（重复的玩家名变量忽略）
+                $withName = true;
+                $afterName = true;
+                $valid = true;
+                continue;
             } else {
-                continue; // 未知变量（或重复的玩家名变量）忽略
+                continue; // 未知变量忽略
             }
-            if ($hasName && !$seenNamePre) { /* 不可达，占位说明见下 */ }
-            if ($seenName && $seg === $name && !$pre_done) { /* 见下方简化实现 */ }
-            $pre .= $seg; // 简化：玩家名段直接参与拼接（下方按占位重算位置）
+            if ($afterName) $post .= $seg; else $pre .= $seg;
+            $valid = true;
         }
-        if ($pre === '') return null;
-        return array($pre, '', false);
+        if (!$valid) return null;
+        return array($pre, $post, $withName);
     }
 }
 
