@@ -2501,7 +2501,7 @@ function syncPlayerIps() {
             $newIp = $player['ip'];
 
             // 检查该玩家是否有历史IP记录
-            $stmt = $db->prepare("SELECT old_ip, synced_at FROM player_ip_changes WHERE player_name = :player");
+            $stmt = $db->prepare("SELECT new_ip, old_ip, synced_at FROM player_ip_changes WHERE player_name = :player");
             $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
             $result = $stmt->execute();
             $row = $result->fetchArray(SQLITE3_ASSOC);
@@ -2509,14 +2509,14 @@ function syncPlayerIps() {
             $hasChanged = false;
             if (!$row) {
                 $hasChanged = true;
-            } elseif ($row['old_ip'] !== $newIp) {
+            } elseif ($row['new_ip'] !== $newIp) {
                 $hasChanged = true;
             }
 
             if ($hasChanged) {
                 $stmt = $db->prepare("INSERT OR REPLACE INTO player_ip_changes (player_name, old_ip, new_ip, changed_at, synced_at) VALUES (:player, :old, :new, :time, :synced)");
                 $stmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-                $stmt->bindValue(':old', $row ? $row['old_ip'] : '', SQLITE3_TEXT);
+                $stmt->bindValue(':old', $row ? $row['new_ip'] : '', SQLITE3_TEXT);
                 $stmt->bindValue(':new', $newIp, SQLITE3_TEXT);
                 $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
                 $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
