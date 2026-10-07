@@ -204,8 +204,10 @@ if (!function_exists('payComposeOrderNo')) {
 if (!function_exists('payMakeFixedOrderNo')) {
     /**
      * 固定订单号格式分支：前缀码 + 订单号格式模板。
-     *   模板 [] 去掉；纯数字 → 每个 0 换成随机数字（如 00000000 → 48392017）；
-     *   模板非纯数字或为空 → 回退保底 6 位递增序列 000001、000002…（持久化计数器防撞单）。
+     *   模板 [] 去掉；
+     *   - 纯数字（如 00000000）→ 按【模板位数】递增序列：00000001、00000002…
+     *     （计数器持久化在 db/pay_order_seq.txt，flock 防撞单；当前无订单则从 1 开始）；
+     *   - 非纯数字或为空 → 保底 6 位递增序列 000001、000002…。
      * @param array $cfg pay.md 配置区
      * @return string
      */
@@ -214,15 +216,11 @@ if (!function_exists('payMakeFixedOrderNo')) {
         $tpl = isset($cfg['订单号格式']) ? (string)$cfg['订单号格式'] : '';
         $tpl = str_replace(array('[', ']', "\u{FF3B}", "\u{FF3D}", ' ', "\t"), '', $tpl);
         if ($tpl !== '' && ctype_digit($tpl)) {
-            $out = '';
-            $n = strlen($tpl);
-            for ($i = 0; $i < $n; $i++) {
-                $out .= ($tpl[$i] === '0') ? (string)mt_rand(0, 9) : $tpl[$i];
-            }
-            $no = $p . $out;
+            // ★ 纯数字模板：按模板位数递增序列（00000000 → CYZJ00000001, CYZJ00000002…）
+            $no = payMakeSequentialOrderNo($tpl);
         } else {
             // 非纯数字模板（或空）→ 保底 6 位递增序列
-            $no = payMakeSequentialOrderNo();
+            $no = payMakeSequentialOrderNo('000000');
         }
         $max = defined('PAY_ORDER_MAX_LEN') ? (int)PAY_ORDER_MAX_LEN : 64;
         if ($max > 0 && strlen($no) > $max) $no = substr($no, 0, $max);
@@ -232,13 +230,16 @@ if (!function_exists('payMakeFixedOrderNo')) {
 
 if (!function_exists('payMakeSequentialOrderNo')) {
     /**
-     * 保底 6 位递增序列：前缀 + 000001、000002…（纯数字模板不可用时的固定格式回退）。
+     * 递增序列订单号：前缀 + 模板位数的序列（000001、000002…，默认 6 位）。
      * 计数器持久化在 db/pay_order_seq.txt（flock 排他锁读写改，防并发撞单）；
      * 计数器不可写时退化为「前缀+日期时间+3位随机」，保底不与历史单撞号。
+     *
+     * @param string $tpl 位数模板（纯数字，如 '00000000'），决定序列补零位数
      * @return string
      */
-    function payMakeSequentialOrderNo() {
+    function payMakeSequentialOrderNo($tpl = '000000') {
         $p = payOrderPrefix();
+        $width = strlen(ctype_digit($tpl) ? $tpl : '000000');
         $dir = dirname(__DIR__) . '/db';
         if (!is_dir($dir)) @mkdir($dir, 0755, true);
         $file = $dir . '/pay_order_seq.txt';
@@ -260,7 +261,7 @@ if (!function_exists('payMakeSequentialOrderNo')) {
         if ($n <= 0) {
             return $p . date('ymdHis') . str_pad((string)mt_rand(0, 999), 3, '0', STR_PAD_LEFT);
         }
-        return $p . str_pad((string)$n, 6, '0', STR_PAD_LEFT);
+        return $p . str_pad((string)$n, $width, '0', STR_PAD_LEFT);
     }
 }
 

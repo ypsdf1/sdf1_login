@@ -215,25 +215,37 @@ function pollPaidOrders() {
     //   仍不过滤 notify：平台可能已标记 notify=1 但本地 DB 未更新（HTTP 回调被
     //   CF WAF 拦截），是否补单以本地 pay_orders 状态为准。
     $prefix = $PLATFORM_DB_PREFIX;
-    // ★ 2026-10-06：扫描前缀改为读配置（原来写死 'RE'）
-    // ★ 2026-10-07：前缀第一来源改为站点根 pay.md「前缀码」；扫描改为「当前前缀+历史前缀」
-    //   双条件（payOrderPrefixLikeAny），手工改过前缀码后，改动前已生成的在途单仍能补回。
-    $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE (" . payOrderPrefixLikeAny() . ") AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
+    // ★ 2026-10-07 改为【定向补单】：不再按前缀批量扫平台共享库，
+    //   而是先取本地 pay_orders 里所有未补单(非 paid)的【完整订单号】，
+    //   再让平台只按这些完整订单号精确匹配。这样就算生产/测试共用 CYZJ 前缀，
+    //   测试服脚本也只会查它自己本地活跃的订单号，抓不到生产服的单。
+    $activeStmt = $sqlite->prepare("SELECT out_trade_no FROM pay_orders WHERE status != 'paid' AND out_trade_no IS NOT NULL AND out_trade_no != ''");
+    $activeStmt->execute();
+    $activeNos = array();
+    while ($a = $activeStmt->fetchArray(SQLITE3_ASSOC)) {
+        $activeNos[] = (string)$a['out_trade_no'];
+    }
+    if (empty($activeNos)) {
+        echo json_encode(['result' => 'no_local_active_orders']);
+        return;
+    }
+    // 平台侧按完整订单号精确匹配（IN 子句，最多取前 200 个，足够覆盖并发场景）
+    $activeNos = array_slice($activeNos, 0, 200);
+    $inList = "'" . implode("','", array_map('addslashes', $activeNos)) . "'";
+    $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE out_trade_no IN (" . $inList . ") AND status IN (1, 2)");
     $stmt->execute();
     $allOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     if (empty($allOrders)) {
-        echo json_encode(['result' => 'no_paid_orders_on_platform']);
+        echo json_encode(['result' => 'no_paid_orders_on_platform', 'active_local' => count($activeNos)]);
         return;
     }
 
-    // 只保留本方订单（前缀兜底校验，与创单端同一份配置），再过滤掉本地已处理(paid)的
+    // 只保留「本地确实在跟踪、且还没补单」的订单（二次过滤，防本地已被补单/已支付）
     $orders = [];
-    $foreign = 0;
     foreach ($allOrders as $o) {
         $outNo = (string)$o['out_trade_no'];
-        if (!payOrderIsOurs($outNo)) {
-            $foreign++;   // 非本方订单：不建单、不写流水、不改它的 notify
+        if (!in_array($outNo, $activeNos, true)) {
             continue;
         }
         $check = $sqlite->prepare("SELECT status FROM pay_orders WHERE out_trade_no = :no");
@@ -245,7 +257,7 @@ function pollPaidOrders() {
     }
 
     if (empty($orders)) {
-        echo json_encode(['result' => 'no_pending_orders', 'platform_paid_count' => count($allOrders), 'foreign_skipped' => $foreign]);
+        echo json_encode(['result' => 'no_pending_orders', 'active_local' => count($activeNos)]);
         return;
     }
 
@@ -337,7 +349,7 @@ function pollPaidOrders() {
         'result'   => 'ok',
         'processed' => $processed,
         'skipped'   => $skipped,
-        'foreign_skipped' => $foreign,
+        'foreign_skipped' => 0,
         'total'     => count($orders),
         'elapsed_ms' => $elapsed,
     ]);
