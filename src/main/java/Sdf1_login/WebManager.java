@@ -322,7 +322,6 @@ public class WebManager {
     private String lastLandDataHash = "";
     private String lastBansHash = "";
     private String lastAdminsHash = "";
-    private String lastPushCredentialsHash = "";
     private String lastUserRegistrationHash = "";
 
     // 嵌入式HTTP服务器（接收PHP回调）
@@ -8153,9 +8152,15 @@ public class WebManager {
                     cred.put("player_name", name);
                     cred.put("password_hash", hash);
                     cred.put("salt", salt);
+                    // ★ 指纹键（cfg.jf 口径，2026-10-07）：alignRowHash 按 password_salt/temp_password
+                    //   取值，只放推送键会让指纹 salt 段恒为 null→空串 → 对账永远 changed=全量、
+                    //   每轮整包硬推 611 条凭证（生产实测 changed=611 恒定）。双写两套键：
+                    //   salt/temp_password_hash 给 PHP 推送接收，password_salt/temp_password 给指纹。
+                    cred.put("password_salt", salt);
                     // ★ 如果有临时密码，也推送
                     if (tempHash != null && !tempHash.isEmpty()) {
                         cred.put("temp_password_hash", tempHash);
+                        cred.put("temp_password", tempHash);
                         cred.put("temp_pw_expire", tempExpire);
                     }
                     credentials.add(cred);
@@ -8165,24 +8170,38 @@ public class WebManager {
             // ★ 双向对账（多退少补）：凭证与 PHP 一致就不发；
             //   PHP 端改过密码（网页改密/重置）时把新凭证收回来
             AlignResult arAlign = alignGate("credentials", credentials);
-            if (arAlign != null && !arAlign.needPush()) return;
-            if (arAlign != null && arAlign.pulled > 0) {
+            if (arAlign == null) {
+                // 对账没做成（PHP 无答复/报错）→ 本轮不推不收，下轮重试，绝不回退全量硬推
+                return;
+            }
+            if (!arAlign.needPush()) return;
+            if (arAlign.pulled > 0) {
                 // 本轮只收不发，防止用对账前的旧密码把刚收回来的新密码覆盖掉
                 return;
             }
-
             if (credentials.isEmpty()) return;
 
-            // ★ 无变化静默
-            String currentHash = credentials.size() + ":" + credentials.hashCode();
-            // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
-            boolean alignNeedsPushCred = arAlign != null && arAlign.needPush();
-            if (!alignNeedsPushCred && currentHash.equals(lastPushCredentialsHash)) return;
+            // ★ 2026-10-07 只推对账裁决出的差集（missing + 本机改过的 changed），绝不整包硬推。
+            //   旧版对账一说要推就把全部 611 条凭证整包重发（生产实测每轮「已同步611人」）。
+            AlignCfg credCfg = ALIGN_CFGS.get("credentials");
+            Map<String, Map<String, Object>> credByKey = new LinkedHashMap<>();
+            if (credCfg != null) {
+                for (Map<String, Object> row : credentials) {
+                    String k = alignKeyOf(credCfg, row);
+                    if (!k.isEmpty()) credByKey.put(k, row);
+                }
+            }
+            List<Map<String, Object>> needCred = new ArrayList<>();
+            for (String k : arAlign.pushKeys) {
+                Map<String, Object> row = credByKey.get(k);
+                if (row != null) needCred.add(row);
+            }
+            if (needCred.isEmpty()) return;
 
             String secretKey = this.secretKey;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("secret", secretKey);
-            body.put("players", credentials);
+            body.put("players", needCred);
 
             String jsonBody = mapToJson(body);
             String response = httpPost("api/sync.php?action=push_web_credentials", jsonBody);
@@ -8190,8 +8209,8 @@ public class WebManager {
                 Map<String, Object> result = parseJson(response);
                 Boolean success = (Boolean) result.get("success");
                 if (Boolean.TRUE.equals(success)) {
-                    lastPushCredentialsHash = currentHash; // ← 成功后才落 hash
-                    plugin.getLogger().info("[Web通信] 密码凭证变更，已同步: " + credentials.size() + "人");
+                    plugin.getLogger().info("[Web通信] 对账补推 " + needCred.size() + "/" + credentials.size()
+                            + " 个凭证到PHP端（PHP 侧共 " + arAlign.phpCount + " 条）");
                 } else {
                     plugin.getLogger().warning("[Web通信] 密码凭证同步失败: " + response);
                 }
