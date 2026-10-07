@@ -1548,7 +1548,19 @@ function checkAlignment() {
         }
         $extra = array();
         foreach ($phpHash as $k => $h) {
-            if (!isset($javaHash[$k])) $extra[] = $k;
+            if (isset($javaHash[$k])) continue;
+            // ★ bans：已过期的封禁不算 extra（2026-10-07 Swight 死循环修复）。
+            //   Web 侧 web_player_bans 永久保留历史（含过期），而 Bukkit 的 getEntries()
+            //   不认过期封禁 → 这类行永远是「PHP 多 1 条」，Java 每轮拉回又立刻失效，
+            //   日志永远「收回1」收敛不到 0。过期行只跳过 extra，不从 phpHash 删除，
+            //   两边都有该 key 时的 changed/指纹比对不受影响。
+            if ($cat === 'bans' && isset($phpRows[$k])
+                && !empty($phpRows[$k]['expire_time'])) {
+                $et = (int)$phpRows[$k]['expire_time'];
+                if ($et > 1000000000000 || $et < -1000000000000) $et = (int)($et / 1000);
+                if ($et > 0 && $et <= time()) continue;
+            }
+            $extra[] = $k;
         }
 
         // ★ 2026-10-06 孤儿行清理（「多退少补」里的「退」）：
