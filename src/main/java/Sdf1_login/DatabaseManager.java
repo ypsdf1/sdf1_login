@@ -123,6 +123,15 @@ public class DatabaseManager {
             safeAdd(st, "twofa_recovery_codes",
                     "TEXT DEFAULT ''");
 
+            // ★ 一次性自愈：历史版本 setField(null) 曾把 temp_password
+            //   写成字面量 'null'，会让 credentials 指纹永久不一致、
+            //   对账每轮补推。启动时统一清回 SQL NULL。
+            try {
+                st.executeUpdate("UPDATE users SET temp_password=NULL "
+                        + "WHERE temp_password='null'");
+            } catch (SQLException ignored) {
+            }
+
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
             boolean hasOldTable = false;
@@ -923,6 +932,11 @@ public class DatabaseManager {
                 ps.setInt(1, (Integer) val);
             else if (val instanceof Long)
                 ps.setLong(1, (Long) val);
+            // ★ null 必须写 SQL NULL：走 String.valueOf(null) 会把
+            //   temp_password 写成字面量 'null'，两端指纹永不一致，
+            //   对账每轮恒定补推（2026-10-07 测试服 credentials 补推1 根因）
+            else if (val == null)
+                ps.setNull(1, java.sql.Types.VARCHAR);
             else
                 ps.setString(1,
                         String.valueOf(val));
