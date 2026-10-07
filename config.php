@@ -62,11 +62,9 @@ define('GAME_SHOP_DIR', 'REPLACE_ME_GAME_SHOP_DIR_PATH');
 // ===== Web子目录路径（如 /plugin 或 /test1，根目录则留空） =====
 define('WEBSUB_DIR', '/plugin');
 
-// ===== Java插件回调端口 =====
-define('CALLBACK_PORT', 9090);
-
-// ===== Java游戏服务器地址（PHP回调Java用） =====
-define('GAME_SERVER_HOST', '127.0.0.1');
+// ★ 2026-10-07：已删除「Java插件回调端口 CALLBACK_PORT」与「Java游戏服务器地址
+//   GAME_SERVER_HOST」两段 —— PHP→Java 从来只走 web.db 的 SQL 队列（四条共享队列表，
+//   Java 5 秒轮询消费），没有 PHP→Java 的 HTTP 调用，这两项是历史死配置（全库无引用）。
 
 // ===== 辅助函数：构建相对路径 =====
 function webPath($path = '') {

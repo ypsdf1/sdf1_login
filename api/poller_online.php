@@ -215,10 +215,10 @@ function pollPaidOrders() {
     //   仍不过滤 notify：平台可能已标记 notify=1 但本地 DB 未更新（HTTP 回调被
     //   CF WAF 拦截），是否补单以本地 pay_orders 状态为准。
     $prefix = $PLATFORM_DB_PREFIX;
-    // ★ 2026-10-06：扫描前缀改为读 config.php 的 PAY_ORDER_PREFIX（原来写死 'RE'）
-    $orderPrefix = payOrderPrefix();
-    $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE out_trade_no LIKE :pfx AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
-    $stmt->bindValue(':pfx', $orderPrefix . '%', PDO::PARAM_STR);
+    // ★ 2026-10-06：扫描前缀改为读配置（原来写死 'RE'）
+    // ★ 2026-10-07：前缀第一来源改为站点根 pay.md「前缀码」；扫描改为「当前前缀+历史前缀」
+    //   双条件（payOrderPrefixLikeAny），手工改过前缀码后，改动前已生成的在途单仍能补回。
+    $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, notify, param, version, addtime FROM `{$prefix}order` WHERE (" . payOrderPrefixLikeAny() . ") AND status IN (1, 2) ORDER BY addtime ASC LIMIT 50");
     $stmt->execute();
     $allOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

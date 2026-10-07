@@ -304,8 +304,9 @@ function handleSyncFromPlatform() {
         //   平台其他订单一概不碰。
         // ★ 2026-10-06：前缀改为读配置（原来写死 'RE'，测试服改前缀后这里不跟着改
         //   就会把生产服的单同步进来）。
-        $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE out_trade_no LIKE :pfx AND status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
-        $stmt->bindValue(':pfx', payOrderPrefixLike(), PDO::PARAM_STR);
+        // ★ 2026-10-07：前缀第一来源改为站点根 pay.md「前缀码」；扫描改为「当前前缀+历史前缀」
+        //   双条件（payOrderPrefixLikeAny），改过前缀码后在途老单仍能同步、不丢单。
+        $stmt = $pdo->prepare("SELECT out_trade_no, trade_no, uid, money, status, param, addtime FROM `pay_order` WHERE (" . payOrderPrefixLikeAny() . ") AND status IN (1, 2) ORDER BY addtime DESC LIMIT 200");
         $stmt->execute();
         $platformOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
