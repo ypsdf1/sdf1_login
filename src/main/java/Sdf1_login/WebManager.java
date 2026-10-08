@@ -2297,35 +2297,71 @@ public class WebManager {
      * 支持MC服务器和Web服务器不在同一台机器的场景
      */
     /**
+     * ★ 2026-10-08 补单提速：独立补单定时器（固定 5 秒一轮）。
+     *
+     * 补单原来只挂在合并定时器B / TimerA 周期批处理里，而这两条路各自都有「早退守卫」：
+     *   - Timer B：PHP 锁库退避、全员下线暂停 → 直接 return，补单被连带跳过；
+     *   - Timer A：每 5 轮才投一次，且投在单线程 db-worker 队列上（任务含 10~30 秒级 HTTP）；
+     *   - 两路再共用一次 15 秒限流。
+     * 三者叠加把实测触发节奏拖到 25~41 秒 → 平均要等约 15 秒才补到单（与用户实测吻合）。
+     * 这里拆出一条独立链路：不受锁库 / 下线 / 队列积压影响，固定节奏触发。
+     * poller 侧有 flock 进程锁 + 幂等去重，重复触发安全；security.php 对带正确
+     * SECRET_KEY 的 Java 调用不计数，5 秒一轮不会撞全局限流。
+     */
+    private void schedulePollerTick(long ticks) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                // 先自调度下一轮再执行本轮：即便 doGet 卡到超时，
+                // 补单节奏也不会被单次慢请求拖垮（服务端有 flock 防并发）
+                schedulePollerTick(POLLER_TICK_TICKS);
+                if (!enabled) {
+                    return;
+                }
+                triggerFastPoller("独立补单定时器");
+            }
+        }.runTaskLaterAsynchronously(plugin, ticks);
+    }
+
+    /**
+     * 触发一次补单。多个触发源（独立定时器 / 合并B / TimerA 批处理）共用 lastPollerTriggerTime
+     * 统一限流，保证任意时刻都不会并发打满 poller。
+     * @param from 触发来源，仅用于日志区分
+     */
+    private void triggerFastPoller(String from) {
+        long now = System.currentTimeMillis();
+        if (now - lastPollerTriggerTime <= POLLER_MIN_INTERVAL_MS) {
+            return;
+        }
+        lastPollerTriggerTime = now;
+        try {
+            String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            long pollerStart = System.currentTimeMillis();
+            String pollerResp = doGet(pollerUrl);
+            long pollerElapsed = System.currentTimeMillis() - pollerStart;
+
+            if (pollerResp != null) {
+                if (pollerResp.contains("\"result\":\"ok\"")) {
+                    plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms, 来源="
+                            + from + "): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
+                }
+            } else {
+                warnSlow("快速补单", "[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms, 来源=" + from);
+            }
+        } catch (Exception ignored) {
+            // 补单失败不影响交易拉取，静默忽略
+        }
+    }
+
+    /**
      * 检查PHP端是否有待处理交易（由合并定时器B调用）
      */
     private void doTransactionPollCheck() {
-        // ★ 2026-07-15 高频补单触发：合并B定时器每~5秒跑一次，顺带触发 poller 快速检测已支付订单
-        //    poller 内部有 flock 锁 + 幂等去重，多次调用安全
-        if (System.currentTimeMillis() - lastPollerTriggerTime > 15000) { // 限流15秒一次
-            lastPollerTriggerTime = System.currentTimeMillis();
-            try {
-                String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
-                        + java.net.URLEncoder.encode(secretKey, "UTF-8");
-                long pollerStart = System.currentTimeMillis();
-                String pollerResp = doGet(pollerUrl);
-                long pollerElapsed = System.currentTimeMillis() - pollerStart;
-
-                if (pollerResp != null) {
-                    if (pollerResp.contains("\"result\":\"ok\"")) {
-                        plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
-               /*     } else if (pollerResp.contains("\"result\":\"already_running\"")) {
-                        plugin.getLogger().info("[快速补单] 补单进程正在运行，跳过 (" + pollerElapsed + "ms)");
-                    } else {
-                        plugin.getLogger().warning("[快速补单] 补单返回: " + pollerResp.substring(0, Math.min(150, pollerResp.length())) + " (" + pollerElapsed + "ms)");*/
-                    }
-                } else {
-                    warnSlow("快速补单", "[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms");
-                }
-            } catch (Exception ignored) {
-                // 补单失败不影响交易拉取，静默忽略
-            }
-        }
+        // ★ 2026-07-15 高频补单触发：顺带触发 poller 快速检测已支付订单
+        //   poller 内部有 flock 锁 + 幂等去重，多次调用安全
+        // ★ 2026-10-08 补单提速：限流 15s → 4s，并由独立 5 秒定时器兜底触发
+        triggerFastPoller("合并B-交易");
 
         try {
             String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_transactions&secret="
@@ -2439,6 +2475,12 @@ public class WebManager {
         scheduleTimerC(240L + randC);
         scheduleTimerD(340L + randD);
         scheduleTimerE(440L + randE);
+        // ★ 2026-10-08 补单提速：独立补单定时器（5 秒一轮），
+        //   不受 Timer B 的锁库/下线早退、也不受 Timer A 的 db-worker 队列积压影响
+        if (!pollerTimerStarted) {
+            pollerTimerStarted = true;
+            schedulePollerTick(POLLER_TICK_TICKS);
+        }
         plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s E=" + (randE/20) + "s)");
     }
 
@@ -9147,7 +9189,13 @@ public class WebManager {
     private long lastPullBondChangesLog = 0;
     private long lastPollRegisterRequestsLog = 0;
     private long lastPollWebLoginExceptionLog = 0;
-    private long lastPollerTriggerTime = 0; // 补单触发限流（15秒间隔）
+    private long lastPollerTriggerTime = 0; // 补单触发限流（多触发源共用）
+    /** ★ 2026-10-08 补单提速：两次补单触发的最小间隔（原 15 秒，实测把到账拖到 15~30 秒） */
+    private static final long POLLER_MIN_INTERVAL_MS = 4000L;
+    /** ★ 独立补单定时器周期：100 tick = 5 秒 */
+    private static final long POLLER_TICK_TICKS = 100L;
+    /** 独立补单定时器只允许启动一条链（startMergedPolling 可能被多次调用） */
+    private boolean pollerTimerStarted = false;
     private static final long LOG_INTERVAL = 60000; // 1分钟内不重复打印相同日志
 
     /**

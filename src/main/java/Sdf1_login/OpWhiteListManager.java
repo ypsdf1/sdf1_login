@@ -64,6 +64,12 @@ public class OpWhiteListManager implements Listener {
     /** 报警节流：同一人 60 秒内不重复报警（防刷屏，但仍会撤销） */
     private static final long WARN_COOLDOWN_MS = 60_000L;
 
+    /** ★ 原版 ops.json 备份（2026-10-08 数据安全）：卸载 OP 前必须先留底。
+     *   NATIVE_OPS_PREFIX 用于让 pickJson() 把 ops.json 及其备份排除在配置之外；
+     *   NATIVE_OPS_BACKUP 是留底文件名（落在 OP白名单/ 目录内）。 */
+    private static final String NATIVE_OPS_PREFIX = "ops.json";
+    private static final String NATIVE_OPS_BACKUP = "ops.json.bak";
+
     private final Main plugin;
     private final File dir;
     /** 当前被读的 json（pickJson 的结果，命令写回也写它） */
@@ -123,9 +129,12 @@ public class OpWhiteListManager implements Listener {
 
     // ================= 配置读取 =================
 
-    /** 目录里任意一个 .json = 白名单文件；文件名按字典序取首个（确定性） */
+    /** 目录里任意一个 .json = 白名单文件；文件名按字典序取首个（确定性）。
+     *  ★ 2026-10-08：排除 ops.json 及其备份（ops.json*）——那是我们留底的原版 OP 名单，
+     *    结构与白名单完全不同，一旦被当成配置解析必然失败，进而误触发全量卸载。 */
     private File pickJson() {
-        File[] fs = dir.listFiles((d, n) -> n.toLowerCase(Locale.ROOT).endsWith(".json"));
+        File[] fs = dir.listFiles((d, n) -> n.toLowerCase(Locale.ROOT).endsWith(".json")
+                && !n.toLowerCase(Locale.ROOT).startsWith(NATIVE_OPS_PREFIX));
         if (fs == null || fs.length == 0) {
             return null;
         }
@@ -166,6 +175,9 @@ public class OpWhiteListManager implements Listener {
             cfg = o;
             if (parseFailed) {
                 plugin.getLogger().info("[OP白名单] 配置已恢复正常，恢复接管");
+                // ★ 数据第一优先级：卸载前备份的原版 ops.json 在此复原，
+                //   让当初被卸载的原版 OP 名单回到服务端（随后 apply() 按白名单再校准）
+                restoreNativeOps();
             }
             parseFailed = false;
             if (log) {
@@ -234,12 +246,26 @@ public class OpWhiteListManager implements Listener {
         saveConfig();
         plugin.getLogger().info("[OP白名单] 已接管原生 OP 名单：导入 " + add.size()
                 + " 人为无固定期限授权 → " + String.join(", ", add));
-    }
+    }{}
 
-    /** 解析失败 → 一次性卸载全部已知 OP（含离线），持续失败不重复执行 */
+    /**
+     * 解析失败 → 一次性卸载全部已知 OP（含离线），持续失败不重复执行。
+     *
+     * ★ 2026-10-08 数据第一优先级：卸载前必须先把【原版 ops.json】备份到我们目录。
+     *   备份失败 → 一律保留现有 OP（宁可暂时不接管，也绝不能让管理员丢失全部原始 OP）；
+     *   此时不置 parseFailed，留待下次解析失败时自动重试备份。
+     */
     private void fail(String why) {
         cfg = null;
         if (parseFailed) {
+            return;
+        }
+        // 第一步：先留底原版 ops.json（备份失败则直接放弃本次卸载）
+        if (!backupNativeOps()) {
+            lastWarn.clear();
+            plugin.getLogger().warning("[OP白名单] " + why
+                    + " —— 但原版 ops.json 备份失败，已【保留】全部现有 OP，本次不卸载。"
+                    + "（数据优先，待备份成功后再接管；json 修复后仍会自动恢复）");
             return;
         }
         parseFailed = true;
@@ -250,9 +276,114 @@ public class OpWhiteListManager implements Listener {
                 n++;
             }
         }
+        // 第二步：清空原版 ops.json（setOp(false) 由服务端落盘，这里兜底确保真的清空）
+        try {
+            File opsFile = nativeOpsFile();
+            if (opsFile.exists() && opsFile.length() > 0) {
+                Files.write(opsFile.toPath(), "[]".getBytes(StandardCharsets.UTF_8));
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[OP白名单] 原版 ops.json 清空失败（不影响主流程）: "
+                    + e.getMessage());
+        }
         lastWarn.clear();
         plugin.getLogger().warning("[OP白名单] " + why
-                + " —— 已一次性卸载全部 " + n + " 名玩家的 OP；修复 json 后自动恢复接管。");
+                + " —— 已一次性卸载全部 " + n + " 名玩家的 OP（原版 ops.json 已先备份为 "
+                + NATIVE_OPS_BACKUP + "）；修复 json 后自动恢复接管并复原原版 OP。");
+    }
+
+    /** 原版 ops.json（服务端根目录，MC 自己维护的 OP 名单） */
+    private File nativeOpsFile() {
+        try {
+            return new File(Bukkit.getWorldContainer(), "ops.json");
+        } catch (Throwable t) {
+            return new File("ops.json");
+        }
+    }
+
+    /** 我们目录下的原版 ops.json 备份（pickJson 已排除，不会被当成配置解析） */
+    private File nativeOpsBackup() {
+        return new File(dir, NATIVE_OPS_BACKUP);
+    }
+
+    /**
+     * ★ 卸载 OP 之前留底原版 ops.json。
+     * 返回 true  = 备份成功，或原版本就没有内容（无数据可丢）→ 允许继续清空
+     * 返回 false = 备份失败 → 调用方必须保留原 OP，绝不产生不可逆丢失
+     */
+    private boolean backupNativeOps() {
+        File src = nativeOpsFile();
+        File dst = nativeOpsBackup();
+        try {
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            // 原版 ops.json 不存在或为空 = 没有内容可丢；已有历史备份则原样保留（绝不用空文件覆盖）
+            if (!src.exists() || src.length() == 0) {
+                return true;
+            }
+            Files.copy(src.toPath(), dst.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            if (dst.length() != src.length()) {
+                plugin.getLogger().severe("[OP白名单] 原版 ops.json 备份校验失败（字节数不一致: 源 "
+                        + src.length() + " / 备份 " + dst.length() + "）→ 本次不卸载 OP，保留原名单");
+                return false;
+            }
+            plugin.getLogger().info("[OP白名单] 原版 ops.json 已备份 → OP白名单/"
+                    + NATIVE_OPS_BACKUP + "（" + dst.length() + " 字节）");
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().severe("[OP白名单] 原版 ops.json 备份失败: " + e.getMessage()
+                    + " → 按「数据第一优先级」，本次【不卸载】任何人的 OP");
+            return false;
+        }
+    }
+
+    /**
+     * ★ json 修复后复原原版 OP：把留底的 ops.json 还原回服务端。
+     *   备份缺失/不可读时静默跳过，绝不阻断恢复接管。
+     */
+    private void restoreNativeOps() {
+        File bak = nativeOpsBackup();
+        if (!bak.exists() || bak.length() == 0) {
+            return;
+        }
+        try {
+            String text = new String(Files.readAllBytes(bak.toPath()), StandardCharsets.UTF_8).trim();
+            JsonElement root = JsonParser.parseString(text);
+            if (!root.isJsonArray()) {
+                plugin.getLogger().warning("[OP白名单] 备份 " + NATIVE_OPS_BACKUP
+                        + " 不是 JSON 数组，跳过复原");
+                return;
+            }
+            int n = 0;
+            for (JsonElement e : root.getAsJsonArray()) {
+                if (!e.isJsonObject()) {
+                    continue;
+                }
+                JsonObject o = e.getAsJsonObject();
+                java.util.UUID id = null;
+                if (o.has("id") && o.get("id").isJsonPrimitive()) {
+                    try {
+                        id = java.util.UUID.fromString(o.get("id").getAsString());
+                    } catch (Exception ignore) { /* id 非法则退回按名字复原 */ }
+                }
+                String name = (o.has("name") && o.get("name").isJsonPrimitive())
+                        ? o.get("name").getAsString() : null;
+                OfflinePlayer op = (id != null)
+                        ? Bukkit.getOfflinePlayer(id)
+                        : (name != null && !name.isEmpty() ? Bukkit.getOfflinePlayer(name) : null);
+                if (op == null || op.isOp()) {
+                    continue;
+                }
+                op.setOp(true);
+                n++;
+            }
+            plugin.getLogger().info("[OP白名单] 已从备份复原原版 OP " + n + " 人（"
+                    + NATIVE_OPS_BACKUP + "），随后按白名单校准");
+        } catch (Exception ex) {
+            plugin.getLogger().warning("[OP白名单] 从备份复原原版 OP 失败: " + ex.getMessage());
+        }
     }
 
     /** 文件指纹：路径 + lastModified + 长度（任一变化都视为变更） */
