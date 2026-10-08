@@ -31,6 +31,16 @@ require_once __DIR__ . '/../security.php';
 require_once __DIR__ . '/../config.php';   // 取 SECRET_KEY（require_once，不会重复定义）
 // ★ 人机验证码（2026-10-02）：CF/VA 统一接入，见 captcha_guard.php
 require_once __DIR__ . '/../captcha_guard.php';
+
+// ====================================================================
+//  ★ 密钥契约统一（2026-10-08）：本文件一律用 config.php 的 SECRET_KEY 校验，
+//    与 sync.php / land_api.php / core.php 完全一致。
+//  根因复盘：原先这里用的是 pay_secrets.php 里的 MC_AUTH_SECRET —— 一个只有
+//  本文件引用的第二常量。生产站两值恰好相等所以一直正常；test12 的
+//  pay_secrets.php 是从生产复制的真实值、config.php 却是占位符 → 两值分叉，
+//  而 Java 端发的 web通信-密钥 只可能等于 SECRET_KEY → 正版验证 403「密钥错误」。
+//  MC_AUTH_SECRET 不再作为校验依据（保留定义不动，pay_secrets.php 不入库不脚本上传）。
+// ====================================================================
 function mcAuthIpBlacklisted() {
     if (PHP_SAPI === 'cli') return false;
     $ip = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -529,7 +539,7 @@ switch ($action) {
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
 
         if (empty($player)) error('缺少player参数');
-        if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
+        if ($secret !== SECRET_KEY) error('密钥错误', 403);
 
         // 检查MS_CLIENT_ID是否配置（公共客户端不需要secret）
         if (empty(MS_CLIENT_ID)) {
@@ -572,7 +582,7 @@ switch ($action) {
         $secret = getParam('secret');
 
         if (empty($sessionId)) error('缺少session_id参数');
-        if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
+        if ($secret !== SECRET_KEY) error('密钥错误', 403);
 
         // 查询会话
         $stmt = $db->prepare("SELECT * FROM mc_auth_sessions WHERE session_id = ?");
@@ -753,8 +763,8 @@ switch ($action) {
 
         // 密钥验证：Java调用需要secret，浏览器表单用session_id自身认证
         if (!empty($secret)) {
-            if ($secret !== MC_AUTH_SECRET) {
-                $debugLine3 = "  ★ 密钥不匹配! 收到: " . substr($secret, 0, 30) . " 期望: " . substr(MC_AUTH_SECRET, 0, 30) . "\n";
+            if ($secret !== SECRET_KEY) {
+                $debugLine3 = "  ★ 密钥不匹配! 收到: " . substr($secret, 0, 30) . " 期望(SECRET_KEY,长度" . strlen(SECRET_KEY) . ")\n";
                 @file_put_contents(__DIR__ . '/debug_minecraft.log', $debugLine3, FILE_APPEND);
                 error('密钥错误', 403);
             }
@@ -819,7 +829,7 @@ switch ($action) {
         $secret = getParam('secret');
 
         if (empty($player)) error('缺少player参数');
-        if ($secret !== MC_AUTH_SECRET) error('密钥错误', 403);
+        if ($secret !== SECRET_KEY) error('密钥错误', 403);
 
         // 通过Mojang API验证用户名是否对应正版账号
         $url = "https://api.mojang.com/users/profiles/minecraft/" . urlencode($player);
