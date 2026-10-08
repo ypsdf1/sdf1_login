@@ -3674,15 +3674,21 @@ public class Main extends JavaPlugin
         }
     }
 
-    // ★ 未登录(冻结)玩家只允许 4 个登录/注册相关命令（含中文版）：
-    //   /login(/登录)  /l  /reg(/注册)  /sdf1_login reset
+    // ★ 未登录(冻结)玩家只允许「与注册登录直接相关」的命令（含中文版）：
+    //   注册/登录 : /login(/登录)  /l  /reg(/注册)  /sdf1_login reset
+    //   正版验证  : /mslogin(/正版)          —— 微软 OAuth 是登录的替代路径
+    //   找回密码  : /找回密码                 —— 忘密自救，登录的前置
+    //   Web令牌   : /web(/控制台)            —— Web 端登录令牌生成
     //   1) 堵住"没登录却能跑 /protect 等管理命令"的越权口子；
-    //   2) 其余命令（改密码/找回密码/正版/2fa/web/控制台/删除账号/通过/拒绝/help 等）
+    //   2) 其余命令（改密码/2fa/删除账号/通过/拒绝/help/绑定邮箱等）
     //      一律移到登录之后，避免未登录试探插件面；
     //   3) /sdf1_login 是多子命令容器，只放行 reset 子命令（见下方闸门逐条判定）。
     private static final Set<String> FROZEN_ALLOWED_CMDS = new HashSet<>(java.util.Arrays.asList(
             "l", "login", "reg", "sdf1_login",
-            "注册", "登录"));
+            "注册", "登录",
+            "mslogin", "正版",
+            "找回密码",
+            "web", "控制台"));
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onFrozenCommandGuard(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
@@ -3704,7 +3710,8 @@ public class Main extends JavaPlugin
         }
         if (FROZEN_ALLOWED_CMDS.contains(cmd)) return;
         e.setCancelled(true);
-        p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+        p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录"
+                + "§7（也可 §e/mslogin §7正版登录、§e/找回密码 §7、§e/web §7）");
     }
 
     // ★ /op 拦截（2026-10-08 第四轮）：按「启用状态」分支
