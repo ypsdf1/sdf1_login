@@ -96,10 +96,12 @@ replay_pid*.log
 
 # 屏蔽patch文件
 *.patch
-# 屏蔽wb产生的文件
+# 屏蔽wb产生的工作文件
 .workbuddy/
 # 屏蔽备份文件
 backup/
+# 屏蔽根目录下的所有json
+/*.json
 # 屏蔽垃圾文件
 *.idx
 *.pack
