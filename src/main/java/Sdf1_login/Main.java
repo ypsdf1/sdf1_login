@@ -1008,6 +1008,10 @@ public class Main extends JavaPlugin
                 {"pvp.db-shm", "pvp"},
                 {"pvp.db-wal", "pvp"},
                 {"maxsell_config.txt", "shop"},
+                // #99 quest_data.db 归入「任务面板」（任务进度数据）
+                {"quest_data.db", "任务面板"},
+                {"quest_data.db-shm", "任务面板"},
+                {"quest_data.db-wal", "任务面板"},
         };
         for (String[] m : moves) {
             File src = new File(root, m[0]);
@@ -5723,10 +5727,11 @@ public class Main extends JavaPlugin
                 getLogger().info("[Sdf1_chat] " + p.getName() + " 命中敏感词("
                         + ms.get(0) + ")，累计违规 " + sc + " 次，消息已拦截");
                 p.sendMessage("§c§l[聊天过滤] §7消息包含违规词 §f" + ms.get(0)
-                        + " §7已被拦截 §8(第 " + sc + " 次违规)");
+                        + " §7已被拦截，§8本次为第 " + sc + " 次违规");
                 String punishHint = chatFilter.nextPunishHint(sc);
                 if (punishHint != null) {
-                    p.sendMessage("§8下次违规将触发: §e" + punishHint);
+                    // ★ 只报处罚档位，不报「第N次」——与上一行的次数并列易被读成跳号
+                    p.sendMessage("§8再次违规将处罚: §e" + punishHint);
                 }
                 String swReason = "说出敏感词("
                         + ms.get(0) + ")";

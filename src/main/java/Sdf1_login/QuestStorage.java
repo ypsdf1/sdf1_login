@@ -23,7 +23,9 @@ public class QuestStorage {
         try {
             Class.forName("org.sqlite.JDBC");
             File dbFile = new File(
-                    dataFolder, "quest_data.db");
+                    new File(dataFolder, "任务面板"),
+                    "quest_data.db");
+            dbFile.getParentFile().mkdirs();
             path = dbFile.getPath();
         } catch (Exception e) {
             e.printStackTrace();

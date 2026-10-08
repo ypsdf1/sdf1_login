@@ -12,8 +12,11 @@ public class PlayerStorage {
                          Logger logger) {
         this.logger = logger;
         File dbFile = new File(
-                dataFolder,
+                new File(dataFolder,
+                        "任务面板"),
                 "quest_data.db");
+        dbFile.getParentFile()
+                .mkdirs();
         try {
             Class.forName(
                     "org.sqlite.JDBC");

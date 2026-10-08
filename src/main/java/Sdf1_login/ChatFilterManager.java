@@ -1123,8 +1123,10 @@ public class ChatFilterManager {
             muteIssuers.remove(name);
             muteStarts.remove(name);
             clearMuteDb(name);
-            // ★ 禁言到期自动解禁 → 立即要求重新人机验证（解禁≠解除人机验证）
-            markReverify(name);
+            // ★ 2026-10-08 用户裁定：玩家已通过人机验证后，禁言到期自动解禁
+            //   **不再**吊销验证状态。此前这里调 markReverify 导致
+            //   「验证码通过 → 被禁言 → 到期解禁 → 又要重验」的死循环。
+            //   仅显式 /chat unmute 与 /chat reset 才吊销（见 unmutePlayer/resetPlayer）。
             return false;
         }
         return true;
@@ -1411,7 +1413,8 @@ public class ChatFilterManager {
     public void resetPlayer(String name) {
         boolean wasMuted = mutedPlayers.remove(name) != null;
         violationCount.remove(name);
-        // ★ 清禁言=解禁 → 必须重新人机验证；从未被禁言的只清计数，不打扰
+        // ★ 显式 /chat reset = 人为强制重置 → 吊销人机验证（合理）。
+        //   注意与 isMuted() 的「到期自动解禁」区分：后者不吊销（见 98-a）。
         if (wasMuted) {
             markReverify(name);
         }
@@ -1434,7 +1437,11 @@ public class ChatFilterManager {
         if ("mute".equals(type)) {
             cn += " " + fmtDuration(dur);
         }
-        return "第 " + nextKey + " 次违规: " + cn;
+        // ★ 2026-10-08：不再返回「第 N 次违规」前缀。
+        //   原文案「第3次违规: 禁言5分」紧跟在「(第 2 次违规)」之后，
+        //   两行并列会被读成计数 2→6 跳号（实际计数是 1→2→3，未跳）。
+        //   次数只在「(第 N 次违规)」一处出现，避免重复计数视觉。
+        return cn;
     }
 
     public boolean isPlayerWhitelisted(
