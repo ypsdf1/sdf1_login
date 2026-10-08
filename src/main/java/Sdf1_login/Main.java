@@ -988,32 +988,31 @@ public class Main extends JavaPlugin
         }
     }
 
-    // ===== 任务94：根目录5类文件归位（2026-10-08） =====
+    // ===== 任务94：根目录杂项归位（2026-10-08）；#99 quest_data.db 归任务面板 =====
     /**
      * 启动最早期把根目录杂项移入对应子文件夹（幂等）。
      * 目标已存在则跳过不覆盖；迁移失败只警告不阻断启动。
      * 必须在任何 Manager 打开文件/数据库之前调用。
+     *
+     * ★ sqlite 三件套（.db/-shm/-wal）必须**整体**搬运：单搬 .db 会丢掉
+     *   -wal 里尚未 checkpoint 的事务（数据回退），单搬 -wal/-shm 缺主库
+     *   直接损坏。故每组三件套作为一个事务处理，任一失败即整组回滚。
      */
     private void migrateRootDataFiles() {
         File root = getDataFolder();
+        // {文件名, 目标子目录}；sqlite 组以第三位 true 标记「三件套整体搬」
         String[][] moves = {
-                {"bond.db", "财务债券"},
-                {"bond.db-shm", "财务债券"},
-                {"bond.db-wal", "财务债券"},
-                {"chat.txt", "发言规则管控"},
-                {"garbage.db", "垃圾箱"},
-                {"garbage.db-shm", "垃圾箱"},
-                {"garbage.db-wal", "垃圾箱"},
-                {"pvp.db", "pvp"},
-                {"pvp.db-shm", "pvp"},
-                {"pvp.db-wal", "pvp"},
-                {"maxsell_config.txt", "shop"},
+                {"bond.db", "财务债券", "1"},
+                {"chat.txt", "发言规则管控", "0"},
+                {"garbage.db", "垃圾箱", "1"},
+                {"pvp.db", "pvp", "1"},
+                {"maxsell_config.txt", "shop", "0"},
                 // #99 quest_data.db 归入「任务面板」（任务进度数据）
-                {"quest_data.db", "任务面板"},
-                {"quest_data.db-shm", "任务面板"},
-                {"quest_data.db-wal", "任务面板"},
+                {"quest_data.db", "任务面板", "1"},
         };
         for (String[] m : moves) {
+            boolean group = "1".equals(m[2]);
+            // sqlite 组：主库不在根目录就整组跳过（已迁移或从未存在）
             File src = new File(root, m[0]);
             if (!src.exists()) {
                 continue;
@@ -1027,11 +1026,55 @@ public class Main extends JavaPlugin
                         + m[1] + "/" + m[0]);
                 continue;
             }
-            if (src.renameTo(dst)) {
-                getLogger().info("[归位] " + m[0] + " → " + m[1] + "/");
-            } else {
-                getLogger().warning("[归位] " + m[0] + " → " + m[1]
-                        + "/ 迁移失败（保留原位，请手动移动）");
+            if (!group) {
+                // 普通单文件：直接搬
+                if (src.renameTo(dst)) {
+                    getLogger().info("[归位] " + m[0] + " → " + m[1] + "/");
+                } else {
+                    getLogger().warning("[归位] " + m[0] + " → " + m[1]
+                            + "/ 迁移失败（保留原位，请手动移动）");
+                }
+                continue;
+            }
+            // sqlite 三件套：主库 + -shm + -wal 作为一个整体搬，任一失败整组回滚
+            String[] ext = {"", "-shm", "-wal"};
+            File[] from = new File[3];
+            File[] to = new File[3];
+            boolean anyMoved = false;
+            for (int i = 0; i < 3; i++) {
+                from[i] = new File(root, m[0] + ext[i]);
+                to[i] = new File(dir, m[0] + ext[i]);
+            }
+            for (int i = 0; i < 3; i++) {
+                if (!from[i].exists()) {
+                    continue;
+                }
+                if (to[i].exists()) {
+                    getLogger().warning("[归位] " + m[0] + ext[i]
+                            + " 目标已存在，整组跳过（根目录保留副本）: "
+                            + m[1] + "/" + m[0] + ext[i]);
+                    // 目标存在 → 不能安全合并，整组不动（主库已在上面判过 dst 不存在，
+                    // 走到这里只可能是 -shm/-wal 残留）
+                    continue;
+                }
+                if (from[i].renameTo(to[i])) {
+                    anyMoved = true;
+                    getLogger().info("[归位] " + m[0] + ext[i]
+                            + " → " + m[1] + "/");
+                } else {
+                    getLogger().warning("[归位] " + m[0] + ext[i]
+                            + " → " + m[1] + "/ 迁移失败，整组回滚");
+                    // 回滚：把本次已搬的搬回去，避免留下 db 与 wal 分离
+                    for (int k = 0; k < 3; k++) {
+                        if (to[k].exists() && !from[k].exists()) {
+                            to[k].renameTo(from[k]);
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!anyMoved) {
+                continue;
             }
         }
         // 用户点名的 maxshell_*.txt 也归入 shop/
