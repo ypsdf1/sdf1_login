@@ -652,7 +652,15 @@ public class ChatFilterManager {
                     + "[_.][\\p{L}]{2,}");
     private static final Pattern DOT_VARIANTS =
             Pattern.compile(
-                    "[\uff0e\u3002\u2025\u2026\u00b7]");
+                    "[\uff0e\u3002\u2025\u2026\u00b7\uff65\ufe52]");
+    /** 零宽/不可见字符：变形URL归一前剔除（如 baidu.<零宽空格>com） */
+    private static final Pattern INVISIBLE =
+            Pattern.compile(
+                    "[\u200b\u200c\u200d\u2060\ufeff\u00ad]");
+    /** 点周带空白的变形域名：baidu . com（2026-10-08 加强拦截） */
+    private static final Pattern SPACED_DOT_URL =
+            Pattern.compile(
+                    "(?i)(?:[\\p{L}0-9](?:[\\p{L}0-9\\-]*[\\p{L}0-9])?[\\s\\u3000]*\\.)+[\\s\\u3000]*[\\p{L}]{2,}");
     private static final Pattern COLOR_CODES =
             Pattern.compile(
                     "\u00a7[0-9a-fk-orA-FK-OR]");
@@ -977,6 +985,8 @@ public class ChatFilterManager {
     // ========== URL检测 ==========
 
     private String normalizeMessage(String msg) {
+        msg = INVISIBLE.matcher(msg)
+                .replaceAll("");
         msg = COLOR_CODES.matcher(msg)
                 .replaceAll("");
         msg = DOT_VARIANTS.matcher(msg)
@@ -998,6 +1008,19 @@ public class ChatFilterManager {
                             + "\\]\\[\\(（]+$",
                     "");
             if (!url.isEmpty()) urls.add(url);
+        }
+        // ★ 变形URL加强（2026-10-08）：点周带空白（baidu . com）压缩空白后再判定；
+        //   仅当顶级域命中「非法域名后缀」才收录，避免误伤 "OK. Good" 之类正常英文句子
+        Matcher m2 = SPACED_DOT_URL.matcher(normalized);
+        while (m2.find()) {
+            String token = m2.group();
+            if (token.indexOf(' ') < 0 && token.indexOf('\t') < 0
+                    && token.indexOf('\u3000') < 0) continue;   // 无空白 = 常规域名，上面已提取
+            String compact = token.replaceAll("[\\s\u3000]+", "").toLowerCase();
+            int dot = compact.lastIndexOf('.');
+            if (dot < 0) continue;
+            if (!illegalDomainSuffixes.contains(compact.substring(dot + 1))) continue;
+            if (!urls.contains(compact)) urls.add(compact);
         }
         return urls;
     }

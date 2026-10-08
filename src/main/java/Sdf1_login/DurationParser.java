@@ -69,8 +69,15 @@ public class DurationParser {
             throws IllegalArgumentException {
         if (input == null || input.trim().isEmpty())
             throw new IllegalArgumentException("时长为空");
+        String in = input.trim();
+
+        // ★ 0) 日期+时间（绝对）：26-10-08 14:43 / 2026-10-08 14:43 / 2026年10月8日 14:43
+        //   必须在去空格之前解析：否则日期与时间粘连（26-10-08 14:43 → 26-10-0814:43）无法区分
+        long dt = parseDateTime(in);
+        if (dt >= 0) return dt;
+
         // ★ 先把英文数字词换成阿拉伯数字（one min -> 1 min）
-        String s = normalizeEnglishNumber(input.trim()).replace(" ", "");
+        String s = normalizeEnglishNumber(in).replace(" ", "");
 
         // 1) 纯数字 → Unix 秒时间戳
         if (s.matches("\\d+")) {
@@ -168,6 +175,73 @@ public class DurationParser {
             case "ninety": return 90;
             default: return 0;
         }
+    }
+
+    // ===== 日期+时间绝对解析（2026-10-08 新增：支持 26-10-08 14:43 写法） =====
+
+    /** 中文日期+时间：2026年10月8日 14:43（“日”已界定日期边界，时间可紧贴） */
+    private static final Pattern DT_CN = Pattern.compile(
+            "(\\d{4})年(\\d{1,2})月(\\d{1,2})日(?:[ T\\u3000]+)?"
+            + "(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d|[A-Za-z])");
+
+    /** 分隔日期+时间：26-10-08 14:43 / 2026-10-08 14:43 / 2026.10.08T14:43:00
+     *  两位年份按 20xx 解释；日期与时间之间必须有空格或 T，
+     *  防止 2026-1-8 14:43 被粘连误读成「日=81、时=4」 */
+    private static final Pattern DT_SEP = Pattern.compile(
+            "(?<!\\d)(\\d{4}|\\d{2})[-/.](\\d{1,2})[-/.](\\d{1,2})"
+            + "[ T\\u3000]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d|[A-Za-z])");
+
+    /** 两位年份无时间：26-10-08
+     *  lookbehind 防止吃掉 4 位年份的后半段（2026-07-09 不能被读成 07-09） */
+    private static final Pattern DT_YMD2 = Pattern.compile(
+            "(?<!\\d{2}[-/.])(\\d{2})[-/.](\\d{1,2})[-/.](\\d{1,2})(?!\\d|[A-Za-z])");
+
+    /** 解析「日期+时间」为绝对毫秒；认不出来返回 -1 交后续分支处理 */
+    private static long parseDateTime(String in) {
+        Matcher m = DT_CN.matcher(in);
+        if (m.find()) {
+            return buildDateTimeMillis(Integer.parseInt(m.group(1)),
+                    Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)),
+                    timeOf(m.group(4), m.group(5), m.group(6)));
+        }
+        m = DT_SEP.matcher(in);
+        if (m.find()) {
+            int year = Integer.parseInt(m.group(1));
+            if (year < 100) year += 2000;   // 26 → 2026
+            return buildDateTimeMillis(year, Integer.parseInt(m.group(2)),
+                    Integer.parseInt(m.group(3)),
+                    timeOf(m.group(4), m.group(5), m.group(6)));
+        }
+        m = DT_YMD2.matcher(in);
+        if (m.find()) {
+            return buildDateTimeMillis(2000 + Integer.parseInt(m.group(1)),
+                    Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)),
+                    new int[]{-1, -1, -1});
+        }
+        return -1;
+    }
+
+    /** 解析 HH:mm[:ss]；无时间（null）返回 {-1,-1,-1} 表示取 00:00:00 */
+    private static int[] timeOf(String h, String mi, String s) {
+        if (h == null) return new int[]{-1, -1, -1};
+        int H = Integer.parseInt(h), M = Integer.parseInt(mi);
+        int S = (s == null) ? 0 : Integer.parseInt(s);
+        if (H > 23 || M > 59 || S > 59)
+            throw new IllegalArgumentException("无效的时间: " + h + ":" + mi);
+        return new int[]{H, M, S};
+    }
+
+    /** 绝对日期+时间（t[0..2] 为 -1 表示 00:00:00） */
+    private static long buildDateTimeMillis(int y, int mo, int d, int[] t) {
+        if (mo < 1 || mo > 12 || d < 1 || d > 31)
+            throw new IllegalArgumentException("无效的日期: " + y + "-" + mo + "-" + d);
+        Calendar c = Calendar.getInstance();
+        c.set(y, mo - 1, d,
+                t[0] < 0 ? 0 : t[0],
+                t[1] < 0 ? 0 : t[1],
+                t[2] < 0 ? 0 : t[2]);
+        c.set(Calendar.MILLISECOND, 0);
+        return c.getTimeInMillis();
     }
 
     private static long parseRelative(String s) {

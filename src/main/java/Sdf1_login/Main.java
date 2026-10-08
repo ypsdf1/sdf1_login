@@ -3447,16 +3447,76 @@ public class Main extends JavaPlugin
     // 告示牌通过 onSignChange 拦截，编辑书通过 onPlayerEditBook 拦截
     // 私信通过 PlayerCommandPreprocessEvent 拦截（/tell, /msg, /w, /r）
     
+    /** 私信命令标签（/r 回复类单独处理），2026-10-08 扩展命名空间与别名 */
+    private static final Set<String> TELL_CMDS = new HashSet<>(java.util.Arrays.asList(
+            "tell", "msg", "w", "whisper", "pm"));
+    /** 最近私信会话：本玩家 → 对方玩家（供 /r 定位接收方，禁言收发屏蔽用） */
+    private final java.util.Map<String, String> lastTellPeer =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPrivateMessage(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
         Player p = e.getPlayer();
-        String cmd = e.getMessage().toLowerCase();
-        boolean isTellCmd = cmd.startsWith("/tell ") || cmd.startsWith("/msg ") || cmd.startsWith("/w ") || cmd.startsWith("/r ");
-        if (!isTellCmd) return;
+        String raw = e.getMessage();
+        // ★ 解析命令标签（兼容 /minecraft:msg 命名空间、连续空格）
+        String[] tok = raw.trim().split("\\s+");
+        if (tok.length == 0) return;
+        String label = tok[0].startsWith("/") ? tok[0].substring(1) : tok[0];
+        label = label.toLowerCase(java.util.Locale.ROOT);
+        int colon = label.indexOf(':');
+        if (colon >= 0) label = label.substring(colon + 1);
+        boolean isTellCmd = TELL_CMDS.contains(label);
+        boolean isReplyCmd = label.equals("r") || label.equals("reply");
+        if (!isTellCmd && !isReplyCmd) return;
         if (isFrozen(p)) return;
         if (chatFilter == null || !chatFilter.isEnabled()) return;
+
+        // ===== 禁言屏蔽（2026-10-08）：禁言期间屏蔽一切私信收发 =====
+        // 1) 发送方被禁言 → 拦
+        if (chatFilter.isMuted(p.getName())) {
+            e.setCancelled(true);
+            String r = chatFilter.getMuteReason(p.getName());
+            long expire = chatFilter.getMuteExpire(p.getName());
+            StringBuilder sb = new StringBuilder("§c§l[私信] §f你已被禁言，禁言期间无法发送私信");
+            if (r != null && !r.isEmpty()) sb.append("\n§7原因: §f").append(r);
+            if (expire > 0) sb.append("\n§7到期: §f")
+                    .append(new java.text.SimpleDateFormat("yyyy年M月d日 HH点mm分")
+                            .format(new java.util.Date(expire)));
+            p.sendMessage(sb.toString());
+            return;
+        }
+        // 2) 解析接收方（/r 取最近会话对方）
+        Player peer = null;
+        if (isTellCmd && tok.length >= 2 && !tok[1].startsWith("@")) {
+            peer = org.bukkit.Bukkit.getPlayerExact(tok[1]);
+            if (peer == null) peer = org.bukkit.Bukkit.getPlayer(tok[1]);
+            if (peer == null) {
+                try {
+                    peer = org.bukkit.Bukkit.getPlayer(java.util.UUID.fromString(tok[1]));
+                } catch (Exception ignore) {
+                }
+            }
+        } else if (isReplyCmd) {
+            String prev = lastTellPeer.get(p.getName());
+            if (prev != null) peer = org.bukkit.Bukkit.getPlayerExact(prev);
+        }
+        // 3) 接收方被禁言 → 拦（禁言期间任何人不得私信被禁言者）
+        if (peer != null && chatFilter.isMuted(peer.getName())) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[私信] §f对方 §e" + peer.getName() + " §f已被禁言，暂时无法接收私信");
+            return;
+        }
+
         if (chatFilter.isPlayerWhitelisted(p.getName())) return;
-        if (filterLinkInContent(p, e.getMessage())) e.setCancelled(true);
+        if (filterLinkInContent(p, raw)) {
+            e.setCancelled(true);
+            return;
+        }
+        // 记录会话（供 /r 判断接收方）；链接被拦则不记
+        if (peer != null) {
+            lastTellPeer.put(p.getName(), peer.getName());
+            lastTellPeer.put(peer.getName(), p.getName());
+        }
     }
     
     @EventHandler
