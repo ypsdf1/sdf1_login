@@ -3674,15 +3674,15 @@ public class Main extends JavaPlugin
         }
     }
 
-    // ★ 未登录(冻结)玩家只允许登录相关命令：
+    // ★ 未登录(冻结)玩家只允许 4 个登录/注册相关命令（含中文版）：
+    //   /login(/登录)  /l  /reg(/注册)  /sdf1_login reset
     //   1) 堵住"没登录却能跑 /protect 等管理命令"的越权口子；
-    //   2) 让未登录的管理员立刻收到"请先登录"反馈，而不是等下线/换人才莫名被冻结（现象B）
+    //   2) 其余命令（改密码/找回密码/正版/2fa/web/控制台/删除账号/通过/拒绝/help 等）
+    //      一律移到登录之后，避免未登录试探插件面；
+    //   3) /sdf1_login 是多子命令容器，只放行 reset 子命令（见下方闸门逐条判定）。
     private static final Set<String> FROZEN_ALLOWED_CMDS = new HashSet<>(java.util.Arrays.asList(
             "l", "login", "reg", "sdf1_login",
-            "注册", "登录", "改密码", "找回密码",
-            "mslogin", "正版",
-            "删除账号", "通过", "拒绝", "web", "控制台",
-            "2fa", "help"));
+            "注册", "登录"));
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onFrozenCommandGuard(org.bukkit.event.player.PlayerCommandPreprocessEvent e) {
@@ -3693,9 +3693,16 @@ public class Main extends JavaPlugin
         if (msg.isEmpty() || msg.charAt(0) != '/') return;
         String body = msg.substring(1).trim().toLowerCase();
         if (body.isEmpty()) return;
-        String cmd = body.split(" ", 2)[0];
-        if (FROZEN_ALLOWED_CMDS.contains(cmd)
-                || body.startsWith("minecraft:help")) return;
+        String[] parts = body.split(" ", 3);
+        String cmd = parts[0];
+        // /sdf1_login 只放行 reset（找回密码），其余子命令（email/reload/sign/pw…）一律拦
+        if (cmd.equals("sdf1_login")) {
+            if (parts.length >= 2 && parts[1].equals("reset")) return;
+            e.setCancelled(true);
+            p.sendMessage("§c§l[登录] §f你还未登录，未登录仅允许 §e/sdf1_login reset §f找回密码。请先使用 §e/l <密码> §f登录");
+            return;
+        }
+        if (FROZEN_ALLOWED_CMDS.contains(cmd)) return;
         e.setCancelled(true);
         p.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
     }
