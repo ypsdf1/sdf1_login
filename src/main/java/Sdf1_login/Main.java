@@ -386,6 +386,8 @@ public class Main extends JavaPlugin
             saveResource("illegal_domains.txt", false);
             getLogger().info("[配置] 已自动释放 illegal_domains.txt 到插件目录");
         }
+        // ★ 任务94：根目录5类文件归位（必须在任何 Manager 打开文件/DB 之前）
+        migrateRootDataFiles();
         // 启动时清理.sdf1临时文件
         cleanupSdf1Files();
         salesStats = new SalesStatsManager(this);
@@ -983,6 +985,67 @@ public class Main extends JavaPlugin
         }
         if (webManager != null) {
             webManager.shutdown();
+        }
+    }
+
+    // ===== 任务94：根目录5类文件归位（2026-10-08） =====
+    /**
+     * 启动最早期把根目录杂项移入对应子文件夹（幂等）。
+     * 目标已存在则跳过不覆盖；迁移失败只警告不阻断启动。
+     * 必须在任何 Manager 打开文件/数据库之前调用。
+     */
+    private void migrateRootDataFiles() {
+        File root = getDataFolder();
+        String[][] moves = {
+                {"bond.db", "财务债券"},
+                {"bond.db-shm", "财务债券"},
+                {"bond.db-wal", "财务债券"},
+                {"chat.txt", "发言规则管控"},
+                {"garbage.db", "垃圾箱"},
+                {"garbage.db-shm", "垃圾箱"},
+                {"garbage.db-wal", "垃圾箱"},
+                {"pvp.db", "pvp"},
+                {"pvp.db-shm", "pvp"},
+                {"pvp.db-wal", "pvp"},
+                {"maxsell_config.txt", "shop"},
+        };
+        for (String[] m : moves) {
+            File src = new File(root, m[0]);
+            if (!src.exists()) {
+                continue;
+            }
+            File dir = new File(root, m[1]);
+            dir.mkdirs();
+            File dst = new File(dir, m[0]);
+            if (dst.exists()) {
+                getLogger().warning("[归位] " + m[0]
+                        + " 目标已存在，跳过（根目录保留副本）: "
+                        + m[1] + "/" + m[0]);
+                continue;
+            }
+            if (src.renameTo(dst)) {
+                getLogger().info("[归位] " + m[0] + " → " + m[1] + "/");
+            } else {
+                getLogger().warning("[归位] " + m[0] + " → " + m[1]
+                        + "/ 迁移失败（保留原位，请手动移动）");
+            }
+        }
+        // 用户点名的 maxshell_*.txt 也归入 shop/
+        File[] extras = root.listFiles((d, n) ->
+                n.toLowerCase().startsWith("maxshell_")
+                        && n.toLowerCase().endsWith(".txt"));
+        if (extras != null) {
+            File dir = new File(root, "shop");
+            for (File src : extras) {
+                File dst = new File(dir, src.getName());
+                if (dst.exists()) {
+                    continue;
+                }
+                dir.mkdirs();
+                if (src.renameTo(dst)) {
+                    getLogger().info("[归位] " + src.getName() + " → shop/");
+                }
+            }
         }
     }
 
@@ -5434,6 +5497,12 @@ public class Main extends JavaPlugin
             chatFilter.markPlayerActive(p.getName());
         }
         
+        // ★ 先探一次禁言状态：若刚好到期，isMuted() 内部会立即解禁并打上
+        //   「需重新人机验证」标记（2026-10-08：解禁≠解除人机验证）
+        if (chatFilter != null) {
+            chatFilter.isMuted(p.getName());
+        }
+
         // ===== 新玩家验证码检查（N+1机制） =====
         if (chatFilter != null && chatFilter.isEnabled()) {
             ChatFilterManager.VerificationResult vr = chatFilter.checkNewPlayerVerification(p);
@@ -5649,6 +5718,16 @@ public class Main extends JavaPlugin
                 }
                 chatFilter.incrementViolation(p.getName());
                 int sc = chatFilter.getViolationCount(p.getName());
+                // ★ 2026-10-08：命中必须给发送者明确反馈——此前 warn 档完全静默、
+                //   自回显又与正常聊天一模一样 →观感「中文敏感词没过滤」
+                getLogger().info("[Sdf1_chat] " + p.getName() + " 命中敏感词("
+                        + ms.get(0) + ")，累计违规 " + sc + " 次，消息已拦截");
+                p.sendMessage("§c§l[聊天过滤] §7消息包含违规词 §f" + ms.get(0)
+                        + " §7已被拦截 §8(第 " + sc + " 次违规)");
+                String punishHint = chatFilter.nextPunishHint(sc);
+                if (punishHint != null) {
+                    p.sendMessage("§8下次违规将触发: §e" + punishHint);
+                }
                 String swReason = "说出敏感词("
                         + ms.get(0) + ")";
                 String ptype = chatFilter.applyPunishment(

@@ -97,6 +97,9 @@ public class ChatFilterManager {
     
     /** 已验证过的玩家名单（永久，跨session持久化到内存） */
     private final Set<String> verifiedPlayers = ConcurrentHashMap.newKeySet();
+
+    /** ★ 解禁后强制重新人机验证名单（2026-10-08：解禁≠解除人机验证） */
+    private final Set<String> reverifyRequired = ConcurrentHashMap.newKeySet();
     
     /** 验证码数据存储（public供Main.java访问清理） */
     public final Map<String, VerificationData> verificationData = new ConcurrentHashMap<>();
@@ -149,6 +152,28 @@ public class ChatFilterManager {
      */
     public VerificationResult checkNewPlayerVerification(Player p) {
         String name = p.getName();
+
+        // ★ 解禁 ≠ 解除人机验证（2026-10-08）：解禁后必须重新过人机验证才能发言。
+        //   该分支优先级最高——连 verifiedPlayers 与正版OAuth豁免也压过。
+        if (reverifyRequired.contains(name)) {
+            VerificationData vd0 = verificationData.get(name);
+            if (vd0 != null && vd0.completed) {
+                verifiedPlayers.add(name);
+                verificationData.remove(name);
+                reverifyRequired.remove(name);
+                return VerificationResult.VERIFIED;
+            }
+            if (vd0 != null && vd0.isExpired()) {
+                verificationData.remove(name);
+                p.sendMessage("§c§l[验证码] §c上一题超时，已为你换新题");
+                generateMathVerification(name);
+                return VerificationResult.TIMEOUT;
+            }
+            if (vd0 != null) {
+                return VerificationResult.PENDING;
+            }
+            return VerificationResult.NEED_VERIFICATION;
+        }
         
         // ★ 永久已验证的玩家 → 直接放行
         if (verifiedPlayers.contains(name)) {
@@ -502,6 +527,7 @@ public class ChatFilterManager {
                     vd.completed = true;
                     verificationData.remove(playerName);
                     verifiedPlayers.add(playerName); // 永久记录 - 验证通过
+                    reverifyRequired.remove(playerName); // 解禁重验已通过
                     return VerificationResult.VERIFIED;
                 } else {
                     // ★ 回答错误 → 不清除验证码也不加入verifiedPlayers，让玩家重新答题
@@ -551,6 +577,7 @@ public class ChatFilterManager {
             vd.completed = true;
             verificationData.remove(name);
             verifiedPlayers.add(name);
+            reverifyRequired.remove(name); // 解禁重验已通过
             return VerificationResult.VERIFIED;
         }
         
@@ -706,7 +733,8 @@ public class ChatFilterManager {
         sensitiveWords.clear(); // 重新加载前先清空
 
         File f = new File(
-                plugin.getDataFolder(), "chat.txt");
+                new File(plugin.getDataFolder(), "发言规则管控"), "chat.txt");
+        f.getParentFile().mkdirs();
         if (!f.exists()) writeDefaultFile(f);
         boolean hasSensitiveSection = false; // 记录文件是否已有敏感词列表节
         try (BufferedReader r =
@@ -749,8 +777,8 @@ public class ChatFilterManager {
                     String[] kv = t.split(":", 2);
                     String k = kv[0].trim();
                     String v = kv[1].trim();
-                    if (equals("启用过滤")
-                            || equals("enabled")) {
+                    if (k.equals("启用过滤")
+                            || k.equals("enabled")) {
                         enabled = parseBool(v);
                         continue;
                     }
@@ -928,7 +956,8 @@ public class ChatFilterManager {
 
     public void saveConfig() {
         File f = new File(
-                plugin.getDataFolder(), "chat.txt");
+                new File(plugin.getDataFolder(), "发言规则管控"), "chat.txt");
+        f.getParentFile().mkdirs();
         try (PrintWriter pw = new PrintWriter(
                 new OutputStreamWriter(
                         new FileOutputStream(f),
@@ -1094,6 +1123,8 @@ public class ChatFilterManager {
             muteIssuers.remove(name);
             muteStarts.remove(name);
             clearMuteDb(name);
+            // ★ 禁言到期自动解禁 → 立即要求重新人机验证（解禁≠解除人机验证）
+            markReverify(name);
             return false;
         }
         return true;
@@ -1276,6 +1307,19 @@ public class ChatFilterManager {
         muteIssuers.remove(name);
         muteStarts.remove(name);
         clearMuteDb(name);
+        // ★ 解禁≠解除人机验证（2026-10-08）
+        markReverify(name);
+    }
+
+    /**
+     * ★ 解禁（命令解禁/禁言到期/重置）→ 吊销人机验证：
+     *   移出已验证名单、清掉挂起的题与缓存消息，下次发言必须重新过人机验证。
+     */
+    public void markReverify(String name) {
+        reverifyRequired.add(name);
+        verifiedPlayers.remove(name);
+        verificationData.remove(name);
+        pendingMessages.remove(name);
     }
 
     // ========== 禁言持久化（重启后仍生效） ==========
@@ -1365,8 +1409,32 @@ public class ChatFilterManager {
     }
 
     public void resetPlayer(String name) {
-        mutedPlayers.remove(name);
+        boolean wasMuted = mutedPlayers.remove(name) != null;
         violationCount.remove(name);
+        // ★ 清禁言=解禁 → 必须重新人机验证；从未被禁言的只清计数，不打扰
+        if (wasMuted) {
+            markReverify(name);
+        }
+    }
+
+    /** 下一档违规将触发的处罚描述（命中时给玩家预告），无更高档返回 null */
+    public String nextPunishHint(int violation) {
+        int nextKey = Integer.MAX_VALUE;
+        for (Integer k : punishmentRules.keySet()) {
+            if (k > violation && k < nextKey) {
+                nextKey = k;
+            }
+        }
+        if (nextKey == Integer.MAX_VALUE) {
+            return null;
+        }
+        String type = punishmentRules.get(nextKey);
+        int dur = punishmentDurations.getOrDefault(nextKey, muteDuration);
+        String cn = switchPunishType(type);
+        if ("mute".equals(type)) {
+            cn += " " + fmtDuration(dur);
+        }
+        return "第 " + nextKey + " 次违规: " + cn;
     }
 
     public boolean isPlayerWhitelisted(

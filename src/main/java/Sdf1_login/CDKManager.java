@@ -25,7 +25,9 @@ public class CDKManager {
         try {
             Class.forName("org.sqlite.JDBC");
             File dbFile = new File(
-                    plugin.getDataFolder(), "bond.db");
+                    new File(plugin.getDataFolder(), "财务债券"),
+                    "bond.db");
+            dbFile.getParentFile().mkdirs();
             db = DriverManager.getConnection(
                     "jdbc:sqlite:" + dbFile.getAbsolutePath());
             Statement st = db.createStatement();

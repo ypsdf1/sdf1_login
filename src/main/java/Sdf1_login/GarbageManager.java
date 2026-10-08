@@ -37,8 +37,9 @@ public class GarbageManager {
         try {
             Class.forName("org.sqlite.JDBC");
             File dbFile = new File(
-                    plugin.getDataFolder(),
+                    new File(plugin.getDataFolder(), "垃圾箱"),
                     "garbage.db");
+            dbFile.getParentFile().mkdirs();
             db = DriverManager.getConnection(
                     "jdbc:sqlite:"
                             + dbFile.getAbsolutePath());

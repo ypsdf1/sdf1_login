@@ -108,8 +108,9 @@ public class PVPManager implements Listener {
             Class.forName(
                     "org.sqlite.JDBC");
             File dbFile = new File(
-                    plugin.getDataFolder(),
+                    new File(plugin.getDataFolder(), "pvp"),
                     "pvp.db");
+            dbFile.getParentFile().mkdirs();
             pvpDb = DriverManager.getConnection(
                     "jdbc:sqlite:"
                             + dbFile.getAbsolutePath());

@@ -1635,7 +1635,7 @@ public class ShopManager implements Listener {
         // ===== maxSell 配置持久化 =====
         /** 加载 maxSell 配置从插件数据文件夹下的 maxsell_config.txt */
         private void loadMaxSellConfig() {
-            File cfgFile = new File(plugin.getDataFolder(), "maxsell_config.txt");
+            File cfgFile = new File(new File(plugin.getDataFolder(), "shop"), "maxsell_config.txt");
             try {
                 if (cfgFile.exists()) {
                     BufferedReader br = new BufferedReader(new FileReader(cfgFile));
@@ -1673,7 +1673,7 @@ public class ShopManager implements Listener {
                 try {
                     File dir = new File(plugin.getDataFolder(), "shop");
                     if (!dir.exists()) dir.mkdirs();
-                    File cfgFile = new File(dir.getParentFile(), "maxsell_config.txt");
+                    File cfgFile = new File(dir, "maxsell_config.txt");
                     BufferedWriter bw = new BufferedWriter(new FileWriter(cfgFile, StandardCharsets.UTF_8));
                     bw.write("maxSellLimit=" + maxSellLimit);
                     bw.newLine();

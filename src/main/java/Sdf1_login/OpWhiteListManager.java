@@ -755,6 +755,12 @@ public class OpWhiteListManager implements Listener {
         //      服主 /op list 也看不到他们）。现改为：在线走 Player.setOp、
         //      离线走 OfflinePlayer.setOp（无档案的自动跳过，等其上线时再补）。
         for (String wn : whitelistedNames()) {
+            // ★ 2026-10-08 修复：过期/时长无法解析的临时条目不再补授。
+            //   否则每轮巡检「第1步撤销过期者 → 第2步又按配置条目原样授予」
+            //   形成无限横跳（截图现象：26-10-08 16:00 到期后每分钟撤销+授予各一次）。
+            if (!isWhitelisted(wn)) {
+                continue;
+            }
             Player online = Bukkit.getPlayerExact(wn);
             if (online != null) {
                 if (online.isOp()) {
