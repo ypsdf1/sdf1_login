@@ -63,6 +63,19 @@ function loadPayKeys() {
  * 凭据从 pay_secrets.php 读取，不再硬编码
  */
 function getPlatformDB() {
+    // ★ 2026-10-08 修复：pay_secrets.php 此前只在 loadPayKeys() 内 require_once，
+    //   而 queryOrder 的调用顺序是「先 checkPlatformOrderStatus() 后 queryPlatformAPI()」——
+    //   第一次进 getPlatformDB() 时常量还没定义，于是落到下面的硬编码默认密码，
+    //   平台库直接 Access denied（2026-10-08 当天 206 次全失败），
+    //   路径1（平台MySQL直查）整条废掉 → 只能干等补单器，支付后 15~30 秒才检测到已支付。
+    //   这里按需补加载一次（require_once 幂等，已加载自动跳过），
+    //   与 poller_online.php 顶层无条件加载保持一致。
+    if (!defined('PAY_MYSQL_PASS')) {
+        $secretsFile = __DIR__ . '/pay_secrets.php';
+        if (@is_file($secretsFile) && @is_readable($secretsFile)) {
+            @require_once $secretsFile;
+        }
+    }
     $host   = defined('PAY_MYSQL_HOST')   ? PAY_MYSQL_HOST   : '127.0.0.1';
     $dbname = defined('PAY_MYSQL_DBNAME') ? PAY_MYSQL_DBNAME : 'caihong';
     $user   = defined('PAY_MYSQL_USER')   ? PAY_MYSQL_USER   : 'hbye3AezRNk4r7YA';
@@ -669,7 +682,14 @@ function queryOrder($token) {
         // 路径2：MySQL失败或未支付 → 官方API查询
         if (!$isPaid) {
             debugLog('[queryOrder] 路径2: MySQL未找到已支付记录，尝试官方API', ['out_trade_no' => $outTradeNo]);
-            $apiResult = queryPlatformAPI($outTradeNo);
+            $apiResult = false;
+            try {
+                $apiResult = queryPlatformAPI($outTradeNo);
+            } catch (\Throwable $e) {
+                debugLog('[queryOrder] 官方API查询异常（不影响主流程，poller 兜底）', [
+                    'out_trade_no' => $outTradeNo, 'error' => $e->getMessage(),
+                ]);
+            }
             debugLog('[queryOrder] 官方API查询结果', [
                 'out_trade_no' => $outTradeNo,
                 'result'       => $apiResult,
@@ -746,7 +766,14 @@ function queryOrder($token) {
         // 路径2：MySQL失败或未支付 → 官方API查询
         if (!$platformPaid) {
             debugLog('[queryOrder] MySQL未支付，尝试官方API', ['out_trade_no' => $outTradeNo]);
-            $apiResult = queryPlatformAPI($outTradeNo);
+            $apiResult = false;
+            try {
+                $apiResult = queryPlatformAPI($outTradeNo);
+            } catch (\Throwable $e) {
+                debugLog('[queryOrder] 官方API查询异常（不影响主流程，poller 兜底）', [
+                    'out_trade_no' => $outTradeNo, 'error' => $e->getMessage(),
+                ]);
+            }
             if (is_array($apiResult) && $apiResult['status'] === 'paid') {
                 $platformResult = $apiResult;
                 $platformPaid = true;
@@ -839,7 +866,10 @@ function checkPlatformOrderStatus($outTradeNo) {
  * @return array|bool 成功返回 ['status'=>'paid', 'trade_no'=>..., 'money'=>..., 'player'=>...]，失败返回 false
  */
 function queryPlatformAPI($outTradeNo) {
-    $keys = getPayKeys();
+    // ★ 2026-10-08 修复：本文件只有 loadPayKeys()，getPayKeys() 从未定义——
+    //   一进来就 Call to undefined function，被入口顶层 catch 转成 HTTP 500，
+    //   导致所有「未支付」订单的 query_order 全部 500，路径2 形同虚设。
+    $keys = loadPayKeys();
     if (empty($keys['pid']) || empty($keys['md5_key'])) {
         debugLog('[queryPlatformAPI] 缺少pid或md5_key', ['pid' => $keys['pid'] ?? '']);
         return false;
