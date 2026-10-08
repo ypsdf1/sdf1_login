@@ -220,8 +220,11 @@ function pollPaidOrders() {
     //   再让平台只按这些完整订单号精确匹配。这样就算生产/测试共用 CYZJ 前缀，
     //   测试服脚本也只会查它自己本地活跃的订单号，抓不到生产服的单。
     $activeStmt = $sqlite->prepare("SELECT out_trade_no FROM pay_orders WHERE status != 'paid' AND out_trade_no IS NOT NULL AND out_trade_no != ''");
-    $activeStmt->execute();
-    $activeRes = $activeStmt->getResult();
+    // ★ 2026-10-08 实测修正：SQLite3Stmt::execute() 直接返回 SQLite3Result（PHP 7.4/8.2/8.5
+    //   三个版本实测一致），Stmt/Result 上都没有 getResult() 方法。此前一版写
+    //   $activeStmt->fetchArray()（Stmt 无此方法→致命错误）、上一版写 getResult()
+    //   （方法不存在→致命错误），补单器其实一直没跑起来过。
+    $activeRes = $activeStmt->execute();
     $activeNos = array();
     while ($activeRes && ($a = $activeRes->fetchArray(SQLITE3_ASSOC)) !== false) {
         $activeNos[] = (string)$a['out_trade_no'];
@@ -251,7 +254,7 @@ function pollPaidOrders() {
         }
         $check = $sqlite->prepare("SELECT status FROM pay_orders WHERE out_trade_no = :no");
         $check->bindValue(':no', $outNo, SQLITE3_TEXT);
-        $checkRes = $check->execute()->getResult();
+        $checkRes = $check->execute();
         $row = $checkRes ? $checkRes->fetchArray(SQLITE3_ASSOC) : false;
         if (!$row || $row['status'] !== 'paid') {
             $orders[] = $o;
@@ -276,7 +279,7 @@ function pollPaidOrders() {
         // 查本地 pay_orders（拿到正确的 bond_amount，创建订单时按档位设置）
         $check = $sqlite->prepare("SELECT status, bond_amount FROM pay_orders WHERE out_trade_no = :no");
         $check->bindValue(':no', $outTradeNo, SQLITE3_TEXT);
-        $checkRes = $check->execute()->getResult();
+        $checkRes = $check->execute();
         $row = $checkRes ? $checkRes->fetchArray(SQLITE3_ASSOC) : false;
 
         if ($row && $row['status'] === 'paid') {
