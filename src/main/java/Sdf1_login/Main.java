@@ -1009,6 +1009,10 @@ public class Main extends JavaPlugin
                 {"maxsell_config.txt", "shop", "0"},
                 // #99 quest_data.db 归入「任务面板」（任务进度数据）
                 {"quest_data.db", "任务面板", "1"},
+                // #100 2026-10-08 三库归位（用户指令：代码层面迁移）
+                {"login.db", "登录凭证", "1"},
+                {"usergroup.db", "用户组", "1"},
+                {"web_sync.db", "Php", "1"},
         };
         for (String[] m : moves) {
             boolean group = "1".equals(m[2]);

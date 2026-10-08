@@ -35,7 +35,10 @@ public class UserGroupManager {
     private void initDB() {
         try {
             Class.forName("org.sqlite.JDBC");
-            File dbFile = new File(plugin.getDataFolder(), "usergroup.db");
+            // ★ 2026-10-08 归位：usergroup.db 创建即放入「用户组/」
+            File dbDir = new File(plugin.getDataFolder(), "用户组");
+            dbDir.mkdirs();
+            File dbFile = new File(dbDir, "usergroup.db");
             db = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             Statement st = db.createStatement();
             st.execute("PRAGMA journal_mode=WAL");

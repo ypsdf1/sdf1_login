@@ -21,8 +21,12 @@ public class DatabaseManager {
     public void init() {
         try {
             Class.forName("org.sqlite.JDBC");
-            File dbFile = new File(dataFolder,
-                    "login.db");
+            // ★ 2026-10-08 归位：login.db 创建即放入「登录凭证/」；
+            //   根目录存量由 Main.migrateRootDataFiles() 启动最早期整组迁移
+            //   （.db + -shm + -wal 同进同退，严禁人工移动）。
+            File dbDir = new File(dataFolder, "登录凭证");
+            dbDir.mkdirs();
+            File dbFile = new File(dbDir, "login.db");
             db = DriverManager.getConnection(
                     "jdbc:sqlite:"
                             + dbFile.getAbsolutePath());

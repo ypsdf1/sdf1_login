@@ -1126,7 +1126,8 @@ public class ChatFilterManager {
             // ★ 2026-10-08 用户裁定：玩家已通过人机验证后，禁言到期自动解禁
             //   **不再**吊销验证状态。此前这里调 markReverify 导致
             //   「验证码通过 → 被禁言 → 到期解禁 → 又要重验」的死循环。
-            //   仅显式 /chat unmute 与 /chat reset 才吊销（见 unmutePlayer/resetPlayer）。
+            //   2026-10-08 用户裁定再收紧：命令解禁 /chat unmute 与重置 /chat reset
+            //   也【不再】吊销——解禁/重置发言违规 与 人机验证 两件事彻底隔开。
             return false;
         }
         return true;
@@ -1309,13 +1310,15 @@ public class ChatFilterManager {
         muteIssuers.remove(name);
         muteStarts.remove(name);
         clearMuteDb(name);
-        // ★ 解禁≠解除人机验证（2026-10-08）
-        markReverify(name);
+        // ★ 解禁≠解除人机验证（2026-10-08 用户裁定，且必须落到代码上）：
+        //   解禁只清禁言状态，绝不触碰人机验证（markReverify 调用已移除）。
     }
 
     /**
-     * ★ 解禁（命令解禁/禁言到期/重置）→ 吊销人机验证：
+     * ★ 显式重置人机验证（2026-10-08 起无内部调用方，保留为对外能力）：
      *   移出已验证名单、清掉挂起的题与缓存消息，下次发言必须重新过人机验证。
+     *   注意：unmutePlayer（解禁）/ resetPlayer（重置发言违规）已按用户裁定
+     *   与本方法解耦，不再调用。
      */
     public void markReverify(String name) {
         reverifyRequired.add(name);
@@ -1411,36 +1414,47 @@ public class ChatFilterManager {
     }
 
     public void resetPlayer(String name) {
-        boolean wasMuted = mutedPlayers.remove(name) != null;
+        mutedPlayers.remove(name);
+        muteReasons.remove(name);
+        muteIssuers.remove(name);
+        muteStarts.remove(name);
         violationCount.remove(name);
-        // ★ 显式 /chat reset = 人为强制重置 → 吊销人机验证（合理）。
-        //   注意与 isMuted() 的「到期自动解禁」区分：后者不吊销（见 98-a）。
-        if (wasMuted) {
-            markReverify(name);
-        }
+        clearMuteDb(name); // 同步清 DB 的 muted_until，避免重启后禁言复活
+        // ★ 2026-10-08 用户裁定：「重置发言违规」与「重置人机验证」彻底隔开——
+        //   这里只清禁言与违规计数，不再调用 markReverify，
+        //   人机验证状态（verifiedPlayers/reverifyRequired 等）原样保留。
     }
 
-    /** 下一档违规将触发的处罚描述（命中时给玩家预告），无更高档返回 null */
+    /**
+     * 下一次违规真正会吃到的处罚描述（命中时给玩家预告），
+     * 没达到任何处罚阈值时返回 null。
+     * ★ 2026-10-08 修正（用户反馈「不是每次违规都罚15分钟，要按规则配置」）：
+     *   旧实现取「大于当前计数的下一个阈值」（k > violation），
+     *   但 applyPunishment 的判据是 violation >= 阈值 取最高档——
+     *   例如规则 3:mute:300 / 6:mute:900 时，第3次违规实际按第3档禁言5分，
+     *   旧预告却已跳到第6档「禁言15分」，且第4、5次也一直报15分，
+     *   预告与实际处罚长期对不上。这里改为按与 applyPunishment 完全相同的
+     *   判据，计算「计数 + 1」时真正命中的那一档，时长取该档配置。
+     * 另：文案只报处罚档位、不带「第 N 次违规」前缀——
+     *   否则与上一行的「本次为第 N 次违规」并列会被读成计数跳号。
+     */
     public String nextPunishHint(int violation) {
-        int nextKey = Integer.MAX_VALUE;
+        int target = violation + 1; // 下一次违规时的计数
+        int bestKey = Integer.MIN_VALUE;
         for (Integer k : punishmentRules.keySet()) {
-            if (k > violation && k < nextKey) {
-                nextKey = k;
+            if (k <= target && k > bestKey) {
+                bestKey = k; // 与 applyPunishment 同款：violation >= 阈值 取最高档
             }
         }
-        if (nextKey == Integer.MAX_VALUE) {
-            return null;
+        if (bestKey == Integer.MIN_VALUE) {
+            return null; // 尚未达到任何处罚阈值
         }
-        String type = punishmentRules.get(nextKey);
-        int dur = punishmentDurations.getOrDefault(nextKey, muteDuration);
+        String type = punishmentRules.get(bestKey);
+        int dur = punishmentDurations.getOrDefault(bestKey, muteDuration);
         String cn = switchPunishType(type);
         if ("mute".equals(type)) {
             cn += " " + fmtDuration(dur);
         }
-        // ★ 2026-10-08：不再返回「第 N 次违规」前缀。
-        //   原文案「第3次违规: 禁言5分」紧跟在「(第 2 次违规)」之后，
-        //   两行并列会被读成计数 2→6 跳号（实际计数是 1→2→3，未跳）。
-        //   次数只在「(第 N 次违规)」一处出现，避免重复计数视觉。
         return cn;
     }
 

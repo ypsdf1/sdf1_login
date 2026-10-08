@@ -1608,7 +1608,7 @@ public class WebManager {
         try {
             Class.forName("org.sqlite.JDBC");
             File dataFolder = plugin.getDataFolder();
-            File dbFile = new File(dataFolder, "web_sync.db");
+            File dbFile = webSyncDbFile(dataFolder);
             if (!dbFile.exists()) {
                 dbFile.createNewFile();
             }
@@ -2170,7 +2170,7 @@ public class WebManager {
             // ★ 检查sync_requests表（来自PHP端的即时同步请求）
             try {
                 File dataFolder = plugin.getDataFolder();
-                File dbFile = new File(dataFolder, "web_sync.db");
+                File dbFile = webSyncDbFile(dataFolder);
                 if (dbFile.exists()) {
                     Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
                     Statement stmt = conn.createStatement();
@@ -7378,7 +7378,7 @@ public class WebManager {
             return;
         }
         try {
-            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            File dbFile = webSyncDbFile(plugin.getDataFolder());
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
             st.execute("PRAGMA busy_timeout=8000");
@@ -7391,10 +7391,22 @@ public class WebManager {
     }
 
 
+    /**
+     * ★ 2026-10-08 归位：web_sync.db 创建即放入「Php/」子目录。
+     *   根目录存量由 Main.migrateRootDataFiles() 启动最早期整组迁移
+     *   （.db + -shm + -wal 同进同退，严禁人工移动）。
+     *   所有取连接处统一走本方法，避免路径分叉。
+     */
+    private static File webSyncDbFile(File dataFolder) {
+        File dir = new File(dataFolder, "Php");
+        dir.mkdirs();
+        return new File(dir, "web_sync.db");
+    }
+
     private void loadLastSyncedTxTime() {
         if (lastSyncedTxTime > 0) return;
         try {
-            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            File dbFile = webSyncDbFile(plugin.getDataFolder());
             if (!dbFile.exists()) return;
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
@@ -7412,7 +7424,7 @@ public class WebManager {
 
     private void saveLastSyncedTxTime(long time) {
         try {
-            File dbFile = new File(plugin.getDataFolder(), "web_sync.db");
+            File dbFile = webSyncDbFile(plugin.getDataFolder());
             java.sql.Connection conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
             java.sql.Statement st = conn.createStatement();
             st.execute("PRAGMA busy_timeout=8000");
