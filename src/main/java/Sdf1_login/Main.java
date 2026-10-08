@@ -3680,7 +3680,7 @@ public class Main extends JavaPlugin
     private static final Set<String> FROZEN_ALLOWED_CMDS = new HashSet<>(java.util.Arrays.asList(
             "l", "login", "reg", "sdf1_login",
             "注册", "登录", "改密码", "找回密码",
-            "mslogin", "正版", "email", "绑定", "绑定邮箱",
+            "mslogin", "正版",
             "删除账号", "通过", "拒绝", "web", "控制台",
             "2fa", "help"));
 
@@ -8645,6 +8645,11 @@ public class Main extends JavaPlugin
 
         // 绑定邮箱
         if (cmdName.equals("绑定邮箱")) {
+            // ★ 3.0 安全修复：邮箱绑定必须登录后才能执行（未登录越权绑邮箱 + 任意收件人 SMTP 滥发）
+            if (sender instanceof Player && isFrozen((Player) sender)) {
+                sender.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+                return true;
+            }
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
@@ -8751,6 +8756,11 @@ public class Main extends JavaPlugin
 
         // ===== /email /绑定 独立命令 =====
         if (cmdName.equals("email") || cmdName.equals("绑定")) {
+            // ★ 3.0 安全修复：邮箱绑定必须登录后才能执行（未登录越权绑邮箱 + 任意收件人 SMTP 滥发）
+            if (sender instanceof Player && isFrozen((Player) sender)) {
+                sender.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+                return true;
+            }
             // /email reload —— 控制台/玩家均可执行
             if (args.length >= 1
                     && args[0].equalsIgnoreCase("reload")) {
@@ -9423,6 +9433,11 @@ public class Main extends JavaPlugin
 
 // ===== email =====
         if (sub.equals("email")) {
+            // ★ 3.0 安全修复：邮箱绑定必须登录后才能执行（未登录越权绑邮箱 + 任意收件人 SMTP 滥发）
+            if (sender instanceof Player && isFrozen((Player) sender)) {
+                sender.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+                return true;
+            }
             // email reload —— 控制台/玩家均可执行，仅需isAdmin
             if (args.length >= 2
                     && args[1].equalsIgnoreCase("reload")) {
