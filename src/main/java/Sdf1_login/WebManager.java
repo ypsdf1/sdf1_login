@@ -1068,6 +1068,15 @@ public class WebManager {
      * ★ 包含SSL降级逻辑：连续失败3次后降级到HTTP
      */
     private String doGet(String urlStr) {
+        return doGet(urlStr, GET_REQUEST_TIMEOUT_S);
+    }
+
+    /**
+     * GET请求 - 返回响应体，失败返回null（可指定响应超时秒数）。
+     * ★ 2026-10-08 补单提速：补单链路传 POLLER_TIMEOUT_S(8秒)，快判死快重来；
+     *   其余调用仍走 doGet(urlStr) = GET_REQUEST_TIMEOUT_S(15秒)，行为完全不变。
+     */
+    private String doGet(String urlStr, int timeoutSeconds) {
         // ★ Web通信关闭闸：开关关闭后一律不出网（doGet 是全部 GET 路径的唯一出口）
         if (!isEnabled()) {
             return null;
@@ -1084,7 +1093,7 @@ public class WebManager {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(urlStr))
-                    .timeout(Duration.ofSeconds(GET_REQUEST_TIMEOUT_S))  // ★ 2026-10-06 30→15秒：链路挂起时白等30秒，既慢又刷屏
+                    .timeout(Duration.ofSeconds(timeoutSeconds))  // ★ 2026-10-08 按入参超时：普通 15 秒，补单 8 秒（POLLER_TIMEOUT_S）
                     .header("User-Agent", "Sdf1-WebManager/2.9")
                     .header("Accept", "application/json")
                     .GET()
@@ -1105,7 +1114,7 @@ public class WebManager {
             plugin.getLogger().warning("[Web通信] GET HTTP " + resp.statusCode() + ": " + shortUrl + " | 响应: " + shortBody);
             if (isSecretAuthFailure(body)) {
                 // ★ 密钥错配是唯一值得立即自愈 + 重试的 4xx（其余 4xx 重试无意义）
-                return withSecretAutoHeal(() -> doGet(urlStr));
+                return withSecretAutoHeal(() -> doGet(urlStr, timeoutSeconds));
             }
             // 返回body让调用方可以解析PHP错误信息
             if (body != null && !body.isEmpty()) {
@@ -1724,6 +1733,7 @@ public class WebManager {
         // ★ 关闭Web线程池
         webExecutor.shutdownNow();
         httpSideExecutor.shutdownNow(); // 旁路线程池一并关停（daemon线程，不关也能退出）
+        pollerExecutor.shutdownNow(); // 补单专用线程一并关停（daemon线程）
         // 关闭回调服务器
         if (callbackServer != null) {
             try {
@@ -2297,24 +2307,39 @@ public class WebManager {
      * 支持MC服务器和Web服务器不在同一台机器的场景
      */
     /**
-     * ★ 2026-10-08 补单提速：独立补单定时器（固定 5 秒一轮）。
+     * ★ 2026-10-08 补单提速（第二轮）：独立补单定时器，节奏 = 0~5 秒随机。
      *
-     * 补单原来只挂在合并定时器B / TimerA 周期批处理里，而这两条路各自都有「早退守卫」：
-     *   - Timer B：PHP 锁库退避、全员下线暂停 → 直接 return，补单被连带跳过；
-     *   - Timer A：每 5 轮才投一次，且投在单线程 db-worker 队列上（任务含 10~30 秒级 HTTP）；
-     *   - 两路再共用一次 15 秒限流。
-     * 三者叠加把实测触发节奏拖到 25~41 秒 → 平均要等约 15 秒才补到单（与用户实测吻合）。
-     * 这里拆出一条独立链路：不受锁库 / 下线 / 队列积压影响，固定节奏触发。
+     * 第一轮把补单从「合并定时器B / TimerA 周期批处理」里拆出来单独跑，是因为那两条路
+     * 各自都有「早退守卫」：Timer B 撞 PHP 锁库 / 全员下线就 return；Timer A 每 5 轮才投
+     * 一次且投在单线程 db-worker 队列上；两路还共用一次 15 秒限流 —— 三者叠加把实测触发
+     * 节奏拖到 25~41 秒，平均要等约 15 秒才补到单。
+     *
+     * 第一轮改成了「固定 5 秒」，用户实测仍然 10 秒才抓到单，根因有两条：
+     *   ① 线程错位：TimerA-周期批处理跑在 sdf1-db-worker 上，triggerFastPoller 在该线程里
+     *      同步 doGet，撞上 sendHard 的 10 秒硬超时 —— 每次补单固定耗时 10 秒且返回 null
+     *      （日志：[快速补单] 补单无响应(null)，耗时: 10004ms；
+     *            [DB队列] TimerA-周期批处理 耗时=10002ms（HTTP已按预算让位）），
+     *      还顺带把整轮 DB 队列预算吃光。
+     *   ② 4 秒限流会把「0~5 秒随机」节奏里间隔小于 4 秒的轮次整轮吞掉，随机形同虚设。
+     *
+     * 第二轮修复：
+     *   - 定时器 0~100 tick（0~5 秒）随机自调度（nextPollerDelayTicks）；
+     *   - 限流 4 秒 → 500 毫秒（POLLER_MIN_INTERVAL_MS）；
+     *   - HTTP 挪到补单专用单线程 pollerExecutor，fire-and-forget：调用方永不阻塞，
+     *     不吃 DB 队列预算，也不再受 10 秒硬超时摆布；
+     *   - 补单用 8 秒短超时（POLLER_TIMEOUT_S），卡住就判死，下一轮随机节奏立刻重来；
+     *   - 这轮真补到新订单（processed>0）就立刻拉单入账，不再等周期批处理来捞。
      * poller 侧有 flock 进程锁 + 幂等去重，重复触发安全；security.php 对带正确
-     * SECRET_KEY 的 Java 调用不计数，5 秒一轮不会撞全局限流。
+     * SECRET_KEY 的 Java 调用不计数，随机节奏不会撞全局限流。
      */
     private void schedulePollerTick(long ticks) {
         new BukkitRunnable() {
             @Override
             public void run() {
-                // 先自调度下一轮再执行本轮：即便 doGet 卡到超时，
-                // 补单节奏也不会被单次慢请求拖垮（服务端有 flock 防并发）
-                schedulePollerTick(POLLER_TICK_TICKS);
+                // 先按 0~5 秒随机自调度下一轮，再执行本轮：
+                // 即便 doGet 卡到超时，补单节奏也不会被单次慢请求拖垮
+                //（服务端有 flock 防并发，补单线程队列容量 1 防堆积）
+                schedulePollerTick(nextPollerDelayTicks());
                 if (!enabled) {
                     return;
                 }
@@ -2324,8 +2349,21 @@ public class WebManager {
     }
 
     /**
+     * 下一轮补单的随机延迟：0~100 tick = 0~5 秒（2026-10-08 用户定案的节奏）。
+     * 随机到 0 时 Bukkit 最快也要等下一个 tick（50ms）；即便连续随机到 0，
+     * POLLER_MIN_INTERVAL_MS = 500ms 也会把 HTTP 频次兜在每秒最多 2 次。
+     */
+    private static long nextPollerDelayTicks() {
+        return (long) (Math.random() * 101);
+    }
+
+    /**
      * 触发一次补单。多个触发源（独立定时器 / 合并B / TimerA 批处理）共用 lastPollerTriggerTime
      * 统一限流，保证任意时刻都不会并发打满 poller。
+     *
+     * ★ 第二轮：HTTP 移到补单专用线程，本方法立刻返回（fire-and-forget）。
+     *   原来在调用线程里同步 doGet —— TimerA-周期批处理的调用线程是 sdf1-db-worker，
+     *   撞 10 秒硬超时后补单固定 10 秒才返回 null，这就是「10 秒才抓到单」的直接根因。
      * @param from 触发来源，仅用于日志区分
      */
     private void triggerFastPoller(String from) {
@@ -2335,22 +2373,60 @@ public class WebManager {
         }
         lastPollerTriggerTime = now;
         try {
+            pollerExecutor.execute(() -> doPollerRequest(from));
+        } catch (java.util.concurrent.RejectedExecutionException ignored) {
+            // 补单线程正忙且队列已满：本轮丢弃，0~5 秒后的随机节奏会再来（flock 保证不并发）
+        }
+    }
+
+    /**
+     * 真正发一次 poller_online.php（只在补单专用线程 sdf1-poller 里跑）。
+     * 捕获到新订单（processed>0）就立刻拉单入账，不再等 TimerA/TimerB 的周期批处理。
+     */
+    private void doPollerRequest(String from) {
+        try {
             String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
             long pollerStart = System.currentTimeMillis();
-            String pollerResp = doGet(pollerUrl);
+            String pollerResp = doGet(pollerUrl, POLLER_TIMEOUT_S);
             long pollerElapsed = System.currentTimeMillis() - pollerStart;
 
-            if (pollerResp != null) {
-                if (pollerResp.contains("\"result\":\"ok\"")) {
-                    plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms, 来源="
-                            + from + "): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
-                }
-            } else {
+            if (pollerResp == null) {
                 warnSlow("快速补单", "[快速补单] 补单无响应(null)，耗时: " + pollerElapsed + "ms, 来源=" + from);
+                return;
+            }
+            if (pollerResp.contains("\"result\":\"ok\"")) {
+                plugin.getLogger().info("[快速补单] 补单成功 (" + pollerElapsed + "ms, 来源="
+                        + from + "): " + pollerResp.substring(0, Math.min(150, pollerResp.length())));
+            }
+            // ★ 快准狠：这轮真补到新订单就立刻拉单入账，
+            //   不用再等 TimerA(15~25秒) / TimerB(0~10秒) 的周期批处理来捞。
+            int processed = jsonInt(pollerResp, "processed");
+            if (processed > 0) {
+                plugin.getLogger().info("[快速补单] 新补 " + processed
+                        + " 笔，立即拉取入账 (来源=" + from + ", " + pollerElapsed + "ms)");
+                pullPendingTransactions();
             }
         } catch (Exception ignored) {
             // 补单失败不影响交易拉取，静默忽略
+        }
+    }
+
+    /** 从 JSON 文本里取一个整数字段（取不到返回 -1）。例：{"result":"ok","processed":3} */
+    private static int jsonInt(String json, String key) {
+        int i = json.indexOf("\"" + key + "\":");
+        if (i < 0) return -1;
+        i += key.length() + 3; // 跳过 "key":
+        StringBuilder sb = new StringBuilder();
+        while (i < json.length() && json.charAt(i) >= '0' && json.charAt(i) <= '9') {
+            sb.append(json.charAt(i));
+            i++;
+        }
+        if (sb.length() == 0 || sb.length() > 9) return -1;
+        try {
+            return Integer.parseInt(sb.toString());
+        } catch (NumberFormatException e) {
+            return -1;
         }
     }
 
@@ -2360,7 +2436,7 @@ public class WebManager {
     private void doTransactionPollCheck() {
         // ★ 2026-07-15 高频补单触发：顺带触发 poller 快速检测已支付订单
         //   poller 内部有 flock 锁 + 幂等去重，多次调用安全
-        // ★ 2026-10-08 补单提速：限流 15s → 4s，并由独立 5 秒定时器兜底触发
+        // ★ 2026-10-08 补单提速：限流 15s → 500ms，并由 0~5 秒随机的独立定时器兜底触发
         triggerFastPoller("合并B-交易");
 
         try {
@@ -2475,11 +2551,11 @@ public class WebManager {
         scheduleTimerC(240L + randC);
         scheduleTimerD(340L + randD);
         scheduleTimerE(440L + randE);
-        // ★ 2026-10-08 补单提速：独立补单定时器（5 秒一轮），
+        // ★ 2026-10-08 补单提速：独立补单定时器（0~5 秒随机一轮），
         //   不受 Timer B 的锁库/下线早退、也不受 Timer A 的 db-worker 队列积压影响
         if (!pollerTimerStarted) {
             pollerTimerStarted = true;
-            schedulePollerTick(POLLER_TICK_TICKS);
+            schedulePollerTick(nextPollerDelayTicks());
         }
         plugin.getLogger().info("[Web通信] ★ 合并定时器已启动(随机偏移A=" + (randA/20) + "s B=" + (randB/20) + "s C=" + (randC/20) + "s D=" + (randD/20) + "s E=" + (randE/20) + "s)");
     }
@@ -9190,12 +9266,33 @@ public class WebManager {
     private long lastPollRegisterRequestsLog = 0;
     private long lastPollWebLoginExceptionLog = 0;
     private long lastPollerTriggerTime = 0; // 补单触发限流（多触发源共用）
-    /** ★ 2026-10-08 补单提速：两次补单触发的最小间隔（原 15 秒，实测把到账拖到 15~30 秒） */
-    private static final long POLLER_MIN_INTERVAL_MS = 4000L;
-    /** ★ 独立补单定时器周期：100 tick = 5 秒 */
-    private static final long POLLER_TICK_TICKS = 100L;
+    /**
+     * ★ 2026-10-08 补单提速（第二轮）：两次补单触发的最小间隔。
+     * 15 秒 → 4 秒 → 500 毫秒。4 秒会把「0~5 秒随机定时器」里间隔小于 4 秒的轮次
+     * 整轮吞掉（定时器触发了却不发请求），随机节奏形同虚设；500 毫秒只用来挡
+     * 「同一瞬间多个触发源齐发」，真正的并发保护在服务端 flock 进程锁。
+     */
+    private static final long POLLER_MIN_INTERVAL_MS = 500L;
+    /** 补单专用响应超时（秒）：快判死、快重来，绝不占着补单线程干等 15 秒 */
+    private static final int POLLER_TIMEOUT_S = 8;
     /** 独立补单定时器只允许启动一条链（startMergedPolling 可能被多次调用） */
     private boolean pollerTimerStarted = false;
+    /**
+     * ★ 补单专用单线程（第二轮核心改动）：HTTP 从调用方线程挪到这里，fire-and-forget。
+     * 队列容量 1 + 丢弃策略：正在补单时后来的触发直接丢（0~5 秒后随机节奏会再来），
+     * 既不堆积任务也不并发打 poller；守护线程，随 JVM 退出。
+     * 这条线程不是 sdf1-db-worker，因此不再吃 sendHard 的 10 秒硬超时，
+     * 也不会把 DB 队列的 10 秒任务预算耗光。
+     */
+    private final java.util.concurrent.ExecutorService pollerExecutor =
+            new java.util.concurrent.ThreadPoolExecutor(1, 1, 30L, java.util.concurrent.TimeUnit.SECONDS,
+                    new java.util.concurrent.LinkedBlockingQueue<>(1),
+                    r -> {
+                        Thread t = new Thread(r, "sdf1-poller");
+                        t.setDaemon(true);
+                        return t;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.DiscardPolicy());
     private static final long LOG_INTERVAL = 60000; // 1分钟内不重复打印相同日志
 
     /**
@@ -9213,7 +9310,7 @@ public class WebManager {
                         String pollerUrl = webBaseUrl + "/api/poller_online.php?secret="
                                 + java.net.URLEncoder.encode(secretKey, "UTF-8");
                         long pollerStart = System.currentTimeMillis();
-                        String pollerResp = doGet(pollerUrl);
+                        String pollerResp = doGet(pollerUrl, POLLER_TIMEOUT_S);
                         long pollerElapsed = System.currentTimeMillis() - pollerStart;
 
                         if (pollerResp != null) {

@@ -782,9 +782,9 @@ public class Main extends JavaPlugin
         // ===== OP白名单（opwl，仅控制台；15秒文件热重载 + 整点(:15/:30/:45)定点扫描）=====
         opWhiteListMgr = new OpWhiteListManager(this);
         getServer().getPluginManager().registerEvents(opWhiteListMgr, this);
-        if (getCommand("opwl") != null) {
-            getCommand("opwl").setExecutor(this);
-        }
+        // ★ 2026-10-08 最小化信息透露：opwl 不再在 plugin.yml 注册，
+        //   改由 onUnknownCommand 的 dispatchConsoleOnlyCommand 接管（仅控制台），
+        //   玩家侧表现为「这指令不存在」（不进 /help、不进 Tab、不进相似建议）。
         getCommand("back").setTabCompleter(quickBack);
 
         // ===== 药水类成就防作弊 =====
@@ -3904,6 +3904,18 @@ public class Main extends JavaPlugin
                 ? ("玩家/" + ((Player) sender).getName())
                 : sender.getClass().getSimpleName();
 
+        // ---- 0.5) 控制台专属指令（conmsg / opwl）----
+        // ★ 2026-10-08 最小化信息透露：这俩指令已从 plugin.yml 摘除，
+        //   玩家敲它 = 与「不存在的指令」完全一样（走下面第 3 步：压制原生 unknown
+        //   报错、相似建议里也永远不含它们），绝不再回「仅控制台可用 / 需要控台权限」
+        //   —— 那等于告诉玩家「有指令、只是你没权限」，反而会勾起攻打控制台抢权限。
+        //   控制台侧则在这里就地接管执行，功能不变。
+        if (!isPlayer && dispatchConsoleOnlyCommand(sender, body)) {
+            suppressUnknown(e);
+            getLogger().info("[无感切换] 控制台专属指令已执行: \"" + body + "\"");
+            return;
+        }
+
         // ---- 1) 命中我们 4 插件的指令 -> 大小写不敏感直接执行 ----
         if (dispatchOwnCommand(sender, body)) {
             getLogger().info("[无感切换] 已接管并执行: \"" + body
@@ -4984,6 +4996,105 @@ public class Main extends JavaPlugin
      * 让玩家自己挑一个手动执行，而不是原样甩 unknown。
      */
 
+
+    // ===== 控制台专属指令（conmsg / opwl）：2026-10-08 最小化信息透露 =====
+    //
+    // 【为什么从 plugin.yml 摘掉注册】只要插件注册了指令，Bukkit 就认识它：
+    //   玩家敲 /opwl 会命中 onCommand，我们只能回一句「仅控制台可用 / 需要控台权限」——
+    //   这等于亲口告诉玩家「有这么个指令，只是你没权限」，反而可能勾起攻打控制台
+    //   抢权限的念头；而且它还会出现在 /help、Tab 补全和相似指令建议里。
+    //   摘掉注册后，玩家敲它会落到 UnknownCommandEvent，走与「不存在的指令」完全
+    //   相同的路径：suppressUnknown 压掉原生报错 + sendSimilarHint 的候选里永远
+    //   没有 conmsg/opwl（filterByPermission 双保险）=> 玩家的体感就是
+    //   「这指令不存在」，一个字都不多说。
+    //   控制台则由下面的 dispatchConsoleOnlyCommand 就地接管执行，功能一点不减。
+
+    /**
+     * 控制台专属指令（conmsg / opwl）就地分发。
+     *
+     * <p><b>★ 认领了就一定返回 true</b>（哪怕执行时抛异常）——否则会漏到
+     * {@code handleConsoleMiss}，被当成「运维手打的话」广播给全服。
+     *
+     * @return true = 已接管执行（调用方负责 suppressUnknown）；
+     *         false = 不归我管，交回 UnknownCommandEvent 的通用流程
+     */
+    private boolean dispatchConsoleOnlyCommand(
+            org.bukkit.command.CommandSender sender, String body) {
+        // 玩家一律不接管：让他们走「指令不存在」的通用路径，一个字都不提示
+        if (sender instanceof Player) return false;
+
+        String label;
+        String rest;
+        try {
+            int sp = body.indexOf(' ');
+            label = (sp < 0 ? body : body.substring(0, sp)).trim();
+            rest = sp < 0 ? "" : body.substring(sp + 1);
+        } catch (Throwable t) {
+            return false;
+        }
+        if (label.startsWith("/")) label = label.substring(1);
+        label = label.toLowerCase(java.util.Locale.ROOT);
+        int colon = label.lastIndexOf(':');
+        if (colon >= 0 && colon < label.length() - 1) label = label.substring(colon + 1);
+
+        boolean ours = "opwl".equals(label) || "conmsg".equals(label);
+        if (!ours) return false;
+
+        try {
+            String[] args = splitArgs(rest);
+            if ("opwl".equals(label)) {
+                if (opWhiteListMgr == null) {
+                    sender.sendMessage("§c[OP白名单] 模块未加载，指令暂不可用。");
+                } else {
+                    opWhiteListMgr.onCommand(sender, args);
+                }
+            } else {
+                runConmsg(sender, args);
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[无感切换] 控制台专属指令执行失败: "
+                    + t.getClass().getSimpleName() + " - " + t.getMessage());
+        }
+        return true;
+    }
+
+    /** 按空白切参（连续空格自动合并；空串返回空数组） */
+    private static String[] splitArgs(String rest) {
+        rest = rest == null ? "" : rest.trim();
+        return rest.isEmpty() ? new String[0] : rest.split("\\s+");
+    }
+
+    /**
+     * /conmsg 执行体（设置控制台发言署名）。
+     * ★ 2026-10-08：原来玩家分支的「这个指令只有控制台能用哦 / 这是控制台用的指令」
+     *   提示已全部删除 —— 指令不在 plugin.yml 里，玩家根本走不到这里，也不该走到。
+     */
+    private boolean runConmsg(org.bukkit.command.CommandSender sender, String[] args) {
+        String nm = args.length > 0 ? args[0].trim() : "";
+        // ★ 用户名只做 & 色码兼容，**不支持换行**：
+        //   换行/制表一律压成空格（署名占一行，多行会破聊天框版式）；
+        //   色码保留，由 parseLegacyOneLine 统一按 & 解析。
+        nm = nm.replaceAll("[\\r\\n\\t]+", " ").trim();
+        // ★ "clear" 是 conmsg 的保留子参数 = 恢复出厂设置（署名回到默认"管理员"）。
+        //   只在本方法拦：控制台直接敲 /clear 仍走原版清背包，插件不接管。
+        if ("clear".equalsIgnoreCase(nm)) {
+            consoleName = null;
+            sender.sendMessage("§a已恢复控制台发言署名为默认：§f" + getConsoleName());
+            sender.sendMessage("§7（想清背包请直接敲 §f/clear §7，那是原版指令）");
+            getLogger().info("[无感切换] 控制台署名已恢复默认");
+            return true;
+        }
+        if (nm.isEmpty()) {
+            sender.sendMessage("§e用法: §f/conmsg <名字> §e或 §f/conmsg clear §8(恢复默认)");
+            sender.sendMessage("§7当前署名: §f" + getConsoleName());
+        } else {
+            if (nm.length() > 16) nm = nm.substring(0, 16);
+            consoleName = nm;
+            sender.sendMessage("§a已设置控制台发言署名为: §f" + nm);
+            getLogger().info("[无感切换] 控制台署名已改为: " + nm);
+        }
+        return true;
+    }
 
     private void handleBanCommand(String rawCommand) {
         if (rawCommand.isEmpty()) return;
@@ -7301,55 +7412,25 @@ public class Main extends JavaPlugin
 
         String cmdName = cmd.getName().toLowerCase();
 
-        // ===== /opwl：OP白名单（仅控制台；玩家调用给提示）=====
+        // ===== /opwl：OP白名单（仅控制台）=====
+        // ★ 2026-10-08 最小化信息透露：opwl 已从 plugin.yml 摘除，正常走不到这里；
+        //   此处只做兜底，玩家侧一律静默 —— 绝不再回「OP白名单仅控制台可用」，
+        //   那等于告诉玩家「有这个指令、只是你没权限」，反而会勾起攻打控制台的念头。
         if (cmdName.equals("opwl")) {
             if (!(sender instanceof Player) && opWhiteListMgr != null) {
                 opWhiteListMgr.onCommand(sender, args);
-            } else if (sender instanceof Player) {
-                sender.sendMessage("§7OP白名单仅控制台可用；玩家 §f/op §7已被插件接管，"
-                        + "需要授权请联系管理员在控制台执行 §f/opwl add <玩家>§7，"
-                        + "或直接编辑 §fOP白名单/opwl.json §7（强制手段，不查注册）");
             }
             return true;
         }
 
-        // ===== /conmsg <名字>：控制台发言署名（仅控制台可用）=====
+        // ===== /conmsg <名字>：控制台发言署名（仅控制台）=====
+        // ★ 2026-10-08 最小化信息透露：conmsg 已从 plugin.yml 摘除，正常走不到这里；
+        //   此处只做兜底（万一有人把注册加回来），玩家侧一律静默，不给任何提示。
         if (cmdName.equals("conmsg")) {
-            if (!(sender instanceof Player)) {
-                String nm = args.length > 0 ? args[0].trim() : "";
-                // ★ 用户名只做 & 色码兼容，**不支持换行**：
-                //   换行/制表一律压成空格（署名占一行，多行会破聊天框版式）；
-                //   色码保留，由 parseLegacyOneLine 统一按 & 解析。
-                nm = nm.replaceAll("[\\r\\n\\t]+", " ").trim();
-                // ★ "clear" 是 conmsg 的保留子参数 = 恢复出厂设置（署名回到默认"管理员"）。
-                //   只在本分支拦：控制台/玩家直接敲 /clear 仍走原版清背包，插件不接管。
-                if ("clear".equalsIgnoreCase(nm)) {
-                    consoleName = null;
-                    sender.sendMessage("§a已恢复控制台发言署名为默认：§f"
-                            + getConsoleName());
-                    sender.sendMessage("§7（想清背包请直接敲 §f/clear §7，那是原版指令）");
-                    getLogger().info("[无感切换] 控制台署名已恢复默认");
-                    return true;
-                }
-                if (nm.isEmpty()) {
-                    sender.sendMessage("§e用法: §f/conmsg <名字> §e或 §f/conmsg clear §8(恢复默认)");
-                    sender.sendMessage("§7当前署名: §f" + getConsoleName());
-                } else {
-                    if (nm.length() > 16) nm = nm.substring(0, 16);
-                    consoleName = nm;
-                    sender.sendMessage("§a已设置控制台发言署名为: §f" + nm);
-                    getLogger().info("[无感切换] 控制台署名已改为: " + nm);
-                }
+            if (sender instanceof Player) {
                 return true;
             }
-            Player cp = (Player) sender;
-            if (!isPrivileged(cp)) {
-                cp.sendMessage("§7这个指令只有控制台能用哦");
-                return true;
-            }
-            cp.sendMessage("§7这是控制台用的指令，"
-                    + "直接在服务器控制台输入即可");
-            return true;
+            return runConmsg(sender, args);
         }
 
         // ===== /2fa 二次验证绑定（TOTP，全部校验在Java本地）=====

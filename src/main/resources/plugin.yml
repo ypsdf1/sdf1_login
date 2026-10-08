@@ -117,9 +117,6 @@ commands:
   web:
     description: 生成Web端登录令牌
     usage: /web
-  conmsg:
-    description: 控制台发言署名（仅控制台可用，替换转发聊天时的 Console 字样）—— conmsg clear 恢复默认"管理员"
-    usage: /conmsg <名字> | /conmsg clear
   控制台:
     description: 生成Web端登录令牌(中文版)
     usage: /控制台
@@ -190,9 +187,3 @@ commands:
   cleartake:
     description: 清空DB队列中未回应的web同步任务（管理员）
     usage: /cleartake
-  opwl:
-    description: OP白名单管理（仅控制台可用，15秒自动热重载）
-    usage: /opwl <add|addtime|removetime|remove|list|reload|help>
-  opwl:
-    description: op白名单
-    usage: /opwl
