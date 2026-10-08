@@ -24,10 +24,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 
 /**
@@ -55,6 +57,9 @@ import java.util.regex.Matcher;
  *   - 2026-10-08：临时OP 存绝对到期时间（exp: 前缀），重载不再重算 → 修复「自动续期」；
  *   - 2026-10-08：上下任提示当事人（在线直发、离线暂存上线补发）；
  *   - 2026-10-08：新增 /opwl check <玩家>（仅注册校验，供 Main 侧 /op 放行判断）。
+ *   - 2026-10-08 事故修复：① ops.json 真实字段是 uuid（不是 id），复原按 name→uuid→id 依次尝试；
+ *     ② 复原的 OP 自动写回白名单（否则同一轮巡检会把它们当非法持有又撤一遍）；
+ *     ③ 配置丢失/解码失败自动隔离坏文件 + 释放 jar 内默认配置 + 复原 OP（热重载与 reload 同生效）。
  *   - opwl 命令仅限控台（Main 侧对玩家静默 return，连帮助都不给）。
  *
  * 所有授权/撤销都在主线程执行（scheduler + 命令 + join 事件），无并发问题。
@@ -69,6 +74,13 @@ public class OpWhiteListManager implements Listener {
      *   NATIVE_OPS_BACKUP 是留底文件名（落在 OP白名单/ 目录内）。 */
     private static final String NATIVE_OPS_PREFIX = "ops.json";
     private static final String NATIVE_OPS_BACKUP = "ops.json.bak";
+
+    /** 损坏配置的隔离标记：坏文件改名为「原名.损坏.<时间戳>.bak」，绝不真删（可随时改回来） */
+    private static final String BROKEN_MARK = ".损坏.";
+    /** jar 内默认模板的资源路径（自愈时释放的就是它） */
+    private static final String TEMPLATE_RESOURCE = "OP白名单/opwl.json";
+    /** 释放到目录里的默认文件名 */
+    private static final String DEFAULT_TEMPLATE = "opwl.json";
 
     private final Main plugin;
     private final File dir;
@@ -85,6 +97,10 @@ public class OpWhiteListManager implements Listener {
     /** 文件指纹（路径 + lastModified + 长度），变化才重载打日志 */
     private String lastPath = "";
     private long lastStamp = Long.MIN_VALUE;
+    /**
+     * 最近一次从备份复原回来的 OP（供 apply() 做「本轮不撤销」兜底）
+     */
+    private final List<String> restoredOps = new ArrayList<>();
     /** 报警节流表：小写用户名 → 上次报警毫秒 */
     private final Map<String, Long> lastWarn = new HashMap<>();
     /** 离线待投递提示：小写用户名 → 待发文案（上线时投递，最多留 2 条/人） */
@@ -115,6 +131,11 @@ public class OpWhiteListManager implements Listener {
         if (cfg != null) {
             importNativeOps();
         }
+        // ★ 2026-10-08 事故兜底：服务器重启后 parseFailed 已复位为 false，
+        //   loadFrom 里的「恢复接管」分支永远不再触发 —— 若此时原版 ops.json 已被清空、
+        //   而留底备份还在，说明上一轮卸过 OP 却没复原，这里主动补一次恢复。
+        //   restoreNativeOps() 自带「ops.json 里还有内容就不动」的守卫，正常启动零开销。
+        recoverOpsAndAdopt("插件启动");
         // 整点扫描（:15/:30/:45）：周期 18000 tick = 15 分钟
         // ★ 2026-10-08 修正：原写 9000 tick 注释称 15 分钟，实际 9000×50ms=7.5 分钟，
         //   导致初始对齐整点后每 7.5 分钟漂一次，扫描点落在 10:55/11:01/11:08 等
@@ -137,8 +158,14 @@ public class OpWhiteListManager implements Listener {
      *  ★ 2026-10-08：排除 ops.json 及其备份（ops.json*）——那是我们留底的原版 OP 名单，
      *    结构与白名单完全不同，一旦被当成配置解析必然失败，进而误触发全量卸载。 */
     private File pickJson() {
-        File[] fs = dir.listFiles((d, n) -> n.toLowerCase(Locale.ROOT).endsWith(".json")
-                && !n.toLowerCase(Locale.ROOT).startsWith(NATIVE_OPS_PREFIX));
+        File[] fs = dir.listFiles((d, n) -> {
+            String ln = n.toLowerCase(Locale.ROOT);
+            // ops.json* = 我们留底的原版 OP 名单；含 .损坏. = 已隔离的坏文件
+            // 两者都不是白名单，被当成配置解析必然失败 → 误触发全量卸载
+            return ln.endsWith(".json")
+                    && !ln.startsWith(NATIVE_OPS_PREFIX)
+                    && !ln.contains(BROKEN_MARK);
+        });
         if (fs == null || fs.length == 0) {
             return null;
         }
@@ -156,42 +183,71 @@ public class OpWhiteListManager implements Listener {
         }
     }
 
+    /**
+     * 读取并解析配置。
+     *
+     * ★ 2026-10-08 起内置自愈（热重载与 /opwl reload 走同一条路径，行为一致）：
+     *   · 目录里没有 json     → 从 jar 释放默认配置后重试；
+     *   · json 语法坏/字段缺 → 先把坏文件改名隔离（绝不删除，可随时改回来），
+     *                        再释放默认配置重试；
+     *   · 解析成功后        → 复原原版 OP 备份【并把复原的人写回白名单】，
+     *                        否则同一轮 apply() 会把他们当非法持有又撤一遍。
+     *   自愈也失败（jar 内模板都坏了）才走 fail() 的卸载流程，绝不静默放过。
+     */
     private void loadFrom(File f, boolean log) {
         if (f == null || !f.exists()) {
+            if (healBrokenConfig(f, "OP白名单目录里没有任何 .json 文件")) {
+                return;
+            }
             fail("OP白名单目录里没有任何 .json 文件（plugins/Sdf1_login/OP白名单/）");
             return;
         }
         try {
-            String text = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
-            JsonObject o = JsonParser.parseString(text).getAsJsonObject();
-            JsonElement en = o.get("启用状态");
-            if (en == null || !en.isJsonPrimitive() || !en.getAsJsonPrimitive().isBoolean()) {
-                throw new IllegalArgumentException("缺少布尔字段「启用状态」");
-            }
-            JsonElement pu = o.get("无固定期限授权列表");
-            if (pu == null || !pu.isJsonArray()) {
-                throw new IllegalArgumentException("「无固定期限授权列表」必须是数组 []");
-            }
-            JsonElement td = o.get("有固定期限授权列表");
-            if (td == null || !td.isJsonObject()) {
-                throw new IllegalArgumentException("「有固定期限授权列表」必须是对象 {}");
-            }
+            JsonObject o = parseConfigFile(f);
             cfg = o;
-            if (parseFailed) {
-                plugin.getLogger().info("[OP白名单] 配置已恢复正常，恢复接管");
-                // ★ 数据第一优先级：卸载前备份的原版 ops.json 在此复原，
-                //   让当初被卸载的原版 OP 名单回到服务端（随后 apply() 按白名单再校准）
-                restoreNativeOps();
-            }
+            boolean wasFailed = parseFailed;
             parseFailed = false;
+            if (wasFailed) {
+                plugin.getLogger().info("[OP白名单] 配置已恢复正常，恢复接管");
+            }
+            recoverOpsAndAdopt(wasFailed ? "配置恢复" : "配置重载");
             if (log) {
-                plugin.getLogger().info("[OP白名单] 已重载 opwl.json："
+                plugin.getLogger().info("[OP白名单] 已重载 " + f.getName() + "："
                         + (isWhitelistActive() ? "启用" : "停用") + "，无固定期限 "
                         + permanentList().size() + " 人，有固定期限 " + timedObject().size() + " 人");
             }
         } catch (Exception e) {
+            if (healBrokenConfig(f, f.getName() + " 解析失败：" + e.getMessage())) {
+                return;
+            }
             fail(f.getName() + " 解析失败：" + e.getMessage());
         }
+    }
+
+    /** 读文件 + 校验必需字段；失败抛异常（loadFrom 与自愈重试共用同一套判据） */
+    private JsonObject parseConfigFile(File f) throws Exception {
+        String text = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+        if (text.isEmpty()) {
+            throw new IllegalArgumentException("文件内容为空");
+        }
+        JsonElement root = JsonParser.parseString(text);
+        if (!root.isJsonObject()) {
+            throw new IllegalArgumentException("顶层不是 JSON 对象（应以 { 开头）");
+        }
+        JsonObject o = root.getAsJsonObject();
+        JsonElement en = o.get("启用状态");
+        if (en == null || !en.isJsonPrimitive() || !en.getAsJsonPrimitive().isBoolean()) {
+            throw new IllegalArgumentException("缺少布尔字段「启用状态」");
+        }
+        JsonElement pu = o.get("无固定期限授权列表");
+        if (pu == null || !pu.isJsonArray()) {
+            throw new IllegalArgumentException("「无固定期限授权列表」必须是数组 []");
+        }
+        JsonElement td = o.get("有固定期限授权列表");
+        if (td == null || !td.isJsonObject()) {
+            throw new IllegalArgumentException("「有固定期限授权列表」必须是对象（用 {} 表示）");
+        }
+        return o;
     }
 
     /** 计算距下一个整点(:00/:15/:30/:45)的毫秒数（最小 1ms）。 */
@@ -344,13 +400,24 @@ public class OpWhiteListManager implements Listener {
     }
 
     /**
-     * ★ json 修复后复原原版 OP：把留底的 ops.json 还原回服务端。
-     *   备份缺失/不可读时静默跳过，绝不阻断恢复接管。
+     * ★ 从留底备份复原原版 OP（返回复原到的玩家名，供 adoptToWhitelist 写回白名单）。
+     *
+     * ★ 2026-10-08 生产事故双修：
+     *   ① 原版 ops.json 的字段名是 【uuid】，旧代码只认 "id" → UUID 永远解析不到，
+     *      只能退回按名字猜。现按 name → uuid → id 依次尝试（name 最稳，setOp 不依赖解析）。
+     *   ② 守卫：原版 ops.json 里【还有内容】就说明不是被我们清空过的场景，一律不动；
+     *      只有它空/缺失（= 被 fail() 清空、或事故后一直是 []）才复原，避免误覆盖运维的主动改动。
+     *   备份缺失/不可读时返回空列表，绝不阻断恢复流程。
      */
-    private void restoreNativeOps() {
+    private List<String> restoreNativeOps() {
+        List<String> restored = new ArrayList<>();
+        File ops = nativeOpsFile();
+        if (ops.exists() && ops.length() > 2) {
+            return restored; // 原版名单还有内容 → 没被清空过，不干预
+        }
         File bak = nativeOpsBackup();
         if (!bak.exists() || bak.length() == 0) {
-            return;
+            return restored;
         }
         try {
             String text = new String(Files.readAllBytes(bak.toPath()), StandardCharsets.UTF_8).trim();
@@ -358,36 +425,200 @@ public class OpWhiteListManager implements Listener {
             if (!root.isJsonArray()) {
                 plugin.getLogger().warning("[OP白名单] 备份 " + NATIVE_OPS_BACKUP
                         + " 不是 JSON 数组，跳过复原");
-                return;
+                return restored;
             }
-            int n = 0;
             for (JsonElement e : root.getAsJsonArray()) {
                 if (!e.isJsonObject()) {
                     continue;
                 }
                 JsonObject o = e.getAsJsonObject();
-                java.util.UUID id = null;
-                if (o.has("id") && o.get("id").isJsonPrimitive()) {
-                    try {
-                        id = java.util.UUID.fromString(o.get("id").getAsString());
-                    } catch (Exception ignore) { /* id 非法则退回按名字复原 */ }
+                String name = strField(o, "name");
+                java.util.UUID id = uuidField(o, "uuid", "id");
+                OfflinePlayer op = null;
+                if (name != null && !name.isEmpty()) {
+                    op = Bukkit.getOfflinePlayer(name);
+                } else if (id != null) {
+                    op = Bukkit.getOfflinePlayer(id);
                 }
-                String name = (o.has("name") && o.get("name").isJsonPrimitive())
-                        ? o.get("name").getAsString() : null;
-                OfflinePlayer op = (id != null)
-                        ? Bukkit.getOfflinePlayer(id)
-                        : (name != null && !name.isEmpty() ? Bukkit.getOfflinePlayer(name) : null);
-                if (op == null || op.isOp()) {
+                if (op == null) {
                     continue;
                 }
-                op.setOp(true);
-                n++;
+                String real = (op.getName() != null && !op.getName().isEmpty())
+                        ? op.getName() : name;
+                if (real == null || real.isEmpty()) {
+                    continue;
+                }
+                try {
+                    if (!op.isOp()) {
+                        op.setOp(true); // 档案未知会抛异常，单独兜住，不中断整批复原
+                    }
+                    if (!containsIgnoreCase(restored, real)) {
+                        restored.add(real);
+                    }
+                } catch (Throwable t) {
+                    plugin.getLogger().warning("[OP白名单] 复原原版 OP 失败（跳过 " + real
+                            + "，多半是本机没有他的档案）: " + t.getMessage());
+                }
             }
-            plugin.getLogger().info("[OP白名单] 已从备份复原原版 OP " + n + " 人（"
-                    + NATIVE_OPS_BACKUP + "），随后按白名单校准");
+            if (!restored.isEmpty()) {
+                plugin.getLogger().info("[OP白名单] 已从备份复原原版 OP " + restored.size()
+                        + " 人（" + NATIVE_OPS_BACKUP + "）：" + String.join(", ", restored));
+            }
         } catch (Exception ex) {
             plugin.getLogger().warning("[OP白名单] 从备份复原原版 OP 失败: " + ex.getMessage());
         }
+        return restored;
+    }
+
+    /**
+     * ★ 把复原回来的 OP 写进「无固定期限授权列表」。
+     *   不写回去的话，下一轮 apply() 会把他们当成「不在白名单的非法持有」当场撤销 + 报警
+     *   —— 这正是线上「刚复原 11 人又被全部撤掉」的直接原因。
+     */
+    private int adoptToWhitelist(List<String> names) {
+        if (cfg == null || names == null || names.isEmpty()) {
+            return 0;
+        }
+        List<String> added = new ArrayList<>();
+        for (String name : names) {
+            if (name == null || name.isEmpty()
+                    || hasPermanent(name) || findTimed(name) != null) {
+                continue;
+            }
+            permanentList().add(new JsonPrimitive(name));
+            added.add(name);
+        }
+        if (added.isEmpty()) {
+            return 0;
+        }
+        saveConfig();
+        plugin.getLogger().info("[OP白名单] 已把复原的 " + added.size()
+                + " 人写回「无固定期限授权列表」（不写回会被巡检当非法持有撤销）→ "
+                + String.join(", ", added));
+        return added.size();
+    }
+
+    /**
+     * OP 恢复总入口（配置重载 / 自愈 / 启动 三条路共用）：
+     *   ① 从 ops.json.bak 复原原版 OP；② 把复原的人写回白名单；③ 静默收尾。
+     *   两条路都带守卫，正常运行（ops.json 有内容）下是零开销空操作。
+     */
+    private void recoverOpsAndAdopt(String trigger) {
+        if (cfg == null) {
+            return;
+        }
+        List<String> back = restoreNativeOps();
+        int n = adoptToWhitelist(back);
+        if (!back.isEmpty()) {
+            for (String b : back) {
+                if (!containsIgnoreCase(restoredOps, b)) {
+                    restoredOps.add(b);
+                }
+            }
+        }
+        if (n > 0) {
+            plugin.getLogger().info("[OP白名单] OP 恢复完成（触发: " + trigger + "）→ "
+                    + "当前白名单 无固定期限 " + permanentList().size() + " 人 / 有固定期限 "
+                    + timedObject().size() + " 人");
+        }
+    }
+
+    /**
+     * ★ 自愈：配置丢失或解码失败时的补救（用户 2026-10-08 要求，热重载与 reload 同样生效）。
+     *   步骤：① 损坏文件改名隔离为「原名.损坏.&lt;时间戳&gt;.bak」（**不删除**，随时可改回来）；
+         ② 从 jar 释放默认配置；③ 用同一套判据校验能否解析；
+         ④ 通过则恢复接管 + 复原 OP 备份 + 写回白名单。
+     *
+     * @return true = 已自愈，调用方必须直接 return（不要再走 fail 卸载流程）
+     */
+    private boolean healBrokenConfig(File broken, String why) {
+        String ts = new SimpleDateFormat("yyyyMMdd-HHmmss").format(new Date());
+        if (broken != null && broken.exists()) {
+            File moved = new File(dir, broken.getName() + BROKEN_MARK + ts + ".bak");
+            try {
+                Files.move(broken.toPath(), moved.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                plugin.getLogger().warning("[OP白名单] 损坏配置已安全隔离为 OP白名单/"
+                        + moved.getName() + "（未删除，修好后改回来即可）");
+            } catch (Exception e) {
+                plugin.getLogger().warning("[OP白名单] 隔离损坏配置失败（将直接覆盖释放模板）: "
+                        + e.getMessage());
+            }
+        }
+        File tpl = releaseTemplate();
+        if (tpl == null) {
+            return false;
+        }
+        try {
+            cfg = parseConfigFile(tpl);
+            file = tpl;
+            watched = tpl;
+            parseFailed = false;
+            updateStamp();
+            plugin.getLogger().warning("[OP白名单] 配置已自愈（原因: " + why
+                    + "）→ 已从 jar 释放默认配置 OP白名单/" + tpl.getName()
+                    + "，接着复原 OP 备份并写回白名单");
+            recoverOpsAndAdopt("配置自愈");
+            return true;
+        } catch (Exception e2) {
+            cfg = null;
+            plugin.getLogger().severe("[OP白名单] 自愈失败：连 jar 内的默认配置都解析不了（"
+                    + e2.getMessage() + "），放弃自愈、保持原状");
+            return false;
+        }
+    }
+
+    /** 从 jar 释放默认配置到目录（覆盖同名文件），成功返回落地文件、失败返回 null */
+    private File releaseTemplate() {
+        File tpl = new File(dir, DEFAULT_TEMPLATE);
+        try {
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+            try (InputStream in = plugin.getResource(TEMPLATE_RESOURCE)) {
+                if (in == null) {
+                    plugin.getLogger().severe("[OP白名单] jar 内缺少模板 " + TEMPLATE_RESOURCE
+                            + "，无法自愈，请手工在 " + dir.getPath() + " 里放一个 .json");
+                    return null;
+                }
+                Files.copy(in, tpl.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            return tpl;
+        } catch (Exception e) {
+            plugin.getLogger().severe("[OP白名单] 释放默认配置失败: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private static String strField(JsonObject o, String key) {
+        return (o.has(key) && o.get(key).isJsonPrimitive())
+                ? o.get(key).getAsString() : null;
+    }
+
+    /** 依次尝试多个键名取 UUID（ops.json 的真实字段是 uuid，旧版本/其它工具可能写 id） */
+    private static java.util.UUID uuidField(JsonObject o, String... keys) {
+        for (String k : keys) {
+            String v = strField(o, k);
+            if (v == null) {
+                continue;
+            }
+            try {
+                return java.util.UUID.fromString(v.trim());
+            } catch (Exception ignore) {
+                // 试下一个键名
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsIgnoreCase(List<String> list, String v) {
+        for (String s : list) {
+            if (s.equalsIgnoreCase(v)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 文件指纹：路径 + lastModified + 长度（任一变化都视为变更） */
@@ -487,6 +718,20 @@ public class OpWhiteListManager implements Listener {
             return;
         }
         long now = System.currentTimeMillis();
+        // ★ 双保险：adoptToWhitelist 已把复原的人写进白名单；这里再兜一层，
+        //   万一写回失败（只读盘/写回异常），也绝不在同一轮把刚复原的 OP 撤掉+报警。
+        Set<String> justRestored = new HashSet<>();
+        for (String n : restoredOps) {
+            if (!isWhitelisted(n)) {
+                justRestored.add(n.toLowerCase(Locale.ROOT));
+            }
+        }
+        restoredOps.clear();
+        if (!justRestored.isEmpty()) {
+            plugin.getLogger().warning("[OP白名单] 警告：复原的 " + justRestored.size()
+                    + " 人没能写进白名单，本轮巡检暂不撤销他们，请立刻检查配置文件是否可写 "
+                    + String.join(", ", justRestored));
+        }
         // 1) 非法持有扫描：持 OP 但不在白名单 → 撤销 + 报警
         for (OfflinePlayer op : new ArrayList<>(Bukkit.getOperators())) {
             String n = op.getName();
@@ -496,23 +741,75 @@ public class OpWhiteListManager implements Listener {
             if (isWhitelisted(n)) {
                 continue;
             }
+            if (justRestored.contains(n.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
             setOpByName(n, false);
             warnIllegal(n, now, describeIllegal(n));
             // 卸任提示当事人（在线直发，离线暂存）
             notifyOpChange(n, false, "自动撤销（不在白名单：" + describeIllegal(n) + "）");
         }
-        // 2) 白名单内在线玩家补授（已是 OP 的跳过）
-        for (Player p : Bukkit.getOnlinePlayers()) {
-            if (p.isOp() || !isWhitelisted(p.getName())) {
+        // 2) 白名单内玩家补授（已是 OP 的跳过）
+        //    ★ 2026-10-08 现场修复：原实现只遍历【在线】玩家，导致离线授权人
+        //      永远拿不回 OP（config 里有 11 人授权、ops.json 却是 []，两者长期不一致，
+        //      服主 /op list 也看不到他们）。现改为：在线走 Player.setOp、
+        //      离线走 OfflinePlayer.setOp（无档案的自动跳过，等其上线时再补）。
+        for (String wn : whitelistedNames()) {
+            Player online = Bukkit.getPlayerExact(wn);
+            if (online != null) {
+                if (online.isOp()) {
+                    continue;
+                }
+                online.setOp(true);
+                plugin.getLogger().info("[OP白名单] 已授权 " + wn + " 获得 OP（在线）");
+                notifyOpChange(wn, true, grantTitle(wn));
                 continue;
             }
-            p.setOp(true);
-            plugin.getLogger().info("[OP白名单] 已授权 " + p.getName() + " 获得 OP");
-            // 上任提示当事人
-            notifyOpChange(p.getName(), true,
-                    hasPermanent(p.getName()) ? "长期OP（无固定期限）"
-                            : "临时OP（到期 " + expDisplay(findTimed(p.getName())) + "）");
+            if (isOpNow(wn)) {
+                continue;
+            }
+            try {
+                OfflinePlayer off = Bukkit.getOfflinePlayer(wn);
+                if (!off.hasPlayedBefore()) {
+                    continue; // 本机没档案，setOp 会抛异常；等其上线时由 join 补授
+                }
+                off.setOp(true);
+                plugin.getLogger().info("[OP白名单] 已授权 " + wn + " 获得 OP（离线补授）");
+                notifyOpChange(wn, true, grantTitle(wn));
+            } catch (Throwable t) {
+                plugin.getLogger().warning("[OP白名单] 离线补授 " + wn + " 失败: "
+                        + t.getMessage());
+            }
         }
+    }
+
+    /** 白名单里的全部授权人名（永久 + 有固定期限，去重、保持配置顺序） */
+    private List<String> whitelistedNames() {
+        List<String> out = new ArrayList<>();
+        if (cfg == null) {
+            return out;
+        }
+        for (JsonElement e : permanentList()) {
+            if (e.isJsonPrimitive()) {
+                String v = e.getAsString();
+                if (v != null && !v.isEmpty() && !containsIgnoreCase(out, v)) {
+                    out.add(v);
+                }
+            }
+        }
+        for (Map.Entry<String, JsonElement> en : timedObject().entrySet()) {
+            String k = en.getKey();
+            if (k != null && !k.isEmpty() && !containsIgnoreCase(out, k)) {
+                out.add(k);
+            }
+        }
+        return out;
+    }
+
+    /** 上任提示用的授权描述（长期 / 临时+到期） */
+    private String grantTitle(String name) {
+        return hasPermanent(name) ? "长期OP（无固定期限）"
+                : "临时OP（到期 " + expDisplay(findTimed(name)) + "）";
     }
 
     /** 撤销非法持有 + 报警（控制台 + 全体在线 OP），带 60 秒节流 */
@@ -738,6 +1035,8 @@ public class OpWhiteListManager implements Listener {
                         + "，无固定期限 " + permanentList().size()
                         + " 人，有固定期限 " + timedObject().size() + " 人");
                 sender.sendMessage("§7提示：原生 OP 只在插件【首次加载】时导入；之后请用 /opwl add 或改 json 加人");
+                sender.sendMessage("§7自愈：配置丢失/解码失败会自动隔离坏文件（改名不删）+ 从 jar 释放默认配置"
+                        + " + 从备份复原 OP 并写回白名单");
                 return;
             }
             default:
@@ -1069,6 +1368,8 @@ public class OpWhiteListManager implements Listener {
         s.sendMessage("§7临时OP 到期时间固化为绝对时间（exp: 前缀），重载不会续期");
         s.sendMessage("§7配置目录: plugins/Sdf1_login/OP白名单/（独立目录，白名单 json 全在里面）");
         s.sendMessage("§7扫描节奏: 每 15 秒一次文件指纹热重载 + 整点(:15/:30/:45)定点扫描/补授权");
+        s.sendMessage("§7自愈: 配置丢失或解码失败 → 坏文件自动改名为 §f原名.损坏.<时间戳>.bak§7（不删）"
+                + "+ 从 jar 释放默认配置 + 从 ops.json.bak 复原 OP 并写回白名单");
         s.sendMessage("§7注册限制: /opwl add 只授权本服注册用户；非注册请改 json（强制手段，不查注册）");
         s.sendMessage("§7报警模板变量: §f{user}§7=玩家名 §f{time}§7=发现时间（中英文写法均可）");
         s.sendMessage("§d欢迎来到草原探险服务器，ip: mc2.ypshidifu.cn 端口(基岩版需要):30679");
