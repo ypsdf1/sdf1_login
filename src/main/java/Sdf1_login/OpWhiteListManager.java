@@ -115,16 +115,20 @@ public class OpWhiteListManager implements Listener {
         if (cfg != null) {
             importNativeOps();
         }
-        // 整点扫描（:15/:30/:45）：周期 9000 tick = 15 分钟
+        // 整点扫描（:15/:30/:45）：周期 18000 tick = 15 分钟
+        // ★ 2026-10-08 修正：原写 9000 tick 注释称 15 分钟，实际 9000×50ms=7.5 分钟，
+        //   导致初始对齐整点后每 7.5 分钟漂一次，扫描点落在 10:55/11:01/11:08 等
+        //   非整点时刻、还多冒一倍泡。18000 tick 才真正等于 15 分钟。
         // 初始延迟 = 距下一个整点的 tick 数（ms/50）
         // 同时保留 15s 文件指纹热重载：改写 json 后最迟 15s 生效
         // 这里把两件事都调度起来：
         //   a) 15s tick 只做 checkAndReload()（指纹变化才重载+打日志，无变化静默 apply）
         //   b) 整点扫描做 checkAndReload() + apply()（撤销非法持有 + 补授权）
+        //      且【无更新则不打印】心跳行——见 onQuarterPoint()
         Bukkit.getScheduler().runTaskTimer(plugin, this::checkAndReload, 300L, 300L);
         long delayMs = millisToNextQuarterPoint();
         Bukkit.getScheduler().runTaskTimer(plugin, this::onQuarterPoint,
-                (long) delayMs / 50L, 9000L);
+                (long) delayMs / 50L, 18000L);
     }
 
     // ================= 配置读取 =================
@@ -402,25 +406,49 @@ public class OpWhiteListManager implements Listener {
     // 文件指纹热重载保留在 checkAndReload() 内：每个扫描点先比指纹，
     // 有变化才重新解析 + 打日志；没变化就静默应用。
 
-    /** 检查文件指纹，有变化则重载，然后静默应用。 */
-    private void checkAndReload() {
+    /**
+     * 检查文件指纹，有变化则重载，然后静默应用。
+     *
+     * @return true = 本轮确实发生了重载（文件指纹有变化）；false = 没变化，纯静默应用
+     */
+    private boolean checkAndReload() {
         File f = pickJson();
         String p = f == null ? "" : f.getAbsolutePath();
         long st = f == null ? 0L : f.lastModified() + f.length();
+        boolean reloaded = false;
         if (!p.equals(lastPath) || st != lastStamp) {
             file = f;
             watched = f;
             loadFrom(f, true); // 有变化：重新解析 + 打日志（含解析失败告警）
             updateStamp();
+            reloaded = true;
         }
         // 无论有无变化都做一次静默应用（撤销非法持有 + 补授权）
         apply();
+        return reloaded;
     }
 
-    /** 每个整点（:15/:30/:45）执行一次扫描 + 补授 + 心跳日志。 */
+    /** 上次扫描点心跳打印时的统计快照（永久数/临期数/非法持有数），无变化不重打 */
+    private String lastScanSnapshot = "";
+
+    /**
+     * 每个整点（:15/:30/:45）执行一次扫描 + 补授。
+     *
+     * ★ 2026-10-08 设计订正：心跳行【无更新就闭嘴】。
+     *   只要本轮发生了重载、或三个统计数字与上次不同（有人被补授权/被撤销/名单变了），
+     *   才打印一行；否则完全静默——彻底做到「没更新不说话」。
+     */
     private void onQuarterPoint() {
-        checkAndReload();
+        boolean reloaded = checkAndReload();
+        String snap = (cfg == null ? "?" : String.valueOf(permanentList().size()))
+                + "/" + (cfg == null ? "?" : String.valueOf(timedObject().size()))
+                + "/" + countIllegal();
+        if (!reloaded && snap.equals(lastScanSnapshot)) {
+            return; // 无更新 → 按设计闭嘴（重载与补授已经静默完成）
+        }
+        lastScanSnapshot = snap;
         plugin.getLogger().info("[OP白名单] 扫描点 " + nowHM()
+                + (reloaded ? "（配置有更新，已重载）" : "")
                 + " | 无固定期限 " + (cfg == null ? "?" : String.valueOf(permanentList().size()))
                 + " | 有固定期限 " + (cfg == null ? "?" : String.valueOf(timedObject().size()))
                 + " | 持OP未入白 " + countIllegal());
