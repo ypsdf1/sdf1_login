@@ -465,6 +465,11 @@ ul{margin:6px 0;padding-left:20px}
   <form method="post" action="install.php" autocomplete="off">
     <input type="hidden" name="act" value="save">
     <input type="hidden" name="csrf" value="<?php echo htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8'); ?>">
+    <?php if (secToken() !== ''): ?>
+    <!-- 已引导站点（config 有 SEC_ACCESS_TOKEN）：POST 也要过第三层令牌门禁；
+         本页只会渲染给已经过了门禁的访问者，令牌不出圈。全新站点为空 → 不输出。 -->
+    <input type="hidden" name="token" value="<?php echo htmlspecialchars(secToken(), ENT_QUOTES, 'UTF-8'); ?>">
+    <?php endif; ?>
 
     <h2>运行模式</h2>
     <div class="modes">

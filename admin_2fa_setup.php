@@ -17,6 +17,15 @@ secEnsureSession();
 secGatePage(true);
 $boot = secBootSessionActive();
 
+// ★ 首跑顺序（2026-10-09）：装库先于安全配置 —— install.php 还没跑完（文件在场、
+//   无 install.lock）时，本页先让位给数据库安装页；装完它自删，再回来配 2FA/白名单/令牌。
+//   引导模式下 secGatePage 已先行 302，这里兜住「已引导 / 本机直连」两种入口；
+//   已引导站点带 ?token= 过 install.php 的第三层门禁（令牌为空时 secTokenUrl 原样返回）。
+if (secInstallPending()) {
+    header('Location: ' . secTokenUrl('install.php'));
+    exit;
+}
+
 // ★ 首次部署：管理密码还是分发占位符 → 走初始化模式。
 //   旧行为在这里直接跳登录页，是个死胡同：登录要密码，而这时候根本没有可用密码。
 $needInit = !secAdminPassConfigured();

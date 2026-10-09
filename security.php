@@ -589,6 +589,16 @@ function secBootRecoveryRedirect() {
 }
 
 /**
+ * 数据库是否还没装完（2026-10-09「首跑顺序」判据）。
+ * 判据 = 自毁式安装页还在场上：install.php 存在 且 install.lock 不存在。
+ * 装完后 install.php 自删 + lock 落地 → 恒为 false；
+ * 线上老站根本没有 install.php → 同样恒为 false，行为零变化。
+ */
+function secInstallPending() {
+    return is_file(__DIR__ . '/install.php') && !is_file(__DIR__ . '/install.lock');
+}
+
+/**
  * 页面级闸门。$allowBoot=true 时接受 boot 令牌解锁（引导配置页 / 2FA 页使用）。
  * - 已引导 且 不在 IP 白名单 → nginx 原生 404（不是 403：403 会告诉探测者
  *   "这个文件确实存在"，与最小化信息透露原则冲突）；
@@ -608,6 +618,15 @@ function secGatePage($allowBoot = false) {
     if (!secIsBootstrapped()) {
         secLog('ip_gate_open_bootstrap', 'path=' . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-'));
         $script = basename(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '');
+        // ★ 首跑顺序（2026-10-09）：装库先于安全配置 —— install.php 还没跑完
+        //   （文件在场、无 install.lock）时，任何引导入口一律先 302 到自毁式安装页；
+        //   装完它自删 + lock 落地，下一次进来才轮到 admin_2fa_setup.php。
+        //   修复实录：全新测试站直接进了 2FA 引导页，数据库安装页根本没露面。
+        if ($script !== 'install.php' && secInstallPending()) {
+            secLog('route_install_first', 'from=' . $script);
+            header('Location: install.php');
+            exit;
+        }
         if ($script === 'admin.php') {
             header('Location: admin_2fa_setup.php');
             exit;

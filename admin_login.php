@@ -2,6 +2,14 @@
 // ★ 紧急加固（2026-09-29）：第二层 IP 白名单 —— 登录页本身也只对白名单 IP 开放
 require_once __DIR__ . '/security.php';
 secGatePage();
+// ★ 首跑顺序（2026-10-09）：装库先于安全配置 —— install.php 还没跑完就先去装库。
+//   引导模式下 secGatePage 已先行 302；这里兜住的是「本机 127.0.0.1 直连」与
+//   「已引导但装库没做过」两种入口。secTokenUrl 在令牌未配置时原样返回
+//   install.php，配了令牌则带上 ?token= 过第三层门禁（与 admin.php 同款拼法）。
+if (secInstallPending()) {
+    header('Location: ' . secTokenUrl('install.php'));
+    exit;
+}
 // ★ 首次部署：管理密码还是分发占位符 → 登录页是个死胡同（要密码，可密码还不存在）。
 //   改投初始化页，让部署者先把自己的第一个密码设出来。
 if (!secAdminPassConfigured()) {
