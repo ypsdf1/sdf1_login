@@ -21,7 +21,10 @@ $boot = secBootSessionActive();
 //   无 install.lock）时，本页先让位给数据库安装页；装完它自删，再回来配 2FA/白名单/令牌。
 //   引导模式下 secGatePage 已先行 302，这里兜住「已引导 / 本机直连」两种入口；
 //   已引导站点带 ?token= 过 install.php 的第三层门禁（令牌为空时 secTokenUrl 原样返回）。
-if (secInstallPending()) {
+//   ★ 0.0.0.0 应急时让位反向失效：install.php 属「其它任何页面」，会被 secEmergencyGate()
+//     302 回本页 —— 若本页再 302 去 install.php 就成了两页互跳死循环。
+//     应急的语义就是「直达引导配置页把白名单改回来」，故应急优先于装库让位。
+if (secInstallPending() && !secIsEmergency()) {
     header('Location: ' . secTokenUrl('install.php'));
     exit;
 }
@@ -34,8 +37,17 @@ $needInit = !secAdminPassConfigured();
 // 说明：本页只依赖 security.php（不加载 core.php），
 //       isAdminLoggedIn() 是 core 的函数，这里用等价的内联判定（admin_auth + 安全纪元）。
 $loggedIn = !empty($_SESSION['admin_auth']) && secSessionEpochOk();
+$isEmergency = false;
 if ($boot) {
     $mode = 'boot';
+} elseif (secIsEmergency()) {
+    // ★ 0.0.0.0 应急（2026-10-09）：boot / 访问令牌全丢时的最后通道 —— 按 boot
+    //   引导模式免密放行（本分支必须在 session 之前：应急时若 session 开着 2FA，
+    //   会被送去 admin_2fa.php，而那页又被全局应急路由 302 回本页 → 死循环）。
+    //   引导动作：删掉白名单里的 0.0.0.0 → 保存 → 重新生成令牌，即恢复常态。
+    $mode = 'boot';
+    $isEmergency = true;
+    secLog('emergency_setup_enter', 'ip=' . secClientIp());
 } elseif ($loggedIn) {
     // 已登录：若 2FA 已启用但本会话未验证 → 先去验证页
     if (defined('SEC_2FA_ENABLED') && SEC_2FA_ENABLED && empty($_SESSION['admin_2fa_ok'])) {
@@ -346,7 +358,8 @@ $wlAllowsMe = secIpAllowed() || secIpInWhitelist($myIp, $whitelist);
     <div class="top">
         <h1>🔐 后台安全配置</h1>
         <div>
-            <?php if ($mode === 'boot'): ?><span class="badge b-boot">引导模式（boot 令牌）</span><?php endif; ?>
+            <?php if ($mode === 'boot' && !$isEmergency): ?><span class="badge b-boot">引导模式（boot 令牌）</span><?php endif; ?>
+            <?php if ($isEmergency): ?><span class="badge b-boot" style="background:#6e1c24;border-color:#ff4d5e;color:#fff">🚨 应急模式（0.0.0.0）</span><?php endif; ?>
             <?php if ($mode === 'init'): ?><span class="badge b-boot">首次初始化</span><?php endif; ?>
             <?php
             // "← 返回"指向 admin_2fa.php / admin.php?token= —— 两者对非白名单 IP 都是 404。
@@ -359,6 +372,16 @@ $wlAllowsMe = secIpAllowed() || secIpInWhitelist($myIp, $whitelist);
 
     <?php if ($err !== ''): ?><span class="msg err">❌ <?php echo $err; ?></span><?php endif; ?>
     <?php if ($ok !== ''): ?><span class="msg ok">✅ <?php echo $ok; ?></span><?php endif; ?>
+
+    <?php if ($isEmergency): ?>
+    <div class="msg err" style="display:block;margin-bottom:14px;line-height:1.7">
+        🚨 <b>应急模式生效中：白名单里存在条目 <code>0.0.0.0</code>，全站其它页面已全部锁定并跳转到本页。</b><br>
+        恢复步骤（做完再离开）：
+        ① 在下方「IP 白名单」里<strong>删掉 <code>0.0.0.0</code></strong> 并点「保存白名单」（确保你的 IP 在列表里）；
+        ② 点「重新生成令牌」<strong>重置全部令牌</strong>（原令牌视为已泄露）；
+        ③ 刷新本页确认 🚨 徽标消失。
+    </div>
+    <?php endif; ?>
 
     <?php if ($mode === 'boot' && !$wlAllowsMe): ?>
     <!-- boot 恢复模式的唯一正事：把当前 IP 加进白名单。其它管理页对你一律 404，这是设计如此。 -->
@@ -447,6 +470,8 @@ $wlAllowsMe = secIpAllowed() || secIpInWhitelist($myIp, $whitelist);
             <?php if (count($whitelist) > 0): ?>
                 <div style="margin-bottom:10px"><?php foreach ($whitelist as $w): ?><span class="wl-item"><?php echo htmlspecialchars($w, ENT_QUOTES, 'UTF-8'); ?></span><?php endforeach; ?></div>
             <?php endif; ?>
+            <div class="hint" style="margin-bottom:6px">当前访问 IP：<code id="myIpTxt"><?php echo htmlspecialchars($myIp, ENT_QUOTES, 'UTF-8'); ?></code>
+                —— 白名单里<strong>必须包含它</strong>，否则保存后你会把自己挡在门外（含 0.0.0.0 应急条目时本页是唯一入口，改完记得删掉它）。</div>
             <textarea name="whitelist" id="wlBox" placeholder="每行一个 IP 或 CIDR 网段，例如：&#10;203.0.113.8&#10;192.168.1.0/24"><?php echo htmlspecialchars(implode("\n", $whitelist), ENT_QUOTES, 'UTF-8'); ?></textarea>
             <div class="row" style="margin-top:10px">
                 <button type="button" class="btn btn-gray" onclick="addMyIp()">＋ 把我的 IP 加入</button>

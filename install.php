@@ -23,8 +23,9 @@ require_once __DIR__ . '/security.php';
 // ① 已装过 → 与文件不存在完全一致的表现（本页也可能还没来得及自删）
 if (is_file(__DIR__ . '/install.lock')) secNginx404();
 
-// ② IP 白名单 / boot 引导令牌 / 未引导放行
-secGatePage(true);
+// ② 不做 IP 白名单验证（2026-10-09 需求）：全新站根本没有白名单可言，拿白名单
+//    挡安装页只会把部署者锁在门外；已引导站点由下面 ③ 的令牌层把关（?token= / ?boot=）。
+//    原 secGatePage(true) 在「已引导但没装库」时会把非白名单 IP 挡成 404。
 // ③ 动态访问令牌（config 里有 SEC_ACCESS_TOKEN 时才生效；全新部署为空 → 放行）
 secTokenGate(true);
 secEnsureSession();
@@ -35,6 +36,7 @@ define('INSTALL_MD',   defined('SQL_MD_PATH') ? SQL_MD_PATH : __DIR__ . '/sql.md
 $cur = sqlMdDbConfig();   // static 缓存，此刻读的是「写入前」的旧配置，仅用于回显
 $err = '';
 $ok  = '';
+$saved = null;            // 本次 POST 成功写入的配置 → 完成页回显供截图/手抄
 
 // CSRF：会话级随机数（不依赖 SEC_ACCESS_TOKEN，全新部署时它还是空的）
 if (empty($_SESSION['inst_csrf'])) {
@@ -383,14 +385,19 @@ $val = function ($k, $d = '') use ($cur, $err) {
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && $err !== '' && isset($_POST[$k])) {
         return htmlspecialchars((string)$_POST[$k], ENT_QUOTES, 'UTF-8');
     }
-    if ($k === 'dir')   return htmlspecialchars($cur['dir'], ENT_QUOTES, 'UTF-8');
+    $cur = is_array($cur) ? $cur : array();
+    if ($k === 'dir')   return htmlspecialchars(isset($cur['dir']) ? (string)$cur['dir'] : '', ENT_QUOTES, 'UTF-8');
     if ($k === 'mode')  return '';
     if (preg_match('/^(java|web)_(host|port|name|user|pass)$/', $k, $m)) {
-        $e = $cur[$m[1]];
+        // ★ 全新站 sql.md 配置区账密全空 → sqlMdDbConfig 的 java/web 槽是 null
+        //   （"字段不全 → null → 该侧兜底 db"），直接 $e[...] 在 PHP 8 会每个输入框
+        //   报一条 "Trying to access array offset on null"（实录：test12 第 391 行）。
+        $e = (isset($cur[$m[1]]) && is_array($cur[$m[1]])) ? $cur[$m[1]] : array();
         $map = array('host' => 'host', 'port' => 'port', 'name' => 'name', 'user' => 'user', 'pass' => 'pass');
-        return htmlspecialchars((string)$e[$map[$m[2]]], ENT_QUOTES, 'UTF-8');
+        $rv = isset($e[$map[$m[2]]]) ? (string)$e[$map[$m[2]]] : '';
+        return htmlspecialchars($rv, ENT_QUOTES, 'UTF-8');
     }
-    return htmlspecialchars($d, ENT_QUOTES, 'UTF-8');
+    return htmlspecialchars((string)$d, ENT_QUOTES, 'UTF-8');
 };
 ?>
 <!DOCTYPE html>
@@ -447,12 +454,40 @@ ul{margin:6px 0;padding-left:20px}
       <ul>
         <li>配置已写入 <code>sql.md</code> 并回读校验通过。</li>
         <li>已生成 <code>install.lock</code>，本页再次访问将返回 404。</li>
-        <li><code>install.php</code> 已自我删除。</li>
+        <li><code>install.php</code> 已自我删除（后台静默完成，页面照常停留供你截图留档）。</li>
       </ul>
+
+      <?php if (is_array($saved)): ?>
+      <div style="margin-top:10px;border-top:1px solid #26543a;padding-top:10px">
+        <div style="font-weight:600;margin:6px 0">📋 本次写入的配置 —— 请截图或手抄留档：</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr>
+            <td style="padding:4px 8px;color:#9ff0bb;white-space:nowrap">运行模式</td>
+            <td><code><?php echo htmlspecialchars($saved['mode'] === 'mysql' ? 'mysql' : 'db（SQLite 文件）', ENT_QUOTES, 'UTF-8'); ?></code></td>
+          </tr>
+          <?php if ($saved['mode'] !== 'mysql'): ?>
+          <tr>
+            <td style="padding:4px 8px;color:#9ff0bb;white-space:nowrap">存储位置</td>
+            <td><code><?php echo htmlspecialchars($saved['dir'] === '' ? './db/（默认）' : $saved['dir'], ENT_QUOTES, 'UTF-8'); ?></code></td>
+          </tr>
+          <?php else: ?>
+            <?php foreach (array('java' => 'Java 侧（sync.php · Java.db）', 'web' => 'PHP 侧（web.db）') as $slot => $label): ?>
+            <?php $e = $saved[$slot]; ?>
+            <tr>
+              <td style="padding:4px 8px;color:#9ff0bb;vertical-align:top;white-space:nowrap"><?php echo $label; ?></td>
+              <td><?php if ($e['host'] === '' && $e['name'] === ''): ?><code>（空 → 自动回退 db 文件）</code><?php else: ?><code><?php echo htmlspecialchars($e['host'] . ':' . $e['port'] . ' · 库名 ' . $e['name'] . ' · 账号 ' . $e['user'] . ' · 密码 ' . $e['pass'], ENT_QUOTES, 'UTF-8'); ?></code><?php endif; ?></td>
+            </tr>
+            <?php endforeach; ?>
+          <?php endif; ?>
+        </table>
+        <div style="color:#9ff0bb;font-size:12.5px;margin-top:6px">本页已随安装完成而删除 —— 这是最后一处能整份查看该配置的页面；完整配置仍保存在 <code>sql.md</code>。</div>
+      </div>
+      <?php endif; ?>
+
       下一步：
       <ul>
-        <li>db 模式 → 直接访问 <a href="admin_login.php" style="color:#7fb0ff">后台登录页</a>。</li>
-        <li>mysql 模式 → 后台首访会自动建表（已在本页实连并验证过建表权限）。</li>
+        <li><strong>先去 <a href="admin_2fa_setup.php" style="color:#7fb0ff">安全配置引导页</a></strong>：把你当前的 IP 加入白名单、保存访问令牌、设置 2FA。</li>
+        <li>mysql 模式 → 配完安全项首次进后台会自动建表（已在本页实连并验证过建表权限）；db 模式 → 配完即可登录。</li>
         <li>记得让 <strong>Java 端</strong>（api/sync.php 所在的独立站点）也用同一份配置：改 sync.php 时两处都要传。</li>
       </ul>
     </div>

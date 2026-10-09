@@ -273,6 +273,25 @@ function secCidrMatch($ip, $cidr) {
  * 规则：127.0.0.1/::1 永远放行（服务器本机逃生舱）；
  *      白名单为空 → 除本机外任何人一律拒绝（含 IP 缺失的异常请求）。
  */
+/**
+ * 0.0.0.0 应急模式（2026-10-09）：白名单里出现字面条目 `0.0.0.0`。
+ *
+ * 场景：boot 引导令牌与后台访问令牌全丢、又没有别的入口 —— 只要能上服务器
+ * （宝塔/SSH）把 config.php 的 ADMIN_IP_WHITELIST 加上一条 0.0.0.0，即可临时恢复：
+ *   - 全站其它页面/API 一律被 security.php 尾部的全局应急路由 302 回
+ *     admin_2fa_setup.php（应急条目只买得到这一张门票，用来删掉它自己 + 重置令牌）；
+ *   - admin_2fa_setup.php 以 boot 引导模式免密放行（见该页 $isEmergency 分支）；
+ *   - 服务器本机 127.0.0.1 / ::1 不受应急路由限制（宝塔/SSH 永远有救）。
+ * 用完必须立刻删掉 0.0.0.0 —— 它等价于"全网都能进引导页"。
+ */
+function secIsEmergency() {
+    if (!defined('ADMIN_IP_WHITELIST') || !is_array(ADMIN_IP_WHITELIST)) return false;
+    foreach (ADMIN_IP_WHITELIST as $e) {
+        if (trim((string)$e) === '0.0.0.0') return true;
+    }
+    return false;
+}
+
 function secIpAllowed() {
     $ip = secClientIp();
     if ($ip === '') {
@@ -284,6 +303,9 @@ function secIpAllowed() {
     foreach (ADMIN_IP_WHITELIST as $entry) {
         $entry = trim((string)$entry);
         if ($entry === '') continue;
+        // ★ 0.0.0.0 = 应急全放行条目：IP 层直接开门，但非引导页根本到不了门禁 ——
+        //   security.php 尾部的全局应急路由会在 require 阶段就把它们 302 回引导页。
+        if ($entry === '0.0.0.0') return true;
         if ($entry === $ip) return true;
         if (strpos($entry, '/') !== false && secCidrMatch($ip, $entry)) return true;
     }
@@ -617,6 +639,9 @@ function secGatePage($allowBoot = false) {
     // → 先放行，让部署者完成首次配置；后台主入口改跳配置页，这就是"引导"的落点。
     if (!secIsBootstrapped()) {
         secLog('ip_gate_open_bootstrap', 'path=' . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-'));
+        // ★ 应急模式下直接放行：全局钩子只放 admin_2fa_setup.php 走到这里，
+        //   不能再把它转送去 install（那是常规首跑的顺序，应急时以自救为先）。
+        if (secIsEmergency()) return;
         $script = basename(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '');
         // ★ 首跑顺序（2026-10-09）：装库先于安全配置 —— install.php 还没跑完
         //   （文件在场、无 install.lock）时，任何引导入口一律先 302 到自毁式安装页；
@@ -1456,6 +1481,27 @@ function secRateTrusted() {
     }
     return false;
 }
+
+/**
+ * 全局应急路由（2026-10-09）：include security.php 时自动执行一次（在限流层之前）。
+ *
+ * 白名单含 0.0.0.0 时，除 admin_2fa_setup.php 与服务器本机外，任何加载本文件的
+ * 入口（admin 系 + core 系全部页面/API）一律 302 送回应急引导页 —— 0.0.0.0 只放行
+ * 到那一页，进去删掉应急条目 + 重置令牌即恢复常态。
+ * 用 302 不用 301：301 会被浏览器永久缓存，改回白名单后客户端仍会继续乱跳。
+ * 无 REMOTE_ADDR（CLI/内部调用）不参与。
+ */
+function secEmergencyGate() {
+    if (empty($_SERVER['REMOTE_ADDR'])) return;
+    if (!secIsEmergency()) return;
+    $script = basename(isset($_SERVER['SCRIPT_NAME']) ? $_SERVER['SCRIPT_NAME'] : '');
+    if ($script === 'admin_2fa_setup.php') return;      // 唯一放行页（引导用户自救）
+    if (secIsLocalIp(secClientIp())) return;            // 本机恒通：宝塔/SSH 永远有救
+    secLog('emergency_route', 'path=' . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '-'));
+    header('Location: admin_2fa_setup.php', true, 302);
+    exit;
+}
+secEmergencyGate();
 
 /** 第四层入口：include security.php 时自动执行一次。 */
 function secRateLimitGate() {

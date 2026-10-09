@@ -116,5 +116,10 @@ define('CAPTCHA_PROVIDER', 'CF');   // ← 只改这个值：'CF' 用 Cloudflare
 // 被锁在外面时的恢复方法：宝塔/SSH 查看本文件补全后的 SEC_BOOT_TOKEN，访问
 //         https://你的域名/plugin/admin_2fa_setup.php?boot=<令牌>
 //         进入配置页把自己当前 IP 加入白名单（boot 令牌本身也是配置页入口）。
+// ★ 令牌全丢的最后手段（2026-10-09）：宝塔/SSH 手工给下面 SEC-UPDATE 区的
+//         ADMIN_IP_WHITELIST 数组加一条字面量 '0.0.0.0' —— 应急模式立即生效：
+//         除服务器本机外全站所有页面/API 一律 302 锁回 admin_2fa_setup.php（免密进入），
+//         按该页红色横幅指引删掉 0.0.0.0 + 「重新生成令牌」即恢复常态。
+//         ⚠️ 0.0.0.0 只是应急门票（等价全网可进引导页），用完必须立刻删除。
 // >>>SEC-UPDATE-BEGIN 本区段由 admin_2fa_setup.php 自动维护，请勿手工改动标记行
 // >>>SEC-UPDATE-END
