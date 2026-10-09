@@ -1,5 +1,14 @@
 # Sdf1_login Web 端（PHP 后端）
 
+## 开源协议
+
+本项目（Sdf1_login 的 PHP Web 后端，配套 Java 插件一同授权）采用 **GNU Affero General Public License v3.0（AGPL-3.0）**，协议全文见 [LICENSE](LICENSE)。
+
+- 你可以自由使用、修改、分发本项目。
+- **本项目本身就是网络服务，若你部署为对外网站/服务，必须向使用者提供完整的对应源代码**（AGPL 第 13 条）。
+- 衍生作品必须同样以 AGPL-3.0 授权分发。
+- 本项目按「原样」提供，不附带任何担保。
+
 > 本目录是 Minecraft PaperMC 插件 **`Sdf1_login`**（即本仓库的 `../Sdf1_login`）配套的 PHP Web 后端。
 > 两个工程是**一对**：Java 插件负责游戏内逻辑（登录注册、债券经济、商城、领地、工单、PVP…），
 > 本目录负责 Web 侧的界面与数据（玩家面板、管理后台、收银台、在线充值、正版登录）。
