@@ -47,6 +47,7 @@ db/
 # 屏蔽所有md文件、python部署脚本
 *.md
 *.py
-# 例外：readme和pay.md
+# 例外：readme、pay.md和sql.md
 !readme.md
 !pay.md
+!sql.md

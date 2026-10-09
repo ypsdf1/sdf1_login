@@ -28,8 +28,8 @@
           ③ 领地/用户组等变更走 web_admin_changes 队列双向同步
 ```
 
-- 对应文档：Java 端 `../Sdf1_login/README.md`（使用手册）、`../Sdf1_login/代码关联关系.md`（类级关联）
-- 本目录的 `代码关联关系.md`（PHP 侧，含全部 sync action 清单与通信模型，本文档的"下钻"手册）
+- 对应文档：Java 端 `../Sdf1_login/README.md`（使用手册）
+
 
 ## 2. 目录结构速览
 
@@ -64,7 +64,7 @@
    无 token 时走密码 → 写 pending → Java 校验 → 前端轮询 `check_web_login_result`。
 4. **在线充值链**：`pay.php` 建单（orders.db）→ 彩虹易支付网关 → notify 验签幂等 + CF WAF 拦截 notify 时的 `poller_online.php` 直扫平台 MySQL 补单双保险 → 写 pending 流水 → Java 轮询加债券到账。
    多服共用一张 `pay_order` 表时靠 `PAY_ORDER_PREFIX` 隔离（生产 `RE`，测试改如 `RT`）。
-5. 每个 action 的完整清单见 `代码关联关系.md` §5/§6。
+
 
 ## 5. 四套鉴权
 
