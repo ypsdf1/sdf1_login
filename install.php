@@ -17,16 +17,21 @@
  *          留空即关闭；2FA 跳转 admin_2fa_setup.php 复用其完整流程。
  *
  * 点「确认安装」统一写盘：sql.md 配置区 + config.php 的 SMTP_* / CAPTCHA_PROVIDER /
- * ADMIN_IP_WHITELIST + captcha_keys.php → 写 install.lock → unlink 自毁 →
- * 停留完成页回显全部配置，供截图手抄。
+ * ADMIN_IP_WHITELIST + captcha_keys.php → 目标库落 _install_lock 安装锁 + 写 install.lock
+ * → unlink 自毁 → 停留完成页回显全部配置，供截图手抄。
  *
  * 设计要点：
  *   1) 只依赖 security.php，**不加载 core.php** —— 初始化阶段 core.php 未必能跑。
- *   2) 门禁：lock 文件在场即 nginx 404；secTokenGate(true) 把关已引导站点的令牌。
+ *   2) 门禁：见下方「数据库自身持锁」四态分流；secTokenGate(true) 把关已引导站点的令牌。
  *      不做 IP 白名单验证（全新站根本没有白名单可言）。
  *   3) 每关数据存 session，最后一关才落盘 —— 中途任何失败都不留半份配置。
  *   4) 写盘一律「备份 → 原子写 → 回读校验」，失败还原。
- *   5) install.lock 存在 ⇒ 立刻 404（装完即失效，即使 __FILE__ 没删成也不会二次执行）。
+ *   5) 安装锁 = 文件 + 数据库双份（2026-10-09 需求：install.lock 不在了 ≠ 首次安装）：
+ *        文件锁在 + 库在          ⇒ nginx 404（绝大多数）
+ *        文件锁在 + 库明确没了    ⇒ 数据丢失警告页（提示需额外关注，可确认后重装）
+ *        文件锁没了 + 库里锁在    ⇒ 自动补写 install.lock 再 404
+ *        两者都没                ⇒ 全新未安装，正常进向导
+ *      探测失败（MySQL 连不上、配置读不出）一律按「库在」从严：宁可 404 也不乱开门。
  *   6) 全程 PHP 7.3 兼容（无箭头函数 / match / str_contains）。
  *
  * 与 admin_2fa_setup.php 的分工：那个页管 2FA 与令牌的完整流程，本页管四步安装配置。
@@ -34,18 +39,42 @@
 require_once __DIR__ . '/security.php';
 
 // ============================ 门禁 ============================
-// ① 已装过 → 与文件不存在完全一致的表现（本页也可能还没来得及自删）
-if (is_file(__DIR__ . '/install.lock')) secNginx404();
+define('INSTALL_LOCK', __DIR__ . '/install.lock');
+define('INSTALL_MD',   defined('SQL_MD_PATH') ? SQL_MD_PATH : __DIR__ . '/sql.md');
+define('INST_PURGE_PHRASE', '确认清空');   // 二次确认口令（用户手输，防误触）
+
+// ★ 数据库自身持锁（2026-10-09 需求）：install.lock 不在了 ≠ 首次安装。
+//  安装成功时除写文件锁外，还会在目标库里落 _install_lock 标记（db → web.db，
+//  mysql → web 侧库；Java 侧的库只读探测、绝不写入）。门禁按两把锁的组合分流：
+//    A 文件锁在 + 库在          → 正常 nginx 404（本页也可能还没来得及自删）
+//    B 文件锁在 + 库明确不存在  → 数据丢失警告页（提示数据丢失需额外关注，可确认后重装）
+//    C 文件锁不在 + 库里锁在    → 自动补写 install.lock 后 404（防误删文件锁后朝有数据的库重装）
+//    D 两者都不在               → 全新未安装，正常进向导
+$instLockIn = is_file(INSTALL_LOCK);
+$instProbe  = instDbLockProbe();
+$instPass   = false;
+if ($instLockIn) {
+    if ($instProbe['state'] === 'missing') {
+        $instPass = instDataLostPage($instProbe);   // 只有「确认数据丢失并重装」才返回 true
+    }
+    if (!$instPass) {
+        // 老站迁移：文件锁在 + 库在 + 库里还没标记 → 顺手补写库内锁（幂等，失败不影响 404）
+        if ($instProbe['state'] === 'exists' && !$instProbe['lock']) instSeedDbLock();
+        secNginx404();   // A / B(未确认)
+    }
+} elseif ($instProbe['lock']) {
+    // C：库里的安装锁还在、文件锁被误删 → 自动补回，表现与已安装完全一致
+    instWriteLockFile('auto-repair');
+    if (function_exists('secLog')) secLog('install_lock_repaired', 'ip=' . secClientIp());
+    secNginx404();
+}
+// D：全新未安装（或探测不了）→ 继续
 
 // ② 不做 IP 白名单验证（2026-10-09 需求）：全新站根本没有白名单可言，拿白名单
 //    挡安装页只会把部署者锁在门外；已引导站点由下面 ③ 的令牌层把关（?token= / ?boot=）。
 // ③ 动态访问令牌（config 里有 SEC_ACCESS_TOKEN 时才生效；全新部署为空 → 放行）
 secTokenGate(true);
 secEnsureSession();
-
-define('INSTALL_LOCK', __DIR__ . '/install.lock');
-define('INSTALL_MD',   defined('SQL_MD_PATH') ? SQL_MD_PATH : __DIR__ . '/sql.md');
-define('INST_PURGE_PHRASE', '确认清空');   // 二次确认口令（用户手输，防误触）
 
 $cur = sqlMdDbConfig();   // static 缓存，此刻读的是「写入前」的旧配置，仅用于回显
 $err = '';
@@ -134,6 +163,351 @@ function instProbeMySql($slot, array $e) {
         throw new Exception(strtoupper($slot) . ' 侧连得上，但建表失败：' . $failed
             . ' —— 站点初始化需要 CREATE 权限，请检查账号授权。');
     }
+}
+
+// ============================ 数据库自身持锁 ============================
+// 2026-10-09 需求原话：「install.lock 不在了 ≠ 首次安装。安装成功后，不管是 db 数据库、
+// MySQL 数据库都通过数据库去锁。数据库不存在、install.lock 不存在 = 全新未安装；
+// 数据库安装锁存在、install.lock 不存在，自动补 install.lock；
+// install.lock 存在、数据库不存在，提示用户数据丢失需额外关注。」
+//
+// 载体 = 目标库里的 `_install_lock` 标记表：db 模式写 web.db，mysql 模式写 web 侧库。
+// Java 侧的库归插件管 —— 门禁只读探测、绝不写入。
+// 标记表在扫库时被忽略（不算「非空」），在清空时一并删掉（清完真的空）。
+
+/** 库内安装锁标记表名。 */
+function instLockTable() {
+    return '_install_lock';
+}
+
+/**
+ * 探测一个 SQLite 库文件：存在性 + 库内锁标记。
+ * @return array{state:string,lock:bool,detail:string,err:string}
+ */
+function instProbeSqliteLock($f) {
+    $out = array('state' => 'missing', 'lock' => false, 'detail' => (string)$f, 'err' => '');
+    if (!is_file($f)) return $out;
+    $out['state'] = 'exists';                      // 文件在 = 库在（打不开也按在处理，从严）
+    if (!class_exists('SQLite3')) { $out['err'] = 'sqlite3 扩展不可用，读不了库内锁'; return $out; }
+    $db = @new SQLite3($f, SQLITE3_OPEN_READONLY);
+    if (!$db) { $out['err'] = '打不开 ' . $f; return $out; }
+    try {
+        $c = @$db->querySingle('SELECT COUNT(*) FROM "'
+            . str_replace('"', '""', instLockTable()) . '"');
+        if ($c !== null && $c !== false && (int)$c > 0) $out['lock'] = true;
+    } catch (Exception $ex) {
+        $out['err'] = $ex->getMessage();           // 表不存在 = 这个库没写过安装锁
+    }
+    $db->close();
+    return $out;
+}
+
+/**
+ * 探测一个 MySQL 库：存在性 + 库内锁标记。
+ * 只有 #1049（Unknown database）算「库明确不存在」；连不上/账密错一律 unknown（门禁从严按「库在」）。
+ * @return array{state:string,lock:bool,detail:string,err:string}
+ */
+function instProbeMysqlLock(array $e) {
+    $out = array('state' => 'unknown', 'lock' => false,
+                 'detail' => $e['host'] . ':' . $e['port'] . '/' . $e['name'], 'err' => '');
+    if (!class_exists('mysqli')) { $out['err'] = 'mysqli 扩展不可用'; return $out; }
+    $m = mysqli_init();
+    $ok = false;
+    $errno = 0;
+    try {
+        @mysqli_options($m, MYSQLI_OPT_CONNECT_TIMEOUT, 3);
+        $ok = @mysqli_real_connect($m, $e['host'], $e['user'], $e['pass'], $e['name'], (int)$e['port']);
+        if (!$ok) $errno = (int)$m->connect_errno;
+    } catch (Exception $ex) {                       // PHP 8.1+ mysqli 默认抛异常
+        $ok = false;
+        $errno = (int)$ex->getCode();
+        if ($errno === 0 && preg_match('/#(\d+)/', $ex->getMessage(), $mm)) $errno = (int)$mm[1];
+    }
+    if (!$ok) {
+        $out['state'] = ($errno === 1049) ? 'missing' : 'unknown';
+        $out['err'] = '#' . $errno;
+        return $out;
+    }
+    $out['state'] = 'exists';
+    try {
+        $rs = @mysqli_query($m, 'SELECT COUNT(*) AS c FROM `'
+            . str_replace('`', '``', instLockTable()) . '`');
+        if ($rs !== false) {
+            $row = mysqli_fetch_assoc($rs);
+            if (isset($row['c']) && (int)$row['c'] > 0) $out['lock'] = true;
+        }
+    } catch (Exception $ex) {
+        $out['err'] = $ex->getMessage();            // 表不存在 = 这个库没写过安装锁
+    }
+    @mysqli_close($m);
+    return $out;
+}
+
+/**
+ * 探测「数据库自身持锁」三态。门禁据此分流（见文件头设计要点 5）。
+ * @return array{state:string,lock:bool,mode:string,detail:string,err:string}
+ *   state: 'exists' 库在 / 'missing' 库明确不存在 / 'unknown' 探测不了
+ *   lock : 库里是否存在 _install_lock 安装锁标记
+ */
+function instDbLockProbe() {
+    $p = array('state' => 'unknown', 'lock' => false, 'mode' => 'db', 'detail' => '', 'err' => '');
+
+    // 站点运行时真正读的是 sql.md → 以它为准；读不出配置时退回 install.lock 记录的 mode。
+    $cfg = sqlMdDbConfig();
+    $mode = $cfg['ok'] ? $cfg['mode'] : 'db';
+    if (!$cfg['ok'] && is_file(INSTALL_LOCK)) {
+        $t = @file_get_contents(INSTALL_LOCK);
+        if (is_string($t) && preg_match('/^mode=(mysql|db)/m', $t, $mm)) $mode = $mm[1];
+    }
+    $p['mode'] = $mode;
+
+    if ($mode === 'mysql') {
+        // 每侧：配了 MySQL 就探 MySQL，全空则该侧回退 db → 探 SQLite 文件
+        $states = array();
+        foreach (array('java', 'web') as $slot) {
+            $e = (isset($cfg[$slot]) && is_array($cfg[$slot])) ? $cfg[$slot] : null;
+            if ($e !== null && isset($e['host']) && $e['host'] !== ''
+                && isset($e['name']) && $e['name'] !== '') {
+                $r = instProbeMysqlLock($e);
+            } else {
+                $r = instProbeSqliteLock(sqlDbFile($slot));
+            }
+            $states[] = $r['state'];
+            if (!empty($r['lock'])) $p['lock'] = true;
+            if ($r['detail'] !== '') $p['detail'] .= ($p['detail'] === '' ? '' : '；') . $r['detail'];
+            if ($r['err'] !== '' && $p['err'] === '') $p['err'] = $r['err'];
+        }
+        if (in_array('exists', $states, true)) $p['state'] = 'exists';
+        elseif (count(array_diff($states, array('missing'))) === 0) $p['state'] = 'missing';
+        else $p['state'] = 'unknown';
+    } else {
+        // db 模式：目录里一个 .db 都没有才算「数据库不存在」（避免误报数据丢失）
+        $dir = sqlDbDir();
+        $files = array();
+        foreach (array(sqlDbFile('web'), sqlDbFile('java')) as $f) {
+            if (is_file($f)) $files[] = $f;
+        }
+        foreach ((array)@glob($dir . '/*.db') as $f) {
+            if (is_file($f) && !in_array($f, $files, true)) $files[] = $f;
+        }
+        if (empty($files)) {
+            $p['state'] = 'missing';
+            $p['detail'] = '空目录 ' . $dir;
+        } else {
+            $p['state'] = 'exists';
+            $p['detail'] = implode('、', $files);
+            $r = instProbeSqliteLock(sqlDbFile('web'));
+            $p['lock'] = !empty($r['lock']);
+            if ($r['err'] !== '') $p['err'] = $r['err'];
+        }
+    }
+    if ($p['lock']) $p['state'] = 'exists';   // 标记在 = 库必在（防御 state 误判）
+    return $p;
+}
+
+/**
+ * 在目标库里落/刷新 _install_lock 安装锁标记（n4 写盘与老站迁移补写都走这里）。
+ * $cfg 与 instValidate() 返回同形（mode/dir/java/web），也可直接传 sqlMdDbConfig()。
+ * @return array{ok:bool,where:string,err:string}
+ */
+function instWriteDbLock(array $cfg) {
+    $out = array('ok' => false, 'where' => '', 'err' => '');
+    $stamp = date('c');
+    $ip    = secClientIp();
+    $tbl   = '`' . str_replace('`', '``', instLockTable()) . '`';
+
+    // mysql 模式且 web 侧配了库 → 标记落 MySQL（Java 侧的库不碰）
+    if (isset($cfg['mode']) && $cfg['mode'] === 'mysql'
+        && isset($cfg['web']) && is_array($cfg['web'])
+        && isset($cfg['web']['host']) && $cfg['web']['host'] !== ''
+        && isset($cfg['web']['name']) && $cfg['web']['name'] !== '') {
+        $e = $cfg['web'];
+        $m = mysqli_init();
+        try {
+            @mysqli_options($m, MYSQLI_OPT_CONNECT_TIMEOUT, 6);
+            if (!@mysqli_real_connect($m, $e['host'], $e['user'], $e['pass'], $e['name'], (int)$e['port'])) {
+                $out['err'] = '#' . $m->connect_errno . ' ' . $m->connect_error;
+                return $out;
+            }
+            $ddl = 'CREATE TABLE IF NOT EXISTS ' . $tbl . ' ('
+                 . '`id` BIGINT NOT NULL AUTO_INCREMENT,'
+                 . '`installed_at` VARCHAR(32) NOT NULL,'
+                 . "`ip` VARCHAR(45) NOT NULL DEFAULT '',"
+                 . "`mode` VARCHAR(16) NOT NULL DEFAULT 'mysql',"
+                 . 'PRIMARY KEY (`id`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
+            if (!@mysqli_query($m, $ddl)) {
+                $out['err'] = mysqli_error($m);
+                @mysqli_close($m);
+                return $out;
+            }
+            @mysqli_query($m, 'DELETE FROM ' . $tbl);   // 永远只留最新一行
+            @mysqli_query($m, 'INSERT INTO ' . $tbl . ' (`installed_at`,`ip`,`mode`) VALUES ('
+                . "'" . $m->real_escape_string($stamp) . "','"
+                . $m->real_escape_string($ip) . "','mysql')");
+            @mysqli_close($m);
+            $out['ok']    = true;
+            $out['where'] = 'MySQL ' . $e['name'] . '/' . instLockTable();
+            return $out;
+        } catch (Exception $ex) {
+            $out['err'] = $ex->getMessage();
+            return $out;
+        }
+    }
+
+    // db 模式（或 mysql 模式 web 侧回退 db）→ web.db 落标记
+    if (!class_exists('SQLite3')) { $out['err'] = 'sqlite3 扩展不可用，写不了库内锁'; return $out; }
+    $dir  = (isset($cfg['dir']) && trim((string)$cfg['dir']) !== '') ? $cfg['dir'] : './db/';
+    $file = instResolveDir($dir) . '/web.db';
+    $dd   = dirname($file);
+    if (!is_dir($dd) && !@mkdir($dd, 0755, true) && !is_dir($dd)) {
+        $out['err'] = '目录创建失败：' . $dd;
+        return $out;
+    }
+    $qname = '"' . str_replace('"', '""', instLockTable()) . '"';
+    $db = null;
+    try {
+        $db = @new SQLite3($file, SQLITE3_OPEN_READWRITE | SQLITE3_OPEN_CREATE);
+        if (!$db) { $out['err'] = '打不开 ' . $file; return $out; }
+        $db->busyTimeout(3000);
+        if (!@$db->exec('CREATE TABLE IF NOT EXISTS ' . $qname . " ("
+            . 'id INTEGER PRIMARY KEY, installed_at TEXT NOT NULL,'
+            . "ip TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT 'db')")) {
+            $out['err'] = $db->lastErrorMsg();
+            return $out;
+        }
+        @$db->exec('DELETE FROM ' . $qname);
+        @$db->exec('INSERT INTO ' . $qname . " (installed_at, ip, mode) VALUES ('"
+            . $db->escapeString($stamp) . "','" . $db->escapeString($ip) . "','db')");
+        $db->close();
+        $db = null;
+        $out['ok']    = true;
+        $out['where'] = $file;
+    } catch (Exception $ex) {
+        $out['err'] = $ex->getMessage();
+    } finally {
+        if ($db instanceof SQLite3) { @$db->close(); }
+    }
+    return $out;
+}
+
+/** 老站迁移：文件锁在 + 库在 + 库里没标记 → 补写库内锁（幂等，失败不影响 404）。 */
+function instSeedDbLock() {
+    $r = instWriteDbLock(sqlMdDbConfig());
+    if ($r['ok'] && function_exists('secLog')) secLog('install_lock_seeded', $r['where']);
+    return $r['ok'];
+}
+
+/**
+ * 写 install.lock 文件锁（n4 安装完成 / 门禁自动补回都走这里）。
+ * @param string $reason install|auto-repair
+ * @param array  $extra  mode/dir 覆盖值（n4 传本次配置；补锁时留空 = 读 sql.md 现值）
+ * @return bool 是否写成功
+ */
+function instWriteLockFile($reason, array $extra = array()) {
+    $cfg  = sqlMdDbConfig();
+    $mode = isset($extra['mode']) ? $extra['mode'] : $cfg['mode'];
+    $dir  = isset($extra['dir']) ? $extra['dir'] : $cfg['dir'];
+    $body = date('c') . "\n"
+          . 'ip=' . secClientIp() . "\n"
+          . 'mode=' . $mode . "\n"
+          . 'dir=' . $dir . "\n"
+          . 'md=' . INSTALL_MD . "\n"
+          . 'reason=' . $reason . "\n";
+    @file_put_contents(INSTALL_LOCK, $body, LOCK_EX);
+    @chmod(INSTALL_LOCK, 0644);
+    return is_file(INSTALL_LOCK);
+}
+
+/** 与 secTokenGate 同判据的非破坏版：当前请求过不过得了令牌层（数据丢失页用）。 */
+function instTokenOk() {
+    if (!secIsBootstrapped()) return true;
+    if (secToken() === '') return true;
+    if (isset($_GET['token']) && hash_equals(secToken(), (string)$_GET['token'])) return true;
+    if (isset($_POST['token']) && hash_equals(secToken(), (string)$_POST['token'])) return true;
+    return secBootAuthenticate();
+}
+
+/**
+ * 「install.lock 在、数据库没了」警告页（2026-10-09 需求：提示用户数据丢失需额外关注）。
+ * POST act=reinstall + csrf 确认 → 删文件锁并返回 true（继续走正常向导，令牌层仍把关）；
+ * 其余一律渲染警告页后 exit。
+ * @return bool true=已确认重装，调用方跳过 404 继续开门
+ */
+function instDataLostPage(array $probe) {
+    secEnsureSession();
+    if (empty($_SESSION['inst_csrf'])) $_SESSION['inst_csrf'] = bin2hex(random_bytes(16));
+    $csrf = (string)$_SESSION['inst_csrf'];
+
+    $act = isset($_POST['act']) ? (string)$_POST['act'] : '';
+    $got = isset($_POST['csrf']) ? (string)$_POST['csrf'] : '';
+    if ($act === 'reinstall' && hash_equals($csrf, $got)) {
+        @unlink(INSTALL_LOCK);
+        if (function_exists('secLog')) secLog('install_reinstall_ack', 'ip=' . secClientIp());
+        $_SERVER['REQUEST_METHOD'] = 'GET';   // 这次 POST 已在门禁消化，别再进分发器
+        unset($_POST);
+        return true;
+    }
+
+    $lockTxt = is_file(INSTALL_LOCK) ? (string)@file_get_contents(INSTALL_LOCK) : '(文件已不在)';
+    $tokenOk = instTokenOk();
+    $e = function ($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); };
+    while (ob_get_level() > 0) { @ob_end_clean(); }
+    header('Content-Type: text/html; charset=utf-8');
+    http_response_code(200);
+    echo '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">'
+       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       . '<meta name="robots" content="noindex,nofollow">'
+       . '<title>数据丢失警告 · 安装锁</title><style>'
+       . '*{box-sizing:border-box}'
+       . 'body{margin:0;background:#0f1115;color:#e6e8ee;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}'
+       . '.wrap{max-width:760px;margin:36px auto;padding:0 16px}'
+       . '.card{background:#171a21;border:1px solid #262a33;border-radius:10px;padding:22px 24px;margin-bottom:16px}'
+       . 'h1{font-size:20px;margin:0 0 8px;color:#ffd9a0}'
+       . 'h2{font-size:15px;margin:18px 0 8px;color:#cdd3dd}'
+       . '.warn{background:#2b1f10;border:1px solid #6b4a17;color:#ffd9a0;padding:12px 14px;border-radius:6px;font-size:13.5px}'
+       . '.muted{color:#98a0ad;font-size:13px;margin-top:6px}'
+       . 'pre{background:#0d0f14;border:1px solid #262a33;border-radius:6px;padding:10px 12px;'
+       . 'font-size:12.5px;color:#e6b673;white-space:pre-wrap;word-break:break-all;margin:8px 0}'
+       . 'code{background:#0d0f14;padding:2px 6px;border-radius:4px;font-size:13px;color:#e6b673}'
+       . '.btn{display:inline-block;padding:11px 22px;background:#b62324;color:#fff;border:0;'
+       . 'border-radius:6px;font-size:14px;cursor:pointer;margin-top:14px}'
+       . '.btn:hover{background:#cf3132}'
+       . 'ul{margin:6px 0;padding-left:20px}'
+       . '</style></head><body><div class="wrap">'
+
+       . '<div class="card"><h1>⚠ 检测到数据库丢失 —— 请额外关注</h1>'
+       . '<div class="warn">本站已生成 <code>install.lock</code>（说明<strong>安装过</strong>），'
+       . '但按当前配置<strong>找不到目标数据库</strong>。这通常意味着数据已被删除、迁移到了别处，'
+       . '或磁盘/数据库损坏 —— <strong>请先确认数据是否需要从备份恢复，不要急着重装。</strong></div>'
+       . '<h2>探测详情</h2>'
+       . '<div class="muted">运行模式：<code>' . $e($probe['mode']) . '</code>　'
+       . '数据库状态：<code>missing（不存在）</code>　库内安装锁：<code>'
+       . (!empty($probe['lock']) ? '有' : '无（随数据库一起消失）') . '</code></div>'
+       . '<div class="muted">定位：' . $e($probe['detail']) . '</div>'
+       . ($probe['err'] !== '' ? '<div class="muted">探测错误：' . $e($probe['err']) . '</div>' : '')
+       . '<div class="muted" style="margin-top:8px">install.lock 内容：</div>'
+       . '<pre>' . $e($lockTxt) . '</pre>'
+       . '</div>'
+
+       . '<div class="card"><h2>接下来怎么办</h2><ul>'
+       . '<li><strong>数据还在别处</strong>（迁移过 / 有备份）→ 把数据库恢复回原位置，或修改 sql.md '
+       . '指回正确位置，然后刷新本页：安装锁继续生效，一切照旧。</li>'
+       . '<li><strong>确认数据已丢失、要重新安装</strong> → 点下面的按钮：删除 install.lock 并进入安装向导。'
+       . '<strong>这一步不可撤销，请确认旧数据已妥善处理。</strong></li>'
+       . '</ul>';
+    if ($tokenOk) {
+        echo '<form method="post">'
+           . '<input type="hidden" name="csrf" value="' . $e($csrf) . '">'
+           . '<input type="hidden" name="act" value="reinstall">'
+           . '<button class="btn" type="submit">我已确认数据丢失，继续重新安装</button>'
+           . '</form>';
+    } else {
+        echo '<div class="warn" style="margin-top:14px">本站点已配置访问令牌 —— 请先在地址栏给本页地址'
+           . '追加 <code>?token=&lt;SEC_ACCESS_TOKEN&gt;</code>（值见 config.php）刷新后，再继续重装操作。</div>';
+    }
+    echo '<p class="muted">本页只做提示，不改动任何文件。</p>'
+       . '</div></div></body></html>';
+    exit;
 }
 
 /**
@@ -233,9 +607,11 @@ function instValidate(array $post, array $ext) {
 // ============================ 第二关：扫库 / 清空 ============================
 /**
  * 扫一个 MySQL 侧的用户表（表名 + 估算行数）。
+ * $withLock=false（默认）时忽略 _install_lock —— 它是安装锁标记，不算「库非空」；
+ * 清空（purge）时传 true，把标记也一并删掉，清完真的空。
  * @return array{ok:bool,err:string,tables:array}
  */
-function instScanMysqlSide(array $e) {
+function instScanMysqlSide(array $e, $withLock = false) {
     $out = array('ok' => false, 'err' => '', 'tables' => array());
     $m = mysqli_init();
     if (!($m instanceof mysqli)) { $out['err'] = 'mysqli_init 失败'; return $out; }
@@ -251,7 +627,9 @@ function instScanMysqlSide(array $e) {
     //   裸拼会被 MySQL 当成列名 → Unknown column 'xxx' in 'where clause'
     $sql = "SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES"
          . " WHERE TABLE_SCHEMA = '" . $m->real_escape_string($e['name']) . "'"
-         . " AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME";
+         . " AND TABLE_TYPE = 'BASE TABLE'";
+    if (!$withLock) $sql .= " AND TABLE_NAME <> '" . instLockTable() . "'";
+    $sql .= " ORDER BY TABLE_NAME";
     $rs = @mysqli_query($m, $sql);
     if ($rs === false) {
         $out['err'] = mysqli_error($m);
@@ -283,7 +661,7 @@ function instPurgeMysqlSide(array $e) {
     }
     @mysqli_set_charset($m, 'utf8mb4');
     @mysqli_query($m, 'SET FOREIGN_KEY_CHECKS=0');
-    $scan = instScanMysqlSide($e);
+    $scan = instScanMysqlSide($e, true);   // 清空要把 _install_lock 标记也删掉
     if (!$scan['ok']) { $out['err'] = $scan['err']; @mysqli_close($m); return $out; }
     foreach ($scan['tables'] as $t) {
         $q = 'DROP TABLE IF EXISTS `' . str_replace('`', '``', $t['name']) . '`';
@@ -322,8 +700,10 @@ function instScanSqlite($dir) {
         $db = @new SQLite3($f, SQLITE3_OPEN_READONLY);
         if (!$db) continue;
         $out['files'][] = basename($f);
+        // _install_lock 是安装锁标记，不算「用户表」（否则装过一次的库永远不空白）
         $rs = @$db->query("SELECT name FROM sqlite_master WHERE type='table'"
-                        . " AND name NOT LIKE 'sqlite_%' ORDER BY name");
+                        . " AND name NOT LIKE 'sqlite_%'"
+                        . " AND name <> '" . instLockTable() . "' ORDER BY name");
         if ($rs) {
             while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
                 $n = (string)$row['name'];
@@ -921,12 +1301,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $written[] = '运行模式与数据库地址已写入 sql.md';
 
-                // ⑤ 锁定 + 自毁
-                @file_put_contents(INSTALL_LOCK, date('c') . "\n"
-                    . 'ip=' . secClientIp() . "\n"
-                    . 'mode=' . $d2['mode'] . "\n"
-                    . 'md=' . INSTALL_MD . "\n", LOCK_EX);
-                @chmod(INSTALL_LOCK, 0644);
+                // ⑤ 数据库自身持锁 + 文件锁 + 自毁
+                //    先在目标库里落 _install_lock 标记（2026-10-09 需求：安装成功后不管
+                //    db 还是 MySQL 都通过数据库去锁），再写 install.lock —— 文件锁哪天
+                //    被误删，门禁也能靠库里的锁自动补回（见文件头设计要点 5）。
+                $mk = instWriteDbLock($d2);
+                if ($mk['ok']) {
+                    $written[] = '数据库安装锁已写入 ' . $mk['where'];
+                } else {
+                    $written[] = '数据库安装锁写入失败：' . $mk['err'] . '（install.lock 文件锁照常生效）';
+                }
+                instWriteLockFile('install', array('mode' => $d2['mode'], 'dir' => $d2['dir']));
                 @unlink(__FILE__);
 
                 $saved = array(
@@ -1195,6 +1580,13 @@ ul{margin:6px 0;padding-left:20px}
       <ul>
         <li>配置已写入并逐项回读校验通过。</li>
         <li>已生成 <code>install.lock</code>，本页再次访问将返回 404。</li>
+        <?php if (isset($mk) && is_array($mk) && !$mk['ok']): ?>
+        <li style="color:#ffd9a0">⚠ 数据库安装锁写入失败（详见下方写入清单）——
+            <code>install.lock</code> 仍在，但它被误删后将无法从数据库自动补回。</li>
+        <?php else: ?>
+        <li>数据库里也写入了 <code>_install_lock</code> 安装锁 ——
+            就算 <code>install.lock</code> 被误删也会自动补回。</li>
+        <?php endif; ?>
         <li><code>install.php</code> 已自我删除（后台静默完成，<strong>页面照常停留供你截图留档，请勿刷新</strong>）。</li>
       </ul>
 
