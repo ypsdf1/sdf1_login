@@ -247,8 +247,10 @@ function instScanMysqlSide(array $e) {
     }
     @mysqli_set_charset($m, 'utf8mb4');
     // TABLE_ROWS 是估算值（InnoDB 不维护精确计数），标注「约」以免误导
-    $sql = 'SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES'
-         . ' WHERE TABLE_SCHEMA = ' . $m->real_escape_string($e['name'])
+    // ★ 库名必须带单引号 —— real_escape_string 只转义不加引号，
+    //   裸拼会被 MySQL 当成列名 → Unknown column 'xxx' in 'where clause'
+    $sql = "SELECT TABLE_NAME, TABLE_ROWS FROM information_schema.TABLES"
+         . " WHERE TABLE_SCHEMA = '" . $m->real_escape_string($e['name']) . "'"
          . " AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME";
     $rs = @mysqli_query($m, $sql);
     if ($rs === false) {
