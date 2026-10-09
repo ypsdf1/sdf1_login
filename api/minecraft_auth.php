@@ -48,7 +48,8 @@ function mcAuthIpBlacklisted() {
     // 放行通道：Java插件 secret
     if (isset($_REQUEST['secret']) && $_REQUEST['secret'] === SECRET_KEY) return false;
     try {
-        $path = dirname(__DIR__) . '/db/web.db';
+        // ★ web_ip_blacklist / weblogin_tokens 都是 Java 专属表 → 必须开 Java.db
+        $path = sqlDbFile('java');
         if (!file_exists($path)) return false;
         $w = new PDO('sqlite:' . $path);
         $w->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);

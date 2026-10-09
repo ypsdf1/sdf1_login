@@ -32,6 +32,185 @@
  */
 require_once __DIR__ . '/config.php';
 
+/* ============================================================================
+ * sql.md 数据库配置解析（2026-10-09 双库切分重构）
+ *
+ * 为什么放 security.php 而不是 config.php：
+ *   1) security.php 是全站唯一的公共加载点 —— core.php、admin_2fa_setup.php、
+ *      poller_online.php、minecraft_auth.php 全部会 require 它，任何入口都拿得到
+ *      sqlDbFile()；而 config.php 只有部分入口直接加载。
+ *   2) 线上 config.php 不随部署覆盖（deploy 的 EXCLUDE 永不上传它，它只由
+ *      admin_2fa_setup.php 就地改写 SEC-UPDATE 区）—— 放 config.php 线上根本不会生效。
+ * ========================================================================== */
+// ===== sql.md 运行配置（2026-10-09 大重构：配置文件 + 说明书二合一）=====
+// ★ sql.md 整个文档就是数据库配置文件：只读「配置区开始」哨兵所在的那个 json 代码块，
+//   说明区表格 / 常见问题一律忽略 —— 文档里不管有多少个代码块，都只认这一个。
+// ★ 软依赖（全部回退 db 兜底，绝不因配置问题让站点 500）：
+//     sql.md 缺失 / json 解码失败 / 运行模式非法 / MySQL 地址任一字段为空 → 一律按 db 运行。
+// ★ 运行模式四个取值不区分大小写：true|db → db（SQLite）；false|mysql → mysql。
+// ★ 归属决定地址给谁用：web|php → PHP 专属库；java|plugin → Java 专属库；
+//   归属留空时按模板出现顺序分配（第 1 个给 Java，第 2 个给 PHP）。
+// ★ 可用 define('SQL_MD_PATH', '/path/sql.md') 覆盖路径（仅测试用，与 PAY_MD_PATH 同规矩）。
+
+if (!function_exists('sqlModeNorm')) {
+    /**
+     * 运行模式归一化：true/db → 'db'；false/mysql → 'mysql'；未知值 → 'db' 兜底。
+     * 兼容 json 里的布尔 true/false 与字符串 "true"/"DB"/"MySQL" 等写法。
+     */
+    function sqlModeNorm($v) {
+        if (is_bool($v)) return $v ? 'db' : 'mysql';
+        if (is_int($v) || is_float($v)) return ((int)$v) ? 'db' : 'mysql';
+        $s = strtolower(trim((string)$v));
+        if ($s === 'true' || $s === 'db') return 'db';
+        if ($s === 'false' || $s === 'mysql') return 'mysql';
+        return 'db';
+    }
+}
+
+if (!function_exists('sqlMySqlEntry')) {
+    /**
+     * 解析 sql.md 里的一个 MySQL 地址条目（一对 {} = 一个地址）。
+     * 软依赖：地址 / 端口 / 库名 / 账号 / 密码 任意一项为空 → 返回 null（该归属回退 db）。
+     * @return array|null ['host','port','name','user','pass'] 或 null
+     */
+    function sqlMySqlEntry($el) {
+        $g = function ($k, $d = '') use ($el) {
+            return array_key_exists($k, $el) ? (string)$el[$k] : $d;
+        };
+        $host = trim($g('数据库地址'));
+        $port = trim($g('端口'));
+        $name = trim($g('数据库名'));
+        $user = trim($g('数据库账号'));
+        $pass = $g('数据库密码');
+        if ($host === '' || $port === '' || $name === '' || $user === '' || $pass === '') return null;
+        if (!ctype_digit($port)) return null;
+        $p = (int)$port;
+        if ($p < 1 || $p > 65535) return null;
+        return array('host' => $host, 'port' => $p, 'name' => $name, 'user' => $user, 'pass' => $pass);
+    }
+}
+
+if (!function_exists('sqlMdDbConfig')) {
+    /**
+     * 读 sql.md 配置模块的 json，返回运行配置（static 缓存，一次请求只读一次盘）。
+     *
+     * @return array {
+     *   'mode' => 'db'|'mysql', 运行模式（已归一化）
+     *   'dir'  => string,       db 模式的存储位置（未配置 = ''）
+     *   'java' => array|null,   Java 专属 MySQL 连接参数（null = 该侧兜底 db）
+     *   'web'  => array|null,   PHP 专属 MySQL 连接参数（null = 该侧兜底 db）
+     *   'raw'  => array|null,   解析出的原始 json（install 页回显用）
+     *   'ok'   => bool,         是否成功读到配置模块
+     * }
+     */
+    function sqlMdDbConfig() {
+        static $cfg = null;
+        if ($cfg !== null) return $cfg;
+        $cfg = array(
+            'mode' => 'db', 'dir' => '', 'java' => null, 'web' => null, 'raw' => null, 'ok' => false,
+        );
+
+        $path = defined('SQL_MD_PATH') ? SQL_MD_PATH : __DIR__ . '/sql.md';
+        if (!is_file($path)) return $cfg;
+        $md = @file_get_contents($path);
+        if (!is_string($md) || $md === '') return $cfg;
+        if (!preg_match_all('/```(?:json|JSON)?\s*(.*?)```/s', $md, $mm) || empty($mm[1])) return $cfg;
+
+        // 只认含「配置区开始」哨兵的代码块；没找到哨兵时退而取第一个可解码的块（老格式兜底）
+        $arr = null;
+        foreach ($mm[1] as $body) {
+            $a = json_decode(trim($body), true);
+            if (!is_array($a)) continue;   // 解码失败的块直接跳过，不影响下一个块
+            $hit = false;
+            foreach ($a as $el) {
+                if (is_array($el) && isset($el['text'])
+                    && strpos((string)$el['text'], '配置区开始') !== false) {
+                    $hit = true;
+                    break;
+                }
+            }
+            if ($hit) { $arr = $a; break; }
+            if ($arr === null) $arr = $a;
+        }
+        if (!is_array($arr)) return $cfg;   // 整体解码失败 → 走 db 兜底
+
+        $cfg['ok']   = true;
+        $cfg['raw']  = $arr;
+        $slotSeq     = 0;   // 归属留空时按出现顺序分配槽位
+        foreach ($arr as $el) {
+            if (!is_array($el)) continue;
+
+            // 模式条目：{运行模式, 数据库存储位置}
+            if (array_key_exists('运行模式', $el)) {
+                $cfg['mode'] = sqlModeNorm($el['运行模式']);
+                if (array_key_exists('数据库存储位置', $el)) {
+                    $cfg['dir'] = trim((string)$el['数据库存储位置']);
+                }
+                continue;
+            }
+
+            // 地址条目：含 MySQL 字段才算（一对 {} = 一个地址）
+            if (!array_key_exists('数据库地址', $el) && !array_key_exists('数据库名', $el)) continue;
+
+            $own  = strtolower(trim(isset($el['归属']) ? (string)$el['归属'] : ''));
+            if ($own !== '' && (strpos($own, 'java') !== false || strpos($own, 'plugin') !== false)) {
+                $slot = 'java';
+            } elseif ($own !== '' && (strpos($own, 'web') !== false || strpos($own, 'php') !== false)) {
+                $slot = 'web';
+            } else {
+                $slot = ($slotSeq === 0) ? 'java' : 'web';
+            }
+            $slotSeq++;
+
+            $conn = sqlMySqlEntry($el);   // 字段不全 → null → 该侧兜底 db
+            if ($conn !== null && $cfg[$slot] === null) $cfg[$slot] = $conn;
+        }
+        return $cfg;
+    }
+}
+
+if (!function_exists('sqlDbDir')) {
+    /**
+     * 解析 db 模式的存储位置：
+     *   /xxx   → 绝对路径（从根目录开始）
+     *   ./xxx  → 相对当前目录（Web 根）
+     *   ../xxx → 相对上层目录
+     *   空     → 默认 __DIR__/db（与改造前 DB_PATH 完全一致，老部署零变化）
+     * @return string 已归一为 / 分隔的绝对路径
+     */
+    function sqlDbDir() {
+        $p = trim(sqlMdDbConfig()['dir']);
+        if ($p === '') return str_replace('\\', '/', __DIR__ . '/db');
+        $p = str_replace('\\', '/', $p);
+        $base = str_replace('\\', '/', __DIR__);
+        while (strpos($p, '../') === 0) { $base = dirname($base); $p = substr($p, 3); }
+        if (strpos($p, './') === 0) $p = substr($p, 2);
+        if ($p !== '' && $p[0] === '/') return rtrim($p, '/');          // 绝对路径
+        if ($p === '') return $base;
+        return rtrim($base, '/') . '/' . trim($p, '/');                 // 相对当前目录
+    }
+}
+
+if (!function_exists('sqlDbFile')) {
+    /**
+     * 取某侧的 SQLite 文件路径（db 模式 / mysql 模式下该侧兜底时都用它）。
+     *   'web'  → web.db（PHP 专属）；未配置存储位置时沿用 config.php 的 DB_PATH，老部署零变化
+     *   'java' → Java.db（Java 专属）
+     */
+    function sqlDbFile($side) {
+        $c = sqlMdDbConfig();
+        if ($side === 'web') {
+            if ($c['dir'] === '' && defined('DB_PATH') && DB_PATH !== '') {
+                return str_replace('\\', '/', DB_PATH);
+            }
+            return sqlDbDir() . '/web.db';
+        }
+        return sqlDbDir() . '/Java.db';
+    }
+}
+
+
+
 // ======================================================================
 //  基础：客户端 IP
 // ======================================================================
@@ -262,7 +441,7 @@ function secTokenUrl($page = 'admin.php', $extra = '') {
 function secBootstrapDb($write = false) {
     if (!class_exists('SQLite3')) return null;
     if (!defined('DB_PATH') || DB_PATH === '') return null;
-    $path = DB_PATH;
+    $path = sqlDbFile('web');
     if ($write) {
         $dir = dirname($path);
         if (!is_dir($dir)) { @mkdir($dir, 0755, true); }
@@ -294,7 +473,7 @@ function secBootstrapDb($write = false) {
 function secMarkBootstrapped($note = '') {
     $db = secBootstrapDb(true);
     if ($db === null) {
-        secLog('bootstrap_mark_fail', 'open failed path=' . (defined('DB_PATH') ? DB_PATH : '(undefined)'));
+        secLog('bootstrap_mark_fail', 'open failed path=' . (function_exists('sqlDbFile') ? sqlDbFile('web') : '(no sqlDbFile)'));
         return false;
     }
     try {
@@ -335,7 +514,7 @@ function secIsBootstrapped() {
         return true;
     }
     // 判据 2：web.db 还没建 = 全新部署第一次访问 → 引导模式
-    if (!defined('DB_PATH') || DB_PATH === '' || !file_exists(DB_PATH)) {
+    if (!function_exists('sqlDbFile') || !file_exists(sqlDbFile('web'))) {
         $cached = false;
         return false;
     }

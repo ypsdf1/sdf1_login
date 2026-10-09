@@ -40,7 +40,7 @@ $PLATFORM_DB_PASS = defined('PAY_MYSQL_PASS') ? PAY_MYSQL_PASS : '5HtD7Rn3seRAn2
 $GLOBALS['PLATFORM_DB_PREFIX'] = 'pay_'; $PLATFORM_DB_PREFIX = 'pay_';
 
 // SQLite 数据库路径
-$GLOBALS['SQLITE_DB_PATH'] = __DIR__ . '/../db/web.db';     // web_transactions (Java读写)
+$GLOBALS['SQLITE_DB_PATH'] = sqlDbFile('java');             // web_transactions (Java专属表 → Java.db)
 $GLOBALS['ORDERS_DB_PATH'] = __DIR__ . '/../db/orders.db';  // pay_orders (PHP读写)
 
 if (!function_exists('debugLog')) {
