@@ -18,6 +18,8 @@ if (!secAdminPassConfigured()) {
 }
 // ★ 人机验证（2026-10-02）：cgWidgetHtml() 渲染挂件，未配密钥时自动放行
 require_once __DIR__ . '/captcha_guard.php';
+// ★ 数据安全护栏横幅（2026-10-10）：库被清空/指错库时，管理员一登录就能看到告警
+require_once __DIR__ . '/db_guard.php';
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -63,6 +65,7 @@ require_once __DIR__ . '/captcha_guard.php';
     <div class="login-box">
         <h1>🔐 管理后台</h1>
         <div class="sub">SDF1 插件管理系统</div>
+        <?php echo function_exists('dfGuardAdminBanner') ? dfGuardAdminBanner() : ''; ?>
         <div class="field">
             <label>管理密码</label>
             <input type="password" id="password" placeholder="请输入管理密码" autofocus>

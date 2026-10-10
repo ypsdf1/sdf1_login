@@ -205,8 +205,9 @@ function shopBuy($token) {
         // 更新库存（同时写admin_stock确保Java同步）
         if ($item['stock'] > 0) {
             $newStock = $item['stock'] - $amount;
-            $stmt = $db->prepare("UPDATE shop_items SET stock = :ns, admin_stock = :ns, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+            $stmt = $db->prepare("UPDATE shop_items SET stock = :ns, admin_stock = :ns, last_modified = :t, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
             $stmt->bindValue(':ns', $newStock, SQLITE3_INTEGER);
+            $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
             $stmt->bindValue(':amount', $amount, SQLITE3_INTEGER);
             $stmt->bindValue(':id', $itemId, SQLITE3_TEXT);
             $stmt->execute();
@@ -543,8 +544,9 @@ function shopBuyCart($token) {
             $item = $p['item'];
             if ($item['stock'] > 0) {
                 $newStock = $item['stock'] - $p['amount'];
-                $stmt = $db->prepare("UPDATE shop_items SET stock = :ns, admin_stock = :ns, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
+                $stmt = $db->prepare("UPDATE shop_items SET stock = :ns, admin_stock = :ns, last_modified = :t, hourly_sales = hourly_sales + :amount, total_sales = total_sales + :amount WHERE id = :id");
                 $stmt->bindValue(':ns', $newStock, SQLITE3_INTEGER);
+                $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
                 $stmt->bindValue(':amount', $p['amount'], SQLITE3_INTEGER);
                 $stmt->bindValue(':id', $p['item_id'], SQLITE3_TEXT);
                 $stmt->execute();

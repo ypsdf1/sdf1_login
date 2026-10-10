@@ -3,6 +3,8 @@
 require_once __DIR__ . '/config.php';
 // ★ 紧急安全加固（2026-09-29）：TOTP 二次验证 + IP 白名单 + 会话纪元（见 security.php）
 require_once __DIR__ . '/security.php';
+// ★ 数据安全护栏 / 灾后自愈（2026-10-10）：dbOpen 连接后体检，块模式拒绝操作
+require_once __DIR__ . '/db_guard.php';
 
 // ★ 确保任何前置输出（包括 BOM、空格、Warning）都被丢弃
 if (ob_get_level() > 0) {
@@ -87,6 +89,16 @@ if (!function_exists('dbExtractTables')) {
     function dbExtractTables($sql) {
         $sql = (string)$sql;
         $out = array();
+
+        // ⓪ upsert 尾段预抹（2026-10-10 灾备演练暴露）：
+        //   INSERT ... ON CONFLICT(...) DO UPDATE SET 列=...（SQLite 方言）
+        //   INSERT ... ON DUPLICATE KEY UPDATE 列=...（MySQL 方言）
+        //   尾段里只有列名，会被 ③ 的 UPDATE 正则误提成表名 → dbPickSide 因混进
+        //   非 Java 表而整句判 web → java 组表被送去 caoyuanphp → #1146。
+        //   router 判侧发生在方言翻译之前、拿的是 SQLite 原句，故两种形态都要抹；
+        //   只抹到分号/语句尾，绝不开跨界（单次 exec/prepare 本就是单语句）。
+        $sql = preg_replace('/\bON\s+CONFLICT\b[^;]*/is', ' ', $sql);
+        $sql = preg_replace('/\bON\s+DUPLICATE\s+KEY\s+UPDATE\b[^;]*/is', ' ', $sql);
 
         // ① CREATE [UNIQUE] INDEX [IF NOT EXISTS] <索引名> ON <表名>(...)：只取 ON 之后的表名
         $patIdx = '/\bCREATE\s+(?:UNIQUE\s+)?INDEX(?:\s+IF\s+NOT\s+EXISTS)?\s+[`"\']?[\w$]+[`"\']?\s+ON\s+[`"\']?([\w$]+)/i';
@@ -1452,21 +1464,42 @@ function dbOpen($side) {
     $mcfg = sqlMdDbConfig();
     if (isset($mcfg['mode']) && $mcfg['mode'] === 'mysql'
         && isset($mcfg[$side]) && is_array($mcfg[$side])) {
+        // ★ 数据安全护栏（2026-10-10）：先连上、再过体检，最后才干活
+        $dfVerdict = 'skip';   // skip = 连接都没建成（走 SQLite 兜底，与改造前一致）
+        $mdb = null;
         try {
             $mdb = new SdfMySqlDb($mcfg[$side], $side);
             $mdb->enableExceptions(true);
             $mdb->busyTimeout(8000);
             try { $mdb->exec('ROLLBACK'); } catch (\Throwable $_) {}   // 清上一请求残留事务
+            // 体检放在 initTables 之前：指错库时绝不往里建表/迁移
+            try { $dfVerdict = dfGuardCheck($mdb, $mcfg[$side], $side); } catch (\Throwable $e) {
+                debugLog('dbOpen[' . $side . ']: 数据护栏体检异常（按 ok 放行）: ' . $e->getMessage());
+                $dfVerdict = 'ok';
+            }
+        } catch (\Throwable $e) {
+            debugLog('dbOpen[' . $side . ']: MySQL 连接失败，回退 SQLite: ' . $e->getMessage());
+        }
+        if ($mdb !== null && $dfVerdict !== 'skip') {
+            if ($dfVerdict === 'block') {
+                // 数据安全优先：sql.md 指错库/指错机 → 硬失败，绝不软回退 SQLite
+                // （软回退等于把数据写进另一个库，比停机更危险）
+                throw new dfGuardBlockException(dfGuardBlockReason($side));
+            }
             try { initTables($mdb, $side); } catch (\Throwable $e) {
                 debugLog('dbOpen[' . $side . ']: initTables失败: ' . $e->getMessage());
             }
             try { migrateDatabase($mdb, $side); } catch (\Throwable $e) {
                 debugLog('dbOpen[' . $side . ']: migrateDatabase失败: ' . $e->getMessage());
             }
+            if ($dfVerdict === 'recover') {
+                // 被清空的自愈：补表结构 + 空表从最近备份补推 SQL 数据，然后放行 Java 握手
+                try { dfGuardRecover($mdb, $side); } catch (\Throwable $e) {
+                    debugLog('dbOpen[' . $side . ']: 自愈执行失败: ' . $e->getMessage());
+                }
+            }
             $cache[$side] = $mdb;
             return $mdb;
-        } catch (\Throwable $e) {
-            debugLog('dbOpen[' . $side . ']: MySQL 连接失败，回退 SQLite: ' . $e->getMessage());
         }
     }
 

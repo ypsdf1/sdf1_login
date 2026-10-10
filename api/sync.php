@@ -101,6 +101,24 @@ function checkPlayerRegistered() {
 
 $action = getParam('action', '');
 
+// ★ 数据安全护栏（2026-10-10）：任一侧处于块状态 → 拒绝一切数据库操作与握手（含对账），
+//   给 Java 明确失败回执；等管理员修好 sql.md 数据库配置后自动恢复放行。
+if (function_exists('dfGuardBlockedSides')) {
+    $dfBlocked = dfGuardBlockedSides();
+    if ($dfBlocked) {
+        while (ob_get_level() > 0) ob_end_clean();
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(503);
+        echo json_encode(array(
+            'success' => false,
+            'guard' => 'blocked',
+            'message' => '数据库安全护栏：' . implode('；', $dfBlocked)
+                . ' 已暂停对该数据库的全部操作并拒绝握手，请管理员检查 sql.md 数据库配置段。',
+        ), JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
 try {
 switch ($action) {
     case 'sync_shop':
@@ -206,6 +224,9 @@ switch ($action) {
         break;
     case 'pull_shop_stock':
         pullShopStock();
+        break;
+    case 'push_shop_stock':
+        pushShopStock();
         break;
     case 'clear_admin_stock':
         clearAdminStock();
@@ -3827,6 +3848,42 @@ function pullShopStock() {
     $db->exec("UPDATE shop_items SET admin_stock = NULL WHERE admin_stock IS NOT NULL");
 
     success(['items' => $items, 'count' => count($items)]);
+}
+
+// ===== 插件推送本地库存改动（双向同步：数据分叉以 Java 为主）=====
+function pushShopStock() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS shop_items (
+        id TEXT PRIMARY KEY, category TEXT NOT NULL, display_name TEXT NOT NULL,
+        material TEXT NOT NULL, buy_price INTEGER DEFAULT 0, sell_price INTEGER DEFAULT -1,
+        stock INTEGER DEFAULT -1, hourly_sales INTEGER DEFAULT 0, total_sales INTEGER DEFAULT 0,
+        last_sync INTEGER DEFAULT 0, admin_stock INTEGER DEFAULT NULL,
+        admin_buy_price INTEGER DEFAULT NULL, admin_sell_price INTEGER DEFAULT NULL
+    )");
+
+    $items = getParam('items');
+    if (!$items || !is_array($items)) error('缺少库存数据');
+
+    $time = time();
+    $applied = 0;
+    $kept = 0;
+    // Java 主：直接写 stock 并清 admin_stock（Java 值即最新权威）。
+    // 竞态护栏：PHP 侧该行若有与本次推送同秒更新的未拉取改动（web 购买/后台改库存），
+    //   保留不覆盖，等 Java 下一轮 pull 时按「哪边有改动对齐哪边」处理。
+    $stmt = $db->prepare("UPDATE shop_items SET stock = :s, admin_stock = NULL, last_modified = :t
+        WHERE id = :id AND (admin_stock IS NULL OR last_modified <= :t)");
+    foreach ($items as $it) {
+        if (!is_array($it) || !isset($it['id'])) continue;
+        $stmt->bindValue(':s', (int)$it['stock'], SQLITE3_INTEGER);
+        $stmt->bindValue(':t', $time, SQLITE3_INTEGER);
+        $stmt->bindValue(':id', (string)$it['id'], SQLITE3_TEXT);
+        $stmt->execute();
+        if ($db->changes() > 0) { $applied++; } else { $kept++; }
+    }
+    success(['count' => count($items), 'applied' => $applied, 'kept' => $kept], '库存已接收');
 }
 
 // ===== 插件确认已应用管理员库存改动 =====
