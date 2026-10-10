@@ -1910,8 +1910,7 @@ ul{margin:6px 0;padding-left:20px}
     <div class="acts">
       <button class="btn gr" type="submit" name="act" value="n4">完成安装，去配置 2FA</button>
       <input type="hidden" name="go2fa" id="go2fa" value="1">
-      <button class="btn gh" type="button" onclick="document.getElementById('go2fa').value='0';
-        this.form.querySelector('[name=act]').value='n4'; this.form.submit();">完成安装，稍后再配 2FA</button>
+      <button class="btn gh" type="submit" name="act" value="n4" onclick="document.getElementById('go2fa').value='0';">完成安装，稍后再配 2FA</button>
       <button class="btn gh" type="submit" name="act" value="prev">上一步</button>
       <input type="hidden" name="from" value="4">
     </div>
