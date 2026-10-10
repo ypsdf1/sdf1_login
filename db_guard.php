@@ -158,12 +158,12 @@ function dfGuardCheck($mdb, $conn, $side)
     $rs = $mdb->query("SELECT table_name FROM information_schema.tables WHERE table_schema='"
         . $mdb->escapeString($dbName) . "'");
     if ($rs) {
-        while ($row = $rs->fetch_assoc()) $tables[] = (string)$row['table_name'];
+        while ($row = $rs->fetchArray(SQLITE3_ASSOC)) $tables[] = (string)$row['table_name'];
     }
     $estRows = 0;
     $rs = $mdb->query("SELECT SUM(TABLE_ROWS) s FROM information_schema.tables WHERE table_schema='"
         . $mdb->escapeString($dbName) . "'");
-    if ($rs && ($row = $rs->fetch_assoc())) $estRows = (int)$row['s'];
+    if ($rs && ($row = $rs->fetchArray(SQLITE3_ASSOC))) $estRows = (int)$row['s'];
 
     $core = dfGuardCoreTables($side);
     $coreNow = array();
@@ -214,7 +214,7 @@ function dfGuardScalar($mdb, $sql)
 {
     try {
         $rs = $mdb->query($sql);
-        if ($rs && ($row = $rs->fetch_assoc())) {
+        if ($rs && ($row = $rs->fetchArray(SQLITE3_ASSOC))) {
             foreach ($row as $v) return $v;
         }
     } catch (\Throwable $e) { return null; }
