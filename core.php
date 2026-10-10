@@ -406,13 +406,17 @@ if (!function_exists('sqlMySqlReservedCols')) {
 if (!function_exists('sqlMySqlQuoteKeyCol')) {
     /**
      * web_area_config 的列名叫 key（MySQL 保留字），DML 里裸写会 1064。
-     * 只对字符串字面量之外、且不是 primary/foreign/unique key 的裸 key 加反引号。
+     * 只对字符串字面量之外、且不是 primary/foreign/unique/duplicate key 的裸 key 加反引号。
      * :key 绑定符被 (?<![:\w$]) 挡掉，cfg_key 之类被词边界挡掉。
+     *
+     * ★ duplicate 必须排除：section 4 已把 SQLite 的 ON CONFLICT(key) DO UPDATE 翻成
+     *   MySQL 的 ON DUPLICATE KEY UPDATE，这里若把其中的 KEY 反引号会得到
+     *   ON DUPLICATE `key` UPDATE → #1064（test12 2026-10-10 的 6 条报错即此）。
      */
     function sqlMySqlQuoteKeyCol($sql) {
         return sqlMySqlMapLiterals($sql, function ($s) {
             return preg_replace_callback(
-                '/(?<![:\w$])(?<!primary\s)(?<!foreign\s)(?<!unique\s)key(?![\w$])/i',
+                '/(?<![:\w$])(?<!primary\s)(?<!foreign\s)(?<!unique\s)(?<!duplicate\s)key(?![\w$])/i',
                 function ($m) { return '`key`'; },
                 $s
             );
@@ -475,7 +479,16 @@ if (!function_exists('sqlMySqlRenderValue')) {
             if (!is_scalar($v)) return 'NULL';
             $f = (float)$v;
             if (is_nan($f) || is_infinite($f)) return 'NULL';
-            return rtrim(rtrim(sprintf('%.17G', $f), '0'), '.');
+            $s = sprintf('%.17G', $f);
+            // ★ 只有小数形式才能去尾零（"1.5000"→"1.5"）。%.17G 对整数值不产生小数点，
+            //   尾随 0 是**有效数位**：0.0→"0"、10.0→"10"、100.0→"100"，
+            //   直接 rtrim('0') 会吃成 ""/1/1 → 空槽位 #1064（test12 line 22）与坐标静默被篡改。
+            //   指数形式（1e20→"1e+20"）的尾 0 同样不能碰，故 'e' 一并排除。
+            if (strpos($s, '.') !== false && stripos($s, 'e') === false) {
+                $s = rtrim(rtrim($s, '0'), '.');
+            }
+            if ($s === '' || $s === '-' || $s === '+') $s = '0';   // 兜底：绝不产出空/孤立正负号
+            return $s;
         }
         if ($type === SQLITE3_BLOB) { return "x'" . bin2hex((string)$v) . "'"; }
         $s = (string)$v;
@@ -533,7 +546,14 @@ if (!function_exists('sqlMySqlColumnPart')) {
             }
             return strtoupper(substr($m[1], 0, 1)) . substr($m[1], 1) . '(' . implode(',', $cols) . ')';
         }
-        if (preg_match('/^(KEY|INDEX|CHECK|CONSTRAINT|FOREIGN)\b/i', $t)) {
+        // ★ 表级索引必须"后接 (列清单)"才算：KEY/INDEX 后面跟类型关键字的是**列定义**
+        //   （web_area_config 的 `key TEXT PRIMARY KEY` 就以 key 开头）。老写法用 ^KEY\b
+        //   一票判定，会把该列当表级约束整段跳过 → TEXT 键列没转成 VARCHAR → 1170
+        //   （test12 实测 137 条，直接导致 web_area_config 建不出来 → 1146）。
+        if (preg_match('/^(?:KEY|INDEX)\s*(?:`?[\w$]+`?\s*)?\(/i', $t)) {
+            return $t;   // 表级索引 KEY idx_name (cols)：长度由 CREATE INDEX 适配处理，原样保留
+        }
+        if (preg_match('/^(CHECK|CONSTRAINT|FOREIGN)\b/i', $t)) {
             return $t;   // 表级非键约束：CHECK/CONSTRAINT/FOREIGN 本仓不用，原样保留
         }
         if (!preg_match('/^([`\"]?)(\w+)\1\s+(\w+)([\s\S]*)$/', $t, $m)) return $t;
@@ -1053,42 +1073,120 @@ if (!class_exists('SdfMySqlDb', false)) {
             return $out;
         }
 
-        /** CREATE INDEX 的 TEXT 列必须带前缀长度（否则 1170）。列类型从 information_schema 查。 */
+        /**
+         * CREATE INDEX 的长列必须带前缀长度（否则 1071）。列元数据从 information_schema 查。
+         *
+         * ★ 判定不能只看"是不是 TEXT"：SQLite 的 TEXT DEFAULT '' 在 MySQL 侧会被翻成
+         *   VARCHAR(500)，utf8mb4 下两列 500×4×2=4000 字节 > InnoDB 3072 索引键上限
+         *   （test12 实测 #1071 刷 9459 条，web_item_sn 的联合索引始终建不出来，查询退化全表扫描）。
+         *   故改为估算索引字节预算：装得下就保留全列索引（语义最优），
+         *   装不下或撞上必须前缀的类型（TEXT/BLOB/JSON/GEOMETRY/SET/ENUM）才均分预算加前缀。
+         */
         private function applyIndexPrefix($sql) {
             if (!preg_match('/^CREATE\s+(UNIQUE\s+)?INDEX\s+([`\"]?\w+[`\"]?)\s+ON\s+([`\"]?\w+[`\"]?)\s*\(([\s\S]*?)\)\s*;?\s*$/i', $sql, $m)) {
                 return $sql;
             }
             $uniq = $m[1]; $idx = $m[2]; $tbl = trim($m[3], '`"'); $cols = $m[4];
-            $out = array();
+            $items = array();
             foreach (sqlMySqlSplitTop($cols) as $c) {
                 $c = trim($c);
-                if (!preg_match('/^([`\"]?)(\w+)\1\s*((?:COLLATE\s+\S+\s*)?(?:ASC|DESC)?)$/i', $c, $mm)) { $out[] = $c; continue; }
-                $col = $mm[2];
-                $dt = $this->colDataType($tbl, $col);
-                if ($dt !== null && in_array($dt, array('text', 'tinytext', 'mediumtext', 'longtext',
-                                                         'blob', 'tinyblob', 'mediumblob', 'longblob',
-                                                         'json', 'geometry', 'set', 'enum'))) {
-                    $out[] = '`' . $col . '`(191)';
+                if (!preg_match('/^([`\"]?)(\w+)\1\s*((?:COLLATE\s+\S+\s*)?(?:ASC|DESC)?)$/i', $c, $mm)) {
+                    $items[] = array('raw' => $c, 'col' => null, 'dir' => '');
                 } else {
-                    $out[] = '`' . $col . '`' . ($mm[3] !== '' ? ' ' . $mm[3] : '');
+                    $items[] = array('raw' => null, 'col' => $mm[2], 'dir' => $mm[3]);
+                }
+            }
+            // InnoDB DYNAMIC 行格式的索引键上限 3072 字节，变长列每列另计 2 字节长度前缀
+            $budget = 3072;
+            $n = 0; $est = 0; $must = false;
+            foreach ($items as $it) {
+                if ($it['col'] === null) continue;   // 解析不了的原样带过，不计入
+                $n++;
+                $info = $this->colIndexInfo($tbl, $it['col']);
+                if ($info === null) continue;
+                if ($info['mustPrefix']) $must = true;
+                $est += $info['maxBytes'] * max(1, (int)$info['maxLen']) + 2;
+            }
+            if (!$must && $est <= $budget) return $sql;   // 装得下：保留全列索引，不加前缀
+
+            // 均分预算；191 是 utf8mb4 下兼容 767 老限制的安全值（191×4+2=766），多列也远在预算内
+            $share = ($n > 0) ? (int)floor(($budget / $n - 2) / 4) : 191;
+            if ($share < 1) $share = 1;
+            if ($share > 191) $share = 191;
+            $out = array();
+            foreach ($items as $it) {
+                if ($it['col'] === null) { $out[] = $it['raw']; continue; }
+                $info = $this->colIndexInfo($tbl, $it['col']);
+                if ($info !== null && $info['varLen']) {
+                    $len = $share;
+                    if ((int)$info['maxLen'] > 0 && (int)$info['maxLen'] < $len) $len = (int)$info['maxLen'];
+                    $out[] = '`' . $it['col'] . '`(' . $len . ')' . ($it['dir'] !== '' ? ' ' . $it['dir'] : '');
+                } else {
+                    $out[] = '`' . $it['col'] . '`' . ($it['dir'] !== '' ? ' ' . $it['dir'] : '');
                 }
             }
             return 'CREATE ' . ($uniq !== '' ? 'UNIQUE ' : '') . 'INDEX ' . $idx . ' ON `' . $tbl . '` (' . implode(',', $out) . ')';
         }
 
-        private function colDataType($table, $col) {
+        /** 单列的索引预算信息：maxBytes=每字符最大字节 / maxLen=最大字符数 / varLen=可加前缀 / mustPrefix=必须前缀 */
+        private function colIndexInfo($table, $col) {
+            $c = $this->colMeta($table, $col);
+            if ($c === null) return null;
+            $dt = $c['type'];
+            $mustPrefixTypes = array('text', 'tinytext', 'mediumtext', 'longtext', 'blob', 'tinyblob',
+                                     'mediumblob', 'longblob', 'json', 'geometry', 'set', 'enum');
+            $varLenTypes = array('char', 'varchar', 'binary', 'varbinary', 'enum', 'set');
+            $info = array(
+                'type' => $dt,
+                'maxBytes' => 4,   // 未知字符集按 utf8mb4 保守估
+                'maxLen' => (int)$c['maxLen'],
+                'varLen' => false,
+                'mustPrefix' => false,
+            );
+            $cs = strtolower((string)$c['charset']);
+            if ($cs === 'utf8mb4' || $cs === 'utf16' || $cs === 'utf16le' || $cs === 'utf32') $info['maxBytes'] = 4;
+            elseif ($cs === 'utf8') $info['maxBytes'] = 3;
+            elseif ($cs === 'latin1' || $cs === 'ascii' || $cs === 'binary') $info['maxBytes'] = 1;
+            if (in_array($dt, $mustPrefixTypes, true)) {
+                if ($info['maxLen'] <= 0) $info['maxLen'] = 500;
+                $info['varLen'] = true;
+                $info['mustPrefix'] = !in_array($dt, $varLenTypes, true);
+            } elseif (in_array($dt, $varLenTypes, true)) {
+                $info['varLen'] = true;
+                if ($info['maxLen'] <= 0) $info['maxLen'] = 500;
+            } elseif ($dt === 'decimal' || $dt === 'numeric') {
+                $info['maxLen'] = 20;   // 定宽，按 20 字节保守估
+            } elseif ($info['maxLen'] <= 0) {
+                $info['maxLen'] = 8;    // 整型/日期等定宽列
+            }
+            return $info;
+        }
+
+        /** 列元数据（type/charset/maxLen），查不到返回 null。 */
+        private function colMeta($table, $col) {
             if (!$this->colLoaded) $this->loadColCache();
             $k = strtolower($table) . '.' . strtolower($col);
             return isset($this->colCache[$k]) ? $this->colCache[$k] : null;
         }
 
+        /** 兼容旧调用点：只关心 DATA_TYPE。 */
+        private function colDataType($table, $col) {
+            $c = $this->colMeta($table, $col);
+            return $c === null ? null : $c['type'];
+        }
+
         private function loadColCache() {
-            $this->colCache = array(); $this->colLoaded = true;
-            $db = mysqli_get_charset($this->m) ? '' : '';
-            $r = @mysqli_query($this->m, 'SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()');
+            $this->colCache = array();
+            $this->colLoaded = true;
+            $r = @mysqli_query($this->m, 'SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, CHARACTER_SET_NAME,'
+                . ' CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()');
             if ($r) {
                 while ($row = $r->fetch_assoc()) {
-                    $this->colCache[strtolower($row['TABLE_NAME']) . '.' . strtolower($row['COLUMN_NAME'])] = strtolower($row['DATA_TYPE']);
+                    $this->colCache[strtolower($row['TABLE_NAME']) . '.' . strtolower($row['COLUMN_NAME'])] = array(
+                        'type' => strtolower((string)$row['DATA_TYPE']),
+                        'charset' => (string)$row['CHARACTER_SET_NAME'],
+                        'maxLen' => (int)$row['CHARACTER_MAXIMUM_LENGTH'],
+                    );
                 }
                 $r->free();
             }
