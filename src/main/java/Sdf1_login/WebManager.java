@@ -3081,6 +3081,12 @@ public class WebManager {
     private static final int SHOP_STOCK_POLL_FAIL_THRESHOLD = 10;
     /** 防重入锁：pullShopStock执行期间不重复拉取 */
     private volatile boolean shopStockPulling = false;
+    /** ★ 库存双向同步（2026-10-10）：本地库存快照 id->stock（盘上持久化 shop_stock_snapshot.properties）。
+     *  与 md 当前值比对得出本地未推送差异 -> push 回 PHP；pull 应用 PHP 值时若本地有未推送差异则跳过覆盖
+     *  （哪边有改动就对齐哪边，数据分叉以 Java 为主）。 */
+    private final Map<String, Integer> shopStockSnapshot = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile boolean shopStockSnapshotLoaded = false;
+    private volatile long lastShopStockPushLog = 0;
 
     /**
      * 库存高频轮询：每15秒(±5)请求Web端库存变更检测接口
@@ -3094,6 +3100,8 @@ public class WebManager {
         if (!initialSyncComplete) return;
         try {
             if (shopStockPulling) return;
+            // ★ 双向同步：每轮 poll 先把本地库存差异推回 PHP（哪边有改动就对齐哪边）
+            pushShopStockDiffs();
             if (shopStockPollFailCount >= SHOP_STOCK_POLL_FAIL_THRESHOLD) {
                 if (shopStockPollFailCount % 12 != 0) {
                     shopStockPollFailCount++;
@@ -3174,6 +3182,8 @@ public class WebManager {
      */
     private boolean pullShopStockSync() {
         try {
+            // ★ 即时/兜底拉取路径也先推本地差异，保证 push 不依赖 poll 节奏
+            pushShopStockDiffs();
             String urlStr = webBaseUrl + "/api/sync.php?action=pull_shop_stock&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
 
@@ -6862,12 +6872,14 @@ public class WebManager {
     private void startTxBatchRun(List<Map<String, Object>> txs) {
         final List<Map<String, Object>> queue = new ArrayList<>(txs);
         final int total = queue.size();
-        final int batchCount = (total + TX_SYNC_BATCH_SIZE - 1) / TX_SYNC_BATCH_SIZE;
+        // ★ 自适应批大小：本轮从下限起探，成功一批加一档、失败当场减半（见 TX_SYNC_BATCH_MIN 注释）
+        final int atLeastBatches = (total + TX_SYNC_BATCH_MIN - 1) / TX_SYNC_BATCH_MIN;
         final int myRunId = txBatchRunSeq.incrementAndGet();
         txBatchRunId = myRunId;
         txBatchLastProgress = System.currentTimeMillis();
-        plugin.getLogger().info("[Web交易同步] ▶ 启动本轮推进: 共 " + total + " 笔 / "
-                + batchCount + " 批（先点验后补推，多退少补）");
+        plugin.getLogger().info("[Web交易同步] ▶ 启动本轮推进: 共 " + total + " 笔（先点验后补推，多退少补）"
+                + " | 批大小自适应 " + TX_SYNC_BATCH_MIN + "→" + TX_SYNC_BATCH_MAX
+                + "（≥" + atLeastBatches + " 批；每批成功 +" + TX_SYNC_BATCH_STEP + "，无回执减半）");
 
         new BukkitRunnable() {
             int index = 0;
@@ -6875,6 +6887,10 @@ public class WebManager {
             int pushedCount = 0;
             /** 当前批的连续失败次数（拿到回执推进后清零） */
             int batchRetries = 0;
+            /** 自适应批大小：每轮从下限起探（见 TX_SYNC_BATCH_MIN 注释） */
+            int curSize = TX_SYNC_BATCH_MIN;
+            /** 批号独立计数：批大小自适应后不能由 index 推导；重试同一批时不递增 */
+            int batchNo = 0;
 
             @Override
             public void run() {
@@ -6898,19 +6914,20 @@ public class WebManager {
                     return;
                 }
 
-                // ★ 批号由 index 推导：重试同一批时批号保持不变，日志不虚增
-                final int batchNo = index / TX_SYNC_BATCH_SIZE + 1;
-                List<Map<String, Object>> batch =
-                        queue.subList(index, Math.min(index + TX_SYNC_BATCH_SIZE, queue.size()));
+                // ★ 批号独立计数：批大小自适应后不能由 index 推导；重试同一批时不递增
+                batchNo++;
+                final int size = Math.max(1, Math.min(curSize, queue.size() - index));
+                List<Map<String, Object>> batch = queue.subList(index, index + size);
 
-                plugin.getLogger().info("[Web交易同步] ● 第" + batchNo + "/" + batchCount
+                plugin.getLogger().info("[Web交易同步] ● 第" + batchNo
                         + "批开始（" + batch.size() + " 笔，索引 " + index + "/" + total
+                        + "，自适应批大小当前=" + size
                         + "，本批已重试 " + batchRetries + "/" + TX_SYNC_MAX_BATCH_RETRIES + "）");
 
                 boolean ok;
                 int pushed;
                 try {
-                    int[] r = syncTxBatch(batch, total, batchNo, batchCount);
+                    int[] r = syncTxBatch(batch, total, batchNo);
                     ok = (r[0] == 1);
                     pushed = r[1];
                 } catch (Exception e) {
@@ -6930,6 +6947,14 @@ public class WebManager {
                         finishTxBatchRun();
                         return;
                     }
+                    // ★ 自适应退避：没拿到回执 → 批大小当场减半（不低于下限），
+                    //   用更小的批重试，顺势探出 PHP 的真实承受力
+                    int beforeDown = curSize;
+                    curSize = Math.max(TX_SYNC_BATCH_MIN, curSize / 2);
+                    if (curSize != beforeDown) {
+                        plugin.getLogger().warning("[Web交易同步] 自适应批大小退避: " + beforeDown
+                                + " → " + curSize + "（本批没拿到回执，换更小的批重试）");
+                    }
                     plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "批没拿到回执，"
                             + (TX_SYNC_RECEIPT_RETRY_MS / 1000) + " 秒后重试同一批（第 "
                             + batchRetries + "/" + TX_SYNC_MAX_BATCH_RETRIES + " 次）");
@@ -6940,13 +6965,20 @@ public class WebManager {
                 batchRetries = 0;
                 okCount += batch.size();
                 pushedCount += pushed;
-                index += TX_SYNC_BATCH_SIZE;
+                index += size;
+                // ★ 自适应加压：这批顺利拿到回执 → 批大小加一档（封顶 MAX），一点点试探 PHP 的胃口
+                int beforeUp = curSize;
+                curSize = Math.min(TX_SYNC_BATCH_MAX, curSize + TX_SYNC_BATCH_STEP);
+                if (curSize != beforeUp) {
+                    plugin.getLogger().info("[Web交易同步] 自适应批大小加压: " + beforeUp + " → " + curSize);
+                }
 
                 // ★ 回执节奏：HTTP success 即回执，收到才推下一批；
                 //   真推了 PHP 的批次再冷却 15 秒让 PHP 消化，纯对账跳过的批次走短间隔
                 long stepMs = pushed > 0 ? TX_SYNC_RECEIPT_STEP_MS : TX_SYNC_VERIFY_STEP_MS;
                 plugin.getLogger().info("[Web交易同步] 第" + batchNo + "批回执已收到（补推 "
-                        + pushed + " 笔），" + (stepMs / 1000) + " 秒后继续下一批");
+                        + pushed + " 笔，下批大小=" + curSize + "），"
+                        + (stepMs / 1000) + " 秒后继续下一批");
                 scheduleTxStep(this, stepMs, myRunId);
             }
         }.runTaskLaterAsynchronously(plugin, 1L);
@@ -7007,7 +7039,7 @@ public class WebManager {
      * 处理一批交易：先与 PHP 点验这批序列号，只补推缺失部分，成功后推进水位线
      * 返回 int[]{ 成功?(1:0), 实际补推笔数 }
      */
-    private int[] syncTxBatch(List<Map<String, Object>> batch, int total, int batchNo, int batchCount) {
+    private int[] syncTxBatch(List<Map<String, Object>> batch, int total, int batchNo) {
         List<Long> ids = new ArrayList<>(batch.size());
         for (Map<String, Object> tx : batch) {
             Object iv = tx.get("id");
@@ -7026,7 +7058,7 @@ public class WebManager {
         if (missing.isEmpty()) {
             // PHP 已经全都有 → 一笔都不推，只推进水位线（本批只花 1 次轻量对账请求）
             advanceTxWatermark(batch);
-            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo
                     + "批 PHP 已齐全（" + batch.size() + " 笔），跳过推送");
             return new int[]{1, 0};
         }
@@ -7038,11 +7070,11 @@ public class WebManager {
                     toPush.add(tx);
                 }
             }
-            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo
                     + "批 仅缺 " + toPush.size() + "/" + batch.size() + " 笔，只补推缺失部分");
         }
 
-        if (!pushTxBatch(toPush, total, batchNo, batchCount)) {
+        if (!pushTxBatch(toPush, total, batchNo)) {
             return new int[]{0, 0};
         }
         advanceTxWatermark(batch);
@@ -7152,8 +7184,17 @@ public class WebManager {
     }
 
 
-    /** 单批交易同步的最大笔数 */
-    private static final int TX_SYNC_BATCH_SIZE = 300;
+    /**
+     * 交易补推批大小：自适应探测（2026-10-10）。
+     * 用户要求：「300 笔是下限，每次一点点加，试探 PHP 一次能吃多少笔，且不会引起其它调度器崩溃」。
+     * · 每轮从 TX_SYNC_BATCH_MIN 起推，每顺利拿到一批回执 +TX_SYNC_BATCH_STEP，直到 TX_SYNC_BATCH_MAX；
+     * · 任一批没拿到回执（15 秒超时 / PHP 明确失败）→ 当场减半（不低于下限）后重试同一批，
+     *   既探到 PHP 实际承受上限，又不会把大单持续怼向 PHP 拖垮其它调度器；
+     * · 每轮重新从下限开始探，不跨轮记忆（避免把一次网络波动误学成固定上限）。
+     */
+    private static final int TX_SYNC_BATCH_MIN = 300;
+    private static final int TX_SYNC_BATCH_STEP = 300;
+    private static final int TX_SYNC_BATCH_MAX = 3000;
 
     /** 首次全量同步：每提交一项打一行进度，便于用户实时观察 */
     private void fullSyncStep(String what) {
@@ -7163,7 +7204,7 @@ public class WebManager {
     /**
      * 推送一批交易到 PHP，成功则推进水位线，失败返回 false（调用方负责中止并保留水位线）
      */
-    private boolean pushTxBatch(List<Map<String, Object>> batch, int totalAll, int batchNo, int batchCount) {
+    private boolean pushTxBatch(List<Map<String, Object>> batch, int totalAll, int batchNo) {
         try {
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("transactions", batch);
@@ -7171,19 +7212,19 @@ public class WebManager {
             // ★ 单次请求、15 秒超时：PHP 必须在窗口内给答复
             String response = httpPostWithTokenOnce("api/sync.php?action=sync_transactions", body);
             if (response == null) {
-                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo
                         + "批 ★ 15 秒内没有答复（超时/网络），不算成功也不算失败 → 等 15 秒重试同一批");
                 return false;
             }
             Map<String, Object> result = parseJson(response);
             if (!Boolean.TRUE.equals(result.get("success"))) {
-                plugin.getLogger().warning("[Web交易同步] 第" + batchNo + "/" + batchCount
+                plugin.getLogger().warning("[Web交易同步] 第" + batchNo
                         + "批 ★ PHP 明确答复失败: " + result.get("message"));
                 return false;
             }
 
             // ★ 水位线由调用方 advanceTxWatermark 统一推进（对账跳过时也要推进）
-            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "/" + batchCount + "批 已推送 "
+            plugin.getLogger().info("[Web交易同步] 第" + batchNo + "批 已推送 "
                     + batch.size() + " 笔（本轮共 " + totalAll + " 笔），回执=" + result.get("message"));
             return true;
         } catch (Exception e) {
@@ -10707,6 +10748,7 @@ public class WebManager {
      */
     private boolean updateLocalShopStock(String itemsJson) {
         try {
+            loadShopStockSnapshot();
             File shopDir = new File(plugin.getDataFolder(), "shop");
             if (!shopDir.exists()) return false;
 
@@ -10787,10 +10829,22 @@ public class WebManager {
 
                     // ★ 管理员手动修改的库存：跳过保护逻辑，直接应用
                     // 管理员设stock=0表示"售罄"，需要同步到游戏
-                    if (!adminOverride.contains(itemId)) {
+                    if (adminOverride.contains(itemId)) {
+                        // 管理员显式改动：直接应用，并刷新同步基线
+                        shopStockSnapshot.put(itemId, newStock);
+                    } else {
                         // stock<-1 为未定义值（-2以下），不生效，跳过同步
                         // -1=无限库存, 0=售罄, >=1=有库存，都正常同步
                         if (newStock < -1) continue;
+                        // ★ 数据分叉以 Java 为主：本地相对同步基线有未推送改动（snapStock != oldStockNum）
+                        //   且 PHP 值与本地不同（oldStockNum != newStock）-> 跳过覆盖，保留本地 md 值，
+                        //   随后由 pushShopStockDiffs() 推回 PHP 对齐。
+                        Integer snapStock = shopStockSnapshot.get(itemId);
+                        if (snapStock != null && snapStock != oldStockNum && oldStockNum != newStock) {
+                            continue;
+                        }
+                        // 应用 PHP 值并刷新同步基线
+                        shopStockSnapshot.put(itemId, newStock);
                     }
 
                     if (oldStockNum != newStock) {
@@ -10821,11 +10875,132 @@ public class WebManager {
                     plugin.getLogger().info("[Web通信] 已同步Web端商品库存，更新了 " + updatedCount + " 个商品");
                     lastPullShopStockLog = now;
                 }
+                saveShopStockSnapshot();
                 return true;
             }
+            saveShopStockSnapshot();
             return false;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 更新商品库存失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 库存同步基线文件（插件 data 目录，盘上持久化，不依赖数据库） */
+    private File shopStockSnapshotFile() {
+        return new File(plugin.getDataFolder(), "shop_stock_snapshot.properties");
+    }
+
+    /**
+     * 懒加载库存同步基线（id->stock）。文件不存在 = 首装/基线丢失，
+     * 按空基线处理 -> 首轮全量对齐推送（以 Java 本地为准）。
+     */
+    private void loadShopStockSnapshot() {
+        if (shopStockSnapshotLoaded) return;
+        shopStockSnapshotLoaded = true;
+        try {
+            File f = shopStockSnapshotFile();
+            if (!f.isFile()) return;
+            java.util.Properties props = new java.util.Properties();
+            java.io.InputStream in = new java.io.FileInputStream(f);
+            try {
+                props.load(in);
+            } finally {
+                in.close();
+            }
+            for (String key : props.stringPropertyNames()) {
+                try {
+                    shopStockSnapshot.put(key, Integer.parseInt(props.getProperty(key).trim()));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 读取库存同步基线失败（按空基线全量对齐）: " + e.getMessage());
+        }
+    }
+
+    /** 库存同步基线落盘（推送/应用成功后才调用，防假成功写脏基线） */
+    private void saveShopStockSnapshot() {
+        try {
+            java.util.Properties props = new java.util.Properties();
+            for (Map.Entry<String, Integer> e : shopStockSnapshot.entrySet()) {
+                props.setProperty(e.getKey(), String.valueOf(e.getValue()));
+            }
+            File f = shopStockSnapshotFile();
+            File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            java.io.OutputStream out = new java.io.FileOutputStream(f);
+            try {
+                props.store(out, "shop stock sync baseline id=stock");
+            } finally {
+                out.close();
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 保存库存同步基线失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 库存双向同步（2026-10-10）：把本地（md）相对同步基线的差异推回 PHP。
+     * 用户原则：哪边有改动就对齐哪边；数据分叉以 Java 为主。
+     * 基线只在推送成功后才更新（防假成功，与对账 hash 铁律同构）。
+     *
+     * @return true=无差异或已全部推送成功
+     */
+    private boolean pushShopStockDiffs() {
+        try {
+            File shopDir = new File(plugin.getDataFolder(), "shop");
+            if (!shopDir.exists()) return true;
+            File[] mdFiles = shopDir.listFiles((d, n) -> n.endsWith(".md"));
+            if (mdFiles == null || mdFiles.length == 0) return true;
+
+            loadShopStockSnapshot();
+
+            Map<String, Integer> current = new HashMap<>();
+            for (File mdFile : mdFiles) {
+                List<Map<String, Object>> catItems = parseMdShopFile(mdFile, mdFile.getName().replace(".md", ""));
+                for (Map<String, Object> it : catItems) {
+                    Object idv = it.get("id");
+                    Object sv = it.get("stock");
+                    if (idv == null || sv == null) continue;
+                    current.put(String.valueOf(idv), ((Number) sv).intValue());
+                }
+            }
+            if (current.isEmpty()) return true;
+
+            List<Map<String, Object>> diff = new ArrayList<>();
+            for (Map.Entry<String, Integer> e : current.entrySet()) {
+                Integer snap = shopStockSnapshot.get(e.getKey());
+                if (snap == null || !snap.equals(e.getValue())) {
+                    Map<String, Object> one = new LinkedHashMap<>();
+                    one.put("id", e.getKey());
+                    one.put("stock", e.getValue());
+                    diff.add(one);
+                }
+            }
+            if (diff.isEmpty()) return true;
+
+            String token = generateAndSyncToken("system", "sync");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("items", diff);
+            String response = httpPostWithToken("api/sync.php?action=push_shop_stock", token, body);
+            if (response != null && response.contains("\"success\":true")) {
+                for (Map<String, Object> one : diff) {
+                    shopStockSnapshot.put(String.valueOf(one.get("id")), ((Number) one.get("stock")).intValue());
+                }
+                saveShopStockSnapshot();
+                long now = System.currentTimeMillis();
+                if (now - lastShopStockPushLog > LOG_INTERVAL) {
+                    plugin.getLogger().info("[Web通信] 本地库存变更已推送 " + diff.size() + " 个商品（双向同步，分叉以游戏端为准）");
+                    lastShopStockPushLog = now;
+                }
+                return true;
+            }
+            plugin.getLogger().warning("[Web通信] 库存推送失败（下轮重试）: "
+                    + (response == null ? "无响应" : response.substring(0, Math.min(160, response.length()))));
+            return false;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 库存推送异常: " + e.getMessage());
             return false;
         }
     }
