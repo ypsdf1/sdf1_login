@@ -221,16 +221,54 @@ if (!function_exists('dbSplitMigrateIfNeeded')) {
      *   全新部署（web.db 还不存在）直接跳过 —— 没有存量可搬。
      */
     function dbSplitMigrateIfNeeded() {
-        static $done = false, $running = false;
-        if ($done || $running) return;
+        static $done = false;
+        if ($done) return;
+        // ★ MySQL 模式不切分：两侧数据都在 MySQL 里，SQLite 文件已不再使用。
+        //   不加这个判断的话，mode=mysql 时仍会把 web.db 白切一遍（11MB 约 18 秒）
+        //   并生成一个永远用不到的 Java.db。
+        $mcfg = sqlMdDbConfig();
+        if (isset($mcfg['mode']) && $mcfg['mode'] === 'mysql'
+            && isset($mcfg['java']) && is_array($mcfg['java'])
+            && isset($mcfg['web'])  && is_array($mcfg['web'])) {
+            $done = true;
+            return;
+        }
+        // 默认让本次请求的 java 侧走共库（web.db）：切分还没确认成功之前，
+        // 绝不能让 dbOpen('java') 把一个空 Java.db 建出来——空库一建出来，
+        // 路由就会把 Java 表的读写全指过去，存量数据等于"消失"。
+        // 只有下面真正切分成功（或已存在带标记的 Java.db）才取消这个回退。
+        $GLOBALS['SDF_SPLIT_FALLBACK_WEB'] = true;
         $webFile  = str_replace('\\', '/', sqlDbFile('web'));
         $javaFile = str_replace('\\', '/', sqlDbFile('java'));
-        if ($webFile === $javaFile || !is_file($webFile) || is_file($javaFile)) { $done = true; return; }
+        $markFile = $javaFile . '.splitdone';   // 完成标记：只有真正切分成功才写
+        if ($webFile === $javaFile || !is_file($webFile)) { $done = true; return; }
 
-        $running = true;
+        // ① Java.db 存在且带完成标记 → 已真正切分过，跳过
+        if (is_file($javaFile) && is_file($markFile)) { $done = true; unset($GLOBALS['SDF_SPLIT_FALLBACK_WEB']); return; }
+
+        // ② Java.db 存在但**无**完成标记 = 历史半成品孤儿（2026-10-09 生产事故形态：
+        //    3 张表搬成、37 张表数据留在 web.db，而路由已指向空壳 Java.db）。
+        //    旧逻辑只看 is_file 就永久跳过 → 数据永远搬不过去。切分是纯复制
+        //    （INSERT..SELECT，源表不动），故可安全备份后重切。
+        if (is_file($javaFile)) {
+            $bak = $javaFile . '.orphan.' . date('YmdHis');
+            @rename($javaFile, $bak);
+            @unlink($javaFile . '-wal'); @unlink($javaFile . '-shm');
+            if (is_file($javaFile)) { $done = true; return; }   // 备份失败 → 本次放弃
+            debugLog('dbSplit: 发现无标记的孤儿 Java.db，已备份待重切', array('bak' => basename($bak)));
+        }
+
+        // ③ 文件锁：PHP-FPM 多 worker 并发进来时只允许一个真正切分。
+        //    旧逻辑的 static $done/$running 只在单进程内有效，多进程会互删 Java.db.new。
+        //    拿不到锁 → 本次请求直接共库运行（切分很快，下次请求自然会看到 Java.db）。
+        $lockFile = $javaFile . '.splitlock';
+        $lk = @fopen($lockFile, 'c');
+        if ($lk === false) { $done = true; return; }
+        if (!@flock($lk, LOCK_EX | LOCK_NB)) { @fclose($lk); $done = true; return; }
+
         $tmp = $javaFile . '.new';
         $q = function ($v) { return "'" . str_replace("'", "''", (string)$v) . "'"; };
-        $moved = 0; $errs = '';
+        $moved = 0; $errs = ''; $wantTables = 0;
         try {
             @unlink($tmp); @unlink($tmp . '-wal'); @unlink($tmp . '-shm');
             $src = new SQLite3($webFile);
@@ -252,8 +290,9 @@ if (!function_exists('dbSplitMigrateIfNeeded')) {
                 }
                 if ($type !== 'table' && $type !== 'index') continue;
                 if (dbSideOfTable($judge) !== 'java') continue;      // 只搬 Java 专属的
+                if ($type === 'table') $wantTables++;
                 $exists = $src->querySingle("SELECT COUNT(*) FROM jd.sqlite_master WHERE name = " . $q($name));
-                if ((int)$exists > 0) continue;                      // 已搬过（续跑）
+                if ((int)$exists > 0) { if ($type === 'table') $moved++; continue; }   // 已搬过（续跑）
                 try {
                     if ($type === 'table') {
                         $new = preg_replace('/^(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)([`\"]?)(\w+)/i',
@@ -262,8 +301,12 @@ if (!function_exists('dbSplitMigrateIfNeeded')) {
                         $src->exec('INSERT INTO jd.' . $name . ' SELECT * FROM ' . $name);   // 数据
                         $moved++;
                     } else {
+                        // ★ 索引名要带 jd. 前缀（索引才落进 jd 库），表名**不能**带前缀：
+                        //   SQLite 的 CREATE INDEX 语法里 ON 后面不接受 schema限定，
+                        //   写成 `ON jd.tbl` 会直接 `near ".": syntax error`（2026-10-09 生产事故根因）。
+                        //   表名不带前缀时，SQLite 在索引所属的 jd 库内解析，正好命中 jd.tbl。
                         $new = preg_replace('/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?)([`\"]?)(\w+)(\s+ON\s+)([`\"]?)(\w+)/i',
-                            '$1jd.$2$3$4jd.$5$6', $ddl, 1);
+                            '$1jd.$2$3$4$5$6', $ddl, 1);
                         $src->exec($new);
                     }
                 } catch (\Throwable $e) {
@@ -273,6 +316,25 @@ if (!function_exists('dbSplitMigrateIfNeeded')) {
             try { $src->exec('PRAGMA jd.wal_checkpoint(TRUNCATE)'); } catch (\Throwable $_) {}
             $src->exec('DETACH DATABASE jd');
             $src->close();
+
+            // ★ 完整性校验：只要有任何一张表/索引失败，就整轮作废（删 .new，下次自动重试）。
+            //   绝不产出"部分表缺失"的 Java.db —— 那会让路由指向空库、玩家数据全部不可见。
+            $gotTables = 0;
+            try {
+                $chk = new SQLite3($tmp);
+                $chk->enableExceptions(true);
+                $gotTables = (int)$chk->querySingle(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'");
+                $chk->close();
+            } catch (\Throwable $_) { $gotTables = -1; }
+            if ($errs !== '' || $gotTables < $wantTables) {
+                @unlink($tmp); @unlink($tmp . '-wal'); @unlink($tmp . '-shm');
+                $done = true;
+                debugLog('dbSplit: 切分不完整，已作废 .new 待下次重试',
+                    array('want' => $wantTables, 'got' => $gotTables, 'err' => substr($errs, 0, 400)));
+                return;
+            }
+
             if (is_file($tmp . '-wal') && @filesize($tmp . '-wal') > 0) {
                 // 新库仍有未落盘的 WAL → 不改名（改名会让 -wal 与主文件脱钩），保留 .new 待人工处理
                 debugLog('dbSplit: 新库残留 WAL，放弃本次切分', array('wal' => @filesize($tmp . '-wal')));
@@ -283,14 +345,18 @@ if (!function_exists('dbSplitMigrateIfNeeded')) {
                 debugLog('dbSplit: rename 失败，保留 .new 供下次重试');
                 return;   // 不置 done：web.db 还在，下次请求自动重来
             }
+            // ★ 完成标记：只有走到这里（表数校验通过 + rename 成功）才写。
+            //   之后 is_file($javaFile) 之外还要看这个标记，孤儿 Java.db 才能被自动识别重切。
+            @file_put_contents($markFile, date('c') . " tables=" . $moved . "/" . $wantTables . "\n");
             $done = true;
-            debugLog('dbSplit: 已切分出 Java.db', array('tables' => $moved, 'err' => $errs));
+            unset($GLOBALS['SDF_SPLIT_FALLBACK_WEB']);   // 切分成功，java 侧恢复独立库
+            debugLog('dbSplit: 已切分出 Java.db', array('tables' => $moved, 'want' => $wantTables, 'err' => $errs));
         } catch (\Throwable $e) {
             @unlink($tmp); @unlink($tmp . '-wal'); @unlink($tmp . '-shm');
             $done = true;
             debugLog('dbSplit: 切分失败，回退共库运行', array('error' => $e->getMessage()));
         } finally {
-            $running = false;
+            @flock($lk, LOCK_UN); @fclose($lk);
         }
     }
 }
@@ -1405,6 +1471,10 @@ function dbOpen($side) {
     }
 
     $file  = str_replace('\\', '/', sqlDbFile($side));
+    // ★ 切分未完成期间，java 侧共用 web.db（避免建出空 Java.db 让存量数据"消失"）
+    if ($side === 'java' && !empty($GLOBALS['SDF_SPLIT_FALLBACK_WEB'])) {
+        $file = str_replace('\\', '/', sqlDbFile('web'));
+    }
     $dbDir = dirname($file);
     if (!is_dir($dbDir)) { @mkdir($dbDir, 0755, true); }
 
