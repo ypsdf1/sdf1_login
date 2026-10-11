@@ -3867,6 +3867,18 @@ function pushShopStock() {
     $items = getParam('items');
     if (!$items || !is_array($items)) error('缺少库存数据');
 
+    // ★ 回执单（2026-10-11）：Java 不再无条件相信 PHP——必须在响应里原样回显
+    //   push_id + 内容指纹 fp + 条数，Java 才认为「PHP 确实收到」；否则 Java 重推一次。
+    //   指纹与 Java 同款算法：条目 "id|stock" 按字典序排序、"\n" 连接、CRC32 无符号十进制字符串。
+    $pushId = (string)getParam('push_id', '');
+    $fpEntries = [];
+    foreach ($items as $it) {
+        if (!is_array($it) || !isset($it['id'])) continue;
+        $fpEntries[] = (string)$it['id'] . '|' . (isset($it['stock']) ? (int)$it['stock'] : 0);
+    }
+    sort($fpEntries, SORT_STRING);
+    $fp = (string)sprintf('%u', crc32(implode("\n", $fpEntries)));
+
     $time = time();
     $applied = 0;
     $kept = 0;
@@ -3883,7 +3895,18 @@ function pushShopStock() {
         $stmt->execute();
         if ($db->changes() > 0) { $applied++; } else { $kept++; }
     }
-    success(['count' => count($items), 'applied' => $applied, 'kept' => $kept], '库存已接收');
+    success([
+        'count' => count($items), 'applied' => $applied, 'kept' => $kept,
+        // ★ 回执单：原样回显 Java 的 push_id / 内容指纹 / 条数，Java 逐项比对通过才落本地基线
+        'receipt' => [
+            'push_id' => $pushId,
+            'count'   => count($items),
+            'fp'      => $fp,
+            'applied' => $applied,
+            'kept'    => $kept,
+            'time'    => $time,
+        ],
+    ], '库存已接收');
 }
 
 // ===== 插件确认已应用管理员库存改动 =====
