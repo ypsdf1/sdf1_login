@@ -2950,19 +2950,36 @@ async function apiCall(action, params = {}, method = 'GET') {
     const url = new URL(LAND_API, window.location.href);
     url.searchParams.set('action', action);
     url.searchParams.set('secret', SECRET);
+    let r;
     if (method === 'GET') {
         for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-        const r = await fetch(url);
-        return r.json();
+        r = await fetch(url);
     } else {
         const body = new URLSearchParams(params);
         body.set('secret', SECRET);
-        const r = await fetch(url, {
+        r = await fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
             body: body.toString()
         });
-        return r.json();
+    }
+    // ★ 2026-10-11 防 HTML 污染：后端异常时可能返回 HTML 错误页，
+    //   统一转成带状态码与响应片段的友好错误，不再直接 r.json() 抛 "Unexpected token '<'"
+    const text = await r.text().catch(() => '');
+    const t = text.replace(/^\uFEFF/, '').trim();
+    if (!t) {
+        throw new Error('接口 ' + action + ' 返回空响应 (HTTP ' + r.status + ')');
+    }
+    if (t.charAt(0) === '<') {
+        console.error('[apiCall] ' + action + ' 返回 HTML 而非 JSON, HTTP ' + r.status + ':', t.substring(0, 300));
+        throw new Error('接口 ' + action + ' 返回了 HTML 页面 (HTTP ' + r.status
+            + ')，服务器可能出错，请查看后端日志。片段: ' + t.substring(0, 100));
+    }
+    try {
+        return JSON.parse(t);
+    } catch (e) {
+        console.error('[apiCall] ' + action + ' JSON 解析失败, HTTP ' + r.status + ':', t.substring(0, 300));
+        throw new Error('接口 ' + action + ' 返回无效 JSON (HTTP ' + r.status + '): ' + t.substring(0, 100));
     }
 }
 

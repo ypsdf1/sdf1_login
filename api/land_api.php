@@ -4,6 +4,39 @@
  * POST: Java端推送领地数据
  * GET: admin/玩家面板读取领地数据
  */
+// ★ 2026-10-11 防 HTML 污染加固（对齐 api/admin.php 的既有做法）：
+//   display_errors 关闭（fatal/警告不再吐 HTML 错误页）+ 输出缓冲 +
+//   shutdown 兜底：只要最终输出不是合法 JSON 开头，就替换为 JSON 错误，
+//   保证管理面板永远收到 JSON（页面不再报 "Unexpected token '<'"）。
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+ob_start();
+register_shutdown_function(function () {
+    $err = error_get_last();
+    $fatal = $err && in_array($err['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true);
+    $buf = '';
+    while (ob_get_level() > 0) {
+        $buf .= ob_get_clean();
+    }
+    $trim = ltrim($buf);
+    if ($buf !== '' && $trim !== '' && $trim[0] !== '{' && $trim[0] !== '[') {
+        // 输出被 HTML/文本污染 → 整体替换为 JSON 错误（保留片段便于排查）
+        echo json_encode([
+            'success' => false,
+            'error' => 'API 输出被非 JSON 内容污染' . ($fatal && !empty($err['message']) ? ': ' . $err['message'] : ''),
+            'snippet' => mb_substr($trim, 0, 160),
+        ], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+    if ($fatal && $buf === '') {
+        echo json_encode([
+            'success' => false,
+            'error' => '服务器内部错误: ' . (isset($err['message']) ? $err['message'] : 'unknown'),
+        ], JSON_UNESCAPED_UNICODE);
+        return;
+    }
+    echo $buf;
+});
 header('Content-Type: application/json; charset=utf-8');
 error_reporting(E_ERROR | E_PARSE);
 // 取 SECRET_KEY（插件与 Web 端约定的通信密钥，值在 config.php 里由部署者自己填）。
