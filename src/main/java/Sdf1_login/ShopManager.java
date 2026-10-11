@@ -3584,7 +3584,7 @@ public class ShopManager implements Listener {
         if (shFeeRate < 0) shFeeRate = 0;
         if (shFeeRate > 10) shFeeRate = 10;
         plugin.getLogger().info("[二手商店] 配置: 上架上限=" + shMaxListings
-                + " 最低售价=" + shMinPrice + " 手续费=" + shFeeRate
+                + " 最低售价=" + shMinPrice + " 手续费=" + feeRateLabel()
                 + (shFeeByBuyer ? "（买方出）" : "（卖方出）"));
     }
 
@@ -3598,11 +3598,49 @@ public class ShopManager implements Listener {
             } else if (key.contains("手续费支付方")) {
                 shFeeByBuyer = !val.contains("卖方");
             } else if (key.contains("手续费")) {
-                shFeeRate = Double.parseDouble(val);
+                double r = parseFeeRate(val);
+                if (r < 0) {
+                    plugin.getLogger().warning("[二手商店] 手续费率无法解析: "
+                            + val + "，保持原值 " + shFeeRate);
+                } else {
+                    shFeeRate = r;
+                }
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[二手商店] 配置项解析失败: " + key + " = " + val);
         }
+    }
+
+    /**
+     * 手续费率解析（2026-10-11 兼容千分位写法）：<br>
+     *   "5%" → 0.05，"5‰" → 0.005，"0.05" → 0.05（纯数字原值）。<br>
+     * 解析失败返回 -1（调用方保留原值并告警）。
+     */
+    private static double parseFeeRate(String s) {
+        String t = s.trim();
+        try {
+            if (t.endsWith("‰")) {
+                return Double.parseDouble(t.substring(0, t.length() - 1).trim()) / 1000.0;
+            }
+            if (t.endsWith("%")) {
+                return Double.parseDouble(t.substring(0, t.length() - 1).trim()) / 100.0;
+            }
+            return Double.parseDouble(t);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** 当前费率友好显示：0.05→"5%"，0.005→"5‰"，其它→原数字 */
+    public String feeRateLabel() {
+        if (shFeeRate == 0) return "0";
+        double pct = shFeeRate * 100;
+        long p = Math.round(pct);
+        if (Math.abs(pct - p) < 1e-9) return p + "%";
+        double perm = shFeeRate * 1000;
+        long q2 = Math.round(perm);
+        if (Math.abs(perm - q2) < 1e-9) return q2 + "‰";
+        return String.valueOf(shFeeRate);
     }
 
     /** 手续费金额（四舍五入；price<=0 或费率为 0 → 0） */
@@ -4208,6 +4246,9 @@ public class ShopManager implements Listener {
         }
         int total = publishQueueTotal.getOrDefault(uuid, q.size());
         int idx = total - q.size() + 1;
+        // ★ 当前件立即出队（2026-10-11 修复重复退还）：此前 peek 不出队，
+        //   当前件同时留在队列与 pendingPublishItem，超时/中止会退两份
+        q.poll();
         pendingPublishItem.put(uuid, it);
         publishListening.add(uuid);
         publishStep.put(uuid, 1);
