@@ -119,5 +119,7 @@ test.*
 *.py
 # 屏蔽其它文件
 *.md
-# 过滤readme
+# 过滤readme和配置文件
 !readme.md
+!scr/main/resources
+!src/main/resources/**/*.md
