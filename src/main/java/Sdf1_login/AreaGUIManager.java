@@ -500,7 +500,8 @@ public class AreaGUIManager implements Listener {
                 {"攻击生物", "denyMobAttack"},
                 {"禁止编辑告示牌", "denySignEdit"},
                 {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"},
-                {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"}
+                {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"},
+                {"村民交易", "denyVillagerTrade"}
         };
 
         for (String[] def : permDefs) {
@@ -536,6 +537,12 @@ public class AreaGUIManager implements Listener {
             }
             if (field.equals("denyEnderTeleport")) {
                 name = landDefault ? "禁用末影人行为" : "启用末影人行为";
+            }
+            if (field.equals("denyItemFrame")) {
+                name = landDefault ? "禁止交互展示框" : "允许交互展示框";
+            }
+            if (field.equals("denyVillagerTrade")) {
+                name = landDefault ? "禁止村民交易" : "允许村民交易";
             }
 
             // ★ 对于 allowPickup/allowDrop，enabled=true 表示"允许操作"（即 allow=true）
@@ -619,6 +626,7 @@ public class AreaGUIManager implements Listener {
             case "denyAnimalFeeding": return land.denyAnimalFeeding;
             case "denyGlowing": return land.denyGlowing;
             case "denySignEdit": return land.denySignEdit;
+            case "denyVillagerTrade": return land.denyVillagerTrade;
             case "peaceMode": return land.peaceMode;
             default: return false;
         }
@@ -695,7 +703,8 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("饥饿", !land.denyHunger));
         perms.add(new PermEntry("所有伤害", !land.denyAllDamage));
         perms.add(new PermEntry("所有效果", !land.denyAllEffects));
-        perms.add(new PermEntry("禁止展示框", !land.denyItemFrame));
+        // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止交互展示框"
+        perms.add(new PermEntry(land.denyItemFrame ? "禁止交互展示框" : "允许交互展示框", !land.denyItemFrame));
         perms.add(new PermEntry("红石电路(按钮/压力板/中继器/比较器)", !land.denyRedstoneInteraction));
         perms.add(new PermEntry("门禁交互(门/栅栏门)", !land.denyDoorInteraction));
         perms.add(new PermEntry("音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
@@ -704,6 +713,7 @@ public class AreaGUIManager implements Listener {
         perms.add(new PermEntry("剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermEntry(land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermEntry(land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
+        perms.add(new PermEntry(land.denyVillagerTrade ? "禁止村民交易" : "允许村民交易", !land.denyVillagerTrade));
         perms.add(new PermEntry(land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
         perms.add(new PermEntry("玩家发光", !land.denyGlowing));
         perms.add(new PermEntry(land.denyFarmlandTrample ? "禁用耕地破坏" : "启用耕地破坏", !land.denyFarmlandTrample));
@@ -758,7 +768,7 @@ public class AreaGUIManager implements Listener {
             case "饥饿": land.denyHunger = !land.denyHunger; break;
             case "所有伤害": land.denyAllDamage = !land.denyAllDamage; break;
             case "所有效果": land.denyAllEffects = !land.denyAllEffects; break;
-            case "禁止展示框": land.denyItemFrame = !land.denyItemFrame; break;
+            case "禁止展示框": case "允许交互展示框": case "禁止交互展示框": land.denyItemFrame = !land.denyItemFrame; break;
             case "红石电路(按钮/压力板/中继器/比较器)": land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
             case "门禁交互(门/栅栏门)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
             case "音频(音符盒/唱片机)": land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
@@ -769,6 +779,7 @@ public class AreaGUIManager implements Listener {
             case "剪切羊毛/生物": land.denyWoolShear = !land.denyWoolShear; break;
             case "禁止投喂": case "允许投喂动物": land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "禁止攻击生物": case "允许攻击生物": land.denyMobAttack = !land.denyMobAttack; break;
+            case "禁止村民交易": case "允许村民交易": land.denyVillagerTrade = !land.denyVillagerTrade; break;
             case "禁止编辑告示牌": case "允许编辑告示牌": land.denySignEdit = !land.denySignEdit; break;
             case "玩家发光": land.denyGlowing = !land.denyGlowing; break;
             case "禁用耕地破坏": case "启用耕地破坏": land.denyFarmlandTrample = !land.denyFarmlandTrample; break;
@@ -1176,7 +1187,8 @@ public class AreaGUIManager implements Listener {
                         {"攻击生物", "denyMobAttack"},
                         {"禁止编辑告示牌", "denySignEdit"},
                         {"玩家发光", "denyGlowing"}, {"传送", "allowTeleport"}, {"和平模式", "peaceMode"},
-                        {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"}
+                        {"耕地破坏", "denyFarmlandTrample"}, {"末影人行为", "denyEnderTeleport"},
+                        {"村民交易", "denyVillagerTrade"}
                 };
 
                 if (raw < permDefs.length) {

@@ -329,19 +329,19 @@ public class AreaProtection implements Listener {
     private boolean isExemptFromGameMode(
             Player p, String areaName) {
         String name = p.getName();
-        String lower = name.toLowerCase();
 
         // 管理员豁免
         if (isAreaAdmin(p)) {
             return true;
         }
 
-        if (globalPlayerWhitelist.contains(lower)) {
+        // ★ 白名单判定统一走 whiteContains（2026-10-10 起为精确匹配）
+        if (whiteContains(globalPlayerWhitelist, name)) {
             return true;
         }
         Set<String> aw =
                 areaPlayerWhitelist.get(areaName);
-        if (aw != null && aw.contains(lower)) {
+        if (whiteContains(aw, name)) {
             return true;
         }
         AreaConfig ac = areas.get(areaName);
@@ -1250,6 +1250,7 @@ public class AreaProtection implements Listener {
                 try { ac.denySignEdit = rs.getInt("deny_sign_edit") == 1; } catch (Exception ignored) {}
                 try { ac.denySpawnEgg = rs.getInt("deny_spawn_egg") == 1; } catch (Exception ignored) {}
                 try { ac.denyWax = rs.getInt("deny_wax") == 1; } catch (Exception ignored) {}
+                try { ac.denyVillagerTrade = rs.getInt("deny_villager_trade") == 1; } catch (Exception ignored) {}
             try { ac.badEffects = parseEffectsString(rs.getString("bad_effects")); } catch (Exception ignored) { ac.badEffects = new ArrayList<>(); }
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
@@ -1552,6 +1553,8 @@ public class AreaProtection implements Listener {
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_spawn_egg INTEGER DEFAULT 0"); } catch (Exception ignored) {}
             // ★ 涂蜡/刮蜡权限列（上级权限：破坏方块/放置方块）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_wax INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 村民交易权限列（2026-10-10：领地主控制玩家能否与领地内村民交易）
+            try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_villager_trade INTEGER DEFAULT 0"); } catch (Exception ignored) {}
         try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN bad_effects TEXT DEFAULT ''"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
@@ -2628,7 +2631,7 @@ public class AreaProtection implements Listener {
         if (ac.allowVisitorTeleport) return true;
         int landId = getLandIdFromDb(ac.name);
         if (landId <= 0) return false; // 无法验证则拒绝
-        Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
+        Map<String, Boolean> perms = getPlayerPermMapExact(landId, p.getName());
         return perms.getOrDefault("allowTeleport", false);
     }
 
@@ -2695,6 +2698,64 @@ public class AreaProtection implements Listener {
     private PermRow findPermRow(int landId, String playerName) {
         List<PermRow> rows = findPermRows(landId, playerName);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * ★ 身份/授权判定专用：仅精确匹配（区分大小写，2026-10-10）。
+     * 本服离线模式：名字大小写不同 => UUID 不同 => 不同玩家。
+     * 旧版 findPermRow 的 normName 模糊兜底会让 YoupaishidIfu 命中 youpaishidifu 的
+     * admin/visitor 行，从而获得 ADMIN/VISITOR 豁免、绕过全部 deny* 限制。
+     * normName 模糊行仅保留在写路径（定位旧行做 UPDATE/DELETE），两者不可混用。
+     */
+    private PermRow findPermRowExact(int landId, String playerName) {
+        if (dbConnection == null || landId <= 0 || playerName == null || playerName.isEmpty())
+            return null;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement(
+                    "SELECT id, player_name, role, permissions, expires_at "
+                            + "FROM area_land_permissions WHERE land_id = ? AND player_name = ?");
+            stmt.setInt(1, landId);
+            stmt.setString(2, playerName);
+            ResultSet rs = stmt.executeQuery();
+            PermRow r = null;
+            if (rs.next()) {
+                r = new PermRow();
+                r.id = rs.getInt("id");
+                r.playerName = rs.getString("player_name");
+                r.role = rs.getString("role");
+                r.permissions = rs.getString("permissions");
+                r.expiresAt = rs.getLong("expires_at");
+            }
+            rs.close();
+            stmt.close();
+            return r;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
+    /**
+     * ★ per-player 权限读取（授权判定专用）：精确匹配版（2026-10-10）。
+     * getEffectiveDeny / canTeleportToLand 等授权路径必须用本方法，
+     * 防止大小写变种玩家读到他人 per-player 放行配置而绕过领地默认 deny。
+     */
+    public Map<String, Boolean> getPlayerPermMapExact(int landId, String playerName) {
+        Map<String, Boolean> map = new HashMap<>();
+        PermRow row = findPermRowExact(landId, playerName);
+        if (row == null || row.permissions == null || row.permissions.isEmpty()) return map;
+        String clean = row.permissions.trim();
+        if (clean.startsWith("{")) clean = clean.substring(1);
+        if (clean.endsWith("}")) clean = clean.substring(0, clean.length() - 1);
+        if (clean.isEmpty()) return map;
+        for (String pair : clean.split(",")) {
+            String[] kv = pair.split(":");
+            if (kv.length == 2) {
+                String key = kv[0].trim().replace("\"", "");
+                boolean val = Boolean.parseBoolean(kv[1].trim().replace("\"", ""));
+                map.put(key, val);
+            }
+        }
+        return map;
     }
 
     /**
@@ -2834,7 +2895,8 @@ public class AreaProtection implements Listener {
     public boolean isLandAdmin(String landName, String playerName) {
         int landId = getLandIdFromDb(landName);
         if (landId <= 0) return false;
-        PermRow row = findPermRow(landId, playerName);
+        // ★ 2026-10-10 精确匹配：normName 模糊会把大小写变种玩家判成本领地管理员而豁免全部 deny*
+        PermRow row = findPermRowExact(landId, playerName);
         return row != null && "admin".equalsIgnoreCase(row.role);
     }
 
@@ -2924,7 +2986,8 @@ public class AreaProtection implements Listener {
         //    旧顺序会把"刚被关停权限的玩家"变成永久访客而直接豁免，关停形同虚设。
         int landId = getLandIdFromDb(ac.name);
         if (landId > 0) {
-            Map<String, Boolean> playerPerms = getPlayerPermMap(landId, player.getName());
+            // ★ 2026-10-10 精确匹配：防止大小写变种玩家读到他人 per-player 放行配置
+            Map<String, Boolean> playerPerms = getPlayerPermMapExact(landId, player.getName());
             if (playerPerms.containsKey(permName)) {
                 return playerPerms.get(permName);
             }
@@ -3025,6 +3088,7 @@ public class AreaProtection implements Listener {
             case "denyMobAttack": return ac.denyMobAttack;
             case "denySignEdit": return ac.denySignEdit;
             case "denySpawnEgg": return ac.denySpawnEgg;
+            case "denyVillagerTrade": return ac.denyVillagerTrade;
             case "denyWax": return ac.denyWax;
             case "peaceMode": return ac.peaceMode;
             default: return false;
@@ -3093,15 +3157,15 @@ public class AreaProtection implements Listener {
     }
 
     /**
-     * 白名单集合兼容查询：
-     * 新写入用 normName，历史数据用默认 Locale 小写，两种格式都能命中。
+     * 白名单查询：★ 精确匹配（2026-10-10 封堵大小写变种绕过）。
+     * 离线模式大小写不同 => UUID 不同 => 不同玩家；
+     * 旧 normName 归一比对会让 YoupaishidIfu 命中 youpaishidifu 的白名单/访客身份，
+     * 从而豁免 denyBlockBreak 等全部限制。历史小写条目由 loadWhitelists 的
+     * canonicalNameFromDb 规范名迁移兜底（用 DB 里记录的精确拼写回写）。
      */
     private static boolean whiteContains(Set<String> set, String name) {
         if (set == null || name == null || name.isEmpty()) return false;
-        String n = normName(name);
-        if (set.contains(n)) return true;
-        String legacy = name.toLowerCase(); // 旧版本写入格式
-        return !legacy.equals(n) && set.contains(legacy);
+        return set.contains(name);
     }
 
     private boolean isPlayerWhitelisted(String player,
@@ -4291,15 +4355,13 @@ public class AreaProtection implements Listener {
     private boolean isPlayerExemptFromModeChange(
             Player p, AreaConfig ac) {
      //   if (p.isOp()) return true;
-        String lower = p.getName().toLowerCase();
-        // 1. 全局白名单
-        if (globalPlayerWhitelist.contains(lower)) {
+        // 1. 全局白名单（★ 精确匹配，2026-10-10）
+        if (whiteContains(globalPlayerWhitelist, p.getName())) {
             return true;
         }
         // 2. 区域白名单
         Set<String> areaWl = areaPlayerWhitelist.get(ac.name);
-        if (areaWl != null
-                && areaWl.contains(lower)) {
+        if (whiteContains(areaWl, p.getName())) {
             return true;
         }
         if (ac.modeExempt.contains(p.getName())) {
@@ -6189,9 +6251,49 @@ public class AreaProtection implements Listener {
         }
     }
 
+    /**
+     * ★ 白名单遗留小写条目 → DB 精确拼写迁移（2026-10-10 精确匹配改造配套）。
+     * area_land_permissions.player_name 保存授予时的精确拼写（权威），
+     * 用它把旧版小写落盘的白名单条目还原为规范名；多种拼写并存（多义）时放弃迁移。
+     * @param landName 领地名；null 表示查全表（全局白名单用）
+     * @return 规范名；无匹配/无法确定时返回 null
+     */
+    private String canonicalNameFromDb(String landName, String entry) {
+        if (dbConnection == null || entry == null || entry.isEmpty()) return null;
+        String want = normName(entry);
+        String found = null;
+        try {
+            PreparedStatement stmt;
+            if (landName == null) {
+                stmt = dbConnection.prepareStatement(
+                        "SELECT DISTINCT player_name FROM area_land_permissions");
+            } else {
+                int landId = getLandIdFromDb(landName);
+                if (landId <= 0) return null;
+                stmt = dbConnection.prepareStatement(
+                        "SELECT DISTINCT player_name FROM area_land_permissions WHERE land_id = ?");
+                stmt.setInt(1, landId);
+            }
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                String n = rs.getString("player_name");
+                if (n == null || n.isEmpty() || !want.equals(normName(n))) continue;
+                if (n.equals(entry)) { found = entry; break; } // 已是规范拼写
+                if (found != null && !found.equals(n)) { found = null; break; } // 多义，放弃
+                found = n;
+            }
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            return null;
+        }
+        return found;
+    }
+
         public void loadWhitelists() {
         globalPlayerWhitelist.clear();
         areaPlayerWhitelist.clear();
+        boolean whitelistMigrated = false;
 
         if (!whitelistDir.exists()) {
             whitelistDir.mkdirs();
@@ -6209,6 +6311,12 @@ public class AreaProtection implements Listener {
                     String name = line.trim();
                     if (!name.isEmpty()
                             && !name.startsWith("#")) {
+                        // ★ 遗留小写条目 → DB 精确拼写迁移（2026-10-10 精确匹配改造配套）
+                        String fixed = canonicalNameFromDb(null, name);
+                        if (fixed != null && !fixed.equals(name)) {
+                            whitelistMigrated = true;
+                            name = fixed;
+                        }
                         globalPlayerWhitelist.add(name);
                     }
                 }
@@ -6232,8 +6340,15 @@ public class AreaProtection implements Listener {
                         String name = line.trim();
                         if (!name.isEmpty()
                                 && !name.startsWith("#")) {
-                            // ★ 统一小写存储，与 isPlayerWhitelisted 的小写比对对齐
-                            set.add(name.toLowerCase());
+                            // ★ 精确存储原始拼写（2026-10-10）：离线模式大小写不同=不同玩家。
+                            //   旧版统一小写落盘会让真实大小写拼写的玩家无法精确命中；
+                            //   遗留小写条目用 area_land_permissions 里的精确拼写做规范名迁移。
+                            String fixed = canonicalNameFromDb(areaName, name);
+                            if (fixed != null && !fixed.equals(name)) {
+                                whitelistMigrated = true;
+                                name = fixed;
+                            }
+                            set.add(name);
                         }
                     }
                     if (!set.isEmpty()) {
@@ -6243,6 +6358,10 @@ public class AreaProtection implements Listener {
                 }
             }
 
+            if (whitelistMigrated) {
+                saveWhitelists();
+                plugin.getLogger().info("[防护] 白名单遗留小写条目已按DB精确拼写迁移回写");
+            }
             plugin.getLogger().info(
                     "[防护] 白名单加载完成，全局: "
                             + globalPlayerWhitelist.size()
@@ -6572,6 +6691,17 @@ public class AreaProtection implements Listener {
                 return;
             }
         }
+        // ★ 村民交易权限（denyVillagerTrade）：右键村民直接拦截，交易界面不会打开（2026-10-10）
+        if (entity instanceof org.bukkit.entity.Villager) {
+            Location vLoc = entity.getLocation();
+            AreaConfig vAc = getArea(vLoc.getWorld().getName(),
+                    vLoc.getBlockX(), vLoc.getBlockY(), vLoc.getBlockZ());
+            if (vAc != null && getEffectiveDeny(p, vAc, "denyVillagerTrade")) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止与此领地的村民交易");
+                return;
+            }
+        }
         // 只检测动物类
         String typeName = entity.getType().name();
         if (!(entity instanceof Animals || typeName.contains("IRON_GOLEM")
@@ -6592,6 +6722,25 @@ public class AreaProtection implements Listener {
         if (hand != null && hand.getType() != Material.AIR && isAnimalFood(hand.getType())) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止在此区域投喂动物");
+        }
+    }
+
+    // ★ 村民交易兜底拦截（2026-10-10）：交易界面已打开后（进服前打开 / 权限中途切换），
+    //   点击交易结果槽仍受 denyVillagerTrade 管控；正常路径由 onEntityInteract 右键拦截。
+    @EventHandler
+    public void onVillagerTradeClick(org.bukkit.event.inventory.InventoryClickEvent e) {
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        org.bukkit.inventory.Inventory topInv = e.getView().getTopInventory();
+        if (topInv == null
+                || !(topInv.getHolder() instanceof org.bukkit.entity.Villager)) return;
+        Player p = (Player) e.getWhoClicked();
+        org.bukkit.entity.Entity holder = (org.bukkit.entity.Entity) topInv.getHolder();
+        Location loc = holder.getLocation();
+        AreaConfig ac = getArea(loc.getWorld().getName(),
+                loc.getBlockX(), loc.getBlockY(), loc.getBlockZ());
+        if (ac != null && getEffectiveDeny(p, ac, "denyVillagerTrade")) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止与此领地的村民交易");
         }
     }
 
@@ -8770,7 +8919,7 @@ public class AreaProtection implements Listener {
             if (args.length == 2) {
                 // ★ 全服级白名单（等于全服免检），必须管理员
                 if (!requireGlobalAdmin(sender, "全局白名单操作")) return true;
-                String name = args[1].toLowerCase();
+                String name = args[1]; // ★ 保留原始拼写（2026-10-10 精确匹配）
                 if (globalPlayerWhitelist.contains(name)) {
                     sender.sendMessage("§e" + name
                             + " 已在全局白名单中");
@@ -8789,7 +8938,7 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 String areaName = parsed[0];
-                String playerName = parsed[1].toLowerCase();
+                String playerName = parsed[1]; // ★ 保留原始拼写（2026-10-10 精确匹配）
                 // ★ 权限闸门：领地白名单须领地主/领地管理员，global 须插件管理员
                 if (!requireLandOwnership(sender, areaName)) return true;
                 if (areaName.equalsIgnoreCase("global")) {
@@ -8819,13 +8968,17 @@ public class AreaProtection implements Listener {
             if (args.length == 2) {
                 // ★ 全服级白名单，必须管理员
                 if (!requireGlobalAdmin(sender, "全局白名单操作")) return true;
-                String name = args[1].toLowerCase();
-                if (!globalPlayerWhitelist.contains(name)) {
+                String name = args[1]; // ★ 保留原始拼写；下方按三种历史格式尝试移除
+                if (!globalPlayerWhitelist.contains(name)
+                        && !globalPlayerWhitelist.contains(name.toLowerCase())
+                        && !globalPlayerWhitelist.contains(normName(name))) {
                     sender.sendMessage("§e" + name
                             + " 不在全局白名单中");
                     return true;
                 }
                 globalPlayerWhitelist.remove(name);
+                globalPlayerWhitelist.remove(name.toLowerCase());
+                globalPlayerWhitelist.remove(normName(name));
                 saveWhitelists();
                 sender.sendMessage("§a已从全局白名单移除: "
                         + name);
@@ -8839,11 +8992,13 @@ public class AreaProtection implements Listener {
                     return true;
                 }
                 String areaName = parsed[0];
-                String playerName = parsed[1].toLowerCase();
+                String playerName = parsed[1]; // ★ 保留原始拼写；下方按三种历史格式尝试移除
                 // ★ 权限闸门：领地白名单须领地主/领地管理员，global 须插件管理员
                 if (!requireLandOwnership(sender, areaName)) return true;
                 if (areaName.equalsIgnoreCase("global")) {
                     globalPlayerWhitelist.remove(playerName);
+                    globalPlayerWhitelist.remove(playerName.toLowerCase());
+                    globalPlayerWhitelist.remove(normName(playerName));
                     saveWhitelists();
                     sender.sendMessage("§a已移除: "
                             + playerName);
@@ -8851,7 +9006,10 @@ public class AreaProtection implements Listener {
                     Set<String> wl =
                             areaPlayerWhitelist.get(areaName);
                     if (wl != null) {
+                        // 精确 / 旧版小写 / normName 三种历史格式都尝试移除
                         wl.remove(playerName);
+                        wl.remove(playerName.toLowerCase());
+                        wl.remove(normName(playerName));
                     }
                     saveWhitelists();
                     sender.sendMessage("§a已从 " + areaName
@@ -10458,8 +10616,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -10472,7 +10630,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects, deny_villager_trade=excluded.deny_villager_trade");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -10547,6 +10705,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(71, ac.denySpawnEgg ? 1 : 0);
             stmt.setInt(72, ac.denyWax ? 1 : 0);
             stmt.setString(73, effectsToString(ac.badEffects));
+            stmt.setInt(74, ac.denyVillagerTrade ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -10768,7 +10927,7 @@ public class AreaProtection implements Listener {
                 "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding",
                 "deny_container", "deny_mob_attack", "deny_fluid",
                 "is_public_building", "allow_visitor_teleport",
-                "deny_spawn_egg", "deny_wax"
+                "deny_spawn_egg", "deny_wax", "deny_villager_trade"
             ));
             if (!allowedFields.contains(field)) {
                 plugin.getLogger().warning("[防护] PHP端更新未知字段: " + field);
@@ -10956,6 +11115,7 @@ public class AreaProtection implements Listener {
             case "deny_wax":           ac.denyWax = "1".equals(value); break;
             case "deny_mob_attack":     ac.denyMobAttack = "1".equals(value); break;
             case "deny_item_frame":     ac.denyItemFrame = "1".equals(value); break;
+            case "deny_villager_trade": ac.denyVillagerTrade = "1".equals(value); break;
             case "deny_entity_interact": ac.denyEntityInteract = "1".equals(value); break;
             case "deny_pickup":         ac.allowPickup = "0".equals(value); break; // deny_pickup 反向
             case "deny_drop":           ac.allowDrop = "0".equals(value); break;   // deny_drop 反向
@@ -12066,9 +12226,9 @@ public class AreaProtection implements Listener {
         if (dbConnection == null || ac == null) return false;
         int landId = getLandIdFromDb(ac.name);
         if (landId <= 0) return false;
-        // 精确优先 + normName 规范化匹配（旧版为 SQL 精确匹配，与读 per-player 权限的
-        // NOCASE 口径不一致，大小写变种玩家会出现"读到权限行却查不到访客身份"的错位）
-        PermRow row = findPermRow(landId, player.getName());
+        // ★ 2026-10-10 起仅精确匹配：离线模式大小写不同=不同玩家，
+        //   normName 模糊匹配会让大小写变种玩家冒充访客身份、绕过全部 deny* 限制。
+        PermRow row = findPermRowExact(landId, player.getName());
         if (row == null || !"visitor".equalsIgnoreCase(row.role)) return false;
         return row.expiresAt == 0 || row.expiresAt > System.currentTimeMillis();
     }
@@ -12270,7 +12430,8 @@ public class AreaProtection implements Listener {
 
     public boolean addPlayerToGlobalWhitelist(
             String playerName) {
-        boolean ok = globalPlayerWhitelist.add(normName(playerName));
+        // ★ 2026-10-10 精确存储原始拼写（离线模式大小写不同=不同玩家）
+        boolean ok = globalPlayerWhitelist.add(playerName);
         if (ok) saveWhitelists();
         return ok;
     }
@@ -12294,7 +12455,8 @@ public class AreaProtection implements Listener {
         Set<String> set = areaPlayerWhitelist
                 .computeIfAbsent(areaName,
                         k -> ConcurrentHashMap.newKeySet());
-        boolean ok = set.add(normName(playerName));
+        // ★ 2026-10-10 精确存储原始拼写（离线模式大小写不同=不同玩家）
+        boolean ok = set.add(playerName);
         if (ok) saveWhitelists();
         return ok;
     }
@@ -13285,6 +13447,9 @@ public class AreaProtection implements Listener {
         public boolean denyWax = false;
         // ★ 玩家攻击生物
         public boolean denyMobAttack = false;
+        // ★ 村民交易（右键村民开交易窗 / 交易窗内完成交易）——独立一级权限：
+        //   开启后普通访客禁止与领地内村民交易，领地主/插件管理员/已授权玩家豁免
+        public boolean denyVillagerTrade = false;
         public boolean enableAnnounce = false;
         public String announceTemplate = "";
         public String txtContent = "";
@@ -13431,6 +13596,7 @@ public class AreaProtection implements Listener {
             if (denyAnimalFeeding) c++;
             if (denySpawnEgg) c++;
             if (denyWax) c++;
+            if (denyVillagerTrade) c++;
             if (!peaceWhitelist.isEmpty()) c++;
 
             return c;

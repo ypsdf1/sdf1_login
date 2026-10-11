@@ -10297,7 +10297,7 @@ public class Main extends JavaPlugin
                                 "fall_damage", "hunger", "all_damage", "all_effects",
                                 "item_frame", "redstone", "door", "audio", "lead",
                                 "crop_harvest", "wool_shear", "animal_feed", "glowing", "peace_mode",
-                                "spawn_egg", "wax"),
+                                "spawn_egg", "wax", "villager_trade"),
                                 args[3]);
                     }
                     if (action.equals("manage") || action.equals("members")
@@ -10335,7 +10335,7 @@ public class Main extends JavaPlugin
                                 "denyFallDamage", "denyHunger", "denyAllDamage", "denyAllEffects",
                                 "denyItemFrame", "denyRedstoneInteraction", "denyDoorInteraction", "denyNoteblockJukebox",
                                 "denyLead", "denyCropHarvest", "denyWoolShear", "denyAnimalFeeding", "denyGlowing", "peaceMode",
-                                "denySpawnEgg", "denyWax"),
+                                "denySpawnEgg", "denyWax", "denyVillagerTrade"),
                                 args[4]);
                     }
                 }

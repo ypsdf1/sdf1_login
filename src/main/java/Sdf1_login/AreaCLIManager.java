@@ -586,6 +586,7 @@ public class AreaCLIManager {
             case "wool_shear": oldState = land.denyWoolShear; land.denyWoolShear = !land.denyWoolShear; break;
             case "animal_feed": oldState = land.denyAnimalFeeding; land.denyAnimalFeeding = !land.denyAnimalFeeding; break;
             case "mob_attack": oldState = land.denyMobAttack; land.denyMobAttack = !land.denyMobAttack; break;
+            case "villager_trade": oldState = land.denyVillagerTrade; land.denyVillagerTrade = !land.denyVillagerTrade; break;
             case "glowing": oldState = land.denyGlowing; land.denyGlowing = !land.denyGlowing; break;
             case "visitor_teleport": oldState = land.allowVisitorTeleport; land.allowVisitorTeleport = !land.allowVisitorTeleport; break;
             case "peace_mode": oldState = land.peaceMode; land.peaceMode = !land.peaceMode; break;
@@ -647,6 +648,7 @@ public class AreaCLIManager {
             case "wool_shear": return "denyWoolShear";
             case "animal_feed": return "denyAnimalFeeding";
             case "mob_attack": return "denyMobAttack";
+            case "villager_trade": return "denyVillagerTrade";
             case "glowing": return "denyGlowing";
             case "peace_mode": return "peaceMode";
             case "public_building": return "isPublicBuilding";
@@ -699,7 +701,8 @@ public class AreaCLIManager {
         perms.add(new PermItem("hunger", "饥饿", !land.denyHunger));
         perms.add(new PermItem("all_damage", "所有伤害", !land.denyAllDamage));
         perms.add(new PermItem("all_effects", "所有效果", !land.denyAllEffects));
-        perms.add(new PermItem("item_frame", "禁止展示框", !land.denyItemFrame));
+        // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止交互展示框"
+        perms.add(new PermItem("item_frame", land.denyItemFrame ? "禁止交互展示框" : "允许交互展示框", !land.denyItemFrame));
         perms.add(new PermItem("redstone", "红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
         perms.add(new PermItem("door", "禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermItem("sign_edit", land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
@@ -711,6 +714,7 @@ public class AreaCLIManager {
         perms.add(new PermItem("wool_shear", "剪切羊毛/生物", !land.denyWoolShear));
         perms.add(new PermItem("animal_feed", land.denyAnimalFeeding ? "禁止投喂" : "允许投喂动物", !land.denyAnimalFeeding));
         perms.add(new PermItem("mob_attack", land.denyMobAttack ? "禁止攻击生物" : "允许攻击生物", !land.denyMobAttack));
+        perms.add(new PermItem("villager_trade", land.denyVillagerTrade ? "禁止村民交易" : "允许村民交易", !land.denyVillagerTrade));
         perms.add(new PermItem("glowing", "玩家发光", !land.denyGlowing));
         perms.add(new PermItem("visitor_teleport", "传送", land.allowVisitorTeleport));
         perms.add(new PermItem("peace_mode", "和平模式", land.peaceMode));
@@ -742,7 +746,7 @@ public class AreaCLIManager {
             case "hunger": return "饥饿";
             case "all_damage": return "所有伤害";
             case "all_effects": return "所有效果";
-            case "item_frame": return "禁止展示框";
+            case "item_frame": return "展示框交互";
             case "redstone": return "红石电路";
             case "door": return "禁止门禁";
             case "sign_edit": return "告示牌编辑";
@@ -754,6 +758,7 @@ public class AreaCLIManager {
             case "wool_shear": return "剪切羊毛";
             case "animal_feed": return "投喂动物";
             case "mob_attack": return "攻击生物";
+            case "villager_trade": return "村民交易";
             case "glowing": return "玩家发光";
             case "peace_mode": return "和平模式";
             case "public_building": return "公共建筑设施";
@@ -1162,7 +1167,7 @@ public class AreaCLIManager {
                 {"hunger", "饥饿", "denyHunger"},
                 {"all_damage", "所有伤害", "denyAllDamage"},
                 {"all_effects", "所有效果", "denyAllEffects"},
-                {"item_frame", "禁止展示框", "denyItemFrame"},
+                {"item_frame", "展示框交互", "denyItemFrame"},
                 {"redstone", "红石电路(中继器/比较器)", "denyRedstoneInteraction"},
                 {"door", "禁止门禁(门/按钮/压力板)", "denyDoorInteraction"},
                 {"sign_edit", "禁止编辑告示牌", "denySignEdit"},
@@ -1174,6 +1179,7 @@ public class AreaCLIManager {
                 {"wool_shear", "剪切羊毛/生物", "denyWoolShear"},
                 {"animal_feed", "投喂动物", "denyAnimalFeeding"},
                 {"mob_attack", "攻击生物", "denyMobAttack"},
+                {"villager_trade", "村民交易", "denyVillagerTrade"},
                 {"glowing", "玩家发光", "denyGlowing"},
                 {"peace_mode", "和平模式", "peaceMode"},
                 {"tp", "传送", "allowTeleport"}
@@ -1216,6 +1222,14 @@ public class AreaCLIManager {
             // ★ denyEnderTeleport显示名称（末影人行为）
             if (field.equals("denyEnderTeleport")) {
                 name = landDefault ? "禁用末影人行为" : "启用末影人行为";
+            }
+            // ★ denyItemFrame显示名称（2026-10-10 按启停状态动态显示）
+            if (field.equals("denyItemFrame")) {
+                name = landDefault ? "禁止交互展示框" : "允许交互展示框";
+            }
+            // ★ denyVillagerTrade显示名称（2026-10-10 新增村民交易权限）
+            if (field.equals("denyVillagerTrade")) {
+                name = landDefault ? "禁止村民交易" : "允许村民交易";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
@@ -1270,6 +1284,7 @@ public class AreaCLIManager {
             case "denyEnderTeleport": return land.denyEnderTeleport;
             case "denyWoolShear": return land.denyWoolShear;
             case "denyAnimalFeeding": return land.denyAnimalFeeding;
+            case "denyVillagerTrade": return land.denyVillagerTrade;
             case "denyGlowing": return land.denyGlowing;
             case "peaceMode": return land.peaceMode;
             case "isPublicBuilding": return land.isPublicBuilding;
