@@ -1709,6 +1709,8 @@ function getLandMaxEffects($db, $land) {
             max_lands INTEGER DEFAULT -1,
             max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
             home_limit INTEGER DEFAULT 0,
             join_price INTEGER DEFAULT 0,
             auto_renew INTEGER DEFAULT 0,
@@ -2547,6 +2549,8 @@ function handleListUserGroups($db) {
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2569,6 +2573,8 @@ function handleListUserGroups($db) {
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
         'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
+        'shop_max_listings' => 'ALTER TABLE web_user_groups ADD COLUMN shop_max_listings INTEGER DEFAULT -1',
+        'shop_min_price' => 'ALTER TABLE web_user_groups ADD COLUMN shop_min_price INTEGER DEFAULT -1',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -2608,6 +2614,8 @@ function handleUpdateUserGroup($db, $data) {
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2633,12 +2641,14 @@ function handleUpdateUserGroup($db, $data) {
     $durationMinutes = (int)($data['duration_minutes'] ?? 0);
     $autoRenew = (int)($data['auto_renew'] ?? 0);
     $defaultPerms = $data['default_perms'] ?? '{}';
+    $shopMaxListings = (int)($data['shop_max_listings'] ?? -1);
+    $shopMinPrice = (int)($data['shop_min_price'] ?? -1);
 
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
-         land_price_per_sqm, max_lands, max_effects, max_effect_level, home_limit, join_price, auto_renew, renew_price, duration_minutes, default_perms, synced_at)
+         land_price_per_sqm, max_lands, max_effects, max_effect_level, home_limit, join_price, auto_renew, renew_price, duration_minutes, default_perms, shop_max_listings, shop_min_price, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
-                :price, :maxlands, :maxEffects, :maxEffectLevel, :homeLimit, :joinPrice, :autoRenew, :renewPrice, :duration, :perms, :synced)");
+                :price, :maxlands, :maxEffects, :maxEffectLevel, :homeLimit, :joinPrice, :autoRenew, :renewPrice, :duration, :perms, :shopmax, :shopmin, :synced)");
     $stmt->bindValue(':name', $name, SQLITE3_TEXT);
     $stmt->bindValue(':display', $displayName, SQLITE3_TEXT);
     $stmt->bindValue(':color', $displayColor, SQLITE3_TEXT);
@@ -2654,6 +2664,8 @@ function handleUpdateUserGroup($db, $data) {
     $stmt->bindValue(':renewPrice', $renewPrice, SQLITE3_INTEGER);
     $stmt->bindValue(':duration', $durationMinutes, SQLITE3_INTEGER);
     $stmt->bindValue(':perms', $defaultPerms, SQLITE3_TEXT);
+    $stmt->bindValue(':shopmax', $shopMaxListings, SQLITE3_INTEGER);
+    $stmt->bindValue(':shopmin', $shopMinPrice, SQLITE3_INTEGER);
     $stmt->bindValue(':synced', time(), SQLITE3_INTEGER);
     $stmt->execute();
 
@@ -2837,6 +2849,8 @@ function handleGetPlayerGroups($db, $player) {
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2857,6 +2871,8 @@ function handleGetPlayerGroups($db, $player) {
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
         'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
+        'shop_max_listings' => 'ALTER TABLE web_user_groups ADD COLUMN shop_max_listings INTEGER DEFAULT -1',
+        'shop_min_price' => 'ALTER TABLE web_user_groups ADD COLUMN shop_min_price INTEGER DEFAULT -1',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -2882,6 +2898,8 @@ function handleGetPlayerGroups($db, $player) {
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2919,6 +2937,8 @@ function handleListAvailableGroups($db) {
         max_lands INTEGER DEFAULT -1,
         max_effects INTEGER DEFAULT 5,
         max_effect_level INTEGER DEFAULT 256,
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         home_limit INTEGER DEFAULT 0,
         join_price INTEGER DEFAULT 0,
         auto_renew INTEGER DEFAULT 0,
@@ -2937,6 +2957,8 @@ function handleListAvailableGroups($db) {
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
         'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
+        'shop_max_listings' => 'ALTER TABLE web_user_groups ADD COLUMN shop_max_listings INTEGER DEFAULT -1',
+        'shop_min_price' => 'ALTER TABLE web_user_groups ADD COLUMN shop_min_price INTEGER DEFAULT -1',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {

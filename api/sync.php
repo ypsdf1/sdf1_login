@@ -969,6 +969,8 @@ function syncUserGroups() {
         renew_price INTEGER DEFAULT 0,
         duration_minutes INTEGER DEFAULT 0,
         default_perms TEXT DEFAULT '{}',
+        shop_max_listings INTEGER DEFAULT -1,
+        shop_min_price INTEGER DEFAULT -1,
         synced_at INTEGER DEFAULT 0
     )");
 
@@ -986,6 +988,8 @@ function syncUserGroups() {
         'duration_minutes' => 'ALTER TABLE web_user_groups ADD COLUMN duration_minutes INTEGER DEFAULT 0',
         'max_effects' => 'ALTER TABLE web_user_groups ADD COLUMN max_effects INTEGER DEFAULT 5',
         'max_effect_level' => 'ALTER TABLE web_user_groups ADD COLUMN max_effect_level INTEGER DEFAULT 256',
+        'shop_max_listings' => 'ALTER TABLE web_user_groups ADD COLUMN shop_max_listings INTEGER DEFAULT -1',
+        'shop_min_price' => 'ALTER TABLE web_user_groups ADD COLUMN shop_min_price INTEGER DEFAULT -1',
     ];
     foreach ($migrations as $col => $sql) {
         if (!in_array($col, $columns)) {
@@ -997,10 +1001,10 @@ function syncUserGroups() {
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_user_groups
         (group_name, display_name, display_color, display_emoji, priority,
          land_price_per_sqm, max_lands, max_effects, max_effect_level, home_limit, join_price, auto_renew,
-         renew_price, duration_minutes, default_perms, synced_at)
+         renew_price, duration_minutes, default_perms, shop_max_listings, shop_min_price, synced_at)
         VALUES (:name, :display, :color, :emoji, :priority,
                 :price, :maxlands, :maxeffects, :maxeffectlevel, :homelimit, :joinprice, :autorenew,
-                :renewprice, :duration, :perms, :synced)");
+                :renewprice, :duration, :perms, :shopmax, :shopmin, :synced)");
     $count = 0;
     foreach ($groups as $g) {
         $stmt->bindValue(':name', $g['group_name'] ?? '', SQLITE3_TEXT);
@@ -1021,6 +1025,8 @@ function syncUserGroups() {
         $stmt->bindValue(':renewprice', (int)($g['renew_price'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':duration', (int)($g['duration_minutes'] ?? 0), SQLITE3_INTEGER);
         $stmt->bindValue(':perms', $g['default_perms'] ?? '{}', SQLITE3_TEXT);
+        $stmt->bindValue(':shopmax', (int)($g['shop_max_listings'] ?? -1), SQLITE3_INTEGER);
+        $stmt->bindValue(':shopmin', (int)($g['shop_min_price'] ?? -1), SQLITE3_INTEGER);
         $stmt->bindValue(':synced', $now, SQLITE3_INTEGER);
         $stmt->execute();
         $count++;

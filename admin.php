@@ -3026,6 +3026,8 @@ async function loadUserGroups(el) {
                 html += `<span>💰 ${hasCustomPrice ? g.land_price_per_sqm+'债券/格²' : '默认'}</span>`;
                 html += `<span>🏗️ ${hasCustomMax ? '最多'+g.max_lands+'块' : '默认'}</span>`;
                 html += `<span>🔑 ${permCount}项默认权限</span>`;
+                html += `<span>📦 二手上架: ${(g.shop_max_listings ?? -1) >= 0 ? '最多'+g.shop_max_listings+'件' : '跟随全局'}</span>`;
+                html += `<span>🛡️ 保底价: ${(g.shop_min_price ?? -1) >= 0 ? g.shop_min_price+'债券' : '跟随全局'}</span>`;
                 html += `</div>`;
                 // 默认权限预览
                 if (permCount > 0) {
@@ -3120,6 +3122,16 @@ function showAddUserGroup() {
                 <input id="ugMaxEffectLevel" type="number" value="256" min="1" max="256" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
             </div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">二手同时上架数上限(-1=跟随全局)</label>
+                <input id="ugShopMaxListings" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+            <div>
+                <label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">二手保底价格(债券, -1=跟随全局)</label>
+                <input id="ugShopMinPrice" type="number" value="-1" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+            </div>
+        </div>
         <div style="font-size:11px;color:var(--dim);margin-bottom:10px">普通玩家按各效果的生存可获取上限封顶（如抗性提升最高 2 级、海豚的恩惠最高 1 级），严禁超限。填 256 表示不额外限制。</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
             <div>
@@ -3166,6 +3178,8 @@ async function doAddUserGroup() {
     const renewPrice = document.getElementById('ugRenewPrice')?.value || '0';
     const duration = document.getElementById('ugDuration')?.value || '0';
     const autoRenew = document.getElementById('ugAutoRenew')?.checked ? '1' : '0';
+    const shopMaxListings = document.getElementById('ugShopMaxListings')?.value || '-1';
+    const shopMinPrice = document.getElementById('ugShopMinPrice')?.value || '-1';
 
     if (!name || !/^[a-zA-Z0-9_]{2,20}$/.test(name)) {
         glassAlert('组ID仅允许英文字母、数字和下划线，2-20位');
@@ -3178,6 +3192,7 @@ async function doAddUserGroup() {
             priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects, max_effect_level: maxEffectLevel,
             home_limit: homeLimit, join_price: joinPrice, renew_price: renewPrice,
             duration_minutes: duration, auto_renew: autoRenew,
+            shop_max_listings: shopMaxListings, shop_min_price: shopMinPrice,
             default_perms: '{}'
         }, 'POST');
         if (res.success) {
@@ -3240,6 +3255,12 @@ async function showEditUserGroup(groupName) {
             <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">续费价格(债券)</label>
             <input id="eugRenewPrice" type="number" value="${g.renew_price || 0}" min="0" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
         </div>`;
+        html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">二手同时上架数上限(-1=跟随全局)</label>
+            <input id="eugShopMaxListings" type="number" value="${(g.shop_max_listings ?? -1)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+            <div><label style="display:block;font-size:12px;color:var(--dim);margin-bottom:4px">二手保底价格(债券, -1=跟随全局)</label>
+            <input id="eugShopMinPrice" type="number" value="${(g.shop_min_price ?? -1)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)"></div>
+        </div>`;
         html += `<div style="margin-bottom:12px">
             <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim);cursor:pointer">
                 <input type="checkbox" id="eugAutoRenew" ${g.auto_renew == 1 ? 'checked' : ''} style="accent-color:#4caf50;width:14px;height:14px">
@@ -3279,6 +3300,8 @@ async function doEditUserGroup(groupName) {
     const joinPrice = document.getElementById('eugJoinPrice')?.value || '0';
     const renewPrice = document.getElementById('eugRenewPrice')?.value || '0';
     const autoRenew = document.getElementById('eugAutoRenew')?.checked ? '1' : '0';
+    const shopMaxListings = document.getElementById('eugShopMaxListings')?.value || '-1';
+    const shopMinPrice = document.getElementById('eugShopMinPrice')?.value || '-1';
 
     // 收集权限
     const perms = {};
@@ -3292,6 +3315,7 @@ async function doEditUserGroup(groupName) {
             priority, land_price_per_sqm: price, max_lands: maxLands, max_effects: maxEffects, max_effect_level: maxEffectLevel,
             home_limit: homeLimit, duration_minutes: duration,
             join_price: joinPrice, renew_price: renewPrice, auto_renew: autoRenew,
+            shop_max_listings: shopMaxListings, shop_min_price: shopMinPrice,
             default_perms: JSON.stringify(perms)
         }, 'POST');
         if (res.success) {
