@@ -36,6 +36,8 @@ public class OfficialTranslations {
 
     private static final ConcurrentHashMap<String, String> map = new ConcurrentHashMap<>();
     private static final Gson gson = new Gson();
+    /** 反向索引（中文→英文键），懒构建；loadFromJson 后置 null 触发重建 */
+    private static volatile Map<String, java.util.List<String>> reverseIndex;
 
     // ---------- 对外 API ----------
 
@@ -86,33 +88,46 @@ public class OfficialTranslations {
         if (materialName == null || materialName.isEmpty()) return null;
         String lower = materialName.toLowerCase(Locale.ROOT);
 
-        // 日志：当前 map 状态
-        Bukkit.getLogger().info("[翻译] officialLookUp: " + materialName
-                + " | map已加载=" + isLoaded() + " 条目数=" + map.size());
-
         // 1. 精确匹配（部分 key 可直接用）
         String val = map.get(lower);
-        if (val != null) {
-            Bukkit.getLogger().info("[翻译] officialLookUp 命中(精确): " + lower + " → " + val);
-            return val;
-        }
+        if (val != null) return val;
 
         // 2. block.minecraft.<name>
         val = map.get("block.minecraft." + lower);
-        if (val != null) {
-            Bukkit.getLogger().info("[翻译] officialLookUp 命中(block): " + lower + " → " + val);
-            return val;
-        }
+        if (val != null) return val;
 
         // 3. item.minecraft.<name>
         val = map.get("item.minecraft." + lower);
-        if (val != null) {
-            Bukkit.getLogger().info("[翻译] officialLookUp 命中(item): " + lower + " → " + val);
-            return val;
-        }
+        if (val != null) return val;
 
-        Bukkit.getLogger().info("[翻译] officialLookUp 未命中: " + lower + "，将走机翻兜底");
-        return null; // 未命中 -> 调用者走机翻
+        return null; // 未命中 -> 调用者走机翻兜底
+    }
+
+    /**
+     * 反向索引：中文名 → 英文键列表（如 「钻石剑」→ ["diamond_sword"]）。<br>
+     * 仅收录 item.minecraft.* / block.minecraft.* 条目；同名时 item 优先（先扫 item 再扫 block）。<br>
+     * 懒构建 + volatile，zh_cn.json 重新 load 后失效重建。
+     */
+    public static Map<String, java.util.List<String>> reverseMap() {
+        Map<String, java.util.List<String>> idx = reverseIndex;
+        if (idx != null) return idx;
+        synchronized (OfficialTranslations.class) {
+            if (reverseIndex != null) return reverseIndex;
+            Map<String, java.util.List<String>> built = new java.util.HashMap<>();
+            for (String prefix : new String[]{"item.minecraft.", "block.minecraft."}) {
+                for (Map.Entry<String, String> e : map.entrySet()) {
+                    if (!e.getKey().startsWith(prefix)) continue;
+                    String zh = e.getValue();
+                    if (zh == null || zh.isEmpty()) continue;
+                    String mat = e.getKey().substring(prefix.length());
+                    java.util.List<String> list = built.computeIfAbsent(zh,
+                            k -> new java.util.ArrayList<>(2));
+                    if (!list.contains(mat)) list.add(mat);
+                }
+            }
+            reverseIndex = built;
+            return built;
+        }
     }
 
     /** 当前加载的条目数（调试用） */
@@ -135,6 +150,7 @@ public class OfficialTranslations {
         for (Map.Entry<String, com.google.gson.JsonElement> entry : obj.entrySet()) {
             map.put(entry.getKey(), entry.getValue().getAsString());
         }
+        reverseIndex = null; // 失效反向索引，下次访问重建
     }
 
     /** 从 Mojang API 拉取 zh_cn.json（完整链：manifest → version → asset index → object） */

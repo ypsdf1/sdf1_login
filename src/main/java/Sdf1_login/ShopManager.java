@@ -3806,7 +3806,14 @@ public class ShopManager implements Listener {
         ItemStack item = pendingPublishItem.remove(uuid);
         if (item == null) return;
 
-        String msg = e.getMessage().trim();
+        // ★ AsyncPlayerChatEvent 在异步线程触发：退还物品/入库/开 GUI 都必须切主线程
+        //   （2026-10-11 生产报错 InventoryOpenEvent may only be triggered synchronously）
+        final String msg = e.getMessage().trim();
+        Bukkit.getScheduler().runTask(plugin, () -> handlePublishInput(p, item, msg));
+    }
+
+    /** 主线程处理售价输入：取消/非法退还，合法则校验入库并开商店界面。 */
+    private void handlePublishInput(Player p, ItemStack item, String msg) {
         if (msg.isEmpty() || msg.equals("取消")) {
             returnItem(p, item);
             p.sendMessage("§7[二手商店] 已取消上架，物品退还");
@@ -3845,7 +3852,7 @@ public class ShopManager implements Listener {
         saveSecondHand();
         p.sendMessage("§a§l[二手商店] §f上架成功: §e" + item.getType().name()
                 + " §7x" + item.getAmount() + " §6" + price + " §7枚债券");
-        openSecondHandShop(p, 0);
+        if (p.isOnline()) openSecondHandShop(p, 0);
     }
 
     private void returnItem(Player p, ItemStack item) {
