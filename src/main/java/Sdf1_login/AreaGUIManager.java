@@ -42,6 +42,7 @@ public class AreaGUIManager implements Listener {
     private static final String T_EFFECTS_CLEAR = "§b§l单清效果";
     private static final String T_EFFECTS_GIVE = "§b§l增益效果";
     private static final String T_LAND_TRANSFER = "§6§l过户领地";
+    private static final String T_CONFISCATE = "§c§l违禁品管理 - ";
 
     // 每页显示数量
     private static final int PAGE_SIZE = 45;
@@ -265,6 +266,15 @@ public class AreaGUIManager implements Listener {
         }
         inv.setItem(33, createItem(Material.NAME_TAG, "§e§l领地改名",
                 renameLore, "", "§e点击输入新名字"));
+
+        // 违禁品管理（位置34，2026-10-11）
+        inv.setItem(34, createItem(Material.BARRIER, "§c§l违禁品管理",
+                "§7配置访客禁止携带的物品",
+                "§7进入回收 · 退出按设置归还",
+                "§7累计没收: §f" + land.confiscateCount + " §7次",
+                "§7退出归还: " + (land.returnOnLeave ? "§a开启" : "§c关闭"),
+                "",
+                "§e点击管理"));
 
         // 返回按钮（位置48）
         inv.setItem(48, createItem(Material.ARROW, "§c§l返回领地列表", ""));
@@ -544,6 +554,10 @@ public class AreaGUIManager implements Listener {
             if (field.equals("denyVillagerTrade")) {
                 name = landDefault ? "禁止村民交易" : "允许村民交易";
             }
+            // ★ denyDoorInteraction显示名称（2026-10-10 按启停状态动态显示）
+            if (field.equals("denyDoorInteraction")) {
+                name = landDefault ? "禁止门禁交互" : "允许门禁交互";
+            }
 
             // ★ 对于 allowPickup/allowDrop，enabled=true 表示"允许操作"（即 allow=true）
             // 其他权限，enabled = true 表示"允许操作"（即 deny=false）
@@ -706,7 +720,8 @@ public class AreaGUIManager implements Listener {
         // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止交互展示框"
         perms.add(new PermEntry(land.denyItemFrame ? "禁止交互展示框" : "允许交互展示框", !land.denyItemFrame));
         perms.add(new PermEntry("红石电路(按钮/压力板/中继器/比较器)", !land.denyRedstoneInteraction));
-        perms.add(new PermEntry("门禁交互(门/栅栏门)", !land.denyDoorInteraction));
+        // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止门禁交互"
+        perms.add(new PermEntry(land.denyDoorInteraction ? "禁止门禁交互(门/栅栏门)" : "允许门禁交互(门/栅栏门)", !land.denyDoorInteraction));
         perms.add(new PermEntry("音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermEntry("拴绳使用", !land.denyLead));
         perms.add(new PermEntry(land.denyCropHarvest ? "禁用农作物收获" : "启用农作物收获", !land.denyCropHarvest));
@@ -770,7 +785,7 @@ public class AreaGUIManager implements Listener {
             case "所有效果": land.denyAllEffects = !land.denyAllEffects; break;
             case "禁止展示框": case "允许交互展示框": case "禁止交互展示框": land.denyItemFrame = !land.denyItemFrame; break;
             case "红石电路(按钮/压力板/中继器/比较器)": land.denyRedstoneInteraction = !land.denyRedstoneInteraction; break;
-            case "门禁交互(门/栅栏门)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
+            case "门禁交互(门/栅栏门)": case "禁止门禁交互(门/栅栏门)": case "允许门禁交互(门/栅栏门)": land.denyDoorInteraction = !land.denyDoorInteraction; break;
             case "音频(音符盒/唱片机)": land.denyNoteblockJukebox = !land.denyNoteblockJukebox; break;
             case "拴绳使用": land.denyLead = !land.denyLead; break;
             case "农作物收获": land.denyCropHarvest = !land.denyCropHarvest; break;
@@ -1002,6 +1017,9 @@ public class AreaGUIManager implements Listener {
                 openLandSettings(p, landName);
             } else if (raw == 16) {
                 openEffectsManagement(p, landName, 1);
+            } else if (raw == 34) {
+                // ★ 违禁品管理面板（2026-10-11）
+                openConfiscatePanel(p, landName);
             } else if (raw == 32) {
                 // 过户领地
                 openTransferLandPanel(p, landName);
@@ -1055,6 +1073,52 @@ public class AreaGUIManager implements Listener {
             String landName = title.substring(T_LAND_TRANSFER_PANEL.length()).trim();
             if (event.isLeftClick()) {
                 handleTransferLandPanelClick(p, landName, raw, true);
+            }
+            return;
+        }
+
+        // ★ 违禁品管理面板（2026-10-11）
+        if (title.startsWith(T_CONFISCATE)) {
+            event.setCancelled(true);
+            String landName = title.substring(T_CONFISCATE.length()).trim();
+            if (!event.isLeftClick()) return;
+
+            AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+            if (land == null) { p.closeInventory(); return; }
+
+            int[] slots = {10,11,12,13,14,15,16, 19,20,21,22,23,24,25, 28,29,30,31,32,33,34};
+            // 判断点击是否命中某个禁带物品
+            int hitIdx = -1;
+            for (int i = 0; i < slots.length && i < land.confiscateItems.size(); i++) {
+                if (slots[i] == raw) { hitIdx = i; break; }
+            }
+            if (hitIdx >= 0) {
+                String removed = land.confiscateItems.remove(hitIdx);
+                areaProtect.saveAreaToDb(land);
+                p.sendMessage("§a§l[违禁品] §f已移除禁带物品: §e" + removed);
+                openConfiscatePanel(p, landName);
+                return;
+            }
+            if (raw == 22) {
+                // 切换退出归还开关
+                land.returnOnLeave = !land.returnOnLeave;
+                areaProtect.saveAreaToDb(land);
+                p.sendMessage(land.returnOnLeave
+                        ? "§a§l[违禁品] §f已开启：玩家离开领地时退还没收物"
+                        : "§c§l[违禁品] §f已关闭：玩家离开领地时不退还没收物");
+                openConfiscatePanel(p, landName);
+                return;
+            }
+            if (raw == 40) {
+                // 添加禁带物品 → 关闭GUI转聊天输入
+                p.closeInventory();
+                areaProtect.setPendingEffectInput(p.getUniqueId(), landName, "confiscate_add", 1);
+                p.sendMessage("§e§l[违禁品] §f请在聊天栏输入物品ID（如 diamond、gold_ingot），输入 §c取消 §7放弃");
+                return;
+            }
+            if (raw == 48) {
+                openLandManage(p, landName);
+                return;
             }
             return;
         }
@@ -2305,6 +2369,69 @@ public class AreaGUIManager implements Listener {
 
         // 返回按钮
         inv.setItem(22, createItem(Material.ARROW, "§c§l返回管理面板", "§7点击返回"));
+
+        p.openInventory(inv);
+    }
+
+    /**
+     * ★ 违禁品管理面板（2026-10-11）。
+     *
+     * <p>展示没收计数、当前访客禁带物品列表（点击移除）、添加入口、
+     * 以及「退出领地是否归还没收物」开关（默认关闭=不退）。
+     */
+    public void openConfiscatePanel(Player p, String landName) {
+        managingLand.put(p.getUniqueId(), landName);
+        Inventory inv = Bukkit.createInventory(null, 54, T_CONFISCATE + landName);
+        fillBg(inv);
+
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage("§c领地不存在");
+            p.closeInventory();
+            return;
+        }
+
+        // 没收计数（位置4）
+        inv.setItem(4, createItem(Material.HOPPER, "§e§l没收计数",
+                "§7该领地累计没收违禁品次数",
+                "§7累计: §f" + land.confiscateCount + " §7次"));
+
+        // 退出归还开关（位置22）
+        inv.setItem(22, createItem(land.returnOnLeave ? Material.LIME_DYE : Material.GRAY_DYE,
+                land.returnOnLeave ? "§a§l退出归还: 开启" : "§c§l退出归还: 关闭",
+                "§7玩家离开领地时是否退还没收物",
+                "§7当前: " + (land.returnOnLeave ? "§a开启，退出时退还" : "§c关闭，退出不退还"),
+                "",
+                "§e点击切换"));
+
+        // 禁带物品列表（位置 10-16, 19-25, 28-34）
+        int[] slots = {10,11,12,13,14,15,16, 19,20,21,22,23,24,25, 28,29,30,31,32,33,34};
+        java.util.List<String> items = land.confiscateItems;
+        for (int i = 0; i < items.size() && i < slots.length; i++) {
+            final int idx = i;
+            String item = items.get(i);
+            org.bukkit.Material mat = org.bukkit.Material.matchMaterial(item);
+            inv.setItem(slots[i], createItem(
+                    mat != null ? mat : Material.BARRIER,
+                    "§c" + item,
+                    "§7访客禁止携带此物品",
+                    "",
+                    "§e点击移除"));
+        }
+
+        // 添加物品按钮（位置40）
+        inv.setItem(40, createItem(Material.EMERALD, "§a§l添加禁带物品",
+                "§7在聊天栏输入物品ID",
+                "§7示例: diamond、gold_ingot",
+                "",
+                "§e点击添加"));
+
+        // 当前数量提示（位置49）
+        inv.setItem(49, createItem(Material.PAPER, "§7§l共 " + items.size() + " 种禁带物品",
+                "§7列表已满时请先移除"));
+
+        // 返回按钮（位置48）
+        inv.setItem(48, createItem(Material.ARROW, "§c§l返回管理领地", ""));
 
         p.openInventory(inv);
     }

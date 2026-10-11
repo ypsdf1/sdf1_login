@@ -7732,6 +7732,20 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ===== /shopbuy 二手交易商店（2026-10-11）=====
+        if (cmd.getName().equalsIgnoreCase("shopbuy")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可使用");
+                return true;
+            }
+            if (shopManager != null) {
+                shopManager.openSecondHandShop((Player) sender, 0);
+            } else {
+                sender.sendMessage("§c商店系统未加载");
+            }
+            return true;
+        }
+
         // ===== /tempban 临时封禁（名字或IP，DurationParser 解析时长） =====
         if (cmd.getName().equalsIgnoreCase("tempban")) {
             doTempBan(sender, "tempban", args);

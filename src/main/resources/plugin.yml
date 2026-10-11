@@ -96,6 +96,9 @@ commands:
   shop :
     description: 游戏商人
     usage: /shop
+  shopbuy :
+    description: 二手交易商店
+    usage: /shopbuy
   商店:
     description: 打开商店
     usage: /商店

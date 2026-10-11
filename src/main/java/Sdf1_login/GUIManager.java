@@ -807,6 +807,8 @@ public class GUIManager implements Listener {
         if ("§a§l购物车".equals(title)
                 || "§c§l退款中心".equals(title)
                 || "§6§l商店".equals(title)
+                || "§6§l二手商店".equals(title)
+                || "§6§l我的二手上架".equals(title)
                 || title.startsWith("§e§l流水记录")
                 || title.startsWith("§e§l转账记录")
                 || title.startsWith("§d§l余额操作")) {
@@ -967,6 +969,20 @@ public class GUIManager implements Listener {
         if ("§6§l商店".equals(title)) {
             event.setCancelled(true);
             plugin.getShopManager().handleMainShopClick(p, raw);
+            return;
+        }
+
+        // ===== 二手商店（2026-10-11 /shopbuy）=====
+        if ("§6§l二手商店".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleSecondHandClick(
+                    p, raw, event.isLeftClick());
+            return;
+        }
+        if ("§6§l我的二手上架".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleSecondHandMineClick(
+                    p, raw, event.isLeftClick());
             return;
         }
 

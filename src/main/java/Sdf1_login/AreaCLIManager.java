@@ -354,6 +354,9 @@ public class AreaCLIManager {
         // ★ 新增：领地公告管理
         p.sendMessage(clickableAction("📢", "领地公告（进出提示消息）",
                 "/protect cli announcement " + land.name + " 1"));
+        // ★ 新增：违禁品管理面板（2026-10-11）
+        p.sendMessage(clickableAction("🚫", "违禁品管理（禁带物品/没收计数/退出归还）",
+                "/protect cli confiscate " + land.name));
         // ★ 新增：领地改名
         long[] cooldown = areaProtect.getRenameCooldown(p);
         String renameHint;
@@ -704,7 +707,8 @@ public class AreaCLIManager {
         // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止交互展示框"
         perms.add(new PermItem("item_frame", land.denyItemFrame ? "禁止交互展示框" : "允许交互展示框", !land.denyItemFrame));
         perms.add(new PermItem("redstone", "红石电路(中继器/比较器)", !land.denyRedstoneInteraction));
-        perms.add(new PermItem("door", "禁止门禁(门/按钮/压力板)", !land.denyDoorInteraction));
+        // ★ 2026-10-10 文案动态化：按启停状态显示"允许/禁止门禁交互"
+        perms.add(new PermItem("door", land.denyDoorInteraction ? "禁止门禁(门/按钮/压力板)" : "允许门禁(门/按钮/压力板)", !land.denyDoorInteraction));
         perms.add(new PermItem("sign_edit", land.denySignEdit ? "禁止编辑告示牌" : "允许编辑告示牌", !land.denySignEdit));
         perms.add(new PermItem("audio", "音频(音符盒/唱片机)", !land.denyNoteblockJukebox));
         perms.add(new PermItem("lead", "拴绳使用", !land.denyLead));
@@ -748,7 +752,7 @@ public class AreaCLIManager {
             case "all_effects": return "所有效果";
             case "item_frame": return "展示框交互";
             case "redstone": return "红石电路";
-            case "door": return "禁止门禁";
+            case "door": return "门禁交互";
             case "sign_edit": return "告示牌编辑";
             case "audio": return "音频";
             case "lead": return "拴绳使用";
@@ -1169,7 +1173,7 @@ public class AreaCLIManager {
                 {"all_effects", "所有效果", "denyAllEffects"},
                 {"item_frame", "展示框交互", "denyItemFrame"},
                 {"redstone", "红石电路(中继器/比较器)", "denyRedstoneInteraction"},
-                {"door", "禁止门禁(门/按钮/压力板)", "denyDoorInteraction"},
+                {"door", "门禁交互", "denyDoorInteraction"},
                 {"sign_edit", "禁止编辑告示牌", "denySignEdit"},
                 {"audio", "音频(音符盒/唱片机)", "denyNoteblockJukebox"},
                 {"lead", "拴绳使用", "denyLead"},
@@ -1230,6 +1234,10 @@ public class AreaCLIManager {
             // ★ denyVillagerTrade显示名称（2026-10-10 新增村民交易权限）
             if (field.equals("denyVillagerTrade")) {
                 name = landDefault ? "禁止村民交易" : "允许村民交易";
+            }
+            // ★ denyDoorInteraction显示名称（2026-10-10 按启停状态动态显示）
+            if (field.equals("denyDoorInteraction")) {
+                name = landDefault ? "禁止门禁交互(门/按钮/压力板)" : "允许门禁交互(门/按钮/压力板)";
             }
 
             // 如果有per-player覆盖，使用覆盖值；否则使用领地默认
@@ -2036,5 +2044,132 @@ public class AreaCLIManager {
         // 返回公告管理页面
         showAnnouncementManagement(p, landName, 1);
         return true;
+    }
+
+    // ==================== 违禁品管理面板（2026-10-11） ====================
+
+    /**
+     * ★ 违禁品管理面板（CLI）。
+     *
+     * <p>展示：没收计数、当前访客禁带物品列表、退出是否归还开关。
+     * 领地主/管理员可在此配置「访客禁止携带的物品」，并控制退出领地时
+     * 是否退还已没收物品（默认不退）。
+     */
+    public void showConfiscateManagement(Player p, String landName) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        // 权限检查
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+
+        p.sendMessage(header("违禁品管理: " + landName));
+        p.sendMessage(Component.text("§7配置访客进入领地时禁止携带的物品"));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+
+        // 没收计数
+        p.sendMessage(Component.text("§a累计没收次数: §f" + land.confiscateCount + " §7次"));
+
+        // 当前禁带物品列表
+        p.sendMessage(Component.text(""));
+        if (land.confiscateItems == null || land.confiscateItems.isEmpty()) {
+            p.sendMessage(Component.text("§7当前访客禁带物品: §c（空）"));
+        } else {
+            p.sendMessage(Component.text("§7当前访客禁带物品（§f" + land.confiscateItems.size() + "§7种）:"));
+            for (int i = 0; i < land.confiscateItems.size(); i++) {
+                final int idx = i;
+                String item = land.confiscateItems.get(i);
+                p.sendMessage(Component.empty()
+                        .append(Component.text("§f  " + (i + 1) + ". " + item + " "))
+                        .append(Component.text("§c[移除]")
+                                .hoverEvent(HoverEvent.showText(Component.text("§e点击移除该禁带物品")))
+                                .clickEvent(ClickEvent.runCommand(
+                                        "/protect cli confiscateremove " + landName + " " + (i + 1)))));
+            }
+        }
+
+        // 添加物品入口
+        p.sendMessage(Component.text(""));
+        p.sendMessage(clickableAction("➕", "添加禁带物品",
+                "/protect cli confiscateadd " + landName));
+
+        // 退出是否归还开关
+        p.sendMessage(Component.text(""));
+        String retState = land.returnOnLeave ? "§a开启" : "§c关闭";
+        p.sendMessage(Component.empty()
+                .append(Component.text("§a退出领地归还没收物: " + retState))
+                .append(Component.text(" §7(当前" + (land.returnOnLeave ? "开启，退出时退还" : "关闭，退出不退还") + ")")));
+        p.sendMessage(Component.empty()
+                .append(Component.text(land.returnOnLeave ? "§c[关闭归还] " : "§a[开启归还] "))
+                .hoverEvent(HoverEvent.showText(Component.text("§e切换：玩家离开领地时是否退还此前被没收的物品")))
+                .clickEvent(ClickEvent.runCommand(
+                        "/protect cli confiscateret " + landName + " " + (land.returnOnLeave ? "off" : "on"))));
+
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+        p.sendMessage(clickableAction("◀", "返回领地管理", "/protect cli manage " + landName));
+        p.sendMessage(Component.text("§7§l───────────────────────────────"));
+    }
+
+    /**
+     * 开始添加禁带物品（等待玩家聊天输入物品ID）
+     */
+    public void startAddConfiscateItem(Player p, String landName) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) { p.sendMessage(Component.text("§c领地不存在: " + landName)); return; }
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) { p.sendMessage(Component.text("§c需要领地所有者或管理员权限")); return; }
+        areaProtect.setPendingEffectInput(p.getUniqueId(), landName, "confiscate_add", 3);
+        p.sendMessage(header("添加禁带物品: " + landName));
+        p.sendMessage(Component.text("§e请在聊天栏输入物品ID（如 diamond、minecraft:gold_ingot）"));
+        p.sendMessage(Component.text("§7输入 §c取消 §7放弃添加"));
+    }
+
+    /**
+     * 移除指定序号的禁带物品
+     */
+    public void removeConfiscateItem(Player p, String landName, String indexStr) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) { p.sendMessage(Component.text("§c领地不存在: " + landName)); return; }
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) { p.sendMessage(Component.text("§c需要领地所有者或管理员权限")); return; }
+        int idx;
+        try { idx = Integer.parseInt(indexStr); } catch (Exception e) { p.sendMessage(Component.text("§c序号无效")); return; }
+        if (idx < 1 || idx > land.confiscateItems.size()) { p.sendMessage(Component.text("§c序号超出范围")); return; }
+        String removed = land.confiscateItems.remove(idx - 1);
+        areaProtect.saveAreaToDb(land);
+        p.sendMessage(Component.text("§a已移除禁带物品: §f" + removed));
+    }
+
+    /**
+     * 切换「退出领地是否归还没收物」开关
+     */
+    public void toggleReturnOnLeave(Player p, String landName, String newState) {
+        AreaProtection.AreaConfig land = areaProtect.getLand(landName);
+        if (land == null) {
+            p.sendMessage(Component.text("§c领地不存在: " + landName));
+            return;
+        }
+        boolean isOwner = AreaProtection.samePlayer(p.getName(), land.owner);
+        boolean isAdmin = areaProtect.isAreaAdmin(p);
+        if (!isOwner && !isAdmin) {
+            p.sendMessage(Component.text("§c需要领地所有者或管理员权限"));
+            return;
+        }
+        if (newState.equalsIgnoreCase("on")) {
+            land.returnOnLeave = true;
+            p.sendMessage(Component.text("§a已开启：玩家离开领地时将退还没收的物品"));
+        } else {
+            land.returnOnLeave = false;
+            p.sendMessage(Component.text("§a已关闭：玩家离开领地时不退还没收的物品"));
+        }
+        areaProtect.saveAreaToDb(land);
     }
 }

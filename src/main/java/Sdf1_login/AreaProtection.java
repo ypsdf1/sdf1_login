@@ -103,6 +103,10 @@ public class AreaProtection implements Listener {
     private final Map<java.util.UUID, String> pendingAddMemberInput = new ConcurrentHashMap<>();
     // ★ 效果管理待处理输入：UUID → [landName, inputType]
     public final Map<java.util.UUID, String[]> pendingEffectInput = new ConcurrentHashMap<>();
+    // ★ 违禁品没收暂存（2026-10-11 违禁品管理面板）：UUID → (领地名 → 被没收物品)
+    //   玩家进入领地被没收时暂存；退出领地时若 returnOnLeave=true 则归还，否则清空（不退）
+    public final Map<java.util.UUID, java.util.Map<String, java.util.List<org.bukkit.inventory.ItemStack>>> confiscatedStore
+            = new ConcurrentHashMap<>();
     // ★ 过户领地待输入新所有者：UUID → [landName]
     public final Map<java.util.UUID, String[]> pendingTransferInput = new ConcurrentHashMap<>();
     // ★ 用户组配置编辑待输入：UUID → [groupName, field("price"|"maxlands"|"priority")]
@@ -1252,6 +1256,8 @@ public class AreaProtection implements Listener {
                 try { ac.denyWax = rs.getInt("deny_wax") == 1; } catch (Exception ignored) {}
                 try { ac.denyVillagerTrade = rs.getInt("deny_villager_trade") == 1; } catch (Exception ignored) {}
             try { ac.badEffects = parseEffectsString(rs.getString("bad_effects")); } catch (Exception ignored) { ac.badEffects = new ArrayList<>(); }
+        try { ac.confiscateCount = rs.getInt("confiscate_count"); } catch (Exception ignored) {}
+        try { ac.returnOnLeave = rs.getInt("return_on_leave") == 1; } catch (Exception ignored) {}
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1556,6 +1562,9 @@ public class AreaProtection implements Listener {
             // ★ 村民交易权限列（2026-10-10：领地主控制玩家能否与领地内村民交易）
             try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN deny_villager_trade INTEGER DEFAULT 0"); } catch (Exception ignored) {}
         try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN bad_effects TEXT DEFAULT ''"); } catch (Exception ignored) {}
+        // ★ 违禁品管理面板（2026-10-11）：没收计数 + 退出是否归还
+        try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN confiscate_count INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+        try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN return_on_leave INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -3532,6 +3541,9 @@ public class AreaProtection implements Listener {
                 showBorderBrief(p, oldAc);
             }
 
+            // ★ 违禁品归还（2026-10-11 违禁品管理面板）：按 returnOnLeave 决定是否退还
+            handleConfiscateReturn(p, oldArea);
+
             // 收标
             List<PotionEffectType> marked =
                     playerMarkedEffects.remove(uid);
@@ -4850,6 +4862,8 @@ public class AreaProtection implements Listener {
             if (fromArea != null) {
                 showBorderBrief(p, fromArea);
             }
+            // ★ 违禁品归还（2026-10-11 违禁品管理面板）：按 returnOnLeave 决定是否退还
+            handleConfiscateReturn(p, fromName);
         }
 
         // ===== 进入新区域 =====
@@ -7482,6 +7496,40 @@ public class AreaProtection implements Listener {
                         try { annPage = Integer.parseInt(args[3]); } catch (Exception ignored) {}
                     }
                     plugin.areaCLIManager.showAnnouncementManagement(p, args[2], annPage);
+                    break;
+                case "confiscate":
+                    // ★ 违禁品管理面板（2026-10-11）
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli confiscate <领地名>");
+                        break;
+                    }
+                    plugin.areaCLIManager.showConfiscateManagement(p, args[2]);
+                    break;
+                case "confiscateret":
+                    // ★ 切换「退出领地是否归还没收物」
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli confiscateret <领地名> on/off");
+                        break;
+                    }
+                    plugin.areaCLIManager.toggleReturnOnLeave(p, args[2], args[3]);
+                    plugin.areaCLIManager.showConfiscateManagement(p, args[2]);
+                    break;
+                case "confiscateadd":
+                    // ★ 添加禁带物品（交互式输入）
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /protect cli confiscateadd <领地名>");
+                        break;
+                    }
+                    plugin.areaCLIManager.startAddConfiscateItem(p, args[2]);
+                    break;
+                case "confiscateremove":
+                    // ★ 移除指定禁带物品
+                    if (args.length < 4) {
+                        p.sendMessage("§c用法: /protect cli confiscateremove <领地名> <序号>");
+                        break;
+                    }
+                    plugin.areaCLIManager.removeConfiscateItem(p, args[2], args[3]);
+                    plugin.areaCLIManager.showConfiscateManagement(p, args[2]);
                     break;
                 case "rename":
                     // ★ 领地改名（交互式输入）
@@ -10616,8 +10664,8 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade, confiscate_count, return_on_leave) "
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
@@ -10630,7 +10678,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects, deny_villager_trade=excluded.deny_villager_trade");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects, deny_villager_trade=excluded.deny_villager_trade, confiscate_count=excluded.confiscate_count, return_on_leave=excluded.return_on_leave");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -10706,6 +10754,8 @@ public class AreaProtection implements Listener {
             stmt.setInt(72, ac.denyWax ? 1 : 0);
             stmt.setString(73, effectsToString(ac.badEffects));
             stmt.setInt(74, ac.denyVillagerTrade ? 1 : 0);
+            stmt.setInt(75, ac.confiscateCount);
+            stmt.setInt(76, ac.returnOnLeave ? 1 : 0);
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -10927,7 +10977,8 @@ public class AreaProtection implements Listener {
                 "deny_crop_harvest", "deny_wool_shear", "deny_animal_feeding",
                 "deny_container", "deny_mob_attack", "deny_fluid",
                 "is_public_building", "allow_visitor_teleport",
-                "deny_spawn_egg", "deny_wax", "deny_villager_trade"
+                "deny_spawn_egg", "deny_wax", "deny_villager_trade",
+                "confiscate_count", "return_on_leave"
             ));
             if (!allowedFields.contains(field)) {
                 plugin.getLogger().warning("[防护] PHP端更新未知字段: " + field);
@@ -11116,6 +11167,10 @@ public class AreaProtection implements Listener {
             case "deny_mob_attack":     ac.denyMobAttack = "1".equals(value); break;
             case "deny_item_frame":     ac.denyItemFrame = "1".equals(value); break;
             case "deny_villager_trade": ac.denyVillagerTrade = "1".equals(value); break;
+            case "return_on_leave":    ac.returnOnLeave = "1".equals(value); break;
+            case "confiscate_count":
+                try { ac.confiscateCount = Integer.parseInt(value); } catch (Exception ignored) {}
+                break;
             case "deny_entity_interact": ac.denyEntityInteract = "1".equals(value); break;
             case "deny_pickup":         ac.allowPickup = "0".equals(value); break; // deny_pickup 反向
             case "deny_drop":           ac.allowDrop = "0".equals(value); break;   // deny_drop 反向
@@ -11796,6 +11851,38 @@ public class AreaProtection implements Listener {
             }
             p.sendMessage(Component.text("§a✓ 领地已改名: §f" + landName + " §a→ §f" + newName));
             if (plugin.areaCLIManager != null) plugin.areaCLIManager.showLandManage(p, newName, 1);
+            return true;
+        } else if ("confiscate_add".equals(inputType)) {
+            // ★ 违禁品管理面板：添加访客禁带物品（2026-10-11）
+            if (message.trim().equals("取消")) {
+                p.sendMessage(Component.text("§e已取消添加，保持原样"));
+                if (plugin.areaCLIManager != null) plugin.areaCLIManager.showConfiscateManagement(p, landName);
+                return true;
+            }
+            String itemId = message.trim();
+            if (itemId.isEmpty()) {
+                p.sendMessage(Component.text("§c§l[添加禁带物品] §f物品ID不能为空"));
+                pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "confiscate_add"});
+                return true;
+            }
+            // ★ 验证物品ID是否有效（Material.matchMaterial）
+            org.bukkit.Material mat = org.bukkit.Material.matchMaterial(itemId);
+            if (mat == null) {
+                p.sendMessage(Component.text("§c§l[添加禁带物品] §f无效的物品ID: §e" + itemId));
+                p.sendMessage(Component.text("§7示例: diamond、minecraft:gold_ingot、netherite_sword"));
+                pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "confiscate_add"});
+                return true;
+            }
+            // 统一为小写标准名，避免重复
+            String stdId = mat.name().toLowerCase();
+            if (land.confiscateItems.contains(stdId)) {
+                p.sendMessage(Component.text("§e§l[添加禁带物品] §f物品 §e" + stdId + " §f已在列表中"));
+            } else {
+                land.confiscateItems.add(stdId);
+                saveAreaToDb(land);
+                p.sendMessage(Component.text("§a§l[添加禁带物品] §f已添加访客禁带物品: §e" + stdId));
+            }
+            if (plugin.areaCLIManager != null) plugin.areaCLIManager.showConfiscateManagement(p, landName);
             return true;
         }
 
@@ -12511,6 +12598,8 @@ public class AreaProtection implements Listener {
 
         int totalRemoved = 0;
         String confiscatedNames = "";
+        // ★ 违禁品管理面板（2026-10-11）：捕获被没收的物品实体，供退出领地时归还
+        java.util.List<ItemStack> captured = new ArrayList<>();
 
         for (String itemId : allItems) {
             // 过滤掉区域名和无效ID
@@ -12525,6 +12614,7 @@ public class AreaProtection implements Listener {
             for (int i = 0; i < all.length; i++) {
                 if (all[i] != null && all[i].getType() == mat) {
                     count += all[i].getAmount();
+                    captured.add(all[i].clone());
                     all[i] = null;
                 }
             }
@@ -12533,6 +12623,7 @@ public class AreaProtection implements Listener {
             ItemStack off = p.getInventory().getItemInOffHand();
             if (off != null && off.getType() == mat) {
                 count += off.getAmount();
+                captured.add(off.clone());
                 p.getInventory().setItemInOffHand(null);
             }
 
@@ -12546,6 +12637,17 @@ public class AreaProtection implements Listener {
         }
 
         if (totalRemoved > 0) {
+            // ★ 没收计数 +1 并落库（领地主可在违禁品面板查看累计没收次数）
+            ac.confiscateCount++;
+            saveAreaToDb(ac);
+            // ★ 暂存被没收物品：退出领地时按 returnOnLeave 决定是否归还
+            java.util.Map<String, java.util.List<ItemStack>> byPlayer =
+                    confiscatedStore.computeIfAbsent(p.getUniqueId(),
+                            k -> new ConcurrentHashMap<>());
+            java.util.List<ItemStack> store = byPlayer.computeIfAbsent(ac.name,
+                    k -> new ArrayList<>());
+            store.addAll(captured);
+
             String msg = (ac.confiscateMsg != null
                     && !ac.confiscateMsg.isEmpty())
                     ? ac.confiscateMsg
@@ -12584,6 +12686,51 @@ public class AreaProtection implements Listener {
         globalItemBlacklist.clear();
         areaItemBlacklist.clear();
         plugin.getLogger().info("[防护] 已清空所有黑名单");
+    }
+
+    /**
+     * ★ 违禁品归还（2026-10-11 违禁品管理面板）。
+     *
+     * <p>玩家离开领地时调用：若该领地 {@code returnOnLeave=true}，把此前
+     * {@link #handleConfiscate} 暂存的没收物品退还给玩家（背包满则掉落脚下）；
+     * 若为 false（默认），直接清空暂存（不退还）。两种情况都会清掉暂存记录。
+     */
+    public void handleConfiscateReturn(Player p, String areaName) {
+        if (areaName == null) return;
+        java.util.Map<String, java.util.List<ItemStack>> byPlayer =
+                confiscatedStore.get(p.getUniqueId());
+        if (byPlayer == null) return;
+        java.util.List<ItemStack> store = byPlayer.remove(areaName);
+        if (byPlayer.isEmpty()) confiscatedStore.remove(p.getUniqueId());
+        if (store == null || store.isEmpty()) return;
+
+        AreaConfig ac = areas.get(areaName);
+        if (ac == null || !ac.returnOnLeave) {
+            // 默认不退还：仅清空暂存
+            return;
+        }
+
+        int returned = 0;
+        StringBuilder names = new StringBuilder();
+        for (ItemStack it : store) {
+            if (it == null || it.getType().isAir()) continue;
+            java.util.HashMap<Integer, ItemStack> left =
+                    p.getInventory().addItem(it);
+            if (!left.isEmpty()) {
+                // 背包放不下：剩余部分掉落脚下
+                for (ItemStack drop : left.values()) {
+                    p.getWorld().dropItemNaturally(p.getLocation(), drop);
+                }
+            }
+            returned += it.getAmount();
+            if (names.length() > 0) names.append("§7、§e");
+            names.append("§e").append(matname(it.getType()))
+                    .append(" x").append(it.getAmount());
+        }
+        if (returned > 0) {
+            p.sendMessage("§a§l[区域防护] §f你离开领地 §e" + areaName
+                    + "§f，已退还没收物品: " + names);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -13389,6 +13536,10 @@ public class AreaProtection implements Listener {
         public int x1, z1, x2, z2;
         public int yMin = 0, yMax = 255;
         public List<String> confiscateItems = new ArrayList<>();
+        // ★ 违禁品没收计数：领地累计没收次数（2026-10-11 违禁品管理面板）
+        public int confiscateCount = 0;
+        // ★ 退出领地是否归还没收物（默认 false=不退，由领地主控制）
+        public boolean returnOnLeave = false;
         public List<String> denyUseItems = new ArrayList<>();
         public List<String> clearEffects = new ArrayList<>();     // 清除单个效果名
         public boolean clearAllBadEffects = false;                // 清除所有负面+中性

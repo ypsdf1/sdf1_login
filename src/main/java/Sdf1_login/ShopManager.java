@@ -61,6 +61,16 @@ public class ShopManager implements Listener {
             new HashSet<>();
     private final Map<UUID, String> pendingCouponCode =
             new HashMap<>();
+    // ===== 二手交易商店（2026-10-11 /shopbuy）=====
+    private final List<SecondHandListing> secondHandListings =
+            new ArrayList<>();
+    // 待定价上架：玩家UUID → 已暂存的物品（等待聊天输入售价）
+    private final Map<UUID, ItemStack> pendingPublishItem =
+            new HashMap<>();
+    private final Set<UUID> publishListening =
+            new HashSet<>();
+    // 每人同时最多上架数
+    private static final int SH_MAX_PER_PLAYER = 9;
     // ===== 物品NBT数据 =====
     private final Map<String, String> itemNbtData =
             new HashMap<>();
@@ -188,6 +198,15 @@ public class ShopManager implements Listener {
         int quantity;
     }
 
+    // ===== 二手交易商店：一条玩家上架的商品（2026-10-11）=====
+    public static class SecondHandListing {
+        long id;              // 自增ID，用于唯一标识与下架
+        String seller;        // 上架玩家名
+        int price;            // 售价（债券），封底 0
+        String itemB64;       // 完整 ItemStack 的 Base64 序列化
+        long createdAt;       // 上架时间戳（毫秒）
+    }
+
 
     private static final int PAGE_SIZE = 28;
     private static final int[] ITEM_SLOTS = {
@@ -203,6 +222,7 @@ public class ShopManager implements Listener {
         loadMaxSellConfig();
         startHourlyTask();
         loadItemNbtData();
+        loadSecondHand();
         startCleanupTask();
     }
     // ===== 切换购物车模式 =====
@@ -2950,7 +2970,15 @@ public class ShopManager implements Listener {
 
         g.setItem(53, mkItem(Material.ARROW,
                 "§7返回"));
-     
+
+        // ★ 二手商店入口（2026-10-11 /shopbuy）- slot 51
+        g.setItem(51, mkItem(Material.EMERALD,
+                "§6§l二手商店",
+                "§7玩家自由上架、自由定价",
+                "§7封底价格: §60 §7枚债券",
+                "",
+                "§a点击进入"));
+
         p.openInventory(g);
     }
 
@@ -3251,6 +3279,11 @@ public class ShopManager implements Listener {
             openCouponInput(p);
             return true;
         }
+        // ★ 二手商店入口（2026-10-11）
+        if (raw == 51) {
+            openSecondHandShop(p, 0);
+            return true;
+        }
         if (raw == 49) { plugin.getOrderManager().openOrderCenter(p); return true;}
             int idx = slotToIndex(raw);
         if (idx < 0 || idx >= categories.size())
@@ -3463,5 +3496,379 @@ public class ShopManager implements Listener {
             it.setItemMeta(im);
         }
         return it;
+    }
+
+    // ==================== 二手交易商店（2026-10-11 /shopbuy） ====================
+
+    private File secondHandFile() {
+        File dir = new File(plugin.getDataFolder(), "shop");
+        if (!dir.exists()) dir.mkdirs();
+        return new File(dir, "secondhand.txt");
+    }
+
+    /** 载入二手商品（每行: id|seller|price|createdAt|base64） */
+    private void loadSecondHand() {
+        secondHandListings.clear();
+        File f = secondHandFile();
+        if (!f.exists()) return;
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(
+                        new FileInputStream(f), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                String[] parts = line.split("\\|", 5);
+                if (parts.length < 5) continue;
+                SecondHandListing l = new SecondHandListing();
+                try {
+                    l.id = Long.parseLong(parts[0]);
+                    l.price = Integer.parseInt(parts[2]);
+                    l.createdAt = Long.parseLong(parts[3]);
+                } catch (Exception e) { continue; }
+                l.seller = parts[1];
+                l.itemB64 = parts[4];
+                secondHandListings.add(l);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[二手商店] 载入失败: " + e.getMessage());
+        }
+    }
+
+    /** 保存二手商品 */
+    private void saveSecondHand() {
+        try (BufferedWriter bw = new BufferedWriter(
+                new OutputStreamWriter(
+                        new FileOutputStream(secondHandFile()), StandardCharsets.UTF_8))) {
+            bw.write("# id|seller|price|createdAt|base64");
+            bw.newLine();
+            for (SecondHandListing l : secondHandListings) {
+                bw.write(l.id + "|" + l.seller + "|" + l.price
+                        + "|" + l.createdAt + "|" + l.itemB64);
+                bw.newLine();
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[二手商店] 保存失败: " + e.getMessage());
+        }
+    }
+
+    private long nextSecondHandId() {
+        long max = 0;
+        for (SecondHandListing l : secondHandListings) {
+            if (l.id > max) max = l.id;
+        }
+        return max + 1;
+    }
+
+    // ===== 打开二手商店主界面 =====
+    public void openSecondHandShop(Player p, int page) {
+        Inventory g = Bukkit.createInventory(null, 54, "§6§l二手商店");
+        int total = (int) Math.ceil((double) secondHandListings.size() / PAGE_SIZE);
+        if (total < 1) total = 1;
+        if (page < 0) page = 0;
+        if (page >= total) page = total - 1;
+        secondHandPages.put(p.getUniqueId(), page);
+        int start = page * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, secondHandListings.size());
+
+        for (int i = start; i < end; i++) {
+            int idx = i - start;
+            if (idx >= ITEM_SLOTS.length) break;
+            SecondHandListing l = secondHandListings.get(i);
+            ItemStack is = base64ToItem(l.itemB64);
+            if (is == null) continue;
+            ItemMeta im = is.getItemMeta();
+            if (im != null) {
+                im.setLore(Arrays.asList(
+                        "§7卖家: §f" + l.seller,
+                        "§7售价: §6" + l.price + " §7枚债券",
+                        "§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
+                                .format(new Date(l.createdAt)),
+                        "",
+                        "§a左键购买"));
+                is.setItemMeta(im);
+            }
+            g.setItem(ITEM_SLOTS[idx], is);
+        }
+
+        g.setItem(4, mkItem(Material.BOOK, "§e§l二手商店",
+                "§7共 §f" + secondHandListings.size() + " §7件商品",
+                "§7玩家自由上架，自由定价"));
+
+        g.setItem(45, mkItem(Material.EMERALD, "§a§l上架物品",
+                "§7将主手物品上架出售",
+                "§7封底价格: §60 §7枚债券",
+                "",
+                plugin.getBonds().isFrozen(p.getName())
+                        ? "§c债券账户被冻结，不可上架"
+                        : "§e点击上架"));
+
+        g.setItem(46, mkItem(Material.CHEST, "§e§l我的上架",
+                "§7查看并管理自己上架的商品",
+                "", "§e点击进入"));
+
+        g.setItem(48, page > 0
+                ? mkItem(Material.ARROW, "§7上一页")
+                : mkItem(Material.BLACK_STAINED_GLASS_PANE, " "));
+        g.setItem(49, mkItem(Material.PAPER, "§7" + (page + 1) + "/" + total));
+        g.setItem(50, page < total - 1
+                ? mkItem(Material.ARROW, "§7下一页")
+                : mkItem(Material.BLACK_STAINED_GLASS_PANE, " "));
+
+        g.setItem(53, mkItem(Material.ARROW, "§7返回"));
+
+        p.openInventory(g);
+    }
+
+    // ===== 打开我的上架 =====
+    public void openSecondHandMine(Player p) {
+        Inventory g = Bukkit.createInventory(null, 54, "§6§l我的二手上架");
+        String me = p.getName();
+        int si = 0;
+        for (SecondHandListing l : secondHandListings) {
+            if (!me.equals(l.seller)) continue;
+            if (si >= ITEM_SLOTS.length) break;
+            ItemStack is = base64ToItem(l.itemB64);
+            if (is == null) continue;
+            ItemMeta im = is.getItemMeta();
+            if (im != null) {
+                im.setLore(Arrays.asList(
+                        "§7售价: §6" + l.price + " §7枚债券",
+                        "",
+                        "§c左键下架（退还物品）"));
+                is.setItemMeta(im);
+            }
+            g.setItem(ITEM_SLOTS[si], is);
+            si++;
+        }
+        g.setItem(4, mkItem(Material.BOOK, "§e§l我的上架",
+                "§7共 §f" + si + " §7件商品"));
+        g.setItem(49, mkItem(Material.ARROW, "§7返回二手商店"));
+        p.openInventory(g);
+    }
+
+    // ===== 二手商店主界面点击 =====
+    public boolean handleSecondHandClick(Player p, int raw, boolean left) {
+        if (raw == 53) { openShopMain(p); return true; }
+        if (raw == 45) { startSecondHandPublish(p); return true; }
+        if (raw == 46) { openSecondHandMine(p); return true; }
+        if (raw == 48) {
+            int pg = getSecondHandPage(p.getUniqueId());
+            openSecondHandShop(p, pg - 1);
+            return true;
+        }
+        if (raw == 50) {
+            int pg = getSecondHandPage(p.getUniqueId());
+            openSecondHandShop(p, pg + 1);
+            return true;
+        }
+        if (!left) return true;
+        int idx = slotToIndex(raw);
+        if (idx < 0) return true;
+        int pg = getSecondHandPage(p.getUniqueId());
+        int actual = idx + pg * PAGE_SIZE;
+        if (actual < 0 || actual >= secondHandListings.size()) return true;
+        buySecondHand(p, secondHandListings.get(actual));
+        return true;
+    }
+
+    // ===== 我的上架点击 =====
+    public boolean handleSecondHandMineClick(Player p, int raw, boolean left) {
+        if (raw == 49) { openSecondHandShop(p, 0); return true; }
+        if (!left) return true;
+        int idx = slotToIndex(raw);
+        if (idx < 0) return true;
+        String me = p.getName();
+        int count = 0;
+        SecondHandListing target = null;
+        for (SecondHandListing l : secondHandListings) {
+            if (!me.equals(l.seller)) continue;
+            if (count == idx) { target = l; break; }
+            count++;
+        }
+        if (target == null) return true;
+        // 下架：退还物品
+        ItemStack is = base64ToItem(target.itemB64);
+        if (is != null) {
+            HashMap<Integer, ItemStack> left2 = p.getInventory().addItem(is);
+            for (ItemStack drop : left2.values()) {
+                p.getWorld().dropItemNaturally(p.getLocation(), drop);
+            }
+        }
+        secondHandListings.remove(target);
+        saveSecondHand();
+        p.sendMessage("§a§l[二手商店] §f已下架并退还物品");
+        openSecondHandMine(p);
+        return true;
+    }
+
+    // ===== 记录/读取二手商店页码 =====
+    private final Map<UUID, Integer> secondHandPages = new HashMap<>();
+    private int getSecondHandPage(UUID uuid) {
+        return secondHandPages.getOrDefault(uuid, 0);
+    }
+
+    // ===== 发布：拿主手物品 → 聊天输入售价 =====
+    public void startSecondHandPublish(Player p) {
+        if (plugin.getBonds().isFrozen(p.getName())) {
+            p.sendMessage("§c§l[二手商店] §f债券账户被冻结，不可上架/出售商品");
+            return;
+        }
+        // 统计该玩家当前上架数
+        int mine = 0;
+        for (SecondHandListing l : secondHandListings) {
+            if (p.getName().equals(l.seller)) mine++;
+        }
+        if (mine >= SH_MAX_PER_PLAYER) {
+            p.sendMessage("§c§l[二手商店] §f最多同时上架 §e" + SH_MAX_PER_PLAYER + " §f件商品");
+            return;
+        }
+        ItemStack hand = p.getInventory().getItemInMainHand();
+        if (hand == null || hand.getType() == Material.AIR) {
+            p.sendMessage("§c§l[二手商店] §f请先手持要上架的物品");
+            return;
+        }
+        // 暂存主手物品并清空
+        pendingPublishItem.put(p.getUniqueId(), hand.clone());
+        p.getInventory().setItemInMainHand(null);
+        publishListening.add(p.getUniqueId());
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (p.isOnline()) p.closeInventory();
+        });
+        p.sendMessage("§6§l[二手商店] §e请在聊天栏输入售价（债券，整数，封底 §f0§e）");
+        p.sendMessage("§715秒内输入，超时自动退还物品");
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (publishListening.remove(p.getUniqueId())) {
+                ItemStack back = pendingPublishItem.remove(p.getUniqueId());
+                if (back != null) {
+                    HashMap<Integer, ItemStack> left = p.getInventory().addItem(back);
+                    for (ItemStack drop : left.values()) {
+                        p.getWorld().dropItemNaturally(p.getLocation(), drop);
+                    }
+                }
+                Player pl = Bukkit.getPlayer(p.getUniqueId());
+                if (pl != null && pl.isOnline()) {
+                    pl.sendMessage("§c[二手商店] 上架超时，物品已退还");
+                }
+            }
+        }, 300L);
+    }
+
+    // ===== 聊天输入售价 =====
+    @EventHandler(priority = EventPriority.LOW)
+    public void onPublishChat(org.bukkit.event.player.AsyncPlayerChatEvent e) {
+        Player p = e.getPlayer();
+        UUID uuid = p.getUniqueId();
+        if (!publishListening.contains(uuid)) return;
+        e.setCancelled(true);
+        publishListening.remove(uuid);
+        ItemStack item = pendingPublishItem.remove(uuid);
+        if (item == null) return;
+
+        String msg = e.getMessage().trim();
+        if (msg.isEmpty() || msg.equals("取消")) {
+            returnItem(p, item);
+            p.sendMessage("§7[二手商店] 已取消上架，物品退还");
+            return;
+        }
+        int price;
+        try {
+            price = Integer.parseInt(msg);
+        } catch (Exception ex) {
+            returnItem(p, item);
+            p.sendMessage("§c[二手商店] 售价必须是整数，已取消上架并退还物品");
+            return;
+        }
+        if (price < 0) price = 0; // 封底 0 债券
+
+        SecondHandListing l = new SecondHandListing();
+        l.id = nextSecondHandId();
+        l.seller = p.getName();
+        l.price = price;
+        l.itemB64 = itemToBase64(item);
+        l.createdAt = System.currentTimeMillis();
+        if (l.itemB64 == null || l.itemB64.isEmpty()) {
+            returnItem(p, item);
+            p.sendMessage("§c[二手商店] 物品序列化失败，已退还");
+            return;
+        }
+        secondHandListings.add(l);
+        saveSecondHand();
+        p.sendMessage("§a§l[二手商店] §f上架成功: §e" + item.getType().name()
+                + " §7x" + item.getAmount() + " §6" + price + " §7枚债券");
+        openSecondHandShop(p, 0);
+    }
+
+    private void returnItem(Player p, ItemStack item) {
+        if (item == null) return;
+        HashMap<Integer, ItemStack> left = p.getInventory().addItem(item);
+        for (ItemStack drop : left.values()) {
+            p.getWorld().dropItemNaturally(p.getLocation(), drop);
+        }
+    }
+
+    // ===== 购买二手商品 =====
+    private void buySecondHand(Player p, SecondHandListing l) {
+        if (l == null) return;
+        // 卖家自己不可购买
+        if (p.getName().equals(l.seller)) {
+            p.sendMessage("§c§l[二手商店] §f不能购买自己上架的商品");
+            return;
+        }
+        // 冻结拦截：买家
+        if (plugin.getBonds().isFrozen(p.getName())) {
+            p.sendMessage("§c§l[二手商店] §f债券账户被冻结，不可购买/出售商品");
+            return;
+        }
+        // 冻结拦截：卖家（出售方）也被冻结则不可成交
+        if (plugin.getBonds().isFrozen(l.seller)) {
+            p.sendMessage("§c§l[二手商店] §f卖家债券账户被冻结，该商品暂不可购买");
+            return;
+        }
+        // 扣买家钱（0 债券直接放行）
+        if (l.price > 0) {
+            boolean ok = plugin.getBonds().deductBonds(
+                    p.getName(), l.price, "shop_secondhand",
+                    l.seller, "二手商店",
+                    "购买二手商品#" + l.id);
+            if (!ok) {
+                p.sendMessage("§c§l[二手商店] §f债券不足或扣款失败");
+                return;
+            }
+        }
+        // 给卖家钱
+        if (l.price > 0) {
+            plugin.getBonds().addBonds(
+                    l.seller, l.price, "shop_secondhand",
+                    p.getName(), "二手商店",
+                    "出售二手商品#" + l.id);
+        }
+        // 发货
+        ItemStack is = base64ToItem(l.itemB64);
+        if (is == null) {
+            p.sendMessage("§c§l[二手商店] §f商品数据损坏，已退款");
+            if (l.price > 0) {
+                plugin.getBonds().addBonds(
+                        p.getName(), l.price, "shop_secondhand_refund",
+                        l.seller, "二手商店", "商品损坏退款#" + l.id);
+            }
+            secondHandListings.remove(l);
+            saveSecondHand();
+            return;
+        }
+        HashMap<Integer, ItemStack> left = p.getInventory().addItem(is);
+        for (ItemStack drop : left.values()) {
+            p.getWorld().dropItemNaturally(p.getLocation(), drop);
+        }
+        secondHandListings.remove(l);
+        saveSecondHand();
+        p.sendMessage("§a§l[二手商店] §f购买成功: §e" + is.getType().name()
+                + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
+        Player seller = Bukkit.getPlayer(l.seller);
+        if (seller != null && seller.isOnline()) {
+            seller.sendMessage("§a§l[二手商店] §f你的商品已售出: §e" + is.getType().name()
+                    + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
+        }
+        openSecondHandShop(p, getSecondHandPage(p.getUniqueId()));
     }
 }
