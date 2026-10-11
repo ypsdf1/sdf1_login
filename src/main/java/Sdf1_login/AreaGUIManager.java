@@ -1113,7 +1113,7 @@ public class AreaGUIManager implements Listener {
                 // 添加禁带物品 → 关闭GUI转聊天输入
                 p.closeInventory();
                 areaProtect.setPendingEffectInput(p.getUniqueId(), landName, "confiscate_add", 1);
-                p.sendMessage("§e§l[违禁品] §f请在聊天栏输入物品ID（如 diamond、gold_ingot），输入 §c取消 §7放弃");
+                p.sendMessage("§e§l[违禁品] §f请在聊天栏输入物品名（支持中文，如 §e钻石、黑曜石§f），输入 §c取消 §7放弃");
                 return;
             }
             if (raw == 48) {
@@ -2413,7 +2413,8 @@ public class AreaGUIManager implements Listener {
             org.bukkit.Material mat = org.bukkit.Material.matchMaterial(item);
             inv.setItem(slots[i], createItem(
                     mat != null ? mat : Material.BARRIER,
-                    "§c" + item,
+                    "§c" + ItemNameResolver.toChinese(mat),
+                    "§7英文ID: §f" + item,
                     "§7访客禁止携带此物品",
                     "",
                     "§e点击移除"));
@@ -2421,8 +2422,8 @@ public class AreaGUIManager implements Listener {
 
         // 添加物品按钮（位置40）
         inv.setItem(40, createItem(Material.EMERALD, "§a§l添加禁带物品",
-                "§7在聊天栏输入物品ID",
-                "§7示例: diamond、gold_ingot",
+                "§7在聊天栏输入物品名（支持中文）",
+                "§7示例: 钻石、黑曜石、diamond",
                 "",
                 "§e点击添加"));
 

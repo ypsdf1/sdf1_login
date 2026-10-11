@@ -11865,11 +11865,13 @@ public class AreaProtection implements Listener {
                 pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "confiscate_add"});
                 return true;
             }
-            // ★ 验证物品ID是否有效（Material.matchMaterial）
-            org.bukkit.Material mat = org.bukkit.Material.matchMaterial(itemId);
+            // ★ 翻译中间人：支持中文名（钻石）与英文ID（diamond、minecraft:gold_ingot）（2026-10-11）
+            StringBuilder cnHint = new StringBuilder();
+            org.bukkit.Material mat = ItemNameResolver.resolveWithHint(itemId, cnHint);
             if (mat == null) {
-                p.sendMessage(Component.text("§c§l[添加禁带物品] §f无效的物品ID: §e" + itemId));
-                p.sendMessage(Component.text("§7示例: diamond、minecraft:gold_ingot、netherite_sword"));
+                p.sendMessage(Component.text("§c§l[添加禁带物品] §f无效的物品: §e" + itemId));
+                p.sendMessage(Component.text("§7支持中文: 钻石、下界合金剑、黑曜石"));
+                p.sendMessage(Component.text("§7也支持英文: diamond、minecraft:gold_ingot、netherite_sword"));
                 pendingEffectInput.put(p.getUniqueId(), new String[]{landName, "confiscate_add"});
                 return true;
             }
@@ -11880,7 +11882,9 @@ public class AreaProtection implements Listener {
             } else {
                 land.confiscateItems.add(stdId);
                 saveAreaToDb(land);
-                p.sendMessage(Component.text("§a§l[添加禁带物品] §f已添加访客禁带物品: §e" + stdId));
+                String matched = cnHint.length() > 0
+                        ? " §7(匹配到: " + cnHint + ")" : "";
+                p.sendMessage(Component.text("§a§l[添加禁带物品] §f已添加访客禁带物品: §e" + stdId + matched));
             }
             if (plugin.areaCLIManager != null) plugin.areaCLIManager.showConfiscateManagement(p, landName);
             return true;

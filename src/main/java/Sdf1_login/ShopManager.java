@@ -3708,6 +3708,41 @@ public class ShopManager implements Listener {
         return secondHandPages.getOrDefault(uuid, 0);
     }
 
+    /**
+     * 二手商店禁售判定（2026-10-11）。
+     * 严禁上架：① SN 自定义物品（PDC sdf1_sn / 4 类管控物品）
+     *          ② Sdf1_game 宝箱物品（lore 含 §0§k / CUSTOM 隐藏标记）
+     * @return 不可上架的原因；null 表示可上架
+     */
+    private String secondHandBlockReason(ItemStack item) {
+        if (item == null || item.getType() == Material.AIR) return null;
+        // ① SN 物品
+        try {
+            if (plugin.getSnManager() != null
+                    && plugin.getSnManager().isSnItem(item)) {
+                return "SN 绑定物品不可交易";
+            }
+        } catch (Throwable ignored) {
+        }
+        // ② Sdf1_game 宝箱物品（lore 隐藏标记 §0§kCUSTOM|...）
+        if (item.hasItemMeta()) {
+            ItemMeta meta = item.getItemMeta();
+            if (meta != null && meta.hasLore()) {
+                java.util.List<String> lore = meta.getLore();
+                if (lore != null) {
+                    for (String line : lore) {
+                        if (line == null) continue;
+                        if (line.contains("§0§k")
+                                || line.contains("CUSTOM")) {
+                            return "宝箱自定义物品不可交易";
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     // ===== 发布：拿主手物品 → 聊天输入售价 =====
     public void startSecondHandPublish(Player p) {
         if (plugin.getBonds().isFrozen(p.getName())) {
@@ -3726,6 +3761,12 @@ public class ShopManager implements Listener {
         ItemStack hand = p.getInventory().getItemInMainHand();
         if (hand == null || hand.getType() == Material.AIR) {
             p.sendMessage("§c§l[二手商店] §f请先手持要上架的物品");
+            return;
+        }
+        // ★ 严禁上架 SN 自定义物品 / Sdf1_game 宝箱物品（2026-10-11）
+        String blocked = secondHandBlockReason(hand);
+        if (blocked != null) {
+            p.sendMessage("§c§l[二手商店] §f该物品不可上架: " + blocked);
             return;
         }
         // 暂存主手物品并清空
@@ -3780,6 +3821,14 @@ public class ShopManager implements Listener {
             return;
         }
         if (price < 0) price = 0; // 封底 0 债券
+
+        // ★ 入库前二次校验：SN / 宝箱物品严禁上架（2026-10-11）
+        String blocked2 = secondHandBlockReason(item);
+        if (blocked2 != null) {
+            returnItem(p, item);
+            p.sendMessage("§c[二手商店] 该物品不可上架: " + blocked2 + "，物品已退还");
+            return;
+        }
 
         SecondHandListing l = new SecondHandListing();
         l.id = nextSecondHandId();
@@ -3854,6 +3903,25 @@ public class ShopManager implements Listener {
             }
             secondHandListings.remove(l);
             saveSecondHand();
+            return;
+        }
+        // ★ 防御历史脏数据：SN / 宝箱物品即使已挂出也不可成交（2026-10-11）
+        String blockedBuy = secondHandBlockReason(is);
+        if (blockedBuy != null) {
+            if (l.price > 0) {
+                plugin.getBonds().addBonds(
+                        p.getName(), l.price, "shop_secondhand_refund",
+                        l.seller, "二手商店", "违禁商品下架退款#" + l.id);
+            }
+            secondHandListings.remove(l);
+            saveSecondHand();
+            p.sendMessage("§c§l[二手商店] §f该商品为违禁物品（" + blockedBuy + "），已自动下架并退款");
+            Player seller = Bukkit.getPlayer(l.seller);
+            if (seller != null && seller.isOnline()) {
+                seller.sendMessage("§c§l[二手商店] §f你的商品 #" + l.id + " 含违禁物品（"
+                        + blockedBuy + "），已自动下架");
+            }
+            openSecondHandShop(p, 0);
             return;
         }
         HashMap<Integer, ItemStack> left = p.getInventory().addItem(is);

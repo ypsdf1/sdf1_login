@@ -2085,8 +2085,10 @@ public class AreaCLIManager {
             for (int i = 0; i < land.confiscateItems.size(); i++) {
                 final int idx = i;
                 String item = land.confiscateItems.get(i);
+                org.bukkit.Material mat = org.bukkit.Material.matchMaterial(item);
+                String cn = mat != null ? " §7" + ItemNameResolver.toChinese(mat) : "";
                 p.sendMessage(Component.empty()
-                        .append(Component.text("§f  " + (i + 1) + ". " + item + " "))
+                        .append(Component.text("§f  " + (i + 1) + ". " + item + cn + " "))
                         .append(Component.text("§c[移除]")
                                 .hoverEvent(HoverEvent.showText(Component.text("§e点击移除该禁带物品")))
                                 .clickEvent(ClickEvent.runCommand(
@@ -2127,8 +2129,8 @@ public class AreaCLIManager {
         if (!isOwner && !isAdmin) { p.sendMessage(Component.text("§c需要领地所有者或管理员权限")); return; }
         areaProtect.setPendingEffectInput(p.getUniqueId(), landName, "confiscate_add", 3);
         p.sendMessage(header("添加禁带物品: " + landName));
-        p.sendMessage(Component.text("§e请在聊天栏输入物品ID（如 diamond、minecraft:gold_ingot）"));
-        p.sendMessage(Component.text("§7输入 §c取消 §7放弃添加"));
+        p.sendMessage(Component.text("§e请在聊天栏输入物品名 §7（支持中文，如 §f钻石、黑曜石§7）"));
+        p.sendMessage(Component.text("§7也可输入英文ID: §fdiamond、minecraft:gold_ingot§7；输入 §c取消 §7放弃添加"));
     }
 
     /**
