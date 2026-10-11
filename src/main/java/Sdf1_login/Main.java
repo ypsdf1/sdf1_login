@@ -209,6 +209,8 @@ public class Main extends JavaPlugin
             "yyyy-MM-dd HH:mm:ss");
 
     private ShopManager shopManager; //商店
+    // ★ 交易记录独立库（2026-10-11 任务5：正常商店订单/二手订单/玩家出售偏好）
+    private TradeLogManager tradeLog;
 
 
     public CommissionManager getCommission() {
@@ -413,6 +415,7 @@ public class Main extends JavaPlugin
 
         // ===== 4. GUI（依赖 menu） =====
         gui = new GUIManager(this);
+        tradeLog = new TradeLogManager(this);
         shopManager = new ShopManager(this);
         Bukkit.getPluginManager().registerEvents(shopManager, this);
         // shopManager.loadCategories();  // 构造器内已调用，此处重复
@@ -825,6 +828,11 @@ public class Main extends JavaPlugin
 
     public SnManager getSnManager() {
         return snManager;
+    }
+
+    /** 交易记录库（订单/玩家出售偏好） */
+    public TradeLogManager getTradeLog() {
+        return tradeLog;
     }
 
     public ShopManager getShopManager() {
@@ -6587,7 +6595,12 @@ public class Main extends JavaPlugin
                 && !title.equals("§6§l垃圾回收站")
                 && !title.equals("§6§l我的钱包")
                 && !title.equals("§6§l余额操作")
-                && !title.equals("§6§l传送系统")) {
+                && !title.equals("§6§l传送系统")
+                // ★ 二手商店系 GUI（2026-10-11）：点击由各自 handler 处理，
+                //   不能被二级菜单分支 cancel 或把 49 号位当成「返回主菜单」
+                && !title.equals("§6§l二手商店")
+                && !title.equals("§6§l我的二手上架")
+                && !title.equals("§6§l二手上架")) {
             e.setCancelled(true);
             if (slot == 49) {
                 gui.openMain(p);

@@ -73,6 +73,21 @@ public class ShopManager implements Listener {
     private final Map<UUID, String> pendingPublishDesc = new HashMap<>();
     // 发布步骤：1=等商品描述，2=等售价
     private final Map<UUID, Integer> publishStep = new HashMap<>();
+    // ===== 批量上架 GUI（2026-10-11 任务2）=====
+    /** 批量上架 GUI 标题 */
+    private static final String T_SH_PUBLISH = "§6§l二手上架";
+    // 批量定价队列：UUID → 尚未定价的物品（当前件同时暂存在 pendingPublishItem）
+    private final Map<UUID, java.util.LinkedList<ItemStack>> publishQueue =
+            new HashMap<>();
+    // 批量总件数（用于进度提示）
+    private final Map<UUID, Integer> publishQueueTotal = new HashMap<>();
+    // ===== 编辑模式（2026-10-11 任务1）：UUID → 正在编辑的商品ID =====
+    private final Map<UUID, Long> editListingId = new HashMap<>();
+    // ===== 出售偏好（2026-10-11 任务4）：手续费承担模式 =====
+    /** 奸商模式：手续费由买方出（买家支付 = 售价 + 手续费） */
+    public static final String FEE_MODE_BUYER = "BUYER";
+    /** 正常模式：手续费由卖方出（卖家到手 = 售价 - 手续费） */
+    public static final String FEE_MODE_SELLER = "SELLER";
     // ===== 二手交易全局配置（shop/二手交易规则.md，用户组可覆盖数量/最低价）=====
     // 每人同时最多上架数（普通玩家默认值，来自配置文件）
     private int shMaxListings = 1;
@@ -634,6 +649,16 @@ public class ShopManager implements Listener {
                                   ? "custom" : "default")
                             : "none",
                     color != null ? color.name() : "");
+            // ★ 交易记录库（2026-10-11 任务5）：购物车订单逐条入库
+            TradeLogManager cartTlog = plugin.getTradeLog();
+            if (cartTlog != null) {
+                for (int ti = 0; ti < cart.size(); ti++) {
+                    CartItem tci = cart.get(ti);
+                    cartTlog.recordNormalOrder(p.getName(), tci.displayName,
+                            tci.quantity, tci.unitPrice, subs[ti],
+                            couponPct, "cart");
+                }
+            }
             // 获取最新订单
             synchronized (plugin.getOrderManager()
                     .getOrders()) {
@@ -1818,6 +1843,12 @@ public class ShopManager implements Listener {
         item.addSales(amount);
 
         mergeOrAddRefund(p, item, amount, total);
+        // ★ 交易记录库（2026-10-11 任务5）：直购订单入库
+        TradeLogManager dirTlog = plugin.getTradeLog();
+        if (dirTlog != null) {
+            dirTlog.recordNormalOrder(p.getName(), item.getDisplayName(),
+                    amount, unit, total, disc, "direct");
+        }
         Long applyTime = couponApplyTime.get(p.getUniqueId());
         if (applyTime != null
                 && System.currentTimeMillis() - applyTime > 300000L) {
@@ -3594,6 +3625,41 @@ public class ShopManager implements Listener {
         return ugm.getPlayerShopMinPrice(player, shMinPrice);
     }
 
+    // ===== 出售偏好（2026-10-11 任务4：发布页一键切换奸商/正常） =====
+
+    /** 玩家实际手续费承担模式：交易记录库有偏好则用偏好，否则回退全局配置。 */
+    public String shFeeModeFor(String player) {
+        TradeLogManager tl = plugin.getTradeLog();
+        if (tl != null) {
+            String m = tl.getSellingPref(player);
+            if (FEE_MODE_BUYER.equals(m) || FEE_MODE_SELLER.equals(m)) return m;
+        }
+        return shFeeByBuyer ? FEE_MODE_BUYER : FEE_MODE_SELLER;
+    }
+
+    /** 覆盖玩家出售偏好（写入交易记录库）。 */
+    public void setShFeeModeFor(String player, String mode) {
+        TradeLogManager tl = plugin.getTradeLog();
+        if (tl != null) tl.setSellingPref(player, mode);
+    }
+
+    /** 偏好显示名：奸商模式 / 正常模式 */
+    public static String feeModeLabel(String mode) {
+        return FEE_MODE_BUYER.equals(mode) ? "奸商模式" : "正常模式";
+    }
+
+    /** 按偏好计算一笔二手交易的手续费明细 */
+    private int[] shFeeSplit(String seller, int price) {
+        int fee = shFeeOf(price);
+        String mode = shFeeModeFor(seller);
+        if (FEE_MODE_BUYER.equals(mode)) {
+            // 奸商模式：买方出 → 买家多付 fee，卖家全额到手
+            return new int[]{fee, price + fee, price};
+        }
+        // 正常模式：卖方出 → 买家付原价，卖家到手扣 fee
+        return new int[]{fee, price, Math.max(0, price - fee)};
+    }
+
     private File secondHandFile() {
         File dir = new File(plugin.getDataFolder(), "shop");
         if (!dir.exists()) dir.mkdirs();
@@ -3681,9 +3747,15 @@ public class ShopManager implements Listener {
             if (is == null) continue;
             ItemMeta im = is.getItemMeta();
             if (im != null) {
+                int[] shsp = shFeeSplit(l.seller, l.price);
                 im.setLore(Arrays.asList(
                         "§7卖家: §f" + l.seller,
                         "§7售价: §6" + l.price + " §7枚债券",
+                        shsp[0] > 0
+                                ? "§7手续费: §6" + shsp[0] + " §7（"
+                                  + feeModeLabel(shFeeModeFor(l.seller))
+                                  + "）§7你需支付 §6" + shsp[1]
+                                : "§7无手续费",
                         "§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
                                 .format(new Date(l.createdAt)),
                         "",
@@ -3736,8 +3808,12 @@ public class ShopManager implements Listener {
             if (im != null) {
                 im.setLore(Arrays.asList(
                         "§7售价: §6" + l.price + " §7枚债券",
+                        l.desc == null || l.desc.isEmpty()
+                                ? "§7描述: §f无"
+                                : "§7描述: §f" + l.desc,
                         "",
-                        "§c左键下架（退还物品）"));
+                        "§e左键编辑（售价 & 描述）",
+                        "§c右键下架（退还物品）"));
                 is.setItemMeta(im);
             }
             g.setItem(ITEM_SLOTS[si], is);
@@ -3752,7 +3828,7 @@ public class ShopManager implements Listener {
     // ===== 二手商店主界面点击 =====
     public boolean handleSecondHandClick(Player p, int raw, boolean left) {
         if (raw == 53) { openShopMain(p); return true; }
-        if (raw == 45) { startSecondHandPublish(p); return true; }
+        if (raw == 45) { openPublishGui(p); return true; }
         if (raw == 46) { openSecondHandMine(p); return true; }
         if (raw == 48) {
             int pg = getSecondHandPage(p.getUniqueId());
@@ -3774,34 +3850,146 @@ public class ShopManager implements Listener {
         return true;
     }
 
-    // ===== 我的上架点击 =====
-    public boolean handleSecondHandMineClick(Player p, int raw, boolean left) {
+    // ===== 我的上架点击（2026-10-11 任务1：左键编辑 / 右键下架） =====
+    public boolean handleSecondHandMineClick(Player p, int raw,
+                                             boolean left, boolean right) {
         if (raw == 49) { openSecondHandShop(p, 0); return true; }
-        if (!left) return true;
         int idx = slotToIndex(raw);
         if (idx < 0) return true;
-        String me = p.getName();
-        int count = 0;
         SecondHandListing target = null;
-        for (SecondHandListing l : secondHandListings) {
-            if (!me.equals(l.seller)) continue;
-            if (count == idx) { target = l; break; }
-            count++;
-        }
-        if (target == null) return true;
-        // 下架：退还物品
-        ItemStack is = base64ToItem(target.itemB64);
-        if (is != null) {
-            HashMap<Integer, ItemStack> left2 = p.getInventory().addItem(is);
-            for (ItemStack drop : left2.values()) {
-                p.getWorld().dropItemNaturally(p.getLocation(), drop);
+        if (left || right) {
+            String me = p.getName();
+            int count = 0;
+            for (SecondHandListing l : secondHandListings) {
+                if (!me.equals(l.seller)) continue;
+                if (count == idx) { target = l; break; }
+                count++;
             }
         }
-        secondHandListings.remove(target);
-        saveSecondHand();
-        p.sendMessage("§a§l[二手商店] §f已下架并退还物品");
-        openSecondHandMine(p);
+        if (target == null) return true;
+
+        // ===== 右键：下架并退还物品 =====
+        if (right && !left) {
+            ItemStack is = base64ToItem(target.itemB64);
+            if (is != null) {
+                HashMap<Integer, ItemStack> left2 = p.getInventory().addItem(is);
+                for (ItemStack drop : left2.values()) {
+                    p.getWorld().dropItemNaturally(p.getLocation(), drop);
+                }
+            }
+            secondHandListings.remove(target);
+            saveSecondHand();
+            p.sendMessage("§a§l[二手商店] §f已下架并退还物品");
+            openSecondHandMine(p);
+            return true;
+        }
+
+        // ===== 左键：编辑售价 & 描述 =====
+        if (left && !right) {
+            startEditSecondHand(p, target);
+            return true;
+        }
         return true;
+    }
+
+    // ===== 编辑商品（2026-10-11 任务1）：聊天两步改 描述 → 售价 =====
+    public void startEditSecondHand(Player p, SecondHandListing l) {
+        if (l == null) return;
+        if (plugin.getBonds().isFrozen(p.getName())) {
+            p.sendMessage("§c§l[二手商店] §f债券账户被冻结，不可编辑商品");
+            return;
+        }
+        UUID uuid = p.getUniqueId();
+        editListingId.put(uuid, l.id);
+        pendingPublishDesc.remove(uuid);
+        publishListening.add(uuid);
+        publishStep.put(uuid, 1);
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (p.isOnline()) p.closeInventory();
+        });
+        p.sendMessage("§6§l[二手商店] §e正在编辑商品 §f#" + l.id
+                + "§e（当前售价 §6" + l.price + "§e，描述 §f"
+                + (l.desc == null || l.desc.isEmpty() ? "无" : l.desc) + "§e）");
+        p.sendMessage("§e请在聊天栏输入新的商品描述（§f无§e清空描述，§c取消§e放弃编辑）");
+        p.sendMessage("§715秒内无输入视为超时并放弃编辑");
+        schedulePublishTimeout(p);
+    }
+
+    private SecondHandListing findSecondHandListing(long id) {
+        for (SecondHandListing l : secondHandListings) {
+            if (l.id == id) return l;
+        }
+        return null;
+    }
+
+    /** 编辑模式聊天输入（step1=描述，step2=售价） */
+    private void handleEditInput(Player p, UUID uuid, int step, String msg) {
+        Long id = editListingId.get(uuid);
+        SecondHandListing target = id == null ? null : findSecondHandListing(id);
+        if (target == null) {
+            clearEditState(uuid);
+            p.sendMessage("§c[二手商店] 该商品已不存在（可能已售出或被下架），编辑结束");
+            return;
+        }
+        if (msg.equals("取消")) {
+            clearEditState(uuid);
+            p.sendMessage("§7[二手商店] 已放弃编辑，商品信息保持不变");
+            if (p.isOnline()) openSecondHandMine(p);
+            return;
+        }
+        if (step == 1) {
+            // ===== 第一步：描述 =====
+            String desc = msg.replace("|", "").trim();
+            if (desc.equals("无") || desc.equalsIgnoreCase("skip")) {
+                desc = "";
+            } else if (desc.length() > 20) {
+                p.sendMessage("§c§l[二手商店] §f描述最多 20 个字符（当前 " + desc.length()
+                        + "），请重新输入（§f无§e清空描述）");
+                return; // 保持等待
+            }
+            pendingPublishDesc.put(uuid, desc);
+            publishStep.put(uuid, 2);
+            int minPrice = shMinPriceFor(p.getName());
+            p.sendMessage("§6§l[二手商店] §e请输入新的售价（整数，最低 §f" + minPrice
+                    + "§e，当前 §6" + target.price + "§e）");
+            schedulePublishTimeout(p);
+            return;
+        }
+
+        // ===== 第二步：售价 =====
+        publishListening.remove(uuid);
+        publishStep.remove(uuid);
+        String desc2 = pendingPublishDesc.remove(uuid);
+        editListingId.remove(uuid);
+        int minPrice = shMinPriceFor(p.getName());
+        int price;
+        try {
+            price = Integer.parseInt(msg.trim());
+        } catch (Exception ex) {
+            p.sendMessage("§c[二手商店] 售价必须是整数，编辑已取消");
+            if (p.isOnline()) openSecondHandMine(p);
+            return;
+        }
+        if (price < minPrice) {
+            p.sendMessage("§c[二手商店] 售价不能低于最低售价 §6" + minPrice + "§c，编辑已取消");
+            if (p.isOnline()) openSecondHandMine(p);
+            return;
+        }
+        target.price = price;
+        if (desc2 != null) target.desc = desc2;
+        saveSecondHand();
+        p.sendMessage("§a§l[二手商店] §f商品 #" + target.id + " 已更新: 售价 §6" + price
+                + " §7描述: §f" + (target.desc == null || target.desc.isEmpty()
+                ? "无" : target.desc));
+        if (p.isOnline()) openSecondHandMine(p);
+    }
+
+    /** 清除编辑状态（不改动商品数据） */
+    private void clearEditState(UUID uuid) {
+        publishListening.remove(uuid);
+        publishStep.remove(uuid);
+        pendingPublishDesc.remove(uuid);
+        editListingId.remove(uuid);
     }
 
     // ===== 记录/读取二手商店页码 =====
@@ -3845,49 +4033,239 @@ public class ShopManager implements Listener {
         return null;
     }
 
-    // ===== 发布：拿主手物品 → 聊天输入售价 =====
-    public void startSecondHandPublish(Player p) {
+    // ===== 批量上架 GUI（2026-10-11 任务2：不再读取主手，改为独立 GUI） =====
+
+    /** 统计玩家当前已上架件数 */
+    private int countSecondHandMine(String name) {
+        int c = 0;
+        for (SecondHandListing l : secondHandListings) {
+            if (name.equals(l.seller)) c++;
+        }
+        return c;
+    }
+
+    /** 构建批量上架 GUI（0-44 放物品，45-53 底栏按钮） */
+    private Inventory buildPublishGui(Player p) {
+        Inventory g = Bukkit.createInventory(null, 54, T_SH_PUBLISH);
+        String mode = shFeeModeFor(p.getName());
+        int mine = countSecondHandMine(p.getName());
+        int max = shMaxListingsFor(p.getName());
+        int left = Math.max(0, max - mine);
+        g.setItem(45, mkItem(Material.BOOK, "§e§l批量上架",
+                "§7把要卖的物品放进上方格子（可放多件）",
+                "§7随后点击 §a发布上架 §7逐件定价",
+                "",
+                "§7当前还可上架: §f" + left + " §7件",
+                "§8SN物品与宝箱自定义物品不可上架"));
+        g.setItem(49, mkItem(Material.EMERALD, "§a§l发布上架",
+                "§7为放入的物品逐件输入售价",
+                "§7已发布的物品直接进入销售，不再退还",
+                "",
+                left <= 0 ? "§c已达上架上限，无法发布" : "§e点击开始"));
+        g.setItem(50, mkItem(
+                FEE_MODE_BUYER.equals(mode) ? Material.GOLD_NUGGET : Material.EMERALD,
+                "§e§l出售偏好: " + feeModeLabel(mode),
+                FEE_MODE_BUYER.equals(mode)
+                        ? "§7奸商模式: 买家支付 售价+手续费"
+                        : "§7正常模式: 手续费从卖家到手价扣除",
+                "",
+                "§e点击切换为 " + feeModeLabel(
+                        FEE_MODE_BUYER.equals(mode) ? FEE_MODE_SELLER : FEE_MODE_BUYER)));
+        g.setItem(53, mkItem(Material.ARROW, "§7返回二手商店"));
+        return g;
+    }
+
+    /** 打开批量上架 GUI */
+    public void openPublishGui(Player p) {
         if (plugin.getBonds().isFrozen(p.getName())) {
             p.sendMessage("§c§l[二手商店] §f债券账户被冻结，不可上架/出售商品");
             return;
         }
-        // 统计该玩家当前上架数（上限：用户组优先，-1组值=全局配置）
-        int mine = 0;
-        for (SecondHandListing l : secondHandListings) {
-            if (p.getName().equals(l.seller)) mine++;
-        }
-        int maxListings = shMaxListingsFor(p.getName());
-        if (mine >= maxListings) {
-            if (maxListings <= 0) {
+        int mine = countSecondHandMine(p.getName());
+        int max = shMaxListingsFor(p.getName());
+        if (mine >= max) {
+            if (max <= 0) {
                 p.sendMessage("§c§l[二手商店] §f你的用户组暂无上架权限");
             } else {
-                p.sendMessage("§c§l[二手商店] §f最多同时上架 §e" + maxListings + " §f件商品");
+                p.sendMessage("§c§l[二手商店] §f最多同时上架 §e" + max
+                        + " §f件商品（当前已上架 §e" + mine + "§f）");
             }
             return;
         }
-        ItemStack hand = p.getInventory().getItemInMainHand();
-        if (hand == null || hand.getType() == Material.AIR) {
-            p.sendMessage("§c§l[二手商店] §f请先手持要上架的物品");
+        p.openInventory(buildPublishGui(p));
+    }
+
+    /** 刷新发布 GUI：保留 0-44 已放入的物品（切换偏好时用，避免吞物品） */
+    private void refreshPublishGui(Player p) {
+        Inventory old = p.getOpenInventory().getTopInventory();
+        if (old == null
+                || !T_SH_PUBLISH.equals(p.getOpenInventory().getTitle())) {
+            openPublishGui(p);
             return;
         }
-        // ★ 严禁上架 SN 自定义物品 / Sdf1_game 宝箱物品（2026-10-11）
-        String blocked = secondHandBlockReason(hand);
-        if (blocked != null) {
-            p.sendMessage("§c§l[二手商店] §f该物品不可上架: " + blocked);
+        ItemStack[] keep = new ItemStack[45];
+        for (int i = 0; i < 45; i++) {
+            ItemStack it = old.getItem(i);
+            if (it != null && it.getType() != Material.AIR) keep[i] = it.clone();
+        }
+        Inventory g = buildPublishGui(p);
+        for (int i = 0; i < 45; i++) {
+            if (keep[i] != null) g.setItem(i, keep[i]);
+        }
+        p.openInventory(g);
+    }
+
+    /** 一键切换出售偏好（任务4：奸商模式 ⇄ 正常模式） */
+    public void toggleFeeMode(Player p) {
+        String cur = shFeeModeFor(p.getName());
+        String next = FEE_MODE_BUYER.equals(cur) ? FEE_MODE_SELLER : FEE_MODE_BUYER;
+        setShFeeModeFor(p.getName(), next);
+        p.sendMessage("§a§l[二手商店] §f出售偏好已切换为 §e" + feeModeLabel(next)
+                + "§f（" + (FEE_MODE_BUYER.equals(next)
+                ? "手续费由买家支付" : "手续费从卖家到手价扣除") + "）");
+        refreshPublishGui(p);
+    }
+
+    /** 批量上架 GUI 点击（由事件处理器调用） */
+    private void handlePublishGuiButton(Player p, int raw) {
+        if (raw == 53) {
+            p.closeInventory();
+            openSecondHandShop(p, 0);
             return;
         }
-        // 暂存主手物品并清空，进入第一步：输入商品描述
+        if (raw == 50) {
+            toggleFeeMode(p);
+            return;
+        }
+        if (raw == 49) {
+            startBatchPublish(p);
+        }
+    }
+
+    /** 开始批量发布：取出 GUI 内物品 → 逐件进入定价流程 */
+    private void startBatchPublish(Player p) {
+        if (plugin.getBonds().isFrozen(p.getName())) {
+            p.sendMessage("§c§l[二手商店] §f债券账户被冻结，不可上架/出售商品");
+            return;
+        }
         UUID uuid = p.getUniqueId();
-        pendingPublishItem.put(uuid, hand.clone());
-        p.getInventory().setItemInMainHand(null);
+        Inventory top = p.getOpenInventory().getTopInventory();
+        if (top == null
+                || !T_SH_PUBLISH.equals(p.getOpenInventory().getTitle())) return;
+
+        int mine = countSecondHandMine(p.getName());
+        int max = shMaxListingsFor(p.getName());
+        int left = max - mine;
+        if (left <= 0) {
+            p.sendMessage("§c§l[二手商店] §f最多同时上架 §e" + max + " §f件商品");
+            return;
+        }
+
+        java.util.LinkedList<ItemStack> items = new java.util.LinkedList<>();
+        List<ItemStack> overflow = new ArrayList<>();
+        for (int i = 0; i < 45; i++) {
+            ItemStack it = top.getItem(i);
+            if (it == null || it.getType() == Material.AIR) continue;
+            top.setItem(i, null); // 先取空，避免关闭事件重复退还
+            if (items.size() < left) items.add(it.clone());
+            else overflow.add(it.clone());
+        }
+        for (ItemStack ov : overflow) returnItem(p, ov);
+        if (!overflow.isEmpty()) {
+            p.sendMessage("§c§l[二手商店] §f超出上架上限，§c" + overflow.size()
+                    + " §f件物品已退还");
+        }
+        if (items.isEmpty()) {
+            p.sendMessage("§c§l[二手商店] §f请先把要上架的物品放进格子");
+            return;
+        }
+        p.closeInventory();
+        publishQueue.put(uuid, items);
+        publishQueueTotal.put(uuid, items.size());
+        p.sendMessage("§6§l[二手商店] §e开始批量上架，共 §f" + items.size() + " §e件");
+        beginNextPublishItem(p, uuid);
+    }
+
+    /** 取队列下一件进入定价（禁售物品自动跳过并退还） */
+    private void beginNextPublishItem(Player p, UUID uuid) {
+        java.util.LinkedList<ItemStack> q = publishQueue.get(uuid);
+        if (q == null || q.isEmpty()) {
+            publishQueue.remove(uuid);
+            publishQueueTotal.remove(uuid);
+            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            if (p.isOnline()) openSecondHandShop(p, 0);
+            return;
+        }
+        ItemStack it = q.peek();
+        String blocked = secondHandBlockReason(it);
+        if (blocked != null) {
+            q.poll();
+            returnItem(p, it);
+            p.sendMessage("§c[二手商店] 跳过不可上架物品 §e"
+                    + it.getType().name() + " §c(" + blocked + ")，已退还");
+            beginNextPublishItem(p, uuid);
+            return;
+        }
+        int total = publishQueueTotal.getOrDefault(uuid, q.size());
+        int idx = total - q.size() + 1;
+        pendingPublishItem.put(uuid, it);
         publishListening.add(uuid);
         publishStep.put(uuid, 1);
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (p.isOnline()) p.closeInventory();
-        });
-        p.sendMessage("§6§l[二手商店] §e请在聊天栏输入商品描述（最多 §f20 §e字，类似闲鱼的卖家介绍）");
-        p.sendMessage("§7不需要描述请输入 §f无 §7跳过；输入 §c取消 §7放弃上架");
+        p.sendMessage("§6§l[二手商店] §e第 §f" + idx + "/" + total
+                + " §e件（§f" + it.getType().name() + " x" + it.getAmount()
+                + "§e）请在聊天栏输入商品描述（§f无§e跳过，§c取消§e中止批量）");
         schedulePublishTimeout(p);
+    }
+
+    // ===== 批量上架 GUI 事件：点击 =====
+    @EventHandler
+    public void onPublishGuiClick(
+            org.bukkit.event.inventory.InventoryClickEvent e) {
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        if (!T_SH_PUBLISH.equals(e.getView().getTitle())) return;
+        Player p = (Player) e.getWhoClicked();
+        int raw = e.getRawSlot();
+        // 0-44 上架区与玩家背包区：放行，允许自由存取物品
+        if (raw < 45 || raw > 53) return;
+        // 45-53 底栏按钮：拦截并处理
+        e.setCancelled(true);
+        handlePublishGuiButton(p, raw);
+    }
+
+    // ===== 批量上架 GUI 事件：拖拽 =====
+    @EventHandler
+    public void onPublishGuiDrag(
+            org.bukkit.event.inventory.InventoryDragEvent e) {
+        if (!(e.getWhoClicked() instanceof Player)) return;
+        if (!T_SH_PUBLISH.equals(e.getView().getTitle())) return;
+        // 只允许拖进 0-44 上架区，落到 45-53 底栏一律拦截
+        for (int raw : e.getRawSlots()) {
+            if (raw >= 45 && raw <= 53) {
+                e.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    // ===== 批量上架 GUI 事件：关闭（退还未发布的物品） =====
+    @EventHandler
+    public void onPublishGuiClose(
+            org.bukkit.event.inventory.InventoryCloseEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        if (!T_SH_PUBLISH.equals(e.getView().getTitle())) return;
+        Player p = (Player) e.getPlayer();
+        int back = 0;
+        for (int i = 0; i < 45; i++) {
+            ItemStack it = e.getInventory().getItem(i);
+            if (it == null || it.getType() == Material.AIR) continue;
+            back++;
+            returnItem(p, it.clone());
+            e.getInventory().setItem(i, null);
+        }
+        if (back > 0) {
+            p.sendMessage("§7[二手商店] 已退还 §f" + back
+                    + " §7件未发布的物品（已发布的商品保持销售）");
+        }
     }
 
     /** 上架聊天输入超时（15秒）：清状态并退还暂存物品。每个步骤完成会重新计时。 */
@@ -3898,15 +4276,29 @@ public class ShopManager implements Listener {
                 publishStep.remove(uuid);
                 pendingPublishDesc.remove(uuid);
                 ItemStack back = pendingPublishItem.remove(uuid);
-                if (back != null) {
-                    HashMap<Integer, ItemStack> left = p.getInventory().addItem(back);
-                    for (ItemStack drop : left.values()) {
-                        p.getWorld().dropItemNaturally(p.getLocation(), drop);
+                boolean editing = editListingId.remove(uuid) != null;
+                Player pl = Bukkit.getPlayer(uuid);
+                if (back != null && pl != null && pl.isOnline()) {
+                    returnItem(pl, back);
+                }
+                // ★ 批量队列剩余一并退还（2026-10-11 任务2）
+                java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
+                publishQueueTotal.remove(uuid);
+                int extra = 0;
+                if (q != null) {
+                    extra = q.size();
+                    if (pl != null && pl.isOnline()) {
+                        for (ItemStack it : q) returnItem(pl, it);
                     }
                 }
-                Player pl = Bukkit.getPlayer(uuid);
                 if (pl != null && pl.isOnline()) {
-                    pl.sendMessage("§c[二手商店] 上架超时，物品已退还");
+                    if (editing) {
+                        pl.sendMessage("§c[二手商店] 编辑超时，已放弃修改");
+                        openSecondHandMine(pl);
+                    } else {
+                        pl.sendMessage("§c[二手商店] 上架超时，物品已退还"
+                                + (extra > 0 ? "（含批量剩余 " + extra + " 件）" : ""));
+                    }
                 }
             }
         }, 300L);
@@ -3919,6 +4311,14 @@ public class ShopManager implements Listener {
         UUID uuid = p.getUniqueId();
         if (!publishListening.contains(uuid)) return;
         e.setCancelled(true);
+        // ★ 编辑模式分流（2026-10-11 任务1）：改售价/描述走独立状态机
+        if (editListingId.containsKey(uuid)) {
+            int editStep = publishStep.getOrDefault(uuid, 1);
+            final String editMsg = e.getMessage().trim();
+            Bukkit.getScheduler().runTask(plugin,
+                    () -> handleEditInput(p, uuid, editStep, editMsg));
+            return;
+        }
         int step = publishStep.getOrDefault(uuid, 2);
         // 不在此处移除暂存：第一步完成后还要进入第二步（等售价）
         ItemStack item = pendingPublishItem.get(uuid);
@@ -3970,8 +4370,7 @@ public class ShopManager implements Listener {
         String desc2 = pendingPublishDesc.remove(uuid);
         int minPrice = shMinPriceFor(p.getName());
         if (msg.isEmpty() || msg.equals("取消")) {
-            pendingPublishItem.remove(uuid);
-            returnItem(p, item);
+            abortPublish(p, uuid, item);
             p.sendMessage("§7[二手商店] 已取消上架，物品退还");
             return;
         }
@@ -3979,15 +4378,13 @@ public class ShopManager implements Listener {
         try {
             price = Integer.parseInt(msg);
         } catch (Exception ex) {
-            pendingPublishItem.remove(uuid);
-            returnItem(p, item);
+            abortPublish(p, uuid, item);
             p.sendMessage("§c[二手商店] 售价必须是整数，已取消上架并退还物品");
             return;
         }
         // ★ 锁死低价：负数或低于最低售价一律拒绝（2026-10-11）
         if (price < minPrice) {
-            pendingPublishItem.remove(uuid);
-            returnItem(p, item);
+            abortPublish(p, uuid, item);
             p.sendMessage("§c[二手商店] 售价不能低于最低售价 §6" + minPrice + " §c，已退还物品");
             return;
         }
@@ -3996,7 +4393,7 @@ public class ShopManager implements Listener {
         // ★ 入库前二次校验：SN / 宝箱物品严禁上架（2026-10-11）
         String blocked2 = secondHandBlockReason(item);
         if (blocked2 != null) {
-            returnItem(p, item);
+            abortPublish(p, uuid, item);
             p.sendMessage("§c[二手商店] 该物品不可上架: " + blocked2 + "，物品已退还");
             return;
         }
@@ -4009,7 +4406,7 @@ public class ShopManager implements Listener {
         l.itemB64 = itemToBase64(item);
         l.createdAt = System.currentTimeMillis();
         if (l.itemB64 == null || l.itemB64.isEmpty()) {
-            returnItem(p, item);
+            abortPublish(p, uuid, item);
             p.sendMessage("§c[二手商店] 物品序列化失败，已退还");
             return;
         }
@@ -4017,20 +4414,46 @@ public class ShopManager implements Listener {
         saveSecondHand();
         p.sendMessage("§a§l[二手商店] §f上架成功: §e" + item.getType().name()
                 + " §7x" + item.getAmount() + " §6" + price + " §7枚债券");
+        // ★ 手续费展示按玩家出售偏好计算（2026-10-11 任务3/4）
         int fee = shFeeOf(price);
         if (fee > 0) {
-            p.sendMessage("§7手续费 §6" + fee + " §7枚债券（" + (shFeeByBuyer ? "买方支付" : "卖家到手扣除") + "）");
+            String mode = shFeeModeFor(p.getName());
+            int buyerPay = FEE_MODE_BUYER.equals(mode) ? price + fee : price;
+            int sellerGot = FEE_MODE_SELLER.equals(mode)
+                    ? Math.max(0, price - fee) : price;
+            p.sendMessage("§7手续费 §6" + fee + " §7枚债券（" + feeModeLabel(mode)
+                    + "）买家实付 §6" + buyerPay + " §7，卖家到手 §6" + sellerGot);
         }
-        if (p.isOnline()) openSecondHandShop(p, 0);
+
+        // ★ 批量上架：继续处理队列中的下一件（2026-10-11 任务2）
+        java.util.LinkedList<ItemStack> q = publishQueue.get(uuid);
+        if (q != null && !q.isEmpty()) {
+            p.sendMessage("§7进度: 还剩 §f" + q.size() + " §7件待定价");
+            beginNextPublishItem(p, uuid);
+        } else {
+            publishQueue.remove(uuid);
+            publishQueueTotal.remove(uuid);
+            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            if (p.isOnline()) openSecondHandShop(p, 0);
+        }
     }
 
-    /** 取消上架：清全部暂存状态并退还物品 */
+    /** 取消上架：清全部暂存状态并退还物品（批量模式下连同队列剩余一并退还） */
     private void abortPublish(Player p, UUID uuid, ItemStack item) {
         publishListening.remove(uuid);
         publishStep.remove(uuid);
         pendingPublishDesc.remove(uuid);
         pendingPublishItem.remove(uuid);
+        editListingId.remove(uuid);
         returnItem(p, item);
+        // ★ 批量上架（2026-10-11 任务2）：中止时把队列里未定价的物品全部退还
+        java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
+        publishQueueTotal.remove(uuid);
+        if (q != null && !q.isEmpty()) {
+            int back = q.size() + (item != null ? 1 : 0);
+            for (ItemStack it : q) returnItem(p, it);
+            p.sendMessage("§7[二手商店] 批量上架已中止，共退还 §f" + back + " §7件物品");
+        }
     }
 
     private void returnItem(Player p, ItemStack item) {
@@ -4059,23 +4482,35 @@ public class ShopManager implements Listener {
             p.sendMessage("§c§l[二手商店] §f卖家债券账户被冻结，该商品暂不可购买");
             return;
         }
+        // ★ 手续费真正扣款（2026-10-11 任务3 修复「手续费蒸发」严重bug）：
+        //   奸商模式(买方出)：买家支付 price+手续费，卖家全额到手 price
+        //   正常模式(卖方出)：买家支付 price，卖家到手 price-手续费
+        //   手续费为平台抽成，不进入任何玩家账户。
+        int[] shSplit = shFeeSplit(l.seller, l.price);
+        final int fee = shSplit[0];
+        final int buyerPaid = shSplit[1];
+        final int sellerGot = shSplit[2];
+        final String feeMode = shFeeModeFor(l.seller);
         // 扣买家钱（0 债券直接放行）
-        if (l.price > 0) {
+        if (buyerPaid > 0) {
             boolean ok = plugin.getBonds().deductBonds(
-                    p.getName(), l.price, "shop_secondhand",
+                    p.getName(), buyerPaid, "shop_secondhand",
                     l.seller, "二手商店",
-                    "购买二手商品#" + l.id);
+                    "购买二手商品#" + l.id
+                            + (fee > 0 ? "（含手续费" + fee + "）" : ""));
             if (!ok) {
-                p.sendMessage("§c§l[二手商店] §f债券不足或扣款失败");
+                p.sendMessage("§c§l[二手商店] §f债券不足或扣款失败"
+                        + (fee > 0 ? "，需 §6" + buyerPaid + " §f枚（含手续费）" : ""));
                 return;
             }
         }
-        // 给卖家钱
-        if (l.price > 0) {
+        // 给卖家钱（已按偏好扣除手续费）
+        if (sellerGot > 0) {
             plugin.getBonds().addBonds(
-                    l.seller, l.price, "shop_secondhand",
+                    l.seller, sellerGot, "shop_secondhand",
                     p.getName(), "二手商店",
-                    "出售二手商品#" + l.id);
+                    "出售二手商品#" + l.id
+                            + (fee > 0 ? "（已扣手续费" + fee + "）" : ""));
         }
         // 发货
         ItemStack is = base64ToItem(l.itemB64);
@@ -4083,7 +4518,7 @@ public class ShopManager implements Listener {
             p.sendMessage("§c§l[二手商店] §f商品数据损坏，已退款");
             if (l.price > 0) {
                 plugin.getBonds().addBonds(
-                        p.getName(), l.price, "shop_secondhand_refund",
+                        p.getName(), buyerPaid, "shop_secondhand_refund",
                         l.seller, "二手商店", "商品损坏退款#" + l.id);
             }
             secondHandListings.remove(l);
@@ -4095,7 +4530,7 @@ public class ShopManager implements Listener {
         if (blockedBuy != null) {
             if (l.price > 0) {
                 plugin.getBonds().addBonds(
-                        p.getName(), l.price, "shop_secondhand_refund",
+                        p.getName(), buyerPaid, "shop_secondhand_refund",
                         l.seller, "二手商店", "违禁商品下架退款#" + l.id);
             }
             secondHandListings.remove(l);
@@ -4117,10 +4552,23 @@ public class ShopManager implements Listener {
         saveSecondHand();
         p.sendMessage("§a§l[二手商店] §f购买成功: §e" + is.getType().name()
                 + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
+        if (fee > 0) {
+            p.sendMessage("§7手续费 §6" + fee + " §7（" + feeModeLabel(feeMode)
+                    + "）买家实付 §6" + buyerPaid + " §7，卖家到手 §6" + sellerGot);
+        }
+        // ★ 交易记录入库（2026-10-11 任务5）
+        TradeLogManager shTlog = plugin.getTradeLog();
+        if (shTlog != null) {
+            shTlog.recordSecondHandOrder(l.id, p.getName(), l.seller,
+                    is.getType().name(), is.getAmount(), l.price,
+                    fee, feeMode, buyerPaid, sellerGot);
+        }
         Player seller = Bukkit.getPlayer(l.seller);
         if (seller != null && seller.isOnline()) {
             seller.sendMessage("§a§l[二手商店] §f你的商品已售出: §e" + is.getType().name()
-                    + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
+                    + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券"
+                    + (fee > 0 ? "§7，到手 §6" + sellerGot
+                    + " §7（已扣手续费 §6" + fee + "§7）" : ""));
         }
         openSecondHandShop(p, getSecondHandPage(p.getUniqueId()));
     }

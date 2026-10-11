@@ -205,14 +205,13 @@ public class ChatFilterManager {
             return VerificationResult.PENDING;
         }
 
-        // 检查玩家加入时间是否≤1小时
-        if (isNewPlayerUnder1Hour(p)) {
-            return VerificationResult.NEED_VERIFICATION;
-        }
-        
-        // 老玩家：直接永久验证通过
-        verifiedPlayers.add(name);
-        return VerificationResult.VERIFIED;
+        // ★ 2026-10-11 用户裁定（任务6 严重bug修复）：
+        //   人机验证豁免必须是【内存态】——服务器重启后，所有人都要重新过一次人机验证。
+        //   旧实现按 register_time（DB 持久化字段）判定「老玩家直接永久验证通过」，
+        //   等于把豁免做成了持久化存储，重启也形同虚设，已废除。
+        //   唯一免验证通道：正版 OAuth 验证通过（上方分支），仅本次运行期内有效，
+        //   重启后随内存一并清空；再次放行请重新走 /mslogin 一键通过。
+        return VerificationResult.NEED_VERIFICATION;
     }
 
     /** 全局共享的Random实例，避免频繁创建产生相同序列 */

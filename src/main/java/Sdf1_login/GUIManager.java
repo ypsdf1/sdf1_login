@@ -816,6 +816,11 @@ public class GUIManager implements Listener {
             return;
         }
 
+        // ★ 批量上架 GUI（2026-10-11 任务2）：允许拖入物品，由 ShopManager 自行按槽位判定
+        if ("§6§l二手上架".equals(title)) {
+            return;
+        }
+
         // 商店分类页：禁止拖拽
         if (title.startsWith("§6§l") && !title.equals(T_MAIN)
                 && !title.equals(T_MY_INFO)
@@ -981,8 +986,9 @@ public class GUIManager implements Listener {
         }
         if ("§6§l我的二手上架".equals(title)) {
             event.setCancelled(true);
+            // ★ 2026-10-11 任务1：左键编辑（售价&描述），右键下架（退还物品）
             plugin.getShopManager().handleSecondHandMineClick(
-                    p, raw, event.isLeftClick());
+                    p, raw, event.isLeftClick(), event.isRightClick());
             return;
         }
 
