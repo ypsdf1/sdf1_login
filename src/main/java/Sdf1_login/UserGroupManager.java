@@ -56,7 +56,10 @@ public class UserGroupManager {
                     + "default_perms TEXT DEFAULT '{}',"          // JSON: 默认deny_*标志
                     + "is_permanent INTEGER DEFAULT 1,"           // 保留兼容
                     + "duration_minutes INTEGER DEFAULT 0,"       // 保留兼容
-                    + "max_effect_level INTEGER DEFAULT 256"      // 药效等级上限，<=0=按原版256
+                    + "max_effect_level INTEGER DEFAULT 256,"     // 药效等级上限，<=0=按原版256
+                    // === 二手商店相关（2026-10-11）===
+                    + "shop_max_listings INTEGER DEFAULT -1,"     // -1 = 使用全局值
+                    + "shop_min_price INTEGER DEFAULT -1"         // -1 = 使用全局值
                     + ")");
 
             // 玩家↔用户组关联
@@ -84,6 +87,9 @@ public class UserGroupManager {
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_effects INTEGER DEFAULT 5"); } catch (Exception ignored) {}
             // ★ 药效等级上限（2026-10-04 任务4）：默认256=原版最大药效强度，<=0=按原版
             try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN max_effect_level INTEGER DEFAULT 256"); } catch (Exception ignored) {}
+            // ★ 二手商店（2026-10-11）：上架数量/最低售价，-1=跟随全局
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN shop_max_listings INTEGER DEFAULT -1"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE user_group_config ADD COLUMN shop_min_price INTEGER DEFAULT -1"); } catch (Exception ignored) {}
             // duration_minutes已有(旧列)，复用
 
             st.close();
@@ -118,6 +124,10 @@ public class UserGroupManager {
                 if (rs.wasNull()) cfg.maxEffects = 5;
                 cfg.maxEffectLevel = rs.getInt("max_effect_level");
                 if (rs.wasNull()) cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL;
+                cfg.shopMaxListings = rs.getInt("shop_max_listings");
+                if (rs.wasNull()) cfg.shopMaxListings = -1;
+                cfg.shopMinPrice = rs.getInt("shop_min_price");
+                if (rs.wasNull()) cfg.shopMinPrice = -1;
                 if (cfg.name != null && !cfg.name.isEmpty()) {
                     groupConfigs.put(cfg.name, cfg);
                 }
@@ -139,8 +149,8 @@ public class UserGroupManager {
                             + "(group_name, display_name, display_color,"
                             + " priority, land_price_per_sqm, max_lands, default_perms,"
                             + " home_limit, join_price, auto_renew, renew_price, duration_minutes,"
-                            + " max_effects, max_effect_level)"
-                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                            + " max_effects, max_effect_level, shop_max_listings, shop_min_price)"
+                            + " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             ps.setString(1, cfg.name);
             ps.setString(2, cfg.displayName);
             ps.setString(3, cfg.displayColor);
@@ -155,6 +165,8 @@ public class UserGroupManager {
             ps.setLong(12, cfg.durationMinutes);
             ps.setInt(13, cfg.maxEffects);
             ps.setInt(14, cfg.maxEffectLevel);
+            ps.setInt(15, cfg.shopMaxListings);
+            ps.setInt(16, cfg.shopMinPrice);
             ps.executeUpdate();
             ps.close();
         } catch (SQLException e) {
@@ -976,6 +988,28 @@ public class UserGroupManager {
     }
 
     /**
+     * ★ 二手商店：获取玩家的可上架数量上限（2026-10-11）
+     * 组配置 >=0 用组值（0=禁止上架），-1=跟随全局
+     */
+    public int getPlayerShopMaxListings(String player, int globalDefault) {
+        if (player == null || player.isEmpty()) return globalDefault;
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null) return globalDefault;
+        return cfg.shopMaxListings >= 0 ? cfg.shopMaxListings : globalDefault;
+    }
+
+    /**
+     * ★ 二手商店：获取玩家的最低售价（2026-10-11）
+     * 组配置 >=0 用组值，-1=跟随全局
+     */
+    public int getPlayerShopMinPrice(String player, int globalDefault) {
+        if (player == null || player.isEmpty()) return globalDefault;
+        UserGroupConfig cfg = getHighestGroup(player);
+        if (cfg == null) return globalDefault;
+        return cfg.shopMinPrice >= 0 ? cfg.shopMinPrice : globalDefault;
+    }
+
+    /**
      * ★ 领地增益效果数量上限（2026-10-04 任务3）
      * 普通玩家（无用户组）走 globalDefault=5；用户组按组配置；
      * 组配置 <=0 表示不限。
@@ -1202,6 +1236,8 @@ public class UserGroupManager {
         public int maxLands = -1;          // -1 = 使用全局
         public int maxEffects = 5;         // 领地增益效果上限，<=0=不限
         public int maxEffectLevel = DEFAULT_MAX_EFFECT_LEVEL; // 药效等级上限，<=0=按原版256
+        public int shopMaxListings = -1;   // 二手商店上架数量上限，-1=跟随全局
+        public int shopMinPrice = -1;      // 二手商店最低售价，-1=跟随全局
         public String defaultPerms = "{}"; // JSON
         // Home相关
         public int homeLimit = 0;          // 0=跟随全局, >0=独立限制, -1=无限

@@ -5422,6 +5422,8 @@ public class WebManager {
                         gs.append("\"max_lands\":").append(cfg.maxLands).append(",");
                         gs.append("\"max_effects\":").append(cfg.maxEffects).append(",");
                         gs.append("\"max_effect_level\":").append(cfg.maxEffectLevel).append(",");
+                        gs.append("\"shop_max_listings\":").append(cfg.shopMaxListings).append(",");
+                        gs.append("\"shop_min_price\":").append(cfg.shopMinPrice).append(",");
                         gs.append("\"home_limit\":").append(cfg.homeLimit).append(",");
                         gs.append("\"join_price\":").append(cfg.joinPrice).append(",");
                         gs.append("\"auto_renew\":").append(cfg.autoRenew ? 1 : 0).append(",");
@@ -5712,6 +5714,8 @@ public class WebManager {
                                     || existing.autoRenew != cfg.autoRenew
                                     || existing.renewPrice != cfg.renewPrice
                                     || existing.durationMinutes != cfg.durationMinutes
+                                    || existing.shopMaxListings != cfg.shopMaxListings
+                                    || existing.shopMinPrice != cfg.shopMinPrice
                                     || !safeEq(existing.defaultPerms, cfg.defaultPerms);
                             if (isDifferent) {
                                 ugm.saveGroupConfigToDB(cfg);
@@ -5867,6 +5871,11 @@ public class WebManager {
                 catch (Exception ignored) { cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL; }
             }
             if (cfg.maxEffectLevel <= 0) cfg.maxEffectLevel = UserGroupManager.DEFAULT_MAX_EFFECT_LEVEL;
+            // ★ 二手商店（2026-10-11）：上架数量/最低售价，-1=跟随全局
+            String shMaxStr = extractJsonField(obj, "shop_max_listings");
+            if (!shMaxStr.isEmpty()) try { cfg.shopMaxListings = Integer.parseInt(shMaxStr); } catch (Exception ignored) {}
+            String shMinStr = extractJsonField(obj, "shop_min_price");
+            if (!shMinStr.isEmpty()) try { cfg.shopMinPrice = Integer.parseInt(shMinStr); } catch (Exception ignored) {}
             String homeLimStr = extractJsonField(obj, "home_limit");
             if (!homeLimStr.isEmpty()) try { cfg.homeLimit = Integer.parseInt(homeLimStr); } catch (Exception ignored) {}
             String joinStr = extractJsonField(obj, "join_price");
