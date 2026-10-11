@@ -55,6 +55,7 @@ public class AreaProtection implements Listener {
     public enum PermissionLevel {
         ADMIN,    // 管理员：可以做所有事
         OWNER,    // 领地所有者：可以管理自己的领地
+        MEMBER,   // 已授权成员（DB role='member'）：不受领地全局默认权限限制，可被per-player单独收紧
         VISITOR   // 访客：只能在被授权的领地内活动
     }
 
@@ -2582,11 +2583,27 @@ public class AreaProtection implements Listener {
             }
         }
 
-        // 3. 领地管理员（DB role='admin'，仅限该领地；通过 /protect setadmin <领地名> <玩家> 或领地所有者GUI设置）
-        // ★ 必须在VISITOR检查之前，否则白名单优先级会覆盖管理员身份
-        // ★ 注意：领地管理员严格按 ac.name 限定，绝不跨领地生效（封堵越权）
-        if (ac != null && isLandAdmin(ac.name, player.getName())) {
-            return PermissionLevel.ADMIN;
+        // 3. 领地角色（DB，仅限该领地；2026-10-11 精确匹配，一次查询判 admin/member 两态）
+        //    admin → ADMIN（/protect setadmin 或领地所有者GUI设置）
+        //    member(未过期) → MEMBER：已授权成员，不受领地全局默认权限限制
+        // ★ 必须在白名单/VISITOR 检查之前：成员多半同时在区域白名单里，
+        //   若先命中白名单只会拿到 VISITOR，denyMove 等权限按访客回退领地默认，
+        //   导致"已授权成员被当成路人、跟随全局权限一起被限制"（2026-10-11 修复）。
+        // ★ 注意：严格按 ac.name 限定，绝不跨领地生效（封堵越权）
+        if (ac != null) {
+            int landId = getLandIdFromDb(ac.name);
+            if (landId > 0) {
+                PermRow row = findPermRowExact(landId, player.getName());
+                if (row != null) {
+                    if ("admin".equalsIgnoreCase(row.role)) {
+                        return PermissionLevel.ADMIN;
+                    }
+                    if ("member".equalsIgnoreCase(row.role)
+                            && (row.expiresAt == 0 || row.expiresAt > System.currentTimeMillis())) {
+                        return PermissionLevel.MEMBER;
+                    }
+                }
+            }
         }
 
         // 4. 访客权限（白名单 + 数据库购买权限）
@@ -3007,6 +3024,16 @@ public class AreaProtection implements Listener {
             if ("denyDrop".equals(permName) && playerPerms.containsKey("allowDrop")) {
                 return !playerPerms.get("allowDrop");
             }
+        }
+
+        // 2.5) 已授权成员（DB role='member'）豁免领地默认权限
+        //      ★ 2026-10-11 修复严重bug：成员此前拿不到 ADMIN/OWNER/VISITOR 任一身份，
+        //        getPermissionLevel 返回 null → 与纯路人一样回退领地默认 deny*，
+        //        被"跟随全局权限一起限制"（denyMove 传送、denyBlockBreak 拦截等全中）。
+        //      成员是领地主显式授权的人，应豁免领地默认限制；
+        //      per-player 显式配置仍在第 2 步优先命中，领地主可对单个成员单独收紧。
+        if (level == PermissionLevel.MEMBER) {
+            return false;
         }
 
         // 3) 访客豁免（该玩家没有任何 per-player 显式配置时才生效）
@@ -5727,6 +5754,7 @@ public class AreaProtection implements Listener {
             PermissionLevel lvl = getPermissionLevel(p, ac);
             if (lvl == PermissionLevel.ADMIN) return "插件/领地管理员豁免";
             if (lvl == PermissionLevel.OWNER) return "领地主豁免";
+            if (lvl == PermissionLevel.MEMBER) return "已授权成员豁免";
             int landId = getLandIdFromDb(ac.name);
             if (landId > 0) {
                 Map<String, Boolean> perms = getPlayerPermMap(landId, p.getName());
@@ -9446,6 +9474,8 @@ public class AreaProtection implements Listener {
                 p.sendMessage("§7(你是此领地的所有者)");
             } else if (level == PermissionLevel.ADMIN) {
                 p.sendMessage("§7(你是服务器管理员)");
+            } else if (level == PermissionLevel.MEMBER) {
+                p.sendMessage("§7(你是此领地的已授权成员)");
             } else if (level == PermissionLevel.VISITOR) {
                 p.sendMessage("§7(你是此领地的访客)");
             }
