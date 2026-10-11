@@ -10981,27 +10981,87 @@ public class WebManager {
             if (diff.isEmpty()) return true;
 
             String token = generateAndSyncToken("system", "sync");
+
+            // ★ 回执单校验（2026-10-11 用户要求）：Java 不再无条件相信 PHP。
+            //   推送带 push_id + 内容指纹 fp；PHP 必须在回执里原样回显两者（且条数一致）才算「确实收到」。
+            //   无回执/回执不匹配 → 立即重推一次；两次都无有效回执 → 不落基线，下轮 poll 再推。
+            List<String> fpEntries = new ArrayList<>();
+            for (Map<String, Object> one : diff) {
+                fpEntries.add(String.valueOf(one.get("id")) + "|" + ((Number) one.get("stock")).intValue());
+            }
+            Collections.sort(fpEntries);
+            java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+            crc.update(String.join("\n", fpEntries).getBytes(StandardCharsets.UTF_8));
+            String fp = String.valueOf(crc.getValue());
+            String pushId = System.currentTimeMillis() + "-"
+                    + java.util.concurrent.ThreadLocalRandom.current().nextInt(100000, 999999);
+
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("items", diff);
-            String response = httpPostWithToken("api/sync.php?action=push_shop_stock", token, body);
-            if (response != null && response.contains("\"success\":true")) {
+            body.put("push_id", pushId);
+            body.put("fp", fp);
+
+            String response = null;
+            String badReason = "无响应";
+            boolean gotReceipt = false;
+            for (int attempt = 1; attempt <= 2 && !gotReceipt; attempt++) {
+                if (attempt > 1) {
+                    plugin.getLogger().warning("[Web通信] 库存推送无有效回执（" + badReason
+                            + "）→ 立即重推一次 push_id=" + pushId);
+                }
+                response = httpPostWithToken("api/sync.php?action=push_shop_stock", token, body);
+                badReason = checkShopStockReceipt(response, pushId, fp, diff.size());
+                gotReceipt = (badReason == null);
+            }
+            if (gotReceipt) {
                 for (Map<String, Object> one : diff) {
                     shopStockSnapshot.put(String.valueOf(one.get("id")), ((Number) one.get("stock")).intValue());
                 }
                 saveShopStockSnapshot();
                 long now = System.currentTimeMillis();
                 if (now - lastShopStockPushLog > LOG_INTERVAL) {
-                    plugin.getLogger().info("[Web通信] 本地库存变更已推送 " + diff.size() + " 个商品（双向同步，分叉以游戏端为准）");
+                    plugin.getLogger().info("[Web通信] 本地库存变更已推送 " + diff.size() + " 个商品（双向同步，分叉以游戏端为准，回执已核验 push_id=" + pushId + "）");
                     lastShopStockPushLog = now;
                 }
                 return true;
             }
-            plugin.getLogger().warning("[Web通信] 库存推送失败（下轮重试）: "
+            plugin.getLogger().warning("[Web通信] 库存推送失败（回执未通过[" + badReason + "]，下轮重试）: "
                     + (response == null ? "无响应" : response.substring(0, Math.min(160, response.length()))));
             return false;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] 库存推送异常: " + e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * ★ 库存推送回执单核验（2026-10-11）：PHP 必须原样回显 push_id + 内容指纹 fp + 条数，
+     *   Java 才承认「PHP 确实收到」。仅匹配 success:true 不再算数（防中间层假 200 / 旧版 PHP）。
+     * @return null=回执有效；非 null=失效原因（用于日志与重推判断）
+     */
+    private String checkShopStockReceipt(String response, String pushId, String fp, int count) {
+        if (response == null || response.isEmpty()) return "无响应";
+        try {
+            Gson gson = new Gson();
+            JsonObject root = gson.fromJson(response, JsonObject.class);
+            if (root == null || !root.has("success") || !root.get("success").getAsBoolean()) {
+                String msg = (root != null && root.has("message") && !root.get("message").isJsonNull())
+                        ? root.get("message").getAsString() : "success非true";
+                return "PHP报错:" + msg;
+            }
+            if (!root.has("data") || !root.get("data").isJsonObject()) return "缺回执单(data)";
+            JsonObject data = root.getAsJsonObject("data");
+            if (!data.has("receipt") || !data.get("receipt").isJsonObject()) return "缺回执单(receipt)";
+            JsonObject r = data.getAsJsonObject("receipt");
+            String rid = (r.has("push_id") && !r.get("push_id").isJsonNull()) ? r.get("push_id").getAsString() : "";
+            String rfp = (r.has("fp") && !r.get("fp").isJsonNull()) ? r.get("fp").getAsString() : "";
+            int rcount = (r.has("count") && !r.get("count").isJsonNull()) ? r.get("count").getAsInt() : -1;
+            if (!pushId.equals(rid)) return "push_id不匹配(回=" + rid + ")";
+            if (!fp.equals(rfp)) return "指纹不匹配(期望" + fp + "回" + rfp + ")";
+            if (rcount != count) return "条数不匹配(期望" + count + "回" + rcount + ")";
+            return null;
+        } catch (Exception e) {
+            return "回执解析异常:" + e.getMessage();
         }
     }
 
