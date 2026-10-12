@@ -9,6 +9,7 @@ import org.bukkit.event.inventory.*;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.persistence.PersistentDataType;
@@ -43,6 +44,8 @@ public class GUIManager implements Listener {
             "§6§l管理员面板";
     public static final String T_INVITE =
             "§6§l邀请数据";
+    public static final String T_MONTHLY_INVITE =
+            "§6§l本月邀请";
     public static final String T_USER_MGMT =
             "§6§l用户管理";
     public static final String T_USER_GROUP =
@@ -2419,10 +2422,9 @@ public class GUIManager implements Listener {
         if (code == null || code.isEmpty()) {
             code = plugin.getInvite().generateCode(p);
         }
-        int monthly = ((Number) plugin.getDb()
-                .getField(p.getName(),
-                        "monthly_invite_count"))
-                .intValue();
+        // ★ 第十批：计数改派生口径（invited_at 回填后与头颅明细同源、跨月自愈）
+        int monthly = plugin.getInvite()
+                .getMonthlyInviteCount(p.getName());
         g.setItem(10, mkItem(Material.PAPER,
                 "§b§l我的邀请码",
                 "§7" + code,
@@ -2430,7 +2432,9 @@ public class GUIManager implements Listener {
                 "§e点击刷新邀请码"));
         g.setItem(12, mkItem(Material.PLAYER_HEAD,
                 "§a本月邀请",
-                "§7已邀请 §e" + monthly + " §7人"));
+                "§7已邀请 §e" + monthly + " §7人",
+                "",
+                "§e点击查看邀请明细"));
         // ★ 第九批：已绑定邀请人则显示「邀请成功时间+邀请人」，
         //   否则显示「输入邀请码」按钮
         String invitedBy = (String) plugin.getDb()
@@ -2467,6 +2471,67 @@ public class GUIManager implements Listener {
                 "§7当前: " + ugLabel));
 
         g.setItem(26, mkItem(Material.ARROW, "§7返回"));
+        p.openInventory(g);
+    }
+
+    /**
+     * ★ 第十批（2026-10-12）：「本月邀请」明细 GUI——
+     * 本月绑定我邀请码的玩家，一人一个真实玩家头颅。
+     * 标题 T_MONTHLY_INVITE 已加入 Main.onInvClick 排除列表，
+     * 点击全部由该分支自行 cancel（防拿走头颅）。
+     */
+    public void openMonthlyInvite(Player p) {
+        Inventory g = Bukkit.createInventory(
+                null, 54, T_MONTHLY_INVITE);
+        fillBg(g);
+        List<Map<String, Object>> list = plugin.getInvite()
+                .getMonthlyInvitedPlayers(p.getName());
+        if (list.isEmpty()) {
+            g.setItem(22, mkItem(Material.BARRIER,
+                    "§c本月暂无邀请记录",
+                    "§7邀请好友绑定你的邀请码后",
+                    "§7这里会展示他们的头颅"));
+        } else {
+            // 内容区 0-44 共 45 格；超出 45 人时留 1 格提示
+            int limit = Math.min(list.size(),
+                    list.size() > 45 ? 44 : 45);
+            for (int i = 0; i < limit; i++) {
+                Map<String, Object> row = list.get(i);
+                String name = String.valueOf(row.get("name"));
+                long at = ((Number) row.get("at")).longValue();
+                ItemStack head = new ItemStack(
+                        Material.PLAYER_HEAD);
+                SkullMeta sm = (SkullMeta)
+                        head.getItemMeta();
+                if (sm != null) {
+                    // 在线优先用精确档案；离线按玩家名解析真实皮肤
+                    Player target =
+                            Bukkit.getPlayerExact(name);
+                    if (target != null) {
+                        sm.setOwningPlayer(target);
+                    } else {
+                        sm.setOwner(name);
+                    }
+                    sm.setDisplayName("§e§l" + name);
+                    sm.setLore(Arrays.asList(
+                            "§7绑定时间: §e"
+                                    + new java.text.SimpleDateFormat(
+                                            "yyyy-MM-dd HH:mm")
+                                            .format(new java.util.Date(at)),
+                            "",
+                            "§7已计入你的本月邀请"));
+                    head.setItemMeta(sm);
+                }
+                g.setItem(i, head);
+            }
+            if (list.size() > 45) {
+                g.setItem(44, mkItem(Material.PAPER,
+                        "§e还有 " + (list.size() - 44)
+                                + " 人未显示"));
+            }
+        }
+        g.setItem(49, mkItem(Material.ARROW,
+                "§7返回", "§7返回「邀请数据」"));
         p.openInventory(g);
     }
 

@@ -53,6 +53,16 @@ public class BondManager {
         initDB();
     }
 
+    /**
+     * ★ 第十批（2026-10-12）：暴露 bond.db 连接。
+     * bond_transaction 在 bond.db（财务债券/），不在 login.db——
+     * 跨库查询必须走这里（CommissionManager 日上限/翻倍统计、
+     * InviteManager 存量绑定时间回填均依赖）。
+     */
+    public Connection getConnection() {
+        return db;
+    }
+
     // ======================== 数据库初始化 ========================
 
     private void initDB() {

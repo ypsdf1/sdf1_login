@@ -239,7 +239,7 @@ public class CommissionManager {
                 .atStartOfDay(ZoneId.systemDefault())
                 .toInstant().toEpochMilli();
         try {
-            PreparedStatement ps = main.getDb()
+            PreparedStatement ps = main.getBonds()
                     .getConnection().prepareStatement(
                             "SELECT COALESCE(SUM(amount),0) "
                                     + "FROM bond_transaction "
@@ -266,7 +266,7 @@ public class CommissionManager {
                 .atStartOfDay(ZoneId.systemDefault())
                 .toInstant().toEpochMilli();
         try {
-            PreparedStatement ps = main.getDb()
+            PreparedStatement ps = main.getBonds()
                     .getConnection().prepareStatement(
                             "SELECT COUNT(*) "
                                     + "FROM bond_transaction "

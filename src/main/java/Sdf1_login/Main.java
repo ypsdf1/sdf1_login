@@ -623,6 +623,9 @@ public class Main extends JavaPlugin
             webManager.registerTransactionListener(bondManager);
         }
 
+        // ★ 第十批：存量邀请数据自愈（回填 invited_at + 重算月度计数）
+        invite.reconcileInviteData();
+
         cdkManager = new CDKManager(this);
         userGroupManager = new UserGroupManager(this);
         cypayCommand = new CypayCommand(this);
@@ -6604,6 +6607,8 @@ public class Main extends JavaPlugin
                 && !title.equals(GUIManager.T_MY_INFO)
                 && !title.equals(GUIManager.T_INVITE)
                 && !title.equals(
+                GUIManager.T_MONTHLY_INVITE)
+                && !title.equals(
                 GUIManager.T_TASK_CENTER)
                 && !title.equals(
                 GUIManager.T_GIFT_STAGES)
@@ -7255,6 +7260,9 @@ public class Main extends JavaPlugin
                         invite.generateCode(p);
                 p.sendMessage("§e邀请码: " + code);
                 gui.openInvite(p);
+            } else if (slot == 12) {
+                // ★ 第十批：「本月邀请」→ 头颅明细 GUI
+                gui.openMonthlyInvite(p);
             } else if (slot == 16) {
                 // ★ 第九批：已绑定邀请人则拦截，不再进入输入
                 Object boundInvite = db.getField(
@@ -7272,6 +7280,13 @@ public class Main extends JavaPlugin
                     p.sendMessage("§e请输入邀请码:");
                 }
             }
+            return;
+        }
+
+        // ==================== 本月邀请明细（第十批） ====================
+        if (title.equals(GUIManager.T_MONTHLY_INVITE)) {
+            e.setCancelled(true);
+            if (slot == 49) gui.openInvite(p);
             return;
         }
 
