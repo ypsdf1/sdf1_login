@@ -3639,9 +3639,9 @@ public class ShopManager implements Listener {
                 + changes.size() + " 项变更: " + String.join("；", changes));
     }
 
-    /** 每整点 0/15/30/45 分扫描一次配置文件（初始对齐到下一个 15 分钟边界） */
+    /** 每分钟第 0/15/30/45 秒扫描一次配置文件（初始对齐到下一个 15 秒边界；2026-10-12 第六批：原 15 分钟太粗导致改配置迟迟不生效） */
     private void startShCfgReloadTask() {
-        final long periodMs = 15 * 60 * 1000L;
+        final long periodMs = 15 * 1000L; // 15 秒 = 每分钟 0/15/30/45 秒四个对齐点
         long now = System.currentTimeMillis();
         long next = (now / periodMs + 1) * periodMs;
         long delayTicks = Math.max(1L, (next - now) / 50L);
@@ -3833,6 +3833,8 @@ public class ShopManager implements Listener {
 
     // ===== 打开二手商店主界面 =====
     public void openSecondHandShop(Player p, int page) {
+        // ★ 打开界面先对齐配置（2026-10-12 第六批）：lore 展示的手续费立即用最新费率
+        reloadSecondHandConfigIncremental("界面打开");
         Inventory g = Bukkit.createInventory(null, 54, "§6§l二手商店");
         int total = (int) Math.ceil((double) secondHandListings.size() / PAGE_SIZE);
         if (total < 1) total = 1;
@@ -4674,6 +4676,9 @@ public class ShopManager implements Listener {
             p.sendMessage("§c§l[二手商店] §f卖家债券账户被冻结，该商品暂不可购买");
             return;
         }
+        // ★ 结算前先对齐配置费率（2026-10-12 第六批）：
+        //   原「购买触发」reload 在结算之后，本笔交易仍按旧费率扣款（用户实测 13:31 改 0.0038、13:33 仍按 2% 结算）
+        reloadSecondHandConfigIncremental("购买结算前对齐");
         // ★ 手续费真正扣款（2026-10-11 任务3 修复「手续费蒸发」严重bug）：
         //   奸商模式(买方出)：买家支付 price+手续费，卖家全额到手 price
         //   正常模式(卖方出)：买家支付 price，卖家到手 price-手续费
@@ -4742,8 +4747,7 @@ public class ShopManager implements Listener {
         }
         secondHandListings.remove(l);
         saveSecondHand();
-        // ★ 购买成功立刻触发一次增量热重载，把配置数据对齐（2026-10-11 问题4 例外）
-        reloadSecondHandConfigIncremental("购买触发");
+        // （增量热重载已前移到结算之前，见方法开头「购买结算前对齐」，2026-10-12 第六批）
         p.sendMessage("§a§l[二手商店] §f购买成功: §e" + ItemNameResolver.toChinese(is.getType())
                 + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
         if (fee > 0) {
