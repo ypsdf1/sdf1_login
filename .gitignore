@@ -122,4 +122,4 @@ test.*
 # 过滤readme和配置文件
 !readme.md
 !scr/main/resources
-!src/main/resources/**/*.md
+!src/main/resources/**/*.*
