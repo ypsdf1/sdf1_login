@@ -7256,11 +7256,21 @@ public class Main extends JavaPlugin
                 p.sendMessage("§e邀请码: " + code);
                 gui.openInvite(p);
             } else if (slot == 16) {
-                chatInput.getState(p).type =
-                        ChatInputManager.InputType
-                                .INVITE_INPUT_CODE;
-                p.closeInventory();
-                p.sendMessage("§e请输入邀请码:");
+                // ★ 第九批：已绑定邀请人则拦截，不再进入输入
+                Object boundInvite = db.getField(
+                        p.getName(), "invited_by");
+                if (boundInvite != null && !boundInvite
+                        .toString().isEmpty()) {
+                    p.sendMessage("§c你已绑定邀请人（"
+                            + boundInvite
+                            + "），邀请码仅能使用一次");
+                } else {
+                    chatInput.getState(p).type =
+                            ChatInputManager.InputType
+                                    .INVITE_INPUT_CODE;
+                    p.closeInventory();
+                    p.sendMessage("§e请输入邀请码:");
+                }
             }
             return;
         }

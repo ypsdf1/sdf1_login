@@ -2431,11 +2431,31 @@ public class GUIManager implements Listener {
         g.setItem(12, mkItem(Material.PLAYER_HEAD,
                 "§a本月邀请",
                 "§7已邀请 §e" + monthly + " §7人"));
-        g.setItem(16, mkItem(Material.BOOK,
-                "§e输入邀请码",
-                "§7绑定他人的邀请码",
-                "",
-                "§e点击输入"));
+        // ★ 第九批：已绑定邀请人则显示「邀请成功时间+邀请人」，
+        //   否则显示「输入邀请码」按钮
+        String invitedBy = (String) plugin.getDb()
+                .getField(p.getName(), "invited_by");
+        if (invitedBy != null && !invitedBy.isEmpty()) {
+            Object tsObj = plugin.getDb().getField(
+                    p.getName(), "invited_at");
+            long ts = (tsObj instanceof Number)
+                    ? ((Number) tsObj).longValue() : 0L;
+            String timeStr = ts > 0
+                    ? new java.text.SimpleDateFormat(
+                            "yyyy-MM-dd HH:mm")
+                            .format(new java.util.Date(ts))
+                    : "未知";
+            g.setItem(16, mkItem(Material.WRITTEN_BOOK,
+                    "§a邀请已绑定",
+                    "§7邀请人: §e" + invitedBy,
+                    "§7绑定时间: §e" + timeStr));
+        } else {
+            g.setItem(16, mkItem(Material.BOOK,
+                    "§e输入邀请码",
+                    "§7绑定他人的邀请码",
+                    "",
+                    "§e点击输入"));
+        }
         String ugLabel = "§7(玩家)";
         UserGroupManager.UserGroupConfig ugCfg =
                 plugin.getUserGroup().getHighestGroup(p.getName());

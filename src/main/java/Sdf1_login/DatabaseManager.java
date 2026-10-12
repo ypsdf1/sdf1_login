@@ -51,6 +51,7 @@ public class DatabaseManager {
                     + "gift_claimed TEXT DEFAULT '',"
                     + "invite_code TEXT DEFAULT '',"
                     + "invited_by TEXT DEFAULT '',"
+                    + "invited_at INTEGER DEFAULT 0,"
                     + "monthly_invite_count INTEGER DEFAULT 0,"
                     + "invite_month TEXT DEFAULT '',"
                     + "points INTEGER DEFAULT 0,"
@@ -92,6 +93,10 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "last_login_ip",
                     "TEXT DEFAULT ''");
+            // ★ 第九批：邀请绑定时间（毫秒时间戳），
+            //   供「我的邀请码」GUI 显示邀请成功时间
+            safeAdd(st, "invited_at",
+                    "INTEGER DEFAULT 0");
             // UI偏好：1=CLI(默认), 0=GUI
             safeAdd(st, "ui_mode",
                     "INTEGER DEFAULT 1");

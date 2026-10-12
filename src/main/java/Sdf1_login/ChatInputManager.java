@@ -662,15 +662,35 @@ public class ChatInputManager {
                                 u.get("player_name");
                         db.setField(myName,
                                 "invited_by", inv);
+                        // ★ 第九批：绑定时间落库（供邀请GUI显示
+                        //   「邀请成功时间+邀请人」）
+                        db.setField(myName, "invited_at",
+                                System.currentTimeMillis());
+                        // ★ 第九批（配置懒更新）：玩家绑定邀请码时
+                        //   自动重载 规则.md，实时刷新奖励信息
+                        //   （不再依赖启动加载或定时热重载）
+                        mainPlugin.getCommission().loadRules();
+                        // ★ 第九批：绑定即计入邀请人「本月邀请」
+                        //   （修复旧逻辑在签到才计数导致恒 0 人）
+                        mainPlugin.getInvite().onInviteeBind(
+                                inv, myName);
                         // ★ 第八批（2026-10-12）：绑定奖励改按
                         //   邀请好友赢债券/规则.md 发债券；
                         //   旧 addPoints(inv,50) 积分随提成规则体系废弃
+                        // ★ 第九批：奖励单向改双向——邀请人 + 被邀请人
                         int bondGive = mainPlugin
                                 .getCommission()
                                 .payInviteBond(inv, myName);
-                        p.sendMessage(
-                                "§a邀请成功！邀请人: "
-                                        + inv);
+                        int bondGet = mainPlugin
+                                .getCommission()
+                                .payInviteeBond(myName, inv);
+                        String bMsg =
+                                "§a邀请成功！邀请人: " + inv;
+                        if (bondGet > 0) {
+                            bMsg += "§7，你获得 §e" + bondGet
+                                    + " §a债券";
+                        }
+                        p.sendMessage(bMsg);
                         Player ip =
                                 Bukkit.getPlayerExact(inv);
                         if (ip != null
