@@ -83,6 +83,9 @@ public class ShopManager implements Listener {
     private final Map<UUID, Integer> publishQueueTotal = new HashMap<>();
     // ===== 编辑模式（2026-10-11 任务1）：UUID → 正在编辑的商品ID =====
     private final Map<UUID, Long> editListingId = new HashMap<>();
+    // ★ 会话令牌（2026-10-11 第五批）：进入新会话/新步骤时 +1，
+    //   旧的超时计时器触发时令牌不符即作废（防止级联误杀新会话）
+    private final Map<UUID, Integer> publishSessionSeq = new HashMap<>();
     // ===== 出售偏好（2026-10-11 任务4）：手续费承担模式 =====
     /** 奸商模式：手续费由买方出（买家支付 = 售价 + 手续费） */
     public static final String FEE_MODE_BUYER = "BUYER";
@@ -4255,9 +4258,26 @@ public class ShopManager implements Listener {
             return;
         }
         UUID uuid = p.getUniqueId();
+        // ★ 第五批：入口先清理残留会话（任何原因中断后遗留的暂存/计时器），
+        //   保证批量入口永远不会被旧状态锁死
+        if (publishListening.contains(uuid) || pendingPublishItem.containsKey(uuid)
+                || publishStep.containsKey(uuid) || editListingId.containsKey(uuid)) {
+            ItemStack stranded = pendingPublishItem.remove(uuid);
+            if (stranded != null) returnItem(p, stranded);
+            publishListening.remove(uuid);
+            publishStep.remove(uuid);
+            pendingPublishDesc.remove(uuid);
+            editListingId.remove(uuid);
+            nextPublishSession(uuid);
+            p.sendMessage("§7[二手商店] 已重置上次未完成的上架流程"
+                    + (stranded != null ? "（暂存物品已退还）" : ""));
+        }
         Inventory top = p.getOpenInventory().getTopInventory();
         if (top == null
-                || !T_SH_PUBLISH.equals(p.getOpenInventory().getTitle())) return;
+                || !T_SH_PUBLISH.equals(p.getOpenInventory().getTitle())) {
+            p.sendMessage("§c§l[二手商店] §f发布界面已失效，请重新打开");
+            return;
+        }
 
         int mine = countSecondHandMine(p.getName());
         int max = shMaxListingsFor(p.getName());
@@ -4286,6 +4306,11 @@ public class ShopManager implements Listener {
             return;
         }
         p.closeInventory();
+        java.util.LinkedList<ItemStack> oldQ = publishQueue.remove(uuid);
+        if (oldQ != null && !oldQ.isEmpty()) {
+            for (ItemStack it : oldQ) returnItem(p, it);
+            p.sendMessage("§7[二手商店] 已退还上次批量遗留的 §f" + oldQ.size() + " §7件物品");
+        }
         publishQueue.put(uuid, items);
         publishQueueTotal.put(uuid, items.size());
         p.sendMessage("§6§l[二手商店] §e开始批量上架，共 §f" + items.size() + " §e件");
@@ -4299,6 +4324,18 @@ public class ShopManager implements Listener {
             publishQueue.remove(uuid);
             publishQueueTotal.remove(uuid);
             p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            if (p.isOnline()) openSecondHandShop(p, 0);
+            return;
+        }
+        // ★ 第五批：每件定价前复检上架上限——中途达到上限（组变更/他人代发等）
+        //   立即中止并退还剩余，防止超发或流程悬空
+        int mineNow = countSecondHandMine(p.getName());
+        int maxNow = shMaxListingsFor(p.getName());
+        if (mineNow >= maxNow) {
+            abortPublish(p, uuid, null);
+            int back = q.size();
+            p.sendMessage("§c§l[二手商店] §f已达上架上限 §6" + maxNow
+                    + " §f件，批量中止，剩余 §e" + back + " §f件已退还");
             if (p.isOnline()) openSecondHandShop(p, 0);
             return;
         }
@@ -4377,10 +4414,45 @@ public class ShopManager implements Listener {
         }
     }
 
-    /** 上架聊天输入超时（15秒）：清状态并退还暂存物品。每个步骤完成会重新计时。 */
+    // ===== 批量上架：玩家退出（2026-10-11 第五批：退还未定价物品防吞物+清状态） =====
+    @EventHandler
+    public void onPublishQuit(org.bukkit.event.player.PlayerQuitEvent e) {
+        Player p = e.getPlayer();
+        UUID uuid = p.getUniqueId();
+        ItemStack back = pendingPublishItem.remove(uuid);
+        java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
+        publishQueueTotal.remove(uuid);
+        publishListening.remove(uuid);
+        publishStep.remove(uuid);
+        pendingPublishDesc.remove(uuid);
+        editListingId.remove(uuid);
+        nextPublishSession(uuid); // 作废挂起的超时计时器
+        if (back != null) returnItem(p, back);
+        if (q != null) {
+            for (ItemStack it : q) returnItem(p, it);
+        }
+    }
+
+    /** 递增玩家的发布会话令牌：此前所有挂起的超时计时器立即作废 */
+    private int nextPublishSession(UUID uuid) {
+        int v = publishSessionSeq.getOrDefault(uuid, 0) + 1;
+        publishSessionSeq.put(uuid, v);
+        return v;
+    }
+
+    /**
+     * 上架聊天输入超时（15秒）：清状态并退还暂存物品。每个步骤完成会重新计时。<br>
+     * ★ 第五批修复：计时器带会话令牌——触发时若玩家已进入新会话/新步骤
+     *   （令牌不符）直接作废，不再误杀正在进行的批量上架。此前每步各挂一个
+     *   15秒计时器且互不作废，旧计时器会在 15 秒后杀死任何新开始的会话，
+     *   表现为批量上架莫名中止、反复重试反复被"超时"，像被永久锁死。
+     */
     private void schedulePublishTimeout(Player p) {
+        final UUID uuid = p.getUniqueId();
+        final int token = nextPublishSession(uuid); // 作废此前所有计时器
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            UUID uuid = p.getUniqueId();
+            Integer cur = publishSessionSeq.get(uuid);
+            if (cur == null || cur != token) return; // 已被新会话/新步骤取代
             if (publishListening.remove(uuid)) {
                 publishStep.remove(uuid);
                 pendingPublishDesc.remove(uuid);
@@ -4498,6 +4570,15 @@ public class ShopManager implements Listener {
             return;
         }
         pendingPublishItem.remove(uuid);
+
+        // ★ 第五批：入库前复检上限——中途已达上限退还不超发
+        int mineNow = countSecondHandMine(p.getName());
+        int maxNow = shMaxListingsFor(p.getName());
+        if (mineNow >= maxNow) {
+            abortPublish(p, uuid, item);
+            p.sendMessage("§c[二手商店] 已达上架上限 §6" + maxNow + " §c件，物品已退还");
+            return;
+        }
 
         // ★ 入库前二次校验：SN / 宝箱物品严禁上架（2026-10-11）
         String blocked2 = secondHandBlockReason(item);
