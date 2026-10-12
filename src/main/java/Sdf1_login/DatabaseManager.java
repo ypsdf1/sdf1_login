@@ -711,6 +711,29 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * ★ OP白名单授权校验用（2026-10-11）：与 userExistsIgnoreCase 相反的失败语义——
+     * SQL 异常一律返回 false（保守拒绝）。opwl add/addtime 宁可让运维改 json 兜底，
+     * 也绝不因 DB 抖动把临时 OP 发给未注册玩家。
+     */
+    public boolean userExistsStrict(String name) {
+        if (name == null || name.isEmpty()) return false;
+        try {
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT 1 FROM users "
+                            + "WHERE player_name=? "
+                            + "COLLATE NOCASE");
+            ps.setString(1, name);
+            boolean r = ps.executeQuery().next();
+            ps.close();
+            return r;
+        } catch (SQLException e) {
+            logger.warning("[OP白名单] 注册校验查询失败(拒绝): "
+                    + e.getMessage());
+            return false;
+        }
+    }
+
     public void createUser(String name, String hash,
                            String salt) {
         try {

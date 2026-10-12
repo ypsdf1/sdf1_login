@@ -250,6 +250,7 @@ public class ShopManager implements Listener {
         startHourlyTask();
         loadItemNbtData();
         loadSecondHandConfig();
+        startShCfgReloadTask();
         loadSecondHand();
         startCleanupTask();
     }
@@ -3544,12 +3545,30 @@ public class ShopManager implements Listener {
 
     // ==================== 二手交易商店（2026-10-11 /shopbuy） ====================
 
+    /** 配置区域快照（项目 → 文件原值），增量热重载 diff 基准（2026-10-11 问题4） */
+    private final java.util.Map<String, String> shCfgSnapshot = new java.util.LinkedHashMap<>();
+
     /**
      * 释放并解析二手交易配置（shop/二手交易规则.md，配置+说明合二为一）。<br>
      * 只读取「## ----配置区域开始----」到「## ----配置区域结束----」之间的表格行，
      * 其余内容（说明书）一律忽略。文件不存在时从 jar 释放，解析失败用默认值。
      */
     private void loadSecondHandConfig() {
+        java.util.Map<String, String> cfg = readSecondHandCfgMap();
+        for (java.util.Map.Entry<String, String> e : cfg.entrySet()) {
+            applySecondHandCfgItem(e.getKey(), e.getValue());
+        }
+        clampSecondHandCfg();
+        shCfgSnapshot.clear();
+        shCfgSnapshot.putAll(cfg);
+        plugin.getLogger().info("[二手商店] 配置: 上架上限=" + shMaxListings
+                + " 最低售价=" + shMinPrice + " 手续费=" + feeRateLabel()
+                + (shFeeByBuyer ? "（买方出）" : "（卖方出）"));
+    }
+
+    /** 读配置区域表格行 → 项目→值（说明区忽略）；文件不存在先从 jar 释放。 */
+    private java.util.Map<String, String> readSecondHandCfgMap() {
+        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
         File f = new File(plugin.getDataFolder(), "shop/二手交易规则.md");
         if (!f.exists()) {
             try {
@@ -3558,8 +3577,7 @@ public class ShopManager implements Listener {
                 plugin.getLogger().warning("[二手商店] 配置文件释放失败: " + e.getMessage());
             }
         }
-        if (!f.exists()) return; // 释放失败 → 用默认值
-
+        if (!f.exists()) return m; // 释放失败 → 空表
         boolean inCfg = false;
         try (BufferedReader br = new BufferedReader(new InputStreamReader(
                 new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -3571,21 +3589,65 @@ public class ShopManager implements Listener {
                 if (!inCfg || !t.startsWith("|")) continue;
                 String[] cols = t.split("\\|", -1);
                 if (cols.length < 4) continue; // | 项目 | 解释 | 值 |
-                String key = cols[1].trim();
-                String val = cols[cols.length - 2].trim();
-                applySecondHandCfgItem(key, val);
+                m.put(cols[1].trim(), cols[cols.length - 2].trim());
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[二手商店] 配置解析失败: " + e.getMessage());
         }
-        // 钳制（锁死低价为0；手续费 10 以内）
+        return m;
+    }
+
+    /** 配置钳制（锁死低价为0；手续费 10 以内） */
+    private void clampSecondHandCfg() {
         if (shMaxListings < 0) shMaxListings = 0;
         if (shMinPrice < 0) shMinPrice = 0;
         if (shFeeRate < 0) shFeeRate = 0;
         if (shFeeRate > 10) shFeeRate = 10;
-        plugin.getLogger().info("[二手商店] 配置: 上架上限=" + shMaxListings
-                + " 最低售价=" + shMinPrice + " 手续费=" + feeRateLabel()
-                + (shFeeByBuyer ? "（买方出）" : "（卖方出）"));
+    }
+
+    /**
+     * ★ 增量热重载（2026-10-11 问题4）：只比对配置区域（说明区忽略），
+     * 无变更一律闭嘴；有变更才播报「哪里变了（旧值 → 新值）」并应用。<br>
+     * 触发点：① 每整点 0/15/30/45 分定时扫描；
+     * ② 例外——买家购买成功 / 卖家上架成功时立刻触发一次对齐数据。
+     */
+    private void reloadSecondHandConfigIncremental(String trigger) {
+        java.util.Map<String, String> m = readSecondHandCfgMap();
+        if (m.isEmpty()) return;
+        java.util.List<String> changes = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : m.entrySet()) {
+            String old = shCfgSnapshot.get(e.getKey());
+            if (old == null) {
+                changes.add(e.getKey() + "（新增）= " + e.getValue());
+                applySecondHandCfgItem(e.getKey(), e.getValue());
+            } else if (!old.equals(e.getValue())) {
+                changes.add(e.getKey() + ": " + old + " → " + e.getValue());
+                applySecondHandCfgItem(e.getKey(), e.getValue());
+            }
+        }
+        for (String k : shCfgSnapshot.keySet()) {
+            if (!m.containsKey(k)) changes.add(k + "（配置中移除，保持现值）");
+        }
+        shCfgSnapshot.clear();
+        shCfgSnapshot.putAll(m);
+        if (changes.isEmpty()) return; // 平时闭嘴
+        clampSecondHandCfg();
+        plugin.getLogger().info("[二手商店] 配置增量热重载(" + trigger + ")，"
+                + changes.size() + " 项变更: " + String.join("；", changes));
+    }
+
+    /** 每整点 0/15/30/45 分扫描一次配置文件（初始对齐到下一个 15 分钟边界） */
+    private void startShCfgReloadTask() {
+        final long periodMs = 15 * 60 * 1000L;
+        long now = System.currentTimeMillis();
+        long next = (now / periodMs + 1) * periodMs;
+        long delayTicks = Math.max(1L, (next - now) / 50L);
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                reloadSecondHandConfigIncremental("定时扫描");
+            }
+        }.runTaskTimer(plugin, delayTicks, periodMs / 50L);
     }
 
     /** 按项目名应用单条配置（只认配置区域内的表格行） */
@@ -3785,19 +3847,25 @@ public class ShopManager implements Listener {
             if (is == null) continue;
             ItemMeta im = is.getItemMeta();
             if (im != null) {
-                int[] shsp = shFeeSplit(l.seller, l.price);
-                im.setLore(Arrays.asList(
-                        "§7卖家: §f" + l.seller,
-                        "§7售价: §6" + l.price + " §7枚债券",
-                        shsp[0] > 0
-                                ? "§7手续费: §6" + shsp[0] + " §7（"
-                                  + feeModeLabel(shFeeModeFor(l.seller))
-                                  + "）§7你需支付 §6" + shsp[1]
-                                : "§7无手续费",
-                        "§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
-                                .format(new Date(l.createdAt)),
-                        "",
-                        "§a左键购买"));
+                // 2026-10-11 第四批：①展示卖家描述 ②手续费仅奸商模式显示
+                //   （正常模式买家只付标价、无额外费用，隐藏手续费行）
+                java.util.List<String> lore = new java.util.ArrayList<>();
+                lore.add("§7卖家: §f" + l.seller);
+                lore.add("§7售价: §6" + l.price + " §7枚债券");
+                if (l.desc != null && !l.desc.isEmpty()) {
+                    lore.add("§7描述: §f" + l.desc);
+                }
+                if (FEE_MODE_BUYER.equals(shFeeModeFor(l.seller))) {
+                    int[] shsp = shFeeSplit(l.seller, l.price);
+                    lore.add(shsp[0] > 0
+                            ? "§7手续费: §6" + shsp[0] + " §7（奸商模式）§7你需支付 §6" + shsp[1]
+                            : "§7无手续费");
+                }
+                lore.add("§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
+                        .format(new Date(l.createdAt)));
+                lore.add("");
+                lore.add("§a左键购买");
+                im.setLore(lore);
                 is.setItemMeta(im);
             }
             g.setItem(ITEM_SLOTS[idx], is);
@@ -4240,7 +4308,7 @@ public class ShopManager implements Listener {
             q.poll();
             returnItem(p, it);
             p.sendMessage("§c[二手商店] 跳过不可上架物品 §e"
-                    + it.getType().name() + " §c(" + blocked + ")，已退还");
+                    + ItemNameResolver.toChinese(it.getType()) + " §c(" + blocked + ")，已退还");
             beginNextPublishItem(p, uuid);
             return;
         }
@@ -4253,7 +4321,7 @@ public class ShopManager implements Listener {
         publishListening.add(uuid);
         publishStep.put(uuid, 1);
         p.sendMessage("§6§l[二手商店] §e第 §f" + idx + "/" + total
-                + " §e件（§f" + it.getType().name() + " x" + it.getAmount()
+                + " §e件（§f" + ItemNameResolver.toChinese(it.getType()) + " x" + it.getAmount()
                 + "§e）请在聊天栏输入商品描述（§f无§e跳过，§c取消§e中止批量）");
         schedulePublishTimeout(p);
     }
@@ -4453,7 +4521,9 @@ public class ShopManager implements Listener {
         }
         secondHandListings.add(l);
         saveSecondHand();
-        p.sendMessage("§a§l[二手商店] §f上架成功: §e" + item.getType().name()
+        // ★ 上架成功立刻触发一次增量热重载，把配置数据对齐（2026-10-11 问题4 例外）
+        reloadSecondHandConfigIncremental("上架触发");
+        p.sendMessage("§a§l[二手商店] §f上架成功: §e" + ItemNameResolver.toChinese(item.getType())
                 + " §7x" + item.getAmount() + " §6" + price + " §7枚债券");
         // ★ 手续费展示按玩家出售偏好计算（2026-10-11 任务3/4）
         int fee = shFeeOf(price);
@@ -4591,7 +4661,9 @@ public class ShopManager implements Listener {
         }
         secondHandListings.remove(l);
         saveSecondHand();
-        p.sendMessage("§a§l[二手商店] §f购买成功: §e" + is.getType().name()
+        // ★ 购买成功立刻触发一次增量热重载，把配置数据对齐（2026-10-11 问题4 例外）
+        reloadSecondHandConfigIncremental("购买触发");
+        p.sendMessage("§a§l[二手商店] §f购买成功: §e" + ItemNameResolver.toChinese(is.getType())
                 + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券");
         if (fee > 0) {
             p.sendMessage("§7手续费 §6" + fee + " §7（" + feeModeLabel(feeMode)
@@ -4606,7 +4678,7 @@ public class ShopManager implements Listener {
         }
         Player seller = Bukkit.getPlayer(l.seller);
         if (seller != null && seller.isOnline()) {
-            seller.sendMessage("§a§l[二手商店] §f你的商品已售出: §e" + is.getType().name()
+            seller.sendMessage("§a§l[二手商店] §f你的商品已售出: §e" + ItemNameResolver.toChinese(is.getType())
                     + " §7x" + is.getAmount() + " §6" + l.price + " §7枚债券"
                     + (fee > 0 ? "§7，到手 §6" + sellerGot
                     + " §7（已扣手续费 §6" + fee + "§7）" : ""));

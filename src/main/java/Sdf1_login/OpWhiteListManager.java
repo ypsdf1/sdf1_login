@@ -1303,16 +1303,18 @@ public class OpWhiteListManager implements Listener {
 
     // ================= 注册检查 =================
 
-    /** 查被授权人是不是本服务器注册用户（DatabaseManager.userExistsIgnoreCase）。
-     *  查不到 / db 未就绪 一律返回 false（保守拒绝，让运维改 json 兜底）。 */
+    /** 查被授权人是不是本服务器注册用户（DatabaseManager.userExistsStrict 严格版）。
+     *  查不到 / db 未就绪 / SQL 异常一律返回 false（保守拒绝，让运维改 json 兜底）。
+     *  2026-10-11：userExistsIgnoreCase 在 SQL 异常时会放行（为封禁防护设计），
+     *  对 opwl 授权是漏洞——DB 抖动时未注册玩家也能拿到临时 OP，故换严格版。 */
     private boolean isRegistered(String name) {
         if (name == null || name.isEmpty()) return false;
         DatabaseManager db = plugin.getDb();
         if (db == null) return false;
         try {
-            return db.userExistsIgnoreCase(name);
+            return db.userExistsStrict(name);
         } catch (Throwable t) {
-            plugin.getLogger().warning("[OP白名单] 注册检查异常: " + t.getMessage());
+            plugin.getLogger().warning("[OP白名单] 注册检查异常(拒绝): " + t.getMessage());
             return false;
         }
     }
