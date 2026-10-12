@@ -3205,6 +3205,14 @@ public class Main extends JavaPlugin
             "sdf1_menu";
 
     public void giveMenuSnowball(Player p) {
+        giveMenuSnowball(p, null);
+    }
+
+    /**
+     * @param reuseSn 复用的旧 SN（自定义图标≉雪球互换时转移登记，
+     *                不重新申领、不触发冷静期）；null = 正常申领
+     */
+    public void giveMenuSnowball(Player p, String reuseSn) {
         String name = p.getName();
         try {
         // getLogger().info("[菜单] ★调用 giveMenuSnowball: " + name);
@@ -3231,7 +3239,8 @@ public class Main extends JavaPlugin
         }
 
         // ★ SN 管控：1人同种类仅限1个，旧SN未注销/冷静期未过不再发放
-        if (snManager != null
+        // ★ 复用旧 SN 换载体时不拦——登记本来就是本人的
+        if (reuseSn == null && snManager != null
                 && snManager.isBlocked(p, SnManager.TYPE_MENU)) {
             return;
         }
@@ -3299,7 +3308,14 @@ public class Main extends JavaPlugin
             im.setLore(lore);
             snow.setItemMeta(im);
         }
-        if (!snTag(p, snow, SnManager.TYPE_MENU, "雪球菜单")) {
+        if (reuseSn != null && snManager != null) {
+            // ★ 图标≉雪球互换：SN 转移到新载体，登记不动（不触发冷静期）
+            snManager.writeSn(snow, reuseSn,
+                    SnManager.TYPE_MENU);
+            snManager.logSn(reuseSn, SnManager.TYPE_MENU,
+                    "xfer", p.getName(),
+                    "菜单载体转换:自定义图标->雪球");
+        } else if (!snTag(p, snow, SnManager.TYPE_MENU, "雪球菜单")) {
             return;
         }
         int slot = p.getInventory()

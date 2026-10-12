@@ -1670,6 +1670,34 @@ public class GUIManager implements Listener {
             return;
         }
 
+        // ★ 第八批（2026-10-12）：图标槽接入 SN 系统（此前完全没拦）——
+        //   ① 背包已有自定义菜单物品 → 拒绝重复载体；
+        //   ② 读旧雪球 SN 作换载体复用（登记不动、不触发冷静期）；
+        //   ③ 无旧 SN 则先过申领管控（冷静期/1人1个），拦在动背包之前。
+        SnManager snm = plugin.getSnManager();
+        for (ItemStack pre : p.getInventory().getContents()) {
+            if (isCustomMenuTrigger(pre)) {
+                p.sendMessage("§c[菜单] 你已拥有菜单物品，请先清除当前图标再更换");
+                return;
+            }
+        }
+        String reuseSn = null;
+        if (snm != null) {
+            for (ItemStack pre : p.getInventory().getContents()) {
+                if (pre != null
+                        && pre.getType() == Material.SNOWBALL
+                        && isMenuTriggerItem(pre)) {
+                    reuseSn = snm.readSn(pre);
+                    break;
+                }
+            }
+        }
+        if (reuseSn == null && snm != null
+                && snm.isBlocked(p, SnManager.TYPE_MENU)) {
+            p.sendMessage("§c[SN] 菜单物品管控中（冷静期或已有有效登记），暂不能更换图标");
+            return;
+        }
+
         int amount = item.getAmount();
         removeSnowballFromInventory(p); //没收雪球菜单
         // 1. 从来源移除
@@ -1740,6 +1768,23 @@ public class GUIManager implements Listener {
             menu.setItemMeta(mm);
         }
 
+        // 4.5 ★ 第八批：自定义菜单物品打 SN 副本——
+        //   有旧雪球 SN 则转移复用；没有则新申领（入口已过管控，
+        //   此处失败按 DB 异常放行不打标，与 Main.snTag 同款容错）
+        String menuSn = reuseSn;
+        if (menuSn == null && snm != null) {
+            menuSn = snm.applySnQuiet(p,
+                    SnManager.TYPE_MENU, "自定义菜单图标");
+        }
+        if (menuSn != null && snm != null) {
+            snm.writeSn(menu, menuSn, SnManager.TYPE_MENU);
+            if (reuseSn != null) {
+                snm.logSn(menuSn, SnManager.TYPE_MENU, "xfer",
+                        p.getName(),
+                        "菜单载体转换:雪球->自定义图标");
+            }
+        }
+
         // 5. 发放菜单物品
         int slot = p.getInventory()
                 .firstEmpty();
@@ -1766,6 +1811,18 @@ public class GUIManager implements Listener {
         String dbIcon = plugin.getDb()
                 .getMenuIcon(p.getName());
 
+        // ★ 第八批：没收前先读自定义物品的 SN，发雪球时转移复用
+        //   （登记不动，避免旧登记把新雪球卡在「1人1个」/冷静期）
+        String reuseSn = null;
+        if (plugin.getSnManager() != null) {
+            for (ItemStack it : p.getInventory().getContents()) {
+                if (isCustomMenuTrigger(it)) {
+                    reuseSn = plugin.getSnManager().readSn(it);
+                    break;
+                }
+            }
+        }
+
         // 1. 没收自定义菜单物品
         removeCustomMenuFromInventory(p);
 
@@ -1776,8 +1833,8 @@ public class GUIManager implements Listener {
         // 3. 强制清空slot 31
         topInv.setItem(31, null);
 
-        // 4. 发雪球
-        plugin.giveMenuSnowball(p);
+        // 4. 发雪球（复用旧 SN 转移登记）
+        plugin.giveMenuSnowball(p, reuseSn);
 
         // 5. 还原件
         if (dbIcon != null && !dbIcon.isEmpty()) {

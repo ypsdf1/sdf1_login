@@ -1,18 +1,33 @@
 package Sdf1_login;
 
-import org.bukkit.entity.Player;
-
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.logging.Logger;
 
+/**
+ * 邀请好友赢债券奖励（配置：邀请好友赢债券/规则.md）。
+ *
+ * <p>★ 2026-10-12 第八批（用户决策）：旧「提成规则.txt」（邀请人数:提成百分比）
+ * 体系整体废弃——其 payCommission 因 Economy 移除早已是无调用死代码，
+ * 签到链路奖励计算 (int)(1*rate) 恒为 0 从未生效（「邀请好友无效」根因）。
+ * 代码层面删除旧 txt（启动时清理而非 SFTP 手删——否则 writeDefault
+ * 会再次释放，写文件逻辑已一并移除），奖励改由新 md 规则控制：
+ * 绑定邀请码成功时立即结算债券，受「单次邀请奖励上限」「单日邀请奖励上限」
+ * 双重限制（当日累计按 bond_transaction type='invite_reward' 汇总，自然日重置）。</p>
+ */
 public class CommissionManager {
 
     private final Main main;
     private final Logger logger;
-    private final List<double[]> rules =
-            new ArrayList<>();
+
+    /** 单次邀请奖励（债券数，绑定成功立即结算） */
+    private volatile int perInviteReward = 10;
+    /** 单日邀请奖励上限（债券数，自然日重置） */
+    private volatile int dailyInviteCap = 100;
 
     public CommissionManager(Main main) {
         this.main = main;
@@ -21,189 +36,151 @@ public class CommissionManager {
     }
 
     public void loadRules() {
-        rules.clear();
-        File f = new File(
-                main.getDataFolder(),
+        // ★ 代码层面删除旧提成规则.txt（手删会被再次释放，故写文件
+        //   逻辑已移除，这里负责清理存量文件）
+        File legacy = new File(main.getDataFolder(),
                 "提成规则.txt");
-        if (!f.exists()) {
-            writeDefault(f);
+        if (legacy.exists() && legacy.delete()) {
+            logger.info("[Commission] 已删除旧版 提成规则.txt"
+                    + "（改由 邀请好友赢债券/规则.md 控制）");
         }
-        try (BufferedReader br =
-                     new BufferedReader(
-                             new InputStreamReader(
-                                     new FileInputStream(f),
-                                     StandardCharsets
-                                             .UTF_8))) {
+
+        File f = new File(main.getDataFolder(),
+                "邀请好友赢债券/规则.md");
+        if (!f.exists()) {
+            try {
+                main.saveResource(
+                        "邀请好友赢债券/规则.md", false);
+            } catch (Exception e) {
+                logger.warning("[Commission] 规则文件释放失败: "
+                        + e.getMessage());
+            }
+        }
+        if (!f.exists()) {
+            logger.warning("[Commission] 规则文件缺失，使用默认值"
+                    + " 单次=" + perInviteReward
+                    + " 单日=" + dailyInviteCap);
+            return;
+        }
+        boolean inCfg = false;
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(
+                        new FileInputStream(f),
+                        StandardCharsets.UTF_8))) {
             String line;
             while ((line = br.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty()
-                        || line.startsWith("#"))
+                String t = line.trim();
+                if (t.startsWith("##") && t.contains("配置区")
+                        && t.contains("开始")) {
+                    inCfg = true;
                     continue;
-                // 格式: 邀请人数:提成百分比
-                // 如 "5:15" = 邀请5人提成15%
-                String[] parts =
-                        line.split(":");
-                if (parts.length >= 2) {
-                    try {
-                        int count = Integer.parseInt(
-                                parts[0].trim());
-                        double rate = Double
-                                .parseDouble(
-                                        parts[1]
-                                                .trim()) / 100.0;
-                        rules.add(new double[]{
-                                count, rate});
-                    } catch (Exception ignored) {
-                    }
+                }
+                if (t.startsWith("##") && t.contains("配置区")
+                        && t.contains("结束")) {
+                    break;
+                }
+                if (!inCfg || !t.startsWith("|")) continue;
+                String[] cols = t.split("\\|", -1);
+                if (cols.length < 4) continue; // | 键 | 解释 | 值 |
+                String key = cols[1].trim();
+                String val = cols[cols.length - 2].trim()
+                        .replace("`", "");
+                if ("单次邀请奖励上限".equals(key)) {
+                    perInviteReward = parseIntSafe(val,
+                            perInviteReward);
+                } else if ("单日邀请奖励上限".equals(key)) {
+                    dailyInviteCap = parseIntSafe(val,
+                            dailyInviteCap);
                 }
             }
-            // 按人数排序（从大到小）
-            rules.sort((a, b) ->
-                    Double.compare(b[0], a[0]));
-            logger.info(
-                    "[Commission] 加载 "
-                            + rules.size() + " 条提成规则");
+            logger.info("[Commission] 邀请债券规则: 单次="
+                    + perInviteReward + " 单日=" + dailyInviteCap);
         } catch (Exception e) {
-            logger.warning(
-                    "[Commission] 加载失败: "
-                            + e.getMessage());
+            logger.warning("[Commission] 规则解析失败: "
+                    + e.getMessage());
         }
     }
 
-    private void writeDefault(File f) {
-        try (PrintWriter pw = new PrintWriter(
-                new OutputStreamWriter(
-                        new FileOutputStream(f),
-                        StandardCharsets.UTF_8))) {
-            pw.println("# 邀请提成规则");
-            pw.println("# 格式: 邀请人数:提成百分比");
-            pw.println("# 邀请10人提成20%");
-            pw.println("10:20");
-            pw.println("# 邀请5人提成15%");
-            pw.println("5:15");
-            pw.println("# 邀请1人提成10%");
-            pw.println("1:10");
-        } catch (IOException ignored) {
-        }
-    }
-
-    /**
-     * 获取邀请人的提成比例
-     * 根据已邀请人数匹配最高规则
-     */
-    public double getCommissionRate(
-            String inviter) {
-        int inviteCount = getInviteCount(
-                inviter);
-        for (double[] rule : rules) {
-            if (inviteCount >= (int) rule[0]) {
-                return rule[1];
-            }
-        }
-        return 0;
-    }
-
-    /**
-     * 获取邀请人数
-     */
-    public int getInviteCount(
-            String inviter) {
+    private static int parseIntSafe(String s, int def) {
         try {
-            Object val =
-                    main.getDb().getField(
-                            inviter,
-                            "monthly_invite_count");
-            if (val instanceof Number) {
-                return ((Number) val).intValue();
-            }
-            Object total =
-                    main.getDb().getField(
-                            inviter,
-                            "total_invite_count");
-            if (total instanceof Number) {
-                return ((Number) total).intValue();
-            }
-        } catch (Exception ignored) {
+            return (int) Double.parseDouble(s.trim());
+        } catch (Exception e) {
+            return def;
         }
-        return 0;
+    }
+
+    /** 单次邀请奖励（债券） */
+    public int getPerInviteReward() {
+        return perInviteReward;
+    }
+
+    /** 单日邀请奖励上限（债券） */
+    public int getDailyInviteCap() {
+        return dailyInviteCap;
     }
 
     /**
-     * 发放提成
-     * 被邀请人获得奖励时，邀请人获得提成
+     * 邀请绑定成功 → 给邀请人发债券。
+     * 规则见 邀请好友赢债券/规则.md：每次按单次上限结算，
+     * 当日累计不超单日上限。
+     *
+     * @param inviter 邀请人（收款方）
+     * @param invitee 被邀请人（绑定者）
+     * @return &gt;0 实发债券数；0 = 今日已达上限或规则为0；
+     *         -1 = 异常/冻结未发
      */
-    public void payCommission(
-            String invitee,
-            double originalAmount) {
-        // 查找邀请人
-        String inviter = getInviter(invitee);
-        if (inviter == null
-                || inviter.isEmpty()) return;
-
-        double rate = getCommissionRate(
-                inviter);
-        if (rate <= 0) return;
-
-        double commission =
-                originalAmount * rate;
-        if (commission <= 0) return;
-
-        // Economy已移除，佣金提成功能不可用
-        // 邀请人可通过债券系统获取奖励
-
-        // 通知邀请人
-        Player inviterP =
-                main.getServer()
-                        .getPlayer(inviter);
-        if (inviterP != null
-                && inviterP.isOnline()) {
-            inviterP.sendMessage(
-                    "§a§l[邀请提成] §f"
-                            + invitee + " 完成任务，"
-                            + "你获得 §e"
-                            + String.format("%.2f",
-                            commission)
-                            + " §f游戏币提成 ("
-                            + (int)(rate * 100) + "%)");
+    public int payInviteBond(String inviter, String invitee) {
+        if (inviter == null || inviter.isEmpty()) return -1;
+        if (perInviteReward <= 0) return 0;
+        int used = inviteBondToday(inviter);
+        int room = dailyInviteCap - used;
+        if (room <= 0) {
+            logger.info("[Commission] " + inviter
+                    + " 今日邀请债券已达上限(" + dailyInviteCap + ")");
+            return 0;
         }
-
-        logger.info(
-                "[Commission] 提成: "
-                        + inviter + " ← "
-                        + invitee + " | "
-                        + String.format("%.2f",
-                        originalAmount)
-                        + " × "
-                        + (int)(rate * 100) + "% = "
-                        + String.format("%.2f",
-                        commission));
+        int give = Math.min(perInviteReward, room);
+        int after = main.getBonds().addBonds(inviter, give,
+                "invite_reward", invitee, "system",
+                "邀请好友绑定奖励(" + invitee + ")");
+        if (after < 0) return -1; // 冻结期未入账
+        logger.info("[Commission] 邀请债券: " + inviter + " ← "
+                + invitee + " | +" + give + "（今日累计 "
+                + (used + give) + "/" + dailyInviteCap + "）");
+        return give;
     }
 
-    /**
-     * 获取邀请人
-     */
-    private String getInviter(String player) {
+    /** 今日 0 点起该玩家已发放的邀请债券总数 */
+    private int inviteBondToday(String inviter) {
+        long dayStart = LocalDate.now()
+                .atStartOfDay(ZoneId.systemDefault())
+                .toInstant().toEpochMilli();
         try {
-            Object val =
-                    main.getDb().getField(
-                            player,
-                            "invited_by");
-            if (val != null
-                    && !val.toString()
-                    .isEmpty()) {
-                return val.toString();
-            }
-        } catch (Exception ignored) {
+            PreparedStatement ps = main.getDb()
+                    .getConnection().prepareStatement(
+                            "SELECT COALESCE(SUM(amount),0) "
+                                    + "FROM bond_transaction "
+                                    + "WHERE player_name=? "
+                                    + "AND type='invite_reward' "
+                                    + "AND time>=?");
+            ps.setString(1, inviter);
+            ps.setLong(2, dayStart);
+            ResultSet rs = ps.executeQuery();
+            int v = rs.next() ? rs.getInt(1) : 0;
+            rs.close();
+            ps.close();
+            return v;
+        } catch (Exception e) {
+            logger.warning("[Commission] 查询当日邀请债券失败: "
+                    + e.getMessage());
+            return 0;
         }
-        return null;
     }
 
     /**
      * 判断金额是否包含经济内容
      */
-    public boolean hasEconomyContent(
-            String text) {
+    public boolean hasEconomyContent(String text) {
         String t = text.toLowerCase();
         return t.contains("游戏币")
                 || t.contains("金币")

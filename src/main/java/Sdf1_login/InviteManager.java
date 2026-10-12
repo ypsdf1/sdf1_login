@@ -47,29 +47,11 @@ public class InviteManager {
                 invitedBy, "monthly_invite_count",
                 count + 1);
 
-        double rate = 0.10;
-        if (count + 1 > 15) {
-            rate = 0.60;
-        } else if (count + 1 > 10) {
-            rate = 0.35;
-        } else if (count + 1 > 5) {
-            rate = 0.15;
-        }
-
-        int bonus = (int) (1 * rate);
-        if (bonus > 0) {
-            plugin.getDb().addPoints(invitedBy, bonus);
-            Player inviterPlayer = Bukkit
-                    .getPlayerExact(invitedBy);
-            if (inviterPlayer != null
-                    && inviterPlayer.isOnline()) {
-                inviterPlayer.sendMessage(
-                        plugin.getConfig2()
-                                .msg("invite_referral_bonus")
-                                .replace("{points}",
-                                        String.valueOf(bonus)));
-            }
-        }
+        // ★ 第八批（2026-10-12）：旧「签到给邀请人积分提成」废弃——
+        //   原 bonus=(int)(1*rate) 恒为 0（rate 最大 0.60，截断后为 0），
+        //   奖励从未实际发放，即用户反馈「邀请好友无效」的根因；
+        //   邀请奖励统一在绑定邀请码时按 邀请好友赢债券/规则.md 发债券
+        //   （CommissionManager.payInviteBond）。此处只保留月度邀请计数。
     }
 
     public List<Map<String, Object>> getAllInviteData() {

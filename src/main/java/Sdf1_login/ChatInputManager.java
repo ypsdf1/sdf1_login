@@ -639,6 +639,18 @@ public class ChatInputManager {
                     reset(p);
                     return;
                 }
+                // ★ 第八批（2026-10-12）：邀请码一次性——已绑定过邀请人的
+                //   禁止重复使用（invited_by 持久落库，重启后依然拦截）
+                Object bound = db.getField(
+                        myName, "invited_by");
+                if (bound != null
+                        && !bound.toString().isEmpty()) {
+                    p.sendMessage(
+                            "§c你已绑定过邀请人（" + bound
+                                    + "），邀请码仅能使用一次");
+                    reset(p);
+                    return;
+                }
                 boolean found = false;
                 for (Map<String, Object> u :
                         db.getAllUsers()) {
@@ -650,17 +662,32 @@ public class ChatInputManager {
                                 u.get("player_name");
                         db.setField(myName,
                                 "invited_by", inv);
-                        db.addPoints(inv, 50);
+                        // ★ 第八批（2026-10-12）：绑定奖励改按
+                        //   邀请好友赢债券/规则.md 发债券；
+                        //   旧 addPoints(inv,50) 积分随提成规则体系废弃
+                        int bondGive = mainPlugin
+                                .getCommission()
+                                .payInviteBond(inv, myName);
                         p.sendMessage(
                                 "§a邀请成功！邀请人: "
                                         + inv);
                         Player ip =
-                                Bukkit.getPlayer(inv);
+                                Bukkit.getPlayerExact(inv);
                         if (ip != null
-                                && ip.isOnline())
+                                && ip.isOnline()) {
+                            String extra = "";
+                            if (bondGive > 0) {
+                                extra = "§7，你获得 §e"
+                                        + bondGive
+                                        + " §a债券";
+                            } else if (bondGive == 0) {
+                                extra = "§7（今日邀请债券已达上限）";
+                            }
                             ip.sendMessage("§a"
                                     + myName
-                                    + " 使用了您的邀请码");
+                                    + " 使用了您的邀请码"
+                                    + extra);
+                        }
                         found = true;
                         break;
                     }
