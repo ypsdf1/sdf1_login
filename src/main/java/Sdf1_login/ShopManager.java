@@ -4223,6 +4223,13 @@ public class ShopManager implements Listener {
         for (int i = 0; i < 45; i++) {
             if (keep[i] != null) g.setItem(i, keep[i]);
         }
+        // ★ 第七批（2026-10-12）：物品已克隆进新界面，先把旧界面清空再换视图——
+        //   openInventory 替换视图会同步触发 InventoryCloseEvent（旧视图标题仍是发布 GUI），
+        //   不清空则 onPublishGuiClose 把物品退还背包，而新界面还有一份克隆 = 物品复制
+        //   （玩家视角：切换偏好退了一份、发布时 GUI 里那份又上架，像退了两次）
+        for (int i = 0; i < 45; i++) {
+            if (old.getItem(i) != null) old.setItem(i, null);
+        }
         p.openInventory(g);
     }
 
