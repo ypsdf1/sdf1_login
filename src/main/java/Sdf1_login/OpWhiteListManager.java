@@ -146,7 +146,14 @@ public class OpWhiteListManager implements Listener {
         //   a) 15s tick 只做 checkAndReload()（指纹变化才重载+打日志，无变化静默 apply）
         //   b) 整点扫描做 checkAndReload() + apply()（撤销非法持有 + 补授权）
         //      且【无更新则不打印】心跳行——见 onQuarterPoint()
-        Bukkit.getScheduler().runTaskTimer(plugin, this::checkAndReload, 300L, 300L);
+        // ★ 2026-10-13 问题3：初始延迟原来写死 300 tick=15s，从插件启动时刻起算，
+        //   于是轮询点整体漂移固定偏移（实际 6/21/36/51 秒，期望 0/15/30/45 秒）。
+        //   改为对齐到下一个 15 秒墙钟边界后，再按 15s 周期跑（同 startShCfgReloadTask 范式）。
+        long now15 = System.currentTimeMillis();
+        long next15 = (now15 / 15000L + 1) * 15000L;
+        long delay15Ticks = Math.max(1L, (next15 - now15) / 50L);
+        Bukkit.getScheduler().runTaskTimer(plugin, this::checkAndReload,
+                delay15Ticks, 300L);
         long delayMs = millisToNextQuarterPoint();
         Bukkit.getScheduler().runTaskTimer(plugin, this::onQuarterPoint,
                 (long) delayMs / 50L, 18000L);

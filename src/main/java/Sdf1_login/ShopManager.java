@@ -103,6 +103,15 @@ public class ShopManager implements Listener {
     private double shFeeRate = 0.05;
     // 手续费支付方：true=买方出（订单加费），false=卖方出（到手价已含税）
     private boolean shFeeByBuyer = true;
+    // ===== 二手管理员认定（shop/二手交易规则.md「谁是管理员」，2026-10-13 问题1）=====
+    // tag（默认）= 只认全局tag管理标签；op = 只认 OP；player = 只认配置里指定的玩家名
+    private String shAdminMode = "tag";
+    // player 模式下指定的管理员玩家名（大小写不敏感比对）
+    private String shAdminPlayer = "";
+    // ===== 管理面板密码（同 md「默认管理员面板密码」，2026-10-13 问题2）=====
+    private String shAdminPassword = "";
+    // 已通过密码验证的管理员（本会话），退出即失效
+    private final Set<UUID> shAdminAuthed = new HashSet<>();
     // ===== 物品NBT数据 =====
     private final Map<String, String> itemNbtData =
             new HashMap<>();
@@ -3572,7 +3581,17 @@ public class ShopManager implements Listener {
         shCfgSnapshot.putAll(cfg);
         plugin.getLogger().info("[二手商店] 配置: 上架上限=" + shMaxListings
                 + " 最低售价=" + shMinPrice + " 手续费=" + feeRateLabel()
-                + (shFeeByBuyer ? "（买方出）" : "（卖方出）"));
+                + (shFeeByBuyer ? "（买方出）" : "（卖方出）")
+                + " | 管理员=" + shAdminModeLabel()
+                + " | 面板密码=" + (shAdminPassword.isEmpty() ? "未配置(回退全局管理密码)" : "已配置"));
+    }
+
+    /** 「谁是管理员」当前模式的人话标签（日志播报用） */
+    private String shAdminModeLabel() {
+        if ("op".equals(shAdminMode)) return "OP";
+        if ("player".equals(shAdminMode)) return "指定玩家 " + shAdminPlayer;
+        String tag = plugin.getConfig2().adminTag;
+        return "全局tag " + (tag.isEmpty() ? "(空)" : tag);
     }
 
     /** 读配置区域表格行 → 项目→值（说明区忽略）；文件不存在先从 jar 释放。 */
@@ -3669,7 +3688,13 @@ public class ShopManager implements Listener {
     /** 按项目名应用单条配置（只认配置区域内的表格行） */
     private void applySecondHandCfgItem(String key, String val) {
         try {
-            if (key.contains("可上架")) {
+            if (key.contains("管理员面板密码")) {
+                // ★ 2026-10-13 问题2：面板验证凭据（原实现漏了这行，静默丢弃）
+                shAdminPassword = val.trim();
+            } else if (key.contains("谁是管理员")) {
+                // ★ 2026-10-13 问题1：tag / op / player+名字 三模式
+                applyShAdminMode(val);
+            } else if (key.contains("可上架")) {
                 shMaxListings = Integer.parseInt(val);
             } else if (key.contains("最低售价")) {
                 shMinPrice = Integer.parseInt(val);
@@ -3882,10 +3907,50 @@ public class ShopManager implements Listener {
             "商品利用漏洞复制", "恶意炒作价格", "占位刷屏恶意上架", "违反二手交易规则其他条款"
     };
 
-    /** 管理员判定（OP 或带管理标签，与全站一致） */
+    /**
+     * 解析配置行「谁是管理员」：tag（默认）/ op / player+名字。<br>
+     * ★ 2026-10-13 问题1：原实现写死 p.isOp() || tag，配置写 tag 时 OP 也放行，
+     *   与配置文件「全局tag管理员」的规定冲突 —— 现按三模式严格判定。
+     */
+    private void applyShAdminMode(String val) {
+        String v = val == null ? "" : val.trim();
+        String low = v.toLowerCase(java.util.Locale.ROOT);
+        if (low.startsWith("player")) {
+            String name = v.substring(6).replaceFirst("^[\\s+：:]+", "").trim();
+            if (name.isEmpty()) {
+                plugin.getLogger().warning("[二手商店] 谁是管理员=player 但没写玩家名，保持原模式 "
+                        + shAdminMode);
+                return;
+            }
+            shAdminMode = "player";
+            shAdminPlayer = name;
+        } else if (low.equals("op")) {
+            shAdminMode = "op";
+            shAdminPlayer = "";
+        } else {
+            shAdminMode = "tag"; // 含 "tag"、空值、其它写法一律回退全局tag
+            shAdminPlayer = "";
+        }
+    }
+
+    /** 面板密码：优先 md「默认管理员面板密码」，未配置则回退全局管理密码 */
+    public String getShAdminPassword() {
+        if (shAdminPassword != null && !shAdminPassword.isEmpty()) return shAdminPassword;
+        return plugin.getConfig2().adminPassword;
+    }
+
+    /**
+     * 管理员判定（★ 2026-10-13 问题1：严格遵守配置行「谁是管理员」）。
+     * tag 模式下不再放行 OP；op 模式只认 OP；player 模式只认配置指定玩家。
+     */
     private boolean isShAdmin(Player p) {
+        if ("op".equals(shAdminMode)) return p.isOp();
+        if ("player".equals(shAdminMode)) {
+            return !shAdminPlayer.isEmpty() && shAdminPlayer.equalsIgnoreCase(p.getName());
+        }
+        // tag 模式（默认，配置写 tag）：只认全局管理标签
         String tag = plugin.getConfig2().adminTag;
-        return p.isOp() || (!tag.isEmpty() && p.getScoreboardTags().contains(tag));
+        return !tag.isEmpty() && p.getScoreboardTags().contains(tag);
     }
 
     /** 商品展示名（反序列化失败兜底） */
@@ -4239,7 +4304,9 @@ public class ShopManager implements Listener {
                     "§7在售: §f" + secondHandListings.size() + " §7件",
                     "§7已下架: §c" + secondHandDelisted.size() + " §7件",
                     "",
-                    "§e点击进入"));
+                    shAdminAuthed.contains(p.getUniqueId())
+                            ? "§e点击进入"
+                            : "§e点击进入（需输入管理密码）"));
         }
 
         g.setItem(48, page > 0
@@ -4291,8 +4358,18 @@ public class ShopManager implements Listener {
         if (raw == 53) { openShopMain(p); return true; }
         if (raw == 45) { openPublishGui(p); return true; }
         if (raw == 46) { openSecondHandMine(p); return true; }
-        if (raw == 47) { // ★ 第十二批：管理员入口
-            if (isShAdmin(p)) openSecondHandAdmin(p, 0);
+        if (raw == 47) { // ★ 第十二批：管理员入口（★ 问题2：先验密码再进面板）
+            if (!isShAdmin(p)) return true;
+            if (shAdminAuthed.contains(p.getUniqueId())) {
+                openSecondHandAdmin(p, 0);
+                return true;
+            }
+            // 未验证：关闭界面，转入聊天输入密码（会话内验证一次即可，退出失效）
+            p.closeInventory();
+            plugin.getChatInput().getState(p).type =
+                    ChatInputManager.InputType.SH_ADMIN_AUTH;
+            p.sendMessage("§e§l[二手管理] §f请在聊天栏输入管理面板密码（输入 §c取消 §7放弃）");
+            p.sendMessage("§7密码取自配置文件 §fshop/二手交易规则.md §7的「默认管理员面板密码」");
             return true;
         }
         if (raw == 48) {
@@ -4789,6 +4866,7 @@ public class ShopManager implements Listener {
         publishStep.remove(uuid);
         pendingPublishDesc.remove(uuid);
         editListingId.remove(uuid);
+        shAdminAuthed.remove(uuid); // ★ 问题2：退出即失效，下次进面板重新验密码
         nextPublishSession(uuid); // 作废挂起的超时计时器
         if (back != null) returnItem(p, back);
         if (q != null) {
@@ -4853,6 +4931,17 @@ public class ShopManager implements Listener {
     public void onPublishChat(org.bukkit.event.player.AsyncPlayerChatEvent e) {
         Player p = e.getPlayer();
         UUID uuid = p.getUniqueId();
+        // ★ 问题2（2026-10-13）：二手管理面板密码输入（与上架流程互斥，先判这里）
+        if (plugin.getChatInput().isInFlow(p)
+                && plugin.getChatInput().getState(p).type
+                == ChatInputManager.InputType.SH_ADMIN_AUTH) {
+            e.setCancelled(true);
+            final String authMsg = e.getMessage().trim();
+            plugin.getChatInput().reset(p); // 同步复位，防止 Main.onChat 重复消费
+            Bukkit.getScheduler().runTask(plugin,
+                    () -> handleShAdminAuth(p, uuid, authMsg));
+            return;
+        }
         if (!publishListening.contains(uuid)) return;
         e.setCancelled(true);
         // ★ 编辑模式分流（2026-10-11 任务1）：改售价/描述走独立状态机
@@ -4876,6 +4965,26 @@ public class ShopManager implements Listener {
         //   （2026-10-11 生产报错 InventoryOpenEvent may only be triggered synchronously）
         final String msg = e.getMessage().trim();
         Bukkit.getScheduler().runTask(plugin, () -> handlePublishInput(p, uuid, item, step, msg));
+    }
+
+    /**
+     * ★ 问题2（2026-10-13）：管理面板密码校验（主线程执行）。<br>
+     * 通过 → 记入本会话 shAdminAuthed 并打开面板；取消/失败 → 复位。
+     */
+    private void handleShAdminAuth(Player p, UUID uuid, String msg) {
+        plugin.getChatInput().reset(p);
+        if (!p.isOnline() || !isShAdmin(p)) return;
+        if (msg.isEmpty() || msg.equals("取消") || msg.equalsIgnoreCase("cancel")) {
+            p.sendMessage("§7[二手管理] 已取消，未进入管理面板");
+            return;
+        }
+        if (!msg.equals(getShAdminPassword())) {
+            p.sendMessage("§c§l[二手管理] §f管理面板密码错误，未进入");
+            return;
+        }
+        shAdminAuthed.add(uuid);
+        p.sendMessage("§a§l[二手管理] §f验证通过，进入管理面板");
+        openSecondHandAdmin(p, 0);
     }
 
     /**

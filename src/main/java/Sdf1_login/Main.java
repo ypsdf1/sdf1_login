@@ -3816,6 +3816,50 @@ public class Main extends JavaPlugin
     }
 
     // =========================================================
+    // ★ 问题4（2026-10-13）：控制台命令里的 @s 选择器报错中文化
+    //   控制台不是玩家，原版只会甩一句 "No player was found"，
+    //   这里在执行前拦下，用中文说清是哪条命令、哪个词、该怎么改。
+    //   优先级 HIGH：早于原版执行，取消后原版提示不会出现。
+    // =========================================================
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onConsoleSelfSelector(org.bukkit.event.server.ServerCommandEvent e) {
+        if (e.isCancelled()) return;
+        CommandSender cs = e.getSender();
+        if (cs instanceof Player) return; // 玩家执行时 @s 合法
+        String raw = e.getCommand().trim();
+        if (raw.isEmpty()) return;
+        String[] toks = raw.split("\\s+");
+        String head = toks[0].toLowerCase(java.util.Locale.ROOT);
+        if (head.startsWith("minecraft:")) head = head.substring(10);
+        // execute ... as ... run ... 链里的 @s 指向被 as 的实体，合法，不拦
+        if (head.equals("execute")) return;
+        // 纯文本广播命令：@s 是要发出去的字面文字，不是选择器，不拦
+        if (head.equals("say") || head.equals("me") || head.equals("teammsg")
+                || head.equals("tm") || head.equals("help") || head.equals("?")) {
+            return;
+        }
+        // 找第一个 @s 选择器（含 @s[...] 形态）
+        int idx = -1;
+        for (int i = 1; i < toks.length; i++) {
+            if (toks[i].equals("@s") || toks[i].startsWith("@s[")) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) return;
+        e.setCancelled(true);
+        cs.sendMessage("§c§l[命令未执行] §f/" + raw);
+        cs.sendMessage("§c原因: §f第 " + idx + " 个参数 §e" + toks[idx]
+                + " §f是 @s（=执行者自己），但控制台不是玩家，没有“自己”可指。");
+        cs.sendMessage("§7原版只会报: No player was found（没找到玩家），不说是哪句出的问题。");
+        cs.sendMessage("§7改法三选一:");
+        cs.sendMessage("§7  · 想对该玩家执行 → 直接写玩家名，如 §e/clear Steve minecraft:creeper_spawn_egg");
+        cs.sendMessage("§7  · 想对全体在线玩家 → 换成 §e@a");
+        cs.sendMessage("§7  · 想让某个玩家自己执行 → 用 §e/execute as <玩家> run §7加原命令");
+        getLogger().info("[命令] 控制台命令含 @s 被拦: " + raw + "（控制台无执行者自身）");
+    }
+
+    // =========================================================
     // ★ 任务50：无感切换 —— 服务端接管聊天栏 "/指令"
     //   · 命中服务器指令（含原版 + 插件）→ 直接执行
     //   · 指令名大小写不敏感（/SDF1_login 与 /sdf1_login 等价）

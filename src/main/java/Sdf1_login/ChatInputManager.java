@@ -15,6 +15,7 @@ public class ChatInputManager {
         SET_EMAIL,
         SET_EMAIL_VERIFY,
         ADMIN_AUTH,
+        SH_ADMIN_AUTH, // ★ 问题2：二手管理面板密码（ShopManager.onPublishChat 消费）
         ADMIN_SET_POINTS,
         ADMIN_SET_PWD,
         ADMIN_DELETE_CONFIRM,
