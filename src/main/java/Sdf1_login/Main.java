@@ -6624,7 +6624,10 @@ public class Main extends JavaPlugin
                 //   不能被二级菜单分支 cancel 或把 49 号位当成「返回主菜单」
                 && !title.equals("§6§l二手商店")
                 && !title.equals("§6§l我的二手上架")
-                && !title.equals("§6§l二手上架")) {
+                && !title.equals("§6§l二手上架")
+                // ★ 第十二批（2026-10-13）：管理员面板 + 下架理由面板
+                && !title.equals("§6§l二手管理")
+                && !title.equals("§6§l下架理由")) {
             e.setCancelled(true);
             if (slot == 49) {
                 gui.openMain(p);

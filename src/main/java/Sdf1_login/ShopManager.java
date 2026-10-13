@@ -64,6 +64,9 @@ public class ShopManager implements Listener {
     // ===== 二手交易商店（2026-10-11 /shopbuy）=====
     private final List<SecondHandListing> secondHandListings =
             new ArrayList<>();
+    // ★ 第十二批（2026-10-13）：管理员下架暂存列表（物品隐藏，等卖家上线发放）
+    private final List<SecondHandListing> secondHandDelisted =
+            new ArrayList<>();
     // 待定价上架：玩家UUID → 已暂存的物品（等待聊天输入售价）
     private final Map<UUID, ItemStack> pendingPublishItem =
             new HashMap<>();
@@ -235,6 +238,9 @@ public class ShopManager implements Listener {
         String desc;          // 卖家描述（可空，≤20字符，2026-10-11）
         String itemB64;       // 完整 ItemStack 的 Base64 序列化
         long createdAt;       // 上架时间戳（毫秒）
+        // ★ 第十二批（2026-10-13）：管理员下架暂存
+        boolean delisted;     // true=已下架（物品暂存隐藏，不参与销售）
+        String delistReason;  // 下架理由（管理员在9格面板选择，可空）
     }
 
 
@@ -3772,6 +3778,7 @@ public class ShopManager implements Listener {
     /** 载入二手商品（新格式: id|seller|price|createdAt|desc|base64；旧格式无desc段） */
     private void loadSecondHand() {
         secondHandListings.clear();
+        secondHandDelisted.clear();
         File f = secondHandFile();
         if (!f.exists()) return;
         try (BufferedReader br = new BufferedReader(
@@ -3781,7 +3788,7 @@ public class ShopManager implements Listener {
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.startsWith("#")) continue;
-                String[] parts = line.split("\\|", 6);
+                String[] parts = line.split("\\|", 8);
                 SecondHandListing l = new SecondHandListing();
                 try {
                     l.id = Long.parseLong(parts[0]);
@@ -3798,24 +3805,33 @@ public class ShopManager implements Listener {
                 } else {
                     continue;
                 }
-                secondHandListings.add(l);
+                // ★ 第十二批：8段格式带下架状态（parts[6]=status 1=下架，parts[7]=理由）
+                if (parts.length >= 8 && "1".equals(parts[6])) {
+                    l.delisted = true;
+                    l.delistReason = "-".equals(parts[7]) ? "" : parts[7];
+                    secondHandDelisted.add(l);
+                } else {
+                    secondHandListings.add(l);
+                }
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[二手商店] 载入失败: " + e.getMessage());
         }
     }
 
-    /** 保存二手商品（6段格式） */
+    /** 保存二手商品（8段格式：id|seller|price|createdAt|desc|base64|status|reason，两个列表都写） */
     private void saveSecondHand() {
         try (BufferedWriter bw = new BufferedWriter(
                 new OutputStreamWriter(
                         new FileOutputStream(secondHandFile()), StandardCharsets.UTF_8))) {
-            bw.write("# id|seller|price|createdAt|desc|base64");
+            bw.write("# id|seller|price|createdAt|desc|base64|status|reason");
             bw.newLine();
             for (SecondHandListing l : secondHandListings) {
-                String desc = l.desc == null ? "" : l.desc.replace("|", "");
-                bw.write(l.id + "|" + l.seller + "|" + l.price
-                        + "|" + l.createdAt + "|" + desc + "|" + l.itemB64);
+                bw.write(shLine(l, false));
+                bw.newLine();
+            }
+            for (SecondHandListing l : secondHandDelisted) {
+                bw.write(shLine(l, true));
                 bw.newLine();
             }
         } catch (Exception e) {
@@ -3823,12 +3839,329 @@ public class ShopManager implements Listener {
         }
     }
 
+    /** 拼一行持久化文本；下架行 status=1 带理由，在售行 status=0 */
+    private String shLine(SecondHandListing l, boolean delisted) {
+        String desc = l.desc == null ? "" : l.desc.replace("|", "");
+        String reason = (delisted && l.delistReason != null && !l.delistReason.isEmpty())
+                ? l.delistReason.replace("|", "") : "-";
+        return l.id + "|" + l.seller + "|" + l.price
+                + "|" + l.createdAt + "|" + desc + "|" + l.itemB64
+                + "|" + (delisted ? "1" : "0") + "|" + reason;
+    }
+
     private long nextSecondHandId() {
         long max = 0;
         for (SecondHandListing l : secondHandListings) {
             if (l.id > max) max = l.id;
         }
+        for (SecondHandListing l : secondHandDelisted) {
+            if (l.id > max) max = l.id;
+        }
         return max + 1;
+    }
+
+    // ===== ★ 第十二批（2026-10-13）：二手市场管理员面板 =====
+    /** 管理面板标题 */
+    private static final String T_SH_ADMIN = "§6§l二手管理";
+    /** 下架理由选择面板标题（9格） */
+    private static final String T_SH_DELIST = "§6§l下架理由";
+    /** 管理面板分页（与普通商店分页隔离） */
+    private final Map<UUID, Integer> shAdminPages = new HashMap<>();
+    /** 待下架目标：管理员UUID → 商品ID（理由面板确认前暂存） */
+    private final Map<UUID, Long> pendingDelistId = new HashMap<>();
+    /** 内置兜底理由（与模板 md 中 JSON 列表一致，配置读取失败时使用） */
+    private static final String[] DEFAULT_DELIST_REASONS = {
+            "商品包含违禁品", "商品售价非法", "商品描述与实物不符", "疑似诈骗或诱导交易",
+            "商品利用漏洞复制", "恶意炒作价格", "占位刷屏恶意上架", "违反二手交易规则其他条款"
+    };
+
+    /** 管理员判定（OP 或带管理标签，与全站一致） */
+    private boolean isShAdmin(Player p) {
+        String tag = plugin.getConfig2().adminTag;
+        return p.isOp() || (!tag.isEmpty() && p.getScoreboardTags().contains(tag));
+    }
+
+    /** 商品展示名（反序列化失败兜底） */
+    private String shItemName(String b64) {
+        ItemStack is = base64ToItem(b64);
+        return is == null ? "未知物品" : ItemNameResolver.toChinese(is.getType());
+    }
+
+    /**
+     * 读取下架理由列表（shop/二手交易规则.md 表格下方 JSON 代码块）。
+     * 围栏标记容错（模板笔误 ```son 也认），解析失败/为空 → 内置 8 条兜底。
+     */
+    private java.util.List<String> readShDelistReasons() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        File f = new File(plugin.getDataFolder(), "shop/二手交易规则.md");
+        if (f.exists()) {
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(f), StandardCharsets.UTF_8))) {
+                StringBuilder block = null;
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String t = line.trim();
+                    if (t.startsWith("```")) {
+                        if (block == null) { block = new StringBuilder(); continue; }
+                        // 代码块结束 → 尝试解析（可能有多个块，取第一个能解析出「理由列表」的）
+                        try {
+                            JsonObject root = com.google.gson.JsonParser
+                                    .parseString(block.toString()).getAsJsonObject();
+                            JsonArray arr = root.getAsJsonArray("理由列表");
+                            if (arr != null) {
+                                for (int i = 0; i < arr.size(); i++) {
+                                    String s = arr.get(i).getAsString();
+                                    if (s != null && !s.trim().isEmpty()) out.add(s.trim());
+                                }
+                            }
+                        } catch (Exception ignore) { /* 该块不是目标 JSON，继续找 */ }
+                        block = null;
+                        if (!out.isEmpty()) break;
+                    } else if (block != null) {
+                        block.append(line).append('\n');
+                    }
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[二手管理] 理由列表读取失败: " + e.getMessage());
+            }
+        }
+        if (out.isEmpty()) out.addAll(Arrays.asList(DEFAULT_DELIST_REASONS));
+        while (out.size() > 8) out.remove(out.size() - 1); // 理由面板只有8格
+        return out;
+    }
+
+    /** 在售+下架合并视图（管理面板按此顺序分页展示） */
+    private java.util.List<SecondHandListing> shAdminView() {
+        java.util.List<SecondHandListing> v = new java.util.ArrayList<>(secondHandListings);
+        v.addAll(secondHandDelisted);
+        return v;
+    }
+
+    /** 打开二手管理面板（54格；在售商品左键下架，已下架商品右键上架） */
+    public void openSecondHandAdmin(Player p, int page) {
+        Inventory g = Bukkit.createInventory(null, 54, T_SH_ADMIN);
+        java.util.List<SecondHandListing> view = shAdminView();
+        int total = (int) Math.ceil((double) view.size() / PAGE_SIZE);
+        if (total < 1) total = 1;
+        if (page < 0) page = 0;
+        if (page >= total) page = total - 1;
+        shAdminPages.put(p.getUniqueId(), page);
+        int start = page * PAGE_SIZE;
+        int end = Math.min(start + PAGE_SIZE, view.size());
+        for (int i = start; i < end; i++) {
+            int idx = i - start;
+            if (idx >= ITEM_SLOTS.length) break;
+            SecondHandListing l = view.get(i);
+            ItemStack is = base64ToItem(l.itemB64);
+            if (is == null) continue;
+            ItemMeta im = is.getItemMeta();
+            if (im != null) {
+                java.util.List<String> lore = new java.util.ArrayList<>();
+                lore.add("§7卖家: §f" + l.seller);
+                lore.add("§7售价: §6" + l.price + " §7枚债券");
+                if (l.desc != null && !l.desc.isEmpty()) {
+                    lore.add("§7描述: §f" + l.desc);
+                }
+                lore.add("§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
+                        .format(new Date(l.createdAt)));
+                lore.add("");
+                if (l.delisted) {
+                    lore.add("§c状态: 已下架（物品暂存中）");
+                    lore.add("§7理由: §f" + (l.delistReason == null || l.delistReason.isEmpty()
+                            ? "无" : l.delistReason));
+                    lore.add("§e右键: 重新上架（恢复销售）");
+                } else {
+                    lore.add("§a状态: 在售");
+                    lore.add("§c左键: 下架（选择理由，物品暂存）");
+                }
+                im.setLore(lore);
+                is.setItemMeta(im);
+            }
+            g.setItem(ITEM_SLOTS[idx], is);
+        }
+        g.setItem(4, mkItem(Material.BOOK, "§e§l二手市场管理",
+                "§7在售: §f" + secondHandListings.size() + " §7件",
+                "§7已下架: §c" + secondHandDelisted.size() + " §7件（暂存待发放）"));
+        g.setItem(48, page > 0
+                ? mkItem(Material.ARROW, "§7上一页")
+                : mkItem(Material.BLACK_STAINED_GLASS_PANE, " "));
+        g.setItem(49, mkItem(Material.PAPER, "§7" + (page + 1) + "/" + total));
+        g.setItem(50, page < total - 1
+                ? mkItem(Material.ARROW, "§7下一页")
+                : mkItem(Material.BLACK_STAINED_GLASS_PANE, " "));
+        g.setItem(53, mkItem(Material.ARROW, "§7返回二手商店"));
+        p.openInventory(g);
+    }
+
+    /** 管理面板点击：在售商品左键下架 / 已下架商品右键上架 */
+    public boolean handleSecondHandAdminClick(Player p, int raw, boolean left, boolean right) {
+        if (raw == 53) { openSecondHandShop(p, getSecondHandPage(p.getUniqueId())); return true; }
+        if (raw == 48 || raw == 50) {
+            int pg = shAdminPages.getOrDefault(p.getUniqueId(), 0);
+            openSecondHandAdmin(p, raw == 48 ? pg - 1 : pg + 1);
+            return true;
+        }
+        int idx = slotToIndex(raw);
+        if (idx < 0) return true;
+        java.util.List<SecondHandListing> view = shAdminView();
+        int pg = shAdminPages.getOrDefault(p.getUniqueId(), 0);
+        int actual = idx + pg * PAGE_SIZE;
+        if (actual < 0 || actual >= view.size()) return true;
+        SecondHandListing l = view.get(actual);
+        if (left && !l.delisted) {
+            pendingDelistId.put(p.getUniqueId(), l.id);
+            openDelistReasonGui(p, l);
+            return true;
+        }
+        if (right && l.delisted) {
+            doRelist(p, l.id);
+            return true;
+        }
+        p.sendMessage(l.delisted
+                ? "§e[二手管理] 该商品已下架，§e右键§f可重新上架"
+                : "§e[二手管理] 该商品在售中，§e左键§f可下架");
+        return true;
+    }
+
+    /** 9格下架理由面板（0-7 理由，8 取消） */
+    public void openDelistReasonGui(Player p, SecondHandListing l) {
+        java.util.List<String> reasons = readShDelistReasons();
+        Inventory g = Bukkit.createInventory(null, 9, T_SH_DELIST);
+        String nm = shItemName(l.itemB64);
+        for (int i = 0; i < 8 && i < reasons.size(); i++) {
+            g.setItem(i, mkItem(Material.PAPER, "§e§l" + reasons.get(i),
+                    "§7商品: §f" + nm,
+                    "§7卖家: §f" + l.seller,
+                    "§7售价: §6" + l.price + " §7枚债券",
+                    "",
+                    "§e点击选择此理由下架"));
+        }
+        g.setItem(8, mkItem(Material.BARRIER, "§c§l取消", "§7放弃下架操作"));
+        p.openInventory(g);
+    }
+
+    /** 理由面板点击 */
+    public boolean handleDelistReasonClick(Player p, int raw) {
+        Long id = pendingDelistId.remove(p.getUniqueId());
+        if (id == null) return true;
+        if (raw == 8) {
+            p.sendMessage("§7[二手管理] 已取消下架");
+            if (isShAdmin(p)) {
+                openSecondHandAdmin(p, shAdminPages.getOrDefault(p.getUniqueId(), 0));
+            }
+            return true;
+        }
+        if (raw < 0 || raw > 7) return true;
+        java.util.List<String> reasons = readShDelistReasons();
+        if (raw >= reasons.size()) return true;
+        doDelist(p, id, reasons.get(raw));
+        return true;
+    }
+
+    /** 下架：在售 → 暂存隐藏；物品等卖家登录后发还并提示理由 */
+    private void doDelist(Player admin, long id, String reason) {
+        SecondHandListing t = null;
+        for (SecondHandListing l : secondHandListings) {
+            if (l.id == id) { t = l; break; }
+        }
+        if (t == null) {
+            admin.sendMessage("§c[二手管理] 该商品已不存在（可能已售出/已下架），下架失败");
+            return;
+        }
+        secondHandListings.remove(t);
+        t.delisted = true;
+        t.delistReason = reason;
+        secondHandDelisted.add(t);
+        saveSecondHand();
+        admin.sendMessage("§a[二手管理] 已下架 §f" + t.seller + " §7的商品（"
+                + shItemName(t.itemB64) + "），理由: §f" + reason);
+        admin.sendMessage("§7物品已暂存，将在卖家下次登录后发还");
+        scheduleDelistDelivery(t.seller);
+        if (isShAdmin(admin)) {
+            openSecondHandAdmin(admin, shAdminPages.getOrDefault(admin.getUniqueId(), 0));
+        }
+    }
+
+    /** 重新上架：暂存 → 恢复销售；卖家在线才通知（离线不通知，正常售出时再通知） */
+    private void doRelist(Player admin, long id) {
+        SecondHandListing t = null;
+        for (SecondHandListing l : secondHandDelisted) {
+            if (l.id == id) { t = l; break; }
+        }
+        if (t == null) {
+            admin.sendMessage("§c[二手管理] 该商品已不在下架列表中");
+            return;
+        }
+        secondHandDelisted.remove(t);
+        t.delisted = false;
+        t.delistReason = null;
+        secondHandListings.add(t);
+        saveSecondHand();
+        admin.sendMessage("§a[二手管理] 已将 §f" + t.seller + " §7的商品（"
+                + shItemName(t.itemB64) + "）重新上架（恢复销售）");
+        Player seller = Bukkit.getPlayerExact(t.seller);
+        if (seller != null && plugin.getLoggedIn().contains(seller.getName())) {
+            seller.sendMessage("§a§l[二手商店] §f你的商品已被管理员重新上架: §e" + shItemName(t.itemB64));
+        }
+        if (isShAdmin(admin)) {
+            openSecondHandAdmin(admin, shAdminPages.getOrDefault(admin.getUniqueId(), 0));
+        }
+    }
+
+    /**
+     * 等卖家登录完成后发还下架暂存物品（主线程轮询）。
+     * ★ 必须等 loggedIn——join 时 clearPlayer 清空背包，登录成功才 restoreInventory，
+     *   提前发放会被清掉/被备份覆盖。
+     */
+    private void scheduleDelistDelivery(final String seller) {
+        new BukkitRunnable() {
+            int ticks = 0;
+            @Override
+            public void run() {
+                Player pl = Bukkit.getPlayerExact(seller);
+                if (pl == null || !plugin.getLoggedIn().contains(pl.getName())) {
+                    if (++ticks > 600) cancel(); // 5分钟未登录成功则等下次上线再发
+                    return;
+                }
+                cancel();
+                deliverDelistedItems(pl);
+            }
+        }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /** 发还该玩家全部下架暂存物品并提示理由 */
+    private void deliverDelistedItems(Player p) {
+        String me = p.getName();
+        java.util.List<SecondHandListing> mine = new java.util.ArrayList<>();
+        for (SecondHandListing l : secondHandDelisted) {
+            if (l.seller != null && l.seller.equalsIgnoreCase(me)) mine.add(l);
+        }
+        if (mine.isEmpty()) return;
+        int n = 0;
+        StringBuilder detail = new StringBuilder();
+        for (SecondHandListing l : mine) {
+            ItemStack is = base64ToItem(l.itemB64);
+            if (is != null) returnItem(p, is);
+            secondHandDelisted.remove(l);
+            n++;
+            detail.append("\n§7- §f").append(shItemName(l.itemB64))
+                    .append(" §8| §7理由: §f")
+                    .append(l.delistReason == null || l.delistReason.isEmpty() ? "无" : l.delistReason);
+        }
+        saveSecondHand();
+        p.sendMessage("§e§l[二手商店] §f你有 §c" + n + " §f件商品被管理员下架，物品已发还背包:" + detail);
+    }
+
+    /** 进服检测：该卖家有下架暂存物品 → 登录完成后发放 */
+    @EventHandler
+    public void onDelistJoin(org.bukkit.event.player.PlayerJoinEvent e) {
+        String me = e.getPlayer().getName();
+        for (SecondHandListing l : secondHandDelisted) {
+            if (l.seller != null && l.seller.equalsIgnoreCase(me)) {
+                scheduleDelistDelivery(me);
+                return;
+            }
+        }
     }
 
     // ===== 打开二手商店主界面 =====
@@ -3892,6 +4225,16 @@ public class ShopManager implements Listener {
                 "§7查看并管理自己上架的商品",
                 "", "§e点击进入"));
 
+        // ★ 第十二批：管理员入口（左键下架 / 右键上架），仅管理员可见
+        if (isShAdmin(p)) {
+            g.setItem(47, mkItem(Material.COMPARATOR, "§6§l二手管理",
+                    "§7管理在售/已下架商品",
+                    "§7在售: §f" + secondHandListings.size() + " §7件",
+                    "§7已下架: §c" + secondHandDelisted.size() + " §7件",
+                    "",
+                    "§e点击进入"));
+        }
+
         g.setItem(48, page > 0
                 ? mkItem(Material.ARROW, "§7上一页")
                 : mkItem(Material.BLACK_STAINED_GLASS_PANE, " "));
@@ -3941,6 +4284,10 @@ public class ShopManager implements Listener {
         if (raw == 53) { openShopMain(p); return true; }
         if (raw == 45) { openPublishGui(p); return true; }
         if (raw == 46) { openSecondHandMine(p); return true; }
+        if (raw == 47) { // ★ 第十二批：管理员入口
+            if (isShAdmin(p)) openSecondHandAdmin(p, 0);
+            return true;
+        }
         if (raw == 48) {
             int pg = getSecondHandPage(p.getUniqueId());
             openSecondHandShop(p, pg - 1);

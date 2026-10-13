@@ -994,6 +994,19 @@ public class GUIManager implements Listener {
                     p, raw, event.isLeftClick(), event.isRightClick());
             return;
         }
+        // ★ 第十二批（2026-10-13）：管理员面板（在售左键下架/已下架右键上架）
+        if ("§6§l二手管理".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleSecondHandAdminClick(
+                    p, raw, event.isLeftClick(), event.isRightClick());
+            return;
+        }
+        // ★ 第十二批（2026-10-13）：下架理由 9 格面板
+        if ("§6§l下架理由".equals(title)) {
+            event.setCancelled(true);
+            plugin.getShopManager().handleDelistReasonClick(p, raw);
+            return;
+        }
 
         // ===== 退款中心 → 重定向订单中心 =====
         if ("§c§l退款中心".equals(title)) {
