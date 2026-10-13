@@ -83,7 +83,8 @@ public class ConfigManager {
     public void loadMessages() {
         messages.clear();
         File file = new File(dataFolder, "消息.txt");
-        if (!file.exists()) createDefaultMessages(file);
+        // ★ 安全交换（2026-10-13）：模板有新字段时自动备份→重建→老值回填
+        safeUpgrade(file, templateMessages(), "消息配置");
         loadMap(file, messages);
     }
 
@@ -98,7 +99,8 @@ public class ConfigManager {
         return val;
     }
 
-    private void createDefaultMessages(File f) {
+    /** 消息配置模板（jar 内置默认，新装=直接落盘；升级=safeUpgrade 骨架） */
+    private List<String> templateMessages() {
         List<String> L = new ArrayList<>();
         L.add("# ===== Sdf1_login 消息配置 =====");
         L.add("login_timeout=§c登录超时");
@@ -117,7 +119,7 @@ public class ConfigManager {
         L.add("checkin_success=§a签到成功！获得 {points} 积分");
         L.add("chat_muted=§c你已被禁言");
         L.add("未知参数=§c未知参数或权限不足");
-        writeLines(f, L);
+        return L;
     }
 
     // ==================== SMTP ====================
@@ -125,12 +127,11 @@ public class ConfigManager {
     public void loadSmtp() {
         smtpSettings.clear();
         File file = new File(dataFolder, "SMTP设置.txt");
-        if (!file.exists()) {
-            createDefaultSmtp(file);
-        }
+        // ★ 安全交换（2026-10-13）：模板有新字段时自动备份→重建→老值回填
+        safeUpgrade(file, templateSmtp(), "邮件配置");
         // 加载配置文件
         loadMap(file, smtpSettings);
-        // 检查并补全缺失的配置项
+        // 检查并补全缺失的配置项（安全交换后的兜底，正常不触发）
         ensureSmtpConfigComplete(file);
         logger.info("[Sdf1_login] 加载邮件配置: 已加载 " + smtpSettings.size() + " 个配置项");
         for (String key : smtpSettings.keySet()) {
@@ -373,7 +374,8 @@ public class ConfigManager {
         writeLines(file, L);
     }
 
-    private void createDefaultSmtp(File f) {
+    /** 邮件配置模板（jar 内置默认） */
+    private List<String> templateSmtp() {
         List<String> L = new ArrayList<>();
         L.add("# ===== 邮件配置 =====");
         L.add("# --- SMTP 信息 ---");
@@ -396,52 +398,20 @@ public class ConfigManager {
         L.add("邮箱后缀列表=");
         L.add("# --- 管理员报警邮箱（备用收件人，2FA解绑报警现发玩家本人，留空则只记日志） ---");
         L.add("管理员邮箱=");
-        writeLines(f, L);
+        return L;
     }
 
     // ==================== 插件设置 ====================
 
     public void loadSettings() {
         File file = new File(dataFolder, "插件设置.txt");
-        if (!file.exists()) createDefaultSettings(file);
+        // ★ 安全交换（2026-10-13）：模板有新字段时自动备份→重建→老值回填
+        safeUpgrade(file, templateSettings(), "插件设置");
         Map<String, String> m = new LinkedHashMap<>();
         loadMap(file, m);
 
-        // 检查是否需要补充新配置项
-        boolean hasNewKey = false;
-        String[][] newKeys = {
-            {"签到债券最小", String.valueOf(checkinBondMin)},
-            {"签到债券最大", String.valueOf(checkinBondMax)},
-            {"奖励发放方式", "债券"},
-            {"区域防护_管理员模式", areaProtectAdminMode},
-            {"区域防护_管理员Tag", areaProtectAdminTag},
-            {"区域防护_每平米价格", String.valueOf(areaProtectPricePerSqM)},
-            {"区域防护_最大领地数", String.valueOf(areaProtectMaxLands)},
-            {"传送_请求有效秒", String.valueOf(tpRequestValidSeconds)},
-            {"传送_发送间隔秒", String.valueOf(tpSendIntervalSeconds)},
-            {"密码错误封禁阈值", String.valueOf(passwordFailThreshold)},
-            {"密码错误封禁时长秒", String.valueOf(passwordBanDuration)},
-        };
-        for (String[] nk : newKeys) {
-            if (!m.containsKey(nk[0])) { hasNewKey = true; }
-        }
-        if (hasNewKey) {
-            try {
-                FileWriter fw = new FileWriter(file, true);
-                BufferedWriter bw = new BufferedWriter(fw);
-                bw.newLine();
-                bw.write("# ===== 新增配置项 =====");
-                bw.newLine();
-                for (String[] nk : newKeys) {
-                    if (!m.containsKey(nk[0])) {
-                        bw.write(nk[0] + "=" + nk[1]);
-                        bw.newLine();
-                    }
-                }
-                bw.flush(); bw.close();
-                Bukkit.getLogger().info("[Config] 已补充缺失的配置项");
-            } catch (IOException ignored) {}
-        }
+        // （旧的「追加新增配置项」块已由 safeUpgrade 取代：
+        //   模板新字段在升级时统一补入，不再用 FileWriter 追加）
 
         // 读取ConfigManager管理的配置项
         adminTag = m.getOrDefault("管理标签", adminTag);
@@ -632,7 +602,8 @@ public class ConfigManager {
         writeLines(file, L);
     }
 
-    private void createDefaultSettings(File f) {
+    /** 插件设置模板（jar 内置默认，新装=直接落盘；升级=safeUpgrade 骨架） */
+    private List<String> templateSettings() {
         List<String> L = new ArrayList<>();
         L.add("# ===== Sdf1_login 插件设置 =====");
         L.add("管理标签=admin");
@@ -679,7 +650,7 @@ public class ConfigManager {
         L.add("");
         L.add("# ===== 其他模块配置 =====");
         // 始终附加空行和注释分隔符，让后续追加逻辑更容易识别边界
-        writeLines(f, L);
+        return L;
     }
     public List<String> getAfkWhitelist() {
         List<String> list = new ArrayList<>();
@@ -768,7 +739,7 @@ public class ConfigManager {
         } catch (IOException ignored) {}
     }
 
-    private void writeLines(File file, List<String> lines) {
+    private boolean writeLines(File file, List<String> lines) {
         // ★ 原子写入：先写临时文件再rename，防止写入中断导致文件损坏
         File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
         try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8))) {
@@ -785,12 +756,145 @@ public class ConfigManager {
                 } catch (IOException e) {
                     logger.warning("[Sdf1_login] 配置文件保存失败: " + e.getMessage());
                     tmp.delete();
+                    return false;
                 }
             }
+            return true;
         } catch (IOException e) {
             logger.warning("[Sdf1_login] 配置文件写入失败: " + e.getMessage());
             tmp.delete();
+            return false;
         }
+    }
+
+    // ==================== ★ 配置安全交换（2026-10-13） ====================
+
+    /**
+     * 配置文件安全交换升级：<br>
+     * 当 jar 内置模板比服务器上的旧配置多出字段时——<br>
+     * ① 先把旧配置完整加载进内存（含续行值，与运行时同一套解析）；<br>
+     * ② 【动手前】备份原文件为 <名字>.bak 并逐字节校验，<b>备份失败整个操作全部取消</b>（原文件不动）；<br>
+     * ③ 校验通过后删除原文件，以模板为骨架重建（新字段=模板默认值，旧字段=内存里的老值）；<br>
+     * ④ 写入失败则自动从 .bak 还原，绝不留空文件；<br>
+     * ⑤ 旧文件里模板没有的键（用户自定义/其他模块）原样追加保留，做到无感切换。<br>
+     * 文件不存在 → 直接落盘模板（首装）；无缺失字段 → 不动文件不产生 .bak。
+     *
+     * @return true=本次执行了升级写入
+     */
+    private boolean safeUpgrade(File file, List<String> template, String label) {
+        if (file == null || template == null) return false;
+        try {
+            if (!file.exists()) {
+                // 首装：直接落盘模板
+                writeLines(file, template);
+                return false;
+            }
+            // ① 旧配置加载进内存（与 loadMap 同一套解析：BOM/续行一致）
+            Map<String, String> oldValues = new LinkedHashMap<>();
+            loadMap(file, oldValues);
+            // ② 模板键集合 + 缺失检测
+            Set<String> templateKeys = new LinkedHashSet<>();
+            for (String l : template) {
+                String t = l.trim();
+                if (t.isEmpty() || t.startsWith("#")) continue;
+                int eq = t.indexOf('=');
+                if (eq > 0) templateKeys.add(t.substring(0, eq).trim());
+            }
+            List<String> missing = new ArrayList<>();
+            for (String k : templateKeys) {
+                if (!oldValues.containsKey(k)) missing.add(k);
+            }
+            if (missing.isEmpty()) return false; // 无新字段，什么都不动
+            logger.info("[" + label + "] 检测到模板新增 " + missing.size() + " 个字段: " + missing
+                    + "，开始安全交换升级");
+            // ③ 备份原文件 → .bak（失败=整个操作取消，原文件不动）
+            File bak = new File(file.getParentFile(), file.getName() + ".bak");
+            try {
+                java.nio.file.Files.copy(file.toPath(), bak.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] ★升级取消：备份 .bak 失败（" + e.getMessage()
+                        + "），原文件未改动");
+                return false;
+            }
+            // 备份校验：大小 + 逐字节比对（任一不过=视同备份失败，取消升级）
+            boolean bakOk = bak.exists() && bak.length() == file.length();
+            if (bakOk) {
+                try {
+                    bakOk = java.util.Arrays.equals(
+                            java.nio.file.Files.readAllBytes(file.toPath()),
+                            java.nio.file.Files.readAllBytes(bak.toPath()));
+                } catch (Exception e) { bakOk = false; }
+            }
+            if (!bakOk) {
+                bak.delete();
+                logger.warning("[" + label + "] ★升级取消：备份校验不通过，原文件未改动");
+                return false;
+            }
+            // ④ 删除原始配置（已有可信备份）
+            if (!file.delete()) {
+                logger.warning("[" + label + "] ★升级取消：旧配置文件无法删除（可能被占用），"
+                        + "请重启后重试。备份保留在: " + bak.getName());
+                return false;
+            }
+            // ⑤ 以模板为骨架重建：老值回填，新字段用模板默认值
+            List<String> out = new ArrayList<>();
+            Set<String> emitted = new HashSet<>();
+            for (String line : template) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#")) { out.add(line); continue; }
+                int eq = t.indexOf('=');
+                if (eq > 0) {
+                    String key = t.substring(0, eq).trim();
+                    emitted.add(key);
+                    if (oldValues.containsKey(key)) {
+                        emitValueLines(out, key, oldValues.get(key)); // 内存里的老值优先
+                    } else {
+                        out.add(line); // 新字段 → 保留模板默认值
+                    }
+                } else {
+                    out.add(line);
+                }
+            }
+            // ⑥ 模板没有的老键（用户自定义/其他模块配置）追加保留
+            List<String> extra = new ArrayList<>();
+            for (Map.Entry<String, String> e : oldValues.entrySet()) {
+                if (!emitted.contains(e.getKey())) extra.add(e.getKey());
+            }
+            if (!extra.isEmpty()) {
+                out.add("");
+                out.add("# ===== 以下为原文件保留的配置项（模板中不存在） =====");
+                for (String k : extra) emitValueLines(out, k, oldValues.get(k));
+            }
+            // ⑦ 原子写入；失败则从 .bak 还原
+            if (!writeLines(file, out)) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★升级失败：写入出错，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★升级失败且还原失败！原文件完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            logger.info("[" + label + "] 安全交换升级完成：补入 " + missing.size()
+                    + " 个新字段，老值已保留；原文件备份: " + bak.getName());
+            return true;
+        } catch (Exception e) {
+            // 兜底：升级流程任何异常都不允许影响插件启动
+            logger.warning("[" + label + "] 配置升级异常（已跳过，保持原文件）: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 按 loadMap 的续行语义回写一个键值（多行值 → 首行 key=v1，后续裸行） */
+    private void emitValueLines(List<String> out, String key, String value) {
+        if (value == null || value.isEmpty()) { out.add(key + "="); return; }
+        String[] parts = value.split("\n", -1);
+        out.add(key + "=" + parts[0]);
+        for (int i = 1; i < parts.length; i++) out.add(parts[i]);
     }
 
     private double parseDouble(String s, double def) { try { return Double.parseDouble(s.trim()); } catch (Exception e) { return def; } }
