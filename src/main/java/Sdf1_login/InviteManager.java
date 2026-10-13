@@ -142,6 +142,15 @@ public class InviteManager {
                 String name = str(u.get("player_name"));
                 if (name.isEmpty()) continue;
                 if (str(u.get("invited_by")).isEmpty()) continue;
+                long invAt = lng(u.get("invited_at"));
+                if (invAt > 0 && invAt < 1000000000000L) {
+                    // ★ 第十一批：秒级存量（回填时继承了秒级
+                    //   register_time）→ 原地转毫秒
+                    plugin.getDb().setField(name, "invited_at",
+                            invAt * 1000L);
+                    u.put("invited_at", invAt * 1000L);
+                    fixedAt++;
+                }
                 if (lng(u.get("invited_at")) > 0) continue;
                 long ts = lookupBondTx(
                         "player_name", name,
@@ -149,8 +158,10 @@ public class InviteManager {
                 if (ts <= 0) ts = lookupBondTx(
                         "target_player", name,
                         "invite_reward");
-                if (ts <= 0) ts = lng(u.get("register_time"));
-                if (ts <= 0) ts = lng(u.get("last_login_time"));
+                if (ts <= 0) ts = DurationParser.toMs(
+                        lng(u.get("register_time")));
+                if (ts <= 0) ts = DurationParser.toMs(
+                        lng(u.get("last_login_time")));
                 if (ts <= 0) ts = now;
                 plugin.getDb().setField(
                         name, "invited_at", ts);
@@ -163,7 +174,8 @@ public class InviteManager {
             for (Map<String, Object> u : users) {
                 String inviter = str(u.get("invited_by"));
                 if (inviter.isEmpty()) continue;
-                if (lng(u.get("invited_at")) >= monthStart) {
+                if (DurationParser.toMs(
+                        lng(u.get("invited_at"))) >= monthStart) {
                     counter.merge(inviter, 1, Integer::sum);
                 }
             }
@@ -244,7 +256,9 @@ public class InviteManager {
                 : plugin.getDb().getAllUsers()) {
             if (!inviter.equals(
                     str(u.get("invited_by")))) continue;
-            if (lng(u.get("invited_at")) >= monthStart) n++;
+            // ★ 第十一批：秒/毫秒归一化后再比较
+            if (DurationParser.toMs(
+                    lng(u.get("invited_at"))) >= monthStart) n++;
         }
         return n;
     }
@@ -265,7 +279,9 @@ public class InviteManager {
                 : plugin.getDb().getAllUsers()) {
             if (!inviter.equals(
                     str(u.get("invited_by")))) continue;
-            long ts = lng(u.get("invited_at"));
+            // ★ 第十一批：秒/毫秒归一化后再比较与展示
+            long ts = DurationParser.toMs(
+                    lng(u.get("invited_at")));
             if (ts < monthStart) continue;
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("name", str(u.get("player_name")));

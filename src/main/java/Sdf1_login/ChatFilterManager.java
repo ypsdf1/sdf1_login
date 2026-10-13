@@ -631,14 +631,17 @@ public class ChatFilterManager {
             DatabaseManager db = mainPlugin.getDb();
             if (db == null) return false; // 查不到就不拦截，直接放行
             
-            // register_time 在数据库存的是秒级时间戳
+            // ★ 第十一批：register_time 秒/毫秒混存（PHP 同步行为秒、
+            //   本地注册为毫秒）→ 统一归一化为毫秒。
+            //   旧代码无条件 ×1000：对已是毫秒的行会算出巨大负数
+            //   elapsed，恒判「新玩家」。
             Object regTimeObj = db.getField(p.getName(), "register_time");
             if (regTimeObj == null) return false; // 没注册记录 → 放行
-            
-            long regTimeSeconds = ((Number) regTimeObj).longValue();
-            if (regTimeSeconds == 0) return false; // 注册时间为0 → 放行
-            
-            long regTimeMs = regTimeSeconds * 1000;
+
+            long regTimeMs = DurationParser.toMs(
+                    ((Number) regTimeObj).longValue());
+            if (regTimeMs == 0) return false; // 注册时间为0 → 放行
+
             long elapsed = System.currentTimeMillis() - regTimeMs;
             boolean isNew = elapsed < 3600000;
             

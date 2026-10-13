@@ -2219,8 +2219,9 @@ public class GUIManager implements Listener {
             if (slot >= 45) break;
             String accName = (String) acc
                     .get("player_name");
-            long regTime = ((Number) acc
-                    .get("register_time")).longValue();
+            // ★ 第十一批：秒/毫秒混存归一化（PHP 同步行为秒）
+            long regTime = DurationParser.toMs(((Number) acc
+                    .get("register_time")).longValue());
             String dateStr = regTime > 0
                     ? sdf.format(
                     new java.util.Date(regTime))
@@ -2444,6 +2445,8 @@ public class GUIManager implements Listener {
                     p.getName(), "invited_at");
             long ts = (tsObj instanceof Number)
                     ? ((Number) tsObj).longValue() : 0L;
+            // ★ 第十一批：秒/毫秒混存归一化（回填来源 register_time 可能为秒）
+            ts = DurationParser.toMs(ts);
             String timeStr = ts > 0
                     ? new java.text.SimpleDateFormat(
                             "yyyy-MM-dd HH:mm")

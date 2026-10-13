@@ -1805,8 +1805,11 @@ public class Main extends JavaPlugin
             sender.sendMessage("§c未找到玩家: " + target);
             return;
         }
-        long reg = asLong(db.getField(target, "register_time"));
-        long lastLogin = asLong(db.getField(target, "last_login_time"));
+        // ★ 第十一批：秒/毫秒混存归一化（PHP 同步行为秒、本地注册为毫秒）
+        long reg = DurationParser.toMs(
+                asLong(db.getField(target, "register_time")));
+        long lastLogin = DurationParser.toMs(
+                asLong(db.getField(target, "last_login_time")));
         Object ipObj = db.getField(target, "last_login_ip");
         String lastIp = (ipObj == null
                 || String.valueOf(ipObj).isEmpty())
@@ -7954,7 +7957,7 @@ public class Main extends JavaPlugin
                 // 获取最近登录信息
                 Object lastLoginObj = db.getField(tgt, "last_login_time");
                 long lastLogin = lastLoginObj != null
-                        ? ((Number) lastLoginObj).longValue() : 0;
+                        ? DurationParser.toMs(((Number) lastLoginObj).longValue()) : 0;
                 String lastIP = (String) db.getField(tgt, "last_ip");
                 if (lastIP == null || lastIP.isEmpty())
                     lastIP = "未知";
@@ -9926,7 +9929,9 @@ public class Main extends JavaPlugin
                 sender.sendMessage("§7邮箱: §e" + user.getOrDefault("email", "无"));
                 Object regTime = user.get("register_time");
                 if (regTime instanceof Number) {
-                    long rt = ((Number) regTime).longValue();
+                    // ★ 第十一批：秒/毫秒混存归一化
+                    long rt = DurationParser.toMs(
+                            ((Number) regTime).longValue());
                     if (rt > 0) {
                         String date = new java.text.SimpleDateFormat(
                                 "yyyy-MM-dd HH:mm")

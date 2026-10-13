@@ -6100,7 +6100,9 @@ public class WebManager {
                                 try {
                                     Object regTimeObj = plugin.getDb().getField(newOwner, "register_time");
                                     if (regTimeObj instanceof Number) {
-                                        registerTime = ((Number) regTimeObj).longValue();
+                                        // ★ 第十一批：秒/毫秒混存归一化
+                                        registerTime = DurationParser.toMs(
+                                                ((Number) regTimeObj).longValue());
                                     }
                                 } catch (Exception e) {
                                     // 忽略异常
@@ -6489,7 +6491,9 @@ public class WebManager {
             try {
                 Object regTimeObj = dbMgr.getField(newOwner, "register_time");
                 if (regTimeObj instanceof Number) {
-                    registerTime = ((Number) regTimeObj).longValue();
+                    // ★ 第十一批：秒/毫秒混存归一化
+                    registerTime = DurationParser.toMs(
+                            ((Number) regTimeObj).longValue());
                 }
             } catch (Exception e) {
                 // 忽略异常

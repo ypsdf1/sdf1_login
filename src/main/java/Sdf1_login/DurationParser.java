@@ -315,6 +315,15 @@ public class DurationParser {
         return section + (hasNum ? num : 0);
     }
 
+    /** ★ 第十一批（2026-10-12）：秒/毫秒混合时间戳归一化为毫秒。
+     *  login.db 的 register_time/last_login_time/invited_at 两种单位
+     *  混存（Java 本地注册写毫秒、PHP 同步拉回写秒），凡显示、比较、
+     *  回填前一律先过这里。幂等：已是毫秒的原样返回。
+     *  阈值 10^12：秒级时间戳到 33658 年才到 10^12，安全。 */
+    public static long toMs(long ts) {
+        return (ts > 0 && ts < 1000000000000L) ? ts * 1000L : ts;
+    }
+
     /** 格式化绝对到期时间戳为「yyyy年M月d日 HH:mm」 */
     public static String formatExpire(long ms) {
         Calendar c = Calendar.getInstance();
