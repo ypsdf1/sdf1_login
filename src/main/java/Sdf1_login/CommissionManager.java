@@ -77,6 +77,14 @@ public class CommissionManager {
                     + " 单日=" + dailyInviteCap);
             return;
         }
+        // ★ 安全交换（2026-10-13）：jar 模板多出的配置行补进原文件，
+        //   说明文本与用户改过的值原样保留（旧菜新菜一起端上桌）
+        java.util.List<String> inviteTpl =
+                ConfigManager.readJarResourceLines(
+                        main.getResource("邀请好友赢债券/规则.md"));
+        if (inviteTpl != null) {
+            main.getConfig2().safeUpgradeDoc(f, inviteTpl, "邀请债券规则");
+        }
         boolean inCfg = false;
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(

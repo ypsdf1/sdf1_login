@@ -897,6 +897,171 @@ public class ConfigManager {
         for (int i = 1; i < parts.length; i++) out.add(parts[i]);
     }
 
+    // ==================== 配置+说明文档混合文件安全交换（2026-10-13） ====================
+
+    /** 从 jar 读取内置资源为行列表（md 安全交换取模板用；缺失/失败返回 null） */
+    public static List<String> readJarResourceLines(java.io.InputStream in) {
+        if (in == null) return null;
+        try (BufferedReader br = new BufferedReader(
+                new InputStreamReader(in, StandardCharsets.UTF_8))) {
+            List<String> L = new ArrayList<>();
+            String line;
+            while ((line = br.readLine()) != null) L.add(line);
+            return L;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /**
+     * 配置+说明文档混合文件（md）安全交换升级。<br>
+     * 饭店换桌比喻（用户原话）：不能只上新菜——不能整文件换成模板把用户说明文字丢掉；
+     * 要旧菜新菜一起端上桌——<b>以原文件为基底</b>，说明文本与用户改过的配置值原样保留，
+     * 只把模板里多出的配置行（表格行 / 围栏代码块）补进配置区。<br>
+     * ① 动手前备份原文件 .bak 并逐字节校验，<b>备份失败整个操作全部取消</b>（原文件不动）；
+     * ② 模板无新增配置时幂等返回（不写文件、不产生 .bak）；
+     * ③ 原文件没有围栏代码块而模板有（如二手理由列表 JSON）→ 整块补入；
+     *    原文件已有代码块 → 视为用户自有内容，原样保留不覆盖；
+     * ④ 原子写入，失败自动从 .bak 还原；整体 try/catch 兜底，绝不影响启动。<br>
+     * 配置区标记与现有解析器同一套约定：## 标题行含「配置区」+「开始/结束」。
+     *
+     * @return true=本次执行了升级写入
+     */
+    public boolean safeUpgradeDoc(File file, List<String> template, String label) {
+        if (file == null || template == null) return false;
+        try {
+            if (!file.exists()) {
+                // 首装：直接落盘模板
+                writeLines(file, template);
+                return false;
+            }
+            // ① 原文件快照进内存（保留原始行，不 trim，用户文字逐字不动）
+            List<String> orig = new ArrayList<>();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(
+                    new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) orig.add(line);
+            }
+            // ② 解析原文件：配置区表格键集合 + 配置区是否已有围栏代码块
+            Set<String> origKeys = new LinkedHashSet<>();
+            boolean origHasCfgBlock = false;
+            boolean inCfg = false;
+            for (String raw : orig) {
+                String t = raw.trim();
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("开始")) {
+                    inCfg = true; continue;
+                }
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("结束")) {
+                    inCfg = false; continue;
+                }
+                if (!inCfg) continue;
+                if (t.startsWith("```")) { origHasCfgBlock = true; continue; }
+                if (!t.startsWith("|")) continue;
+                String[] cols = t.split("\\|", -1);
+                if (cols.length < 4) continue;
+                String key = cols[1].trim();
+                if (key.isEmpty() || key.matches("[-:\\s]+")) continue; // 表头分隔行
+                origKeys.add(key);
+            }
+            // ③ 解析模板：原文件缺失的配置行 + 配置区围栏代码块（含```边界行）
+            List<String> missingRows = new ArrayList<>();
+            List<String> tplCfgBlocks = new ArrayList<>();
+            boolean tplInCfg = false, tplInBlock = false, tplHasCfgBlock = false;
+            for (String raw : template) {
+                String t = raw.trim();
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("开始")) {
+                    tplInCfg = true; continue;
+                }
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("结束")) {
+                    tplInCfg = false; continue;
+                }
+                if (tplInBlock) {
+                    tplCfgBlocks.add(raw);
+                    if (t.startsWith("```")) tplInBlock = false;
+                    continue;
+                }
+                if (!tplInCfg) continue;
+                if (t.startsWith("```")) {
+                    tplInBlock = true; tplHasCfgBlock = true; tplCfgBlocks.add(raw);
+                    continue;
+                }
+                if (!t.startsWith("|")) continue;
+                String[] cols = t.split("\\|", -1);
+                if (cols.length < 4) continue;
+                String key = cols[1].trim();
+                if (key.isEmpty() || key.matches("[-:\\s]+")) continue;
+                if (!origKeys.contains(key)) missingRows.add(raw);
+            }
+            boolean needBlocks = tplHasCfgBlock && !origHasCfgBlock
+                    && !tplCfgBlocks.isEmpty();
+            if (missingRows.isEmpty() && !needBlocks) return false; // 无新增，幂等
+            // ④ 定位原文件配置区结束标记（插入锚点）；找不到=结构异常，取消不动
+            int endIdx = -1;
+            for (int i = orig.size() - 1; i >= 0; i--) {
+                String t = orig.get(i).trim();
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("结束")) {
+                    endIdx = i; break;
+                }
+            }
+            if (endIdx < 0) {
+                logger.warning("[" + label + "] ★升级取消：原文件缺少配置区结束标记，"
+                        + "结构异常，原文件未改动");
+                return false;
+            }
+            // ⑤ 备份原文件 → .bak（失败=整个操作取消，原文件不动）
+            File bak = new File(file.getParentFile(), file.getName() + ".bak");
+            try {
+                java.nio.file.Files.copy(file.toPath(), bak.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] ★升级取消：备份 .bak 失败（" + e.getMessage()
+                        + "），原文件未改动");
+                return false;
+            }
+            boolean bakOk = bak.exists() && bak.length() == file.length();
+            if (bakOk) {
+                try {
+                    bakOk = java.util.Arrays.equals(
+                            java.nio.file.Files.readAllBytes(file.toPath()),
+                            java.nio.file.Files.readAllBytes(bak.toPath()));
+                } catch (Exception e) { bakOk = false; }
+            }
+            if (!bakOk) {
+                bak.delete();
+                logger.warning("[" + label + "] ★升级取消：备份校验不通过，原文件未改动");
+                return false;
+            }
+            // ⑥ 以原文件为基底：缺失表格行 +（需要时）围栏代码块，插到结束标记前
+            List<String> out = new ArrayList<>(orig);
+            List<String> insert = new ArrayList<>(missingRows);
+            if (needBlocks) {
+                insert.add("");
+                insert.addAll(tplCfgBlocks);
+            }
+            out.addAll(endIdx, insert);
+            // ⑦ 原子写入；失败则从 .bak 还原
+            if (!writeLines(file, out)) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★升级失败：写入出错，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★升级失败且还原失败！原文件完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            logger.info("[" + label + "] 文档配置安全交换完成：补入 " + missingRows.size()
+                    + " 行配置" + (needBlocks ? " + 1 个配置代码块" : "")
+                    + "，说明文本与已有配置值原样保留；原文件备份: " + bak.getName());
+            return true;
+        } catch (Exception e) {
+            logger.warning("[" + label + "] 文档配置升级异常（已跳过，保持原文件）: " + e.getMessage());
+            return false;
+        }
+    }
+
     private double parseDouble(String s, double def) { try { return Double.parseDouble(s.trim()); } catch (Exception e) { return def; } }
     private int parseInt(String s, int def) { try { return Integer.parseInt(s.trim()); } catch (Exception e) { return def; } }
     
