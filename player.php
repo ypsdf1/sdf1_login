@@ -4550,7 +4550,9 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
     function banItemHtml(b) {
         const name = escHtml(b.target || '');
         const reason = escHtml(b.reason || '违反服务器规则');
-        const expire = parseInt(b.expire_time, 10) || 0;
+        let expire = parseInt(b.expire_time, 10) || 0;
+        // 防御：后端若漏归一（Java 推的是毫秒），这里兜一手，避免显示成 68260 年
+        if (expire > 100000000000) expire = Math.floor(expire / 1000);
         const perm = expire === 0 ? '<span class="bperm">永久</span>' : '';
         let when = '';
         if (expire > 0) {

@@ -5430,6 +5430,9 @@ function getBanBoard() {
         $out = array();
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $expire = (int) ($row['expire_time'] ?? 0);
+            // ★ 单位归一：Java 端 BanEntry 推的是毫秒（13位），公示接口对外统一按秒；
+            //   不归一的话「已过期跳过」判断恒不成立，前端还会把日期显示成 68260 年
+            if ($expire > 100000000000) $expire = intdiv($expire, 1000);
             if ($expire > 0 && $expire <= $now) continue;   // 跳过已过期的临时封禁
             $out[] = array(
                 'target'     => (string) ($row['target'] ?? ''),
