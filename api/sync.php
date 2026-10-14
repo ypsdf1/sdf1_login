@@ -5412,33 +5412,55 @@ function getBanBoard() {
     //   那条 SQL 抽不出 web_player_bans（只抽得到 sqlite_master），SdfDbRouter::side()
     //   会把语句判成 web 侧；而 web_player_bans 在 dbJavaTables() 清单里，实际建在 java 侧，
     //   于是探测恒为空 → 公示永远返回"暂无"（后台却挂着几十条封禁）。
-    //   改为直接查目标表：SQL 自带表名 → 路由到正确一侧；表缺失由 try/catch 兜底返回空。
+    //   改为直接查目标表：SQL 自带表名 → 路由到正确一侧；
+    //   若路由到的那侧根本没有这张表（个别站点库未切分/表在另一侧）→ 显式换侧再查一次。
     // 仅公示名字封禁（ban_type='name'），IP 封禁不公开（IP 属敏感信息）
     $now = time();
-    $bans = [];
-    try {
-        $res = $db->query("SELECT target, ban_type, reason, expire_time, synced_at
-                           FROM web_player_bans
-                           WHERE ban_type = 'name'
-                           ORDER BY synced_at DESC
-                           LIMIT " . $limit);
-        if ($res) {
-            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-                $expire = (int) ($row['expire_time'] ?? 0);
-                // 跳过已过期的临时封禁（expire_time>0 且已过期）
-                if ($expire > 0 && $expire <= $now) continue;
-                $bans[] = [
-                    'target'     => (string) ($row['target'] ?? ''),
-                    'reason'     => (string) ($row['reason'] ?? ''),
-                    'expire_time'=> $expire,          // 0 = 永久
-                    'synced_at'  => (int) ($row['synced_at'] ?? 0),
-                ];
-            }
+    $sql = "SELECT target, ban_type, reason, expire_time, synced_at
+            FROM web_player_bans
+            WHERE ban_type = 'name'
+            ORDER BY synced_at DESC
+            LIMIT " . $limit;
+
+    // 返回 [查询是否成功, 公示数组]：false 表示该侧没有这张表/语句失败（区别于 0 条）
+    $fetch = function ($conn) use ($sql, $now) {
+        if (!$conn) return array(false, array());
+        $res = $conn->query($sql);
+        if (!$res) return array(false, array());
+        $out = array();
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $expire = (int) ($row['expire_time'] ?? 0);
+            if ($expire > 0 && $expire <= $now) continue;   // 跳过已过期的临时封禁
+            $out[] = array(
+                'target'     => (string) ($row['target'] ?? ''),
+                'reason'     => (string) ($row['reason'] ?? ''),
+                'expire_time'=> $expire,          // 0 = 永久
+                'synced_at'  => (int) ($row['synced_at'] ?? 0),
+            );
         }
-    } catch (Throwable $e) {
-        $bans = [];   // 表不存在 / 瞬时错误 → 公示为空，不影响接口本身
+        return array(true, $out);
+    };
+
+    $ok = false;
+    $bans = array();
+    try { list($ok, $bans) = $fetch($db); } catch (Throwable $e) { $ok = false; $bans = array(); }
+
+    // 兜底换侧：只在"查询失败"（表不在这一侧）时才换，避免把切分留在 web 库的旧副本当新数据读出来
+    if (!$ok && function_exists('dbOpen')) {
+        foreach (array('java', 'web') as $side) {
+            $conn = null;
+            try { $conn = dbOpen($side); } catch (Throwable $e) { $conn = null; }
+            if (!$conn) continue;
+            try {
+                list($ok, $bans) = $fetch($conn);
+                if ($ok) break;
+            } catch (Throwable $e) { /* 该侧也没有这张表，继续换下一侧 */ }
+        }
     }
-    success(['total' => count($bans), 'bans' => $bans], count($bans) ? 'ok' : 'empty');
+
+    // ok=true 但 0 条 = 确实没人被封；ok=false = 两侧都没这张表（数据链路问题）
+    success(array('total' => count($bans), 'bans' => $bans),
+            count($bans) ? 'ok' : ($ok ? 'empty' : 'unavailable'));
 }
 
 // ===== Java端推送封禁名单到PHP =====
