@@ -4516,7 +4516,7 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
     let banBoardTimer = null;
     let banBoardLoaded = false;      // 是否成功拉到过一次公示数据（未拉到时显示"同步中"而非"暂无"）
 
-    // ★ 第十六批缺陷修复：卡片改插进 #content 内部（个人中心内容区第一张卡），
+    // ★ 第十七批：卡片插到 #content 末尾（「详细信息」板块下面），
     //   不再 insertBefore(.main) 横跨整页宽度把侧边栏和正文一起顶下去；
     //   只在 dashboard 显示——其它页面 content.innerHTML 被整体重写，卡片自然不残留。
     function ensureBanCard() {
@@ -4533,7 +4533,7 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
             card.innerHTML = '<h2 style="color:var(--red)">⚠ 封禁常态化公示</h2>' +
                 '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">违规玩家将被公示，杀鸡儆猴，请各位引以为戒</p>' +
                 '<div class="ban-roll-wrap"><div class="ban-roll-inner" id="' + BAN_SLOT_ID + '"></div></div>';
-            box.insertBefore(card, box.firstChild);
+            box.appendChild(card);
         }
         return document.getElementById(BAN_SLOT_ID);
     }
