@@ -84,6 +84,9 @@ public class ShopManager implements Listener {
             new HashMap<>();
     // 批量总件数（用于进度提示）
     private final Map<UUID, Integer> publishQueueTotal = new HashMap<>();
+    // ★ 问题3（2026-10-14）：批量成功/跳过计数（与 publishQueue 同生命周期）
+    private final Map<UUID, Integer> publishQueueOk = new HashMap<>();
+    private final Map<UUID, Integer> publishQueueSkip = new HashMap<>();
     // ===== 编辑模式（2026-10-11 任务1）：UUID → 正在编辑的商品ID =====
     private final Map<UUID, Long> editListingId = new HashMap<>();
     // ★ 会话令牌（2026-10-11 第五批）：进入新会话/新步骤时 +1，
@@ -4753,6 +4756,8 @@ public class ShopManager implements Listener {
         }
         publishQueue.put(uuid, items);
         publishQueueTotal.put(uuid, items.size());
+        publishQueueOk.put(uuid, 0);
+        publishQueueSkip.put(uuid, 0);
         p.sendMessage("§6§l[二手商店] §e开始批量上架，共 §f" + items.size() + " §e件");
         beginNextPublishItem(p, uuid);
     }
@@ -4761,9 +4766,7 @@ public class ShopManager implements Listener {
     private void beginNextPublishItem(Player p, UUID uuid) {
         java.util.LinkedList<ItemStack> q = publishQueue.get(uuid);
         if (q == null || q.isEmpty()) {
-            publishQueue.remove(uuid);
-            publishQueueTotal.remove(uuid);
-            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            finishPublishQueue(p, uuid);
             if (p.isOnline()) openSecondHandShop(p, 0);
             return;
         }
@@ -4786,6 +4789,7 @@ public class ShopManager implements Listener {
             returnItem(p, it);
             p.sendMessage("§c[二手商店] 跳过不可上架物品 §e"
                     + ItemNameResolver.toChinese(it.getType()) + " §c(" + blocked + ")，已退还");
+            publishQueueSkip.merge(uuid, 1, Integer::sum); // ★ 问题3：跳过计数
             beginNextPublishItem(p, uuid);
             return;
         }
@@ -4862,6 +4866,8 @@ public class ShopManager implements Listener {
         ItemStack back = pendingPublishItem.remove(uuid);
         java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
         publishQueueTotal.remove(uuid);
+        publishQueueOk.remove(uuid);
+        publishQueueSkip.remove(uuid);
         publishListening.remove(uuid);
         publishStep.remove(uuid);
         pendingPublishDesc.remove(uuid);
@@ -4906,6 +4912,8 @@ public class ShopManager implements Listener {
                 // ★ 批量队列剩余一并退还（2026-10-11 任务2）
                 java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
                 publishQueueTotal.remove(uuid);
+                publishQueueOk.remove(uuid);
+                publishQueueSkip.remove(uuid);
                 int extra = 0;
                 if (q != null) {
                     extra = q.size();
@@ -5074,6 +5082,7 @@ public class ShopManager implements Listener {
         }
         secondHandListings.add(l);
         saveSecondHand();
+        publishQueueOk.merge(uuid, 1, Integer::sum); // ★ 问题3：成功计数
         // ★ 上架成功立刻触发一次增量热重载，把配置数据对齐（2026-10-11 问题4 例外）
         reloadSecondHandConfigIncremental("上架触发");
         p.sendMessage("§a§l[二手商店] §f上架成功: §e" + ItemNameResolver.toChinese(item.getType())
@@ -5095,10 +5104,37 @@ public class ShopManager implements Listener {
             p.sendMessage("§7进度: 还剩 §f" + q.size() + " §7件待定价");
             beginNextPublishItem(p, uuid);
         } else {
-            publishQueue.remove(uuid);
-            publishQueueTotal.remove(uuid);
-            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            finishPublishQueue(p, uuid);
             if (p.isOnline()) openSecondHandShop(p, 0);
+        }
+    }
+
+    /**
+     * ★ 批量上架统一收尾（2026-10-14 问题3）：按成功/跳过计数给出准确语义。
+     *   此前两处收尾无条件打「全部商品已上架完成」——物品被退回（禁售跳过/全禁）
+     *   时也这么说，语义误导。计数与 publishQueue 同生命周期：
+     *   startBatchPublish 置 0 → 成功 add(l) 时 ok++、禁售跳过 skip++ →
+     *   abortPublish / 超时 / 退出一并清理。
+     */
+    private void finishPublishQueue(Player p, UUID uuid) {
+        Integer ok = publishQueueOk.remove(uuid);
+        Integer skip = publishQueueSkip.remove(uuid);
+        publishQueue.remove(uuid);
+        publishQueueTotal.remove(uuid);
+        if (ok == null && skip == null) {
+            // 防御：计数缺失（理论不可达）→ 退回旧文案
+            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成");
+            return;
+        }
+        int okN = ok == null ? 0 : ok;
+        int skipN = skip == null ? 0 : skip;
+        if (skipN == 0) {
+            p.sendMessage("§a§l[二手商店] §f全部商品已上架完成（共 " + okN + " 件）");
+        } else if (okN == 0) {
+            p.sendMessage("§c§l[二手商店] §f" + skipN + " 件物品全部不可上架、已退还，本次未上架任何商品");
+        } else {
+            p.sendMessage("§a§l[二手商店] §f批量上架结束：成功上架 §a" + okN
+                    + " §f件、跳过退还 §c" + skipN + " §f件");
         }
     }
 
@@ -5113,6 +5149,8 @@ public class ShopManager implements Listener {
         // ★ 批量上架（2026-10-11 任务2）：中止时把队列里未定价的物品全部退还
         java.util.LinkedList<ItemStack> q = publishQueue.remove(uuid);
         publishQueueTotal.remove(uuid);
+        publishQueueOk.remove(uuid);
+        publishQueueSkip.remove(uuid);
         if (q != null && !q.isEmpty()) {
             int back = q.size() + (item != null ? 1 : 0);
             for (ItemStack it : q) returnItem(p, it);

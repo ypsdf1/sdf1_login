@@ -3831,8 +3831,48 @@ public class Main extends JavaPlugin
         String[] toks = raw.split("\\s+");
         String head = toks[0].toLowerCase(java.util.Locale.ROOT);
         if (head.startsWith("minecraft:")) head = head.substring(10);
-        // execute ... as ... run ... 链里的 @s 指向被 as 的实体，合法，不拦
-        if (head.equals("execute")) return;
+        // execute 链静态扫描：@s 出现在任何 as 之前 = 指向控制台自身 → 拦截提示；
+        //   出现在 as 之后 = 指向被 as 的实体，合法放行。
+        // ★ 问题1（2026-10-14）：原实现对 head=execute 一刀切 return，
+        //   execute at @s run say 123 这类从控制台发出原版【静默无输出】，
+        //   插件完全没监管 —— 现扫到就拦，给中文改法提示。
+        if (head.equals("execute")) {
+            int eIdx = -1;
+            boolean asSeen = false;
+            for (int i = 1; i < toks.length; i++) {
+                String t = toks[i].toLowerCase(java.util.Locale.ROOT);
+                if (t.equals("as")) {
+                    asSeen = true; // execute as / positioned as / rotated as 的 as 都算
+                    continue;
+                }
+                if (t.equals("run")) {
+                    if (i + 1 >= toks.length) break;
+                    String nx = toks[i + 1].toLowerCase(java.util.Locale.ROOT);
+                    if (nx.startsWith("minecraft:")) nx = nx.substring(10);
+                    // run 后只有仍嵌套 execute 才继续扫；say/me/help 等文本命令里
+                    // 的字面 @s 不是选择器，直接停（防误伤）
+                    if (!nx.equals("execute")) break;
+                    i++; // 跳过内层 execute 本身，继续扫下一段链
+                    continue;
+                }
+                if (!asSeen && (toks[i].equals("@s") || toks[i].startsWith("@s["))) {
+                    eIdx = i;
+                    break;
+                }
+            }
+            if (eIdx < 0) return;
+            e.setCancelled(true);
+            cs.sendMessage("§c§l[命令未执行] §f/" + raw);
+            cs.sendMessage("§c原因: §f第 " + eIdx + " 个参数 §e" + toks[eIdx]
+                    + " §f是 @s（=执行者自己），但控制台不是玩家，没有“自己”可指。");
+            cs.sendMessage("§7原版此情况【静默无输出】：execute 的 @s 解析不到就直接中止，不报任何错。");
+            cs.sendMessage("§7改法三选一:");
+            cs.sendMessage("§7  · 想对该玩家执行 → 直接写玩家名，如 §e/execute at Steve run say 123");
+            cs.sendMessage("§7  · 想对全体在线玩家 → 换成 §e@a");
+            cs.sendMessage("§7  · 想让某个玩家自己执行 → 用 §e/execute as <玩家> run §7加原命令");
+            getLogger().info("[命令] 控制台 execute 链含 @s 被拦: " + raw + "（@s 出现在 as 之前）");
+            return;
+        }
         // 纯文本广播命令：@s 是要发出去的字面文字，不是选择器，不拦
         if (head.equals("say") || head.equals("me") || head.equals("teammsg")
                 || head.equals("tm") || head.equals("help") || head.equals("?")) {
@@ -4158,7 +4198,22 @@ public class Main extends JavaPlugin
         body = body.trim();
         if (body.isEmpty()) return;
         if (body.charAt(0) == '/') body = body.substring(1).trim();
-        if (body.isEmpty()) return;
+        if (body.isEmpty()) {
+            // ★ 问题2（2026-10-14）：只输入了 "/"（去头后为空）—— 原实现直接
+            //   return 且不压制，Paper 原生 "Unknown or incomplete command" 就此
+            //   溜给运维（生产日志实证）。现压掉原生报错 + 中文提示正确写法：
+            //   控制台直接输入指令名（无需斜杠），除非指令本身就以斜杠开头。
+            suppressUnknown(e);
+            if (sender instanceof Player) {
+                sender.sendMessage("§c§l[命令未执行] §7你只输入了 §f/ §7，后面没有指令名，"
+                        + "请输入完整指令，如 §f/list§7、§f/tpa Steve");
+            } else {
+                sender.sendMessage("§c§l[命令未执行] §7控制台直接输入指令名即可（无需斜杠），"
+                        + "如 §flist§7、§fsay 你好");
+            }
+            getLogger().info("[无感切换] 单斜杠空指令已拦下并中文化: " + e.getCommandLine());
+            return;
+        }
 
         // ---- 0) 诊断日志：确认本处理器是否真的被触发 ----
         boolean isPlayer = sender instanceof Player;

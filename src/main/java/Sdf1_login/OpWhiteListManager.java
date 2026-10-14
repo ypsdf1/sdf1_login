@@ -149,14 +149,47 @@ public class OpWhiteListManager implements Listener {
         // ★ 2026-10-13 问题3：初始延迟原来写死 300 tick=15s，从插件启动时刻起算，
         //   于是轮询点整体漂移固定偏移（实际 6/21/36/51 秒，期望 0/15/30/45 秒）。
         //   改为对齐到下一个 15 秒墙钟边界后，再按 15s 周期跑（同 startShCfgReloadTask 范式）。
-        long now15 = System.currentTimeMillis();
-        long next15 = (now15 / 15000L + 1) * 15000L;
-        long delay15Ticks = Math.max(1L, (next15 - now15) / 50L);
-        Bukkit.getScheduler().runTaskTimer(plugin, this::checkAndReload,
-                delay15Ticks, 300L);
-        long delayMs = millisToNextQuarterPoint();
-        Bukkit.getScheduler().runTaskTimer(plugin, this::onQuarterPoint,
-                (long) delayMs / 50L, 18000L);
+        // ★ 2026-10-14 问题4（第十三批复发根因）：上一版只对齐了【初始延迟】，
+        //   固定 period（300/18000 tick）在 TPS≠20 时逐轮累积漂移，运行几小时后
+        //   轮询点又飘离 0/15/30/45 秒整点。改为墙钟自对齐、每轮执行完重排的
+        //   runTaskLater 调度（见 scheduleAligned），无论 TPS 多少都精确落点。
+        scheduleAligned(this::checkAndReload, 15000L, "15s热重载");
+        scheduleAligned(this::onQuarterPoint, 900000L, "整点扫描");
+    }
+
+    /**
+     * ★ 2026-10-14 问题4：墙钟自对齐、每轮重排的调度器（替代固定 period 的 runTaskTimer）。
+     * 每轮任务跑完后按【执行时刻的墙钟】重新计算下一个 periodMs 边界再 runTaskLater，
+     * 漂移不累积 —— TPS 高低、卡顿都影响不了落点；任务异常也不打断重排（finally）。
+     *
+     * @param task     每轮要跑的任务
+     * @param periodMs 墙钟周期毫秒（15000=对齐 :00/:15/:30/:45 秒；900000=对齐 :00/:15/:30/:45 分）
+     * @param tag      日志标签（异常时打印用）
+     */
+    private void scheduleAligned(Runnable task, long periodMs, String tag) {
+        Runnable self = new Runnable() {
+            @Override
+            public void run() {
+                if (!plugin.isEnabled()) {
+                    return; // 插件已禁用，不再重排
+                }
+                try {
+                    task.run();
+                } catch (Throwable t) {
+                    plugin.getLogger().warning("[OP白名单] " + tag + "任务异常(下轮照常): "
+                            + t.getMessage());
+                } finally {
+                    long now = System.currentTimeMillis();
+                    long next = (now / periodMs + 1) * periodMs;
+                    long delayTicks = Math.max(1L, (next - now + 49L) / 50L);
+                    Bukkit.getScheduler().runTaskLater(plugin, this, delayTicks);
+                }
+            }
+        };
+        long now = System.currentTimeMillis();
+        long next = (now / periodMs + 1) * periodMs;
+        long delayTicks = Math.max(1L, (next - now + 49L) / 50L);
+        Bukkit.getScheduler().runTaskLater(plugin, self, delayTicks);
     }
 
     // ================= 配置读取 =================
@@ -385,8 +418,15 @@ public class OpWhiteListManager implements Listener {
             if (!dir.exists()) {
                 dir.mkdirs();
             }
-            // 原版 ops.json 不存在或为空 = 没有内容可丢；已有历史备份则原样保留（绝不用空文件覆盖）
-            if (!src.exists() || src.length() == 0) {
+            // 原版 ops.json 不存在 / 空白 / 只剩 "[]" 空壳 = 没有内容可丢；
+            // 一律保留已有历史备份（★ 2026-10-14 问题4：fail() 清空后 ops.json 是
+            // 2 字节的 "[]"，旧判空 length()==0 挡不住 → REPLACE_EXISTING 会用空壳
+            // 覆盖掉唯一一份好备份，管理员就只能手动逐个恢复 OP）
+            if (!src.exists() || isDegenerateOps(src)) {
+                if (dst.exists() && dst.length() > 0) {
+                    plugin.getLogger().info("[OP白名单] 原版 ops.json 实质为空(空壳)，"
+                            + "已有历史备份原样保留: OP白名单/" + NATIVE_OPS_BACKUP);
+                }
                 return true;
             }
             Files.copy(src.toPath(), dst.toPath(),
@@ -403,6 +443,19 @@ public class OpWhiteListManager implements Listener {
             plugin.getLogger().severe("[OP白名单] 原版 ops.json 备份失败: " + e.getMessage()
                     + " → 按「数据第一优先级」，本次【不卸载】任何人的 OP");
             return false;
+        }
+    }
+
+    /** ops.json 是否实质为空（不存在 / 空白 / 只有 "[]" 空壳）——空壳绝不允许覆盖历史备份 */
+    private static boolean isDegenerateOps(File f) {
+        try {
+            if (!f.exists() || f.length() == 0) {
+                return true;
+            }
+            String s = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
+            return s.isEmpty() || s.equals("[]");
+        } catch (Exception e) {
+            return false; // 读不了 → 当作有内容，走正常备份流程（失败则按铁律不卸载）
         }
     }
 
@@ -740,6 +793,12 @@ public class OpWhiteListManager implements Listener {
                     + String.join(", ", justRestored));
         }
         // 1) 非法持有扫描：持 OP 但不在白名单 → 撤销 + 报警
+        // ★ 问题4 铁律（2026-10-14 用户原话）：「先备份原生 ops.json 到插件自己的
+        //   json 文件夹下面来，再卸载删除」。本循环是 fail() 之外唯一的自动撤销入口
+        //   （配置自愈后的全量接管也走这里）—— 此前该路径一次备份都没做过，
+        //   用户没提前备份就只能手动逐个恢复。备份失败 → 数据第一优先级，
+        //   本轮中止 apply（不撤也不授），下轮自动重试。
+        boolean opsBackedUp = false;
         for (OfflinePlayer op : new ArrayList<>(Bukkit.getOperators())) {
             String n = op.getName();
             if (n == null || n.isEmpty() || !op.isOp()) {
@@ -751,10 +810,19 @@ public class OpWhiteListManager implements Listener {
             if (justRestored.contains(n.toLowerCase(Locale.ROOT))) {
                 continue;
             }
+            if (!opsBackedUp) {
+                if (!backupNativeOps()) {
+                    plugin.getLogger().warning("[OP白名单] 撤销前备份原版 ops.json 失败 → "
+                            + "本轮【跳过全部撤销】（数据第一优先级），下轮自动重试");
+                    return;
+                }
+                opsBackedUp = true;
+            }
             setOpByName(n, false);
             warnIllegal(n, now, describeIllegal(n));
-            // 卸任提示当事人（在线直发，离线暂存）
-            notifyOpChange(n, false, "自动撤销（不在白名单：" + describeIllegal(n) + "）");
+            // ★ 问题5（2026-10-14）：玩家侧最小化信息披露 —— 只说结果，
+            //   不点名白名单/判定细节（细节只进控制台 warnIllegal 日志）
+            notifyAutoRevoked(n);
         }
         // 2) 白名单内玩家补授（已是 OP 的跳过）
         //    ★ 2026-10-08 现场修复：原实现只遍历【在线】玩家，导致离线授权人
@@ -1177,7 +1245,8 @@ public class OpWhiteListManager implements Listener {
                     saveConfig();
                     if (isOpNow(name)) {
                         setOpByName(name, false);
-                        notifyOpChange(name, false, "临时OP被扣减至到期，已撤销");
+                        // ★ 问题6：旧文案与模板拼成病句「你的 临时OP被扣减至到期，已撤销 已撤销」
+                        notifyAutoRevoked(name);
                     }
                     sender.sendMessage("§a扣减后 " + name + " 的临时OP已到期，条目已移除，OP 已撤销");
                 } else {
@@ -1201,7 +1270,9 @@ public class OpWhiteListManager implements Listener {
                 boolean wasOp = isOpNow(name);
                 setOpByName(name, false);
                 if (wasOp) {
-                    notifyOpChange(name, false, inTimed ? "临时OP被移除" : "长期OP被移除");
+                    // ★ 问题6（2026-10-14）：旧文案「你的 长期OP被移除 已撤销」是病句，
+                    //   改走固定文案「管理员已撤销你的OP」（最小化信息披露）
+                    notifyAutoRevoked(name);
                 }
                 lastWarn.remove(name.toLowerCase(Locale.ROOT));
                 if (!inPerm && !inTimed && !wasOp) {
@@ -1282,10 +1353,22 @@ public class OpWhiteListManager implements Listener {
     /** 提示当事人 OP 上任/卸任。在线直发；离线暂存 pendingMsg，上线时补发。 */
     public void notifyOpChange(String name, boolean isGrant, String what) {
         if (name == null || name.isEmpty()) return;
-        Player p = Bukkit.getPlayerExact(name);
         String msg = isGrant
                 ? "§a[OP白名单] 你已获得 §f" + what + "§a。"
                 : "§c[OP白名单] 你的 §f" + what + " §c已撤销，OP 权限已收回。";
+        notifyMsg(name, msg);
+    }
+
+    /** ★ 问题5（2026-10-14）：自动撤销的玩家侧固定文案 —— 最小化信息披露，
+     *  只说结果「管理员已撤销你的OP」；白名单/判定细节只留控制台 warnIllegal 日志。 */
+    public void notifyAutoRevoked(String name) {
+        if (name == null || name.isEmpty()) return;
+        notifyMsg(name, "§c[OP白名单] §f管理员已撤销你的OP");
+    }
+
+    /** 提示投递：在线直发，离线暂存（每人最多 2 条，上线由 flushPendingMsgs 投递） */
+    private void notifyMsg(String name, String msg) {
+        Player p = Bukkit.getPlayerExact(name);
         if (p != null) {
             p.sendMessage(msg);
         } else {
