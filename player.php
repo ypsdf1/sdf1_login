@@ -274,9 +274,11 @@ if ($currentVersion !== $BUILD_VERSION) {
 
         /* ===== 第十六批：封禁常态化公示卡片（从下往上滚动替换） ===== */
         .ban-roll-wrap {
-            position: relative; height: 320px; overflow: hidden;
+            /* 第十六批缺陷修复：高度由 JS 按实际内容撑开（空态不再占 320px 空白） */
+            position: relative; height: 42px; overflow: hidden;
             border-radius: 8px; margin-top: 4px;
         }
+        .ban-roll-page { width: 100%; }
         .ban-roll-inner {
             position: absolute; left: 0; right: 0; top: 0;
             transition: transform 0.7s cubic-bezier(.22,.61,.36,1);
@@ -1148,7 +1150,16 @@ if ($currentVersion !== $BUILD_VERSION) {
         document.querySelector('.sidebar').style.display = 'block';
         const c = document.getElementById('content');
         if (!c) return;
-        if (page === 'dashboard') renderDashboard(c);
+        if (page === 'dashboard') {
+            // renderDashboard 是 async 且会整体重写 content.innerHTML，
+            // 必须等它渲染完再把封禁公示卡插到内容区顶部
+            const rp = renderDashboard(c);
+            if (rp && typeof rp.then === 'function') {
+                rp.then(() => { if (typeof banCardSync === 'function') banCardSync(); }).catch(() => {});
+            } else if (typeof banCardSync === 'function') {
+                banCardSync();
+            }
+        }
         else if (page === 'shop') renderShop(c);
         else if (page === 'lands') renderLands(c);
         else if (page === 'cdk') renderCDK(c);
@@ -4503,20 +4514,37 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
     let banBoardRows = [];            // 当前生效封禁（从近到远）
     let banBoardShown = false;        // 是否已渲染过（控制动画方向）
     let banBoardTimer = null;
+    let banBoardLoaded = false;      // 是否成功拉到过一次公示数据（未拉到时显示"同步中"而非"暂无"）
 
+    // ★ 第十六批缺陷修复：卡片改插进 #content 内部（个人中心内容区第一张卡），
+    //   不再 insertBefore(.main) 横跨整页宽度把侧边栏和正文一起顶下去；
+    //   只在 dashboard 显示——其它页面 content.innerHTML 被整体重写，卡片自然不残留。
     function ensureBanCard() {
-        if (!document.getElementById(BAN_CARD_ID)) {
-            const card = document.createElement('div');
+        if (currentPage !== 'dashboard') return null;
+        const box = document.getElementById('content');
+        if (!box) return null;
+        let card = document.getElementById(BAN_CARD_ID);
+        if (!card || card.parentNode !== box) {
+            if (card && card.parentNode) card.parentNode.removeChild(card);
+            card = document.createElement('div');
             card.className = 'card';
             card.id = BAN_CARD_ID;
             card.style.borderColor = 'var(--red)';
             card.innerHTML = '<h2 style="color:var(--red)">⚠ 封禁常态化公示</h2>' +
                 '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">违规玩家将被公示，杀鸡儆猴，请各位引以为戒</p>' +
                 '<div class="ban-roll-wrap"><div class="ban-roll-inner" id="' + BAN_SLOT_ID + '"></div></div>';
-            const main = document.querySelector('.main');
-            if (main && main.parentNode) main.parentNode.insertBefore(card, main);
+            box.insertBefore(card, box.firstChild);
         }
         return document.getElementById(BAN_SLOT_ID);
+    }
+
+    // 页面切换 / 内容被重写后，立刻补位并渲染已有数据（不用干等下一个 15 秒窗口）
+    function banCardSync() {
+        const slot = ensureBanCard();
+        if (!slot) return;
+        if (!slot.children.length) {
+            banRollUpdate(slot, banPageHtml(banBoardRows.slice(0, BAN_PAGE_SIZE)));
+        }
     }
 
     function banItemHtml(b) {
@@ -4534,47 +4562,59 @@ function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
     }
 
     function banPageHtml(rows) {
+        if (!banBoardLoaded) return '<div class="ban-roll-item"><span class="breason">⏳ 正在同步公示数据...</span></div>';
         if (!rows.length) return '<div class="ban-roll-item"><span class="breason" style="color:var(--green)">✓ 当前暂无被封禁玩家</span></div>';
         return rows.map(banItemHtml).join('');
     }
 
-    // 从下往上滚动替换信息：先把新页放到下方（translateY(100%)），再滚到 0 位
+    // 从下往上滚动替换：旧页滚出上方的同时新页从下方滚入，容器高度同步过渡
+    // ★ 缺陷修复：按"页"操作而非整块 innerHTML 覆写，高度按内容实测，空态只有一行高
     function banRollUpdate(slot, html) {
-        const inner = slot;
-        if (!banBoardShown) {
-            // 首次：直接显示
-            inner.innerHTML = html;
-            inner.style.transition = 'none';
-            inner.style.transform = 'translateY(0)';
+        const wrap = slot.parentNode;
+        const page = document.createElement('div');
+        page.className = 'ban-roll-page';
+        page.innerHTML = html;
+        const direct = () => {
+            while (slot.firstChild) slot.removeChild(slot.firstChild);
+            slot.appendChild(page);
+            slot.style.transition = 'none';
+            slot.style.transform = 'translateY(0)';
+            if (wrap) { wrap.style.transition = 'none'; wrap.style.height = page.offsetHeight + 'px'; }
             banBoardShown = true;
-            return;
+            slot._banBusy = false;
+        };
+        if (!banBoardShown || !slot.children.length || slot._banBusy) { direct(); return; }
+        const oldH = slot.offsetHeight;          // 旧页高度
+        slot.appendChild(page);
+        const newH = page.offsetHeight;          // 新页高度
+        slot._banBusy = true;
+        void slot.offsetHeight;                  // 强制回流，让过渡从旧状态起步
+        slot.style.transition = 'transform 0.7s cubic-bezier(.22,.61,.36,1)';
+        slot.style.transform = 'translateY(-' + oldH + 'px)';
+        if (wrap) {
+            wrap.style.transition = 'height 0.7s cubic-bezier(.22,.61,.36,1)';
+            wrap.style.height = newH + 'px';
         }
-        // 旧页先滚出上方（-100%），同时把新页放在下方再滚入
-        const oldH = inner.offsetHeight;
-        inner.style.transition = 'transform 0.7s cubic-bezier(.22,.61,.36,1)';
-        inner.style.transform = 'translateY(-' + oldH + 'px)';
-        // 滚出结束后换成新页并从下方滚入
         setTimeout(() => {
-            inner.style.transition = 'none';
-            inner.style.transform = 'translateY(100%)';
-            inner.innerHTML = html;
-            // 强制 reflow 后再滚回 0（新页从下往上出现）
-            void inner.offsetHeight;
-            inner.style.transition = 'transform 0.7s cubic-bezier(.22,.61,.36,1)';
-            inner.style.transform = 'translateY(0)';
-        }, 720);
+            slot.style.transition = 'none';
+            slot.style.transform = 'translateY(0)';
+            while (slot.firstChild && slot.firstChild !== page) slot.removeChild(slot.firstChild);
+            if (wrap) { wrap.style.transition = 'none'; wrap.style.height = page.offsetHeight + 'px'; }
+            slot._banBusy = false;
+        }, 760);
     }
 
     async function banBoardLoadAndRoll() {
-        const slot = ensureBanCard();
-        if (!slot) return;
         try {
             const res = await fetch(API + 'sync.php?action=get_ban_board&limit=' + BAN_PAGE_SIZE, {cache: 'no-store'});
             const j = await res.json();
             if (j && j.success && j.data && Array.isArray(j.data.bans)) {
                 banBoardRows = j.data.bans;
+                banBoardLoaded = true;
             }
         } catch (e) { /* 网络抖动沿用上一帧 */ }
+        const slot = ensureBanCard();
+        if (!slot || slot._banBusy) return;
         banRollUpdate(slot, banPageHtml(banBoardRows.slice(0, BAN_PAGE_SIZE)));
     }
 

@@ -5408,32 +5408,37 @@ function getBanBoard() {
     try { $db = getDB(); } catch (Throwable $e) { $db = null; }
     if (!$db) { success(['total' => 0, 'bans' => []], 'db unavailable'); return; }
 
-    // 表不存在 → 空结果
-    $chk = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_bans'");
-    if (!$chk || !$chk->fetchArray()) { success(['total' => 0, 'bans' => []], 'empty'); return; }
-
+    // ★ 第十六批缺陷修复：禁止用 sqlite_master 探测表是否存在 ——
+    //   那条 SQL 抽不出 web_player_bans（只抽得到 sqlite_master），SdfDbRouter::side()
+    //   会把语句判成 web 侧；而 web_player_bans 在 dbJavaTables() 清单里，实际建在 java 侧，
+    //   于是探测恒为空 → 公示永远返回"暂无"（后台却挂着几十条封禁）。
+    //   改为直接查目标表：SQL 自带表名 → 路由到正确一侧；表缺失由 try/catch 兜底返回空。
     // 仅公示名字封禁（ban_type='name'），IP 封禁不公开（IP 属敏感信息）
     $now = time();
-    $res = $db->query("SELECT target, ban_type, reason, expire_time, synced_at
-                       FROM web_player_bans
-                       WHERE ban_type = 'name'
-                       ORDER BY synced_at DESC
-                       LIMIT " . $limit);
     $bans = [];
-    if ($res) {
-        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $expire = (int) ($row['expire_time'] ?? 0);
-            // 跳过已过期的临时封禁（expire_time>0 且已过期）
-            if ($expire > 0 && $expire <= $now) continue;
-            $bans[] = [
-                'target'     => (string) ($row['target'] ?? ''),
-                'reason'     => (string) ($row['reason'] ?? ''),
-                'expire_time'=> $expire,          // 0 = 永久
-                'synced_at'  => (int) ($row['synced_at'] ?? 0),
-            ];
+    try {
+        $res = $db->query("SELECT target, ban_type, reason, expire_time, synced_at
+                           FROM web_player_bans
+                           WHERE ban_type = 'name'
+                           ORDER BY synced_at DESC
+                           LIMIT " . $limit);
+        if ($res) {
+            while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                $expire = (int) ($row['expire_time'] ?? 0);
+                // 跳过已过期的临时封禁（expire_time>0 且已过期）
+                if ($expire > 0 && $expire <= $now) continue;
+                $bans[] = [
+                    'target'     => (string) ($row['target'] ?? ''),
+                    'reason'     => (string) ($row['reason'] ?? ''),
+                    'expire_time'=> $expire,          // 0 = 永久
+                    'synced_at'  => (int) ($row['synced_at'] ?? 0),
+                ];
+            }
         }
+    } catch (Throwable $e) {
+        $bans = [];   // 表不存在 / 瞬时错误 → 公示为空，不影响接口本身
     }
-    success(['total' => count($bans), 'bans' => $bans], 'ok');
+    success(['total' => count($bans), 'bans' => $bans], count($bans) ? 'ok' : 'empty');
 }
 
 // ===== Java端推送封禁名单到PHP =====

@@ -17,6 +17,18 @@ secGatePage();
 header('Referrer-Policy: no-referrer');
 header('Cache-Control: no-cache, no-store, must-revalidate, max-age=0');
 header('Pragma: no-cache');
+
+// ★ AGPL-3.0 合规：源码地址（使用者可在 开源地址.txt 中改成自己的仓库地址），与 player.php 同款
+$OSS_REPO_DEFAULT = 'https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/';
+$OSS_REPO = $OSS_REPO_DEFAULT;
+$ossTxt = __DIR__ . '/开源地址.txt';
+if (is_file($ossTxt)) {
+    foreach (file($ossTxt, FILE_IGNORE_NEW_LINES) as $ossLine) {
+        $ossLine = trim($ossLine);
+        if ($ossLine === '' || $ossLine[0] === '#') continue;
+        if (preg_match('#^https?://#i', $ossLine)) { $OSS_REPO = $ossLine; break; }
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -33,12 +45,12 @@ header('Pragma: no-cache');
         body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
         .header { background:linear-gradient(135deg,#1a1e2e,#0d1117); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
         .header h1 { font-size:18px; color:var(--accent); }
-        .main { display:flex; min-height:calc(100vh - 52px); }
-        .sidebar { width:200px; background:var(--card); border-right:1px solid var(--border); padding:12px 0; flex-shrink:0; overflow-y:auto; max-height:calc(100vh - 52px); }
+        .main { display:flex; min-height:calc(100vh - 52px - 44px); }
+        .sidebar { width:200px; background:var(--card); border-right:1px solid var(--border); padding:12px 0; flex-shrink:0; overflow-y:auto; max-height:calc(100vh - 52px - 44px); }
         .si { padding:10px 20px; cursor:pointer; color:var(--dim); transition:all 0.2s; font-size:13px; display:flex; align-items:center; gap:8px; }
         .si:hover { background:rgba(88,166,255,0.1); color:var(--text); }
         .si.active { color:var(--accent); border-right:3px solid var(--accent); background:rgba(88,166,255,0.05); }
-        .content { flex:1; padding:20px; overflow-y:auto; max-height:calc(100vh - 52px); }
+        .content { flex:1; padding:20px; overflow-y:auto; max-height:calc(100vh - 52px - 44px); }
         .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:12px; }
         .card h2 { font-size:15px; color:var(--accent); margin-bottom:10px; }
         .stats { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-bottom:16px; }
@@ -4718,5 +4730,10 @@ go = function(p) {
 };
 </script>
 <script src="cashier.js?<?php echo filemtime(__FILE__); ?>"></script>
+<!-- ★ AGPL-3.0 合规页脚：源码地址取自 开源地址.txt（可由使用者替换为自己的仓库） -->
+<footer style="min-height:44px;box-sizing:border-box;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px;padding:8px 16px;font-size:12px;color:var(--dim);border-top:1px solid var(--border);background:var(--bg);text-align:center">
+    本后台基于 <a href="LICENSE" target="_blank" style="color:var(--accent);text-decoration:none">AGPL-3.0</a> 开源协议发布
+    · 源代码地址：<a href="<?php echo htmlspecialchars($OSS_REPO, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" style="color:var(--accent);text-decoration:none"><?php echo htmlspecialchars($OSS_REPO, ENT_QUOTES, 'UTF-8'); ?></a>
+</footer>
 </body>
 </html>
