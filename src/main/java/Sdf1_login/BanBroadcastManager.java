@@ -37,7 +37,7 @@ import java.util.regex.Pattern;
  *   - 解码全失败  → 备份原文件 + 释放一份新的。
  * 配置丢失 → 自动补发（saveResource 自愈）。
  *
- * 键值：轮播最低间隔(秒) / 轮播最大间隔(秒) / 播报模式
+ * 键值：轮播最低间隔(秒) / 轮播最大间隔(秒) / 播报模式 / 播报起点(插件安装之前的封禁不播)
  *   播报模式：true=由近到远、false=由远到近、0=关闭；
  *   表格值：由近到远 / 由远到近 / 0。
  *   间隔或模式为 0 → 关闭播报。
@@ -54,7 +54,11 @@ public class BanBroadcastManager {
     private int minInterval = 60;
     private int maxInterval = 180;
     private int mode = 1;            // 0=关闭 1=由近到远 2=由远到近
-    private int pageSize = 9;        // 每轮播报条数（耻辱台一页）
+    private int pageSize = 6;        // 每轮播报条数（耻辱台一页，一次发6个）
+    private int lastDelaySec = 0;     // 本轮实际排定的随机间隔秒数（播报日志用）
+    private long startCutoffMs = 0;   // 播报起点(毫秒)：只播该时刻之后创建的封禁
+    private boolean startCutoffAuto = true;  // 起点未配置 → 自动取插件数据目录创建时间(=插件安装时间)
+    private long autoCutoffMs = -1;    // 自动起点缓存(-1=未取)
 
     public BanBroadcastManager(Main plugin) {
         this.plugin = plugin;
@@ -69,8 +73,10 @@ public class BanBroadcastManager {
         ensureConfigExists();
         reloadConfig();
         scheduleNext();
+        long cut0 = resolveStartCutoff();
         plugin.getLogger().info("[封禁播报] 已启动，模式=" + modeName()
-                + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条");
+                + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条"
+                + " 起点=" + (cut0 > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut0)) : "不限"));
     }
 
     public void shutdown() { /* BukkitRunnable 随插件卸载自动取消 */ }
@@ -161,6 +167,9 @@ public class BanBroadcastManager {
                 mode = parseMode(o.get("播报模式").getAsString());
                 modePresent = true;
             }
+            if (o.has("播报起点") && !o.get("播报起点").isJsonNull()) {
+                parseStartCutoff(o.get("播报起点").getAsString());
+            }
             if (anyInterval) { normalize(); return true; }
             // 没有可用间隔值：纯「只有播报模式且无间隔键」的 json 也算生效
             if (modePresent && !hasIntervalKey) { normalize(); return true; }
@@ -196,6 +205,7 @@ public class BanBroadcastManager {
             if (key.equals("轮播最低间隔")) { minInterval = toSec(val); any = true; }
             else if (key.equals("轮播最大间隔")) { maxInterval = toSec(val); any = true; }
             else if (key.equals("播报模式")) { mode = parseMode(val); any = true; }
+            else if (key.equals("播报起点")) { parseStartCutoff(val); any = true; }
         }
         if (any) normalize();
         return any;
@@ -228,6 +238,66 @@ public class BanBroadcastManager {
         if (mode == 0 || (minInterval == 0 && maxInterval == 0)) mode = 0;
     }
 
+    /**
+     * 解析「播报起点」：插件安装之前的封禁（历史封禁）不播报。
+     * 支持 yyyy-MM-dd[ HH:mm[:ss]] 日期、10/13 位时间戳；0/留空 = 自动
+     * （自动模式取插件数据目录创建时间，即插件安装上服务器的时间）
+     */
+    private void parseStartCutoff(String s) {
+        String v = s == null ? "" : s.trim();
+        if (v.isEmpty() || v.equals("0")) {
+            startCutoffAuto = true;
+            startCutoffMs = 0;
+            return;
+        }
+        if (v.matches("\\d{10,13}")) {
+            long n = Long.parseLong(v);
+            startCutoffMs = v.length() <= 10 ? n * 1000L : n;
+            startCutoffAuto = false;
+            return;
+        }
+        String[] pats = {"yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd"};
+        for (String p : pats) {
+            try {
+                java.text.ParsePosition pos = new java.text.ParsePosition(0);
+                Date d = new SimpleDateFormat(p, Locale.ROOT).parse(v, pos);
+                if (d != null && pos.getIndex() == v.length()) {
+                    startCutoffMs = d.getTime();
+                    startCutoffAuto = false;
+                    return;
+                }
+            } catch (Exception ignored) { }
+        }
+        warn("播报起点无法解析，回退自动: " + v);
+        startCutoffAuto = true;
+        startCutoffMs = 0;
+    }
+
+    /**
+     * 取播报起点(毫秒)：>0 表示只播该时刻之后创建的封禁。
+     * 自动模式取插件数据目录(plugins/Sdf1_login)的创建时间 = 插件安装时间；
+     * 文件系统给不出可信创建时间时（缓存值距今不足 7 天，多半是 mtime 兜底）
+     * → 返回 0 不过滤，避免把插件安装之后的封禁也一并排除。
+     */
+    private long resolveStartCutoff() {
+        if (!startCutoffAuto) return startCutoffMs;
+        if (autoCutoffMs < 0) {
+            autoCutoffMs = 0;
+            try {
+                File df = plugin.getDataFolder();
+                if (df != null && df.exists()) {
+                    long t = java.nio.file.Files.readAttributes(df.toPath(),
+                            java.nio.file.attribute.BasicFileAttributes.class)
+                            .creationTime().toMillis();
+                    if (t > 0 && System.currentTimeMillis() - t > 7L * 24 * 3600 * 1000) {
+                        autoCutoffMs = t;
+                    }
+                }
+            } catch (Exception ignored) { }
+        }
+        return autoCutoffMs;
+    }
+
     // ==================== 调度 ====================
 
     /** 排下一次窗口期：随机 [min,max] 秒后播报，再自我reschedule */
@@ -238,14 +308,22 @@ public class BanBroadcastManager {
             // 运行中把 0 改回正常值可自动恢复播报（无需重启）
             delaySec = 60;
         } else {
+            // ★ 每次在[最小间隔,最大间隔]之间随机取一个秒数，不是固定值
             int span = maxInterval - minInterval;
             delaySec = minInterval + (span > 0 ? rnd.nextInt(span + 1) : 0);
+            lastDelaySec = delaySec;
         }
         long delayTicks = Math.max(20L, delaySec * 20L);
         new BukkitRunnable() {
             @Override
             public void run() {
                 if (!plugin.isEnabled()) return;
+                // ★ 服务器没人就闭嘴：无人在线时不播报、不重载、不自愈、不打任何日志，
+                //   直接排下一轮（没人时播报和日志打出来也没人看）
+                if (Bukkit.getOnlinePlayers().isEmpty()) {
+                    scheduleNext();
+                    return;
+                }
                 // ★ 自愈 + 热重载：每次窗口期前检查配置存在性并重读
                 ensureConfigExists();
                 reloadConfig();
@@ -267,9 +345,13 @@ public class BanBroadcastManager {
         try {
             BanList nb = Bukkit.getBanList(BanList.Type.NAME);
             // getEntries() 实际返回 Set，按 Collection 中转强转（防 ClassCastException）
+            // ★ 播报起点：插件安装之前的封禁（历史封禁）不播报，与插件管辖范围对齐
+            long cutoff = resolveStartCutoff();
             for (BanEntry<?> e : (Collection<BanEntry<?>>) (Collection<?>) nb.getEntries()) {
                 Date exp = e.getExpiration();
                 if (exp != null && exp.getTime() <= System.currentTimeMillis()) continue;
+                Date created = e.getCreated();
+                if (cutoff > 0 && created != null && created.getTime() < cutoff) continue;
                 list.add(e);
             }
         } catch (Exception e) {
@@ -313,7 +395,8 @@ public class BanBroadcastManager {
                     + " §8| §7封于§f" + when + " §8| " + expStr);
         }
         Bukkit.broadcastMessage("§7§o请各位玩家引以为戒，遵守服务器规则。");
-        log("本轮已播报 " + page.size() + "/" + total + " 条封禁");
+        log("本轮已播报 " + page.size() + "/" + total + " 条封禁（本次随机间隔 "
+                + lastDelaySec + "s，区间 " + minInterval + "~" + maxInterval + "s）");
     }
 
     /** 轮播游标（下一页起点） */
@@ -324,9 +407,12 @@ public class BanBroadcastManager {
     /** 手动重载配置并汇报当前生效值 */
     public void report(CommandSender to) {
         reloadConfig();
+        long cut = resolveStartCutoff();
         to.sendMessage("§a[封禁播报] §7模式=§f" + modeName()
                 + " §7间隔=§f" + minInterval + "~" + maxInterval + "s"
                 + " §7每页=§f" + pageSize + "条"
+                + " §7起点=§f" + (cut > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut)) : "不限")
+                + (startCutoffAuto ? "§7(自动)" : "")
                 + (mode == 0 ? " §c(已关闭)" : ""));
     }
 
