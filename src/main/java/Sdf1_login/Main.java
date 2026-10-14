@@ -553,6 +553,10 @@ public class Main extends JavaPlugin
                 .registerEvents(this, this);
 
         // ===== 11. 定时任务 =====
+        // ★ 第十五批：主线程卡顿看门狗（生产 14:52:08~14:52:29 主线程静默 21 秒、
+        //   全程无 ERROR 只有 SSL 断路器 WARN —— 日志抓不到卡点栈，靠它下次复现
+        //   直接把主线程栈打进日志定位）
+        new MainThreadWatchdog(this).start();
         afk.startCheck();
         startLoginReminder();
         startTimeoutCheck();
@@ -3838,11 +3842,31 @@ public class Main extends JavaPlugin
         //   插件完全没监管 —— 现扫到就拦，给中文改法提示。
         if (head.equals("execute")) {
             int eIdx = -1;
-            boolean asSeen = false;
+            // ★ 第十五批（2026-10-14）执行者状态机（修第十四批 asSeen 布尔残留）：
+            //   executorIsEntity=false 时当前执行者是控制台（非实体），链上任何 @s
+            //   都解析不到 → 原版整条【静默中止】；只有 as <实体/选择器> 才把执行者
+            //   换成实体，positioned/rotated as 只取位置朝向、不换执行者。
+            //   `execute as @s run say 1`（生产复现指令）在旧代码里 asSeen 已置真
+            //   而被放行 → 原版静默失败没人管，现拦下给中文改法。
+            boolean executorIsEntity = false;
             for (int i = 1; i < toks.length; i++) {
                 String t = toks[i].toLowerCase(java.util.Locale.ROOT);
                 if (t.equals("as")) {
-                    asSeen = true; // execute as / positioned as / rotated as 的 as 都算
+                    if (i + 1 >= toks.length) break;
+                    // positioned as / rotated as 的 as 不改执行者
+                    boolean passiveAs = i > 1
+                            && (toks[i - 1].equalsIgnoreCase("positioned")
+                                || toks[i - 1].equalsIgnoreCase("rotated"));
+                    String tgt = toks[i + 1].toLowerCase(java.util.Locale.ROOT);
+                    if (tgt.equals("@s") || tgt.startsWith("@s[")) {
+                        // as @s：@s 指向「当前执行者」——执行者还是控制台 → 拦；
+                        //   执行者已是实体（如 as Steve 后再 as @s）→ 合法放行。
+                        if (!executorIsEntity) { eIdx = i + 1; break; }
+                        i++;
+                        continue;
+                    }
+                    if (!passiveAs) executorIsEntity = true; // as <实体> → 执行者变实体
+                    i++; // 跳过 as 的目标 token，避免误判
                     continue;
                 }
                 if (t.equals("run")) {
@@ -3855,22 +3879,33 @@ public class Main extends JavaPlugin
                     i++; // 跳过内层 execute 本身，继续扫下一段链
                     continue;
                 }
-                if (!asSeen && (toks[i].equals("@s") || toks[i].startsWith("@s["))) {
+                if (!executorIsEntity && (toks[i].equals("@s") || toks[i].startsWith("@s["))) {
                     eIdx = i;
                     break;
                 }
             }
             if (eIdx < 0) return;
+            // 命中的 @s 是否紧跟 as（execute as @s 形态，positioned/rotated as 除外）
+            boolean asTarget = eIdx > 1 && toks[eIdx - 1].equalsIgnoreCase("as")
+                    && !(eIdx > 2 && (toks[eIdx - 2].equalsIgnoreCase("positioned")
+                        || toks[eIdx - 2].equalsIgnoreCase("rotated")));
             e.setCancelled(true);
             cs.sendMessage("§c§l[命令未执行] §f/" + raw);
-            cs.sendMessage("§c原因: §f第 " + eIdx + " 个参数 §e" + toks[eIdx]
-                    + " §f是 @s（=执行者自己），但控制台不是玩家，没有“自己”可指。");
+            if (asTarget) {
+                cs.sendMessage("§c原因: §f§eexecute as @s §f—— @s 指向「当前执行者」，"
+                        + "而控制台不是实体，原版会静默中止整条指令。");
+            } else {
+                cs.sendMessage("§c原因: §f第 " + eIdx + " 个参数 §e" + toks[eIdx]
+                        + " §f是 @s（=执行者自己），但控制台不是玩家，没有“自己”可指。");
+            }
             cs.sendMessage("§7原版此情况【静默无输出】：execute 的 @s 解析不到就直接中止，不报任何错。");
             cs.sendMessage("§7改法三选一:");
             cs.sendMessage("§7  · 想对该玩家执行 → 直接写玩家名，如 §e/execute at Steve run say 123");
             cs.sendMessage("§7  · 想对全体在线玩家 → 换成 §e@a");
             cs.sendMessage("§7  · 想让某个玩家自己执行 → 用 §e/execute as <玩家> run §7加原命令");
-            getLogger().info("[命令] 控制台 execute 链含 @s 被拦: " + raw + "（@s 出现在 as 之前）");
+            getLogger().info("[命令] 控制台 execute 链含 @s 被拦: " + raw
+                    + (asTarget ? "（execute as @s 指向控制台自身）"
+                            : "（@s 在执行者变为实体之前）"));
             return;
         }
         // 纯文本广播命令：@s 是要发出去的字面文字，不是选择器，不拦
@@ -4196,22 +4231,24 @@ public class Main extends JavaPlugin
         String body = e.getCommandLine();
         if (body == null) return;
         body = body.trim();
-        if (body.isEmpty()) return;
-        if (body.charAt(0) == '/') body = body.substring(1).trim();
+        // ★ 问题2 补刀（2026-10-14 生产 14:50:22 实证，第十五批）：
+        //   commandLine 原样就是空串时（原生报错 "<--[HERE]" 缩进为 0 = 位置 0），
+        //   旧代码第一个 isEmpty() 直接 return 不压制 → Paper 原生
+        //   "Unknown or incomplete command" 照样溜给运维。
+        //   现统一：先去开头斜杠，凡是"最终为空"（空串 / 纯空白 / 仅"/"）
+        //   一律 suppressUnknown 压掉原生报错 + 中文提示正确写法。
+        if (!body.isEmpty() && body.charAt(0) == '/') body = body.substring(1).trim();
         if (body.isEmpty()) {
-            // ★ 问题2（2026-10-14）：只输入了 "/"（去头后为空）—— 原实现直接
-            //   return 且不压制，Paper 原生 "Unknown or incomplete command" 就此
-            //   溜给运维（生产日志实证）。现压掉原生报错 + 中文提示正确写法：
-            //   控制台直接输入指令名（无需斜杠），除非指令本身就以斜杠开头。
             suppressUnknown(e);
             if (sender instanceof Player) {
-                sender.sendMessage("§c§l[命令未执行] §7你只输入了 §f/ §7，后面没有指令名，"
+                sender.sendMessage("§c§l[命令未执行] §7命令为空（只有 §f/ §7或什么都没输），"
                         + "请输入完整指令，如 §f/list§7、§f/tpa Steve");
             } else {
-                sender.sendMessage("§c§l[命令未执行] §7控制台直接输入指令名即可（无需斜杠），"
+                sender.sendMessage("§c§l[命令未执行] §7命令为空：控制台直接输入指令名即可（无需斜杠），"
                         + "如 §flist§7、§fsay 你好");
             }
-            getLogger().info("[无感切换] 单斜杠空指令已拦下并中文化: " + e.getCommandLine());
+            getLogger().info("[无感切换] 空指令(空串或仅斜杠)已拦下并中文化: "
+                    + String.valueOf(e.getCommandLine()));
             return;
         }
 
