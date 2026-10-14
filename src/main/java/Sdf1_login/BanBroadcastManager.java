@@ -114,6 +114,14 @@ public class BanBroadcastManager {
     /** 重新加载配置（json 优先 → md json块 → md 表格 → 备份重置） */
     public void reloadConfig() {
         try {
+            // ★ 懒重载（每次播报窗口执行一次）：先回出厂默认再解析文件 ——
+            //   文件里新改的值、被删掉/清空的项都能如实读到（读到的就是文件里最新的）；
+            //   开关(播报模式)决定这次报/不报，最新间隔用于播报完后的下次排程计时。
+            minInterval = 60;
+            maxInterval = 180;
+            mode = 1;
+            startCutoffAuto = true;
+            startCutoffMs = 0;
             if (jsonFile == null) jsonFile = findJsonConfig();
             if (jsonFile != null && jsonFile.exists()) {
                 String txt = readFile(jsonFile);
@@ -324,7 +332,8 @@ public class BanBroadcastManager {
                     scheduleNext();
                     return;
                 }
-                // ★ 自愈 + 热重载：每次窗口期前检查配置存在性并重读
+                // ★ 懒重载：每次播报窗口重读配置 —— 开关决定这次报/不报，
+                //   最新间隔用于播报完后的下次排程计时；顺带自愈补发丢失的配置文件
                 ensureConfigExists();
                 reloadConfig();
                 if (mode != 0) {
