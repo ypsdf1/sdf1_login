@@ -1032,6 +1032,14 @@ function handleSyncBans($db, $post) {
         return;
     }
     $now = time();
+    // ★ 第十六批：保留旧 synced_at 作为「首见时间」，供封禁公示按时间从近到远排序
+    $firstSeen = array();
+    $oldRes = $db->query("SELECT target, ban_type, synced_at FROM web_player_bans");
+    if ($oldRes) {
+        while ($orow = $oldRes->fetchArray(SQLITE3_ASSOC)) {
+            $firstSeen[$orow['target'] . "\x1f" . $orow['ban_type']] = (int) ($orow['synced_at'] ?? 0);
+        }
+    }
     // 先清空旧数据再全量写入
     $db->exec("DELETE FROM web_player_bans");
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at) VALUES (:target, :type, :reason, :source, :expire, :now)");
@@ -1042,7 +1050,8 @@ function handleSyncBans($db, $post) {
         $stmt->bindValue(':reason', $ban['reason'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':source', $ban['source'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':expire', (int)($ban['expire'] ?? 0), SQLITE3_INTEGER);
-        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $fk = $ban['target'] . "\x1f" . ($ban['type'] ?? 'name');
+        $stmt->bindValue(':now', (isset($firstSeen[$fk]) && $firstSeen[$fk] > 0) ? $firstSeen[$fk] : $now, SQLITE3_INTEGER);
         $stmt->execute();
     }
     echo json_encode(['success' => true, 'count' => count($bans)]);

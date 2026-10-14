@@ -366,6 +366,10 @@ switch ($action) {
     case 'sync_bans':
         syncBans();
         break;
+    // ★ 第十六批：公开封禁公示（玩家端首页卡片数据源，无需SECRET，限流保护）
+    case 'get_ban_board':
+        getBanBoard();
+        break;
     default:
         error('未知操作: ' . $action);
 }
@@ -5394,6 +5398,44 @@ function syncAdmins() {
     success(['count' => count($admins)]);
 }
 
+// ===== 第十六批：公开封禁公示（玩家端首页卡片，从近到远取前9条） =====
+// 无需 SECRET / token：web_player_bans 是已公开的公示名单（不含敏感字段），
+// 返回 target/ban_type/reason/expire_time。用 synced_at 作为近似封禁时间排序。
+function getBanBoard() {
+    $limit = (int) getParam('limit', 9);
+    if ($limit <= 0 || $limit > 50) $limit = 9;
+
+    try { $db = getDB(); } catch (Throwable $e) { $db = null; }
+    if (!$db) { success(['total' => 0, 'bans' => []], 'db unavailable'); return; }
+
+    // 表不存在 → 空结果
+    $chk = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_bans'");
+    if (!$chk || !$chk->fetchArray()) { success(['total' => 0, 'bans' => []], 'empty'); return; }
+
+    // 仅公示名字封禁（ban_type='name'），IP 封禁不公开（IP 属敏感信息）
+    $now = time();
+    $res = $db->query("SELECT target, ban_type, reason, expire_time, synced_at
+                       FROM web_player_bans
+                       WHERE ban_type = 'name'
+                       ORDER BY synced_at DESC
+                       LIMIT " . $limit);
+    $bans = [];
+    if ($res) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $expire = (int) ($row['expire_time'] ?? 0);
+            // 跳过已过期的临时封禁（expire_time>0 且已过期）
+            if ($expire > 0 && $expire <= $now) continue;
+            $bans[] = [
+                'target'     => (string) ($row['target'] ?? ''),
+                'reason'     => (string) ($row['reason'] ?? ''),
+                'expire_time'=> $expire,          // 0 = 永久
+                'synced_at'  => (int) ($row['synced_at'] ?? 0),
+            ];
+        }
+    }
+    success(['total' => count($bans), 'bans' => $bans], 'ok');
+}
+
 // ===== Java端推送封禁名单到PHP =====
 function syncBans() {
     $secret = getParam('secret');
@@ -5415,6 +5457,15 @@ function syncBans() {
     )");
 
     $now = time();
+    // ★ 第十六批：保留旧 synced_at 作为「首见时间」，供封禁公示按时间从近到远排序
+    //   （新封禁用本次同步时间，老封禁保持首次出现时间，避免全量重写抹平时间轴）
+    $firstSeen = array();
+    $oldRes = $db->query("SELECT target, ban_type, synced_at FROM web_player_bans");
+    if ($oldRes) {
+        while ($orow = $oldRes->fetchArray(SQLITE3_ASSOC)) {
+            $firstSeen[$orow['target'] . "\x1f" . $orow['ban_type']] = (int) ($orow['synced_at'] ?? 0);
+        }
+    }
     // 先清空旧数据再全量写入
     $db->exec("DELETE FROM web_player_bans");
     $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at) VALUES (:target, :type, :reason, :source, :expire, :now)");
@@ -5425,7 +5476,8 @@ function syncBans() {
         $stmt->bindValue(':reason', $ban['reason'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':source', $ban['source'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':expire', (int)($ban['expire'] ?? 0), SQLITE3_INTEGER);
-        $stmt->bindValue(':now', $now, SQLITE3_INTEGER);
+        $fk = $ban['target'] . "\x1f" . ($ban['type'] ?? 'name');
+        $stmt->bindValue(':now', (isset($firstSeen[$fk]) && $firstSeen[$fk] > 0) ? $firstSeen[$fk] : $now, SQLITE3_INTEGER);
         $stmt->execute();
     }
 

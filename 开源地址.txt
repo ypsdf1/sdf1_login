@@ -1,0 +1,4 @@
+# 本文件用于填写你自己的后端源码仓库地址（AGPL-3.0 合规要求：需向使用者提供源码地址）
+# 修改下面一行（必须是 http/https 完整地址），保存后页面页脚链接自动更新
+# 以 # 开头的行为注释，会被忽略
+https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/

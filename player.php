@@ -8,6 +8,18 @@ header('Pragma: no-cache');
 header('Expires: 0');
 header('X-Accel-Expires: 0');  // Nginx反代也禁缓存
 
+// ★ AGPL-3.0 合规：源码地址（使用者可在 开源地址.txt 中改成自己的仓库地址）
+$OSS_REPO_DEFAULT = 'https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/';
+$OSS_REPO = $OSS_REPO_DEFAULT;
+$ossTxt = __DIR__ . '/开源地址.txt';
+if (is_file($ossTxt)) {
+    foreach (file($ossTxt, FILE_IGNORE_NEW_LINES) as $ossLine) {
+        $ossLine = trim($ossLine);
+        if ($ossLine === '' || $ossLine[0] === '#') continue;
+        if (preg_match('#^https?://#i', $ossLine)) { $OSS_REPO = $ossLine; break; }
+    }
+}
+
 $BUILD_VERSION = 'v' . filemtime(__FILE__);  // 文件修改时间 = 版本号
 $currentVersion = isset($_GET['_v']) ? $_GET['_v'] : '';
 if ($currentVersion !== $BUILD_VERSION) {
@@ -259,6 +271,25 @@ if ($currentVersion !== $BUILD_VERSION) {
             .sidebar { display: none; }
             .grid { grid-template-columns: 1fr; }
         }
+
+        /* ===== 第十六批：封禁常态化公示卡片（从下往上滚动替换） ===== */
+        .ban-roll-wrap {
+            position: relative; height: 320px; overflow: hidden;
+            border-radius: 8px; margin-top: 4px;
+        }
+        .ban-roll-inner {
+            position: absolute; left: 0; right: 0; top: 0;
+            transition: transform 0.7s cubic-bezier(.22,.61,.36,1);
+        }
+        .ban-roll-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 9px 12px; border-bottom: 1px solid var(--border);
+            font-size: 13px; line-height: 1.3;
+        }
+        .ban-roll-item .bname { color: var(--red); font-weight: 700; flex-shrink: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ban-roll-item .breason { color: var(--dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ban-roll-item .btime { color: var(--yellow); font-size: 11px; flex-shrink: 0; }
+        .ban-roll-item .bperm { color: var(--red); font-size: 11px; flex-shrink: 0; }
     </style>
 </head>
 <body>
@@ -4464,6 +4495,106 @@ async function clearAllMemberPerms(landName, targetPlayer) {
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
+    // ===== 第十六批：封禁常态化公示卡片（独立卡片，每15秒一个窗口期，从下往上滚动替换） =====
+    const BAN_CARD_ID = 'banBoardCard';
+    const BAN_SLOT_ID = 'banBoardSlot';
+    const BAN_PAGE_SIZE = 9;          // 卡片内展示9名被封禁玩家
+    const BAN_WINDOW_MS = 15000;      // 每15秒一个窗口期
+    let banBoardRows = [];            // 当前生效封禁（从近到远）
+    let banBoardShown = false;        // 是否已渲染过（控制动画方向）
+    let banBoardTimer = null;
+
+    function ensureBanCard() {
+        if (!document.getElementById(BAN_CARD_ID)) {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.id = BAN_CARD_ID;
+            card.style.borderColor = 'var(--red)';
+            card.innerHTML = '<h2 style="color:var(--red)">⚠ 封禁常态化公示</h2>' +
+                '<p style="color:var(--dim);font-size:12px;margin-bottom:8px">违规玩家将被公示，杀鸡儆猴，请各位引以为戒</p>' +
+                '<div class="ban-roll-wrap"><div class="ban-roll-inner" id="' + BAN_SLOT_ID + '"></div></div>';
+            const main = document.querySelector('.main');
+            if (main && main.parentNode) main.parentNode.insertBefore(card, main);
+        }
+        return document.getElementById(BAN_SLOT_ID);
+    }
+
+    function banItemHtml(b) {
+        const name = escHtml(b.target || '');
+        const reason = escHtml(b.reason || '违反服务器规则');
+        const expire = parseInt(b.expire_time, 10) || 0;
+        const perm = expire === 0 ? '<span class="bperm">永久</span>' : '';
+        let when = '';
+        if (expire > 0) {
+            const d = new Date(expire * 1000);
+            when = '<span class="btime">至 ' + d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate() + '</span>';
+        }
+        return '<div class="ban-roll-item"><span class="bname">☠ ' + name + '</span>' +
+               '<span class="breason">' + reason + '</span>' + perm + when + '</div>';
+    }
+
+    function banPageHtml(rows) {
+        if (!rows.length) return '<div class="ban-roll-item"><span class="breason" style="color:var(--green)">✓ 当前暂无被封禁玩家</span></div>';
+        return rows.map(banItemHtml).join('');
+    }
+
+    // 从下往上滚动替换信息：先把新页放到下方（translateY(100%)），再滚到 0 位
+    function banRollUpdate(slot, html) {
+        const inner = slot;
+        if (!banBoardShown) {
+            // 首次：直接显示
+            inner.innerHTML = html;
+            inner.style.transition = 'none';
+            inner.style.transform = 'translateY(0)';
+            banBoardShown = true;
+            return;
+        }
+        // 旧页先滚出上方（-100%），同时把新页放在下方再滚入
+        const oldH = inner.offsetHeight;
+        inner.style.transition = 'transform 0.7s cubic-bezier(.22,.61,.36,1)';
+        inner.style.transform = 'translateY(-' + oldH + 'px)';
+        // 滚出结束后换成新页并从下方滚入
+        setTimeout(() => {
+            inner.style.transition = 'none';
+            inner.style.transform = 'translateY(100%)';
+            inner.innerHTML = html;
+            // 强制 reflow 后再滚回 0（新页从下往上出现）
+            void inner.offsetHeight;
+            inner.style.transition = 'transform 0.7s cubic-bezier(.22,.61,.36,1)';
+            inner.style.transform = 'translateY(0)';
+        }, 720);
+    }
+
+    async function banBoardLoadAndRoll() {
+        const slot = ensureBanCard();
+        if (!slot) return;
+        try {
+            const res = await fetch(API + 'sync.php?action=get_ban_board&limit=' + BAN_PAGE_SIZE, {cache: 'no-store'});
+            const j = await res.json();
+            if (j && j.success && j.data && Array.isArray(j.data.bans)) {
+                banBoardRows = j.data.bans;
+            }
+        } catch (e) { /* 网络抖动沿用上一帧 */ }
+        banRollUpdate(slot, banPageHtml(banBoardRows.slice(0, BAN_PAGE_SIZE)));
+    }
+
+    function banBoardStart() {
+        if (banBoardTimer) return;
+        banBoardLoadAndRoll();
+        banBoardTimer = setInterval(banBoardLoadAndRoll, BAN_WINDOW_MS);
+    }
+    // DOM 就绪后启动（脚本在 body 末尾，此时 .main 已存在；保险起见仍判断 readyState）
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', banBoardStart);
+    } else {
+        banBoardStart();
+    }
+
     </script>
+    <!-- ★ AGPL-3.0 合规页脚：源码地址取自 开源地址.txt（可由使用者替换为自己的仓库） -->
+    <footer style="text-align:center;padding:14px 16px;font-size:12px;color:var(--dim);border-top:1px solid var(--border)">
+        本后台基于 <a href="LICENSE" target="_blank" style="color:var(--accent);text-decoration:none">AGPL-3.0</a> 开源协议发布
+        · 源代码地址：<a href="<?php echo htmlspecialchars($OSS_REPO, ENT_QUOTES, 'UTF-8'); ?>" target="_blank" style="color:var(--accent);text-decoration:none"><?php echo htmlspecialchars($OSS_REPO, ENT_QUOTES, 'UTF-8'); ?></a>
+    </footer>
 </body>
 </html>
