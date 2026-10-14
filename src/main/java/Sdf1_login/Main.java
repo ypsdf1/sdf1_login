@@ -557,6 +557,9 @@ public class Main extends JavaPlugin
         //   全程无 ERROR 只有 SSL 断路器 WARN —— 日志抓不到卡点栈，靠它下次复现
         //   直接把主线程栈打进日志定位）
         new MainThreadWatchdog(this).start();
+        // ★ 第十六批：游戏内轮询封禁播报（耻辱台）
+        //   配置 ban/规则配置.md 或 ban/*.json，丢失自愈补发、解码失败备份重置
+        new BanBroadcastManager(this).start();
         afk.startCheck();
         startLoginReminder();
         startTimeoutCheck();
@@ -3388,6 +3391,51 @@ public class Main extends JavaPlugin
         }
     }
 
+    /**
+     * ★ 第十六批：雪球菜单 SN 校验（仅雪球开 GUI 路径调用）
+     * 规则：
+     *   - 无 SN（历史雪球）→ 放行；
+     *   - SN 未登记 → 拒绝（数据异常/伪造）；
+     *   - 状态 illegal（锁定）→ 拒绝；
+     *   - 登记持有者 ≠ 实际持有者 → 拒绝；
+     *   - active/lost 且持有者一致 → 放行。
+     * 校验异常时放行（防 DB 抖动误伤），只记日志。
+     * @return true=放行可打开主 GUI；false=已提示并拒绝
+     */
+    private boolean verifyMenuSnowballSn(Player p) {
+        try {
+            if (snManager == null) return true;
+            ItemStack it = p.getInventory().getItemInMainHand();
+            if (!isMenuSnowball(it)) it = p.getInventory().getItemInOffHand();
+            String sn = snManager.readSn(it);
+            if (sn == null || sn.isEmpty()) return true;   // 历史雪球无 SN，放行
+            java.util.Map<String, Object> row = snManager.getSn(sn);
+            if (row == null) {
+                p.sendMessage("§c§l[菜单] §f菜单雪球校验失败：SN 未登记，请联系管理员");
+                getLogger().info("[菜单] 雪球SN校验拒绝: " + p.getName() + " SN=" + sn + " 未登记");
+                return false;
+            }
+            String st = row.get("status") == null ? "" : String.valueOf(row.get("status"));
+            if (SnManager.ST_ILLEGAL.equals(st)) {
+                p.sendMessage("§c§l[菜单] §f该菜单雪球已被锁定，无法打开菜单");
+                getLogger().info("[菜单] 雪球SN校验拒绝: " + p.getName() + " SN=" + sn + " 已锁定");
+                return false;
+            }
+            String owner = row.get("owner") == null ? "" : String.valueOf(row.get("owner"));
+            String me = p.getName();
+            // 持有者精确匹配（离线模式大小写不同=不同玩家）
+            if (!owner.isEmpty() && !owner.equals(me)) {
+                p.sendMessage("§c§l[菜单] §f该菜单雪球不属于你，无法打开菜单");
+                getLogger().info("[菜单] 雪球SN校验拒绝: " + me + " 持有 " + owner + " 的 SN=" + sn);
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            getLogger().warning("[菜单] 雪球SN校验异常(放行): " + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return true;
+        }
+    }
+
     private boolean isMenuSnowball(ItemStack item) {
         if (item == null
                 || item.getType()
@@ -3544,6 +3592,12 @@ public class Main extends JavaPlugin
         if (isMenuSnowball(hand)
                 || isMenuSnowball(offhand)) {
             e.setCancelled(true);
+            // ★ 第十六批：雪球菜单打开 GUI 前校验 SN
+            //   被锁定 / SN登记持有者与实际持有者不符 → 拒绝打开主 GUI
+            //   主指令 /sdf1_login 不走这里，不受影响
+            if (!verifyMenuSnowballSn(p)) {
+                return;
+            }
             gui.openMain(p);
             return;
         }
