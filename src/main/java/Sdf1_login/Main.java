@@ -1942,6 +1942,114 @@ public class Main extends JavaPlugin
         sender.sendMessage(sb.toString());
     }
 
+    /**
+     * /banget 点名查询封禁：全量原生 banlist（不应用播报起点过滤，
+     * 插件安装之前的历史封禁也能查到），替代原版 /banlist 一屏全量打印。
+     * 用法：/banget <玩家名|IP>（自动识别）| /banget user <名> | /banget ip <IP>
+     */
+    @SuppressWarnings("unchecked")
+    private void doBanGet(CommandSender sender, String[] args) {
+        if (!isPrivileged(sender)) {
+            sender.sendMessage("§c权限不足");
+            return;
+        }
+        String kind = null;   // user / ip / null=自动识别
+        String target = null;
+        if (args.length == 1) {
+            String a = args[0].toLowerCase();
+            if (a.equals("user") || a.equals("ip")) {
+                sender.sendMessage("§c请指定查询目标: /banget " + a + " <玩家名或IP>");
+                return;
+            }
+            target = args[0];
+        } else if (args.length >= 2) {
+            String a = args[0].toLowerCase();
+            if (!a.equals("user") && !a.equals("ip")) {
+                sender.sendMessage("§c用法: /banget [user|ip] <玩家名或IP>");
+                return;
+            }
+            kind = a;
+            target = args[1];
+        } else {
+            sender.sendMessage("§c用法: /banget [user|ip] <玩家名或IP>");
+            sender.sendMessage("§7示例: §f/banget Notch §7| §f/banget user Notch"
+                    + " §7| §f/banget ip 127.0.0.1");
+            return;
+        }
+        boolean ipMode = kind != null ? kind.equals("ip") : isIpTarget(target);
+
+        sender.sendMessage("§8========== §e封禁查询: §f" + target
+                + (ipMode ? " §7[IP]" : " §7[玩家名]") + " §8==========");
+        int hits = 0;
+        int expiredHits = 0;
+        SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+        try {
+            org.bukkit.BanList bl = Bukkit.getBanList(ipMode
+                    ? org.bukkit.BanList.Type.IP : org.bukkit.BanList.Type.NAME);
+            // ★ 全量查询：不应用播报起点，历史封禁照查；
+            // getEntries() 实际返回 Set，按 Collection 中转强转（防 ClassCastException）
+            for (Object oo : (java.util.Collection<?>) bl.getEntries()) {
+                org.bukkit.BanEntry e = (org.bukkit.BanEntry) oo;
+                if (!banEntryMatches(e, target)) continue;
+                hits++;
+                Date created = e.getCreated();
+                Date exp = e.getExpiration();
+                boolean expired = exp != null
+                        && exp.getTime() <= System.currentTimeMillis();
+                if (expired) expiredHits++;
+                String reason = e.getReason();
+                if (reason == null || reason.trim().isEmpty()) {
+                    reason = "违反服务器规则";
+                }
+                String src;
+                try { src = e.getSource(); } catch (Throwable t) { src = null; }
+                if (src == null || src.trim().isEmpty()) src = "未知";
+                sender.sendMessage((expired ? "§8⌛ §f" : "§c☠ §f")
+                        + target + " §7- " + reason);
+                sender.sendMessage("§7  封于§f"
+                        + (created != null ? df.format(created) : "未知时间")
+                        + " §8| " + (expired ? "§a已过期"
+                            : (exp != null ? "§7至§f" + df.format(exp) : "§c永久"))
+                        + " §8| §7来源§f" + src);
+            }
+        } catch (Exception ex) {
+            sender.sendMessage("§c查询封禁名单失败: " + ex.getMessage());
+            return;
+        }
+        if (hits == 0) {
+            sender.sendMessage("§7未查到相关封禁（全量查询，含插件安装前的历史数据）");
+        } else {
+            sender.sendMessage("§7共§f" + hits + "§7条记录"
+                    + (expiredHits > 0
+                        ? " §8(其中§f" + expiredHits + "§8条已过期)" : ""));
+        }
+    }
+
+    /**
+     * banget 目标匹配：getTarget() 字符串直比 + GameProfile[id=..,name=..] 兜底。
+     * （NAME 型 getBanEntry(String) 新 API 已不可靠，故遍历 getEntries 自行匹配）
+     */
+    private boolean banEntryMatches(org.bukkit.BanEntry e, String target) {
+        try {
+            String t = e.getTarget();
+            if (t != null && t.equalsIgnoreCase(target)) return true;
+        } catch (Throwable ignored) { }
+        try {
+            Object bt = e.getBanTarget();
+            if (bt == null) return false;
+            String bs = String.valueOf(bt);
+            if (bs.equalsIgnoreCase(target)) return true;
+            int ni = bs.indexOf("name=");
+            if (ni >= 0) {
+                String nm = bs.substring(ni + 5);
+                int end = nm.indexOf(']');
+                if (end >= 0) nm = nm.substring(0, end);
+                if (nm.equalsIgnoreCase(target)) return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
     private long asLong(Object o) {
         if (o == null) return 0;
         if (o instanceof Number) return ((Number) o).longValue();
@@ -4243,7 +4351,7 @@ public class Main extends JavaPlugin
     private static final Set<String> ADMIN_ONLY = new HashSet<>(
             java.util.Arrays.asList(
                     // 封禁 / 改判 / 注销
-                    "tempban", "tempbanip", "banip", "whois", "clear",
+                    "tempban", "tempbanip", "banip", "banget", "whois", "clear",
                     "cleartake", "清空队列",
                     // 账号管理
                     "删除", "删除账号", "通过", "拒绝", "accept", "deny",
@@ -8026,6 +8134,12 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ===== /banget 点名查询封禁（全量 banlist，含插件安装前的历史封禁） =====
+        if (cmd.getName().equalsIgnoreCase("banget")) {
+            doBanGet(sender, args);
+            return true;
+        }
+
         String sub = (args.length > 0) ? args[0].toLowerCase() : "";
 
 // ===== 在 onCommand 方法体内，最开头加： =====
@@ -10313,6 +10427,13 @@ public class Main extends JavaPlugin
                 return filterTab(Arrays.asList(
                         "add", "code", "remove", "解绑", "help"),
                         args[0]);
+            }
+            return list;
+        }
+        // ★ /banget 点名查询封禁：第一层 user/ip 提示
+        if (cmd.getName().equalsIgnoreCase("banget")) {
+            if (args.length == 1) {
+                return filterTab(Arrays.asList("user", "ip"), args[0]);
             }
             return list;
         }

@@ -184,6 +184,9 @@ commands:
   who:
     description: 查看在线玩家列表
     usage: /who
+  banget:
+    description: 点名查询封禁（全量，含插件安装前的历史封禁）
+    usage: /banget [user|ip] <玩家名或IP>
   清空队列:
     description: 清空DB队列中未回应的web同步任务（管理员）
     usage: /清空队列

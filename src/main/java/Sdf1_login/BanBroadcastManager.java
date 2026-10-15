@@ -59,6 +59,7 @@ public class BanBroadcastManager {
     private long startCutoffMs = 0;   // 播报起点(毫秒)：只播该时刻之后创建的封禁
     private boolean startCutoffAuto = true;  // 起点未配置 → 自动取插件数据目录创建时间(=插件安装时间)
     private long autoCutoffMs = -1;    // 自动起点缓存(-1=未取)
+    private boolean jsonSyntaxOk = false; // json 文本语法是否有效（区分「语法坏」与「语法好但值空」）
 
     public BanBroadcastManager(Main plugin) {
         this.plugin = plugin;
@@ -92,6 +93,7 @@ public class BanBroadcastManager {
 
     /** 配置文件丢失就补一份（自愈） */
     private void ensureConfigExists() {
+        jsonFile = findJsonConfig();   // ★ 每轮重查：运行中新增/删除的 json 都要跟上
         try {
             if (jsonFile != null) {
                 if (!banDir.exists()) banDir.mkdirs();
@@ -122,12 +124,27 @@ public class BanBroadcastManager {
             mode = 1;
             startCutoffAuto = true;
             startCutoffMs = 0;
-            if (jsonFile == null) jsonFile = findJsonConfig();
+            jsonFile = findJsonConfig();   // ★ 每轮重查（不再只在 null 时查一次）
             if (jsonFile != null && jsonFile.exists()) {
                 String txt = readFile(jsonFile);
                 if (parseJsonText(txt)) { log("已加载 json 配置: " + jsonFile.getName()); return; }
+                if (jsonSyntaxOk) {
+                    // ★ 第十八批：语法有效但间隔值为空（文档语义「表格/json 二者选一填」）
+                    //   → 继承 json 里已解析的播报模式/播报起点，间隔回退 md 表格
+                    //   （只取间隔，绝不覆盖已继承的模式/起点）或出厂默认，不判损毁。
+                    boolean iv = false;
+                    if (mdFile != null && mdFile.exists()) {
+                        String md0 = readFile(mdFile);
+                        if (md0 != null) iv = parseIntervalTable(md0);
+                    }
+                    normalize();
+                    log("json 配置语法有效，已继承模式/起点（间隔回退"
+                            + (iv ? "md 表格" : "出厂默认") + "）: " + jsonFile.getName());
+                    return;
+                }
+                // 语法真损坏 → 备份+移除，继续回退 md 分支（不再就此 return）
                 backupAndReset(jsonFile, jsonFile.getName());
-                return;
+                jsonFile = null;
             }
             if (!mdFile.exists()) { ensureConfigExists(); }
             String md = readFile(mdFile);
@@ -160,8 +177,10 @@ public class BanBroadcastManager {
      * @return true = json 配置生效；false = 视为未配置，调用方回退表格
      */
     private boolean parseJsonText(String txt) {
+        jsonSyntaxOk = false;
         try {
             JsonObject o = JsonParser.parseString(txt).getAsJsonObject();
+            jsonSyntaxOk = true;   // 语法解析成功（值是否为空另行判定）
             boolean hasIntervalKey = o.has("最小间隔") || o.has("最大间隔")
                     || o.has("轮播最低间隔") || o.has("轮播最大间隔");
             boolean anyInterval = false;
@@ -216,6 +235,27 @@ public class BanBroadcastManager {
             else if (key.equals("播报起点")) { parseStartCutoff(val); any = true; }
         }
         if (any) normalize();
+        return any;
+    }
+
+    /** 只从 md 表格取间隔值（不碰播报模式/播报起点 —— 继承 json 时仅回退间隔用） */
+    private boolean parseIntervalTable(String md) {
+        boolean any = false;
+        for (String line : md.split("\n")) {
+            String t = line.trim();
+            if (!t.startsWith("|") || t.startsWith("| ---") || t.startsWith("|---")) continue;
+            String[] cells = t.split("\\|");
+            if (cells.length < 4) continue;
+            String key = cells[1].trim();
+            String val = cells[cells.length - 2].trim();
+            if (key.equals("轮播最低间隔")) { minInterval = toSec(val); any = true; }
+            else if (key.equals("轮播最大间隔")) { maxInterval = toSec(val); any = true; }
+        }
+        if (any) {
+            if (minInterval < 0) minInterval = 0;
+            if (maxInterval < 0) maxInterval = 0;
+            if (maxInterval > 0 && minInterval > maxInterval) maxInterval = minInterval;
+        }
         return any;
     }
 
@@ -457,6 +497,11 @@ public class BanBroadcastManager {
             if (f != null && f.exists()) f.delete();
             plugin.saveResource("ban/" + resourceName, false);
             log("已释放一份新配置: " + resourceName);
+        } catch (IllegalArgumentException e) {
+            // jar 里没有同名模板（如用户自建 cfg.json）：原文件已备份并移除，
+            // 不算失败 —— 调用方会继续回退 md / 出厂默认
+            warn("jar 内无模板资源 ban/" + resourceName
+                    + "，原文件已备份并移除，回退其它配置源");
         } catch (Exception e) {
             warn("备份/重置失败: " + e.getMessage());
         }
