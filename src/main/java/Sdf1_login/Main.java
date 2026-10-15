@@ -2115,73 +2115,86 @@ public class Main extends JavaPlugin
     }
 
     public void restoreInventory(Player p) {
-        String name = p.getName();
-        try {
-            String[] backup =
-                    db.loadInventoryBackup(name);
-            if (backup == null
-                    || !isValidBackup(backup)) {
-                return;
-            }
-
-            debugPrintBase64("恢复前", name,
-                    backup[0]);
-
-            ItemStack[] contents =
-                    InventorySerializer
-                            .fromBase64(backup[0]);
-            if (contents != null)
-                p.getInventory()
-                        .setContents(contents);
-
-            if (backup[1] != null
-                    && !backup[1].isEmpty()) {
-                ItemStack[] armor =
-                        InventorySerializer
-                                .fromBase64(
-                                        backup[1]);
-                if (armor != null)
-                    p.getInventory()
-                            .setArmorContents(
-                                    armor);
-            }
-
-            if (backup[2] != null
-                    && !backup[2].isEmpty()) {
-                ItemStack[] extra =
-                        InventorySerializer
-                                .fromBase64(
-                                        backup[2]);
-                if (extra != null)
-                    p.getInventory()
-                            .setExtraContents(
-                                    extra);
-            }
-
-            int lv = Integer.parseInt(
-                    backup[3]);
-            if (lv > 0) p.setLevel(lv);
-            double xp = Double.parseDouble(
-                    backup[4]);
-            if (xp > 0)
-                p.setExp((float) xp);
-
-            debugPrintBase64("恢复后", name,
-                    InventorySerializer.toBase64(
-                            p.getInventory()
-                                    .getContents()));
-
-            getLogger().info(
-                    "[Sdf1_login] " + name
-                            + " 背包已恢复");
-        } catch (Exception e) {
-            getLogger().severe(
-                    "[Sdf1_login] 还原背包失败: "
-                            + name);
-            e.printStackTrace();
-        }
+        restoreInventory(p, null);
     }
 
+    /**
+     * ★ 二十二批：背包读写分离 —— DB 读挪异步线程（共享 SQLite 连接
+     * 上的同步 SELECT 会与 WebManager db-worker 争锁，曾致主线程
+     * 卡10秒触发 Paper watchdog 转储），背包写回（setContents 等
+     * Bukkit API）仍在主线程执行。afterRestore 在恢复完成后于主线程
+     * 回调，保持「先恢复背包、再发菜单雪球」的原调用顺序。
+     */
+    public void restoreInventory(Player p,
+                                 Runnable afterRestore) {
+        final String name = p.getName();
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            String[] backup = null;
+            try {
+                backup = db.loadInventoryBackup(name);
+            } catch (Exception e) {
+                getLogger().severe(
+                        "[Sdf1_login] 还原背包失败: " + name);
+                e.printStackTrace();
+            }
+            final String[] b = backup;
+            Bukkit.getScheduler().runTask(this, () -> {
+                try {
+                    if (b != null && isValidBackup(b)) {
+                        debugPrintBase64("恢复前", name, b[0]);
+                        ItemStack[] contents =
+                                InventorySerializer
+                                        .fromBase64(b[0]);
+                        if (contents != null)
+                            p.getInventory()
+                                    .setContents(contents);
+                        if (b[1] != null && !b[1].isEmpty()) {
+                            ItemStack[] armor =
+                                    InventorySerializer
+                                            .fromBase64(b[1]);
+                            if (armor != null)
+                                p.getInventory()
+                                        .setArmorContents(
+                                                armor);
+                        }
+                        if (b[2] != null && !b[2].isEmpty()) {
+                            ItemStack[] extra =
+                                    InventorySerializer
+                                            .fromBase64(b[2]);
+                            if (extra != null)
+                                p.getInventory()
+                                        .setExtraContents(
+                                                extra);
+                        }
+                        int lv = Integer.parseInt(b[3]);
+                        if (lv > 0) p.setLevel(lv);
+                        double xp = Double.parseDouble(b[4]);
+                        if (xp > 0) p.setExp((float) xp);
+                        debugPrintBase64("恢复后", name,
+                                InventorySerializer.toBase64(
+                                        p.getInventory()
+                                                .getContents()));
+                        getLogger().info(
+                                "[Sdf1_login] " + name
+                                        + " 背包已恢复");
+                    }
+                } catch (Exception e) {
+                    getLogger().severe(
+                            "[Sdf1_login] 还原背包失败: "
+                                    + name);
+                    e.printStackTrace();
+                } finally {
+                    if (afterRestore != null) {
+                        try {
+                            afterRestore.run();
+                        } catch (Exception e2) {
+                            e2.printStackTrace();
+                        }
+                    }
+                }
+            });
+        });
+    }
 
     public void backupInventory(Player p) {
         String name = p.getName();
@@ -2257,27 +2270,40 @@ public class Main extends JavaPlugin
         if (!p.isOnline()) return;
         if (!isFrozen(p)) return;
 
-        // 从数据库加载已有备份
-        String[] existing =
-                db.loadInventoryBackup(name);
+        // ★ 二十二批：DB 读挪异步线程（watchdog 卡点 =
+        //   主线程同步 SELECT 与 db-worker 争锁），结果回主线程
+        //   重查 isOnline/isFrozen 再动背包。
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            String[] existing = null;
+            try {
+                existing = db.loadInventoryBackup(name);
+            } catch (Exception e) {
+                getLogger().severe(
+                        "[Sdf1_login] 加载背包备份失败: " + name);
+                e.printStackTrace();
+            }
+            final String[] ex = existing;
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (!p.isOnline()) return;
+                if (!isFrozen(p)) return;
 
-        // 调试打印
-        debugPrintBase64("加入-加载DB", name,
-                existing != null
-                        ? existing[0] : null);
+                // 调试打印
+                debugPrintBase64("加入-加载DB", name,
+                        ex != null ? ex[0] : null);
 
-        // 无有效备份 → 跳过清空背包
-        if (existing == null
-                || !isValidBackup(existing)) {
-            getLogger().info(
-                    "[Sdf1_login] " + name
-                            + " 无有效备份，"
-                            + "跳过清空背包");
-            return;
-        }
+                // 无有效备份 → 跳过清空背包
+                if (ex == null || !isValidBackup(ex)) {
+                    getLogger().info(
+                            "[Sdf1_login] " + name
+                                    + " 无有效备份，"
+                                    + "跳过清空背包");
+                    return;
+                }
 
-        // 有有效备份 → 清空当前背包
-        hideInventory(p);
+                // 有有效备份 → 清空当前背包
+                hideInventory(p);
+            });
+        });
     }
 
     // ===== Microsoft OAuth正版验证（Java仅开session+轮询，所有输入交web后端） =====
@@ -2420,10 +2446,9 @@ public class Main extends JavaPlugin
             });
         }
 
-        // 只在有有效备份时恢复
-        restoreInventory(p);
-
-        giveMenuSnowball(p);
+        // 只在有有效备份时恢复（菜单雪球延后到恢复完成回调，
+        //   保持「先恢复背包、再发菜单雪球」原顺序）
+        restoreInventory(p, () -> giveMenuSnowball(p));
         p.sendMessage("§a[Sdf1_login] §f您已自动登录！");
         if (welcome != null) welcome.onLogin(p);
         // ★ 未绑定邮箱：登录后提示（聊天 + actionbar 15秒）

@@ -83,9 +83,10 @@ public class LoginManager {
         plugin.getDb().setField(name,
                 "register_time",
                 System.currentTimeMillis());
-        plugin.restoreInventory(p);
+        // ★ 二十二批：DB 读挪异步线程，菜单雪球延后到恢复完成回调
+        plugin.restoreInventory(p,
+                () -> plugin.giveMenuSnowball(p));
         plugin.recordIPLogin(p);
-        plugin.giveMenuSnowball(p);
 
         p.sendMessage(plugin.getConfig2()
                 .msg("reg_success"));
@@ -286,9 +287,10 @@ public class LoginManager {
         p.setAllowFlight(false);
         p.setFlying(false);
         // 只在有有效备份时恢复
-        plugin.restoreInventory(p);
+        // ★ 二十二批：DB 读挪异步线程，菜单雪球延后到恢复完成回调
+        plugin.restoreInventory(p,
+                () -> plugin.giveMenuSnowball(p));
         plugin.recordIPLogin(p);
-        plugin.giveMenuSnowball(p);
         if (tempPassword) {
             // ★ 确保这行存在
             plugin.getNeedsPasswordChange().add(name);

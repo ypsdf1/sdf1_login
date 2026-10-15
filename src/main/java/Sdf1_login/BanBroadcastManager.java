@@ -93,6 +93,27 @@ public class BanBroadcastManager implements Listener {
         reloadConfig();
         scheduleNext();
         plugin.getServer().getPluginManager().registerEvents(this, plugin);
+        // ★ 二十二批：错位配置检测 —— 曾有人把 规则配置.md/json 放到
+        //   plugins/ban/（插件只读 plugins/Sdf1_login/ban/），表现为
+        //   「安全升级没生效」。发现即警告并指明正确路径。
+        try {
+            File wrongDir = new File(
+                    plugin.getDataFolder().getParentFile(),
+                    "ban");
+            if (wrongDir.isDirectory()) {
+                String[] wrongs = wrongDir.list((d, n) ->
+                        n.equals("规则配置.md")
+                                || n.toLowerCase(Locale.ROOT)
+                                        .endsWith(".json"));
+                if (wrongs != null && wrongs.length > 0) {
+                    warn("检测到错位配置目录 plugins/ban/（含 "
+                            + String.join(", ", wrongs)
+                            + "）——本插件只读取 "
+                            + banDir.getPath()
+                            + "，该目录内的配置不会生效！");
+                }
+            }
+        } catch (Exception ignored) {}
         long cut0 = resolveStartCutoff();
         plugin.getLogger().info("[封禁播报] 已启动，模式=" + modeName()
                 + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条"

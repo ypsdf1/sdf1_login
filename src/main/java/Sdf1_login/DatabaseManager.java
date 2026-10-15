@@ -32,6 +32,11 @@ public class DatabaseManager {
                             + dbFile.getAbsolutePath());
             Statement st = db.createStatement();
             st.execute("PRAGMA journal_mode=WAL");
+            // ★ 二十二批：busy_timeout —— WAL 下读写仍会与
+            //   db-worker/长事务争锁，无超时会让主线程
+            //   sqlite3_step 无限等待（watchdog 卡点之一），
+            //   5秒等锁后报 SQLITE_BUSY 快速失败。
+            st.execute("PRAGMA busy_timeout=5000");
 
             // 用户表
             st.execute("CREATE TABLE IF NOT EXISTS "
