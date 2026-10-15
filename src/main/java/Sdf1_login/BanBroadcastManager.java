@@ -63,6 +63,7 @@ public class BanBroadcastManager implements Listener {
     private boolean startCutoffAuto = true;  // 起点未配置 → 自动取插件数据目录创建时间(=插件安装时间)
     private long autoCutoffMs = -1;    // 自动起点缓存(-1=未取)
     private boolean jsonSyntaxOk = false; // json 文本语法是否有效（区分「语法坏」与「语法好但值空」）
+    private String lastCfgSig = null;             // 上轮配置签名（增量重载：无变更不打日志）
     private volatile boolean timerRunning = false;   // 已有待触发的排程（防重复拉起）
     private volatile boolean stoppedByEmpty = false; // 全员下线导致的停机（等玩家上线恢复）
     private static BanBroadcastManager instance;     // 单插件单实例，供 WebManager 取播报起点
@@ -144,8 +145,17 @@ public class BanBroadcastManager implements Listener {
         }
     }
 
-    /** 重新加载配置（json 优先 → md json块 → md 表格 → 备份重置） */
+    /** 重新加载配置（json 优先 → md json块 → md 表格 → 备份重置）。
+     *  ★ 第二十批：增量重载 —— 生效配置与上一轮逐项对比：
+     *  无变更一个字不打（安静执行随机计时，到点该干嘛干嘛）；
+     *  有变更才打一条明细（模式/间隔/起点/来源 哪里从什么变成什么）。 */
     public void reloadConfig() {
+        // 进门快照（对比基线）：上一轮生效值
+        final int oMin = minInterval, oMax = maxInterval, oMode = mode;
+        final long oCut = startCutoffMs;
+        final boolean oAuto = startCutoffAuto;
+        final String oldSig = lastCfgSig;
+        String src = null;   // 本轮配置源（变更明细用）
         try {
             // ★ 懒重载（每次播报窗口执行一次）：先回出厂默认再解析文件 ——
             //   文件里新改的值、被删掉/清空的项都能如实读到（读到的就是文件里最新的）；
@@ -158,8 +168,9 @@ public class BanBroadcastManager implements Listener {
             jsonFile = findJsonConfig();   // ★ 每轮重查（不再只在 null 时查一次）
             if (jsonFile != null && jsonFile.exists()) {
                 String txt = readFile(jsonFile);
-                if (parseJsonText(txt)) { log("已加载 json 配置: " + jsonFile.getName()); return; }
-                if (jsonSyntaxOk) {
+                if (parseJsonText(txt)) {
+                    src = "json:" + jsonFile.getName();
+                } else if (jsonSyntaxOk) {
                     // ★ 第十八批：语法有效但间隔值为空（文档语义「表格/json 二者选一填」）
                     //   → 继承 json 里已解析的播报模式/播报起点，间隔回退 md 表格
                     //   （只取间隔，绝不覆盖已继承的模式/起点）或出厂默认，不判损毁。
@@ -169,28 +180,68 @@ public class BanBroadcastManager implements Listener {
                         if (md0 != null) iv = parseIntervalTable(md0);
                     }
                     normalize();
-                    log("json 配置语法有效，已继承模式/起点（间隔回退"
-                            + (iv ? "md 表格" : "出厂默认") + "）: " + jsonFile.getName());
-                    return;
+                    src = "json继承" + (iv ? "+md间隔" : "+默认间隔") + ":" + jsonFile.getName();
+                } else {
+                    // 语法真损坏 → 备份+移除，继续回退 md 分支（不再就此 return）
+                    backupAndReset(jsonFile, jsonFile.getName());
+                    jsonFile = null;
                 }
-                // 语法真损坏 → 备份+移除，继续回退 md 分支（不再就此 return）
-                backupAndReset(jsonFile, jsonFile.getName());
-                jsonFile = null;
             }
-            if (!mdFile.exists()) { ensureConfigExists(); }
-            String md = readFile(mdFile);
-            if (md != null) {
-                String jsonBlock = extractJsonBlock(md);
-                if (jsonBlock != null && parseJsonText(jsonBlock)) {
-                    log("已加载 md 内嵌 json 配置: 规则配置.md"); return;
+            if (src == null) {
+                if (!mdFile.exists()) { ensureConfigExists(); }
+                String md = readFile(mdFile);
+                if (md != null) {
+                    String jsonBlock = extractJsonBlock(md);
+                    if (jsonBlock != null && parseJsonText(jsonBlock)) {
+                        src = "md内嵌json";
+                    } else if (parseTableText(md)) {
+                        src = "md表格";
+                    }
                 }
-                if (parseTableText(md)) { log("已加载 md 表格配置: 规则配置.md"); return; }
+                if (src == null) {
+                    // 全部解码失败 → 备份原文件 + 释放一份新的（低频真事件，仍打日志）
+                    backupAndReset(mdFile, "规则配置.md");
+                    src = "出厂重置";
+                }
             }
-            // 全部解码失败 → 备份原文件 + 释放一份新的
-            backupAndReset(mdFile, "规则配置.md");
         } catch (Exception e) {
             warn("reloadConfig 异常: " + e.getMessage());
+            src = "异常";
         }
+        // ★ 增量日志：签名 = 配置源 + 全部生效值；与上一轮完全一致 → 安静
+        String sig = src + "|" + mode + "|" + minInterval + "|" + maxInterval + "|"
+                + (startCutoffAuto ? "auto" : startCutoffMs);
+        if (sig.equals(oldSig)) { return; }
+        lastCfgSig = sig;
+        if (oldSig == null) { return; }   // 首轮只记基线（start()「已启动」总览已覆盖，不重复刷屏）
+        StringBuilder sb = new StringBuilder("配置变更(").append(src).append("):");
+        if (oMode != mode) {
+            sb.append(" 模式 ").append(modeNameOf(oMode)).append("→").append(modeName());
+        }
+        if (oMin != minInterval || oMax != maxInterval) {
+            sb.append(" 间隔 ").append(oMin).append("~").append(oMax).append("s→")
+              .append(minInterval).append("~").append(maxInterval).append("s");
+        }
+        if (oAuto != startCutoffAuto || oCut != startCutoffMs) {
+            sb.append(" 起点 ").append(cutText(oAuto, oCut))
+              .append("→").append(cutText(startCutoffAuto, startCutoffMs));
+        }
+        String oldSrc = oldSig.substring(0, oldSig.indexOf('|'));
+        if (!oldSrc.equals(src)) {
+            sb.append(" 来源 ").append(oldSrc).append("→").append(src);
+        }
+        log(sb.toString());
+    }
+
+    /** 模式码→文字（增量日志对比旧值用；modeName() 取当前字段） */
+    private String modeNameOf(int m) {
+        return m == 0 ? "关闭" : (m == 1 ? "由近到远" : "由远到近");
+    }
+
+    /** 起点状态→文字（增量日志用）：auto=自动 / 时间戳=日期 / 0=不限 */
+    private String cutText(boolean auto, long ms) {
+        if (auto) return "自动";
+        return ms > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(ms)) : "不限";
     }
 
     /** 从 md 提取 ```json 代码块内容（不含围栏） */
@@ -259,7 +310,7 @@ public class BanBroadcastManager implements Listener {
             String[] cells = t.split("\\|");
             if (cells.length < 4) continue;
             String key = cells[1].trim();
-            String val = cells[cells.length - 2].trim();
+            String val = cells[cells.length - 1].trim();
             if (key.equals("轮播最低间隔")) { minInterval = toSec(val); any = true; }
             else if (key.equals("轮播最大间隔")) { maxInterval = toSec(val); any = true; }
             else if (key.equals("播报模式")) { mode = parseMode(val); any = true; }
@@ -278,7 +329,7 @@ public class BanBroadcastManager implements Listener {
             String[] cells = t.split("\\|");
             if (cells.length < 4) continue;
             String key = cells[1].trim();
-            String val = cells[cells.length - 2].trim();
+            String val = cells[cells.length - 1].trim();
             if (key.equals("轮播最低间隔")) { minInterval = toSec(val); any = true; }
             else if (key.equals("轮播最大间隔")) { maxInterval = toSec(val); any = true; }
         }
