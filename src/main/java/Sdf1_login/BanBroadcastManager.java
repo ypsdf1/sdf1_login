@@ -6,6 +6,9 @@ import org.bukkit.BanEntry;
 import org.bukkit.BanList;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.scheduler.BukkitRunnable;
 
@@ -42,7 +45,7 @@ import java.util.regex.Pattern;
  *   表格值：由近到远 / 由远到近 / 0。
  *   间隔或模式为 0 → 关闭播报。
  */
-public class BanBroadcastManager {
+public class BanBroadcastManager implements Listener {
 
     private final Main plugin;
     private final Random rnd = new Random();
@@ -60,10 +63,23 @@ public class BanBroadcastManager {
     private boolean startCutoffAuto = true;  // 起点未配置 → 自动取插件数据目录创建时间(=插件安装时间)
     private long autoCutoffMs = -1;    // 自动起点缓存(-1=未取)
     private boolean jsonSyntaxOk = false; // json 文本语法是否有效（区分「语法坏」与「语法好但值空」）
+    private volatile boolean timerRunning = false;   // 已有待触发的排程（防重复拉起）
+    private volatile boolean stoppedByEmpty = false; // 全员下线导致的停机（等玩家上线恢复）
+    private static BanBroadcastManager instance;     // 单插件单实例，供 WebManager 取播报起点
 
     public BanBroadcastManager(Main plugin) {
         this.plugin = plugin;
+        instance = this;
     }
+
+    /** 单例访问（WebManager 推送封禁时取播报起点） */
+    public static BanBroadcastManager get() { return instance; }
+
+    /**
+     * 播报起点(毫秒)，0=不过滤。与游戏内播报同一套语义（配置的播报起点 / 自动=插件数据目录创建时间），
+     * 供 PHP 端封禁公示过滤「插件上服务器之前的历史封禁」——两端同源，不各配一套。
+     */
+    public long getStartCutoff() { return resolveStartCutoff(); }
 
     // ==================== 生命周期 ====================
 
@@ -74,6 +90,7 @@ public class BanBroadcastManager {
         ensureConfigExists();
         reloadConfig();
         scheduleNext();
+        plugin.getServer().getPluginManager().registerEvents(this, plugin);
         long cut0 = resolveStartCutoff();
         plugin.getLogger().info("[封禁播报] 已启动，模式=" + modeName()
                 + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条"
@@ -81,6 +98,20 @@ public class BanBroadcastManager {
     }
 
     public void shutdown() { /* BukkitRunnable 随插件卸载自动取消 */ }
+
+    /**
+     * ★ 第十九批：定时器生命周期 —— 停止条件只有两个：全员下线、服务器关机/插件卸载。
+     * 配置为「关闭」不停定时器：只静默本轮，下一轮醒来重读配置，
+     * 改回开启（或把间隔从 0 恢复）即自动续播，无需重启。
+     * 全员下线时 scheduleNext 的空服分支停掉排程，第一个玩家上线由此重新拉起。
+     * （start/runTaskLater/PlayerJoinEvent 都在主线程，状态无并发问题）
+     */
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent e) {
+        if (!stoppedByEmpty || timerRunning) return;
+        stoppedByEmpty = false;
+        scheduleNext();
+    }
 
     // ==================== 配置：自愈 + 双模式解析 ====================
 
@@ -358,7 +389,8 @@ public class BanBroadcastManager {
         int delaySec;
         if (mode == 0) {
             // 播报关闭时仍每 60 秒自检一次：配置文件被删则自愈补发、
-            // 运行中把 0 改回正常值可自动恢复播报（无需重启）
+            // 运行中把 0 改回正常值可自动恢复播报（无需重启）。
+            // ★ 关闭 ≠ 停机：定时器只在全员下线/关服时才停（第十九批）
             delaySec = 60;
         } else {
             // ★ 每次在[最小间隔,最大间隔]之间随机取一个秒数，不是固定值
@@ -367,14 +399,17 @@ public class BanBroadcastManager {
             lastDelaySec = delaySec;
         }
         long delayTicks = Math.max(20L, delaySec * 20L);
+        timerRunning = true;
         new BukkitRunnable() {
             @Override
             public void run() {
+                timerRunning = false;
                 if (!plugin.isEnabled()) return;
-                // ★ 服务器没人就闭嘴：无人在线时不播报、不重载、不自愈、不打任何日志，
-                //   直接排下一轮（没人时播报和日志打出来也没人看）
+                // ★ 服务器没人就停机：全员下线是定时器的两个停止条件之一（另一个是关服），
+                //   不播报、不重载、不自愈、不打任何日志，直接停排程 ——
+                //   第一个玩家上线时 onPlayerJoin 重新拉起（配置为关闭同样只静默本轮）
                 if (Bukkit.getOnlinePlayers().isEmpty()) {
-                    scheduleNext();
+                    stoppedByEmpty = true;
                     return;
                 }
                 // ★ 懒重载：每次播报窗口重读配置 —— 开关决定这次报/不报，

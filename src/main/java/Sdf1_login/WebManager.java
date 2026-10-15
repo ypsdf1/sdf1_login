@@ -321,6 +321,8 @@ public class WebManager {
     private String lastBondBalanceHash = "";
     private String lastLandDataHash = "";
     private String lastBansHash = "";
+    private boolean bansCreatedPushed = false;  // ★ 第十九批：进程内是否已把 created/起点推给PHP过一次
+    private long lastPushedCutoff = -1;         //    上次推送时的播报起点（变了就再强制推一轮）
     private String lastAdminsHash = "";
     private String lastUserRegistrationHash = "";
 
@@ -5564,10 +5566,13 @@ public class WebManager {
                 String reason = entry.getReason() != null ? entry.getReason() : "";
                 String source = entry.getSource() != null ? entry.getSource() : "";
                 long expireDate = entry.getExpiration() != null ? entry.getExpiration().getTime() : 0;
+                // ★ 第十九批：封禁创建时间(毫秒)一并下发 —— PHP 公示按它过滤插件上架前的历史封禁
+                long createdDate = entry.getCreated() != null ? entry.getCreated().getTime() : 0;
                 sb.append("{\"type\":\"name\",\"target\":\"").append(escapeJson(target))
                   .append("\",\"reason\":\"").append(escapeJson(reason))
                   .append("\",\"source\":\"").append(escapeJson(source))
-                  .append("\",\"expire\":").append(expireDate).append("}");
+                  .append("\",\"expire\":").append(expireDate)
+                  .append(",\"created\":").append(createdDate).append("}");
                 hashBuilder.append("n:").append(target).append(":").append(reason).append(":").append(expireDate).append("|");
             }
 
@@ -5581,10 +5586,12 @@ public class WebManager {
                 String reason = entry.getReason() != null ? entry.getReason() : "";
                 String source = entry.getSource() != null ? entry.getSource() : "";
                 long expireDate = entry.getExpiration() != null ? entry.getExpiration().getTime() : 0;
+                long createdDate = entry.getCreated() != null ? entry.getCreated().getTime() : 0;
                 sb.append("{\"type\":\"ip\",\"target\":\"").append(escapeJson(target))
                   .append("\",\"reason\":\"").append(escapeJson(reason))
                   .append("\",\"source\":\"").append(escapeJson(source))
-                  .append("\",\"expire\":").append(expireDate).append("}");
+                  .append("\",\"expire\":").append(expireDate)
+                  .append(",\"created\":").append(createdDate).append("}");
                 hashBuilder.append("i:").append(target).append(":").append(reason).append(":").append(expireDate).append("|");
             }
 
@@ -5598,14 +5605,20 @@ public class WebManager {
             Set<org.bukkit.BanEntry<?>> ib0 = (Set<org.bukkit.BanEntry<?>>) (Set<?>) ipBanList.getEntries();
             for (org.bukkit.BanEntry<?> e0 : ib0) banRows.add(banRowOf(e0, "ip"));
             AlignResult arAlign = alignGate("bans", banRows);
-            if (arAlign != null && !arAlign.needPush()) return;   // 零发送
+            // ★ 第十九批：created/ban_cutoff（PHP公示过滤历史封禁用）不进对账列，两端行一致时
+            //   alignGate 判「零发送」会把它们永远拦住 —— 进程内首轮 & 起点配置变化时强制整包推一轮；
+            //   只绕过「零发送」，「本轮只收不发」保持原样（pull 后立即整包推会先把 PHP 多的行抹掉）。
+            BanBroadcastManager bbCut = BanBroadcastManager.get();
+            long cutoffNow = bbCut != null ? bbCut.getStartCutoff() : 0L;
+            boolean forceCreatedPush = !bansCreatedPushed || cutoffNow != lastPushedCutoff;
+            if (arAlign != null && !arAlign.needPush() && !forceCreatedPush) return;   // 零发送
             if (arAlign != null && arAlign.pulled > 0) return;    // 本轮只收不发
 
             sb.append("]");
             String currentHash = hashBuilder.toString();
             // ★ 对账明说要推时本地 hash 不得拦截（同 admins，2026-10-06 灾备修复）
             boolean alignNeedsPushBans = arAlign != null && arAlign.needPush();
-            if (!alignNeedsPushBans && currentHash.equals(lastBansHash)) {
+            if (!alignNeedsPushBans && !forceCreatedPush && currentHash.equals(lastBansHash)) {
                 plugin.getLogger().fine("[防护-sync] 封禁名单无变化，跳过");
                 return;
             }
@@ -5632,12 +5645,16 @@ public class WebManager {
             body.put("secret", secretKey);
             body.put("bans", sb.toString());
             body.put("ips", ipsb.toString());
+            // ★ 第十九批：连同「播报起点」一起推给PHP（get_ban_board 用它过滤插件安装前的历史封禁）
+            body.put("ban_cutoff", String.valueOf(cutoffNow));
             String resp = httpPost("api/sync.php?action=sync_bans", mapToJson(body));
             plugin.getLogger().info("[防护-sync] 封禁名单同步: " + (nameEntries.size() + ipEntries.size())
                     + "条(IP黑名单 " + ipOnlyEntries.size() + "个) → " + resp);
             // ★ 关键修复：hash 成功后才提交（防 404 时把 hash 写脏 → 永久漏推，2026-10-06）
             if (resp != null && resp.contains("\"success\":true")) {
                 lastBansHash = currentHash;
+                bansCreatedPushed = true;
+                lastPushedCutoff = cutoffNow;
             } else {
                 plugin.getLogger().warning("[防护-sync] 封禁名单同步未确认成功，下轮重试（hash 不提交）");
             }
