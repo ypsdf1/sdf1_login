@@ -263,10 +263,15 @@ public class BanBroadcastManager {
     private int parseMode(String s) {
         if (s == null) return 1;
         String v = s.trim();
-        if (v.equals("0") || v.equalsIgnoreCase("false")) return 2;   // false=由远到近
-        if (v.equals("1") || v.equalsIgnoreCase("true")) return 1;    // true=由近到远
-        if (v.contains("近到远")) return 1;                            // 由近到远
-        if (v.contains("远到近")) return 2;                            // 由远到近
+        // ★ 第十八批遗留修复：0 = 关闭（表格文档语义）。
+        //   原实现把 "0" 和 "false" 合并映射成 2（由远到近），
+        //   导致表格填 0 永远关不掉、一直播报 —— 现拆开各归各位。
+        if (v.equals("0")) return 0;                                // 0=关闭
+        if (v.equalsIgnoreCase("false")) return 2;                  // false=由远到近
+        if (v.equals("1") || v.equalsIgnoreCase("true")) return 1;  // true=由近到远
+        if (v.contains("关闭")) return 0;                            // 容错：直接写「关闭」
+        if (v.contains("近到远")) return 1;                          // 由近到远
+        if (v.contains("远到近")) return 2;                          // 由远到近
         return 1;
     }
 
