@@ -38,7 +38,8 @@ import java.util.regex.Pattern;
  *   - *.json      直接作为配置文件；
  *   - 规则配置.md  优先解 ```json 代码块，解不出再解 markdown 表格；
  *   - 解码全失败  → 备份原文件 + 释放一份新的。
- * 配置丢失 → 自动补发（saveResource 自愈）。
+ * 配置丢失 → 自动补发（saveResource 自愈）；
+ * 已存在的 md → 安全升级自动补齐模板新增行（safeUpgradeDoc，第二十一批）。
  *
  * 键值：轮播最低间隔(秒) / 轮播最大间隔(秒) / 播报模式 / 播报起点(插件安装之前的封禁不播)
  *   播报模式：true=由近到远、false=由远到近、0=关闭；
@@ -123,7 +124,7 @@ public class BanBroadcastManager implements Listener {
         return (fs != null && fs.length > 0) ? fs[0] : null;
     }
 
-    /** 配置文件丢失就补一份（自愈） */
+    /** 配置文件丢失就补一份（自愈）；已存在的 md 走安全升级补齐模板新增行 */
     private void ensureConfigExists() {
         jsonFile = findJsonConfig();   // ★ 每轮重查：运行中新增/删除的 json 都要跟上
         try {
@@ -133,12 +134,22 @@ public class BanBroadcastManager implements Listener {
                     plugin.saveResource("ban/" + jsonFile.getName(), false);
                     log("配置文件丢失，已自愈补发: " + jsonFile.getName());
                 }
-                return;
-            }
-            if (!mdFile.exists()) {
+            } else if (!mdFile.exists()) {
                 banDir.mkdirs();
                 plugin.saveResource("ban/规则配置.md", false);
                 log("配置文件丢失，已自愈补发: 规则配置.md");
+            }
+            // ★ 第二十一批：已存在的 md 安全升级 —— saveResource(...,false) 对已存在文件
+            //   永不覆盖，jar 模板新增的配置行（如「播报起点」）借此补进原文件；
+            //   说明文字与用户改过的值原样保留（safeUpgradeDoc：先 .bak 逐字节校验，
+            //   备份失败整个取消不动原文件；原子写失败自动还原；无新增行幂等不写文件）。
+            //   有变更由 safeUpgradeDoc 打一条明细，无变更安静 —— 对齐增量日志要求。
+            if (mdFile != null && mdFile.exists()) {
+                java.util.List<String> tpl = ConfigManager.readJarResourceLines(
+                        plugin.getResource("ban/规则配置.md"));
+                if (tpl != null) {
+                    plugin.getConfig2().safeUpgradeDoc(mdFile, tpl, "封禁播报规则");
+                }
             }
         } catch (Exception e) {
             warn("自愈补发失败: " + e.getMessage());
