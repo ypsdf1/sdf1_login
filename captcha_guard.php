@@ -343,6 +343,7 @@ function cgWidgetHtml() {
 .cg-badge.bad{background:#da3633;color:#fff}
 .cg-badge.warn{background:#9e6a03;color:#fff}
 .cg-err{display:none;margin-top:8px;font-size:12.5px;color:#f85149}
+#cgCfBox{width:100%}
 .cg-btn{width:100%;padding:11px 14px;font-size:14px;font-weight:600;border:none;border-radius:6px;
   background:#21262d;color:#e6edf3;cursor:not-allowed}
 .cg-btn:enabled{background:#238636;color:#fff;cursor:pointer}
@@ -375,6 +376,19 @@ function cgWidgetHtml() {
   function loadScript(src,ok,failFn){var s=document.createElement('script');s.src=src;s.async=true;
     s.onload=ok;s.onerror=failFn;document.head.appendChild(s);}
 
+  // ★ 第十九批：Turnstile 挂件固定 300px 宽，容器（如管理后台登录卡）比它窄时右侧溢出边框 ——
+  //   按容器宽度整体等比缩放（原点左上），视觉与 .cg-box 边框对齐；容器够宽则还原不缩放
+  function fitCf(){
+    var box=el('cgCfBox'); if(!box) return;
+    var w=box.clientWidth||0;
+    if(!w) return;
+    if(w>=300){ box.style.transform=''; box.style.marginBottom=''; return; }
+    var s=w/300;
+    box.style.transformOrigin='top left';
+    box.style.transform='scale('+s+')';
+    box.style.marginBottom=(65*s-65)+'px';
+  }
+
   function initCf(){
     el('cgCfBox').style.display='block';
     // ★ 关键：本页必须自己拉起 Turnstile SDK（测试页是 <script src> 引的，本挂件漏了）
@@ -401,6 +415,10 @@ function cgWidgetHtml() {
           'error-callback': function(m){ fail('验证错误: '+m); },
           'expired-callback': function(){ st.tok=''; put(); badge('已过期，请重新勾选','warn'); }
         });
+        // widget 的 iframe 是异步插入的，分几次校准（含低网速兜底）
+        setTimeout(fitCf, 400);
+        setTimeout(fitCf, 1500);
+        setTimeout(fitCf, 4000);
       }catch(ex){ fail('render 异常: '+ex.message); }
     })();
   }
@@ -464,6 +482,7 @@ function cgWidgetHtml() {
     }
   };
 
+  window.addEventListener('resize', fitCf);
   if (P === 'cf') initCf(); else initVa();
 })();
 </script>

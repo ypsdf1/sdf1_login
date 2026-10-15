@@ -5416,9 +5416,20 @@ function getBanBoard() {
     //   若路由到的那侧根本没有这张表（个别站点库未切分/表在另一侧）→ 显式换侧再查一次。
     // 仅公示名字封禁（ban_type='name'），IP 封禁不公开（IP 属敏感信息）
     $now = time();
+    // ★ 第十九批：只公示「播报起点」之后创建的封禁 —— 与游戏内播报同源（Java推送时下发），
+    //   插件上服务器之前的历史封禁不上公示；起点未下发(0)时不过滤，行为与旧版一致。
+    try { $db->exec("ALTER TABLE web_player_bans ADD COLUMN created_time INTEGER DEFAULT 0"); } catch (Throwable $e) {}
+    $cutoff = 0;
+    try {
+        $cr = $db->query("SELECT start_cutoff FROM web_ban_board_cfg WHERE id = 1");
+        if ($cr) {
+            $crow = $cr->fetchArray(SQLITE3_ASSOC);
+            if ($crow) $cutoff = (int) ($crow['start_cutoff'] ?? 0);
+        }
+    } catch (Throwable $e) { $cutoff = 0; }
     $sql = "SELECT target, ban_type, reason, expire_time, synced_at
             FROM web_player_bans
-            WHERE ban_type = 'name'
+            WHERE ban_type = 'name' AND created_time >= " . $cutoff . "
             ORDER BY synced_at DESC
             LIMIT " . $limit;
 
@@ -5483,8 +5494,12 @@ function syncBans() {
         source TEXT DEFAULT '',
         expire_time INTEGER DEFAULT 0,
         synced_at INTEGER DEFAULT 0,
+        created_time INTEGER DEFAULT 0,
         PRIMARY KEY (target, ban_type)
     )");
+    // ★ 第十九批：老库补列（CREATE TABLE IF NOT EXISTS 不会给老表补列）——
+    //   created_time = 封禁创建时间(毫秒)，公示按它过滤插件上架前的历史封禁
+    try { $db->exec("ALTER TABLE web_player_bans ADD COLUMN created_time INTEGER DEFAULT 0"); } catch (Throwable $e) {}
 
     $now = time();
     // ★ 第十六批：保留旧 synced_at 作为「首见时间」，供封禁公示按时间从近到远排序
@@ -5498,7 +5513,7 @@ function syncBans() {
     }
     // 先清空旧数据再全量写入
     $db->exec("DELETE FROM web_player_bans");
-    $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at) VALUES (:target, :type, :reason, :source, :expire, :now)");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_bans (target, ban_type, reason, source, expire_time, synced_at, created_time) VALUES (:target, :type, :reason, :source, :expire, :now, :created)");
     foreach ($bans as $ban) {
         if (empty($ban['target'])) continue;
         $stmt->bindValue(':target', $ban['target'], SQLITE3_TEXT);
@@ -5506,6 +5521,7 @@ function syncBans() {
         $stmt->bindValue(':reason', $ban['reason'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':source', $ban['source'] ?? '', SQLITE3_TEXT);
         $stmt->bindValue(':expire', (int)($ban['expire'] ?? 0), SQLITE3_INTEGER);
+        $stmt->bindValue(':created', (int)($ban['created'] ?? 0), SQLITE3_INTEGER);
         $fk = $ban['target'] . "\x1f" . ($ban['type'] ?? 'name');
         $stmt->bindValue(':now', (isset($firstSeen[$fk]) && $firstSeen[$fk] > 0) ? $firstSeen[$fk] : $now, SQLITE3_INTEGER);
         $stmt->execute();
@@ -5520,6 +5536,21 @@ function syncBans() {
         if (is_array($ips)) {
             $ipCount = syncIpBlacklist($db, $ips, $now);
         }
+    }
+
+    // ★ 第十九批：接收 Java 端「播报起点」（与游戏内封禁播报同源），
+    //   get_ban_board 用它过滤插件上服务器之前的历史封禁；Java 没传/传0 = 不过滤
+    $cutoffRaw = getParam('ban_cutoff', '');
+    if ($cutoffRaw !== null && $cutoffRaw !== '') {
+        $cutoff = (int) $cutoffRaw;
+        if ($cutoff < 0) $cutoff = 0;
+        try {
+            $db->exec("CREATE TABLE IF NOT EXISTS web_ban_board_cfg (id INTEGER PRIMARY KEY, start_cutoff INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
+            $cst = $db->prepare("INSERT OR REPLACE INTO web_ban_board_cfg (id, start_cutoff, updated_at) VALUES (1, :c, :t)");
+            $cst->bindValue(':c', $cutoff, SQLITE3_INTEGER);
+            $cst->bindValue(':t', $now, SQLITE3_INTEGER);
+            $cst->execute();
+        } catch (Throwable $e) {}
     }
 
     success(['count' => count($bans), 'ip_blacklist' => $ipCount]);
