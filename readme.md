@@ -9,7 +9,7 @@
 - 衍生作品必须同样以 AGPL-3.0 授权分发。
 - 本项目按「原样」提供，不附带任何担保。
 
-> **部署者须知**：请把根目录的 [`开源地址.txt`](开源地址.txt) 里的地址改成**你自己**的后端源码仓库地址（第一行非 `#` 注释的 http/https 地址即生效）。玩家端页脚会自动读取并展示该地址，用于满足 AGPL 对网络服务提供源码获取途径的要求；出厂默认指向 `https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/`。
+> **部署者须知**：请把根目录的 [`开源地址.txt`](开源地址.txt) 里的地址改成**你自己**的后端源码仓库地址（第一行非 `#` 注释的 http/https 地址即生效）。玩家端页脚会自动读取并展示该地址，用于满足 AGPL 对网络服务提供源码获取途径的要求；出厂默认指向 `[https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/](https://git.ypshidifu.cn/youpaishidifu/Sdf1_login/src/branch/php/)`。
 
 > 本目录是 Minecraft PaperMC 插件 **`Sdf1_login`**（即本仓库的 `../Sdf1_login`）配套的 PHP Web 后端。
 > 两个工程是**一对**：Java 插件负责游戏内逻辑（登录注册、债券经济、商城、领地、工单、PVP…），
