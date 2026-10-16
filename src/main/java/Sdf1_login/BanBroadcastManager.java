@@ -2,8 +2,6 @@ package Sdf1_login;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.bukkit.BanEntry;
-import org.bukkit.BanList;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.event.EventHandler;
@@ -23,7 +21,6 @@ import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +37,14 @@ import java.util.regex.Pattern;
  *   - 解码全失败  → 备份原文件 + 释放一份新的。
  * 配置丢失 → 自动补发（saveResource 自愈）；
  * 已存在的 md → 安全升级自动补齐模板新增行（safeUpgradeDoc，第二十一批）。
+ *
+ * ★ 第二十七批：数据源改为原版 banned-players.json（用户明令「这是 MC 唯一的封禁数据来源」）。
+ *   线上事故：旧实现读 Bukkit.getBanList(NAME) 的内存名单，而内存名单在重启/被
+   Web 后台批量改写后与磁盘 banned-players.json 严重不一致（文件里 [] 空，内存里
+   却有几十条）→ 玩家看到「一个都没封却公示一堆人」。
+ *   现改为：每轮播报都重新读 <worldContainer>/banned-players.json 到内存，
+ *   解析每条的 created，过滤掉插件数据目录创建时间之前的全部历史封禁；
+ *   文件缺失 / 语法坏 / 过滤后为空 → 一律闭嘴不播，绝不拿兜底假数据说话。
  *
  * 键值：轮播最低间隔(秒) / 轮播最大间隔(秒) / 播报模式 / 播报起点(插件安装之前的封禁不播)
  *   播报模式：true=由近到远、false=由远到近、0=关闭；
@@ -83,6 +88,32 @@ public class BanBroadcastManager implements Listener {
      */
     public long getStartCutoff() { return resolveStartCutoff(); }
 
+    // ==================== 27批：banned-players.json 数据模型 ====================
+
+    /** banned-players.json 的一条记录（只取公示需要的字段） */
+    private static final class JsonBan {
+        final String name;
+        final String reason;
+        final String source;
+        final long createdMs;
+        /** 到期毫秒；0 = 永久 */
+        final long expiresMs;
+
+        JsonBan(String name, String reason, String source,
+                long createdMs, long expiresMs) {
+            this.name = name;
+            this.reason = reason;
+            this.source = source;
+            this.createdMs = createdMs;
+            this.expiresMs = expiresMs;
+        }
+    }
+
+    /** 上次成功读到的原始文件签名（内容+长度），用于「数据有没有变」判定与日志 */
+    private String lastFileSig = null;
+    private int lastFileRawCount = 0;
+    private int lastFileKeptCount = 0;
+
     // ==================== 生命周期 ====================
 
     public void start() {
@@ -115,9 +146,13 @@ public class BanBroadcastManager implements Listener {
             }
         } catch (Exception ignored) {}
         long cut0 = resolveStartCutoff();
+        File bf0 = bannedPlayersFile();
         plugin.getLogger().info("[封禁播报] 已启动，模式=" + modeName()
                 + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条"
-                + " 起点=" + (cut0 > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut0)) : "不限"));
+                + " 起点=" + (cut0 > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut0)) : "不限")
+                + " 数据源=" + (bf0 == null ? "未定位" : bf0.getPath()));
+        List<JsonBan> boot = collectBans();
+        log("启动首筛：banned-players.json 有效封禁 " + boot.size() + " 条");
     }
 
     public void shutdown() { /* BukkitRunnable 随插件卸载自动取消 */ }
@@ -442,9 +477,15 @@ public class BanBroadcastManager implements Listener {
 
     /**
      * 取播报起点(毫秒)：>0 表示只播该时刻之后创建的封禁。
-     * 自动模式取插件数据目录(plugins/Sdf1_login)的创建时间 = 插件安装时间；
-     * 文件系统给不出可信创建时间时（缓存值距今不足 7 天，多半是 mtime 兜底）
-     * → 返回 0 不过滤，避免把插件安装之后的封禁也一并排除。
+     *
+     * <p>★ 第二十七批：自动模式取插件数据目录(plugins/Sdf1_login)的创建时间
+     * = 插件安装上服务器的时间，插件上服之前的全部历史封禁一律不播。
+     *
+     * <p>旧实现有「距今不足 7 天就放弃过滤」的守卫（当年担心 mtime 兜底不可信），
+     * 结果插件刚装上服务器时自动退化成「不过滤」，把上线前几年的历史封禁全播了出来
+     * —— 这正是用户看到的「一个都没封却公示一堆人」。
+     * 现改为无条件采用 creationTime：只有文件系统根本给不出创建时间（返回 0 /
+     * 抛异常）才退化为不过滤，宁可少播也不误播历史数据。
      */
     private long resolveStartCutoff() {
         if (!startCutoffAuto) return startCutoffMs;
@@ -456,11 +497,16 @@ public class BanBroadcastManager implements Listener {
                     long t = java.nio.file.Files.readAttributes(df.toPath(),
                             java.nio.file.attribute.BasicFileAttributes.class)
                             .creationTime().toMillis();
-                    if (t > 0 && System.currentTimeMillis() - t > 7L * 24 * 3600 * 1000) {
-                        autoCutoffMs = t;
-                    }
+                    if (t > 0) autoCutoffMs = t;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                warn("读取插件数据目录创建时间失败，本次不过滤历史封禁: "
+                        + e.getMessage());
+            }
+            if (autoCutoffMs <= 0) {
+                warn("取不到插件数据目录创建时间，历史封禁过滤已关闭"
+                        + "（可在 ban/规则配置.md 里手动填「播报起点」锁定时间）");
+            }
         }
         return autoCutoffMs;
     }
@@ -510,65 +556,195 @@ public class BanBroadcastManager implements Listener {
 
     // ==================== 播报 ====================
 
-    /** 取当前生效封禁条目（未过期），按创建时间排序 */
-    @SuppressWarnings("unchecked")
-    private List<BanEntry<?>> collectBans() {
-        List<BanEntry<?>> list = new ArrayList<>();
+    /**
+     * ★ 27批（用户明令的唯一数据源）：每轮都重新读原版 banned-players.json，
+     * 加载到内存做筛选 —— 不再依赖任何内存名单，杜绝「文件是空的却公示一堆人」。
+     *
+     * <p>流程：定位文件 → 读全文 → 内存解析 → 过滤（过期 / created 早于播报起点）
+     *   → 返回。文件缺失、为空、语法坏、过滤后一条不剩，一律返回空列表（=闭嘴）。
+     *
+     * <p>created/expires 两种格式都兼容：
+     *   ISO「2026-10-16T13:32:58Z」、带时区「2026-10-16 21:06:20 +0800」、
+     *   「yyyy-MM-dd HH:mm:ss」、以及纯数字时间戳（秒/毫秒）；
+     *   「forever」/空 = 永久。解析不了的条目按 created=0 处理，
+     *   起点过滤时会被当成历史封禁排除（宁可漏播不误播）。
+     */
+    private List<JsonBan> collectBans() {
+        List<JsonBan> list = new ArrayList<>();
+        File f = bannedPlayersFile();
+        if (f == null || !f.exists()) {
+            log("未找到 banned-players.json，本轮闭嘴不播");
+            lastFileSig = null;
+            lastFileRawCount = 0;
+            lastFileKeptCount = 0;
+            return list;
+        }
+        String txt = readFile(f);
+        if (txt == null || txt.trim().isEmpty() || txt.trim().equals("[]")) {
+            log("banned-players.json 为空（" + f.length() + " 字节），本轮闭嘴不播");
+            lastFileSig = sigOf(f, txt);
+            lastFileRawCount = 0;
+            lastFileKeptCount = 0;
+            return list;
+        }
+
+        // 内存加载：解析成 JsonBan 列表
+        List<JsonBan> raw = new ArrayList<>();
         try {
-            BanList nb = Bukkit.getBanList(BanList.Type.NAME);
-            // getEntries() 实际返回 Set，按 Collection 中转强转（防 ClassCastException）
-            // ★ 播报起点：插件安装之前的封禁（历史封禁）不播报，与插件管辖范围对齐
-            long cutoff = resolveStartCutoff();
-            for (BanEntry<?> e : (Collection<BanEntry<?>>) (Collection<?>) nb.getEntries()) {
-                Date exp = e.getExpiration();
-                if (exp != null && exp.getTime() <= System.currentTimeMillis()) continue;
-                Date created = e.getCreated();
-                if (cutoff > 0 && created != null && created.getTime() < cutoff) continue;
-                list.add(e);
+            com.google.gson.JsonElement root = JsonParser.parseString(txt);
+            if (!root.isJsonArray()) {
+                warn("banned-players.json 根节点不是数组，本轮闭嘴不播");
+                lastFileSig = sigOf(f, txt);
+                return list;
+            }
+            long nowMs = System.currentTimeMillis();
+            for (com.google.gson.JsonElement el : root.getAsJsonArray()) {
+                if (el == null || !el.isJsonObject()) continue;
+                com.google.gson.JsonObject o = el.getAsJsonObject();
+                String name = str(o, "name");
+                if (name.isEmpty()) name = str(o, "uuid");
+                if (name.isEmpty()) continue;
+                raw.add(new JsonBan(name, str(o, "reason"), str(o, "source"),
+                        parseBanTime(str(o, "created")),
+                        parseBanTime(str(o, "expires"))));
             }
         } catch (Exception e) {
-            warn("读取封禁名单失败: " + e.getMessage());
+            warn("banned-players.json 解析失败（" + e.getMessage()
+                    + "），本轮闭嘴不播");
+            lastFileSig = sigOf(f, txt);
+            return list;
+        }
+
+        // 内存筛选：未过期 + created 晚于播报起点（起点=插件数据目录创建时间）
+        long nowMs2 = System.currentTimeMillis();
+        long cutoff = resolveStartCutoff();
+        int expiredCnt = 0, historyCnt = 0, timeUnknownCnt = 0;
+        for (JsonBan b : raw) {
+            if (b.expiresMs > 0 && b.expiresMs <= nowMs2) { expiredCnt++; continue; }
+            if (b.createdMs <= 0) { timeUnknownCnt++; }              // created 解析不了
+            if (cutoff > 0 && b.createdMs < cutoff) { historyCnt++; continue; }
+            list.add(b);
+        }
+
+        // 「每次都检查是不是最新」：文件签名变了才打日志，避免刷屏
+        String sig = sigOf(f, txt);
+        lastFileRawCount = raw.size();
+        lastFileKeptCount = list.size();
+        if (!sig.equals(lastFileSig)) {
+            lastFileSig = sig;
+            log("已重读 banned-players.json: 原始 " + raw.size() + " 条"
+                    + " → 过滤后 " + list.size() + " 条（起点 "
+                    + (cutoff > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cutoff)) : "§c未取到·不过滤")
+                    + "；过期 " + expiredCnt + "，历史 " + historyCnt
+                    + "，时间未知 " + timeUnknownCnt + "，文件 " + sig + "）");
         }
         return list;
     }
 
+    /** 原版封禁名单文件：<worldContainer>/banned-players.json（MC 唯一封禁数据源） */
+    private File bannedPlayersFile() {
+        try {
+            File wc = Bukkit.getWorldContainer();
+            if (wc != null) {
+                return new File(wc, "banned-players.json");
+            }
+        } catch (Exception e) {
+            warn("取世界容器失败: " + e.getMessage());
+        }
+        return plugin.getDataFolder() == null ? null
+                : new File(plugin.getDataFolder().getParentFile() == null
+                    ? plugin.getDataFolder()
+                    : plugin.getDataFolder().getParentFile().getParentFile(),
+                    "banned-players.json");
+    }
+
+    /** 文件内容签名（长度+哈希），用于「数据有没有变」判定 */
+    private String sigOf(File f, String txt) {
+        int h = txt == null ? 0 : txt.hashCode();
+        return f.length() + "B/" + Integer.toHexString(h);
+    }
+
+    private static String str(com.google.gson.JsonObject o, String k) {
+        try {
+            if (o == null || !o.has(k) || o.get(k).isJsonNull()) return "";
+            String s = o.get(k).getAsString();
+            return s == null ? "" : s;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * banned-players.json 的时间字段 → 毫秒；解析不了返回 0。
+     * 兼容：ISO8601(带 Z/时区) / "yyyy-MM-dd HH:mm:ss Z" / "yyyy-MM-dd HH:mm:ss"
+     *      / "yyyy-MM-dd" / 纯数字（10位=秒，13位=毫秒）。
+     */
+    private long parseBanTime(String s) {
+        if (s == null) return 0L;
+        String v = s.trim();
+        if (v.isEmpty()) return 0L;
+        if (v.equalsIgnoreCase("forever") || v.equals("永久")) return 0L;
+        // 纯数字时间戳
+        if (v.matches("\\d{10,13}")) {
+            long n = Long.parseLong(v);
+            return v.length() <= 10 ? n * 1000L : n;
+        }
+        String[] pats = {
+                "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+                "yyyy-MM-dd'T'HH:mm:ssXXX",
+                "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                "yyyy-MM-dd'T'HH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss Z",
+                "yyyy-MM-dd HH:mm:ss ZZZZ",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd HH:mm",
+                "yyyy-MM-dd"};
+        for (String pt : pats) {
+            try {
+                java.text.ParsePosition pos = new java.text.ParsePosition(0);
+                Date d = new SimpleDateFormat(pt, Locale.ROOT).parse(v, pos);
+                if (d != null && pos.getIndex() == v.length()) return d.getTime();
+            } catch (Exception ignored) { }
+        }
+        return 0L;
+    }
+
     /** 轮播当前页并广播给全服 */
     private void broadcastOnce() {
-        List<BanEntry<?>> bans = collectBans();
+        List<JsonBan> bans = collectBans();
         if (bans.isEmpty()) { log("当前无生效封禁，跳过本轮"); return; }
 
         // 由近到远：最新封禁在前；由远到近：最早封禁在前
-        bans.sort((a, b) -> {
-            long ta = a.getCreated() != null ? a.getCreated().getTime() : 0L;
-            long tb = b.getCreated() != null ? b.getCreated().getTime() : 0L;
-            return mode == 1 ? Long.compare(tb, ta) : Long.compare(ta, tb);
-        });
+        bans.sort((a, b) -> mode == 1
+                ? Long.compare(b.createdMs, a.createdMs)     // 由近到远
+                : Long.compare(a.createdMs, b.createdMs));   // 由远到近
 
         int total = bans.size();
         int start = cursor % total;
         int end = Math.min(start + pageSize, total);
-        List<BanEntry<?>> page = bans.subList(start, end);
+        List<JsonBan> page = bans.subList(start, end);
         cursor = end % total;
 
         String head = "§c§l⚠ §6违规封禁公示 §7(共§f" + total + "§7人, 第§f"
                 + (start / pageSize + 1) + "§7/" + ((total + pageSize - 1) / pageSize) + "§7页)";
         Bukkit.broadcastMessage(head);
         SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm");
-        for (BanEntry<?> e : page) {
-            String target = e.getTarget();
-            String reason = e.getReason() != null && !e.getReason().isEmpty()
-                    ? e.getReason() : "违反服务器规则";
-            String when;
-            Date created = e.getCreated();
-            when = created != null ? df.format(created) : "未知时间";
-            Date exp = e.getExpiration();
-            String expStr = exp != null ? ("§7至§f" + df.format(exp)) : "§c永久";
+        for (JsonBan e : page) {
+            String target = e.name;
+            String reason = (e.reason != null && !e.reason.isEmpty())
+                    ? e.reason : "违反服务器规则";
+            String when = e.createdMs > 0 ? df.format(new Date(e.createdMs)) : "时间未知";
+            String expStr = e.expiresMs > 0 ? ("§7至§f" + df.format(new Date(e.expiresMs)))
+                    : "§c永久";
             Bukkit.broadcastMessage("§c☠ §f" + target + " §7- " + reason
                     + " §8| §7封于§f" + when + " §8| " + expStr);
         }
         Bukkit.broadcastMessage("§7§o请各位玩家引以为戒，遵守服务器规则。");
-        log("本轮已播报 " + page.size() + "/" + total + " 条封禁（本次随机间隔 "
-                + lastDelaySec + "s，区间 " + minInterval + "~" + maxInterval + "s）");
+        log("本轮已播报 " + page.size() + "/" + total + " 条封禁"
+                + "（本次随机间隔 " + lastDelaySec + "s，区间 "
+                + minInterval + "~" + maxInterval + "s；banned-players.json 原始 "
+                + lastFileRawCount + " 条，过滤后 " + lastFileKeptCount + " 条）");
     }
 
     /** 轮播游标（下一页起点） */
@@ -586,6 +762,12 @@ public class BanBroadcastManager implements Listener {
                 + " §7起点=§f" + (cut > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut)) : "不限")
                 + (startCutoffAuto ? "§7(自动)" : "")
                 + (mode == 0 ? " §c(已关闭)" : ""));
+        File bf = bannedPlayersFile();
+        List<JsonBan> now = collectBans();
+        to.sendMessage("§a[封禁播报] §7数据源=§f" + (bf == null ? "未定位"
+                : bf.getName() + (bf.exists() ? "(§f" + bf.length() + "§7字节)" : "(§c不存在§7)"))
+                + " §7有效封禁=§f" + now.size() + "§7条"
+                + (now.isEmpty() ? " §8(无数据，保持沉默)" : ""));
     }
 
     private String modeName() {

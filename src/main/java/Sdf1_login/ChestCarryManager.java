@@ -13,6 +13,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDropItemEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
@@ -25,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -43,9 +45,16 @@ import java.util.concurrent.ConcurrentHashMap;
  *   - 超时（链断）→ 单独交付那 1 个；大箱子天然只快照被拆那一半
  *     （Chest.getBlockInventory() 只含被拆半边的 27 格）
  *
- * 打包箱：Material.CHEST / TRAPPED_CHEST + 名称标识 + PDC 存 InventorySerializer
+ * 打包箱：沿用来源箱子材质 + 名称标识 + PDC 存 InventorySerializer
  *   base64 内容；setMaxStackSize(1) 防不同内容堆叠混淆。
  * 放置回填：BlockPlaceEvent 后 1 tick 方块状态就绪再灌回 27 格。
+ *
+ * ★ 第二十七批线上事故修复（"拆箱物品照炸开"）：
+ *   26.2 新增铜箱族（COPPER_CHEST / EXPOSED_ / WEATHERED_ / OXIDIZED_ /
+ *   WAXED_ 等 8 种），原判定只认 CHEST / TRAPPED_CHEST → 玩家拆铜箱时
+ *   整条判定链第一步就早退，交原版散落。改为「凡 *_CHEST 且非末影箱」全收。
+ *   材质一律走字符串判定（不引用 Material.COPPER_CHEST 之类常量）→
+ *   跨服务端 build 零风险。
  */
 public class ChestCarryManager implements Listener {
 
@@ -56,6 +65,9 @@ public class ChestCarryManager implements Listener {
     /** 组队窗口 2 秒 = 40 tick */
     private static final long WINDOW_TICKS = 40L;
     private static final long WINDOW_MS = 2000L;
+
+    /** 接管后该位置的掉落抑制时长（tick）：setDropItems 之外的第二道保险 */
+    private static final long DROP_SUPPRESS_TICKS = 60L;
 
     /** PDC key 的小包装（避免与 block data 的 Chest 类名混淆的命名负担） */
     private static final class NamespacedKeyRef {
@@ -70,17 +82,17 @@ public class ChestCarryManager implements Listener {
         final UUID player;
         final String worldName;
         final Location dropLoc;     // 超时且玩家离线时的兜底投递点
-        final boolean trapped;      // 来源是否陷阱箱
+        final Material sourceMat;   // 来源箱子材质（打包箱沿用，铜箱拆出来还是铜箱）
         final String halfName;      // 小箱子 / 大箱子·左半 / 大箱子·右半
         final ItemStack[] contents; // 被拆半边 27 格快照
         final long ts;              // 挂起时刻（组队窗口判定）
 
         PendingCarry(UUID player, String worldName, Location dropLoc,
-                     boolean trapped, String halfName, ItemStack[] contents, long ts) {
+                     Material sourceMat, String halfName, ItemStack[] contents, long ts) {
             this.player = player;
             this.worldName = worldName;
             this.dropLoc = dropLoc;
-            this.trapped = trapped;
+            this.sourceMat = sourceMat;
             this.halfName = halfName;
             this.contents = contents;
             this.ts = ts;
@@ -89,6 +101,9 @@ public class ChestCarryManager implements Listener {
 
     /** 玩家 UUID → 挂起中的搬运（每人最多 1 条） */
     private final Map<UUID, PendingCarry> pending = new ConcurrentHashMap<>();
+
+    /** 已接管但仍需拦掉落的位置（BlockDropItemEvent 兜底，tick 后自动放行） */
+    private final Set<Location> suppressDrops = ConcurrentHashMap.newKeySet();
 
     public ChestCarryManager(Main main) {
         this.main = main;
@@ -101,7 +116,7 @@ public class ChestCarryManager implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onChestBreak(BlockBreakEvent e) {
         Material mat = e.getBlock().getType();
-        if (mat != Material.CHEST && mat != Material.TRAPPED_CHEST) return;
+        if (!isChestMaterial(mat)) return;
         Player p = e.getPlayer();
 
         // 手持：主手必须是精准采集斧头，否则交原版
@@ -122,11 +137,23 @@ public class ChestCarryManager implements Listener {
                 && lv != AreaProtection.PermissionLevel.OWNER
                 && lv != AreaProtection.PermissionLevel.MEMBER) return;
 
-        // 快照被拆半边内容（大箱子 getBlockInventory 只含这半边 27 格）
+        // ★ 27批：走 Container 接口 + getSnapshotInventory() ——
+        //   26.2 的 Chest 只覆盖木箱/陷阱箱，铜箱族同样实现 Container；
+        //   getSnapshotInventory() 返回「被拆那半边」的独立快照（大箱子天然只含半边 27 格），
+        //   不用像 getBlockInventory() 那样先判断是否双箱。
         BlockState st = b.getState();
-        if (!(st instanceof org.bukkit.block.Chest)) return;
-        org.bukkit.block.Chest chest = (org.bukkit.block.Chest) st;
-        ItemStack[] snap = chest.getBlockInventory().getContents();
+        if (!(st instanceof org.bukkit.block.Container)) {
+            plugin.getLogger().fine("[箱子搬运] 非容器方块，跳过: " + mat);
+            return;
+        }
+        ItemStack[] snap;
+        try {
+            snap = ((org.bukkit.block.Container) st).getSnapshotInventory().getContents();
+        } catch (Exception ex) {
+            plugin.getLogger().warning(
+                    "[箱子搬运] 读取箱子快照失败: " + ex.getMessage());
+            return;
+        }
 
         // 全空箱不接管：交原版掉箱子本体，无物品洪水
         if (isEmpty(snap)) return;
@@ -139,10 +166,11 @@ public class ChestCarryManager implements Listener {
             if (t == Chest.Type.LEFT) halfName = "大箱子·左半";
             else if (t == Chest.Type.RIGHT) halfName = "大箱子·右半";
         }
-        boolean trapped = (mat == Material.TRAPPED_CHEST);
 
-        // 接管：删原版大量掉落
+
+        // 接管：删原版大量掉落（setDropItems + BlockDropItemEvent 双保险）
         e.setDropItems(false);
+        markSuppressDrop(b.getLocation());
 
         UUID id = p.getUniqueId();
         PendingCarry prev = pending.remove(id);
@@ -151,11 +179,11 @@ public class ChestCarryManager implements Listener {
             // 成组：2 箱 1 组，一并交付
             deliver(p, prev);
             deliver(p, new PendingCarry(id, b.getWorld().getName(),
-                    p.getLocation(), trapped, halfName, snap, now));
+                    p.getLocation(), mat, halfName, snap, now));
         } else {
             // 首破：挂起观察 2 秒，等第二破成组或超时单独交付
             PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
-                    p.getLocation(), trapped, halfName, snap, now);
+                    p.getLocation(), mat, halfName, snap, now);
             pending.put(id, cur);
             plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                 PendingCarry pc = pending.get(id);
@@ -170,7 +198,7 @@ public class ChestCarryManager implements Listener {
                         World w = Bukkit.getWorld(pc.worldName);
                         if (w != null) {
                             w.dropItemNaturally(pc.dropLoc,
-                                    buildPackedChest(pc.trapped, pc.halfName, pc.contents));
+                                    buildPackedChest(pc.sourceMat, pc.halfName, pc.contents));
                         }
                     } catch (Exception ex) {
                         plugin.getLogger().warning(
@@ -187,7 +215,7 @@ public class ChestCarryManager implements Listener {
     public void onChestPlace(BlockPlaceEvent e) {
         ItemStack it = e.getItemInHand();
         if (it == null) return;
-        if (it.getType() != Material.CHEST && it.getType() != Material.TRAPPED_CHEST) return;
+        if (!isChestMaterial(it.getType())) return;
         if (!it.hasItemMeta()) return;
         PersistentDataContainer pdc = it.getItemMeta().getPersistentDataContainer();
         if (!pdc.has(carryKey.key, PersistentDataType.STRING)) return;
@@ -198,13 +226,12 @@ public class ChestCarryManager implements Listener {
         // 1 tick 后方块状态就绪再回填（含与邻半合并成大箱子的情况）
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             BlockState st = placed.getState();
-            if (!(st instanceof org.bukkit.block.Chest)) return;
+            if (!(st instanceof org.bukkit.block.Container)) return;
             try {
                 ItemStack[] items = InventorySerializer.fromBase64(data);
-                org.bukkit.block.Chest chest = (org.bukkit.block.Chest) st;
-                Inventory inv = chest.getBlockInventory();
+                Inventory inv = ((org.bukkit.block.Container) st).getInventory();
                 inv.clear();
-                int n = Math.min(items.length, 27);
+                int n = Math.min(items.length, inv.getSize());
                 for (int i = 0; i < n; i++) {
                     if (items[i] != null) inv.setItem(i, items[i]);
                 }
@@ -219,7 +246,7 @@ public class ChestCarryManager implements Listener {
     /** 交付一个打包箱给玩家（背包满则掉脚下），并提示 */
     private void deliver(Player p, PendingCarry c) {
         try {
-            ItemStack packed = buildPackedChest(c.trapped, c.halfName, c.contents);
+            ItemStack packed = buildPackedChest(c.sourceMat, c.halfName, c.contents);
             HashMap<Integer, ItemStack> left = p.getInventory().addItem(packed);
             if (!left.isEmpty()) {
                 left.values().forEach(it ->
@@ -239,12 +266,14 @@ public class ChestCarryManager implements Listener {
         }
     }
 
-    /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容 */
-    private ItemStack buildPackedChest(boolean trapped, String halfName,
+    /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容（沿用来源箱子材质） */
+    private ItemStack buildPackedChest(Material sourceMat, String halfName,
                                        ItemStack[] contents) throws Exception {
-        ItemStack it = new ItemStack(trapped ? Material.TRAPPED_CHEST : Material.CHEST);
+        ItemStack it = new ItemStack(sourceMat != null ? sourceMat : Material.CHEST);
         ItemMeta meta = it.getItemMeta();
-        meta.setDisplayName("§b§l打包箱 §7(" + halfName + ")");
+        String matLabel = sourceMat == null ? "木箱"
+                : sourceMat.name().toLowerCase(java.util.Locale.ROOT);
+        meta.setDisplayName("§b§l打包箱 §7(" + halfName + " §8· " + matLabel + ")");
         List<String> lore = new ArrayList<>();
         lore.add("§7内含 §f" + countItems(contents) + " §7件物品");
         lore.add("§a放置后 §7自动回填内容");
@@ -255,6 +284,37 @@ public class ChestCarryManager implements Listener {
                 PersistentDataType.STRING, InventorySerializer.toBase64(contents));
         it.setItemMeta(meta);
         return it;
+    }
+
+    /**
+     * 可搬运的箱子材质：凡 *_CHEST 且非末影箱全收。
+     * 26.2 起存在铜箱族（COPPER_CHEST / EXPOSED_ / WEATHERED_ / OXIDIZED_ / WAXED_ 等），
+     * 用枚举名后缀判定可一并覆盖，且不引用具体常量，跨服务端 build 不会 NoSuchFieldError。
+     */
+    private static boolean isChestMaterial(Material mat) {
+        if (mat == null || mat.isAir()) return false;
+        String n = mat.name();
+        return n.endsWith("_CHEST") && !n.equals("ENDER_CHEST");
+    }
+
+    /** 登记一个待抑制掉落的位置（tick 后自动放行，避免误伤其它掉落） */
+    private void markSuppressDrop(Location loc) {
+        suppressDrops.add(loc);
+        plugin.getServer().getScheduler().runTaskLater(plugin,
+                () -> suppressDrops.remove(loc), DROP_SUPPRESS_TICKS);
+    }
+
+    /**
+     * 掉落兜底抑制：部分版本/服务器路径下箱子内容经 loot table 走
+     * BlockDropItemEvent 抛出，setDropItems(false) 拦不住 —— 这里补一刀，
+     * 只对本次已接管（登记过）的方块位置生效，其它掉落一律不碰。
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onChestDropItem(BlockDropItemEvent e) {
+        if (suppressDrops.isEmpty()) return;
+        if (suppressDrops.remove(e.getBlock().getLocation())) {
+            e.setCancelled(true);
+        }
     }
 
     private static boolean isEmpty(ItemStack[] a) {

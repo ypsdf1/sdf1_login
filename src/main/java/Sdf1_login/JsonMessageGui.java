@@ -87,6 +87,12 @@ public class JsonMessageGui implements Listener {
     private static final int SLOT_CLEAR = 25;
     private static final int SLOT_SEND = 26;
 
+    // ★ 27批：样式按钮（原空闲格）—— 加粗/斜体/下划线/删除线
+    private static final int SLOT_STYLE_BOLD = 18;
+    private static final int SLOT_STYLE_ITALIC = 19;
+    private static final int SLOT_STYLE_UNDERLINE = 20;
+    private static final int SLOT_STYLE_STRIKE = 23;
+
     // ==================== 每玩家会话 ====================
     private static final class Session {
         int mode = MODE_TELLRAW;
@@ -94,6 +100,15 @@ public class JsonMessageGui implements Listener {
         final StringBuilder text = new StringBuilder();
         /** 当前等待聊天捕获的输入类型：null=无 */
         String capture; // "text" | "customcolor"
+        /**
+         * ★ 27批：先点颜色、后输入内容时的待应用颜色（MC legacy 码，如 "§a"）。
+         *   线上事故：颜色只是 append 进 text，"先选色再打字"时色码落在文字前面
+         *   被 toTellrawJson 切成一个空 extra 段 → 屏幕上完全看不到颜色（显示白）。
+         *   改为暂存颜色，等文字进来时前置到该段文字之前。
+         */
+        String pendingColor;
+        /** 已开启的样式开关：1=加粗 2=斜体 4=下划线 8=删除线 */
+        int styleFlags;
         Session(int mode) { this.mode = mode; }
     }
 
@@ -257,6 +272,8 @@ public class JsonMessageGui implements Listener {
         s.mode = mode;
         s.capture = null;
         s.text.setLength(0);
+        s.pendingColor = null;
+        s.styleFlags = 0;
         if (!extracted.isEmpty()) s.text.append(extracted);
 
         p.openInventory(build(s));
@@ -307,7 +324,10 @@ public class JsonMessageGui implements Listener {
                 "§f使用说明",
                 "§71. 选模式 → 2. 点「输入内容」",
                 "§7在聊天栏打字（自动收回面板）",
-                "§3点击颜色按钮§7可给当前内容上色",
+                "§3点颜色§7：空内容时记住颜色，打字时带上；",
+                "§7已有内容时整段重新染色",
+                "§3四个样式按钮§7：加粗/斜体/下划线/删除线",
+                "§7发送成功会把 JSON 原样回给你（仅本人可见）",
                 "§7发送以你自己的身份执行原版指令，",
                 "§7权限与直接敲 /tellraw、/title 完全一致"));
 
@@ -331,11 +351,24 @@ public class JsonMessageGui implements Listener {
             }
         }
 
+        // ★ 27批：样式开关 4 连（点一下切换开/关，直接作用于后续文字）
+        inv.setItem(SLOT_STYLE_BOLD, styleItem(Material.BLAZE_POWDER,
+                "加粗", 1, s.styleFlags));
+        inv.setItem(SLOT_STYLE_ITALIC, styleItem(Material.FEATHER,
+                "斜体", 2, s.styleFlags));
+        inv.setItem(SLOT_STYLE_UNDERLINE, styleItem(Material.NAME_TAG,
+                "下划线", 4, s.styleFlags));
+        inv.setItem(SLOT_STYLE_STRIKE, styleItem(Material.STICK,
+                "删除线", 8, s.styleFlags));
+
         inv.setItem(SLOT_PREVIEW, previewItem(s));
         inv.setItem(SLOT_INPUT_TEXT, simple(Material.WRITABLE_BOOK,
                 "§a输入内容",
                 "§7点击后在聊天栏输入文字",
-                "§7（不会真的发到公屏）"));
+                "§7（不会真的发到公屏）",
+                (s.pendingColor != null
+                        ? "§7当前色：§f" + legacyPreview(s.pendingColor)
+                        : "§8尚未选色（可先选颜色再打字）")));
         inv.setItem(SLOT_CLEAR, simple(Material.LAVA_BUCKET,
                 "§c清空内容", "§7清空已输入的文本"));
         inv.setItem(SLOT_SEND, simple(Material.EMERALD_BLOCK,
@@ -345,7 +378,31 @@ public class JsonMessageGui implements Listener {
 
     private ItemStack previewItem(Session s) {
         String shown = s.text.length() == 0 ? "§8（空）" : clip(s.text.toString(), 40);
-        return simple(Material.HONEYCOMB, "§e当前内容预览", "§r" + shown);
+        return simple(Material.HONEYCOMB, "§e当前内容预览", "§r" + shown,
+                styleStateLine(s));
+    }
+
+    /** 样式开启动态一行（让玩家看得见当前样式开关） */
+    private static String styleStateLine(Session s) {
+        StringBuilder sb = new StringBuilder("§8样式: ");
+        int f = s.styleFlags;
+        sb.append((f & 1) != 0 ? "§a粗" : "§7粗").append(' ')
+          .append((f & 2) != 0 ? "§a斜" : "§7斜").append(' ')
+          .append((f & 4) != 0 ? "§a下划" : "§7下划").append(' ')
+          .append((f & 8) != 0 ? "§a删除" : "§7删除");
+        return sb.toString();
+    }
+
+    /** legacy § 码 → 可读标签（仅 GUI 文案用） */
+    private static String legacyPreview(String legacy) {
+        if (legacy == null || legacy.isEmpty()) return "（无）";
+        return legacy.replace('§', '&');
+    }
+
+    /** 把纯文本按 legacy 色码渲染（仅用于聊天栏回显） */
+    private static String colorPreview(String plain, String colorCode) {
+        if (colorCode == null || colorCode.isEmpty()) return "§r";
+        return colorCode + "§r";
     }
 
     private static String clip(String s, int max) {
@@ -418,6 +475,25 @@ public class JsonMessageGui implements Listener {
         }
     }
 
+    /** 样式开关按钮：亮起=已开，灰暗=未开 */
+    private static ItemStack styleItem(Material mat, String name, int bit, int flags) {
+        boolean on = (flags & bit) != 0;
+        return simple(mat,
+                (on ? "§a✔ " : "§7") + (on ? "§l" : "") + name,
+                on ? "§a已开启 §7— 再次点击关闭" : "§e点击开启",
+                "§7对应 JSON 字段 §f" + styleJsonField(bit),
+                "§7样式作用于之后输入的文字");
+    }
+
+    private static String styleJsonField(int bit) {
+        switch (bit) {
+            case 1: return "\"bold\":true";
+            case 2: return "\"italic\":true";
+            case 4: return "\"underlined\":true";
+            default: return "\"strikethrough\":true";
+        }
+    }
+
     private static ItemStack modeItem(Material mat, String name, boolean selected,
                                       String... lore) {
         ItemStack it = simple(mat, (selected ? "§a✔ " : "§7") + name, lore);
@@ -465,9 +541,27 @@ public class JsonMessageGui implements Listener {
                 beginCapture(p, s, "customcolor"); break;
             case SLOT_INPUT_TEXT:
                 beginCapture(p, s, "text"); break;
+            case SLOT_STYLE_BOLD:
+                s.styleFlags ^= 1;
+                p.sendMessage(styleMsg("加粗", (s.styleFlags & 1) != 0));
+                refresh(p, s); break;
+            case SLOT_STYLE_ITALIC:
+                s.styleFlags ^= 2;
+                p.sendMessage(styleMsg("斜体", (s.styleFlags & 2) != 0));
+                refresh(p, s); break;
+            case SLOT_STYLE_UNDERLINE:
+                s.styleFlags ^= 4;
+                p.sendMessage(styleMsg("下划线", (s.styleFlags & 4) != 0));
+                refresh(p, s); break;
+            case SLOT_STYLE_STRIKE:
+                s.styleFlags ^= 8;
+                p.sendMessage(styleMsg("删除线", (s.styleFlags & 8) != 0));
+                refresh(p, s); break;
             case SLOT_CLEAR:
                 s.text.setLength(0);
-                p.sendMessage("§e[JSON构造器] §7内容已清空");
+                s.pendingColor = null;
+                s.styleFlags = 0;
+                p.sendMessage("§e[JSON构造器] §7内容/颜色/样式已全部清空");
                 refresh(p, s); break;
             case SLOT_SEND:
                 doSend(p, s); break;
@@ -475,7 +569,7 @@ public class JsonMessageGui implements Listener {
                 if (slot >= SLOT_PALETTE_FIRST && slot <= SLOT_PALETTE_LAST) {
                     int idx = slot - SLOT_PALETTE_FIRST;
                     if (idx < palette.size()) {
-                        appendColor(p, s, palette.get(idx));
+                        pickColor(p, s, palette.get(idx));
                     }
                 }
                 break;
@@ -533,12 +627,20 @@ public class JsonMessageGui implements Listener {
             if (msg.isEmpty() || msg.equals("/qj")) {
                 p.sendMessage("§e[JSON构造器] §7已取消输入");
             } else if (type.equals("text")) {
+                // ★ 27批：先把待用颜色/样式冠在这段文字之前 ——
+                //   这样「先选色后打字」也能真正带上颜色（此前色码裸挂在段首被丢弃）
+                String style = styleToLegacy(s.styleFlags);
+                if (s.pendingColor != null || !style.isEmpty()) {
+                    s.text.append(s.pendingColor == null ? "" : s.pendingColor);
+                    s.text.append(style);
+                }
                 s.text.append(msg);
-                p.sendMessage("§a[JSON构造器] §7已加入内容：§f" + clip(msg, 60));
+                p.sendMessage("§a[JSON构造器] §7已加入内容："
+                        + colorPreview(msg, s.pendingColor) + clip(msg, 60));
             } else {
                 // 自定义颜色
                 if (isValidColor(msg)) {
-                    appendColor(p, s, normalizeColor(msg));
+                    applyCustomColor(p, s, normalizeColor(msg));
                 } else {
                     p.sendMessage("§c[JSON构造器] 颜色配置无效：§f" + msg
                             + "§7（仅支持 MC 原生16色名 / #RRGGBB / R G B）");
@@ -553,21 +655,126 @@ public class JsonMessageGui implements Listener {
         sessions.remove(e.getPlayer().getUniqueId());
     }
 
-    /** 颜色写入当前文本（legacy § 码，hex 用 §x§R§R§G§G§B§B） */
-    private void appendColor(Player p, Session s, String color) {
+    /** 颜色 → legacy § 码串（hex 用 §x§R§R§G§G§B§B） */
+    private static String colorToLegacy(String color) {
+        StringBuilder sb = new StringBuilder();
         if (color.startsWith("#")) {
-            s.text.append('§').append('x');
+            sb.append('§').append('x');
             for (char c : color.substring(1).toCharArray()) {
-                s.text.append('§').append(Character.toLowerCase(c));
+                sb.append('§').append(Character.toLowerCase(c));
             }
         } else {
-            s.text.append('§').append(nativeToLegacy(color));
+            sb.append('§').append(nativeToLegacy(color));
         }
-        p.sendMessage("§a[JSON构造器] §7已上色 §f" + color);
+        return sb.toString();
+    }
+
+    /** 已开启样式的 legacy 码串（加粗§l/斜体§o/下划线§n/删除线§m） */
+    private static String styleToLegacy(int flags) {
+        StringBuilder sb = new StringBuilder();
+        if ((flags & 1) != 0) sb.append('§').append('l');
+        if ((flags & 2) != 0) sb.append('§').append('o');
+        if ((flags & 4) != 0) sb.append('§').append('n');
+        if ((flags & 8) != 0) sb.append('§').append('m');
+        return sb.toString();
+    }
+
+    private static String styleMsg(String name, boolean on) {
+        return "§a[JSON构造器] §7样式 §f" + name + " §7已"
+                + (on ? "§a开启" : "§c关闭");
+    }
+
+    /**
+     * ★ 27批 线上事故修复：「设置绿色，输出白色」。
+     *
+     * <p>原实现把颜色码直接 append 到 text 末尾。当玩家「先输入文字、再点颜色」时，
+     * 色码只是给已发出的文字「下个位置」上色——对已输入的内容没有任何效果；
+     * 而「先点颜色、再输入文字」时色码落在文字之前，被 toTellrawJson 切成一个空的
+     * extra 段被丢弃，表现同样是全白。两种顺序都拿不到颜色。
+     *
+     * <p>现语义改为「选色是状态，不是追加」：
+     * <ul>
+     *   <li>text 为空 → 只记 pendingColor，等输入时前置到该段文字；</li>
+     *   <li>text 已有内容 → 重写整个内容：每个可见文字段冠以「当前色 + 当前样式」；</li>
+     *   <li>已开样式同时以 § 码形式注入，保证 toTellrawJson 能转成 JSON 布尔字段。</li>
+     * </ul>
+     */
+    private void pickColor(Player p, Session s, String color) {
+        String code = colorToLegacy(color);
+        String style = styleToLegacy(s.styleFlags);
+        if (s.text.length() == 0) {
+            s.pendingColor = code;
+            p.sendMessage("§a[JSON构造器] §7已选色 §f" + color
+                    + "§7，输入内容时自动带上");
+            refresh(p, s);
+            return;
+        }
+        // 先剥掉旧色码得到裸文本，再按新颜色整体重建
+        String plain = stripCodes(s.text.toString());
+        s.pendingColor = code;
+        applyColorToPlain(p, s, plain, code, style);
+        p.sendMessage("§a[JSON构造器] §7已把已有内容染成 §f" + color);
         refresh(p, s);
     }
 
+    /** 去掉所有 § 颜色/样式码，得到裸文本（重染色前先剥干净） */
+    private static String stripCodes(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '§' && i + 1 < s.length()) { i++; continue; }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** 把裸文本按给定颜色 + 样式重建为 text（每段一个「色码+样式码+文字」） */
+    private void applyColorToPlain(Player p, Session s, String plain,
+                                   String colorCode, String style) {
+        s.text.setLength(0);
+        if (plain.isEmpty()) {
+            s.pendingColor = colorCode;
+            return;
+        }
+        // 按行切段，逐段冠色 —— 换行也能保持颜色
+        String[] lines = plain.split("\\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) s.text.append('\n');
+            if (lines[i].isEmpty()) continue;
+            s.text.append(colorCode).append(style).append(lines[i]);
+        }
+    }
+
+    /** 自定义颜色输入校验通过后统一走这里（与调色板同语义） */
+    private void applyCustomColor(Player p, Session s, String color) {
+        pickColor(p, s, color);
+    }
+
     // ==================== 发送 ====================
+
+    /**
+     * 把本次实际执行的原版指令 + 生成的 JSON 原样回显给执行者（仅本人可见）。
+     * 长 JSON 按 180 字符一行折行，避免超长行被客户端吞掉；
+     * 同时给出该 JSON 的最小可复制形态，方便照着敲进游戏。
+     */
+    private void echoJson(Player p, String cmd, String json) {
+        p.sendMessage("§8§m                    ");
+        p.sendMessage("§b[JSON构造器] §7以下是你刚发送的 JSON（§f仅你可见§7，可直接复制）：");
+        p.sendMessage("§8指令 §7: §f/" + cmd);
+        for (String line : wrap(json, 180)) {
+            p.sendMessage("§8JSON §7: §e" + line);
+        }
+        p.sendMessage("§8§m                    ");
+    }
+
+    private static List<String> wrap(String s, int width) {
+        List<String> out = new ArrayList<>();
+        if (s == null || s.isEmpty()) return out;
+        for (int i = 0; i < s.length(); i += width) {
+            out.add(s.substring(i, Math.min(s.length(), i + width)));
+        }
+        return out;
+    }
 
     private void doSend(Player p, Session s) {
         if (s.text.length() == 0) {
@@ -600,8 +807,12 @@ public class JsonMessageGui implements Listener {
             p.sendMessage("§a[JSON构造器] §7已发送（"
                     + (s.mode == MODE_TITLE ? "大标题"
                     : s.mode == MODE_SUBTITLE ? "小标题" : "tellraw消息") + "）");
+            // ★ 27批（用户要求）：把生成的 JSON 原样回给执行者，便于学习 JSON 写法。
+            //   只私发给本人，不刷公屏；分多行发，长度也不受聊天栏截断影响。
+            echoJson(p, cmd, json);
         } else {
             p.sendMessage("§c[JSON构造器] 发送失败：权限不足或指令被拒绝");
+            echoJson(p, cmd, json);   // 失败也回显，方便改完权限再试
         }
     }
 
