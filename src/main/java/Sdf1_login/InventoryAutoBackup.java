@@ -10,7 +10,7 @@ import java.io.IOException;
  * 背包滚动自动备份。
  * <p>
  * ★ 功能：
- * 1. 由 Main 的 15 分钟定时任务驱动，遍历所有在线玩家。
+ * 1. 由 Main 的准点定时任务驱动（第26批：每小时 0/15/30/45 分墙钟对齐，不再按启动时刻漂移），遍历所有在线玩家。
  * 2. 在 PVP 竞技场 / 练习场（测试场）的玩家不备份 —— 避免竞技场装备覆盖真实背包。
  * 3. 序列化 主背包 / 护甲 / 副手(extra) / 等级 / 经验，写入 inv_backup_auto 表。
  * 4. 每玩家保留最近 3 份（滚动覆盖），由 DatabaseManager.saveAutoBackup 负责清理。
@@ -22,7 +22,7 @@ public class InventoryAutoBackup {
 
     private final Main plugin;
 
-    /** 备份周期：15 分钟（单位 tick） */
+    /** 备份周期：15 分钟（单位 tick）。★ 第26批起 Main 改墙钟对齐调度（:00/:15/:30/:45 分），此常量仅作周期语义参考，不再直接作调度入参。 */
     public static final long INTERVAL_TICKS = 15L * 60L * 20L;
 
     public InventoryAutoBackup(Main plugin) {

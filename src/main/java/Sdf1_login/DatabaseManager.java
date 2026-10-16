@@ -401,7 +401,7 @@ public class DatabaseManager {
                     + "time INTEGER"
                     + ")");
 
-            // 背包自动滚动备份表（15分钟定时）：每位玩家保留最近 3 份
+            // 背包自动滚动备份表（每小时 0/15/30/45 分准点定时）：每位玩家保留最近 3 份
             st.execute("CREATE TABLE IF NOT EXISTS "
                     + "inv_backup_auto ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -3014,7 +3014,7 @@ public class DatabaseManager {
         return deleted;
     }
 
-    // ==================== 背包自动滚动备份（15分钟定时）====================
+    // ==================== 背包自动滚动备份（每小时 0/15/30/45 分准点定时）====================
 
     /**
      * 保存背包自动备份 —— 追加写入，每位玩家仅保留最近 3 份。

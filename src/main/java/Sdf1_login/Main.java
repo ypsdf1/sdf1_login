@@ -191,6 +191,10 @@ public class Main extends JavaPlugin
     public AchievementEffectGuard achievementEffectGuard;
     public LandRecordManager landRecordManager;
     public InventoryAutoBackup inventoryAutoBackup;
+    /** 26批：箱子搬运（精准采集斧拆箱→2秒窗口打包→放置回填） */
+    public ChestCarryManager chestCarryManager;
+    /** 26批：/json JSON消息构造器（tellraw/大标题/小标题 + 颜色 + 报错接管） */
+    public JsonMessageGui jsonGui;
     private TeleportManager teleportMgr;
     private HomeManager homeMgr;
     private DeathReport deathReport;
@@ -387,6 +391,16 @@ public class Main extends JavaPlugin
         if (!illegalDomainsFile.exists()) {
             saveResource("illegal_domains.txt", false);
             getLogger().info("[配置] 已自动释放 illegal_domains.txt 到插件目录");
+        }
+        // ★ 26批：自动释放 json解码配置/解码配置.md（调色板自定义色，仅不存在时）
+        try {
+            File jsonCfg = new File(getDataFolder(), "json解码配置/解码配置.md");
+            if (!jsonCfg.exists()) {
+                saveResource("json解码配置/解码配置.md", false);
+                getLogger().info("[配置] 已自动释放 json解码配置/解码配置.md");
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[配置] 解码配置.md 释放失败: " + t.getMessage());
         }
         // ★ 任务94：根目录5类文件归位（必须在任何 Manager 打开文件/DB 之前）
         migrateRootDataFiles();
@@ -674,6 +688,14 @@ public class Main extends JavaPlugin
         areaGUIManager = new AreaGUIManager(this, areaProtection);
         getServer().getPluginManager()
                 .registerEvents(areaGUIManager, this);
+        // 26批：箱子搬运（依赖 areaProtection 权限链）
+        chestCarryManager = new ChestCarryManager(this);
+        getServer().getPluginManager()
+                .registerEvents(chestCarryManager, this);
+        // 26批：/json JSON消息构造器（含解码配置.md 调色板）
+        jsonGui = new JsonMessageGui(this);
+        getServer().getPluginManager()
+                .registerEvents(jsonGui, this);
         // 区域防护CLI
         areaCLIManager = new AreaCLIManager(this, areaProtection);
 
@@ -703,16 +725,37 @@ public class Main extends JavaPlugin
 // 15.1.1 ====MC官方中文翻译加载（异步下载 zh_cn.json）====
         OfficialTranslations.init(this);
 
-// 15.2 ====背包滚动自动备份（每15分钟）====
+// 15.2 ====背包滚动自动备份（每小时 0/15/30/45 分准点）====
         inventoryAutoBackup = new InventoryAutoBackup(this);
-        getServer().getScheduler().runTaskTimer(this,
-                () -> {
-                    if (inventoryAutoBackup != null) {
-                        inventoryAutoBackup.runBackup();
-                    }
-                },
-                InventoryAutoBackup.INTERVAL_TICKS,   // 首跑延迟 15 分钟
-                InventoryAutoBackup.INTERVAL_TICKS);  // 之后每 15 分钟
+        // ★ 第26批：改准点备份。原 runTaskTimer 从【启动时刻】起算 15 分钟周期，
+        //   落点永远带启动偏移（如 10:07/10:22/10:37…）。改为墙钟自对齐、每轮
+        //   执行完按【执行时刻】重排下一个 900000ms 边界的 runTaskLater
+        //   （同 OpWhiteListManager.scheduleAligned 范式），无论 TPS 高低、服务器
+        //   何时启动，都精确落在每小时第 0/15/30/45 分（period=900000ms=15 分钟）。
+        final Runnable[] invBackupTick = new Runnable[1];
+        invBackupTick[0] = () -> {
+            try {
+                if (inventoryAutoBackup != null) {
+                    inventoryAutoBackup.runBackup();
+                }
+            } catch (Throwable t) {
+                getLogger().warning("[自动备份] 定时任务异常(下轮照常): " + t.getMessage());
+            } finally {
+                if (isEnabled()) {
+                    long now = System.currentTimeMillis();
+                    long next = (now / 900000L + 1) * 900000L;
+                    getServer().getScheduler().runTaskLater(this, invBackupTick[0],
+                            Math.max(1L, (next - now + 49L) / 50L));
+                }
+            }
+        };
+        // 首跑：同样对齐到下一个 0/15/30/45 分墙钟边界（不再等固定 15 分钟）
+        {
+            long now = System.currentTimeMillis();
+            long next = (now / 900000L + 1) * 900000L;
+            getServer().getScheduler().runTaskLater(this, invBackupTick[0],
+                    Math.max(1L, (next - now + 49L) / 50L));
+        }
 
 // 15.3 ====领地记录每日清理（保留 7 天）====
         // 每天 0 点附近跑一次：用 24h 周期，首跑延迟到下一个整点对齐不强制，
@@ -4463,6 +4506,21 @@ public class Main extends JavaPlugin
                     + "\"  来源=" + senderTag);
             suppressUnknown(e);
             return;
+        }
+
+        // ---- 1.5) 原版 title/tellraw 报错 -> /json 构造器接管并提取用户原文 ----
+        //（26批 任务170：玩家 JSON 写错时不再干看原版报错，直接拉起可视化编辑器）
+        if (isPlayer && jsonGui != null) {
+            String lowerBody = body.toLowerCase(java.util.Locale.ROOT);
+            if (lowerBody.startsWith("tellraw ")
+                    || lowerBody.startsWith("title ")) {
+                if (jsonGui.tryTakeover((Player) sender, body)) {
+                    suppressUnknown(e);
+                    getLogger().info("[无感切换] title/tellraw 报错已接管进JSON构造器: \""
+                            + body + "\"");
+                    return;
+                }
+            }
         }
 
         // ---- 2) 指令根存在，但参数不全/语法写错 -> 中文友好报错 ----
@@ -8876,6 +8934,19 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ===== /json：JSON消息构造器（tellraw/大标题/小标题 + 颜色）=====
+        // 全员可用：发送以玩家自身身份执行原版指令，权限天然受原版约束
+        if (cmdName.equals("json")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            if (jsonGui != null) {
+                jsonGui.open((Player) sender);
+            }
+            return true;
+        }
+
 
         // /垃圾清理
         if (cmdName.equals("垃圾清理")) {
@@ -9601,7 +9672,7 @@ public class Main extends JavaPlugin
                     }
                 }
                 if (!autoBks.isEmpty()) {
-                    sender.sendMessage("§6[自动备份]（游戏中每15分钟保存）");
+                    sender.sendMessage("§6[自动备份]（每小时 0/15/30/45 分准点保存）");
                     for (Map<String, Object> b : autoBks) {
                         int id = ((Number) b.get("id")).intValue();
                         long st = b.get("save_time") != null
@@ -9749,7 +9820,7 @@ public class Main extends JavaPlugin
 
             // 自动备份
             if (!autoList.isEmpty()) {
-                sender.sendMessage("§6[自动备份]（游戏中每15分钟保存）");
+                sender.sendMessage("§6[自动备份]（每小时 0/15/30/45 分准点保存）");
                 for (Map<String, Object> b : autoList) {
                     int bidi = ((Number) b.get("id")).intValue();
                     long st = b.get("save_time") != null
