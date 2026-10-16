@@ -966,6 +966,7 @@ public class ConfigManager {
             // ③ 解析模板：原文件缺失的配置行 + 配置区围栏代码块（含```边界行）
             List<String> missingRows = new ArrayList<>();
             List<String> tplCfgBlocks = new ArrayList<>();
+            Set<String> tplKeys = new LinkedHashSet<>();
             boolean tplInCfg = false, tplInBlock = false, tplHasCfgBlock = false;
             for (String raw : template) {
                 String t = raw.trim();
@@ -990,12 +991,12 @@ public class ConfigManager {
                 if (cols.length < 4) continue;
                 String key = cols[1].trim();
                 if (key.isEmpty() || key.matches("[-:\\s]+")) continue;
+                tplKeys.add(key);
                 if (!origKeys.contains(key)) missingRows.add(raw);
             }
             boolean needBlocks = tplHasCfgBlock && !origHasCfgBlock
                     && !tplCfgBlocks.isEmpty();
-            if (missingRows.isEmpty() && !needBlocks) return false; // 无新增，幂等
-            // ④ 定位原文件配置区结束标记（插入锚点）；找不到=结构异常，取消不动
+            // ④ 定位原文件配置区结束标记（结构校验锚点）；找不到=结构异常，取消不动
             int endIdx = -1;
             for (int i = orig.size() - 1; i >= 0; i--) {
                 String t = orig.get(i).trim();
@@ -1008,7 +1009,43 @@ public class ConfigManager {
                         + "结构异常，原文件未改动");
                 return false;
             }
-            // ⑤ 备份原文件 → .bak（失败=整个操作取消，原文件不动）
+            // ⑤ 定位主表格段（配置区开始→结束之间第一段连续 | 行）的末行；
+            //    并收集「孤儿行」= 主表格段之后游离在表格外的模板配置行
+            //    （第二十三批：把历史误插到 json 块后/表格区外的行自愈归位）
+            int startIdx = -1;
+            for (int i = 0; i < endIdx; i++) {
+                String t = orig.get(i).trim();
+                if (t.startsWith("##") && t.contains("配置区") && t.contains("开始")) {
+                    startIdx = i; break;
+                }
+            }
+            int tableEndIdx = -1;
+            java.util.List<Integer> orphanIdxs = new ArrayList<>();
+            boolean inFence = false;
+            for (int i = startIdx + 1; i < endIdx; i++) {
+                String t = orig.get(i).trim();
+                if (t.startsWith("```")) { inFence = !inFence; continue; }
+                if (inFence) continue;
+                if (t.startsWith("|")) {
+                    String[] cols = t.split("\\|", -1);
+                    String key = cols.length >= 4 ? cols[1].trim() : "";
+                    boolean isData = !key.isEmpty() && !key.matches("[-:\\s]+");
+                    if (tableEndIdx < 0) {
+                        if (isData || key.matches("[-:\\s]+")) tableEndIdx = i;
+                    } else if (i == tableEndIdx + 1 && (isData
+                            || key.matches("[-:\\s]+"))) {
+                        tableEndIdx = i;   // 表格段连续延伸
+                    } else if (isData && tplKeys.contains(key)) {
+                        orphanIdxs.add(i); // 表格外的模板配置行 → 归位
+                    }
+                }
+            }
+            boolean hasTable = tableEndIdx >= 0;
+            boolean needOrphan = !orphanIdxs.isEmpty();
+            if (missingRows.isEmpty() && !needBlocks && !needOrphan) {
+                return false; // 无新增、无归位，幂等
+            }
+            // ⑥ 备份原文件 → .bak（失败=整个操作取消，原文件不动）
             File bak = new File(file.getParentFile(), file.getName() + ".bak");
             try {
                 java.nio.file.Files.copy(file.toPath(), bak.toPath(),
@@ -1031,15 +1068,44 @@ public class ConfigManager {
                 logger.warning("[" + label + "] ★升级取消：备份校验不通过，原文件未改动");
                 return false;
             }
-            // ⑥ 以原文件为基底：缺失表格行 +（需要时）围栏代码块，插到结束标记前
-            List<String> out = new ArrayList<>(orig);
+            // ⑦ 以原文件为基底组装新文件：
+            //    a) 先摘掉孤儿行（归位准备）
+            //    b) 缺失表格行插到主表格段末行之后（表格内部）；
+            //       原文件没有表格（纯 json 配置）才回退插结束标记前
+            //    c) 围栏代码块需要时整块补入（保持在表格之后、结束标记之前）
+            java.util.List<Integer> orphans = new ArrayList<>(orphanIdxs);
+            List<String> out = new ArrayList<>();
+            for (int i = 0; i < orig.size(); i++) {
+                if (!orphans.contains(i)) out.add(orig.get(i));
+            }
+            // 摘除孤儿行后重定位表格末行/结束标记
+            int newTableEnd = -1, newEndIdx = -1;
+            {
+                int shift = 0;
+                for (int i = 0; i < orig.size(); i++) {
+                    if (orphans.contains(i)) { shift++; continue; }
+                    if (i == tableEndIdx) newTableEnd = i - shift;
+                    if (i == endIdx) newEndIdx = i - shift;
+                }
+                if (newEndIdx < 0) newEndIdx = out.size() - 1;
+            }
             List<String> insert = new ArrayList<>(missingRows);
             if (needBlocks) {
                 insert.add("");
                 insert.addAll(tplCfgBlocks);
             }
-            out.addAll(endIdx, insert);
-            // ⑦ 原子写入；失败则从 .bak 还原
+            if (!insert.isEmpty()) {
+                int at = hasTable ? newTableEnd + 1 : newEndIdx;
+                out.addAll(at, insert);
+            }
+            // 归位行追加到表格末行之后（缺失行之后），保持模板顺序内聚
+            if (hasTable) {
+                int at = newTableEnd + 1 + insert.size();
+                java.util.List<String> moved = new ArrayList<>();
+                for (Integer oi : orphans) moved.add(orig.get(oi));
+                out.addAll(at, moved);
+            }
+            // ⑧ 原子写入；失败则从 .bak 还原
             if (!writeLines(file, out)) {
                 try {
                     java.nio.file.Files.copy(bak.toPath(), file.toPath(),
@@ -1053,7 +1119,8 @@ public class ConfigManager {
                 return false;
             }
             logger.info("[" + label + "] 文档配置安全交换完成：补入 " + missingRows.size()
-                    + " 行配置" + (needBlocks ? " + 1 个配置代码块" : "")
+                    + " 行配置" + (needOrphan ? "，归位 " + orphans.size() + " 行到表格内" : "")
+                    + (needBlocks ? " + 1 个配置代码块" : "")
                     + "，说明文本与已有配置值原样保留；原文件备份: " + bak.getName());
             return true;
         } catch (Exception e) {
