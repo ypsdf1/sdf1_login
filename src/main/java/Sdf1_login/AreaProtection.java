@@ -12922,11 +12922,11 @@ public class AreaProtection implements Listener {
             p.sendMessage("§c§l[区域防护] §f禁止交互实体");
             return;
         }
-        // ★ 防爆模式：denyItemFrame 开启 → 交互（旋转/放入/取出）一律拦截（含授权玩家），
-        //   否则走三级豁免链（denyContainer 仍per-player）。
+        // ★ 25批订正倒反天罡：denyItemFrame/denyContainer 走 getEffectiveDeny 豁免链——
+        //   领地主/授权成员/服务器管理员豁免，普通访客按领地默认拦截；
+        //   此前裸字段短路，连领地主交互自己领地的展示框都被拦。
         //   不提前 return——复用下方统一的 取消+下tick旋转恢复+消息 流程。
-        if (!ac.denyItemFrame
-                && !getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
+        if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -12988,8 +12988,9 @@ public class AreaProtection implements Listener {
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
 
-            // ★ 防爆模式：授权玩家手动拆除也拦截（防爆硬保护，不走豁免链）
-            if (ac.denyItemFrame) {
+            // ★ 25批订正倒反天罡：玩家攻击走 getEffectiveDeny 豁免链——领地主/授权成员/服务器管理员豁免，
+            //   普通访客按领地默认拦截；非玩家 damager（苦力怕/凋零/闪电等）走上方裸字段硬保护（24批防爆）。
+            if (getEffectiveDeny(p, ac, "denyItemFrame")) {
                 e.setCancelled(true);
                 p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
                 return;
@@ -13119,9 +13120,10 @@ public class AreaProtection implements Listener {
     }
 
     // ===== ★ 悬挂物破坏拦截（展示框/画等）：HangingBreakEvent 是破坏的权威事件 =====
-    // ★ 展示框防爆：denyItemFrame 开启 → 硬保护模式（无豁免链）。
-    //   非个人破坏（苦力怕/TNT/凋零之首爆炸、闪电、非玩家投射物、环境等）一律拦截；
-    //   授权玩家（ADMIN/OWNER，getEffectiveDeny 豁免链）手动破坏同样拦截——防爆是硬保护。
+    // ★ 展示框防爆：denyItemFrame 开启 → 非个人破坏（苦力怕/TNT/凋零之首爆炸、闪电、
+    //   非玩家投射物、环境等）一律硬拦截（24批防爆，无豁免链）；
+    //   玩家破坏走 getEffectiveDeny 豁免链——领地主/授权成员/服务器管理员豁免，
+    //   普通访客按领地默认拦截（25批订正「倒反天罡」：此前连领地主手动破坏都被拦）。
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onHangingBreak(org.bukkit.event.hanging.HangingBreakEvent e) {
         org.bukkit.entity.Hanging hanging = e.getEntity();
@@ -13140,8 +13142,9 @@ public class AreaProtection implements Listener {
             return; // 玩家主动破坏；箭矢命中由 onProjectileHit 处理
         }
         Player p = (Player) remover;
-        // ★ 防爆模式：授权玩家手动破坏也拦截（防爆硬保护，不走豁免链）
-        if (ac.denyItemFrame) {
+        // ★ 25批订正倒反天罡：玩家破坏走 getEffectiveDeny 豁免链——领地主/授权成员/服务器管理员豁免，
+        //   普通访客按领地默认拦截；非玩家破坏走上方裸字段硬保护（24批防爆）。
+        if (getEffectiveDeny(p, ac, "denyItemFrame")) {
             e.setCancelled(true);
             p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
             return;
@@ -13211,8 +13214,9 @@ public class AreaProtection implements Listener {
         }
         Player shooter = (Player) e.getEntity().getShooter();
 
-        // ★ 防爆模式：授权玩家射击也拦截（防爆硬保护，不走豁免链）
-        if (ac.denyItemFrame) {
+        // ★ 25批订正倒反天罡：玩家射击走 getEffectiveDeny 豁免链——领地主/授权成员/服务器管理员豁免，
+        //   普通访客按领地默认拦截；非玩家 shooter（发射器箭/骷髅箭等）走上方裸字段硬保护（24批防爆）。
+        if (getEffectiveDeny(shooter, ac, "denyItemFrame")) {
             e.setCancelled(true);
             shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
             return;
