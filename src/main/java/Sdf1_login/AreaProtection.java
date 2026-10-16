@@ -12922,8 +12922,11 @@ public class AreaProtection implements Listener {
             p.sendMessage("§c§l[区域防护] §f禁止交互实体");
             return;
         }
-        // ★ 三级：展示框同时受denyItemFrame和denyContainer控制
-        if (!getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
+        // ★ 防爆模式：denyItemFrame 开启 → 交互（旋转/放入/取出）一律拦截（含授权玩家），
+        //   否则走三级豁免链（denyContainer 仍per-player）。
+        //   不提前 return——复用下方统一的 取消+下tick旋转恢复+消息 流程。
+        if (!ac.denyItemFrame
+                && !getEffectiveDeny(p, ac, "denyItemFrame") && !getEffectiveDeny(p, ac, "denyContainer")) return;
 
         // 非白名单 → 拦截
         // 记录当前旋转角度
@@ -12972,11 +12975,25 @@ public class AreaProtection implements Listener {
         if (typeName.equals("ITEM_FRAME")
                 || typeName.equals("GLOW_ITEM_FRAME")) {
             // 展示框被攻击
-            if (!(e.getDamager() instanceof Player)) return;
+            // ★ 防爆模式：非玩家 damager（苦力怕/凋零/闪电/投射物实体等）→ denyItemFrame 区域一律取消
+            if (!(e.getDamager() instanceof Player)) {
+                AreaConfig guardAc = findFrameArea(entity);
+                if (guardAc != null && guardAc.denyItemFrame) {
+                    e.setCancelled(true);
+                }
+                return;
+            }
             Player p = (Player) e.getDamager();
 
             AreaConfig ac = findFrameArea(entity);
             if (ac == null) return;
+
+            // ★ 防爆模式：授权玩家手动拆除也拦截（防爆硬保护，不走豁免链）
+            if (ac.denyItemFrame) {
+                e.setCancelled(true);
+                p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+                return;
+            }
 
             // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框/容器
             if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
@@ -13102,6 +13119,9 @@ public class AreaProtection implements Listener {
     }
 
     // ===== ★ 悬挂物破坏拦截（展示框/画等）：HangingBreakEvent 是破坏的权威事件 =====
+    // ★ 展示框防爆：denyItemFrame 开启 → 硬保护模式（无豁免链）。
+    //   非个人破坏（苦力怕/TNT/凋零之首爆炸、闪电、非玩家投射物、环境等）一律拦截；
+    //   授权玩家（ADMIN/OWNER，getEffectiveDeny 豁免链）手动破坏同样拦截——防爆是硬保护。
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onHangingBreak(org.bukkit.event.hanging.HangingBreakEvent e) {
         org.bukkit.entity.Hanging hanging = e.getEntity();
@@ -13112,8 +13132,20 @@ public class AreaProtection implements Listener {
         if (e instanceof org.bukkit.event.hanging.HangingBreakByEntityEvent) {
             remover = ((org.bukkit.event.hanging.HangingBreakByEntityEvent) e).getRemover();
         }
-        if (!(remover instanceof Player)) return; // 玩家主动破坏；箭矢命中由 onProjectileHit 处理
+        // ★ 防爆模式：非玩家破坏（爆炸/闪电/环境/非玩家投射物）→ denyItemFrame 区域一律取消
+        if (!(remover instanceof Player)) {
+            if (ac.denyItemFrame) {
+                e.setCancelled(true);
+            }
+            return; // 玩家主动破坏；箭矢命中由 onProjectileHit 处理
+        }
         Player p = (Player) remover;
+        // ★ 防爆模式：授权玩家手动破坏也拦截（防爆硬保护，不走豁免链）
+        if (ac.denyItemFrame) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+            return;
+        }
         // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框
         if (getEffectiveDeny(p, ac, "denyBlockBreak")) {
             e.setCancelled(true);
@@ -13154,12 +13186,10 @@ public class AreaProtection implements Listener {
         return null;
     }
 
-    // ===== 投射物击中展示框（弓箭/弩）=====
+    // ===== 投射物击中展示框（弓箭/弩/发射器箭/骷髅箭等）=====
     @EventHandler
     public void onProjectileHit(
             org.bukkit.event.entity.ProjectileHitEvent e) {
-        if (!(e.getEntity().getShooter() instanceof Player)) return;
-        Player shooter = (Player) e.getEntity().getShooter();
         Entity hit = e.getHitEntity();
         if (hit == null) return;
         String typeName = hit.getType().name();
@@ -13171,6 +13201,22 @@ public class AreaProtection implements Listener {
         // ★ 使用统一的权限检查方法（支持per-player权限）
         AreaConfig ac = findFrameArea(hit);
         if (ac == null) return;
+
+        // ★ 防爆模式：非玩家 shooter（发射器箭/骷髅箭等）→ denyItemFrame 区域一律取消
+        if (!(e.getEntity().getShooter() instanceof Player)) {
+            if (ac.denyItemFrame) {
+                e.setCancelled(true);
+            }
+            return;
+        }
+        Player shooter = (Player) e.getEntity().getShooter();
+
+        // ★ 防爆模式：授权玩家射击也拦截（防爆硬保护，不走豁免链）
+        if (ac.denyItemFrame) {
+            e.setCancelled(true);
+            shooter.sendMessage("§c§l[区域防护] §f禁止破坏展示框");
+            return;
+        }
         // 层级：L1 破坏总开关 → L2 实体交互 → L3 展示框/容器
         if (getEffectiveDeny(shooter, ac, "denyBlockBreak")) {
             e.setCancelled(true);
