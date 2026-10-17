@@ -102,6 +102,14 @@ public class ChestCarryManager implements Listener {
     /** 玩家 UUID → 挂起中的搬运（每人最多 1 条） */
     private final Map<UUID, PendingCarry> pending = new ConcurrentHashMap<>();
 
+    // ★ 33批五次：拆连箱时 clearChestBlock(twin) 的 setType(AIR) 会触发 Bukkit 给
+    //   连接箱另一半再发一次 BlockBreakEvent（"右边自动掉"）→ 合并分支重入翻倍。
+    //   用「玩家UUID+被拆方块位置」最近合并时间做幂等守卫，同一玩家 5 秒内重复命中
+    //   双连箱合并分支直接跳过（第二次事件里 twin 已被清成空气、findTwin 返回 null
+    //   天然不会再进，此处守卫双保险）。
+    private final Map<UUID, long[]> lastMergeGuard = new ConcurrentHashMap<>();
+    private static final long MERGE_GUARD_MS = 5000L;
+
     /** 已接管但仍需拦掉落的位置（BlockDropItemEvent 兜底，tick 后自动放行） */
     private final Set<Location> suppressDrops = ConcurrentHashMap.newKeySet();
 
@@ -305,27 +313,34 @@ public class ChestCarryManager implements Listener {
                             + twin.getType().name() + ",invSize=" + twinInvSize + ")") : "无")
                 + " mergeTwo=" + cfgMergeTwo());
         if (twin != null && cfgMergeTwo()) {
+            // ★ 33批五次：幂等守卫 —— clearChestBlock 的 setType(AIR) 会让 Bukkit 对
+            //   连接箱另一半再发一次 BlockBreakEvent（"右边自动掉"）→ 合并分支重入
+            //   翻倍。这里 5 秒内同一玩家命中双连箱合并分支直接跳过（第二次事件里
+            //   twin 已被清成空气、findTwin 返回 null 天然不会再进，此处双保险）。
+            long nowMs = System.currentTimeMillis();
+            long[] guard = lastMergeGuard.get(id);
+            if (guard != null && (nowMs - guard[0]) < MERGE_GUARD_MS
+                    && guard[1] == b.getX() && guard[2] == b.getY() && guard[3] == b.getZ()) {
+                plugin.getLogger().fine("[箱子搬运][诊断] 幂等跳过（5s 内同位置二次事件）");
+                return;
+            }
+            lastMergeGuard.put(id, new long[]{nowMs, b.getX(), b.getY(), b.getZ()});
+
             plugin.getLogger().info("[箱子搬运][诊断] >>> 进入邻接箱合并分支 deliver合并箱 "
                     + halfName + "+" + halfNameOf(twin));
             // 双半全量内容（被破半 selfSnap 27 + 孤半 getSnapshotInventory 27；
             //   连箱=54 全量、独立小箱=各 27 独立；一条路径、不翻倍、不误删）
             ItemStack[] merged = newMergedContents(b, twin, snap, isBigChest);
-            // ★ 33批根因修正：孤半 twin 在 clearChestBlock 时内容会原版掉落
-            //   （BlockBreakEvent 只覆盖被破那半 b，twin 是另一块）→ 这里补登记
-            //   suppressDrop 拦住，内容已并入打包箱、不应散落。
+            // ★ 33批根因：孤半 twin 若被玩家/原版再触发 BlockBreakEvent，
+            //   内容会经 BlockDropItemEvent 散落 → 这里补登记 suppressDrop 拦住。
             markSuppressDrop(twin.getLocation());
-            // 主动物理移除孤半 + 被破那半（此刻已空，setType 幂等无害）；
-            //   再 1 tick 幂等重清双半，兜底孤半连接态回弹
-            clearChestBlock(twin);
-            clearChestBlock(b);
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                clearChestBlock(twin);
-                clearChestBlock(b);
-            });
+            // 被破半 b 已在 onChestBreak 前 markSuppressDrop（上方 markSuppressDrop(b)），
+            //   不再主动 setType(AIR) 物理移除孤半（那是二次事件+散落的源头）；
+            //   孤半留给玩家自然处理（再挥斧拆掉 → 走旧 2 秒窗口分支，或留着）。
             // 直接交付双半合并箱（不走 2 秒窗口 —— 用户诉求"不管多快都合并"）
             PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
                     p.getLocation(), mat, halfName + "+" + halfNameOf(twin),
-                    merged, System.currentTimeMillis());
+                    merged, nowMs);
             deliver(p, cur);
             return;
         }
@@ -425,6 +440,45 @@ public class ChestCarryManager implements Listener {
             }
             st = placed.getState();   // update 后旧快照失效，重新取
             if (!(st instanceof org.bukkit.block.Container)) return;
+            // ★ 33批五次：内容 >27 件的打包箱用的是 TRAPPED_CHEST（54 格容器），
+            //   但陷阱箱放置后不会自动接双箱 → 这里主动连上邻接 27 格陷阱箱凑成
+            //   54 格，否则 28~54 件会被 27 格截断（用户实测"54 件放出来是小箱"）。
+            try {
+                int contentCount = 0;
+                ItemStack[] items0 = InventorySerializer.fromBase64(data);
+                for (ItemStack it0 : items0) {
+                    if (it0 != null && !it0.getType().isAir()) contentCount += it0.getAmount();
+                }
+                if (contentCount > 27) {
+                    org.bukkit.block.data.type.Chest chestData =
+                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                    // 尝试水平四向接双箱（与已有邻接陷阱箱/木箱共用 54 格库存）
+                    World w = placed.getWorld();
+                    int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
+                    Block[][] cands = {
+                            {w.getBlockAt(px + 1, py, pz), w.getBlockAt(px - 1, py, pz)},
+                            {w.getBlockAt(px, py, pz + 1), w.getBlockAt(px, py, pz - 1)},
+                    };
+                    for (Block[] row : cands) {
+                        for (Block c : row) {
+                            if (c != null && isChestMaterial(c.getType())
+                                    && (c.getType() == org.bukkit.Material.TRAPPED_CHEST
+                                        || c.getType() == org.bukkit.Material.CHEST)) {
+                                // 把刚放的陷阱箱 block data 接到已有箱上
+                                chestData.setType(Chest.Type.LEFT);
+                                placed.setBlockData(chestData);
+                                plugin.getLogger().fine(
+                                        "[箱子搬运] 54格容器自动接双箱于 "
+                                                + c.getX() + "," + c.getY() + "," + c.getZ());
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                // 接双箱失败不影响回填（回填按放置后容器实际大小自然截断）
+                plugin.getLogger().fine("[箱子搬运] 接双箱失败(不影响回填): " + ex.getMessage());
+            }
             try {
                 ItemStack[] items = InventorySerializer.fromBase64(data);
                 Inventory inv = ((org.bukkit.block.Container) st).getInventory();
@@ -482,17 +536,23 @@ public class ChestCarryManager implements Listener {
         }
     }
 
-    /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容（沿用来源箱子材质） */
+    /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容。
+     *  ★ 33批五次：内容数 >27 → 用 TRAPPED_CHEST（54 格陷阱箱，放置后自动接成
+     *    双箱塞得下全量）；≤27 件沿用来源箱子材质（木箱/铜箱保持原版观感）。 */
     private ItemStack buildPackedChest(Material sourceMat, String halfName,
                                        ItemStack[] contents) throws Exception {
-        ItemStack it = new ItemStack(sourceMat != null ? sourceMat : Material.CHEST);
+        int count = countItems(contents);
+        boolean big = count > 27;
+        Material containerMat = big ? Material.TRAPPED_CHEST
+                : (sourceMat != null ? sourceMat : Material.CHEST);
+        ItemStack it = new ItemStack(containerMat);
         ItemMeta meta = it.getItemMeta();
-        String matLabel = sourceMat == null ? "木箱"
-                : sourceMat.name().toLowerCase(java.util.Locale.ROOT);
-        meta.setDisplayName("§b§l打包箱 §7(" + halfName + " §8· " + matLabel + ")");
+        String matLabel = containerMat.name().toLowerCase(java.util.Locale.ROOT);
+        meta.setDisplayName("§b§l打包箱 §7(" + halfName + " §8· " + matLabel
+                + (big ? " §f54格" : "") + ")");
         List<String> lore = new ArrayList<>();
-        lore.add("§7内含 §f" + countItems(contents) + " §7件物品");
-        lore.add("§a放置后 §7自动回填内容");
+        lore.add("§7内含 §f" + count + " §7件物品");
+        lore.add(big ? "§e放置后自动接双箱(54格)回填" : "§a放置后 §7自动回填内容");
         meta.setLore(lore);
         // 不同内容绝不堆叠，否则 PDC 串味
         meta.setMaxStackSize(1);
