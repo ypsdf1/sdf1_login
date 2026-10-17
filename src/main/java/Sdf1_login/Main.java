@@ -4436,6 +4436,8 @@ public class Main extends JavaPlugin
                     "printer", "take", "give",
                     // 聊天 / 清理 / 菜单
                     "chat", "聊天", "menu", "垃圾清理", "recycle",
+                    // ★ 31批：/json（OP 以上才能用 JSON 构造器，非 OP 在近似建议里拿掉）
+                    "json",
                     // 系统运维
                     "update", "import",
                     // 商店 / 领地运营
@@ -4523,16 +4525,29 @@ public class Main extends JavaPlugin
         // ★ 30批：/json 构造器权限调到 OP 以上（与原版 /title、/tellraw 对齐）——
         //   非 OP 玩家打 title/tellraw → 交还原版报错（原生已自带「无权限」文案），
         //   不再被本构造器接管。
+        // ★ 31批：title 接管收窄——OP 玩家打 title/tellraw 时：
+        //   ① 载荷是 JSON（以 { 开头）→ 接管进构造器（预填原文 + 直接打开）；
+        //   ② 载荷非 JSON（缺括号/转义符/乱填中文等语法错）→ **不接管、不弹构造器**，
+        //      但仍压制原生 "<--[HERE]" 语法报错（交给「近似指令建议」风格处理，
+        //      玩家不会被强制拉起可视化编辑器，体验更自然）。
         if (isPlayer && jsonGui != null && ((Player) sender).isOp()) {
             String lowerBody = body.toLowerCase(java.util.Locale.ROOT);
-            if (lowerBody.startsWith("tellraw ")
-                    || lowerBody.startsWith("title ")) {
-                if (jsonGui.tryTakeover((Player) sender, body)) {
-                    // ★ 29批（回退28批）：压制原生 "<--[HERE]" 报错 —— tryTakeover 接管后
-                    //   自己发「标准最小化示例 + /json CLI超链接」并直接打开构造器，
-                    //   原生那行报错按用户要求压掉
+            boolean isTitleOrTellraw =
+                    lowerBody.startsWith("tellraw ") || lowerBody.startsWith("title ");
+            if (isTitleOrTellraw) {
+                boolean taken = jsonGui.tryTakeover((Player) sender, body);
+                if (taken) {
+                    // 接管成功 → 压掉原生报错 + 开构造器
                     suppressUnknown(e);
-                    getLogger().info("[无感切换] title/tellraw 报错已接管进JSON构造器: \""
+                    getLogger().info("[无感切换] title/tellraw JSON报错已接管进JSON构造器: \""
+                            + body + "\"");
+                    return;
+                } else {
+                    // ★ 31批：未接管（非 JSON 载荷的语法错）→ 仍压掉原生报错，
+                    //   走「近似指令建议」风格提示，不弹构造器、不预填
+                    suppressUnknown(e);
+                    sendSimilarHint((Player) sender, body);
+                    getLogger().info("[无感切换] title/tellraw 非JSON语法错已压制+出近似建议: \""
                             + body + "\"");
                     return;
                 }
@@ -8954,13 +8969,20 @@ public class Main extends JavaPlugin
         // ★ 30批：权限调到 OP 以上（与原版 /title、/tellraw 对齐）。
         //   非 OP 玩家 → 提示「权限不足」，不开面板、不接管 title/tellraw 报错。
         if (cmdName.equals("json")) {
+            // ★ 31批：/json 保留在 plugin.yml（对非 OP 玩家隐藏存在性，
+            //   最小化信息披露——玩家不知道是"没这个指令"还是"参数传错"）。
+            //   非 OP 玩家敲 /json → 直接走相似指令建议（"你是不是想输入"），
+            //   与 26批 conmsg/opwl 同款做法：onCommand 不静默吞掉，
+            //   而是把球交给 onUnknownCommand → sendSimilarHint 流。
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
             }
             Player p = (Player) sender;
             if (!p.isOp()) {
-                p.sendMessage("§c权限不足：/json 需要 OP 或更高权限");
+                // 非 OP：不泄露 /json 存在性，直接出相似指令建议
+                // （OP 候选里 /json 仍会命中，但非 OP 的 filterByPermission 拿掉 OP 专用候选）
+                sendSimilarHint(p, "json");
                 return true;
             }
             if (jsonGui != null) {

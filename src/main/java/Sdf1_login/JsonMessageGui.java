@@ -275,6 +275,12 @@ public class JsonMessageGui implements Listener {
                 return false;
             }
             payload = sp2 < 0 ? "" : afterTarget.substring(sp2 + 1).trim();
+            // ★ 31批：title 接管收窄——仅当 payload 是「看起来像 JSON」才接管。
+            //   非 JSON（缺括号/转义符/空载荷/乱填中文）交还原版报错，
+            //   避免玩家手打 JSON 少个括号就被强制拉起构造器（体验很糟）。
+            if (!payload.isEmpty() && !payload.startsWith("{")) {
+                return false;
+            }
         } else {
             return false;
         }

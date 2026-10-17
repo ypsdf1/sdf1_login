@@ -105,6 +105,12 @@ public class ChestCarryManager implements Listener {
     /** 已接管但仍需拦掉落的位置（BlockDropItemEvent 兜底，tick 后自动放行） */
     private final Set<Location> suppressDrops = ConcurrentHashMap.newKeySet();
 
+    // ★ 31批修正：玩家 UUID → 首破 40 tick 超时任务句柄（第二半破坏时主动 cancel，
+    //   防止 40 tick 超时任务先于第二半破坏跑完，把第一半直接 deliver 掉，导致
+    //   第二半破坏时 pending.remove 拿到 null 走首破分支 → 「左半打包右半原版」）
+    private final Map<UUID, org.bukkit.scheduler.BukkitTask> timeoutTasks =
+            new ConcurrentHashMap<>();
+
     // ==================== 30批：chest/cfg.json 运维开关（增量热重载） ====================
     /** 运维开关：true=拆箱接管为打包箱；false=全交还原版散落 */
     private volatile boolean cfgEnabled = true;
@@ -263,6 +269,10 @@ public class ChestCarryManager implements Listener {
         PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
                 p.getLocation(), mat, halfName, snap, now);
         if (prev != null && (now - prev.ts) <= WINDOW_MS) {
+            // ★ 31批修正：成组时 cancel 首破挂起的 40 tick 超时任务
+            //   （超时任务跑完会把第一半直接 deliver 掉，导致第二半破坏拿不到 prev）
+            org.bukkit.scheduler.BukkitTask oldTask = timeoutTasks.remove(id);
+            if (oldTask != null) oldTask.cancel();
             // ★ 30批：成组合二为一 —— 只看时间窗口（2秒内），不看塞满。
             //   两个半边的非空物品顺序拼接成「一个」打包箱（变长数组，
             //   放置时按容器实际大小回填，大箱子≈54 格场景全部收进一个箱）。
@@ -276,27 +286,31 @@ public class ChestCarryManager implements Listener {
         } else {
             // 首破：挂起观察 2 秒，等第二破成组或超时单独交付
             pending.put(id, cur);
-            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                PendingCarry pc = pending.get(id);
-                if (pc != cur) return; // 已成组交付或被新记录替换
-                pending.remove(id);
-                Player online = Bukkit.getPlayer(id);
-                if (online != null && online.isOnline()) {
-                    deliver(online, pc);
-                } else {
-                    // 玩家离线兜底：打包箱掉在原地（变长内容 → 自适应放置回填）
-                    try {
-                        World w = Bukkit.getWorld(pc.worldName);
-                        if (w != null) {
-                            w.dropItemNaturally(pc.dropLoc,
-                                    buildPackedChest(pc.sourceMat, pc.halfName, pc.contents));
+            // ★ 31批：保存超时任务句柄，第二半破坏时主动 cancel
+            org.bukkit.scheduler.BukkitTask t =
+                    plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                        PendingCarry pc = pending.get(id);
+                        if (pc != cur) return; // 已成组交付或被新记录替换
+                        pending.remove(id);
+                        timeoutTasks.remove(id);
+                        Player online = Bukkit.getPlayer(id);
+                        if (online != null && online.isOnline()) {
+                            deliver(online, pc);
+                        } else {
+                            // 玩家离线兜底：打包箱掉在原地（变长内容 → 自适应放置回填）
+                            try {
+                                World w = Bukkit.getWorld(pc.worldName);
+                                if (w != null) {
+                                    w.dropItemNaturally(pc.dropLoc,
+                                            buildPackedChest(pc.sourceMat, pc.halfName, pc.contents));
+                                }
+                            } catch (Exception ex) {
+                                plugin.getLogger().warning(
+                                        "[箱子搬运] 离线兜底掉落失败: " + ex.getMessage());
+                            }
                         }
-                    } catch (Exception ex) {
-                        plugin.getLogger().warning(
-                                "[箱子搬运] 离线兜底掉落失败: " + ex.getMessage());
-                    }
-                }
-            }, WINDOW_TICKS);
+                    }, WINDOW_TICKS);
+            if (t != null) timeoutTasks.put(id, t);
         }
     }
 
