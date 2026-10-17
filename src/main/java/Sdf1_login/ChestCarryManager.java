@@ -127,6 +127,7 @@ public class ChestCarryManager implements Listener {
     /**
      * 每次拆箱前调：mtime/size 没变直接 return；变了才重新解析。
      * 解析失败 → 保持现状（运维改坏一个字段不该让箱子搬运整个失效）。
+     * ★ 键名全中文（与 opwl.json 项目惯例对齐，Gson 自动 UTF-8 解码中文键）
      */
     private void reloadCfg() {
         if (!cfgFile.exists()) {
@@ -146,15 +147,18 @@ public class ChestCarryManager implements Listener {
             StringBuilder sb = new StringBuilder();
             String line;
             while ((line = br.readLine()) != null) sb.append(line).append('\n');
-            // 极简 JSON 解析（仅支持本文件的 key 层级，无嵌套对象）
             String text = sb.toString().trim();
             if (text.isEmpty()) { ok = true; return; } // 空文件=保持默认
-            // 找 "enabled" / "merge" 键
-            cfgEnabled = readBool(text, "enabled", true);
-            cfgMergeTwo = readBool(text, "merge", true);
+            // Gson 解析中文键（与 OP白名单/opwl.json 同款解析方式，Gson 自动 UTF-8 解码中文键）
+            com.google.gson.JsonObject obj =
+                    new com.google.gson.Gson().fromJson(text,
+                            com.google.gson.JsonObject.class);
+            if (obj == null) { ok = true; return; }
+            cfgEnabled = readBool(obj, "开关", true);
+            cfgMergeTwo = readBool(obj, "是否合并两个箱子", true);
             ok = true;
-            main.getLogger().info("[箱子搬运] chest/cfg.json 已重载: enabled="
-                    + cfgEnabled + ", merge=" + cfgMergeTwo);
+            main.getLogger().info("[箱子搬运] chest/cfg.json 已重载: 开关="
+                    + cfgEnabled + ", 是否合并两个箱子=" + cfgMergeTwo);
         } catch (Exception ex) {
             main.getLogger().warning("[箱子搬运] chest/cfg.json 解析失败，保持现状: "
                     + ex.getMessage());
@@ -164,20 +168,18 @@ public class ChestCarryManager implements Listener {
         }
     }
 
-    /** 从 JSON 文本读 bool（支持 "enabled":true / "enabled":1 等） */
-    private static boolean readBool(String json, String key, boolean def) {
-        int i = json.indexOf("\"" + key + "\"");
-        if (i < 0) return def;
-        i += key.length() + 2;
-        // 跳过空白 + 冒号
-        while (i < json.length() && (json.charAt(i) == ' ' || json.charAt(i) == ':')) i++;
-        // 取 token
-        int start = i;
-        while (i < json.length() && json.charAt(i) != ',' && json.charAt(i) != '}'
-                && json.charAt(i) != ']' && json.charAt(i) != '\n') i++;
-        String tok = json.substring(start, i).trim().toLowerCase(java.util.Locale.ROOT);
-        if (tok.equals("true") || tok.equals("1")) return true;
-        if (tok.equals("false") || tok.equals("0")) return false;
+    /** 从 JSON 对象读 bool（键=中文；支持 true/false 或 0/1；缺省/解析失败=def） */
+    private static boolean readBool(com.google.gson.JsonObject obj,
+                                    String key, boolean def) {
+        com.google.gson.JsonElement el = obj.get(key);
+        if (el == null || el.isJsonNull()) return def;
+        try {
+            if (el.isJsonPrimitive()) {
+                String tok = el.getAsString().trim().toLowerCase(java.util.Locale.ROOT);
+                if (tok.equals("true") || tok.equals("1")) return true;
+                if (tok.equals("false") || tok.equals("0")) return false;
+            }
+        } catch (Exception ignored) { }
         return def;
     }
 
