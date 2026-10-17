@@ -224,25 +224,11 @@ public class ChestCarryManager implements Listener {
 
         Block placed = e.getBlockPlaced();
 
-        // ★ 29批第4项：打包箱仅领地主/授权成员/管理员可放置 ——
-        //   防止访客/路人拿到打包箱后就地放下自动回填、窃取他人财物。
-        //   无权限 → 取消放置（打包箱原封不动留在手上，绝不吞物）；
-        //   放置点不在任何领地内 → 无人管辖，交还原版正常回填。
-        AreaProtection ap = main.areaProtection;
-        if (ap != null) {
-            AreaProtection.AreaConfig ac = ap.getArea(
-                    placed.getWorld().getName(), placed.getX(), placed.getY(), placed.getZ());
-            if (ac != null) {
-                AreaProtection.PermissionLevel lv = ap.getPermissionLevel(e.getPlayer(), ac);
-                if (lv != AreaProtection.PermissionLevel.ADMIN
-                        && lv != AreaProtection.PermissionLevel.OWNER
-                        && lv != AreaProtection.PermissionLevel.MEMBER) {
-                    e.setCancelled(true);
-                    e.getPlayer().sendMessage("§c[箱子搬运] §7只有领地主/授权成员能在此放置打包箱");
-                    return;
-                }
-            }
-        }
+        // ★ 29批验收修正（用户定稿）：放置侧不拦任何人 —— 非授权用户也交还原版正常
+        //   放下并回填。隔离靠下游链路：非授权用户「拆箱」在 onChestBreak 判定链
+        //   （非 OWNER/ADMIN/MEMBER 交原版）→ 箱子掉原版掉落、内容散落一地 →
+        //   配合领地禁止拾取（deny_pickup）物品留在原地拿不走，领地主可回收；
+        //   开箱由 deny_container 拦。曾实现「无权限取消放置」被用户否决。
 
         // 1 tick 后方块状态就绪再回填（含与邻半合并成大箱子的情况）
         plugin.getServer().getScheduler().runTask(plugin, () -> {
