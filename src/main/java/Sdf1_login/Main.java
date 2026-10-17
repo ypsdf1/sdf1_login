@@ -402,6 +402,16 @@ public class Main extends JavaPlugin
         } catch (Throwable t) {
             getLogger().warning("[配置] 解码配置.md 释放失败: " + t.getMessage());
         }
+        // ★ 30批：自动释放 chest/cfg.json（箱子搬运运维开关，仅不存在时；存在=运维改过不覆盖）
+        try {
+            File chestCfg = new File(getDataFolder(), "chest/cfg.json");
+            if (!chestCfg.exists()) {
+                saveResource("chest/cfg.json", false);
+                getLogger().info("[配置] 已自动释放 chest/cfg.json");
+            }
+        } catch (Throwable t) {
+            getLogger().warning("[配置] chest/cfg.json 释放失败: " + t.getMessage());
+        }
         // ★ 任务94：根目录5类文件归位（必须在任何 Manager 打开文件/DB 之前）
         migrateRootDataFiles();
         // 启动时清理.sdf1临时文件
@@ -4510,7 +4520,10 @@ public class Main extends JavaPlugin
 
         // ---- 1.5) 原版 title/tellraw 报错 -> /json 构造器接管并提取用户原文 ----
         //（26批 任务170：玩家 JSON 写错时不再干看原版报错，直接拉起可视化编辑器）
-        if (isPlayer && jsonGui != null) {
+        // ★ 30批：/json 构造器权限调到 OP 以上（与原版 /title、/tellraw 对齐）——
+        //   非 OP 玩家打 title/tellraw → 交还原版报错（原生已自带「无权限」文案），
+        //   不再被本构造器接管。
+        if (isPlayer && jsonGui != null && ((Player) sender).isOp()) {
             String lowerBody = body.toLowerCase(java.util.Locale.ROOT);
             if (lowerBody.startsWith("tellraw ")
                     || lowerBody.startsWith("title ")) {
@@ -8937,15 +8950,21 @@ public class Main extends JavaPlugin
             return true;
         }
 
-        // ===== /json：JSON消息构造器（tellraw/大标题/小标题 + 颜色）=====
-        // 全员可用：发送以玩家自身身份执行原版指令，权限天然受原版约束
+        // ===== /json：JSON消息构造器（tellraw/大标题/小标题/actionbar + 颜色）=====
+        // ★ 30批：权限调到 OP 以上（与原版 /title、/tellraw 对齐）。
+        //   非 OP 玩家 → 提示「权限不足」，不开面板、不接管 title/tellraw 报错。
         if (cmdName.equals("json")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("§c仅玩家可用");
                 return true;
             }
+            Player p = (Player) sender;
+            if (!p.isOp()) {
+                p.sendMessage("§c权限不足：/json 需要 OP 或更高权限");
+                return true;
+            }
             if (jsonGui != null) {
-                jsonGui.open((Player) sender);
+                jsonGui.open(p);
             }
             return true;
         }

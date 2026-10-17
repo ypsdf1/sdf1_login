@@ -105,11 +105,84 @@ public class ChestCarryManager implements Listener {
     /** 已接管但仍需拦掉落的位置（BlockDropItemEvent 兜底，tick 后自动放行） */
     private final Set<Location> suppressDrops = ConcurrentHashMap.newKeySet();
 
+    // ==================== 30批：chest/cfg.json 运维开关（增量热重载） ====================
+    /** 运维开关：true=拆箱接管为打包箱；false=全交还原版散落 */
+    private volatile boolean cfgEnabled = true;
+    /** 运维开关：true=2秒窗口连续拆箱合二为一；false=两个独立打包箱 */
+    private volatile boolean cfgMergeTwo = true;
+    /** cfg.json 文件 mtime / size 缓存（增量判定：没变就不重新解析） */
+    private volatile long cfgMtime = -1L;
+    private volatile long cfgSize = -1L;
+    /** cfg.json 路径（插件数据目录下） */
+    private final java.io.File cfgFile;
+
     public ChestCarryManager(Main main) {
         this.main = main;
         this.plugin = main;
         this.carryKey = new NamespacedKeyRef(main, "chest_carry_data");
+        this.cfgFile = new java.io.File(main.getDataFolder(), "chest/cfg.json");
+        reloadCfg();   // 启动即读一次
     }
+
+    /**
+     * 每次拆箱前调：mtime/size 没变直接 return；变了才重新解析。
+     * 解析失败 → 保持现状（运维改坏一个字段不该让箱子搬运整个失效）。
+     */
+    private void reloadCfg() {
+        if (!cfgFile.exists()) {
+            // 资源未释放（旧版升级场景）→ 用内置默认
+            if (cfgMtime < 0) { cfgMtime = 0; cfgSize = 0; }
+            cfgEnabled = true; cfgMergeTwo = true;
+            return;
+        }
+        long mt = cfgFile.lastModified();
+        long sz = cfgFile.length();
+        if (cfgMtime > 0 && mt == cfgMtime && sz == cfgSize) return; // 没变
+        boolean ok = false;
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(
+                        new java.io.FileInputStream(cfgFile),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) sb.append(line).append('\n');
+            // 极简 JSON 解析（仅支持本文件的 key 层级，无嵌套对象）
+            String text = sb.toString().trim();
+            if (text.isEmpty()) { ok = true; return; } // 空文件=保持默认
+            // 找 "enabled" / "merge" 键
+            cfgEnabled = readBool(text, "enabled", true);
+            cfgMergeTwo = readBool(text, "merge", true);
+            ok = true;
+            main.getLogger().info("[箱子搬运] chest/cfg.json 已重载: enabled="
+                    + cfgEnabled + ", merge=" + cfgMergeTwo);
+        } catch (Exception ex) {
+            main.getLogger().warning("[箱子搬运] chest/cfg.json 解析失败，保持现状: "
+                    + ex.getMessage());
+        }
+        if (ok) {
+            cfgMtime = mt; cfgSize = sz;
+        }
+    }
+
+    /** 从 JSON 文本读 bool（支持 "enabled":true / "enabled":1 等） */
+    private static boolean readBool(String json, String key, boolean def) {
+        int i = json.indexOf("\"" + key + "\"");
+        if (i < 0) return def;
+        i += key.length() + 2;
+        // 跳过空白 + 冒号
+        while (i < json.length() && (json.charAt(i) == ' ' || json.charAt(i) == ':')) i++;
+        // 取 token
+        int start = i;
+        while (i < json.length() && json.charAt(i) != ',' && json.charAt(i) != '}'
+                && json.charAt(i) != ']' && json.charAt(i) != '\n') i++;
+        String tok = json.substring(start, i).trim().toLowerCase(java.util.Locale.ROOT);
+        if (tok.equals("true") || tok.equals("1")) return true;
+        if (tok.equals("false") || tok.equals("0")) return false;
+        return def;
+    }
+
+    /** 配置「是否合并两个箱子」开关（false=两个独立打包箱，true=合二为一） */
+    private boolean cfgMergeTwo() { return cfgMergeTwo; }
 
     // ==================== 拆箱：拦截 → 挂起/成组 ====================
 
@@ -117,6 +190,9 @@ public class ChestCarryManager implements Listener {
     public void onChestBreak(BlockBreakEvent e) {
         Material mat = e.getBlock().getType();
         if (!isChestMaterial(mat)) return;
+        // ★ 30批：每次拆箱增量热重载 cfg.json（mtime+size 没变就跳过解析）
+        reloadCfg();
+        if (!cfgEnabled) return; // 运维关闭 → 全交还原版散落
         Player p = e.getPlayer();
 
         // 手持：主手必须是精准采集斧头，否则交原版
@@ -132,10 +208,17 @@ public class ChestCarryManager implements Listener {
         AreaProtection.AreaConfig ac =
                 ap.getArea(b.getWorld().getName(), b.getX(), b.getY(), b.getZ());
         if (ac == null) return;
-        AreaProtection.PermissionLevel lv = ap.getPermissionLevel(p, ac);
-        if (lv != AreaProtection.PermissionLevel.ADMIN
-                && lv != AreaProtection.PermissionLevel.OWNER
-                && lv != AreaProtection.PermissionLevel.MEMBER) return;
+        // ★ 30批：权限判定改为「容器管理权限」——
+        //   原版链路里 容器管理 = denyContainer 的四级豁免链（getEffectiveDeny）：
+        //   ① 领地主/插件管理员(ADMIN/OWNER) 恒豁免 → 不拦 → 拿打包箱；
+        //   ② per-player 独立权限（截图里"容器管理 允许"那一栏）→ 显式配置命中 →
+        //      被授权容器管理的普通玩家/成员/访客 也豁免 → 拿打包箱；
+        //   ③ 已授权成员(MEMBER) 豁免；
+        //   ④ 白名单访客(VISITOR) 豁免（denyContainer 非 denyMove，访客回退 false）；
+        //   ⑤ 普通访客/路人才回退领地默认 denyContainer。
+        //   旧判定只看 getPermissionLevel 属于 ADMIN/OWNER/MEMBER，把"被授权容器管理
+        //   的访客"（level=VISITOR）一票否决交还原版散落 —— 本次改正。
+        if (ap.getEffectiveDeny(p, ac, "denyContainer")) return;
 
         // ★ 27批：走 Container 接口 + getSnapshotInventory() ——
         //   26.2 的 Chest 只覆盖木箱/陷阱箱，铜箱族同样实现 Container；
@@ -175,15 +258,21 @@ public class ChestCarryManager implements Listener {
         UUID id = p.getUniqueId();
         PendingCarry prev = pending.remove(id);
         long now = System.currentTimeMillis();
+        PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
+                p.getLocation(), mat, halfName, snap, now);
         if (prev != null && (now - prev.ts) <= WINDOW_MS) {
-            // 成组：2 箱 1 组，一并交付
-            deliver(p, prev);
-            deliver(p, new PendingCarry(id, b.getWorld().getName(),
-                    p.getLocation(), mat, halfName, snap, now));
+            // ★ 30批：成组合二为一 —— 只看时间窗口（2秒内），不看塞满。
+            //   两个半边的非空物品顺序拼接成「一个」打包箱（变长数组，
+            //   放置时按容器实际大小回填，大箱子≈54 格场景全部收进一个箱）。
+            if (cfgMergeTwo()) {
+                deliver(p, prev, cur);
+            } else {
+                // 运维把「是否合并两个箱子」关了 → 仍走旧逻辑：两个独立打包箱
+                deliver(p, prev);
+                deliver(p, cur);
+            }
         } else {
             // 首破：挂起观察 2 秒，等第二破成组或超时单独交付
-            PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
-                    p.getLocation(), mat, halfName, snap, now);
             pending.put(id, cur);
             plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                 PendingCarry pc = pending.get(id);
@@ -193,7 +282,7 @@ public class ChestCarryManager implements Listener {
                 if (online != null && online.isOnline()) {
                     deliver(online, pc);
                 } else {
-                    // 玩家离线兜底：打包箱掉在原地
+                    // 玩家离线兜底：打包箱掉在原地（变长内容 → 自适应放置回填）
                     try {
                         World w = Bukkit.getWorld(pc.worldName);
                         if (w != null) {
@@ -264,23 +353,41 @@ public class ChestCarryManager implements Listener {
 
     // ==================== 内部工具 ====================
 
-    /** 交付一个打包箱给玩家（背包满则掉脚下），并提示 */
-    private void deliver(Player p, PendingCarry c) {
+    /** 交付打包箱给玩家（背包满则掉脚下），并提示。支持 1~N 个半边快照合并成一个箱 */
+    private void deliver(Player p, PendingCarry... carries) {
         try {
-            ItemStack packed = buildPackedChest(c.sourceMat, c.halfName, c.contents);
+            // 合并：顺序拼接各半边的非空物品（变长，保留原顺序）
+            List<ItemStack> merged = new ArrayList<>();
+            for (PendingCarry c : carries) {
+                for (ItemStack it : c.contents) {
+                    if (it != null && !it.getType().isAir()) merged.add(it);
+                }
+            }
+            StringBuilder label = new StringBuilder();
+            for (PendingCarry c : carries) {
+                if (label.length() > 0) label.append('、');
+                label.append(c.halfName);
+            }
+            // 合并物超过 27 格 → 仍打包成一个物理箱子（放置时按容器实际大小回填，
+            // 多余 28+ 物品按放置后容器大小自然截断；用户实测大箱子≈54 格场景）
+            ItemStack[] mergedArr = merged.toArray(new ItemStack[0]);
+            String halfLabel = label.length() == 0 ? "小箱子" : label.toString();
+            ItemStack packed = buildPackedChest(carries[0].sourceMat, halfLabel, mergedArr);
             HashMap<Integer, ItemStack> left = p.getInventory().addItem(packed);
             if (!left.isEmpty()) {
                 left.values().forEach(it ->
                         p.getWorld().dropItemNaturally(p.getLocation(), it));
             }
-            p.sendMessage("§a[箱子搬运] §7已打包 §f" + c.halfName
-                    + "§7（" + countItems(c.contents) + " 件物品），放下自动回填");
+            p.sendMessage("§a[箱子搬运] §7已打包 §f" + halfLabel
+                    + "§7（" + mergedArr.length + " 件物品），放下自动回填");
         } catch (Exception ex) {
             // 序列化失败兜底：内容直接掉落，绝不吞物
             p.sendMessage("§c[箱子搬运] §7打包失败，物品已直接掉落");
-            for (ItemStack it : c.contents) {
-                if (it != null && !it.getType().isAir()) {
-                    p.getWorld().dropItemNaturally(p.getLocation(), it);
+            for (PendingCarry c : carries) {
+                for (ItemStack it : c.contents) {
+                    if (it != null && !it.getType().isAir()) {
+                        p.getWorld().dropItemNaturally(p.getLocation(), it);
+                    }
                 }
             }
             plugin.getLogger().warning("[箱子搬运] 打包失败: " + ex.getMessage());

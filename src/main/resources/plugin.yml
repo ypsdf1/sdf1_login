@@ -194,5 +194,5 @@ commands:
     description: 清空DB队列中未回应的web同步任务（管理员）
     usage: /cleartake
   json:
-    description: JSON消息构造器（tellraw/大标题/小标题+颜色）
+    description: JSON消息构造器（tellraw/大标题/小标题/actionbar+颜色，需OP以上权限）
     usage: /json

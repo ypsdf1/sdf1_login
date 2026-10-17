@@ -61,6 +61,8 @@ public class JsonMessageGui implements Listener {
     private static final int MODE_TELLRAW = 0;
     private static final int MODE_TITLE = 1;
     private static final int MODE_SUBTITLE = 2;
+    // ★ 30批：actionbar 模式（玩家 /title @a actionbar 报错被接管）
+    private static final int MODE_ACTIONBAR = 3;
 
     // ==================== MC 原生 16 色（Wiki 所列） ====================
     private static final Set<String> NATIVE_COLORS = new LinkedHashSet<>(Arrays.asList(
@@ -78,6 +80,8 @@ public class JsonMessageGui implements Listener {
     private static final int SLOT_MODE_TELLRAW = 1;
     private static final int SLOT_MODE_TITLE = 3;
     private static final int SLOT_MODE_SUBTITLE = 5;
+    // ★ 30批：actionbar 模式项（空位 24，避开风格键 / 调色板 / 发送键）
+    private static final int SLOT_MODE_ACTIONBAR = 24;
     private static final int SLOT_HELP = 7;
     private static final int SLOT_CUSTOM_COLOR = 9;
     private static final int SLOT_PALETTE_FIRST = 10;   // 10-17 共 8 格调色板
@@ -263,8 +267,12 @@ public class JsonMessageGui implements Listener {
                 mode = MODE_TITLE;
             } else if (kind.equals("subtitle")) {
                 mode = MODE_SUBTITLE;
+            } else if (kind.equals("actionbar")) {
+                // ★ 30批：actionbar 也接管（不再「return false 交还原版报错」）
+                mode = MODE_ACTIONBAR;
             } else {
-                return false; // actionbar 不在3模式内
+                // 未知 kind（比如 /title @a clear、reset）→ 非 JSON 载荷，交还原版
+                return false;
             }
             payload = sp2 < 0 ? "" : afterTarget.substring(sp2 + 1).trim();
         } else {
@@ -311,9 +319,11 @@ public class JsonMessageGui implements Listener {
     /** 29批：各模式的标准最小化写法示例（压制原生报错后由本构造器给出） */
     private static String exampleCmdOf(int mode) {
         switch (mode) {
-            case MODE_TITLE:    return "/title @a title {\"text\":\"标题\"}";
-            case MODE_SUBTITLE: return "/title @a subtitle {\"text\":\"副标题\"}";
-            default:            return "/tellraw @a {\"text\":\"你好\"}";
+            case MODE_TITLE:     return "/title @a title {\"text\":\"标题\"}";
+            case MODE_SUBTITLE:  return "/title @a subtitle {\"text\":\"副标题\"}";
+            // ★ 30批：actionbar 示例
+            case MODE_ACTIONBAR: return "/title @a actionbar {\"text\":\"提示\"}";
+            default:             return "/tellraw @a {\"text\":\"你好\"}";
         }
     }
 
@@ -376,6 +386,11 @@ public class JsonMessageGui implements Listener {
                 Material.NAME_TAG, "小标题",
                 s.mode == MODE_SUBTITLE,
                 "全服屏幕中央小字（大字下方）", "对应 /title @a subtitle ..."));
+        // ★ 30批：actionbar 模式项（槽位 24，避开其它键）
+        inv.setItem(SLOT_MODE_ACTIONBAR, modeItem(
+                Material.CLOCK, "底部提示栏(actionbar)",
+                s.mode == MODE_ACTIONBAR,
+                "屏幕底部行动条（聊天栏上方）", "对应 /title @a actionbar ..."));
 
         inv.setItem(SLOT_HELP, simple(Material.BOOK,
                 "§f使用说明",
@@ -594,6 +609,8 @@ public class JsonMessageGui implements Listener {
                 s.mode = MODE_TITLE; refresh(p, s); break;
             case SLOT_MODE_SUBTITLE:
                 s.mode = MODE_SUBTITLE; refresh(p, s); break;
+            case SLOT_MODE_ACTIONBAR:
+                s.mode = MODE_ACTIONBAR; refresh(p, s); break;
             case SLOT_CUSTOM_COLOR:
                 beginCapture(p, s, "customcolor"); break;
             case SLOT_INPUT_TEXT:
@@ -855,6 +872,10 @@ public class JsonMessageGui implements Listener {
             case MODE_SUBTITLE:
                 cmd = "title @a subtitle " + json;
                 break;
+            // ★ 30批：actionbar 模式
+            case MODE_ACTIONBAR:
+                cmd = "title @a actionbar " + json;
+                break;
             default:
                 cmd = "tellraw @a " + json;
                 break;
@@ -876,7 +897,9 @@ public class JsonMessageGui implements Listener {
         if (ok) {
             p.sendMessage("§a[JSON构造器] §7已发送（"
                     + (s.mode == MODE_TITLE ? "大标题"
-                    : s.mode == MODE_SUBTITLE ? "小标题·已附带空大字同屏显示" : "tellraw消息") + "）");
+                    : s.mode == MODE_SUBTITLE ? "小标题·已附带空大字同屏显示"
+                    : s.mode == MODE_ACTIONBAR ? "actionbar 底部提示栏"
+                    : "tellraw消息") + "）");
             // ★ 27批（用户要求）：把生成的 JSON 原样回给执行者，便于学习 JSON 写法。
             //   只私发给本人，不刷公屏；分多行发，长度也不受聊天栏截断影响。
             echoJson(p, cmd, json);
