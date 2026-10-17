@@ -4431,6 +4431,8 @@ public class Main extends JavaPlugin
                     // 封禁 / 改判 / 注销
                     "tempban", "tempbanip", "banip", "banget", "whois", "clear",
                     "cleartake", "清空队列",
+                    // 在线玩家列表 / 查封禁（32批最小化信息披露：非 OP 走近似建议流）
+                    "who", "banget",
                     // 账号管理
                     "删除", "删除账号", "通过", "拒绝", "accept", "deny",
                     "printer", "take", "give",
@@ -8244,12 +8246,31 @@ public class Main extends JavaPlugin
 
         // ===== /who 在线玩家列表（仅大后台/OP/插件管理员） =====
         if (cmd.getName().equalsIgnoreCase("who")) {
+            // ★ 32批：最小化信息披露——/who 是 OP 级指令，非 OP 玩家敲 /who
+            //   不再回「§c权限不足」（那等于告知"有这指令、只是你没权限"），
+            //   而是走近似指令建议流（"你是不是想输入..."），让玩家无法判断
+            //   是服务器没这指令还是参数传错。OP/控制台正常执行。
+            if (!(sender instanceof org.bukkit.command.ConsoleCommandSender)
+                    && !isPrivileged(sender)) {
+                if (sender instanceof Player) {
+                    sendSimilarHint((Player) sender, "who");
+                }
+                return true;
+            }
             doWho(sender);
             return true;
         }
 
         // ===== /banget 点名查询封禁（全量 banlist，含插件安装前的历史封禁） =====
         if (cmd.getName().equalsIgnoreCase("banget")) {
+            // ★ 32批：最小化信息披露——非 OP 走近似指令建议（同 /who）
+            if (!(sender instanceof org.bukkit.command.ConsoleCommandSender)
+                    && !isPrivileged(sender)) {
+                if (sender instanceof Player) {
+                    sendSimilarHint((Player) sender, "banget");
+                }
+                return true;
+            }
             doBanGet(sender, args);
             return true;
         }
