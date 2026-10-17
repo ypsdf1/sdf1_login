@@ -274,12 +274,24 @@ public class ChestCarryManager implements Listener {
         //    有副作用）。小箱（无 twin）维持旧 2 秒窗口逻辑。
         boolean isBigChest = halfName.startsWith("大箱子");
         Block twin = findTwin(b);
+        // ★ 33批：合并口径=「紧挨着就算」—— 连大箱（isBig）、独立小箱紧挨（!isBig）
+        //   只要有水平邻接箱（twin）且 mergeTwo 开 就合并，不再强制 isBigChest。
+        //   双连箱根因（挥斧只破一半）+ 独立小箱挨放，统一走此分支。
         // ★ 32批诊断：双连箱合并不生效——打全量判定链，定位断在哪一环
         int invSize = -1;
+        int twinInvSize = -1;
         try {
             BlockState st2 = b.getState();
             if (st2 instanceof org.bukkit.block.Container) {
                 invSize = ((org.bukkit.block.Container) st2).getInventory().getSize();
+            }
+        } catch (Throwable ignored) { }
+        try {
+            if (twin != null) {
+                BlockState st3 = twin.getState();
+                if (st3 instanceof org.bukkit.block.Container) {
+                    twinInvSize = ((org.bukkit.block.Container) st3).getInventory().getSize();
+                }
             }
         } catch (Throwable ignored) { }
         plugin.getLogger().info("[箱子搬运][诊断] " + p.getName()
@@ -290,10 +302,11 @@ public class ChestCarryManager implements Listener {
                 + " snap格数=" + snap.length
                 + " 邻接twin=" + (twin != null
                         ? (twin.getX() + "," + twin.getY() + "," + twin.getZ() + "("
-                            + twin.getType().name() + ")") : "无")
+                            + twin.getType().name() + ",invSize=" + twinInvSize + ")") : "无")
                 + " mergeTwo=" + cfgMergeTwo());
-        if (isBigChest && twin != null && cfgMergeTwo()) {
-            plugin.getLogger().info("[箱子搬运][诊断] >>> 进入双连箱合并分支 deliver合并箱");
+        if (twin != null && cfgMergeTwo()) {
+            plugin.getLogger().info("[箱子搬运][诊断] >>> 进入邻接箱合并分支 deliver合并箱 "
+                    + halfName + "+" + halfNameOf(twin));
             // 双半全量内容（优先 54 格双箱库存，回退「已拆半边 27 + 邻接半边 27」）
             ItemStack[] merged = newMergedContents(b, twin, snap);
             // 主动物理移除孤半 + 被破那半（此刻已空，setType 幂等无害）；
@@ -582,15 +595,23 @@ public class ChestCarryManager implements Listener {
     }
 
     /**
-     * ★ 32批：找双连箱的邻接半（同 y，x 方向 ±1，材质须也是箱子）。
-     *   用于「被破坏半边」主动取走孤留的邻接半，合并成完整双箱。
+     * ★ 32批：找被破坏箱子的任意水平邻接箱（同 y，x±1 或 z±1，材质须也是箱子）。
+     *   用于「被破坏那半」主动取走邻接孤半，合并成完整箱。
+     *   33批扩展：从只查 x±1 扩到四向（x±1、z±1）——双连箱可能沿 z 方向连接，
+     *   且「独立小箱紧挨着」也是水平邻接。任意一个邻接箱都算 twin。
      */
     private Block findTwin(Block self) {
         World w = self.getWorld();
-        Block a = w.getBlockAt(self.getX() + 1, self.getY(), self.getZ());
-        if (a != null && isChestMaterial(a.getType())) return a;
-        Block b = w.getBlockAt(self.getX() - 1, self.getY(), self.getZ());
-        if (b != null && isChestMaterial(b.getType())) return b;
+        int x = self.getX(), y = self.getY(), z = self.getZ();
+        Block[][] candidates = {
+                {w.getBlockAt(x + 1, y, z), w.getBlockAt(x - 1, y, z)},
+                {w.getBlockAt(x, y, z + 1), w.getBlockAt(x, y, z - 1)},
+        };
+        for (Block[] row : candidates) {
+            for (Block c : row) {
+                if (c != null && isChestMaterial(c.getType())) return c;
+            }
+        }
         return null;
     }
 
