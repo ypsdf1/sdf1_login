@@ -234,8 +234,12 @@ public class JsonMessageGui implements Listener {
     /**
      * 原版 title/tellraw 报错接管（挂在 Main.onUnknownCommand）。
      *
+     * <p>★ 28批（用户要求）：不再直接 openInventory 强接管——运维手打 JSON 出错时
+     * 瞬间被弹走面板很突兀。改为「保留原生最小化报错」（Main 侧不再 suppressUnknown），
+     * 本方法只做「预填原文 + 提示 + 可点击超链接」，由玩家自己点链接唤醒构造器。
+     *
      * @param body 已去掉开头斜杠的命令行
-     * @return true = 已接管（打开GUI预填原文），false = 不归本构造器管
+     * @return true = 已预填并发出提示+超链接（原生报错保留），false = 不归本构造器管
      */
     public boolean tryTakeover(Player p, String body) {
         if (body.isEmpty()) return false;
@@ -244,7 +248,8 @@ public class JsonMessageGui implements Listener {
         String payload;
         if (lower.startsWith("tellraw ")) {
             mode = MODE_TELLRAW;
-            payload = body.substring(8).trim();
+            // 28批：目标选择器（@a/@p/玩家名）是指令参数，不是用户文本
+            payload = stripTarget(body.substring(8).trim());
         } else if (lower.startsWith("title ")) {
             // title <target> title|subtitle|actionbar <json...>
             String rest = body.substring(6).trim();
@@ -276,10 +281,44 @@ public class JsonMessageGui implements Listener {
         s.styleFlags = 0;
         if (!extracted.isEmpty()) s.text.append(extracted);
 
-        p.openInventory(build(s));
-        p.sendMessage("§e[JSON构造器] §7已接管原版报错，你的原文已填入，"
-                + "选颜色/改内容后点§a发送§7即可（也可继续§f/json§7打开本面板）");
+        // ★ 28批：延迟 1 tick 发提示——先让原生最小化报错落地，再看到提示+超链接
+        plugin.getServer().getScheduler().runTask(plugin, () -> {
+            p.sendMessage(net.kyori.adventure.text.Component
+                    .text("[JSON构造器] ", net.kyori.adventure.text.format.NamedTextColor.GOLD)
+                    .append(net.kyori.adventure.text.Component.text(
+                            "你的原文已预填 → ",
+                            net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                    .append(net.kyori.adventure.text.Component.text(
+                            "[点击唤醒构造器]",
+                            net.kyori.adventure.text.format.NamedTextColor.YELLOW,
+                            net.kyori.adventure.text.format.TextDecoration.UNDERLINED)
+                            .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/json"))
+                            .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                                    net.kyori.adventure.text.Component.text("打开 JSON 构造器（原文已预填）")))));
+        });
         return true;
+    }
+
+    /**
+     * 28批：从 tellraw 载荷里剥掉目标选择器——原版结构 tellraw <target> <json>，
+     * @a/@p/玩家名属于指令参数，不能被构造成用户文本（用户实测 @a 被塞进了 text）。
+     */
+    private static String stripTarget(String payload) {
+        if (payload.isEmpty() || payload.startsWith("{")) return payload;
+        int sp = payload.indexOf(' ');
+        if (sp < 0) return looksLikeSelector(payload) ? "" : payload;
+        String first = payload.substring(0, sp);
+        String rest = payload.substring(sp + 1).trim();
+        if (looksLikeSelector(first)) return rest; // tellraw @a 文本
+        if (rest.startsWith("{")) return rest;     // tellraw 玩家名 {"text":...}
+        return payload;
+    }
+
+    /** 28批：@a/@p/@e/@r/@s/@n（可带 [..] 过滤参数）→ 是选择器，不是正文 */
+    private static boolean looksLikeSelector(String t) {
+        return t.length() >= 2 && t.charAt(0) == '@'
+                && Character.isLetter(t.charAt(1))
+                && (t.length() == 2 || (t.charAt(2) == '[' && t.endsWith("]")));
     }
 
     /** 从 tellraw/title 的 JSON 载荷里提取用户原文 text；解析不了就原样返回 */
@@ -764,6 +803,14 @@ public class JsonMessageGui implements Listener {
         for (String line : wrap(json, 180)) {
             p.sendMessage("§8JSON §7: §e" + line);
         }
+        // ★ 28批（用户要求，参考原版 /seed）：JSON 整段做成可点击复制超链接，
+        //   一键拷进系统剪贴板；上面的折行只便于阅读，复制以这条为准
+        p.sendMessage(net.kyori.adventure.text.Component
+                .text("[点击复制完整JSON]", net.kyori.adventure.text.format.NamedTextColor.AQUA,
+                        net.kyori.adventure.text.format.TextDecoration.UNDERLINED)
+                .clickEvent(net.kyori.adventure.text.event.ClickEvent.copyToClipboard(json))
+                .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                        net.kyori.adventure.text.Component.text("复制到系统剪贴板"))));
         p.sendMessage("§8§m                    ");
     }
 
@@ -799,6 +846,11 @@ public class JsonMessageGui implements Listener {
         boolean ok = false;
         try {
             ok = Bukkit.dispatchCommand(p, cmd);
+            // ★ 28批：原版 subtitle 单发只「设置」不显示，必须有 title 同屏才呈现；
+            //   先设 subtitle、再发空 title 作显示载体，小标题立即全屏显示
+            if (ok && s.mode == MODE_SUBTITLE) {
+                Bukkit.dispatchCommand(p, "title @a title {\"text\":\"\"}");
+            }
         } catch (Throwable t) {
             plugin.getLogger().warning(
                     "[JSON构造器] 指令执行异常: " + t.getMessage());
@@ -806,7 +858,7 @@ public class JsonMessageGui implements Listener {
         if (ok) {
             p.sendMessage("§a[JSON构造器] §7已发送（"
                     + (s.mode == MODE_TITLE ? "大标题"
-                    : s.mode == MODE_SUBTITLE ? "小标题" : "tellraw消息") + "）");
+                    : s.mode == MODE_SUBTITLE ? "小标题·已附带空大字同屏显示" : "tellraw消息") + "）");
             // ★ 27批（用户要求）：把生成的 JSON 原样回给执行者，便于学习 JSON 写法。
             //   只私发给本人，不刷公屏；分多行发，长度也不受聊天栏截断影响。
             echoJson(p, cmd, json);

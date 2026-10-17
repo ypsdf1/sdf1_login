@@ -294,7 +294,8 @@ public class ChestCarryManager implements Listener {
     private static boolean isChestMaterial(Material mat) {
         if (mat == null || mat.isAir()) return false;
         String n = mat.name();
-        return n.endsWith("_CHEST") && !n.equals("ENDER_CHEST");
+        // 28批：裸 CHEST 也要认——"CHEST".endsWith("_CHEST")=false，曾把普通木箱一票否决
+        return n.equals("CHEST") || (n.endsWith("_CHEST") && !n.equals("ENDER_CHEST"));
     }
 
     /** 登记一个待抑制掉落的位置（tick 后自动放行，避免误伤其它掉落） */

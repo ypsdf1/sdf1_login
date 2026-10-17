@@ -481,6 +481,13 @@ public class BanBroadcastManager implements Listener {
      * <p>★ 第二十七批：自动模式取插件数据目录(plugins/Sdf1_login)的创建时间
      * = 插件安装上服务器的时间，插件上服之前的全部历史封禁一律不播。
      *
+     * <p>★ 第二十八批：数据目录可能被重建/迁移/重装——creationTime 变成当天，
+     * 把之后创建的全部生效封禁一并滤光（实测起点=2026-10-16 → 2026-09-30
+     * 的封禁被滤 → 播报误报「当前无生效封禁」）。故自动起点加下限保护：
+     * 绝不晚于「距今 180 天」——既挡住古早历史封禁（半年前的一律不播），
+     * 又保证目录被重建时近半年内的生效封禁不被误杀。
+     * 手动配置的播报起点（startCutoffAuto=false）不受此保护，完全按配置走。
+     *
      * <p>旧实现有「距今不足 7 天就放弃过滤」的守卫（当年担心 mtime 兜底不可信），
      * 结果插件刚装上服务器时自动退化成「不过滤」，把上线前几年的历史封禁全播了出来
      * —— 这正是用户看到的「一个都没封却公示一堆人」。
@@ -491,17 +498,29 @@ public class BanBroadcastManager implements Listener {
         if (!startCutoffAuto) return startCutoffMs;
         if (autoCutoffMs < 0) {
             autoCutoffMs = 0;
+            long folderCreated = 0;
             try {
                 File df = plugin.getDataFolder();
                 if (df != null && df.exists()) {
                     long t = java.nio.file.Files.readAttributes(df.toPath(),
                             java.nio.file.attribute.BasicFileAttributes.class)
                             .creationTime().toMillis();
-                    if (t > 0) autoCutoffMs = t;
+                    if (t > 0) folderCreated = t;
                 }
             } catch (Exception e) {
                 warn("读取插件数据目录创建时间失败，本次不过滤历史封禁: "
                         + e.getMessage());
+            }
+            if (folderCreated > 0) {
+                long cap = System.currentTimeMillis() - MAX_AUTO_CUTOFF_WINDOW_MS;
+                autoCutoffMs = Math.min(folderCreated, cap);
+                if (folderCreated > cap) {
+                    warn("插件数据目录创建时间 " + fmtCutoff(folderCreated)
+                            + " 晚于180天前（目录可能被重建/迁移），"
+                            + "自动起点回退为 " + fmtCutoff(cap)
+                            + "，近半年内的生效封禁照常播报"
+                            + "（可在 ban/规则配置.md 手动填「播报起点」精确控制）");
+                }
             }
             if (autoCutoffMs <= 0) {
                 warn("取不到插件数据目录创建时间，历史封禁过滤已关闭"
@@ -509,6 +528,13 @@ public class BanBroadcastManager implements Listener {
             }
         }
         return autoCutoffMs;
+    }
+
+    /** 28批：自动播报起点最多回溯 180 天（约半年）——数据目录重建时起点不得过新 */
+    private static final long MAX_AUTO_CUTOFF_WINDOW_MS = 180L * 24 * 3600 * 1000;
+
+    private static String fmtCutoff(long ms) {
+        return new SimpleDateFormat("yyyy-MM-dd").format(new Date(ms));
     }
 
     // ==================== 调度 ====================
