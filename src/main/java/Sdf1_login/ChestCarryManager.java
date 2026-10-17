@@ -273,8 +273,27 @@ public class ChestCarryManager implements Listener {
         //    物理移除防孤半连接态回弹成普通箱）。不再用 breakBlock（对双箱连接态
         //    有副作用）。小箱（无 twin）维持旧 2 秒窗口逻辑。
         boolean isBigChest = halfName.startsWith("大箱子");
-        Block twin = isBigChest ? findTwin(b) : null;
+        Block twin = findTwin(b);
+        // ★ 32批诊断：双连箱合并不生效——打全量判定链，定位断在哪一环
+        int invSize = -1;
+        try {
+            BlockState st2 = b.getState();
+            if (st2 instanceof org.bukkit.block.Container) {
+                invSize = ((org.bukkit.block.Container) st2).getInventory().getSize();
+            }
+        } catch (Throwable ignored) { }
+        plugin.getLogger().info("[箱子搬运][诊断] " + p.getName()
+                + " 拆 b=" + b.getX() + "," + b.getY() + "," + b.getZ()
+                + " 数据类型=" + (bd instanceof Chest ? ((Chest) bd).getType().name() : "无Chest")
+                + " halfName=" + halfName + " isBig=" + isBigChest
+                + " invSize=" + invSize
+                + " snap格数=" + snap.length
+                + " 邻接twin=" + (twin != null
+                        ? (twin.getX() + "," + twin.getY() + "," + twin.getZ() + "("
+                            + twin.getType().name() + ")") : "无")
+                + " mergeTwo=" + cfgMergeTwo());
         if (isBigChest && twin != null && cfgMergeTwo()) {
+            plugin.getLogger().info("[箱子搬运][诊断] >>> 进入双连箱合并分支 deliver合并箱");
             // 双半全量内容（优先 54 格双箱库存，回退「已拆半边 27 + 邻接半边 27」）
             ItemStack[] merged = newMergedContents(b, twin, snap);
             // 主动物理移除孤半 + 被破那半（此刻已空，setType 幂等无害）；
@@ -296,12 +315,13 @@ public class ChestCarryManager implements Listener {
         long now = System.currentTimeMillis();
         PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
                 p.getLocation(), mat, halfName, snap, now);
-        // ★ 诊断日志（32批）：定位双木箱合并不生效根因
+        // ★ 诊断日志（32批）：定位双木箱合并不生效根因（首破 vs 成组）
+        //   注：数据类型/邻接twin 全量判定已挪到「双连箱分支前置」诊断，
+        //   这里只记 首破 vs 成组 的时序，避免重复刷屏
         plugin.getLogger().info("[箱子搬运][诊断] " + p.getName()
                 + " 拆 " + halfName + " snap=" + snap.length + "格 "
                 + (prev != null ? ("prev=" + prev.halfName + " 间隔=" + (now - prev.ts) + "ms") : "首破")
-                + " mergeTwo=" + cfgMergeTwo()
-                + (twin != null ? " twin=" + twin.getType().name() : ""));
+                + " mergeTwo=" + cfgMergeTwo());
         if (prev != null && (now - prev.ts) <= WINDOW_MS) {
             // ★ 31批修正：成组时 cancel 首破挂起的 40 tick 超时任务
             //   （超时任务跑完会把第一半直接 deliver 掉，导致第二半破坏拿不到 prev）
