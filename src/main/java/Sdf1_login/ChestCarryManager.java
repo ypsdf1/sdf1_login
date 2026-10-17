@@ -264,6 +264,34 @@ public class ChestCarryManager implements Listener {
         markSuppressDrop(b.getLocation());
 
         UUID id = p.getUniqueId();
+        // ★ 32批根因修正：双连箱挥斧只命中一半时，Bukkit 只对「被破那半边」
+        //   触发一次 BlockBreakEvent，邻接孤半不会掉落（原版：另一半存在就不掉），
+        //   2 秒窗口里第二事件不来 → 首破超时单独交付半箱，孤半内容留地。
+        //   实测用户截图实锤「1个打包箱 + 1个原版普通箱」即此。
+        //   改：拆双连箱时读「双半全量内容」直接打包交付 + 主动清掉邻接孤半
+        //   （孤半内容已并入打包箱、清方块不产物；双半都 setType(AIR,false,false)
+        //    物理移除防孤半连接态回弹成普通箱）。不再用 breakBlock（对双箱连接态
+        //    有副作用）。小箱（无 twin）维持旧 2 秒窗口逻辑。
+        boolean isBigChest = halfName.startsWith("大箱子");
+        Block twin = isBigChest ? findTwin(b) : null;
+        if (isBigChest && twin != null && cfgMergeTwo()) {
+            // 双半全量内容（优先 54 格双箱库存，回退「已拆半边 27 + 邻接半边 27」）
+            ItemStack[] merged = newMergedContents(b, twin, snap);
+            // 主动物理移除孤半 + 被破那半（此刻已空，setType 幂等无害）；
+            //   再 1 tick 幂等重清双半，兜底孤半连接态回弹
+            clearChestBlock(twin);
+            clearChestBlock(b);
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                clearChestBlock(twin);
+                clearChestBlock(b);
+            });
+            // 直接交付双半合并箱（不走 2 秒窗口 —— 用户诉求"不管多快都合并"）
+            PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
+                    p.getLocation(), mat, halfName + "+" + halfNameOf(twin),
+                    merged, System.currentTimeMillis());
+            deliver(p, cur);
+            return;
+        }
         PendingCarry prev = pending.remove(id);
         long now = System.currentTimeMillis();
         PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
@@ -272,7 +300,8 @@ public class ChestCarryManager implements Listener {
         plugin.getLogger().info("[箱子搬运][诊断] " + p.getName()
                 + " 拆 " + halfName + " snap=" + snap.length + "格 "
                 + (prev != null ? ("prev=" + prev.halfName + " 间隔=" + (now - prev.ts) + "ms") : "首破")
-                + " mergeTwo=" + cfgMergeTwo());
+                + " mergeTwo=" + cfgMergeTwo()
+                + (twin != null ? " twin=" + twin.getType().name() : ""));
         if (prev != null && (now - prev.ts) <= WINDOW_MS) {
             // ★ 31批修正：成组时 cancel 首破挂起的 40 tick 超时任务
             //   （超时任务跑完会把第一半直接 deliver 掉，导致第二半破坏拿不到 prev）
@@ -473,6 +502,99 @@ public class ChestCarryManager implements Listener {
             if (i != null && !i.getType().isAir()) return false;
         }
         return true;
+    }
+
+    /**
+     * ★ 32批：物理移除一个箱子方块（setType(AIR, false) 两参）。
+     *   Paper 26 的 Block.setType 只有 (Material) / (Material, boolean) 两参，
+     *   无 (Material, boolean, boolean)。drops=false 不产掉落；被破半边此刻已
+     *   是空气（BlockBreakEvent 后）setType 幂等无害；孤半是真正的连接态方块，
+     *   清掉防其变回普通箱。
+     */
+    private void clearChestBlock(Block bl) {
+        try {
+            if (bl != null && bl.getType() != org.bukkit.Material.AIR) {
+                bl.setType(org.bukkit.Material.AIR, false);
+            }
+        } catch (Throwable ex) {
+            plugin.getLogger().fine("[箱子搬运] 清箱子方块失败: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * ★ 32批：取双连箱「双半全量」内容。
+     *   优先 getInventory（连接双箱返回 54 格全量）；失败/未连接则回退
+     *   「被破半边快照 27 格 + 邻接半边快照 27 格」拼接（顺序：self 在前、twin 在后）。
+     */
+    private ItemStack[] newMergedContents(Block self, Block twin, ItemStack[] selfSnap) {
+        // 优先 54 格全量
+        ItemStack[] full = readContents(self);
+        if (full != null && full.length > 27) {
+            return full;
+        }
+        // 回退：被破半边快照（可能已是 27 或 54）+ 邻接半边快照
+        List<ItemStack> merged = new ArrayList<>();
+        if (selfSnap != null) {
+            for (ItemStack it : selfSnap) {
+                if (it != null && !it.getType().isAir()) merged.add(it);
+            }
+        }
+        ItemStack[] twinSnap = readContents(twin);
+        if (twinSnap != null) {
+            for (ItemStack it : twinSnap) {
+                if (it != null && !it.getType().isAir()) merged.add(it);
+            }
+        }
+        return merged.toArray(new ItemStack[0]);
+    }
+
+    /** 取方块半边归属名（Chest.Type.LEFT/RIGHT），用于打包箱标签 */
+    private String halfNameOf(Block bl) {
+        try {
+            org.bukkit.block.data.BlockData bd = bl.getBlockData();
+            if (bd instanceof Chest) {
+                Chest.Type t = ((Chest) bd).getType();
+                if (t == Chest.Type.LEFT) return "大箱子·左半";
+                if (t == Chest.Type.RIGHT) return "大箱子·右半";
+            }
+        } catch (Throwable ignored) { }
+        return "小箱子";
+    }
+
+    /**
+     * ★ 32批：找双连箱的邻接半（同 y，x 方向 ±1，材质须也是箱子）。
+     *   用于「被破坏半边」主动取走孤留的邻接半，合并成完整双箱。
+     */
+    private Block findTwin(Block self) {
+        World w = self.getWorld();
+        Block a = w.getBlockAt(self.getX() + 1, self.getY(), self.getZ());
+        if (a != null && isChestMaterial(a.getType())) return a;
+        Block b = w.getBlockAt(self.getX() - 1, self.getY(), self.getZ());
+        if (b != null && isChestMaterial(b.getType())) return b;
+        return null;
+    }
+
+    /** 读方块内容快照：优先 getInventory（连接双箱=54 格全量），失败回退 27 格快照 */
+    private static ItemStack[] readContents(Block bl) {
+        try {
+            BlockState st = bl.getState();
+            if (st instanceof org.bukkit.block.Container) {
+                org.bukkit.inventory.Inventory inv =
+                        ((org.bukkit.block.Container) st).getInventory();
+                if (inv != null) {
+                    int n = inv.getSize();
+                    if (n > 0) return inv.getStorageContents();
+                }
+            }
+        } catch (Throwable ignored) { }
+        try {
+            BlockState st = bl.getState();
+            if (st instanceof org.bukkit.block.Container) {
+                return ((org.bukkit.block.Container) st)
+                        .getSnapshotInventory().getContents();
+            }
+        } catch (Throwable ignored) { }
+        return new ItemStack[0];
     }
 
     private static int countItems(ItemStack[] a) {
