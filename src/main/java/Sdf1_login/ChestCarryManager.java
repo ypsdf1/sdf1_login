@@ -307,7 +307,8 @@ public class ChestCarryManager implements Listener {
         if (twin != null && cfgMergeTwo()) {
             plugin.getLogger().info("[箱子搬运][诊断] >>> 进入邻接箱合并分支 deliver合并箱 "
                     + halfName + "+" + halfNameOf(twin));
-            // 双半全量内容（被破半 selfSnap + 邻接半 readContents(twin)，连箱去重）
+            // 双半全量内容（被破半 selfSnap 27 + 孤半 getSnapshotInventory 27；
+            //   连箱=54 全量、独立小箱=各 27 独立；一条路径、不翻倍、不误删）
             ItemStack[] merged = newMergedContents(b, twin, snap, isBigChest);
             // ★ 33批根因修正：孤半 twin 在 clearChestBlock 时内容会原版掉落
             //   （BlockBreakEvent 只覆盖被破那半 b，twin 是另一块）→ 这里补登记
@@ -559,51 +560,40 @@ public class ChestCarryManager implements Listener {
     }
 
     /**
-     * ★ 33批修正：取邻接箱「双半全量」内容。
-     *   - 连箱双半（bigHalf=true）：直接读 readContents(self) 的 54 格全量
-     *     （连接双箱 getInventory 返回 54 格，一次拿全），不再 selfSnap+去重
-     *     （isSimilar 去重会误删同类型不同组，且 2×54 格翻倍）。
-     *   - 独立小箱（bigHalf=false）：selfSnap（被破半 27 格）+ readContents(twin)
-     *     （邻接半 27 格），不去重，全部追加。
+     * ★ 33批四次修正：取邻接箱「双半全量」内容。
+     *   彻底弃用 getInventory()（BlockBreakEvent 时刻连接双箱库存未同步、读回全空
+     *   是 33 批三次实测实锤的「0件」根因）。统一双半都用 getSnapshotInventory：
+     *   - 连箱双半：被破半 selfSnap(27) + 孤半 snapshotInventory(27) = 54 全量
+     *   - 独立小箱：被破半 27 + 邻接半 27 = 各 27 格独立库存
+     *   一条路径，不用 isSimilar、不用 getInventory。
      */
     private ItemStack[] newMergedContents(Block self, Block twin, ItemStack[] selfSnap, boolean bigHalf) {
-        if (bigHalf) {
-            // 连箱：一次读 54 格全量（连接双箱 getInventory 返回 54）
-            ItemStack[] full = readContents(self);
-            if (full != null && full.length > 27) {
-                return full;
-            }
-            // 兜底：读不出 54 格（个别服务端 getInventory 未同步）→ 退回 selfSnap
-            //   + readContents(twin) 双半拼接（不去重，靠 readContents 本身对
-            //   连接箱返回 54 格全量来避免翻倍；若读不出 54 格说明是独立小箱）
-            List<ItemStack> merged = new ArrayList<>();
-            if (selfSnap != null) {
-                for (ItemStack it : selfSnap) {
-                    if (it != null && !it.getType().isAir()) merged.add(it);
-                }
-            }
-            ItemStack[] twinSnap = readContents(twin);
-            if (twinSnap != null) {
-                for (ItemStack it : twinSnap) {
-                    if (it != null && !it.getType().isAir()) merged.add(it);
-                }
-            }
-            return merged.toArray(new ItemStack[0]);
-        }
-        // 独立小箱：selfSnap（被破半 27 格）+ readContents(twin)（邻接半 27 格），不去重
         List<ItemStack> merged = new ArrayList<>();
         if (selfSnap != null) {
             for (ItemStack it : selfSnap) {
                 if (it != null && !it.getType().isAir()) merged.add(it);
             }
         }
-        ItemStack[] twinSnap = readContents(twin);
+        // 孤半/邻接半：用 getSnapshotInventory（唯一可靠，不受连接态库存同步影响）
+        ItemStack[] twinSnap = readSnapshotInventory(twin);
         if (twinSnap != null) {
             for (ItemStack it : twinSnap) {
                 if (it != null && !it.getType().isAir()) merged.add(it);
             }
         }
         return merged.toArray(new ItemStack[0]);
+    }
+
+    /** 读方块 27 格快照库存（getSnapshotInventory，BlockBreakEvent 内可靠） */
+    private static ItemStack[] readSnapshotInventory(Block bl) {
+        try {
+            BlockState st = bl.getState();
+            if (st instanceof org.bukkit.block.Container) {
+                return ((org.bukkit.block.Container) st)
+                        .getSnapshotInventory().getContents();
+            }
+        } catch (Throwable ignored) { }
+        return new ItemStack[0];
     }
 
     /** 取方块半边归属名（Chest.Type.LEFT/RIGHT），用于打包箱标签 */
