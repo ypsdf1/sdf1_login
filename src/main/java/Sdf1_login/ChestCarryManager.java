@@ -257,13 +257,15 @@ public class ChestCarryManager implements Listener {
         // 全空箱不接管：交原版掉箱子本体，无物品洪水
         if (isEmpty(snap)) return;
 
-        // 大/小箱子归属名（TRAPPED_CHEST 的 block data 也是 Chest 类）
+        // 大/小箱子归属名（33批七次修正：标签按连接态判定）
+        //   Paper 26 的 Chest.Type 对孤立半箱可能返回 LEFT/RIGHT 而非 SINGLE，
+        //   直接按 Type 判定会把孤立小箱误标成"大箱子"。改为：有水平邻接箱(twin)
+        //   才算双箱半边，无邻接箱一律"小箱子"。
         String halfName = "小箱子";
         org.bukkit.block.data.BlockData bd = b.getBlockData();
+        Chest.Type chestType = Chest.Type.SINGLE;
         if (bd instanceof Chest) {
-            Chest.Type t = ((Chest) bd).getType();
-            if (t == Chest.Type.LEFT) halfName = "大箱子·左半";
-            else if (t == Chest.Type.RIGHT) halfName = "大箱子·右半";
+            chestType = ((Chest) bd).getType();
         }
 
 
@@ -280,8 +282,14 @@ public class ChestCarryManager implements Listener {
         //   （孤半内容已并入打包箱、清方块不产物；双半都 setType(AIR,false,false)
         //    物理移除防孤半连接态回弹成普通箱）。不再用 breakBlock（对双箱连接态
         //    有副作用）。小箱（无 twin）维持旧 2 秒窗口逻辑。
-        boolean isBigChest = halfName.startsWith("大箱子");
         Block twin = findTwin(b);
+        // 连接态判定：有水平邻接箱 = 双箱半边；无邻接箱且 Type=SINGLE = 孤立小箱
+        boolean isBigChest = (twin != null) || chestType != Chest.Type.SINGLE;
+        if (isBigChest) {
+            if (chestType == Chest.Type.LEFT) halfName = "大箱子·左半";
+            else if (chestType == Chest.Type.RIGHT) halfName = "大箱子·右半";
+            else halfName = "大箱子";
+        }
         // ★ 33批：合并口径=「紧挨着就算」—— 连大箱（isBig）、独立小箱紧挨（!isBig）
         //   只要有水平邻接箱（twin）且 mergeTwo 开 就合并，不再强制 isBigChest。
         //   双连箱根因（挥斧只破一半）+ 独立小箱挨放，统一走此分支。
@@ -445,11 +453,14 @@ public class ChestCarryManager implements Listener {
             //   放完第二个再回填（双箱连接后 getInventory 返回 54 格全量）。
             try {
                 ItemStack[] items0 = InventorySerializer.fromBase64(data);
-                int contentCount = 0;
+                // ★ 33批七次修正：判定用「非空格子数」而非「物品总数量(amount)」
+                //   ——一个双箱 54 格，>27 格才需接双箱；amount 累加会把一堆小物品
+                //   误判成"塞满"导致孤立小箱被强接双箱（用户实测"两个右半边"根因）
+                int slotCount = 0;
                 for (ItemStack it0 : items0) {
-                    if (it0 != null && !it0.getType().isAir()) contentCount += it0.getAmount();
+                    if (it0 != null && !it0.getType().isAir()) slotCount++;
                 }
-                if (contentCount > 27) {
+                if (slotCount > 27) {
                     World w = placed.getWorld();
                     int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
                     // 优先四向接已有邻接木箱（共用 54 格库存）；否则在空气位放第二个
@@ -461,11 +472,18 @@ public class ChestCarryManager implements Listener {
                     for (Block[] row : cands) {
                         for (Block c : row) {
                             if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                                // 已有邻接木箱 → 把刚放这块设成 LEFT 接上
+                                // ★ 33批七次修正：双块都设 LEFT 才真正共享 54 格库存
                                 org.bukkit.block.data.type.Chest bd =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
                                 bd.setType(Chest.Type.LEFT);
                                 placed.setBlockData(bd);
+                                org.bukkit.block.data.type.Chest bdN =
+                                        (org.bukkit.block.data.type.Chest) c.getBlockData();
+                                bdN.setType(Chest.Type.LEFT);
+                                c.setBlockData(bdN);
+                                plugin.getLogger().fine(
+                                        "[箱子搬运] 接已有邻接木箱于 "
+                                                + c.getX() + "," + c.getY() + "," + c.getZ());
                                 connected = true;
                                 break;
                             }
