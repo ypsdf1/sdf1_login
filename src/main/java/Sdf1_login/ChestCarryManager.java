@@ -559,15 +559,38 @@ public class ChestCarryManager implements Listener {
     }
 
     /**
-     * ★ 33批：取邻接箱「双半全量」内容。
-     *   被破那半用调用方已读好的 selfSnap（getSnapshotInventory 27 格，可靠）；
-     *   邻接半用 readContents(twin)（独立小箱=自己 27 格 / 连箱另一半=共享 54 格）。
-     *   - 连箱双半（bigHalf=true）：self 与 twin 共享同一 54 格库存，selfSnap 已含全量，
-     *     此时 twin 的读取是同批的第二次读 → 去重（同 type+amount+meta 不重复追加）。
-     *   - 独立小箱（bigHalf=false）：self 与 twin 是各 27 格独立库存，物品可能同类型
-     *     同数量但属两个箱 → 不去重，全部追加。
+     * ★ 33批修正：取邻接箱「双半全量」内容。
+     *   - 连箱双半（bigHalf=true）：直接读 readContents(self) 的 54 格全量
+     *     （连接双箱 getInventory 返回 54 格，一次拿全），不再 selfSnap+去重
+     *     （isSimilar 去重会误删同类型不同组，且 2×54 格翻倍）。
+     *   - 独立小箱（bigHalf=false）：selfSnap（被破半 27 格）+ readContents(twin)
+     *     （邻接半 27 格），不去重，全部追加。
      */
     private ItemStack[] newMergedContents(Block self, Block twin, ItemStack[] selfSnap, boolean bigHalf) {
+        if (bigHalf) {
+            // 连箱：一次读 54 格全量（连接双箱 getInventory 返回 54）
+            ItemStack[] full = readContents(self);
+            if (full != null && full.length > 27) {
+                return full;
+            }
+            // 兜底：读不出 54 格（个别服务端 getInventory 未同步）→ 退回 selfSnap
+            //   + readContents(twin) 双半拼接（不去重，靠 readContents 本身对
+            //   连接箱返回 54 格全量来避免翻倍；若读不出 54 格说明是独立小箱）
+            List<ItemStack> merged = new ArrayList<>();
+            if (selfSnap != null) {
+                for (ItemStack it : selfSnap) {
+                    if (it != null && !it.getType().isAir()) merged.add(it);
+                }
+            }
+            ItemStack[] twinSnap = readContents(twin);
+            if (twinSnap != null) {
+                for (ItemStack it : twinSnap) {
+                    if (it != null && !it.getType().isAir()) merged.add(it);
+                }
+            }
+            return merged.toArray(new ItemStack[0]);
+        }
+        // 独立小箱：selfSnap（被破半 27 格）+ readContents(twin)（邻接半 27 格），不去重
         List<ItemStack> merged = new ArrayList<>();
         if (selfSnap != null) {
             for (ItemStack it : selfSnap) {
@@ -577,16 +600,7 @@ public class ChestCarryManager implements Listener {
         ItemStack[] twinSnap = readContents(twin);
         if (twinSnap != null) {
             for (ItemStack it : twinSnap) {
-                if (it == null || it.getType().isAir()) continue;
-                if (bigHalf) {
-                    // 连箱：selfSnap 已含全量，twin 读的是同批库存，去重
-                    boolean dup = false;
-                    for (ItemStack s : merged) {
-                        if (s.isSimilar(it)) { dup = true; break; }
-                    }
-                    if (dup) continue;
-                }
-                merged.add(it);
+                if (it != null && !it.getType().isAir()) merged.add(it);
             }
         }
         return merged.toArray(new ItemStack[0]);
