@@ -1407,11 +1407,15 @@ function alignmentCatConfig($cat) {
                 'intcols' => array(),
                 'pull' => 0,
             ),
+            // ★ 29批（2026-10-22）：cols 增加 created_time（map→created）——Java 收回行时
+            //   把封禁创建时间回填进 Bukkit BanEntry（addBan 默认 created=now，不回填会导致
+            //   拷贝生产封禁数据到测试服后「收回」一轮把全员封禁刷成当天 → 播报乱叫）。
+            //   hashcols 故意不含 created_time：指纹不变，防两端 created 精度/缺失差异恒 changed 死循环。
             'bans' => array(
                 'table' => 'web_player_bans',
                 'keycols' => array('target', 'ban_type'),
-                'map' => array('ban_type' => 'type', 'expire_time' => 'expire'),
-                'cols' => array('target', 'ban_type', 'reason', 'source', 'expire_time'),
+                'map' => array('ban_type' => 'type', 'expire_time' => 'expire', 'created_time' => 'created'),
+                'cols' => array('target', 'ban_type', 'reason', 'source', 'expire_time', 'created_time'),
                 'hashcols' => array('target', 'ban_type', 'reason', 'source', 'expire_time'),
                 'intcols' => array('expire_time'),
                 'pull' => 0,
