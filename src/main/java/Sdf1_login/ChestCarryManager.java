@@ -268,6 +268,11 @@ public class ChestCarryManager implements Listener {
         long now = System.currentTimeMillis();
         PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
                 p.getLocation(), mat, halfName, snap, now);
+        // ★ 诊断日志（32批）：定位双木箱合并不生效根因
+        plugin.getLogger().info("[箱子搬运][诊断] " + p.getName()
+                + " 拆 " + halfName + " snap=" + snap.length + "格 "
+                + (prev != null ? ("prev=" + prev.halfName + " 间隔=" + (now - prev.ts) + "ms") : "首破")
+                + " mergeTwo=" + cfgMergeTwo());
         if (prev != null && (now - prev.ts) <= WINDOW_MS) {
             // ★ 31批修正：成组时 cancel 首破挂起的 40 tick 超时任务
             //   （超时任务跑完会把第一半直接 deliver 掉，导致第二半破坏拿不到 prev）
@@ -311,19 +316,6 @@ public class ChestCarryManager implements Listener {
                         }
                     }, WINDOW_TICKS);
             if (t != null) timeoutTasks.put(id, t);
-            // ★ 32批修正：铜双箱（大箱子·左/右半）挥斧时 getSnapshotInventory
-            //   对连接态双箱返回 54 格完整快照（snap 已含双半内容），但 2 秒窗口
-            //   要求玩家「再挥一刀」破另一半才合并——挥斧只命中一半时第二刀
-            //   常超 2000ms 窗口，导致散。改：铜双箱首破即直接 deliver
-            //   （snap 已是 54 格全量），不依赖第二刀；小箱/木双箱才走 2 秒窗口。
-            //   判定：halfName 带「大箱子」前缀（Chest.Type.LEFT/RIGHT）= 铜双箱。
-            if (halfName.startsWith("大箱子") && cfgMergeTwo()) {
-                pending.remove(id);
-                org.bukkit.scheduler.BukkitTask ot = timeoutTasks.remove(id);
-                if (ot != null) ot.cancel();
-                deliver(p, cur);
-                return;
-            }
         }
     }
 
