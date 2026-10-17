@@ -223,9 +223,44 @@ public class ChestCarryManager implements Listener {
         if (data == null || data.isEmpty()) return;
 
         Block placed = e.getBlockPlaced();
+
+        // ★ 29批第4项：打包箱仅领地主/授权成员/管理员可放置 ——
+        //   防止访客/路人拿到打包箱后就地放下自动回填、窃取他人财物。
+        //   无权限 → 取消放置（打包箱原封不动留在手上，绝不吞物）；
+        //   放置点不在任何领地内 → 无人管辖，交还原版正常回填。
+        AreaProtection ap = main.areaProtection;
+        if (ap != null) {
+            AreaProtection.AreaConfig ac = ap.getArea(
+                    placed.getWorld().getName(), placed.getX(), placed.getY(), placed.getZ());
+            if (ac != null) {
+                AreaProtection.PermissionLevel lv = ap.getPermissionLevel(e.getPlayer(), ac);
+                if (lv != AreaProtection.PermissionLevel.ADMIN
+                        && lv != AreaProtection.PermissionLevel.OWNER
+                        && lv != AreaProtection.PermissionLevel.MEMBER) {
+                    e.setCancelled(true);
+                    e.getPlayer().sendMessage("§c[箱子搬运] §7只有领地主/授权成员能在此放置打包箱");
+                    return;
+                }
+            }
+        }
+
         // 1 tick 后方块状态就绪再回填（含与邻半合并成大箱子的情况）
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             BlockState st = placed.getState();
+            if (!(st instanceof org.bukkit.block.Container)) return;
+            // ★ 29批第2项：放下的是「原版普通箱子」——物品的自定义名可能被方块继承成
+            //   CustomName（准星指向时显示「打包箱」），这里清掉并落盘，再回填内容。
+            //   update(force=true, applyPhysics=false)：强制写回世界、不触发邻块物理。
+            try {
+                // Paper 26：BlockState 已无 setCustomName —— 方块实体名在 Nameable 上
+                //（Container ← LockableTileState ← Nameable），setter 是 adventure
+                // 的 customName(Component)，null 直传无歧义
+                ((org.bukkit.Nameable) st).customName(null);
+                st.update(true, false);
+            } catch (Exception ex) {
+                // 个别容器不支持改名就忽略，回填照常进行
+            }
+            st = placed.getState();   // update 后旧快照失效，重新取
             if (!(st instanceof org.bukkit.block.Container)) return;
             try {
                 ItemStack[] items = InventorySerializer.fromBase64(data);

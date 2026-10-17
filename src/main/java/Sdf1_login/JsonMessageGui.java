@@ -234,12 +234,12 @@ public class JsonMessageGui implements Listener {
     /**
      * 原版 title/tellraw 报错接管（挂在 Main.onUnknownCommand）。
      *
-     * <p>★ 28批（用户要求）：不再直接 openInventory 强接管——运维手打 JSON 出错时
-     * 瞬间被弹走面板很突兀。改为「保留原生最小化报错」（Main 侧不再 suppressUnknown），
-     * 本方法只做「预填原文 + 提示 + 可点击超链接」，由玩家自己点链接唤醒构造器。
+     * <p>★ 29批（用户要求，回退28批「不直接打开」的决定）：Main 侧 suppressUnknown
+     * 压掉原生报错后由本方法接管 ——「预填原文 + 标准最小化写法示例 + /json CLI
+     * 可点击超链接 + 直接 openInventory 打开构造器」。
      *
      * @param body 已去掉开头斜杠的命令行
-     * @return true = 已预填并发出提示+超链接（原生报错保留），false = 不归本构造器管
+     * @return true = 已预填并接管（原生报错由 Main 压制），false = 不归本构造器管
      */
     public boolean tryTakeover(Player p, String body) {
         if (body.isEmpty()) return false;
@@ -281,22 +281,40 @@ public class JsonMessageGui implements Listener {
         s.styleFlags = 0;
         if (!extracted.isEmpty()) s.text.append(extracted);
 
-        // ★ 28批：延迟 1 tick 发提示——先让原生最小化报错落地，再看到提示+超链接
+        // ★ 29批：延迟 1 tick —— 先让 suppressUnknown 压掉的原生报错彻底落地，
+        //   再发「标准最小化示例 + /json CLI 连接」并直接打开构造器（回退28批不打开的决定）
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             p.sendMessage(net.kyori.adventure.text.Component
                     .text("[JSON构造器] ", net.kyori.adventure.text.format.NamedTextColor.GOLD)
                     .append(net.kyori.adventure.text.Component.text(
-                            "你的原文已预填 → ",
+                            "原文已预填，构造器已打开。标准写法示例：",
                             net.kyori.adventure.text.format.NamedTextColor.GRAY))
                     .append(net.kyori.adventure.text.Component.text(
-                            "[点击唤醒构造器]",
+                            exampleCmdOf(mode),
+                            net.kyori.adventure.text.format.NamedTextColor.WHITE))
+                    .append(net.kyori.adventure.text.Component.newline())
+                    .append(net.kyori.adventure.text.Component.text(
+                            "CLI 连接（备用入口）：",
+                            net.kyori.adventure.text.format.NamedTextColor.GRAY))
+                    .append(net.kyori.adventure.text.Component.text(
+                            "[/json]",
                             net.kyori.adventure.text.format.NamedTextColor.YELLOW,
                             net.kyori.adventure.text.format.TextDecoration.UNDERLINED)
                             .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/json"))
                             .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
                                     net.kyori.adventure.text.Component.text("打开 JSON 构造器（原文已预填）")))));
+            open(p);
         });
         return true;
+    }
+
+    /** 29批：各模式的标准最小化写法示例（压制原生报错后由本构造器给出） */
+    private static String exampleCmdOf(int mode) {
+        switch (mode) {
+            case MODE_TITLE:    return "/title @a title {\"text\":\"标题\"}";
+            case MODE_SUBTITLE: return "/title @a subtitle {\"text\":\"副标题\"}";
+            default:            return "/tellraw @a {\"text\":\"你好\"}";
+        }
     }
 
     /**

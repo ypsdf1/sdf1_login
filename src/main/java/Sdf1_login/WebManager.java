@@ -4294,11 +4294,15 @@ public class WebManager {
                 new String[]{},
                 alignMap(), false, false));
         // —— 封禁名单（Web 后台加的封禁要拉回游戏内生效）——
+        //   ★ 29批：map 增加 created_time→created —— PHP check_alignment 的 cols 已带上
+        //     created_time，收回行才能携带真实封禁创建时间；hashcols 故意不含 created，
+        //     指纹不变（防两端 created 精度/缺失差异恒 changed 死循环）。
         ALIGN_CFGS.put("bans", new AlignCfg("bans",
                 new String[]{"target", "ban_type"},
                 new String[]{"target", "ban_type", "reason", "source", "expire_time"},
                 new String[]{"expire_time"},
-                alignMap("ban_type", "type", "expire_time", "expire"), true, false));
+                alignMap("ban_type", "type", "expire_time", "expire",
+                        "created_time", "created"), true, false));
         // —— 领地数据（PHP web_area_lands；游戏内 area_lands 为唯一权威）——
         //   pull=false：Web 后台的领地改动不回流 Java（与改造前一致）。
         //   pushOnExtra=true：PHP 多出的行（游戏里已删 / 后台自建）→ 触发一次整包推，
@@ -4763,8 +4767,16 @@ public class WebManager {
                     }
                     // 真实签名：addBan(target, reason, expires, source)
                     // Date 必须全限定——本文件同时 import 了 java.sql.* 与 java.util.*
-                    banList.addBan(target, reason,
+                    // ★ 29批：收回行现在携带 PHP 侧创建时间（check_alignment cols 已含
+                    //   created_time→created）。addBan 默认 created=now，若不回填，
+                    //   生产封禁数据拷到测试服后「收回」一轮会把所有封禁的创建时间刷成
+                    //   当天 → 封禁播报全员乱叫（2026-10-22 用户实测）。
+                    org.bukkit.BanEntry<?> pulled = banList.addBan(target, reason,
                             expire > 0 ? new java.util.Date(expire) : null, source);
+                    long created = longOf(row.get("created"));
+                    if (pulled != null && created > 0) {
+                        pulled.setCreated(new java.util.Date(created));
+                    }
                     plugin.getLogger().info("[对账] 已收回 Web 端封禁: " + (isIp ? "IP " : "") + target);
                     return true;
                 }

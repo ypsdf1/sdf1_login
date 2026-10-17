@@ -4515,9 +4515,11 @@ public class Main extends JavaPlugin
             if (lowerBody.startsWith("tellraw ")
                     || lowerBody.startsWith("title ")) {
                 if (jsonGui.tryTakeover((Player) sender, body)) {
-                    // 28批：不再 suppressUnknown——按用户要求保留原生最小化报错，
-                    // tryTakeover 只负责预填+发提示超链接（由玩家点链接唤醒GUI）
-                    getLogger().info("[无感切换] title/tellraw 报错已提示进JSON构造器: \""
+                    // ★ 29批（回退28批）：压制原生 "<--[HERE]" 报错 —— tryTakeover 接管后
+                    //   自己发「标准最小化示例 + /json CLI超链接」并直接打开构造器，
+                    //   原生那行报错按用户要求压掉
+                    suppressUnknown(e);
+                    getLogger().info("[无感切换] title/tellraw 报错已接管进JSON构造器: \""
                             + body + "\"");
                     return;
                 }
