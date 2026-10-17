@@ -440,46 +440,70 @@ public class ChestCarryManager implements Listener {
             }
             st = placed.getState();   // update 后旧快照失效，重新取
             if (!(st instanceof org.bukkit.block.Container)) return;
-            // ★ 33批五次：内容 >27 件的打包箱用的是 TRAPPED_CHEST（54 格容器），
-            //   但陷阱箱放置后不会自动接双箱 → 这里主动连上邻接 27 格陷阱箱凑成
-            //   54 格，否则 28~54 件会被 27 格截断（用户实测"54 件放出来是小箱"）。
+            // ★ 33批六次修正：内容 >27 件的打包箱放下来只有 27 格 → 自动在四向找
+            //   空气位放第二个 CHEST 接成双箱（54 格），不用陷阱箱（红石误联控风险）。
+            //   放完第二个再回填（双箱连接后 getInventory 返回 54 格全量）。
             try {
-                int contentCount = 0;
                 ItemStack[] items0 = InventorySerializer.fromBase64(data);
+                int contentCount = 0;
                 for (ItemStack it0 : items0) {
                     if (it0 != null && !it0.getType().isAir()) contentCount += it0.getAmount();
                 }
                 if (contentCount > 27) {
-                    org.bukkit.block.data.type.Chest chestData =
-                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                    // 尝试水平四向接双箱（与已有邻接陷阱箱/木箱共用 54 格库存）
                     World w = placed.getWorld();
                     int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
+                    // 优先四向接已有邻接木箱（共用 54 格库存）；否则在空气位放第二个
                     Block[][] cands = {
                             {w.getBlockAt(px + 1, py, pz), w.getBlockAt(px - 1, py, pz)},
                             {w.getBlockAt(px, py, pz + 1), w.getBlockAt(px, py, pz - 1)},
                     };
+                    boolean connected = false;
                     for (Block[] row : cands) {
                         for (Block c : row) {
-                            if (c != null && isChestMaterial(c.getType())
-                                    && (c.getType() == org.bukkit.Material.TRAPPED_CHEST
-                                        || c.getType() == org.bukkit.Material.CHEST)) {
-                                // 把刚放的陷阱箱 block data 接到已有箱上
-                                chestData.setType(Chest.Type.LEFT);
-                                placed.setBlockData(chestData);
+                            if (c != null && c.getType() == org.bukkit.Material.CHEST) {
+                                // 已有邻接木箱 → 把刚放这块设成 LEFT 接上
+                                org.bukkit.block.data.type.Chest bd =
+                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                bd.setType(Chest.Type.LEFT);
+                                placed.setBlockData(bd);
+                                connected = true;
+                                break;
+                            }
+                        }
+                        if (connected) break;
+                    }
+                    if (!connected) {
+                        // 四向无木箱 → 找一个空气位放第二个 CHEST 接双箱
+                        int[][] offsets = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+                        for (int[] off : offsets) {
+                            Location airLoc = new Location(w, px + off[0], py, pz + off[1]);
+                            Block air = w.getBlockAt(airLoc);
+                            if (air.getType() == org.bukkit.Material.AIR) {
+                                // 放第二个木箱，并把两块都设 LEFT 让它们自动接成双箱
+                                air.setType(org.bukkit.Material.CHEST, false);
+                                org.bukkit.block.data.type.Chest bd2 =
+                                        (org.bukkit.block.data.type.Chest) air.getBlockData();
+                                bd2.setType(Chest.Type.LEFT);
+                                air.setBlockData(bd2);
+                                org.bukkit.block.data.type.Chest bd1 =
+                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                bd1.setType(Chest.Type.LEFT);
+                                placed.setBlockData(bd1);
                                 plugin.getLogger().fine(
-                                        "[箱子搬运] 54格容器自动接双箱于 "
-                                                + c.getX() + "," + c.getY() + "," + c.getZ());
+                                        "[箱子搬运] 54格自动放第二半木箱于 "
+                                                + air.getX() + "," + air.getY() + "," + air.getZ());
+                                connected = true;
                                 break;
                             }
                         }
                     }
                 }
             } catch (Exception ex) {
-                // 接双箱失败不影响回填（回填按放置后容器实际大小自然截断）
-                plugin.getLogger().fine("[箱子搬运] 接双箱失败(不影响回填): " + ex.getMessage());
+                // 接双箱失败不影响回填（按 27 格截断，不吞物）
+                plugin.getLogger().fine("[箱子搬运] 接双箱失败(不回填): " + ex.getMessage());
             }
             try {
+                st = placed.getState();   // 接双箱后重取快照（连接后 54 格）
                 ItemStack[] items = InventorySerializer.fromBase64(data);
                 Inventory inv = ((org.bukkit.block.Container) st).getInventory();
                 inv.clear();
@@ -537,19 +561,20 @@ public class ChestCarryManager implements Listener {
     }
 
     /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容。
-     *  ★ 33批五次：内容数 >27 → 用 TRAPPED_CHEST（54 格陷阱箱，放置后自动接成
-     *    双箱塞得下全量）；≤27 件沿用来源箱子材质（木箱/铜箱保持原版观感）。 */
+     *  ★ 33批六次修正：用户明令不用陷阱箱（红石电路误联控风险）——一律用 CHEST
+     *    或来源箱子材质；>27 件放下来时由 onChestPlace 自动再放一个 CHEST 接双箱
+     *    凑 54 格，不用 TRAPPED_CHEST。 */
     private ItemStack buildPackedChest(Material sourceMat, String halfName,
                                        ItemStack[] contents) throws Exception {
         int count = countItems(contents);
         boolean big = count > 27;
-        Material containerMat = big ? Material.TRAPPED_CHEST
-                : (sourceMat != null ? sourceMat : Material.CHEST);
+        // 不用陷阱箱（红石电路误联控风险）：统一 CHEST / 来源材质
+        Material containerMat = sourceMat != null ? sourceMat : Material.CHEST;
         ItemStack it = new ItemStack(containerMat);
         ItemMeta meta = it.getItemMeta();
         String matLabel = containerMat.name().toLowerCase(java.util.Locale.ROOT);
         meta.setDisplayName("§b§l打包箱 §7(" + halfName + " §8· " + matLabel
-                + (big ? " §f54格" : "") + ")");
+                + (big ? " §f54格(放置自动接双箱)" : "") + ")");
         List<String> lore = new ArrayList<>();
         lore.add("§7内含 §f" + count + " §7件物品");
         lore.add(big ? "§e放置后自动接双箱(54格)回填" : "§a放置后 §7自动回填内容");
@@ -589,7 +614,7 @@ public class ChestCarryManager implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onChestDropItem(BlockDropItemEvent e) {
         if (suppressDrops.isEmpty()) return;
-        if (suppressDrops.remove(e.getBlock().getLocation())) {
+        if (suppressDrops.contains(e.getBlock().getLocation())) {
             e.setCancelled(true);
         }
     }
