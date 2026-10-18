@@ -472,13 +472,16 @@ public class ChestCarryManager implements Listener {
                     for (Block[] row : cands) {
                         for (Block c : row) {
                             if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                                // ★ 33批七次修正：双块都设 LEFT 才真正共享 54 格库存
+                                // ★ 33批八次修正：双块都设 LEFT + facing 对齐才共享 54 格
+                                //   （Chest 继承 Directional，朝向不同则双箱不连接，
+                                //   用户实测"前后错位切断"根因）
                                 org.bukkit.block.data.type.Chest bd =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                                bd.setType(Chest.Type.LEFT);
-                                placed.setBlockData(bd);
                                 org.bukkit.block.data.type.Chest bdN =
                                         (org.bukkit.block.data.type.Chest) c.getBlockData();
+                                bd.setType(Chest.Type.LEFT);
+                                bd.setFacing(bdN.getFacing());   // 对齐朝向
+                                placed.setBlockData(bd);
                                 bdN.setType(Chest.Type.LEFT);
                                 c.setBlockData(bdN);
                                 plugin.getLogger().fine(
@@ -497,14 +500,15 @@ public class ChestCarryManager implements Listener {
                             Location airLoc = new Location(w, px + off[0], py, pz + off[1]);
                             Block air = w.getBlockAt(airLoc);
                             if (air.getType() == org.bukkit.Material.AIR) {
-                                // 放第二个木箱，并把两块都设 LEFT 让它们自动接成双箱
+                                // ★ 33批八次修正：放第二个木箱 + 双块 LEFT + facing 对齐
                                 air.setType(org.bukkit.Material.CHEST, false);
                                 org.bukkit.block.data.type.Chest bd2 =
                                         (org.bukkit.block.data.type.Chest) air.getBlockData();
-                                bd2.setType(Chest.Type.LEFT);
-                                air.setBlockData(bd2);
                                 org.bukkit.block.data.type.Chest bd1 =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                bd2.setType(Chest.Type.LEFT);
+                                bd2.setFacing(bd1.getFacing());   // 朝向对齐
+                                air.setBlockData(bd2);
                                 bd1.setType(Chest.Type.LEFT);
                                 placed.setBlockData(bd1);
                                 plugin.getLogger().fine(
@@ -586,8 +590,11 @@ public class ChestCarryManager implements Listener {
                                        ItemStack[] contents) throws Exception {
         int count = countItems(contents);
         boolean big = count > 27;
-        // 不用陷阱箱（红石电路误联控风险）：统一 CHEST / 来源材质
-        Material containerMat = sourceMat != null ? sourceMat : Material.CHEST;
+        // ★ 33批八次修正：大箱子(>27件)强制用原版普通 CHEST（不用来源材质，
+        //   避免来源是陷阱箱时打包箱也是陷阱箱）；小箱子(≤27件)沿用来源材质
+        //   保持原版观感（铜箱拆出来还是铜箱）。
+        Material containerMat = big ? Material.CHEST
+                : (sourceMat != null ? sourceMat : Material.CHEST);
         ItemStack it = new ItemStack(containerMat);
         ItemMeta meta = it.getItemMeta();
         String matLabel = containerMat.name().toLowerCase(java.util.Locale.ROOT);
