@@ -2195,9 +2195,16 @@ public class Main extends JavaPlugin
                 try {
                     if (b != null && isValidBackup(b)) {
                         debugPrintBase64("恢复前", name, b[0]);
+                        // ★ 33批二十四次修正：DB 背包备份里也可能存着旧超大打包箱
+                        //（19:33:39 实锤：登录自愈清掉背包炸弹后，这里又从 DB 塞回来
+                        // → container_set_slot 编码失败照样被踢）。先拆分再 setContents。
+                        List<ItemStack> healExtras = new ArrayList<>();
+                        boolean healedAny = false;
                         ItemStack[] contents =
                                 InventorySerializer
                                         .fromBase64(b[0]);
+                        if (contents != null && chestCarryManager != null)
+                            healedAny |= chestCarryManager.healOversizedArray(contents, healExtras);
                         if (contents != null)
                             p.getInventory()
                                     .setContents(contents);
@@ -2205,6 +2212,8 @@ public class Main extends JavaPlugin
                             ItemStack[] armor =
                                     InventorySerializer
                                             .fromBase64(b[1]);
+                            if (armor != null && chestCarryManager != null)
+                                healedAny |= chestCarryManager.healOversizedArray(armor, healExtras);
                             if (armor != null)
                                 p.getInventory()
                                         .setArmorContents(
@@ -2214,11 +2223,23 @@ public class Main extends JavaPlugin
                             ItemStack[] extra =
                                     InventorySerializer
                                             .fromBase64(b[2]);
+                            if (extra != null && chestCarryManager != null)
+                                healedAny |= chestCarryManager.healOversizedArray(extra, healExtras);
                             if (extra != null)
                                 p.getInventory()
                                         .setExtraContents(
                                                 extra);
                         }
+                        for (ItemStack healAdd : healExtras) {
+                            HashMap<Integer, ItemStack> remH =
+                                    p.getInventory().addItem(healAdd);
+                            if (!remH.isEmpty())
+                                remH.values().forEach(x ->
+                                        p.getWorld().dropItemNaturally(p.getLocation(), x));
+                        }
+                        if (healedAny)
+                            getLogger().info("[Sdf1_login] " + name
+                                    + " DB背包备份中的超大打包箱已拆分修复");
                         int lv = Integer.parseInt(b[3]);
                         if (lv > 0) p.setLevel(lv);
                         double xp = Double.parseDouble(b[4]);

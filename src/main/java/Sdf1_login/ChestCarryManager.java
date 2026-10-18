@@ -718,9 +718,30 @@ public class ChestCarryManager implements Listener {
     /** 扫描并拆分超大 PDC 打包箱（背包/盔甲/副手/末影箱全覆盖）。 */
     private void healOversizedInventory(Inventory inv, Player p) {
         if (inv == null) return;
-        boolean changed = false;
         List<ItemStack> toAdd = new ArrayList<>();
         ItemStack[] contents = inv.getContents();
+        boolean changed = healOversizedArray(contents, toAdd);
+        if (changed) {
+            plugin.getLogger().info("[箱子搬运][登录自愈] 玩家 " + p.getName()
+                    + " 超大打包箱已自愈 (补出 " + toAdd.size() + " 箱)");
+            inv.setContents(contents);
+            for (ItemStack add : toAdd) {
+                HashMap<Integer, ItemStack> rem = inv.addItem(add);
+                if (!rem.isEmpty()) {
+                    rem.values().forEach(x -> p.getWorld().dropItemNaturally(p.getLocation(), x));
+                }
+            }
+        }
+    }
+
+    /** ★ 33批二十四次修正：就地拆分 ItemStack[] 里的超大 PDC 打包箱（55000 字符上限），
+     *  拆出的多余箱进 extrasOut。供登录自愈与 Main.restoreInventory（DB 背包备份恢复）
+     *  共用——19:33:39 实锤：登录自愈清掉背包炸弹后，restoreInventory 又从 DB
+     *  inventory_backups 把 109280 字节超大箱 setContents 塞回背包，
+     *  container_set_slot 编码失败照样被踢。 */
+    public boolean healOversizedArray(ItemStack[] contents, List<ItemStack> extrasOut) {
+        if (contents == null) return false;
+        boolean changed = false;
         for (int i = 0; i < contents.length; i++) {
             ItemStack item = contents[i];
             if (item == null || item.getType().isAir()) continue;
@@ -741,28 +762,16 @@ public class ChestCarryManager implements Listener {
                 List<ItemStack> split = buildPackedChestsSplit(Material.CHEST, halfName, items, false);
                 if (!split.isEmpty()) {
                     contents[i] = split.get(0);
-                    for (int k = 1; k < split.size(); k++) {
-                        toAdd.add(split.get(k));
-                    }
-                    plugin.getLogger().info("[箱子搬运][登录自愈] 玩家 " + p.getName()
-                            + " 超大打包箱已拆分为 " + split.size() + " 箱 (原PDC " + data.length() + " 字符)");
+                    extrasOut.addAll(split.subList(1, split.size()));
                 } else {
                     contents[i] = null;
                 }
             } catch (Exception ex) {
                 contents[i] = null;
-                plugin.getLogger().warning("[箱子搬运][登录自愈] 移除无法解析的超大打包箱: " + ex.getMessage());
+                plugin.getLogger().warning("[箱子搬运][超大箱自愈] 移除无法解析的超大打包箱: " + ex.getMessage());
             }
         }
-        if (changed) {
-            inv.setContents(contents);
-            for (ItemStack add : toAdd) {
-                HashMap<Integer, ItemStack> rem = inv.addItem(add);
-                if (!rem.isEmpty()) {
-                    rem.values().forEach(x -> p.getWorld().dropItemNaturally(p.getLocation(), x));
-                }
-            }
-        }
+        return changed;
     }
 
     // ==================== 内部工具 ====================
