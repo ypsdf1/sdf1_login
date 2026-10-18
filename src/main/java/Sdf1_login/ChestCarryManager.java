@@ -598,9 +598,13 @@ public class ChestCarryManager implements Listener {
                             return;   // 回退已处理，不再回填
                         }
                         // 双箱已连（54格）→ 立即回填
+                        plugin.getLogger().info("[箱子搬运][诊断] 双箱已连 placedSize=" + placedSize
+                                + " 需" + slotCountFinal + " 立即回填");
                         doBackfill(placedFinal, data, placerUuid);
                     } else {
                         // 单箱场景(≤27格)：立即回填（原逻辑）
+                        plugin.getLogger().info("[箱子搬运][诊断] 单箱场景 slotCount=" + slotCount
+                                + " 需" + countSlots(items0) + " 立即回填");
                         doBackfill(placed, data, placerUuid);
                     }
                 }
@@ -885,8 +889,12 @@ public class ChestCarryManager implements Listener {
                     filled++;
                 }
             }
-            if (filled < countSlots(items)) {
-                int missing = countSlots(items) - filled;
+            int totalSlots = countSlots(items);
+            plugin.getLogger().info("[箱子搬运][诊断] 回填完成 cap=" + cap + "格 filled=" + filled
+                    + "/" + totalSlots + " items数=" + items.length
+                    + "（" + placedIn.getX() + "," + placedIn.getY() + "," + placedIn.getZ() + "）");
+            if (filled < totalSlots) {
+                int missing = totalSlots - filled;
                 plugin.getLogger().info("[箱子搬运][诊断] 容器仅 " + cap + " 格，" + missing + " 件未塞入 → 重新打包寄玩家");
                 List<ItemStack> missingList = new ArrayList<>();
                 for (int mi = filled; mi < items.length; mi++) {
