@@ -15,6 +15,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockDropItemEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -697,6 +698,71 @@ public class ChestCarryManager implements Listener {
             }
             // 回填：读真实库存（连接生效=54 格，未生效=27 格），塞不下的掉在箱子旁
         });
+    }
+
+    /** ★ 33批二十三次修正：登录自愈——扫描背包超大 PDC 打包箱并拆分替换。
+     *  根因（生产服 19:13:46 实锤）：18:39 旧 jar 时代创建的超大打包箱（PDC base64
+     *  109280 字节 > 65535 NBT 上限）卡在玩家存档里，每次登录服务端发包/存档失败
+     *  → 玩家被踢。二十二次拆分修复只防新建超大物品，卡在存档里的旧物品需登录时
+     *  反序列化重新拆分成多个小箱替换掉。 */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onLoginHealOversized(PlayerLoginEvent e) {
+        Player p = e.getPlayer();
+        try {
+            healOversizedInventory(p.getInventory(), p);
+        } catch (Exception ex) {
+            plugin.getLogger().warning("[箱子搬运][登录自愈]异常: " + ex.getMessage());
+        }
+    }
+
+    /** 扫描并拆分超大 PDC 打包箱（背包/盔甲/副手/末影箱全覆盖）。 */
+    private void healOversizedInventory(Inventory inv, Player p) {
+        if (inv == null) return;
+        boolean changed = false;
+        List<ItemStack> toAdd = new ArrayList<>();
+        ItemStack[] contents = inv.getContents();
+        for (int i = 0; i < contents.length; i++) {
+            ItemStack item = contents[i];
+            if (item == null || item.getType().isAir()) continue;
+            if (!isChestMaterial(item.getType())) continue;
+            if (!item.hasItemMeta()) continue;
+            PersistentDataContainer pdc = item.getItemMeta().getPersistentDataContainer();
+            if (!pdc.has(carryKey.key, PersistentDataType.STRING)) continue;
+            String data = pdc.get(carryKey.key, PersistentDataType.STRING);
+            if (data == null || data.length() <= 55000) continue;
+            // 超大 PDC —— 反序列化重新拆分
+            changed = true;
+            try {
+                ItemStack[] items = InventorySerializer.fromBase64(data);
+                String halfName = "超大回血箱";
+                if (item.getItemMeta().hasDisplayName()) {
+                    halfName = item.getItemMeta().getDisplayName();
+                }
+                List<ItemStack> split = buildPackedChestsSplit(Material.CHEST, halfName, items, false);
+                if (!split.isEmpty()) {
+                    contents[i] = split.get(0);
+                    for (int k = 1; k < split.size(); k++) {
+                        toAdd.add(split.get(k));
+                    }
+                    plugin.getLogger().info("[箱子搬运][登录自愈] 玩家 " + p.getName()
+                            + " 超大打包箱已拆分为 " + split.size() + " 箱 (原PDC " + data.length() + " 字符)");
+                } else {
+                    contents[i] = null;
+                }
+            } catch (Exception ex) {
+                contents[i] = null;
+                plugin.getLogger().warning("[箱子搬运][登录自愈] 移除无法解析的超大打包箱: " + ex.getMessage());
+            }
+        }
+        if (changed) {
+            inv.setContents(contents);
+            for (ItemStack add : toAdd) {
+                HashMap<Integer, ItemStack> rem = inv.addItem(add);
+                if (!rem.isEmpty()) {
+                    rem.values().forEach(x -> p.getWorld().dropItemNaturally(p.getLocation(), x));
+                }
+            }
+        }
     }
 
     // ==================== 内部工具 ====================
