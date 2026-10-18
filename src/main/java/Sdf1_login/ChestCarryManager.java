@@ -950,6 +950,19 @@ public class ChestCarryManager implements Listener {
     private void clearChestBlock(Block bl) {
         try {
             if (bl != null && bl.getType() != org.bukkit.Material.AIR) {
+                // ★ 33批二十五次修正（拆大箱子散落一地根因）：setType(AIR) 触发
+                //   ChestBlock.onRemove → Containers.dropContents，把双箱共享库存
+                //   （DoubleInventory 54 格）全部洒到地上 —— 插件随后又交付打包箱
+                //   → 双倍凋落物。onRemove 的掉落直接 spawn ItemEntity，
+                //   setDropItems(false)/BlockDropItemEvent 都拦不住。
+                //   调用方（合并分支）已在此之前用 newMergedContents 读走双半快照，
+                //   这里先清空真实库存再移除方块 = 原版无物可吐，只给玩家打包箱。
+                try {
+                    org.bukkit.block.BlockState tst = bl.getState();
+                    if (tst instanceof org.bukkit.block.Container) {
+                        ((org.bukkit.block.Container) tst).getInventory().clear();
+                    }
+                } catch (Throwable ignored) { }
                 bl.setType(org.bukkit.Material.AIR, false);
                 // ★ 33批十一次：清后 2 tick 再清一次（防双箱连接态回弹，孤半不再越积越多）
                 int bx = bl.getX(), by = bl.getY(), bz = bl.getZ();
