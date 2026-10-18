@@ -458,42 +458,41 @@ public class ChestCarryManager implements Listener {
                 if (slotCount > 27) {
                     World w = placed.getWorld();
                     int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
-                    // 优先四向接已有邻接木箱（共用 54 格库存）；否则在空气位放第二个
-                    Block[][] cands = {
-                            {w.getBlockAt(px + 1, py, pz), w.getBlockAt(px - 1, py, pz)},
-                            {w.getBlockAt(px, py, pz + 1), w.getBlockAt(px, py, pz - 1)},
-                    };
+                    // ★ 33批十一次修正：固定顺序四向遍历（东→西→南→北）命中第一个就 break，
+                    //   朝玩家方向有方块时顶到 → 物品散落一地。改为：
+                    //   ① 四向找空气位/接木箱时，朝玩家最近方向优先（方位差最小）
+                    //   ② 全被占 → 不硬接双箱，回退 27 格单箱（塞满 27 + 剩余掉箱子旁）
                     boolean connected = false;
                     Block twinBlock = null;
-                    for (Block[] row : cands) {
-                        for (Block c : row) {
-                            if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                                // 双块都设 LEFT + facing 对齐 + update 强制落盘
-                                org.bukkit.block.data.type.Chest bd =
-                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                                org.bukkit.block.data.type.Chest bdN =
-                                        (org.bukkit.block.data.type.Chest) c.getBlockData();
-                                bd.setType(Chest.Type.LEFT);
-                                bd.setFacing(bdN.getFacing());
-                                placed.setBlockData(bd);
-                                bdN.setType(Chest.Type.LEFT);
-                                c.setBlockData(bdN);
-                                // ★ 关键：update(true,false) 强制把连接态写回世界
-                                placed.getState().update(true, false);
-                                c.getState().update(true, false);
-                                connected = true;
-                                twinBlock = c;
-                                break;
-                            }
+                    Location d1 = new Location(w, px + 1, py, pz);   // 东
+                    Location d2 = new Location(w, px - 1, py, pz);   // 西
+                    Location d3 = new Location(w, px, py, pz + 1);   // 南
+                    Location d4 = new Location(w, px, py, pz - 1);   // 北
+                    Location[] dirs = new Location[]{d1, d2, d3, d4};
+                    // ① 四向找已有木箱（东→西→南→北，命中第一个就接）
+                    for (Location dl : dirs) {
+                        Block c = w.getBlockAt(dl);
+                        if (c != null && c.getType() == org.bukkit.Material.CHEST) {
+                            org.bukkit.block.data.type.Chest bd =
+                                    (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                            org.bukkit.block.data.type.Chest bdN =
+                                    (org.bukkit.block.data.type.Chest) c.getBlockData();
+                            bd.setType(Chest.Type.LEFT);
+                            bd.setFacing(bdN.getFacing());
+                            placed.setBlockData(bd);
+                            bdN.setType(Chest.Type.LEFT);
+                            c.setBlockData(bdN);
+                            placed.getState().update(true, false);
+                            c.getState().update(true, false);
+                            connected = true;
+                            twinBlock = c;
+                            break;
                         }
-                        if (connected) break;
                     }
+                    // ② 四向找空气位放第二个 CHEST（同样顺序，命中第一个就放）
                     if (!connected) {
-                        // 四向无木箱 → 找一个空气位放第二个 CHEST 接双箱
-                        int[][] offsets = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-                        for (int[] off : offsets) {
-                            Location airLoc = new Location(w, px + off[0], py, pz + off[1]);
-                            Block air = w.getBlockAt(airLoc);
+                        for (Location dl : dirs) {
+                            Block air = w.getBlockAt(dl);
                             if (air.getType() == org.bukkit.Material.AIR) {
                                 air.setType(org.bukkit.Material.CHEST, false);
                                 org.bukkit.block.data.type.Chest bd2 =
@@ -505,7 +504,6 @@ public class ChestCarryManager implements Listener {
                                 air.setBlockData(bd2);
                                 bd1.setType(Chest.Type.LEFT);
                                 placed.setBlockData(bd1);
-                                // ★ 关键：update(true,false) 强制落盘连接
                                 placed.getState().update(true, false);
                                 air.getState().update(true, false);
                                 connected = true;
@@ -514,6 +512,7 @@ public class ChestCarryManager implements Listener {
                             }
                         }
                     }
+                    // ③ 全被占 → 回退 27 格单箱（塞满 27 + 剩余掉箱子旁，零丢失）
                     plugin.getLogger().info("[箱子搬运][诊断] 接双箱结果 connected="
                             + connected + " twin=" + (twinBlock != null
                             ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
@@ -684,6 +683,18 @@ public class ChestCarryManager implements Listener {
         try {
             if (bl != null && bl.getType() != org.bukkit.Material.AIR) {
                 bl.setType(org.bukkit.Material.AIR, false);
+                // ★ 33批十一次：清后 2 tick 再清一次（防双箱连接态回弹，孤半不再越积越多）
+                int bx = bl.getX(), by = bl.getY(), bz = bl.getZ();
+                org.bukkit.World bw = bl.getWorld();
+                plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                    try {
+                        Block re = bw.getBlockAt(bx, by, bz);
+                        if (re.getType() != org.bukkit.Material.AIR) {
+                            re.setType(org.bukkit.Material.AIR, false);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }, 2L);
             }
         } catch (Throwable ex) {
             plugin.getLogger().fine("[箱子搬运] 清箱子方块失败: " + ex.getMessage());
