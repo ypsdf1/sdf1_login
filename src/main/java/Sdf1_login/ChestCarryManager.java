@@ -475,17 +475,19 @@ public class ChestCarryManager implements Listener {
                     for (Location dl : dirs) {
                         Block c = w.getBlockAt(dl);
                         if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                            org.bukkit.block.data.type.Chest bd =
-                                    (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                            org.bukkit.block.data.type.Chest bdN =
-                                    (org.bukkit.block.data.type.Chest) c.getBlockData();
-                            bd.setType(Chest.Type.LEFT);
-                            bd.setFacing(bdN.getFacing());
-                            placed.setBlockData(bd);
-                            bdN.setType(Chest.Type.LEFT);
-                            c.setBlockData(bdN);
-                            placed.getState().update(true, false);
-                            c.getState().update(true, false);
+                            // ★ 33批十四次修正：引擎原生——placed 已是 CHEST，只需把 facing 对齐邻箱，
+                            //   引擎据相邻关系自动连 54 格双箱；彻底移除手动 setBlockData(LEFT)。
+                            try {
+                                org.bukkit.block.data.type.Chest bdP =
+                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                org.bukkit.block.data.type.Chest bdC =
+                                        (org.bukkit.block.data.type.Chest) c.getBlockData();
+                                bdP.setFacing(bdC.getFacing());
+                                placed.setBlockData(bdP);
+                                placed.getState().update(true, false);
+                                c.getState().update(true, false);
+                            } catch (Exception ign) {
+                            }
                             connected = true;
                             twinBlock = c;
                             break;
@@ -496,31 +498,32 @@ public class ChestCarryManager implements Listener {
                         for (Location dl : dirs) {
                             Block air = w.getBlockAt(dl);
                             if (air.getType() == org.bukkit.Material.AIR) {
+                                // ★ 33批十四次修正：引擎原生——air.setType(CHEST,false) 摆第二只箱子，
+                                //   引擎检测到与 placed 紧邻会自动连成 54 格双箱；
+                                //   彻底移除手动 setBlockData(LEFT)（Paper26 建不出 54 格连接，十三次实锤）。
                                 air.setType(org.bukkit.Material.CHEST, false);
-                                org.bukkit.block.data.type.Chest bd2 =
-                                        (org.bukkit.block.data.type.Chest) air.getBlockData();
-                                org.bukkit.block.data.type.Chest bd1 =
-                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                                bd2.setType(Chest.Type.LEFT);
-                                bd2.setFacing(bd1.getFacing());
-                                air.setBlockData(bd2);
-                                bd1.setType(Chest.Type.LEFT);
-                                placed.setBlockData(bd1);
-                                placed.getState().update(true, false);
-                                air.getState().update(true, false);
+                                // 仅对齐 facing（双箱朝向一致），不碰 Chest.Type（引擎自动判定 LEFT/RIGHT）
+                                try {
+                                    org.bukkit.block.data.type.Chest bdP =
+                                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                    org.bukkit.block.data.type.Chest bdA =
+                                            (org.bukkit.block.data.type.Chest) air.getBlockData();
+                                    bdA.setFacing(bdP.getFacing());
+                                    air.setBlockData(bdA);
+                                    placed.getState().update(true, false);
+                                    air.getState().update(true, false);
+                                } catch (Exception ign) {
+                                }
                                 connected = true;
                                 twinBlock = air;
                                 break;
                             }
                         }
                     }
-                    // ③ 全被占 → 回退 27 格单箱（塞满 27 + 剩余掉箱子旁，零丢失）
-                    plugin.getLogger().info("[箱子搬运][诊断] 接双箱结果 connected="
-                            + connected + " twin=" + (twinBlock != null
-                            ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
-                            + " 需塞入格子数=" + slotCount);
-                    // ★ 33批十三次修正：接双箱后 2 tick 实测读真实库存判断 54/27，
-                    //   不信任 connected 标志（update(true,false) 在 Paper 26 上可能没真正连成）。
+                    // ③ 全被占 → 清方块 + 重新打包寄玩家（环境不安全，不硬接双箱）
+                    // ★ 33批十四次修正：彻底移除手动 setBlockData(LEFT)，引擎据相邻关系自动连双箱；
+                    //   接双箱后【立即】实测真实 size（同步操作连接已生效），
+                    //   未连成清双箱 + 全部物品重新打包寄玩家（不残地，防岩浆/垃圾箱环境物品丢失）。
                     final Block placedFinal = placed;
                     final Block twinFinal = twinBlock;
                     final int slotCountFinal = slotCount;
@@ -552,49 +555,50 @@ public class ChestCarryManager implements Listener {
                         }
                         return;
                     }
-                    // ★ 十三次修正：双箱场景(>27格)→ 2 tick 后实测真实 size 再决定回填/回退
+                    // ★ 十四次修正：双箱场景(>27格)→【立即】实测真实 size 再决定回填/回退。
+                    //   setBlockData(LEFT)+update(true,false) 是同步的，双箱 54 格连接即时生效，
+                    //   立即实测即可读到真实 size；原来 2 tick 走异步线程时容器尚未同步 → 误读 27 格
+                    //   → 误判未连成 → 走「双箱未连回退箱」寄玩家（用户看到空白箱的根因）。
                     if (slotCount > 27) {
-                        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-                            int placedSize = -1;
-                            try {
-                                org.bukkit.block.BlockState stP = placedFinal.getState();
-                                if (stP instanceof org.bukkit.block.Container) {
-                                    placedSize = ((org.bukkit.block.Container) stP).getInventory().getSize();
-                                }
-                            } catch (Exception ignored) {
+                        int placedSize = -1;
+                        try {
+                            org.bukkit.block.BlockState stP = placedFinal.getState();
+                            if (stP instanceof org.bukkit.block.Container) {
+                                placedSize = ((org.bukkit.block.Container) stP).getInventory().getSize();
                             }
-                            plugin.getLogger().info("[箱子搬运][诊断] 接双箱实测 placed=" + placedSize
-                                    + "格（需" + slotCountFinal + "）");
-                            if (placedSize < 54) {
-                                // 没连成：清双箱 + 全部物品重新打包寄玩家（不残地）
-                                plugin.getLogger().info("[箱子搬运][诊断] 双箱未连 → 清方块 + 全部物品重新打包寄玩家（" + slotCountFinal + " 件）");
-                                placedFinal.setType(org.bukkit.Material.AIR, false);
-                                if (twinFinal != null && twinFinal.getType() != org.bukkit.Material.AIR) {
-                                    twinFinal.setType(org.bukkit.Material.AIR, false);
-                                }
-                                org.bukkit.entity.Player placerB = Bukkit.getPlayer(placerUuid);
-                                List<ItemStack> allListB = new ArrayList<>();
-                                for (ItemStack x : items0) {
-                                    if (x != null && !x.getType().isAir()) allListB.add(x);
-                                }
-                                if (!allListB.isEmpty()) {
-                                    ItemStack[] allArrB = allListB.toArray(new ItemStack[0]);
-                                    try {
-                                        ItemStack packedB = buildPackedChest(Material.CHEST, "双箱未连回退箱", allArrB);
-                                        if (placerB != null && placerB.isOnline()) {
-                                            HashMap<Integer, ItemStack> remB = placerB.getInventory().addItem(packedB);
-                                            if (!remB.isEmpty()) remB.values().forEach(x -> placerB.getWorld().dropItemNaturally(placerB.getLocation(), x));
-                                            placerB.sendMessage("§e[箱子搬运] §7双箱未连成（环境不安全），已重新打包 " + allArrB.length + " 件寄给你，请再放一次");
-                                        } else {
-                                            placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedB);
-                                        }
-                                    } catch (Exception exB) { plugin.getLogger().warning("[箱子搬运] 双箱未连回退异常: " + exB.getMessage()); }
-                                }
-                                return;   // 回退已处理，不再回填
+                        } catch (Exception ignored) {
+                        }
+                        plugin.getLogger().info("[箱子搬运][诊断] 接双箱立即实测 placed=" + placedSize
+                                + "格（需" + slotCountFinal + "）");
+                        if (placedSize < 54) {
+                            // 没连成：清双箱 + 全部物品重新打包寄玩家（不残地）
+                            plugin.getLogger().info("[箱子搬运][诊断] 双箱未连 → 清方块 + 全部物品重新打包寄玩家（" + slotCountFinal + " 件）");
+                            placedFinal.setType(org.bukkit.Material.AIR, false);
+                            if (twinFinal != null && twinFinal.getType() != org.bukkit.Material.AIR) {
+                                twinFinal.setType(org.bukkit.Material.AIR, false);
                             }
-                            // 双箱已连（54格）→ 回填
-                            doBackfill(placedFinal, data, placerUuid);
-                        }, 2L);
+                            org.bukkit.entity.Player placerB = Bukkit.getPlayer(placerUuid);
+                            List<ItemStack> allListB = new ArrayList<>();
+                            for (ItemStack x : items0) {
+                                if (x != null && !x.getType().isAir()) allListB.add(x);
+                            }
+                            if (!allListB.isEmpty()) {
+                                ItemStack[] allArrB = allListB.toArray(new ItemStack[0]);
+                                try {
+                                    ItemStack packedB = buildPackedChest(Material.CHEST, "双箱未连回退箱", allArrB);
+                                    if (placerB != null && placerB.isOnline()) {
+                                        HashMap<Integer, ItemStack> remB = placerB.getInventory().addItem(packedB);
+                                        if (!remB.isEmpty()) remB.values().forEach(x -> placerB.getWorld().dropItemNaturally(placerB.getLocation(), x));
+                                        placerB.sendMessage("§e[箱子搬运] §7双箱未连成（环境不安全），已重新打包 " + allArrB.length + " 件寄给你，请再放一次");
+                                    } else {
+                                        placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedB);
+                                    }
+                                } catch (Exception exB) { plugin.getLogger().warning("[箱子搬运] 双箱未连回退异常: " + exB.getMessage()); }
+                            }
+                            return;   // 回退已处理，不再回填
+                        }
+                        // 双箱已连（54格）→ 立即回填
+                        doBackfill(placedFinal, data, placerUuid);
                     } else {
                         // 单箱场景(≤27格)：立即回填（原逻辑）
                         doBackfill(placed, data, placerUuid);
