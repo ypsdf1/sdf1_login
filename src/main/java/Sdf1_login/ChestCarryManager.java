@@ -532,16 +532,34 @@ public class ChestCarryManager implements Listener {
                         }
                     }
                     // ③ 全被占 → 清方块 + 重新打包寄玩家（环境不安全，不硬接双箱）
-                    // ★ 33批十四次修正：彻底移除手动 setBlockData(LEFT)，引擎据相邻关系自动连双箱；
-                    //   接双箱后【立即】实测真实 size（同步操作连接已生效），
-                    //   未连成清双箱 + 全部物品重新打包寄玩家（不残地，防岩浆/垃圾箱环境物品丢失）。
+                    // ★ 33批二十次修正：接双箱双半各设 LEFT + update(true,false)（手动建 54 格连接，
+                    //   不依赖引擎自动检测——生产服日志实证 Paper26 对空气位摆出的第二只箱
+                    //   update(true,true) 不触发双箱检测，placed 恒 27 格；现有箱分支成功是因
+                    //   玩家放置时引擎已建好，代码自摆需手动设 LEFT）。实测延迟 2tick（双箱检测
+                    //   需物理 tick，立即读会误判未连成 → 双箱未连误回退）。
                     final Block placedFinal = placed;
                     final Block twinFinal = twinBlock;
                     final int slotCountFinal = slotCount;
-                    plugin.getLogger().info("[箱子搬运][诊断] 接双箱结果 connected="
+                    // 双半各设 LEFT + update(true,false)（手动建 54 格连接）
+                    try {
+                        org.bukkit.block.data.type.Chest bdPL =
+                                (org.bukkit.block.data.type.Chest) placedFinal.getBlockData();
+                        org.bukkit.block.data.type.Chest bdTL =
+                                (org.bukkit.block.data.type.Chest) twinFinal.getBlockData();
+                        bdPL.setFacing(bdTL.getFacing());
+                        bdPL.setType(org.bukkit.block.data.type.Chest.Type.LEFT);
+                        placedFinal.setBlockData(bdPL);
+                        bdTL.setType(org.bukkit.block.data.type.Chest.Type.LEFT);
+                        twinFinal.setBlockData(bdTL);
+                        placedFinal.getState().update(true, false);
+                        twinFinal.getState().update(true, false);
+                    } catch (Exception exL) {
+                        plugin.getLogger().warning("[箱子搬运] 双半设LEFT异常: " + exL.getMessage());
+                    }
+                    plugin.getLogger().info("[箱子搬运][诊断] 接双箱 connected="
                             + (connected ? "是" : "否") + " twin=" + (twinBlock != null
                             ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
-                            + " 需塞入格子数=" + slotCount);
+                            + " 需塞入格子数=" + slotCount + " 双半LEFT+2tick实测");
                     if (!connected) {
                         // 全被占：清方块 + 全部物品重新打包寄玩家
                         plugin.getLogger().info("[箱子搬运][诊断] 接双箱全被占 → 清方块 + 重新打包寄玩家（" + slotCount + " 件）");
@@ -566,8 +584,8 @@ public class ChestCarryManager implements Listener {
                         }
                         return;
                     }
-                    // ★ 十七次修正：移除冗余嵌套 if (slotCount > 27)（外层 L468 已保证 >27）。
-                    //   直接进双箱实测块，小箱(≤27格)走外层 else 立即 doBackfill。
+                    // ★ 二十次修正：实测延迟 2tick（双箱连接需物理 tick，立即读会误判 27 格）
+                    plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                     int placedSize = -1;
                     try {
                         org.bukkit.block.BlockState stP = placedFinal.getState();
@@ -610,6 +628,7 @@ public class ChestCarryManager implements Listener {
                     plugin.getLogger().info("[箱子搬运][诊断] 双箱已连 placedSize=" + placedSize
                             + " 需" + slotCountFinal + " 双半54格立即回填");
                     doBackfillDouble(placedFinal, twinFinal, data, placerUuid);
+                    }, 2L);
                 } else {
                     // ★ 十七次修正：单箱场景(≤27格)——立即 doBackfill 回填
                     //   （原 L612 死代码 else 提外层，对应 L468 的 if/else）
@@ -949,15 +968,14 @@ public class ChestCarryManager implements Listener {
         }
     }
 
-    /** ★ 33批十九次修正：双箱 54 格全量回填（双半独立 27 格 + 双半全清杜绝残留）。
-     *  根因（生产服 latest.log 实锤）：Bukkit 单个 BlockState 只覆盖单半 27 格，
-     *  双箱左半 state.getInventory().getSize() 恒 27。物品≥28 件塞不进 27 格 →
-     *  doBackfill 走"塞不下回退"重新打包寄玩家（打包箱给一份），而右半 27 格
-     *  原版物品从未被 clear() 清掉（只清了左半 state 覆盖的 27 格）→ 拆箱时
-     *  原版掉落一份 = 双倍掉落（用户实测「≥27 永远双倍掉落」）。
-     *  改法：双半各自读 27 格 inventory（双半全量 = 54 格），先 clear() 双半
-     *  （全 54 格清空杜绝原版残留），再按 54 格全量回填（左半 0-26、右半 0-26
-     *  物理格）。双半都清双半都塞，塞不下的重新打包寄玩家（不残地）。 */
+    /** ★ 33批二十次修正：双箱 54 格单容器全量回填（引擎双箱连接后两半共享同一 54 格容器）。
+     *  根因（生产服 latest.log 二次实锤）：双箱连接后 leftIn.getState().getInventory().getSize()
+     *  与 rightIn.getState().getInventory().getSize() 都返回 54（日志 capL=54 capR=54 cap=108），
+     *  十九次假设"双半各 27 格"错误——旧代码 filled<capL 写左半 0..53、
+     *  (filled-capL)<capR 写右半 0..53，但右半容器逻辑格只有 0..53（同 54 格双箱），
+     *  写到 index44+ 越界/错位 → 物品散落。
+     *  改法：双半全清（杜绝原版残留 → 消灭双倍掉落）+ 左半单 54 格全量回填
+     *  （连接后两半共享同一容器，左半 54 格已覆盖全部 54 格）。塞不下的重新打包寄玩家。 */
     private void doBackfillDouble(Block leftIn, Block rightIn, String data, java.util.UUID placerUuid) {
         try {
             plugin.getLogger().info("[箱子搬运][诊断] doBackfillDouble 入口 data长度="
@@ -980,28 +998,23 @@ public class ChestCarryManager implements Listener {
                 }
             } catch (Exception ignored) { }
             if (leftInv == null) return;
-            // ★ 双半全清（全 54 格清空，杜绝原版残留 → 消灭双倍掉落）
+            // ★ 双半全清（连接后两半共享同一 54 格容器，clear 一份即可）
             leftInv.clear();
             if (rightInv != null) rightInv.clear();
-            int capL = leftInv.getSize();                              // 27
-            int capR = (rightInv != null) ? rightInv.getSize() : 0;     // 27
-            int cap = capL + capR;                                       // 54
+            int cap = leftInv.getSize();     // 连接后 54
             int filled = 0;
             for (ItemStack cur : items) {
                 if (cur == null || cur.getType().isAir()) continue;
-                if (filled < capL) {
+                if (filled < cap) {
                     leftInv.setItem(filled, cur);
-                    filled++;
-                } else if (capR > 0 && (filled - capL) < capR) {
-                    rightInv.setItem(filled - capL, cur);
                     filled++;
                 } else {
                     break;
                 }
             }
             int totalSlots = countSlots(items);
-            plugin.getLogger().info("[箱子搬运][诊断] 双箱回填完成 capL=" + capL
-                    + " capR=" + capR + " cap=" + cap + "格 filled=" + filled
+            plugin.getLogger().info("[箱子搬运][诊断] 双箱回填完成 cap=" + cap
+                    + "格（连接后 54 格单容器） filled=" + filled
                     + "/" + totalSlots + " items数=" + items.length
                     + "（左=" + leftIn.getX() + "," + leftIn.getY() + "," + leftIn.getZ()
                     + " 右=" + (rightIn != null
