@@ -605,10 +605,11 @@ public class ChestCarryManager implements Listener {
                         }
                         return;   // 回退已处理，不再回填
                     }
-                    // 双箱已连（54格）→ 立即回填
+                    // ★ 33批十九次修正：双箱已连 → 双半独立 54 格全量回填
+                    //   （双半各自 clear + 双半各自 setItem，杜绝原版残留 → 消灭双倍掉落）
                     plugin.getLogger().info("[箱子搬运][诊断] 双箱已连 placedSize=" + placedSize
-                            + " 需" + slotCountFinal + " 立即回填");
-                    doBackfill(placedFinal, data, placerUuid);
+                            + " 需" + slotCountFinal + " 双半54格立即回填");
+                    doBackfillDouble(placedFinal, twinFinal, data, placerUuid);
                 } else {
                     // ★ 十七次修正：单箱场景(≤27格)——立即 doBackfill 回填
                     //   （原 L612 死代码 else 提外层，对应 L468 的 if/else）
@@ -640,11 +641,18 @@ public class ChestCarryManager implements Listener {
                 if (label.length() > 0) label.append('、');
                 label.append(c.halfName);
             }
-            // 合并物超过 27 格 → 仍打包成一个物理箱子（放置时按容器实际大小回填，
-            // 多余 28+ 物品按放置后容器大小自然截断；用户实测大箱子≈54 格场景）
+            // ★ 33批十九次修正：双连箱合并交付强制 54 格大箱（force54=true）。
+            //   根因（生产服 latest.log 实锤）：双连箱 54 格物品被引擎分摊在左右两半，
+            //   拆时 newMergedContents 读双半 27 格快照，物品≤27 时全挤在一半边、
+            //   合并 countSlots≤27 → 旧 buildPackedChest 判小箱给 27 格铜箱，
+            //   放下来只能 27 格（用户实测「≤27 永远给小箱」）。
+            //   双连箱本是 54 格容器，拆出来就该按 54 格大箱打包，不管几件物品。
+            //   判定：双连箱合并来的 carries 各半 halfName 含「大箱子」标记
+            //   （onChestBreak 双连箱分支 deliver 时 halfName = "大箱子·左半+大箱子·右半"）。
             ItemStack[] mergedArr = merged.toArray(new ItemStack[0]);
             String halfLabel = label.length() == 0 ? "小箱子" : label.toString();
-            ItemStack packed = buildPackedChest(carries[0].sourceMat, halfLabel, mergedArr);
+            boolean isDoubleChestMerge = halfLabel.contains("大箱子");
+            ItemStack packed = buildPackedChest(carries[0].sourceMat, halfLabel, mergedArr, isDoubleChestMerge);
             HashMap<Integer, ItemStack> left = p.getInventory().addItem(packed);
             if (!left.isEmpty()) {
                 left.values().forEach(it ->
@@ -666,18 +674,27 @@ public class ChestCarryManager implements Listener {
         }
     }
 
-    /** 构造打包箱物品：名称标识 + 防堆叠 + PDC 内容。
+    /** 构造打包箱物品（3 参兼容重载）：走 countSlots 自动判定大小。
      *  ★ 33批六次修正：用户明令不用陷阱箱（红石电路误联控风险）——一律用 CHEST
      *    或来源箱子材质；>27 件放下来时由 onChestPlace 自动再放一个 CHEST 接双箱
      *    凑 54 格，不用 TRAPPED_CHEST。 */
     private ItemStack buildPackedChest(Material sourceMat, String halfName,
                                        ItemStack[] contents) throws Exception {
+        return buildPackedChest(sourceMat, halfName, contents, false);
+    }
+
+    /** 构造打包箱物品（4 参，force54=双连箱合并强制 54 格大箱）。
+     *  ★ 33批十九次修正：双连箱 54 格容器拆出来，哪怕物品≤27 件也按 54 格
+     *    CHEST 大箱打包（不再靠 countSlots>27 猜），放下来自动接双箱 54 格回填。 */
+    private ItemStack buildPackedChest(Material sourceMat, String halfName,
+                                       ItemStack[] contents, boolean force54) throws Exception {
         // ★ 33批九次修正：big 判定改用「非空格子数 slotCount」而非 amount 累加
         //   ——27 格各放 1 件（27 个非空格子）amount 总和可能远超 27，旧口径会
         //   误判成"塞满"→ 强接双箱错位；改格子数后 27 格=27 不接双箱，>27 才接。
+        //   ★ 33批十九次修正：force54=true 时（双连箱合并）不管物品几件都按大箱 54 格打包。
         int count = countItems(contents);
         int slotCount = countSlots(contents);
-        boolean big = slotCount > 27;
+        boolean big = force54 || slotCount > 27;
         // 大箱子(>27 格)强制用原版普通 CHEST（不用来源材质/陷阱箱）；
         // 小箱子(≤27 格)沿用来源材质保持铜箱观感
         Material containerMat = big ? Material.CHEST
@@ -929,6 +946,102 @@ public class ChestCarryManager implements Listener {
             }
         } catch (Exception ex) {
             plugin.getLogger().warning("[箱子搬运] 放置回填失败: " + ex.getMessage());
+        }
+    }
+
+    /** ★ 33批十九次修正：双箱 54 格全量回填（双半独立 27 格 + 双半全清杜绝残留）。
+     *  根因（生产服 latest.log 实锤）：Bukkit 单个 BlockState 只覆盖单半 27 格，
+     *  双箱左半 state.getInventory().getSize() 恒 27。物品≥28 件塞不进 27 格 →
+     *  doBackfill 走"塞不下回退"重新打包寄玩家（打包箱给一份），而右半 27 格
+     *  原版物品从未被 clear() 清掉（只清了左半 state 覆盖的 27 格）→ 拆箱时
+     *  原版掉落一份 = 双倍掉落（用户实测「≥27 永远双倍掉落」）。
+     *  改法：双半各自读 27 格 inventory（双半全量 = 54 格），先 clear() 双半
+     *  （全 54 格清空杜绝原版残留），再按 54 格全量回填（左半 0-26、右半 0-26
+     *  物理格）。双半都清双半都塞，塞不下的重新打包寄玩家（不残地）。 */
+    private void doBackfillDouble(Block leftIn, Block rightIn, String data, java.util.UUID placerUuid) {
+        try {
+            plugin.getLogger().info("[箱子搬运][诊断] doBackfillDouble 入口 data长度="
+                    + (data != null ? data.length() : 0));
+            ItemStack[] items = InventorySerializer.fromBase64(data);
+            // 双半各自读 27 格 inventory（双半全量 = 54 格）
+            Inventory leftInv = null, rightInv = null;
+            try {
+                BlockState ls = leftIn.getState();
+                if (ls instanceof org.bukkit.block.Container) {
+                    leftInv = ((org.bukkit.block.Container) ls).getInventory();
+                }
+            } catch (Exception ignored) { }
+            try {
+                if (rightIn != null) {
+                    BlockState rs = rightIn.getState();
+                    if (rs instanceof org.bukkit.block.Container) {
+                        rightInv = ((org.bukkit.block.Container) rs).getInventory();
+                    }
+                }
+            } catch (Exception ignored) { }
+            if (leftInv == null) return;
+            // ★ 双半全清（全 54 格清空，杜绝原版残留 → 消灭双倍掉落）
+            leftInv.clear();
+            if (rightInv != null) rightInv.clear();
+            int capL = leftInv.getSize();                              // 27
+            int capR = (rightInv != null) ? rightInv.getSize() : 0;     // 27
+            int cap = capL + capR;                                       // 54
+            int filled = 0;
+            for (ItemStack cur : items) {
+                if (cur == null || cur.getType().isAir()) continue;
+                if (filled < capL) {
+                    leftInv.setItem(filled, cur);
+                    filled++;
+                } else if (capR > 0 && (filled - capL) < capR) {
+                    rightInv.setItem(filled - capL, cur);
+                    filled++;
+                } else {
+                    break;
+                }
+            }
+            int totalSlots = countSlots(items);
+            plugin.getLogger().info("[箱子搬运][诊断] 双箱回填完成 capL=" + capL
+                    + " capR=" + capR + " cap=" + cap + "格 filled=" + filled
+                    + "/" + totalSlots + " items数=" + items.length
+                    + "（左=" + leftIn.getX() + "," + leftIn.getY() + "," + leftIn.getZ()
+                    + " 右=" + (rightIn != null
+                        ? (rightIn.getX() + "," + rightIn.getY() + "," + rightIn.getZ()) : "null")
+                    + "）");
+            if (filled < totalSlots) {
+                int missing = totalSlots - filled;
+                plugin.getLogger().info("[箱子搬运][诊断] 双箱仅 " + cap + " 格，"
+                        + missing + " 件未塞入 → 重新打包寄玩家");
+                List<ItemStack> missingList = new ArrayList<>();
+                for (int mi = filled; mi < items.length; mi++) {
+                    if (items[mi] != null && !items[mi].getType().isAir()) {
+                        missingList.add(items[mi]);
+                    }
+                }
+                if (!missingList.isEmpty()) {
+                    ItemStack[] missingArr = missingList.toArray(new ItemStack[0]);
+                    try {
+                        // ★ 双箱塞不下回退：全部未塞入物品重新打包寄玩家（不残地）
+                        ItemStack packed2 = buildPackedChest(Material.CHEST, "双箱塞不下回退箱", missingArr);
+                        org.bukkit.entity.Player placer2 = Bukkit.getPlayer(placerUuid);
+                        if (placer2 != null && placer2.isOnline()) {
+                            HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
+                            if (!rem2.isEmpty()) {
+                                rem2.values().forEach(x -> placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                            }
+                            placer2.sendMessage("§e[箱子搬运] §7双箱空间不足，"
+                                    + missingArr.length + " 件物品已重新打包寄给你，请再放一次");
+                        } else {
+                            leftIn.getWorld().dropItemNaturally(
+                                    new Location(leftIn.getWorld(), leftIn.getX() + 0.5, leftIn.getY() + 1, leftIn.getZ() + 0.5),
+                                    packed2);
+                        }
+                    } catch (Exception ex2) {
+                        plugin.getLogger().warning("[箱子搬运] 双箱塞不下回退打包异常: " + ex2.getMessage());
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            plugin.getLogger().warning("[箱子搬运] 双箱放置回填失败: " + ex.getMessage());
         }
     }
 }
