@@ -448,18 +448,13 @@ public class ChestCarryManager implements Listener {
             }
             st = placed.getState();   // update 后旧快照失效，重新取
             if (!(st instanceof org.bukkit.block.Container)) return;
-            // ★ 33批六次修正：内容 >27 件的打包箱放下来只有 27 格 → 自动在四向找
-            //   空气位放第二个 CHEST 接成双箱（54 格），不用陷阱箱（红石误联控风险）。
-            //   放完第二个再回填（双箱连接后 getInventory 返回 54 格全量）。
+            // ★ 33批九次修正：判定用「非空格子数 slotCount」+ 双块 update(true,false)
+            //   强制落盘连接。旧 setBlockData 只改 block data 缓存、方块实体库存没
+            //   真正连成 54 格（"错位切断"根因），必须 update(force=true,applyPhysics
+            //   =false) 强制写回世界连接态。回填读真实库存，塞不下的物品掉在箱子旁。
             try {
                 ItemStack[] items0 = InventorySerializer.fromBase64(data);
-                // ★ 33批七次修正：判定用「非空格子数」而非「物品总数量(amount)」
-                //   ——一个双箱 54 格，>27 格才需接双箱；amount 累加会把一堆小物品
-                //   误判成"塞满"导致孤立小箱被强接双箱（用户实测"两个右半边"根因）
-                int slotCount = 0;
-                for (ItemStack it0 : items0) {
-                    if (it0 != null && !it0.getType().isAir()) slotCount++;
-                }
+                int slotCount = countSlots(items0);
                 if (slotCount > 27) {
                     World w = placed.getWorld();
                     int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
@@ -469,25 +464,25 @@ public class ChestCarryManager implements Listener {
                             {w.getBlockAt(px, py, pz + 1), w.getBlockAt(px, py, pz - 1)},
                     };
                     boolean connected = false;
+                    Block twinBlock = null;
                     for (Block[] row : cands) {
                         for (Block c : row) {
                             if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                                // ★ 33批八次修正：双块都设 LEFT + facing 对齐才共享 54 格
-                                //   （Chest 继承 Directional，朝向不同则双箱不连接，
-                                //   用户实测"前后错位切断"根因）
+                                // 双块都设 LEFT + facing 对齐 + update 强制落盘
                                 org.bukkit.block.data.type.Chest bd =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
                                 org.bukkit.block.data.type.Chest bdN =
                                         (org.bukkit.block.data.type.Chest) c.getBlockData();
                                 bd.setType(Chest.Type.LEFT);
-                                bd.setFacing(bdN.getFacing());   // 对齐朝向
+                                bd.setFacing(bdN.getFacing());
                                 placed.setBlockData(bd);
                                 bdN.setType(Chest.Type.LEFT);
                                 c.setBlockData(bdN);
-                                plugin.getLogger().fine(
-                                        "[箱子搬运] 接已有邻接木箱于 "
-                                                + c.getX() + "," + c.getY() + "," + c.getZ());
+                                // ★ 关键：update(true,false) 强制把连接态写回世界
+                                placed.getState().update(true, false);
+                                c.getState().update(true, false);
                                 connected = true;
+                                twinBlock = c;
                                 break;
                             }
                         }
@@ -500,38 +495,61 @@ public class ChestCarryManager implements Listener {
                             Location airLoc = new Location(w, px + off[0], py, pz + off[1]);
                             Block air = w.getBlockAt(airLoc);
                             if (air.getType() == org.bukkit.Material.AIR) {
-                                // ★ 33批八次修正：放第二个木箱 + 双块 LEFT + facing 对齐
                                 air.setType(org.bukkit.Material.CHEST, false);
                                 org.bukkit.block.data.type.Chest bd2 =
                                         (org.bukkit.block.data.type.Chest) air.getBlockData();
                                 org.bukkit.block.data.type.Chest bd1 =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
                                 bd2.setType(Chest.Type.LEFT);
-                                bd2.setFacing(bd1.getFacing());   // 朝向对齐
+                                bd2.setFacing(bd1.getFacing());
                                 air.setBlockData(bd2);
                                 bd1.setType(Chest.Type.LEFT);
                                 placed.setBlockData(bd1);
-                                plugin.getLogger().fine(
-                                        "[箱子搬运] 54格自动放第二半木箱于 "
-                                                + air.getX() + "," + air.getY() + "," + air.getZ());
+                                // ★ 关键：update(true,false) 强制落盘连接
+                                placed.getState().update(true, false);
+                                air.getState().update(true, false);
                                 connected = true;
+                                twinBlock = air;
                                 break;
                             }
                         }
                     }
+                    plugin.getLogger().info("[箱子搬运][诊断] 接双箱结果 connected="
+                            + connected + " twin=" + (twinBlock != null
+                            ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
+                            + " 需塞入格子数=" + slotCount);
                 }
             } catch (Exception ex) {
-                // 接双箱失败不影响回填（按 27 格截断，不吞物）
-                plugin.getLogger().fine("[箱子搬运] 接双箱失败(不回填): " + ex.getMessage());
+                plugin.getLogger().fine("[箱子搬运] 接双箱异常: " + ex.getMessage());
             }
+            // 回填：读真实库存（连接生效=54 格，未生效=27 格），塞不下的掉在箱子旁
             try {
                 st = placed.getState();   // 接双箱后重取快照（连接后 54 格）
                 ItemStack[] items = InventorySerializer.fromBase64(data);
                 Inventory inv = ((org.bukkit.block.Container) st).getInventory();
+                int cap = inv.getSize();
                 inv.clear();
-                int n = Math.min(items.length, inv.getSize());
-                for (int i = 0; i < n; i++) {
-                    if (items[i] != null) inv.setItem(i, items[i]);
+                int filled = 0;
+                for (ItemStack cur : items) {
+                    if (cur == null || cur.getType().isAir()) continue;
+                    if (filled < cap) {
+                        inv.setItem(filled, cur);
+                        filled++;
+                    }
+                }
+                if (filled < countSlots(items)) {
+                    // 容器格子不够（双箱未连接）→ 多出的物品掉在箱子旁（零丢失）
+                    plugin.getLogger().info("[箱子搬运][诊断] 容器仅 " + cap
+                            + " 格，" + (countSlots(items) - filled)
+                            + " 件物品已掉在箱子旁（双箱连接未生效）");
+                    World w = placed.getWorld();
+                    Location dropLoc = new Location(w, placed.getX() + 0.5,
+                            placed.getY() + 1, placed.getZ() + 0.5);
+                    for (int i = filled; i < items.length; i++) {
+                        if (items[i] != null && !items[i].getType().isAir()) {
+                            w.dropItemNaturally(dropLoc, items[i]);
+                        }
+                    }
                 }
             } catch (Exception ex) {
                 plugin.getLogger().warning("[箱子搬运] 放置回填失败: " + ex.getMessage());
@@ -588,11 +606,14 @@ public class ChestCarryManager implements Listener {
      *    凑 54 格，不用 TRAPPED_CHEST。 */
     private ItemStack buildPackedChest(Material sourceMat, String halfName,
                                        ItemStack[] contents) throws Exception {
+        // ★ 33批九次修正：big 判定改用「非空格子数 slotCount」而非 amount 累加
+        //   ——27 格各放 1 件（27 个非空格子）amount 总和可能远超 27，旧口径会
+        //   误判成"塞满"→ 强接双箱错位；改格子数后 27 格=27 不接双箱，>27 才接。
         int count = countItems(contents);
-        boolean big = count > 27;
-        // ★ 33批八次修正：大箱子(>27件)强制用原版普通 CHEST（不用来源材质，
-        //   避免来源是陷阱箱时打包箱也是陷阱箱）；小箱子(≤27件)沿用来源材质
-        //   保持原版观感（铜箱拆出来还是铜箱）。
+        int slotCount = countSlots(contents);
+        boolean big = slotCount > 27;
+        // 大箱子(>27 格)强制用原版普通 CHEST（不用来源材质/陷阱箱）；
+        // 小箱子(≤27 格)沿用来源材质保持铜箱观感
         Material containerMat = big ? Material.CHEST
                 : (sourceMat != null ? sourceMat : Material.CHEST);
         ItemStack it = new ItemStack(containerMat);
@@ -601,7 +622,7 @@ public class ChestCarryManager implements Listener {
         meta.setDisplayName("§b§l打包箱 §7(" + halfName + " §8· " + matLabel
                 + (big ? " §f54格(放置自动接双箱)" : "") + ")");
         List<String> lore = new ArrayList<>();
-        lore.add("§7内含 §f" + count + " §7件物品");
+        lore.add("§7内含 §f" + count + " §7件物品（占 " + slotCount + " 格）");
         lore.add(big ? "§e放置后自动接双箱(54格)回填" : "§a放置后 §7自动回填内容");
         meta.setLore(lore);
         // 不同内容绝不堆叠，否则 PDC 串味
@@ -767,6 +788,16 @@ public class ChestCarryManager implements Listener {
         int n = 0;
         for (ItemStack i : a) {
             if (i != null && !i.getType().isAir()) n += i.getAmount();
+        }
+        return n;
+    }
+
+    /** ★ 33批九次修正：非空格子数（一个 ItemStack 占 1 格，与 amount 无关）。
+     *   接双箱判定、打包箱大/小判定都用此口径：>27 个非空格子才需 54 格双箱。 */
+    private static int countSlots(ItemStack[] a) {
+        int n = 0;
+        for (ItemStack i : a) {
+            if (i != null && !i.getType().isAir()) n++;
         }
         return n;
     }
