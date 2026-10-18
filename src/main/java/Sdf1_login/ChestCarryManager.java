@@ -483,8 +483,9 @@ public class ChestCarryManager implements Listener {
                     for (Location dl : dirs) {
                         Block c = w.getBlockAt(dl);
                         if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                            // ★ 33批十四次修正：引擎原生——placed 已是 CHEST，只需把 facing 对齐邻箱，
-                            //   引擎据相邻关系自动连 54 格双箱；彻底移除手动 setBlockData(LEFT)。
+                            // ★ 33批十八次修正：双箱合并真根因——facing 对齐邻箱（原版双箱要求同朝向）
+                            //   必须 applyPhysics=true 让引擎做双箱检测；之前 false 跳过检测，
+                            //   主箱永远 27 格（生产服日志实锤：connected=是 但实测 placed=27格）。
                             try {
                                 org.bukkit.block.data.type.Chest bdP =
                                         (org.bukkit.block.data.type.Chest) placed.getBlockData();
@@ -492,8 +493,9 @@ public class ChestCarryManager implements Listener {
                                         (org.bukkit.block.data.type.Chest) c.getBlockData();
                                 bdP.setFacing(bdC.getFacing());
                                 placed.setBlockData(bdP);
-                                placed.getState().update(true, false);
-                                c.getState().update(true, false);
+                                // ★ 关键：applyPhysics=true 触发引擎双箱合并检测
+                                placed.getState().update(true, true);
+                                c.getState().update(true, true);
                             } catch (Exception ign) {
                             }
                             connected = true;
@@ -506,11 +508,11 @@ public class ChestCarryManager implements Listener {
                         for (Location dl : dirs) {
                             Block air = w.getBlockAt(dl);
                             if (air.getType() == org.bukkit.Material.AIR) {
-                                // ★ 33批十四次修正：引擎原生——air.setType(CHEST,false) 摆第二只箱子，
-                                //   引擎检测到与 placed 紧邻会自动连成 54 格双箱；
-                                //   彻底移除手动 setBlockData(LEFT)（Paper26 建不出 54 格连接，十三次实锤）。
+                                // ★ 33批十八次修正：摆第二只箱 + facing 对齐 placed（原版双箱同朝向）
+                                //   + applyPhysics=true 触发引擎双箱检测。
+                                //   之前 air.setType(CHEST,false)+update(true,false) 全程跳过物理，
+                                //   引擎从不做合并检测 → 主箱永远 27 格（生产服日志实锤）。
                                 air.setType(org.bukkit.Material.CHEST, false);
-                                // 仅对齐 facing（双箱朝向一致），不碰 Chest.Type（引擎自动判定 LEFT/RIGHT）
                                 try {
                                     org.bukkit.block.data.type.Chest bdP =
                                             (org.bukkit.block.data.type.Chest) placed.getBlockData();
@@ -518,8 +520,9 @@ public class ChestCarryManager implements Listener {
                                             (org.bukkit.block.data.type.Chest) air.getBlockData();
                                     bdA.setFacing(bdP.getFacing());
                                     air.setBlockData(bdA);
-                                    placed.getState().update(true, false);
-                                    air.getState().update(true, false);
+                                    // ★ 关键：applyPhysics=true 触发引擎双箱合并检测
+                                    placed.getState().update(true, true);
+                                    air.getState().update(true, true);
                                 } catch (Exception ign) {
                                 }
                                 connected = true;
