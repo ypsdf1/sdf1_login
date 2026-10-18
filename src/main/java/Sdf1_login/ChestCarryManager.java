@@ -469,50 +469,52 @@ public class ChestCarryManager implements Listener {
                 if (slotCount > 27) {
                     World w = placed.getWorld();
                     int px = placed.getX(), py = placed.getY(), pz = placed.getZ();
-                    // ★ 33批十一次修正：固定顺序四向遍历（东→西→南→北）命中第一个就 break，
-                    //   朝玩家方向有方块时顶到 → 物品散落一地。改为：
-                    //   ① 四向找空气位/接木箱时，朝玩家最近方向优先（方位差最小）
-                    //   ② 全被占 → 不硬接双箱，回退 27 格单箱（塞满 27 + 剩余掉箱子旁）
+                    // ★ 33批二十六次修正（环境紧张「炸开/放不下」根因，生产服 20:40:41
+                    //   实锤：第二只箱被四向遍历摆到「朝向轴上」（z-1），而 MC 原版双箱
+                    //   只认与 facing 垂直的左右两翼（LEFT 向 facing.getClockWise 找配对）
+                    //   → 引擎永远连不上 → 2tick 实测 27 格 → 剩余寄回 = 观感炸开，
+                    //   必须完全开放空间才碰巧摆对方向。
+                    //   用户定稿新口径 —— 只看左右两翼：有 1 空就放（空气翼优先）；
+                    //   无空气翼但翼位有现有木箱 → 接双箱；两翼都被实体挡死 →
+                    //   退回打包箱 + 提醒调整环境。
                     boolean connected = false;
                     Block twinBlock = null;
-                    Location d1 = new Location(w, px + 1, py, pz);   // 东
-                    Location d2 = new Location(w, px - 1, py, pz);   // 西
-                    Location d3 = new Location(w, px, py, pz + 1);   // 南
-                    Location d4 = new Location(w, px, py, pz - 1);   // 北
-                    Location[] dirs = new Location[]{d1, d2, d3, d4};
-                    // ① 四向找已有木箱（东→西→南→北，命中第一个就接）
-                    for (Location dl : dirs) {
-                        Block c = w.getBlockAt(dl);
-                        if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                            // ★ 33批十八次修正：双箱合并真根因——facing 对齐邻箱（原版双箱要求同朝向）
-                            //   必须 applyPhysics=true 让引擎做双箱检测；之前 false 跳过检测，
-                            //   主箱永远 27 格（生产服日志实锤：connected=是 但实测 placed=27格）。
-                            try {
-                                org.bukkit.block.data.type.Chest bdP =
-                                        (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                                org.bukkit.block.data.type.Chest bdC =
-                                        (org.bukkit.block.data.type.Chest) c.getBlockData();
-                                bdP.setFacing(bdC.getFacing());
-                                placed.setBlockData(bdP);
-                                // ★ 关键：applyPhysics=true 触发引擎双箱合并检测
-                                placed.getState().update(true, true);
-                                c.getState().update(true, true);
-                            } catch (Exception ign) {
-                            }
-                            connected = true;
-                            twinBlock = c;
-                            break;
+                    boolean placedTwinFlag = false;
+                    org.bukkit.block.data.type.Chest bdW =
+                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                    org.bukkit.block.BlockFace facW = bdW.getFacing();
+                    org.bukkit.block.BlockFace cwW, ccwW;
+                    if (facW == org.bukkit.block.BlockFace.NORTH) {
+                        cwW = org.bukkit.block.BlockFace.EAST; ccwW = org.bukkit.block.BlockFace.WEST;
+                    } else if (facW == org.bukkit.block.BlockFace.EAST) {
+                        cwW = org.bukkit.block.BlockFace.SOUTH; ccwW = org.bukkit.block.BlockFace.NORTH;
+                    } else if (facW == org.bukkit.block.BlockFace.SOUTH) {
+                        cwW = org.bukkit.block.BlockFace.WEST; ccwW = org.bukkit.block.BlockFace.EAST;
+                    } else {
+                        cwW = org.bukkit.block.BlockFace.NORTH; ccwW = org.bukkit.block.BlockFace.SOUTH;
+                    }
+                    Block[] wings = new Block[]{
+                            w.getBlockAt(px + cwW.getModX(), py, pz + cwW.getModZ()),
+                            w.getBlockAt(px + ccwW.getModX(), py, pz + ccwW.getModZ())};
+                    // ★ 放置时引擎已自动连成双箱（同朝向邻箱立即合并 → type=LEFT/RIGHT）
+                    //   → 直接 54 格回填，绝不再摆第三只箱乱入
+                    if (bdW.getType() != org.bukkit.block.data.type.Chest.Type.SINGLE) {
+                        Block partnerAuto = bdW.getType()
+                                == org.bukkit.block.data.type.Chest.Type.LEFT ? wings[0] : wings[1];
+                        if (partnerAuto != null && isChestMaterial(partnerAuto.getType())) {
+                            plugin.getLogger().info("[箱子搬运][诊断] 引擎放置时已自动连双箱 → 直接54格回填 partner="
+                                    + partnerAuto.getX() + "," + partnerAuto.getY() + "," + partnerAuto.getZ());
+                            doBackfillDouble(placed, partnerAuto, data, placerUuid);
+                            return;
                         }
                     }
-                    // ② 四向找空气位放第二个 CHEST（同样顺序，命中第一个就放）
+                    // ① 左右两翼找空气位摆第二只箱（用户定稿：左右有 1 空就放；
+                    //   空气翼优先，两翼都空则顺时针翼优先）
                     if (!connected) {
-                        for (Location dl : dirs) {
-                            Block air = w.getBlockAt(dl);
+                        for (Block air : wings) {
                             if (air.getType() == org.bukkit.Material.AIR) {
                                 // ★ 33批十八次修正：摆第二只箱 + facing 对齐 placed（原版双箱同朝向）
                                 //   + applyPhysics=true 触发引擎双箱检测。
-                                //   之前 air.setType(CHEST,false)+update(true,false) 全程跳过物理，
-                                //   引擎从不做合并检测 → 主箱永远 27 格（生产服日志实锤）。
                                 // ★ 33批二十一次修正：applyPhysics=true —— setType 时立即通知邻居 placed
                                 //   触发双箱合并检测（十八/二十次失败根因：setType(false) 不传播物理，
                                 //   placed.update(true,true) 只从 placed 侧触发，引擎双箱检测需被摆方块
@@ -533,6 +535,32 @@ public class ChestCarryManager implements Listener {
                                 }
                                 connected = true;
                                 twinBlock = air;
+                                placedTwinFlag = true;
+                                break;
+                            }
+                        }
+                    }
+                    // ② 无空气翼 → 左右两翼找现有木箱接双箱（保留「挨着现有箱放」能力）
+                    if (!connected) {
+                        for (Block c : wings) {
+                            if (c != null && c.getType() == org.bukkit.Material.CHEST) {
+                                // ★ 33批十八次修正：双箱合并真根因——facing 对齐邻箱（原版双箱要求同朝向）
+                                //   必须 applyPhysics=true 让引擎做双箱检测；之前 false 跳过检测，
+                                //   主箱永远 27 格（生产服日志实锤：connected=是 但实测 placed=27格）。
+                                try {
+                                    org.bukkit.block.data.type.Chest bdP =
+                                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
+                                    org.bukkit.block.data.type.Chest bdC =
+                                            (org.bukkit.block.data.type.Chest) c.getBlockData();
+                                    bdP.setFacing(bdC.getFacing());
+                                    placed.setBlockData(bdP);
+                                    // ★ 关键：applyPhysics=true 触发引擎双箱合并检测
+                                    placed.getState().update(true, true);
+                                    c.getState().update(true, true);
+                                } catch (Exception ign) {
+                                }
+                                connected = true;
+                                twinBlock = c;
                                 break;
                             }
                         }
@@ -546,13 +574,14 @@ public class ChestCarryManager implements Listener {
                     final Block placedFinal = placed;
                     final Block twinFinal = twinBlock;
                     final int slotCountFinal = slotCount;
+                    final boolean twinPlacedByCode = placedTwinFlag;
                     // ★ 33批二十二次修正：双半各设 LEFT/RIGHT（一个 LEFT 一个 RIGHT 才能配对）。
                     //   二十次失败根因：双半都设 LEFT，MC 双箱合并要求一个 LEFT 一个 RIGHT
                     //   （LEFT 向 facing.getClockWise() 找配对，RIGHT 向 getCounterClockWise() 找配对，
                     //   两个都 LEFT 会互相找不到对方 → 永远 27 格）。
                     //   几何判定：若 twin 在 placed + facing.getClockWise() 方向 → placed=LEFT,twin=RIGHT；
                     //   否则 placed=RIGHT,twin=LEFT。
-                    try {
+                    if (twinFinal != null) try {
                         org.bukkit.block.data.type.Chest bdPL =
                                 (org.bukkit.block.data.type.Chest) placedFinal.getBlockData();
                         org.bukkit.block.data.type.Chest bdTL =
@@ -587,7 +616,7 @@ public class ChestCarryManager implements Listener {
                             + " 需塞入格子数=" + slotCount + " 双半LEFT/RIGHT+2tick实测");
                     if (!connected) {
                         // 全被占：清方块 + 全部物品重新打包寄玩家
-                        plugin.getLogger().info("[箱子搬运][诊断] 接双箱全被占 → 清方块 + 重新打包寄玩家（" + slotCount + " 件）");
+                        plugin.getLogger().info("[箱子搬运][诊断] 左右两翼全被实体挡死 → 清方块 + 退回打包箱（" + slotCount + " 件）");
                         placedFinal.setType(org.bukkit.Material.AIR, false);
                         org.bukkit.entity.Player placerAll = Bukkit.getPlayer(placerUuid);
                         List<ItemStack> allListA = new ArrayList<>();
@@ -603,7 +632,7 @@ public class ChestCarryManager implements Listener {
                                         HashMap<Integer, ItemStack> remA = placerAll.getInventory().addItem(packedA);
                                         if (!remA.isEmpty()) remA.values().forEach(x -> placerAll.getWorld().dropItemNaturally(placerAll.getLocation(), x));
                                     }
-                                    placerAll.sendMessage("§e[箱子搬运] §7接双箱全被占（环境不安全），已重新打包 " + allArrA.length + " 件寄给你，请再放一次");
+                                    placerAll.sendMessage("§e[箱子搬运] §7左右两侧均被实体占据，无法放下双箱——已退回打包箱（" + allArrA.length + " 件）。请调整环境：左右留出至少 1 格空位后再放置");
                                 } else {
                                     for (ItemStack packedA : packedListA) {
                                         placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedA);
@@ -631,7 +660,9 @@ public class ChestCarryManager implements Listener {
                         //   改为：placed 保持 27 格回填前 27 件，剩余第 28+ 件打包寄玩家（不残地、不散落）。
                         //   twin（代码摆的第二只箱）清掉避免残留空箱。
                         plugin.getLogger().info("[箱子搬运][诊断] 双箱未连 → 保持27格回填前27件 + 剩余寄玩家（" + slotCountFinal + " 件）");
-                        if (twinFinal != null && twinFinal.getType() != org.bukkit.Material.AIR) {
+                        // ★ 只清「代码自己摆的」第二只箱（placedTwinFlag）；接的现有箱属
+                        //   环境资产绝不能删（否则连带其内容物一起炸）。
+                        if (twinPlacedByCode && twinFinal != null && twinFinal.getType() != org.bukkit.Material.AIR) {
                             twinFinal.setType(org.bukkit.Material.AIR, false);
                         }
                         org.bukkit.entity.Player placerB = Bukkit.getPlayer(placerUuid);
