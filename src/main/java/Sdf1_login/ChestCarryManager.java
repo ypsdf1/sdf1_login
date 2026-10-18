@@ -425,6 +425,11 @@ public class ChestCarryManager implements Listener {
         Block placed = e.getBlockPlaced();
         // ★ 33批十二次修正：记录操作玩家 UUID，lambda 内取回（接双箱失败/塞不下时重新打包）
         final java.util.UUID placerUuid = e.getPlayer().getUniqueId();
+        // ★ 33批十六次修正：入口诊断日志——实锤 PDC 是否真的写入了 15 件内容
+        plugin.getLogger().info("[箱子搬运][诊断] 放置入口 玩家=" + e.getPlayer().getName()
+                + " PDC长度=" + (data != null ? data.length() : 0)
+                + " placed=" + placed.getX() + "," + placed.getY() + "," + placed.getZ()
+                + " mat=" + it.getType().name());
 
         // ★ 29批验收修正（用户定稿）：放置侧不拦任何人 —— 非授权用户也交还原版正常
         //   放下并回填。隔离靠下游链路：非授权用户「拆箱」在 onChestBreak 判定链
@@ -450,6 +455,9 @@ public class ChestCarryManager implements Listener {
             }
             st = placed.getState();   // update 后旧快照失效，重新取
             if (!(st instanceof org.bukkit.block.Container)) return;
+            int capAfterUpdate = ((org.bukkit.block.Container) st).getInventory().getSize();
+            plugin.getLogger().info("[箱子搬运][诊断] 清CustomName后 cap=" + capAfterUpdate
+                    + "格（update(true,false) 后容器真实 size）");
             // ★ 33批九次修正：判定用「非空格子数 slotCount」+ 双块 update(true,false)
             //   强制落盘连接。旧 setBlockData 只改 block data 缓存、方块实体库存没
             //   真正连成 54 格（"错位切断"根因），必须 update(force=true,applyPhysics
@@ -875,6 +883,8 @@ public class ChestCarryManager implements Listener {
      *  双箱场景由实测延迟任务调用（2 tick 后），单箱场景立即调用。 */
     private void doBackfill(Block placedIn, String data, java.util.UUID placerUuid) {
         try {
+            plugin.getLogger().info("[箱子搬运][诊断] doBackfill 入口 data长度="
+                    + (data != null ? data.length() : 0));
             BlockState st = placedIn.getState();
             if (!(st instanceof org.bukkit.block.Container)) return;
             ItemStack[] items = InventorySerializer.fromBase64(data);
