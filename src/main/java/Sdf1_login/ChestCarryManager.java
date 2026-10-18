@@ -545,26 +545,45 @@ public class ChestCarryManager implements Listener {
                     final Block placedFinal = placed;
                     final Block twinFinal = twinBlock;
                     final int slotCountFinal = slotCount;
-                    // 双半各设 LEFT + update(true,false)（手动建 54 格连接）
+                    // ★ 33批二十二次修正：双半各设 LEFT/RIGHT（一个 LEFT 一个 RIGHT 才能配对）。
+                    //   二十次失败根因：双半都设 LEFT，MC 双箱合并要求一个 LEFT 一个 RIGHT
+                    //   （LEFT 向 facing.getClockWise() 找配对，RIGHT 向 getCounterClockWise() 找配对，
+                    //   两个都 LEFT 会互相找不到对方 → 永远 27 格）。
+                    //   几何判定：若 twin 在 placed + facing.getClockWise() 方向 → placed=LEFT,twin=RIGHT；
+                    //   否则 placed=RIGHT,twin=LEFT。
                     try {
                         org.bukkit.block.data.type.Chest bdPL =
                                 (org.bukkit.block.data.type.Chest) placedFinal.getBlockData();
                         org.bukkit.block.data.type.Chest bdTL =
                                 (org.bukkit.block.data.type.Chest) twinFinal.getBlockData();
                         bdPL.setFacing(bdTL.getFacing());
-                        bdPL.setType(org.bukkit.block.data.type.Chest.Type.LEFT);
+                        int tdx = twinFinal.getX() - placedFinal.getX();
+                        int tdz = twinFinal.getZ() - placedFinal.getZ();
+                        org.bukkit.block.BlockFace facB = bdPL.getFacing();
+                        // 手工算水平四向顺时针（Paper BlockFace 无 getClockWise）：N->E->S->W->N
+                        org.bukkit.block.BlockFace cwB;
+                        if (facB == org.bukkit.block.BlockFace.NORTH) cwB = org.bukkit.block.BlockFace.EAST;
+                        else if (facB == org.bukkit.block.BlockFace.EAST) cwB = org.bukkit.block.BlockFace.SOUTH;
+                        else if (facB == org.bukkit.block.BlockFace.SOUTH) cwB = org.bukkit.block.BlockFace.WEST;
+                        else cwB = org.bukkit.block.BlockFace.NORTH;
+                        boolean placedIsLeft = (tdx == cwB.getModX() && tdz == cwB.getModZ());
+                        bdPL.setType(placedIsLeft
+                                ? org.bukkit.block.data.type.Chest.Type.LEFT
+                                : org.bukkit.block.data.type.Chest.Type.RIGHT);
                         placedFinal.setBlockData(bdPL);
-                        bdTL.setType(org.bukkit.block.data.type.Chest.Type.LEFT);
+                        bdTL.setType(placedIsLeft
+                                ? org.bukkit.block.data.type.Chest.Type.RIGHT
+                                : org.bukkit.block.data.type.Chest.Type.LEFT);
                         twinFinal.setBlockData(bdTL);
                         placedFinal.getState().update(true, false);
                         twinFinal.getState().update(true, false);
                     } catch (Exception exL) {
-                        plugin.getLogger().warning("[箱子搬运] 双半设LEFT异常: " + exL.getMessage());
+                        plugin.getLogger().warning("[箱子搬运] 双半设LEFT/RIGHT异常: " + exL.getMessage());
                     }
                     plugin.getLogger().info("[箱子搬运][诊断] 接双箱 connected="
                             + (connected ? "是" : "否") + " twin=" + (twinBlock != null
                             ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
-                            + " 需塞入格子数=" + slotCount + " 双半LEFT+2tick实测");
+                            + " 需塞入格子数=" + slotCount + " 双半LEFT/RIGHT+2tick实测");
                     if (!connected) {
                         // 全被占：清方块 + 全部物品重新打包寄玩家
                         plugin.getLogger().info("[箱子搬运][诊断] 接双箱全被占 → 清方块 + 重新打包寄玩家（" + slotCount + " 件）");
@@ -577,13 +596,17 @@ public class ChestCarryManager implements Listener {
                         if (!allListA.isEmpty()) {
                             ItemStack[] allArrA = allListA.toArray(new ItemStack[0]);
                             try {
-                                ItemStack packedA = buildPackedChest(Material.CHEST, "接双箱全被占回退箱", allArrA);
+                                List<ItemStack> packedListA = buildPackedChestsSplit(Material.CHEST, "接双箱全被占回退箱", allArrA, false);
                                 if (placerAll != null && placerAll.isOnline()) {
-                                    HashMap<Integer, ItemStack> remA = placerAll.getInventory().addItem(packedA);
-                                    if (!remA.isEmpty()) remA.values().forEach(x -> placerAll.getWorld().dropItemNaturally(placerAll.getLocation(), x));
+                                    for (ItemStack packedA : packedListA) {
+                                        HashMap<Integer, ItemStack> remA = placerAll.getInventory().addItem(packedA);
+                                        if (!remA.isEmpty()) remA.values().forEach(x -> placerAll.getWorld().dropItemNaturally(placerAll.getLocation(), x));
+                                    }
                                     placerAll.sendMessage("§e[箱子搬运] §7接双箱全被占（环境不安全），已重新打包 " + allArrA.length + " 件寄给你，请再放一次");
                                 } else {
-                                    placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedA);
+                                    for (ItemStack packedA : packedListA) {
+                                        placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedA);
+                                    }
                                 }
                             } catch (Exception exA) { plugin.getLogger().warning("[箱子搬运] 全被占回退异常: " + exA.getMessage()); }
                         }
@@ -632,13 +655,17 @@ public class ChestCarryManager implements Listener {
                                 if (!restList.isEmpty()) {
                                     ItemStack[] restArr = restList.toArray(new ItemStack[0]);
                                     try {
-                                        ItemStack packedB = buildPackedChest(Material.CHEST, "双箱未连剩余箱", restArr);
+                                        List<ItemStack> packedListB = buildPackedChestsSplit(Material.CHEST, "双箱未连剩余箱", restArr, false);
                                         if (placerB != null && placerB.isOnline()) {
-                                            HashMap<Integer, ItemStack> remB = placerB.getInventory().addItem(packedB);
-                                            if (!remB.isEmpty()) remB.values().forEach(remIt -> placerB.getWorld().dropItemNaturally(placerB.getLocation(), remIt));
+                                            for (ItemStack packedB : packedListB) {
+                                                HashMap<Integer, ItemStack> remB = placerB.getInventory().addItem(packedB);
+                                                if (!remB.isEmpty()) remB.values().forEach(remIt -> placerB.getWorld().dropItemNaturally(placerB.getLocation(), remIt));
+                                            }
                                             placerB.sendMessage("§e[箱子搬运] §7未能连成双箱（需紧挨现有箱子），已回填 " + filledFB + " 件，剩余 " + restArr.length + " 件寄给你");
                                         } else {
-                                            placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedB);
+                                            for (ItemStack packedB : packedListB) {
+                                                placedFinal.getWorld().dropItemNaturally(new Location(placedFinal.getWorld(), placedFinal.getX()+0.5, placedFinal.getY()+1, placedFinal.getZ()+0.5), packedB);
+                                            }
                                         }
                                     } catch (Exception exB) { plugin.getLogger().warning("[箱子搬运] 未连成剩余打包异常: " + exB.getMessage()); }
                                 } else {
@@ -700,14 +727,21 @@ public class ChestCarryManager implements Listener {
             ItemStack[] mergedArr = merged.toArray(new ItemStack[0]);
             String halfLabel = label.length() == 0 ? "小箱子" : label.toString();
             boolean isDoubleChestMerge = halfLabel.contains("大箱子");
-            ItemStack packed = buildPackedChest(carries[0].sourceMat, halfLabel, mergedArr, isDoubleChestMerge);
-            HashMap<Integer, ItemStack> left = p.getInventory().addItem(packed);
-            if (!left.isEmpty()) {
-                left.values().forEach(it ->
-                        p.getWorld().dropItemNaturally(p.getLocation(), it));
+            // ★ 33批二十二次修正：拆分打包防 PDC 超 64KB 被踢出（生产服 18:39:42 实锤
+            //   54 格物品 base64 109280 字节 > 65535 → container_set_slot 编码失败玩家掉线）
+            List<ItemStack> packedList = buildPackedChestsSplit(carries[0].sourceMat, halfLabel, mergedArr, isDoubleChestMerge);
+            int packedCount = 0;
+            for (ItemStack packed : packedList) {
+                packedCount++;
+                HashMap<Integer, ItemStack> left = p.getInventory().addItem(packed);
+                if (!left.isEmpty()) {
+                    left.values().forEach(it ->
+                            p.getWorld().dropItemNaturally(p.getLocation(), it));
+                }
             }
             p.sendMessage("§a[箱子搬运] §7已打包 §f" + halfLabel
-                    + "§7（" + mergedArr.length + " 件物品），放下自动回填");
+                    + "§7（" + mergedArr.length + " 件物品" + (packedCount > 1 ? "，分" + packedCount + "箱" : "")
+                    + "），放下自动回填");
         } catch (Exception ex) {
             // 序列化失败兜底：内容直接掉落，绝不吞物
             p.sendMessage("§c[箱子搬运] §7打包失败，物品已直接掉落");
@@ -762,6 +796,33 @@ public class ChestCarryManager implements Listener {
                 PersistentDataType.STRING, InventorySerializer.toBase64(contents));
         it.setItemMeta(meta);
         return it;
+    }
+
+    /** ★ 33批二十二次修正：按 PDC 字符上限拆分成多个打包箱，防 NBT 字符串超 64KB 被踢出。
+     *  生产服 18:39:42 实锤：54 格物品 base64 达 109280 字节 > 65535（Java NBT 字符串上限），
+     *  服务端 container_set_slot 编码失败 → 玩家掉线被踢。
+     *  逐件累加测试 base64 长度，超 55000 即封一箱重新开始。 */
+    private List<ItemStack> buildPackedChestsSplit(Material sourceMat, String halfName,
+                                                   ItemStack[] contents, boolean force54) throws Exception {
+        List<ItemStack> out = new ArrayList<>();
+        List<ItemStack> cur = new ArrayList<>();
+        for (ItemStack item : contents) {
+            if (item == null || item.getType().isAir()) continue;
+            cur.add(item);
+            String b64 = InventorySerializer.toBase64(cur.toArray(new ItemStack[0]));
+            if (b64.length() > 55000) {
+                cur.remove(cur.size() - 1);
+                if (!cur.isEmpty()) {
+                    out.add(buildPackedChest(sourceMat, halfName, cur.toArray(new ItemStack[0]), force54));
+                }
+                cur.clear();
+                cur.add(item);
+            }
+        }
+        if (!cur.isEmpty()) {
+            out.add(buildPackedChest(sourceMat, halfName, cur.toArray(new ItemStack[0]), force54));
+        }
+        return out;
     }
 
     /**
@@ -978,14 +1039,18 @@ public class ChestCarryManager implements Listener {
                 if (!missingList.isEmpty()) {
                     ItemStack[] missingArr = missingList.toArray(new ItemStack[0]);
                     try {
-                        ItemStack packed2 = buildPackedChest(Material.CHEST, "塞不下回退箱", missingArr);
+                        List<ItemStack> packedList2 = buildPackedChestsSplit(Material.CHEST, "塞不下回退箱", missingArr, false);
                         org.bukkit.entity.Player placer2 = Bukkit.getPlayer(placerUuid);
                         if (placer2 != null && placer2.isOnline()) {
-                            HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
-                            if (!rem2.isEmpty()) rem2.values().forEach(x -> placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                            for (ItemStack packed2 : packedList2) {
+                                HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
+                                if (!rem2.isEmpty()) rem2.values().forEach(x -> placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                            }
                             placer2.sendMessage("§e[箱子搬运] §7容器空间不足，" + missingArr.length + " 件物品已重新打包寄给你，请再放一次");
                         } else {
-                            placedIn.getWorld().dropItemNaturally(new Location(placedIn.getWorld(), placedIn.getX()+0.5, placedIn.getY()+1, placedIn.getZ()+0.5), packed2);
+                            for (ItemStack packed2 : packedList2) {
+                                placedIn.getWorld().dropItemNaturally(new Location(placedIn.getWorld(), placedIn.getX()+0.5, placedIn.getY()+1, placedIn.getZ()+0.5), packed2);
+                            }
                         }
                     } catch (Exception ex2) {
                         plugin.getLogger().warning("[箱子搬运] 塞不下回退打包异常: " + ex2.getMessage());
@@ -1063,19 +1128,23 @@ public class ChestCarryManager implements Listener {
                     ItemStack[] missingArr = missingList.toArray(new ItemStack[0]);
                     try {
                         // ★ 双箱塞不下回退：全部未塞入物品重新打包寄玩家（不残地）
-                        ItemStack packed2 = buildPackedChest(Material.CHEST, "双箱塞不下回退箱", missingArr);
+                        List<ItemStack> packedList2 = buildPackedChestsSplit(Material.CHEST, "双箱塞不下回退箱", missingArr, false);
                         org.bukkit.entity.Player placer2 = Bukkit.getPlayer(placerUuid);
                         if (placer2 != null && placer2.isOnline()) {
-                            HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
-                            if (!rem2.isEmpty()) {
-                                rem2.values().forEach(x -> placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                            for (ItemStack packed2 : packedList2) {
+                                HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
+                                if (!rem2.isEmpty()) {
+                                    rem2.values().forEach(x -> placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                                }
                             }
                             placer2.sendMessage("§e[箱子搬运] §7双箱空间不足，"
                                     + missingArr.length + " 件物品已重新打包寄给你，请再放一次");
                         } else {
-                            leftIn.getWorld().dropItemNaturally(
-                                    new Location(leftIn.getWorld(), leftIn.getX() + 0.5, leftIn.getY() + 1, leftIn.getZ() + 0.5),
-                                    packed2);
+                            for (ItemStack packed2 : packedList2) {
+                                leftIn.getWorld().dropItemNaturally(
+                                        new Location(leftIn.getWorld(), leftIn.getX() + 0.5, leftIn.getY() + 1, leftIn.getZ() + 0.5),
+                                        packed2);
+                            }
                         }
                     } catch (Exception ex2) {
                         plugin.getLogger().warning("[箱子搬运] 双箱塞不下回退打包异常: " + ex2.getMessage());
