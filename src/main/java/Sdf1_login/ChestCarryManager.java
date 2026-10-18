@@ -339,12 +339,12 @@ public class ChestCarryManager implements Listener {
             // 双半全量内容（被破半 selfSnap 27 + 孤半 getSnapshotInventory 27；
             //   连箱=54 全量、独立小箱=各 27 独立；一条路径、不翻倍、不误删）
             ItemStack[] merged = newMergedContents(b, twin, snap, isBigChest);
-            // ★ 33批根因：孤半 twin 若被玩家/原版再触发 BlockBreakEvent，
-            //   内容会经 BlockDropItemEvent 散落 → 这里补登记 suppressDrop 拦住。
+            // ★ 33批十次修正（孤半物品丢失根因）：孤半内容已并入 merged（双连箱 54 格全量），
+            //   孤半方块本体必须立即清掉 —— 否则孤半留壳，玩家再拆它 findTwin 找不到
+            //   （被破半已清）→ 走孤半 2 秒窗口分支 → "小箱 26件"独立交付 → 翻倍+丢失。
+            //   幂等守卫 lastMergeGuard 拦住 clearChestBlock 触发的二次 BlockBreakEvent。
             markSuppressDrop(twin.getLocation());
-            // 被破半 b 已在 onChestBreak 前 markSuppressDrop（上方 markSuppressDrop(b)），
-            //   不再主动 setType(AIR) 物理移除孤半（那是二次事件+散落的源头）；
-            //   孤半留给玩家自然处理（再挥斧拆掉 → 走旧 2 秒窗口分支，或留着）。
+            clearChestBlock(twin);   // 孤半方块物理移除，内容已并入合并箱不留壳
             // 直接交付双半合并箱（不走 2 秒窗口 —— 用户诉求"不管多快都合并"）
             PendingCarry cur = new PendingCarry(id, b.getWorld().getName(),
                     p.getLocation(), mat, halfName + "+" + halfNameOf(twin),
