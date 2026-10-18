@@ -423,6 +423,8 @@ public class ChestCarryManager implements Listener {
         if (data == null || data.isEmpty()) return;
 
         Block placed = e.getBlockPlaced();
+        // ★ 33批十二次修正：记录操作玩家 UUID，lambda 内取回（接双箱失败/塞不下时重新打包）
+        final java.util.UUID placerUuid = e.getPlayer().getUniqueId();
 
         // ★ 29批验收修正（用户定稿）：放置侧不拦任何人 —— 非授权用户也交还原版正常
         //   放下并回填。隔离靠下游链路：非授权用户「拆箱」在 onChestBreak 判定链
@@ -517,6 +519,46 @@ public class ChestCarryManager implements Listener {
                             + connected + " twin=" + (twinBlock != null
                             ? twinBlock.getX()+","+twinBlock.getY()+","+twinBlock.getZ() : "无")
                             + " 需塞入格子数=" + slotCount);
+
+                    // ★ 33批十二次修正：接双箱全被占 → 不硬接双箱、不清空物品、
+                    //   不丢一地 —— 清掉放置的方块 + 把全部物品重新打包成一个新箱
+                    //   寄给操作玩家（玩家可能在线/离线，离线掉落在放置点）。
+                    if (!connected) {
+                        plugin.getLogger().info("[箱子搬运][诊断] 接双箱全被占 → 清方块 + 重新打包寄玩家（" + slotCount + " 件）");
+                        // 清掉已放置的方块（回滚，不留空箱壳）
+                        placed.setType(org.bukkit.Material.AIR, false);
+                        if (twinBlock != null) twinBlock.setType(org.bukkit.Material.AIR, false);
+                        // 重新打包全部物品 → 寄给操作玩家
+                        org.bukkit.entity.Player placer = Bukkit.getPlayer(placerUuid);
+                        try {
+                            List<ItemStack> allItems = new ArrayList<>();
+                            for (ItemStack x : items0) {
+                                if (x != null && !x.getType().isAir()) allItems.add(x);
+                            }
+                            ItemStack[] allArr = allItems.toArray(new ItemStack[0]);
+                            if (allArr.length > 0) {
+                                ItemStack packed = buildPackedChest(Material.CHEST,
+                                        "接双箱失败回退箱", allArr);
+                                if (placer != null && placer.isOnline()) {
+                                    HashMap<Integer, ItemStack> rem = placer.getInventory().addItem(packed);
+                                    if (!rem.isEmpty()) {
+                                        rem.values().forEach(x ->
+                                                placer.getWorld().dropItemNaturally(placer.getLocation(), x));
+                                    }
+                                    placer.sendMessage("§e[箱子搬运] §7接双箱失败（环境不安全），已重新打包 "
+                                            + allArr.length + " 件物品寄给你，请再放一次");
+                                } else {
+                                    org.bukkit.World ww = placed.getWorld();
+                                    Location dropHere = new Location(ww, placed.getX() + 0.5,
+                                            placed.getY() + 1, placed.getZ() + 0.5);
+                                    ww.dropItemNaturally(dropHere, packed);
+                                }
+                            }
+                        } catch (Exception ex) {
+                            plugin.getLogger().warning("[箱子搬运] 接双箱失败回退打包异常: " + ex.getMessage());
+                        }
+                        return;
+                    }
                 }
             } catch (Exception ex) {
                 plugin.getLogger().fine("[箱子搬运] 接双箱异常: " + ex.getMessage());
@@ -536,17 +578,41 @@ public class ChestCarryManager implements Listener {
                         filled++;
                     }
                 }
+                // ★ 33批十二次修正：容器格子不够（双箱未连接）→ 塞不下的"那一边"
+                //   不丢在箱子旁（避免岩浆/垃圾箱环境物品丢失），而是重新打包
+                //   成一个新箱寄给操作玩家；已塞进箱子的部分留在箱子里不动。
                 if (filled < countSlots(items)) {
-                    // 容器格子不够（双箱未连接）→ 多出的物品掉在箱子旁（零丢失）
+                    int missing = countSlots(items) - filled;
                     plugin.getLogger().info("[箱子搬运][诊断] 容器仅 " + cap
-                            + " 格，" + (countSlots(items) - filled)
-                            + " 件物品已掉在箱子旁（双箱连接未生效）");
-                    World w = placed.getWorld();
-                    Location dropLoc = new Location(w, placed.getX() + 0.5,
-                            placed.getY() + 1, placed.getZ() + 0.5);
-                    for (int i = filled; i < items.length; i++) {
-                        if (items[i] != null && !items[i].getType().isAir()) {
-                            w.dropItemNaturally(dropLoc, items[i]);
+                            + " 格，" + missing + " 件未塞入 → 重新打包寄玩家");
+                    // 把塞不下的物品（items[filled..]）重新打包
+                    List<ItemStack> missingList = new ArrayList<>();
+                    for (int mi = filled; mi < items.length; mi++) {
+                        if (items[mi] != null && !items[mi].getType().isAir())
+                            missingList.add(items[mi]);
+                    }
+                    if (!missingList.isEmpty()) {
+                        ItemStack[] missingArr = missingList.toArray(new ItemStack[0]);
+                        try {
+                            ItemStack packed2 = buildPackedChest(Material.CHEST,
+                                    "塞不下回退箱", missingArr);
+                            org.bukkit.entity.Player placer2 = Bukkit.getPlayer(placerUuid);
+                            if (placer2 != null && placer2.isOnline()) {
+                                HashMap<Integer, ItemStack> rem2 = placer2.getInventory().addItem(packed2);
+                                if (!rem2.isEmpty()) {
+                                    rem2.values().forEach(x ->
+                                            placer2.getWorld().dropItemNaturally(placer2.getLocation(), x));
+                                }
+                                placer2.sendMessage("§e[箱子搬运] §7容器空间不足，"
+                                        + missingArr.length + " 件物品已重新打包寄给你，请再放一次");
+                            } else {
+                                org.bukkit.World ww3 = placed.getWorld();
+                                Location dropHere = new Location(ww3, placed.getX() + 0.5,
+                                        placed.getY() + 1, placed.getZ() + 0.5);
+                                ww3.dropItemNaturally(dropHere, packed2);
+                            }
+                        } catch (Exception ex2) {
+                            plugin.getLogger().warning("[箱子搬运] 塞不下回退打包异常: " + ex2.getMessage());
                         }
                     }
                 }
