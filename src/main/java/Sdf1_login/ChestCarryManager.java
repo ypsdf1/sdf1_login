@@ -540,31 +540,11 @@ public class ChestCarryManager implements Listener {
                             }
                         }
                     }
-                    // ② 无空气翼 → 左右两翼找现有木箱接双箱（保留「挨着现有箱放」能力）
-                    if (!connected) {
-                        for (Block c : wings) {
-                            if (c != null && c.getType() == org.bukkit.Material.CHEST) {
-                                // ★ 33批十八次修正：双箱合并真根因——facing 对齐邻箱（原版双箱要求同朝向）
-                                //   必须 applyPhysics=true 让引擎做双箱检测；之前 false 跳过检测，
-                                //   主箱永远 27 格（生产服日志实锤：connected=是 但实测 placed=27格）。
-                                try {
-                                    org.bukkit.block.data.type.Chest bdP =
-                                            (org.bukkit.block.data.type.Chest) placed.getBlockData();
-                                    org.bukkit.block.data.type.Chest bdC =
-                                            (org.bukkit.block.data.type.Chest) c.getBlockData();
-                                    bdP.setFacing(bdC.getFacing());
-                                    placed.setBlockData(bdP);
-                                    // ★ 关键：applyPhysics=true 触发引擎双箱合并检测
-                                    placed.getState().update(true, true);
-                                    c.getState().update(true, true);
-                                } catch (Exception ign) {
-                                }
-                                connected = true;
-                                twinBlock = c;
-                                break;
-                            }
-                        }
-                    }
+                    // ★ 33批二十七次修正（用户定稿口径）：两翼都不空（任意实体方块，含其它箱子）
+                    //   → 一律退回打包箱 + 提醒调整环境，不再硬接「翼位现有木箱」。
+                    //   生产服 22:04:10 实锤：placed=214,44,743 两翼 z±1 均为箱子，硬接后
+                    //   实测仍 27 格 → 地上残留「被砍掉一半的箱子」+ 玩家只拿回剩余 17 件。
+                    //   ① 空气翼仍优先摆第二只；两翼都非空气 → connected 保持 false 走下方退回分支。
                     // ③ 全被占 → 清方块 + 重新打包寄玩家（环境不安全，不硬接双箱）
                     // ★ 33批二十次修正：接双箱双半各设 LEFT + update(true,false)（手动建 54 格连接，
                     //   不依赖引擎自动检测——生产服日志实证 Paper26 对空气位摆出的第二只箱
@@ -617,7 +597,13 @@ public class ChestCarryManager implements Listener {
                     if (!connected) {
                         // 全被占：清方块 + 全部物品重新打包寄玩家
                         plugin.getLogger().info("[箱子搬运][诊断] 左右两翼全被实体挡死 → 清方块 + 退回打包箱（" + slotCount + " 件）");
-                        placedFinal.setType(org.bukkit.Material.AIR, false);
+                        // ★ 33批二十七次修正：退回时清方块走 clearChestBlock
+                        //   （先清空真实库存再 setType(AIR)，并 2tick 后再清一次）——
+                        //   裸 setType(AIR) 对已被引擎连成双箱/带连接态的方块会触发
+                        //   onRemove 掉共享库存，并让 Bukkit 对连接另一半再发一次
+                        //   BlockBreakEvent，结果 = 地上残留一个「被砍掉一半的箱子」。
+                        markSuppressDrop(placedFinal.getLocation());
+                        clearChestBlock(placedFinal);
                         org.bukkit.entity.Player placerAll = Bukkit.getPlayer(placerUuid);
                         List<ItemStack> allListA = new ArrayList<>();
                         for (ItemStack x : items0) {
