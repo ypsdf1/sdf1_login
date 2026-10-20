@@ -1038,7 +1038,19 @@ public class ChatFilterManager {
                     "[\\s.,;!?，。；！？、）》」』】"
                             + "\\]\\[\\(（]+$",
                     "");
-            if (!url.isEmpty()) urls.add(url);
+            if (url.isEmpty()) continue;
+            // ★ 28批修复（用户口径「接入illegal_domains.txt，命中的中英文后缀一律拦截」）：
+            //   显式协议URL（含 ://，如 http://1.2.3.4/x、https://a.com）无条件收录；
+            //   裸域名/下划线 token 必须命中非法域名后缀（含中文后缀：中国/网络/公司…
+            //   与英文后缀 com/cn/net…，均来自 illegal_domains.txt）才收录。
+            //   —— 修「今天.天气真好啊」被 URL_PATTERN 点分隔支整句匹配为域名而误伤。
+            if (!url.contains("://")) {
+                String probe = url;
+                int slash = probe.indexOf('/');
+                if (slash > 0) probe = probe.substring(0, slash);
+                if (!containsIllegalDomain(probe)) continue;
+            }
+            if (!urls.contains(url)) urls.add(url);
         }
         // ★ 变形URL加强（2026-10-08）：点周带空白（baidu . com）压缩空白后再判定；
         //   仅当顶级域命中「非法域名后缀」才收录，避免误伤 "OK. Good" 之类正常英文句子
@@ -1090,17 +1102,24 @@ public class ChatFilterManager {
 
     /**
      * 判断URL是否应被拦截
-     * 下划线分隔的字符串（如 player_name），必须命中非法域名后缀才拦截
-     * 点分隔或标准URL正常拦截
+     * ★ 28批修复（用户口径）：接入 illegal_domains.txt，命中的中英文后缀一律拦截，其余放行。
+     * - 白名单优先放行；
+     * - 显式协议URL（含 ://，如 http://a.com、http://1.2.3.4/x）非白名单一律拦截
+     *   （IP直链无后缀可查，保持反广告强度）；
+     * - 裸域名/下划线 token（如 xxx.com、xxx_com、今天.天气真好啊）：
+     *   必须命中非法域名后缀（英文 com/cn/net… 或中文 中国/网络/公司…）才拦截 —— 修误伤。
      */
     public boolean shouldBlockUrl(String url) {
         if (isWhitelisted(url)) return false;
-        // 下划线分隔 → 检查是否非法域名，不在列表则跳过（合法玩家名下划线误匹配）
-        if (url.contains("_")) {
-            return containsIllegalDomain(url);
+        // 显式协议URL → 非白名单一律拦截（原行为保持）
+        if (url.contains("://")) {
+            return true;
         }
-        // 点分隔或标准URL正常拦截
-        return true;
+        // 裸域名/下划线token → 必须命中非法域名后缀才拦截
+        String probe = url;
+        int slash = probe.indexOf('/');
+        if (slash > 0) probe = probe.substring(0, slash);
+        return containsIllegalDomain(probe);
     }
 
     public boolean isLikelyDomain(String url) {

@@ -309,6 +309,35 @@ public class MaterialTranslator {
      */
     public static void clearCache() {
         cache.clear();
+        chatCache.clear();
+    }
+
+    // ==================== 聊天整句机翻（28批新增） ====================
+
+    /** 聊天机翻独立缓存（与材料名缓存隔离），上限保护防内存膨胀 */
+    private static final ConcurrentHashMap<String, String> chatCache = new ConcurrentHashMap<>();
+    private static final int CHAT_CACHE_MAX = 500;
+
+    /**
+     * 聊天整句机翻（英→中）。复用 translateWithFallback 的
+     * YOUDAO→JIANXIN→GOOGLE 降级链（与领地系统同一套 API 流程）。
+     * 结果独立缓存（上限500条，满则整体清空重来），不污染材料名缓存。
+     * 同步阻塞 HTTP（每源 3s 超时），调用方必须放在异步线程执行。
+     * 返回 null 表示翻译失败或译文无意义（如与原文相同）。
+     */
+    public static String translateChatText(String text) {
+        if (text == null) return null;
+        String key = text.trim();
+        if (key.isEmpty()) return null;
+        String hit = chatCache.get(key);
+        if (hit != null) return hit;
+        String zh = translateWithFallback(key);
+        if (zh != null && !zh.isEmpty() && !zh.equals(key)) {
+            if (chatCache.size() >= CHAT_CACHE_MAX) chatCache.clear();
+            chatCache.put(key, zh);
+            return zh;
+        }
+        return null;
     }
 
     /**

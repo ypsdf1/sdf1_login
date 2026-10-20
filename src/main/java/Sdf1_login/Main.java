@@ -1012,6 +1012,9 @@ public class Main extends JavaPlugin
         }
         if (db != null) db.close();
         if (garbage != null) garbage.close();
+        if (chatTransPool != null) {
+            chatTransPool.shutdownNow();
+        }
         if (questTracker != null)
             questTracker.shutdown();
         if (homeMgr != null)
@@ -6273,7 +6276,11 @@ public class Main extends JavaPlugin
         // ===== URL检测 =====
         List<String> urls =
                 chatFilter.extractUrls(msg);
-        if (urls.isEmpty()) return;
+        if (urls.isEmpty()) {
+            // 28批：无链接的正常消息放行 → 触发英文聊天机翻（不拦截，追加双语展示）
+            tryScheduleChatTranslation(p, msg);
+            return;
+        }
 
         // 过滤白名单 + 下划线误匹配（player_name 不在非法域名列表则跳过）
         List<String> blocked = new ArrayList<>();
@@ -6282,7 +6289,11 @@ public class Main extends JavaPlugin
                 blocked.add(url);
             }
         }
-        if (blocked.isEmpty()) return;
+        if (blocked.isEmpty()) {
+            // 28批：URL 全部放行（白名单/未命中非法后缀）→ 同样触发英文聊天机翻
+            tryScheduleChatTranslation(p, msg);
+            return;
+        }
 
         // 取消消息
         e.setCancelled(true);
@@ -6361,6 +6372,68 @@ public class Main extends JavaPlugin
     }
 
 // ==================== 聊天过滤辅助方法 ====================
+
+    // ===== 英文聊天机翻（28批新增） =====
+    /** 同一玩家机翻冷却（毫秒），防刷屏触发大量 API 请求 */
+    private final java.util.Map<String, Long> chatTransCd = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 机翻专用线程池（HTTP 阻塞最多 ~9s，不能占用 ForkJoinPool.commonPool） */
+    private final java.util.concurrent.ExecutorService chatTransPool =
+            java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+                Thread t = new Thread(r, "Sdf1-chat-translator");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /**
+     * 英文聊天机翻调度（28批，用户定稿口径）：
+     * - 所有消息一律不拦截、原样放行（交 MC 自行处理），本方法只做「追加双语展示」；
+     * - 仅「整条消息不含任何中文字符」的英文消息（如 what are you doing?）才机翻，
+     *   原始消息由 MC 正常广播之后，再追加一条「[机翻] 原文 → 译文」；
+     * - 中文消息或中文夹杂英文（如「你需要用water来免伤」）一律原样输出、不做机翻
+     *   —— 脱离第三方模型无法判定英文单词在语境中的真实含义，强行翻反而出错。
+     * 异步：HTTP 翻译在线程池执行（每源3s超时，YOUDAO→JIANXIN→GOOGLE 降级），
+     * 结果回主线程广播；任何异常静默吞掉，绝不影响聊天主流程。
+     */
+    private void tryScheduleChatTranslation(Player p, String msg) {
+        try {
+            if (p == null || msg == null) return;
+            String text = msg.trim();
+            if (text.isEmpty() || text.length() > 200) return;
+            // 整条消息必须「不含任何中文字符」才机翻（含中文=原样输出）
+            boolean hasChinese = false;
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c >= '\u4e00' && c <= '\u9fff') { hasChinese = true; break; }
+            }
+            if (hasChinese) return;
+            // 至少要有一个英文字母（纯数字/符号无翻译意义）
+            boolean hasLetter = false;
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { hasLetter = true; break; }
+            }
+            if (!hasLetter) return;
+            // 冷却防刷（10秒/人）
+            long now = System.currentTimeMillis();
+            Long last = chatTransCd.get(p.getName());
+            if (last != null && now - last < 10_000L) return;
+            chatTransCd.put(p.getName(), now);
+
+            final String original = text;
+            final String sender = p.getName();
+            java.util.concurrent.CompletableFuture.supplyAsync(
+                    () -> MaterialTranslator.translateChatText(original), chatTransPool)
+                .thenAccept(zh -> {
+                    if (zh == null || zh.isEmpty()) return;
+                    // 切主线程追加「机翻」双语展示（原始消息已由 MC 自行广播）
+                    Bukkit.getScheduler().runTask(this, () ->
+                        Bukkit.broadcastMessage("§8[机翻] §7" + sender + ": §f"
+                                + original + " §7→ §a" + zh));
+                });
+        } catch (Throwable ignored) {
+            // 机翻任何异常都不影响聊天
+        }
+    }
 
     /**
      * 过滤内容中的链接（用于告示牌、编辑书等非聊天场景）
