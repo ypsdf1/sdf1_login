@@ -958,7 +958,7 @@ public class ConfigManager {
                 if (t.startsWith("```")) { origHasCfgBlock = true; continue; }
                 if (!t.startsWith("|")) continue;
                 String[] cols = t.split("\\|", -1);
-                if (cols.length < 4) continue;
+                if (cols.length < 3) continue;
                 String key = cols[1].trim();
                 if (key.isEmpty() || key.matches("[-:\\s]+")) continue; // 表头分隔行
                 origKeys.add(key);
@@ -988,7 +988,7 @@ public class ConfigManager {
                 }
                 if (!t.startsWith("|")) continue;
                 String[] cols = t.split("\\|", -1);
-                if (cols.length < 4) continue;
+                if (cols.length < 3) continue;
                 String key = cols[1].trim();
                 if (key.isEmpty() || key.matches("[-:\\s]+")) continue;
                 tplKeys.add(key);
@@ -1028,7 +1028,7 @@ public class ConfigManager {
                 if (inFence) continue;
                 if (t.startsWith("|")) {
                     String[] cols = t.split("\\|", -1);
-                    String key = cols.length >= 4 ? cols[1].trim() : "";
+                    String key = cols.length >= 3 ? cols[1].trim() : "";
                     boolean isData = !key.isEmpty() && !key.matches("[-:\\s]+");
                     if (tableEndIdx < 0) {
                         if (isData || key.matches("[-:\\s]+")) tableEndIdx = i;
@@ -1125,6 +1125,280 @@ public class ConfigManager {
             return true;
         } catch (Exception e) {
             logger.warning("[" + label + "] 文档配置升级异常（已跳过，保持原文件）: " + e.getMessage());
+            return false;
+        }
+    }
+
+    // ==================== 35批：resources 模板通用同步（全量扫描，缺啥补啥） ====================
+
+    /**
+     * 通用模板同步（35批，用户口径「处理所有我们插件 resources 里的模板文件，如果插件数据目录
+     * 里的文件内容缺了模板里的一些配置值，立刻备份，提取内容出来，安全释放新的。只插入对应的
+     * 配置，不能误伤其它内容」）：启动时扫描 jar 内全部资源模板，与插件数据目录逐一对照 ——
+     * ① 数据目录缺该文件 → 直接安全释放新版；
+     * ② 文件存在但缺模板里的配置值 → 先备份 .bak（逐字节校验）→ 只把缺失项插入，
+     *    用户已有配置值、自定义键、说明文档一律原样保留（绝不整文件覆盖）；
+     * ③ 内容与模板一致 → 安静跳过（幂等，不产生 .bak）。
+     * 按扩展名分派：.md → safeUpgradeDoc（只补配置区表格行，说明文档不动）；
+     * .json → 递归缺键补入（Gson 解析失败=用户加了注释/格式特殊 → 跳过不动）；
+     * 纯文本（.txt/.yml 等）→ 缺失数据行追加；未识别类型只记录不改动。
+     * 任何异常只打日志，绝不影响启动。必须在任何 Manager 读配置文件之前调用（onEnable 早期）。
+     */
+    public void syncAllResourceTemplates() {
+        try {
+            java.net.URL loc = ConfigManager.class.getProtectionDomain()
+                    .getCodeSource().getLocation();
+            if (loc == null) return;
+            File jar = new File(loc.toURI());
+            if (!jar.isFile()) return; // 开发态（class 目录）无 jar 可扫，跳过
+            int released = 0, upgraded = 0, skipped = 0;
+            try (java.util.jar.JarFile jf = new java.util.jar.JarFile(jar)) {
+                java.util.Enumeration<java.util.jar.JarEntry> en = jf.entries();
+                while (en.hasMoreElements()) {
+                    java.util.jar.JarEntry je = en.nextElement();
+                    if (je.isDirectory()) continue;
+                    String name = je.getName();
+                    if (name.startsWith("META-INF/")) continue;
+                    if (name.endsWith(".class")) continue;
+                    if (name.equals("plugin.yml")) continue; // 插件描述文件，不是配置模板
+                    try {
+                        byte[] tpl;
+                        try (InputStream in = jf.getInputStream(je)) {
+                            tpl = readAllBytes(in);
+                        }
+                        if (tpl == null || tpl.length == 0) continue;
+                        File target = new File(dataFolder, name);
+                        if (!target.exists()) {
+                            File parent = target.getParentFile();
+                            if (parent != null) parent.mkdirs();
+                            java.nio.file.Files.write(target.toPath(), tpl);
+                            released++;
+                            continue;
+                        }
+                        byte[] cur = java.nio.file.Files.readAllBytes(target.toPath());
+                        if (Arrays.equals(cur, tpl)) continue; // 与模板一致 → 安静
+                        String label = "通用模板:" + name;
+                        String lower = name.toLowerCase(Locale.ROOT);
+                        boolean ok;
+                        if (lower.endsWith(".md")) {
+                            ok = safeUpgradeDoc(target, readUtf8Lines(tpl), label);
+                        } else if (lower.endsWith(".json")) {
+                            ok = upgradeJsonMissing(target, tpl, label);
+                        } else if (lower.endsWith(".txt") || lower.endsWith(".yml")
+                                || lower.endsWith(".yaml") || lower.endsWith(".cfg")
+                                || lower.endsWith(".conf") || lower.endsWith(".properties")
+                                || lower.endsWith(".csv")) {
+                            ok = upgradeLineList(target, readUtf8Lines(tpl), label);
+                        } else {
+                            logger.info("[" + label + "] 未识别的资源类型，跳过（不改动）");
+                            skipped++;
+                            continue;
+                        }
+                        if (ok) upgraded++;
+                    } catch (Throwable inner) {
+                        skipped++;
+                        logger.warning("[通用模板:" + name + "] 处理失败（已跳过，不影响启动）: "
+                                + inner.getMessage());
+                    }
+                }
+            }
+            if (released > 0 || upgraded > 0) {
+                logger.info("[通用模板] 扫描完成：首装释放 " + released + " 个文件，安全升级 "
+                        + upgraded + " 个文件（只补缺失配置，其余原样保留）"
+                        + (skipped > 0 ? "，跳过 " + skipped + " 个" : ""));
+            }
+        } catch (Throwable t) {
+            // 兜底：模板同步任何异常都不允许影响插件启动
+            logger.warning("[通用模板] 同步异常（已跳过，不影响启动）: " + t.getMessage());
+        }
+    }
+
+    /** 读 InputStream → 字节数组（jar 资源读取用） */
+    private static byte[] readAllBytes(InputStream in) throws IOException {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        return bos.toByteArray();
+    }
+
+    /** 字节数组 → 行列表（UTF-8，去 BOM，去 CR，去文件末空行） */
+    private static List<String> readUtf8Lines(byte[] data) {
+        String s = new String(data, StandardCharsets.UTF_8);
+        if (!s.isEmpty() && s.charAt(0) == '\uFEFF') s = s.substring(1);
+        List<String> L = new ArrayList<>();
+        for (String line : s.split("\n", -1)) {
+            if (line.endsWith("\r")) line = line.substring(0, line.length() - 1);
+            L.add(line);
+        }
+        if (!L.isEmpty() && L.get(L.size() - 1).isEmpty()) L.remove(L.size() - 1);
+        return L;
+    }
+
+    /**
+     * JSON 配置缺键补入（35批）：以原文件为基底，递归把模板里 target 缺失的键插进去 ——
+     * 只插入、绝不覆盖已有值（数组/标量/类型不同一律不碰，用户改过的值原样保留）；
+     * 键名以 "#" 开头的视为模板示例说明（opwl.json「以下是模板文件」节），不回插。
+     * 原文件 JSON 解析失败（用户加了注释/格式特殊）→ 跳过不动。
+     * 动手前备份 .bak 并逐字节校验（失败=取消）；写后重新解析校验，失败从 .bak 还原。
+     *
+     * @return true=本次执行了升级写入
+     */
+    private boolean upgradeJsonMissing(File file, byte[] tplBytes, String label) {
+        try {
+            String tplText = new String(tplBytes, StandardCharsets.UTF_8);
+            if (!tplText.isEmpty() && tplText.charAt(0) == '\uFEFF') tplText = tplText.substring(1);
+            byte[] cur = java.nio.file.Files.readAllBytes(file.toPath());
+            String oldText = new String(cur, StandardCharsets.UTF_8);
+            if (!oldText.isEmpty() && oldText.charAt(0) == '\uFEFF') oldText = oldText.substring(1);
+            com.google.gson.JsonElement tplEl;
+            try {
+                tplEl = com.google.gson.JsonParser.parseString(tplText);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] 模板 JSON 解析失败，跳过");
+                return false;
+            }
+            if (!tplEl.isJsonObject()) return false;
+            com.google.gson.JsonElement oldEl;
+            try {
+                oldEl = com.google.gson.JsonParser.parseString(oldText);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] 原文件 JSON 解析失败（可能含注释或被改坏），跳过不动");
+                return false;
+            }
+            if (!oldEl.isJsonObject()) {
+                logger.warning("[" + label + "] 原文件 JSON 顶层不是对象，跳过不动");
+                return false;
+            }
+            com.google.gson.JsonObject root = oldEl.getAsJsonObject();
+            List<String> added = new ArrayList<>();
+            if (!mergeJsonMissing(root, tplEl.getAsJsonObject(), "", added)) {
+                return false; // 无缺失键，幂等
+            }
+            // ① 备份原文件 → .bak 并逐字节校验（失败=取消，原文件不动）
+            File bak = new File(file.getParentFile(), file.getName() + ".bak");
+            java.nio.file.Files.copy(file.toPath(), bak.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            boolean bakOk = bak.exists() && bak.length() == file.length();
+            if (bakOk) {
+                try {
+                    bakOk = Arrays.equals(cur, java.nio.file.Files.readAllBytes(bak.toPath()));
+                } catch (Exception e) { bakOk = false; }
+            }
+            if (!bakOk) {
+                bak.delete();
+                logger.warning("[" + label + "] ★升级取消：备份 .bak 校验不通过，原文件未改动");
+                return false;
+            }
+            // ② 写回（pretty + 不转义 HTML，与 OpWhiteListManager 写回同款格式），写后复解析校验
+            com.google.gson.Gson g = new com.google.gson.GsonBuilder()
+                    .setPrettyPrinting().disableHtmlEscaping().create();
+            try {
+                byte[] out = g.toJson(root).getBytes(StandardCharsets.UTF_8);
+                java.nio.file.Files.write(file.toPath(), out);
+                com.google.gson.JsonParser.parseString(
+                        new String(out, StandardCharsets.UTF_8)).getAsJsonObject();
+            } catch (Exception e) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★升级失败：写入/校验出错，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★升级失败且还原失败！完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            logger.info("[" + label + "] JSON 配置安全交换完成：补入 " + added.size()
+                    + " 个缺失键 " + added + "，已有配置值与其它内容原样保留；备份: " + bak.getName());
+            return true;
+        } catch (Exception e) {
+            logger.warning("[" + label + "] JSON 配置升级异常（已跳过，保持原文件）: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 递归把模板里 target 缺失的键补进去（只插入不覆盖；数组/标量不递归合并；# 说明键跳过） */
+    private boolean mergeJsonMissing(com.google.gson.JsonObject target,
+            com.google.gson.JsonObject tpl, String path, List<String> added) {
+        boolean changed = false;
+        for (Map.Entry<String, com.google.gson.JsonElement> en : tpl.entrySet()) {
+            String k = en.getKey();
+            if (k.startsWith("#")) continue; // 模板示例说明键，不算配置，不回插
+            com.google.gson.JsonElement have = target.get(k);
+            if (have == null || have.isJsonNull()) {
+                target.add(k, en.getValue().deepCopy());
+                added.add(path + k);
+                changed = true;
+            } else if (have.isJsonObject() && en.getValue().isJsonObject()) {
+                changed |= mergeJsonMissing(have.getAsJsonObject(),
+                        en.getValue().getAsJsonObject(), path + k + ".", added);
+            }
+            // 已存在的键（含数组、标量、类型不同）一律不碰 → 用户值与自定义内容原样保留
+        }
+        return changed;
+    }
+
+    /**
+     * 纯文本行列表缺行补入（35批，illegal_domains.txt 等）：原文件没有的模板数据行
+     * （非空非注释）追加到文件末尾；已有行、用户自加行原样保留。
+     * 备份/校验/写失败还原与 safeUpgrade 同一套安全约定。
+     *
+     * @return true=本次执行了升级写入
+     */
+    private boolean upgradeLineList(File file, List<String> tpl, String label) {
+        try {
+            List<String> orig = readUtf8Lines(java.nio.file.Files.readAllBytes(file.toPath()));
+            Set<String> have = new HashSet<>();
+            for (String raw : orig) {
+                String t = raw.trim();
+                if (!t.isEmpty()) have.add(t);
+            }
+            List<String> missing = new ArrayList<>();
+            for (String raw : tpl) {
+                String t = raw.trim();
+                if (t.isEmpty() || t.startsWith("#")) continue;
+                if (!have.contains(t)) missing.add(raw);
+            }
+            if (missing.isEmpty()) return false; // 幂等
+            File bak = new File(file.getParentFile(), file.getName() + ".bak");
+            java.nio.file.Files.copy(file.toPath(), bak.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            boolean bakOk = bak.exists() && bak.length() == file.length();
+            if (bakOk) {
+                try {
+                    bakOk = Arrays.equals(
+                            java.nio.file.Files.readAllBytes(file.toPath()),
+                            java.nio.file.Files.readAllBytes(bak.toPath()));
+                } catch (Exception e) { bakOk = false; }
+            }
+            if (!bakOk) {
+                bak.delete();
+                logger.warning("[" + label + "] ★升级取消：备份 .bak 校验不通过，原文件未改动");
+                return false;
+            }
+            List<String> out = new ArrayList<>(orig);
+            out.add("");
+            out.add("# ===== 以下为模板补充行（通用模板同步自动补入，可自行删改） =====");
+            out.addAll(missing);
+            if (!writeLines(file, out)) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★升级失败：写入出错，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★升级失败且还原失败！完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            logger.info("[" + label + "] 行列表安全交换完成：补入 " + missing.size()
+                    + " 行，已有内容原样保留；备份: " + bak.getName());
+            return true;
+        } catch (Exception e) {
+            logger.warning("[" + label + "] 行列表升级异常（已跳过，保持原文件）: " + e.getMessage());
             return false;
         }
     }

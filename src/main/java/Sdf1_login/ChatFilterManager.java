@@ -1122,6 +1122,108 @@ public class ChatFilterManager {
         return containsIllegalDomain(probe);
     }
 
+    // ==================== 35批修订：IPv4/IPv6 地址检测（加白豁免，其余无条件拦） ====================
+
+    /** IPv4：四段 0-255，前后用非数字边界包住（"1.21.4" 三段版本号不匹配，"1.2.3.4.5" 不匹配） */
+    private static final Pattern IPV4_PATTERN = Pattern.compile(
+            "(?<![0-9.])(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)"
+                    + "(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}(?![0-9]|\\.\\d)");
+
+    /** IPv6 候选：>=1 个冒号的十六进制/冒号/点串（粗取后 isRealIpv6 严格校验，防 12:34:56 时间误伤） */
+    private static final Pattern IPV6_CAND = Pattern.compile(
+            "(?i)(?:[0-9a-f]{0,4}:){1,}[0-9a-f:.]*");
+
+    /**
+     * 提取消息里全部 IPv4/IPv6 地址（严格校验、按出现顺序去重）。
+     * IPv4 按 0-255 校验；IPv6 先粗取候选再去尾点后校验组数/::唯一性/组格式，
+     * 时间 "12:34:56"、三段冒号串不会误伤；句末句号（"…cbd5."）不吞。
+     */
+    public java.util.List<String> extractIpAddresses(String msg) {
+        java.util.List<String> out = new ArrayList<>();
+        if (msg == null || msg.isEmpty()) return out;
+        Matcher m4 = IPV4_PATTERN.matcher(msg);
+        while (m4.find()) {
+            String ip = m4.group();
+            if (!out.contains(ip)) out.add(ip);
+        }
+        Matcher m6 = IPV6_CAND.matcher(msg);
+        while (m6.find()) {
+            String cand = m6.group();
+            // 去尾部句点（英文句号紧跟 IP 时不能因此漏判）
+            int end = cand.length();
+            while (end > 0 && cand.charAt(end - 1) == '.') end--;
+            cand = cand.substring(0, end);
+            if (cand.isEmpty() || !isRealIpv6(cand)) continue;
+            if (!out.contains(cand)) out.add(cand);
+        }
+        return out;
+    }
+
+    /**
+     * 消息是否包含「未加白」的 IPv4/IPv6（35批修订口径，用户原话：
+     * 「对加白的ip和玩家不受影响，其它玩家ipv6、ipv4全部无条件拦下来」）。
+     * 加白 IP = chat.txt「白名单」节条目（与域名共用同一列表，支持完整 IP 与 *.x.x.x 后缀）；
+     * 消息里的 IP 全部加白才放行，出现任何一个未加白 IP 即返回 true。
+     * 加白玩家在 onChat 更早的「白名单玩家」早退里豁免，走不到 IP 检测。
+     */
+    public boolean containsNonWhitelistedIp(String msg) {
+        for (String ip : extractIpAddresses(msg)) {
+            if (!isWhitelistedIp(ip)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 加白 IP 判定。不复用 isWhitelisted：它按第一个冒号剥「端口」，
+     * 对 IPv6（2408:8352::1）会截断成 "2408" 误判未加白 —— 这里不剥端口，
+     * 提取出来的 IP 本就不含端口；条目支持完整等值与 *.段 后缀通配。
+     */
+    private boolean isWhitelistedIp(String ip) {
+        if (ip == null || ip.isEmpty()) return false;
+        String clean = ip.trim().toLowerCase(java.util.Locale.ROOT);
+        for (String entry : whitelistUrls) {
+            String e = entry.trim().toLowerCase(java.util.Locale.ROOT);
+            if (e.isEmpty()) continue;
+            if (e.startsWith("*.")) {
+                if (clean.endsWith(e.substring(1))) return true;
+            } else if (clean.equals(e)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 候选串是否为合法 IPv6（:: 压缩、末段 IPv4-mapped、%scope 尾巴） */
+    private static boolean isRealIpv6(String t) {
+        if (t == null || t.isEmpty()) return false;
+        String s = t;
+        int pct = s.indexOf('%');
+        if (pct >= 0) s = s.substring(0, pct);   // fe80::1%eth0
+        int slash = s.indexOf('/');
+        if (slash >= 0) s = s.substring(0, slash); // CIDR 尾巴
+        if (s.indexOf(':') < 0) return false;
+        int dc = s.indexOf("::");
+        if (dc >= 0 && s.indexOf("::", dc + 1) >= 0) return false; // 两个 :: 非法
+        String body = dc >= 0
+                ? s.substring(0, dc) + ":" + s.substring(dc + 2) : s;
+        int groups = 0;
+        for (String part : body.split(":", -1)) {
+            if (part.isEmpty()) continue;
+            if (part.indexOf('.') >= 0) {
+                // 末段 IPv4 形态（::ffff:192.168.1.1）→ 按 IPv4 校验，计 2 组
+                if (!part.matches("(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)"
+                        + "(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3}")) return false;
+                groups += 2;
+            } else {
+                if (!part.matches("[0-9a-fA-F]{1,4}")) return false;
+                groups++;
+            }
+            if (groups > 8) return false;
+        }
+        if (dc >= 0) return groups < 8;  // :: 至少压缩 1 组 -> 显式组 <=7
+        return groups == 8;              // 无 :: 必须恰好 8 组
+    }
+
     public boolean isLikelyDomain(String url) {
         int lastDot = url.lastIndexOf('.');
         if (lastDot < 0

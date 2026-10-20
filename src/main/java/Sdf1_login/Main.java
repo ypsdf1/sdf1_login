@@ -420,6 +420,11 @@ public class Main extends JavaPlugin
 
         // ===== 1. 基础配置 =====
         config = new ConfigManager(getDataFolder());
+        // ★ 35批：通用模板同步——启动即扫描 jar 全部 resources 模板：数据目录缺文件=安全释放，
+        //   缺模板里的配置值=先备份 .bak 再只插缺失项（说明文档与用户改过的值原样保留）。
+        //   必须在任何 Manager 读配置之前（illegal_domains.txt / chest/cfg.json /
+        //   OP白名单/opwl.json / 各 md 配置都由它先对齐）。
+        config.syncAllResourceTemplates();
         config.loadMessages();
         config.loadSmtp();
         config.loadSettings();
@@ -6074,6 +6079,8 @@ public class Main extends JavaPlugin
                     // ★ 答对了 → 释放所有缓存消息 + 当前消息
                     chatFilter.broadcastCachedMessages(p.getName());
                     Bukkit.broadcastMessage(p.getDisplayName() + ": " + msg);
+                    // 35批：机翻无条件执行——验证通过手动广播的这条也照常追加机翻
+                    tryScheduleChatTranslation(p, msg);
                     p.sendMessage("§a§l[验证码] §a验证通过！");
                     e.setCancelled(true);
                     return;
@@ -6192,11 +6199,19 @@ public class Main extends JavaPlugin
         }
 
         // ===== 聊天过滤 - 开关检查 =====
-        if (!chatFilter.isEnabled()) return;
+        if (!chatFilter.isEnabled()) {
+            // 35批：机翻无条件执行——过滤关闭也照常追加英文机翻（机翻是展示功能，不随开关走）
+            tryScheduleChatTranslation(p, msg);
+            return;
+        }
 
         // ===== 白名单玩家 =====
         if (chatFilter.isPlayerWhitelisted(
-                p.getName())) return;
+                p.getName())) {
+            // 35批：机翻无条件执行——加白玩家不过滤，但英文机翻照常（机翻没有任何豁免）
+            tryScheduleChatTranslation(p, msg);
+            return;
+        }
 
         // ===== 禁言检查 =====
         if (chatFilter.isMuted(p.getName())) {
@@ -6271,6 +6286,24 @@ public class Main extends JavaPlugin
                 }
                 return;
             }
+        }
+
+        // ===== IPv4/IPv6 地址检测（35批修订口径：加白 IP / 加白玩家不受影响，
+        //      其它玩家消息含 IPv4/IPv6 一律无条件拦截）=====
+        // 加白玩家：上面「白名单玩家」已早退，根本走不到这里；
+        // 加白 IP：复用 chat.txt「白名单」节条目（isWhitelisted，支持完整 IP 与 *.x.x.x 后缀），
+        // 消息里的 IP 全部加白才放行，出现任何一个未加白的 IP 即拦。
+        if (chatFilter != null && chatFilter.containsNonWhitelistedIp(msg)) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[聊天过滤] §7消息包含未加白的 IP 地址，已被拦截");
+            chatFilter.incrementViolation(p.getName());
+            int ipCount = chatFilter.getViolationCount(p.getName());
+            p.sendMessage(chatFilter.msg(
+                    "chat_url_violation",
+                    "count", String.valueOf(ipCount)));
+            chatFilter.applyPunishment(p, ipCount,
+                    "发送IP地址", "系统");
+            return;
         }
 
         // ===== URL检测 =====
@@ -6373,9 +6406,7 @@ public class Main extends JavaPlugin
 
 // ==================== 聊天过滤辅助方法 ====================
 
-    // ===== 英文聊天机翻（28批新增） =====
-    /** 同一玩家机翻冷却（毫秒），防刷屏触发大量 API 请求 */
-    private final java.util.Map<String, Long> chatTransCd = new java.util.concurrent.ConcurrentHashMap<>();
+    // ===== 英文聊天机翻（28批新增，35批去豁免） =====
     /** 机翻专用线程池（HTTP 阻塞最多 ~9s，不能占用 ForkJoinPool.commonPool） */
     private final java.util.concurrent.ExecutorService chatTransPool =
             java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
@@ -6385,12 +6416,14 @@ public class Main extends JavaPlugin
             });
 
     /**
-     * 英文聊天机翻调度（28批，用户定稿口径）：
+     * 英文聊天机翻调度（28批用户定稿口径，35批修正「机翻无条件执行，没有豁免」）：
      * - 所有消息一律不拦截、原样放行（交 MC 自行处理），本方法只做「追加双语展示」；
-     * - 仅「整条消息不含任何中文字符」的英文消息（如 what are you doing?）才机翻，
+     * - 触发口径不变：整条消息不含任何中文字符（如 what are you doing?）才机翻，
      *   原始消息由 MC 正常广播之后，再追加一条「[机翻] 原文 → 译文」；
-     * - 中文消息或中文夹杂英文（如「你需要用water来免伤」）一律原样输出、不做机翻
+     *   中文/中英夹杂（如「你需要用water来免伤」）一律原样输出、不做机翻
      *   —— 脱离第三方模型无法判定英文单词在语境中的真实含义，强行翻反而出错。
+     * - ★ 35批：无条件执行、没有任何豁免 —— 10秒/人冷却与 200 字符上限已删除，
+     *   每条英文消息都触发机翻（白名单玩家/过滤关闭/验证通过等早退路径也补了调度）。
      * 异步：HTTP 翻译在线程池执行（每源3s超时，YOUDAO→JIANXIN→GOOGLE 降级），
      * 结果回主线程广播；任何异常静默吞掉，绝不影响聊天主流程。
      */
@@ -6398,26 +6431,21 @@ public class Main extends JavaPlugin
         try {
             if (p == null || msg == null) return;
             String text = msg.trim();
-            if (text.isEmpty() || text.length() > 200) return;
-            // 整条消息必须「不含任何中文字符」才机翻（含中文=原样输出）
+            if (text.isEmpty()) return;
+            // 触发口径：整条消息必须「不含任何中文字符」才机翻（含中文=原样输出）
             boolean hasChinese = false;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
                 if (c >= '\u4e00' && c <= '\u9fff') { hasChinese = true; break; }
             }
             if (hasChinese) return;
-            // 至少要有一个英文字母（纯数字/符号无翻译意义）
+            // 触发口径：至少一个英文字母（纯数字/符号不算英文消息）
             boolean hasLetter = false;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
                 if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { hasLetter = true; break; }
             }
             if (!hasLetter) return;
-            // 冷却防刷（10秒/人）
-            long now = System.currentTimeMillis();
-            Long last = chatTransCd.get(p.getName());
-            if (last != null && now - last < 10_000L) return;
-            chatTransCd.put(p.getName(), now);
 
             final String original = text;
             final String sender = p.getName();
@@ -6443,7 +6471,13 @@ public class Main extends JavaPlugin
         if (content == null || content.isEmpty()) return false;
         if (chatFilter == null || !chatFilter.isEnabled()) return false;
         if (chatFilter.isPlayerWhitelisted(p.getName())) return false;
-        
+        // 35批修订：私信/告示牌/书本内容同样拦 IP —— 加白 IP 放行，其余 IPv4/IPv6 无条件拦
+        // （加白玩家已在上一行豁免）
+        if (chatFilter.containsNonWhitelistedIp(content)) {
+            p.sendMessage("§c§l[聊天过滤] §7内容包含未加白的 IP 地址，已被拦截");
+            return true;
+        }
+
         List<String> urls = chatFilter.extractUrls(content);
         if (urls.isEmpty()) return false;
         
