@@ -6424,6 +6424,11 @@ public class Main extends JavaPlugin
      *   —— 脱离第三方模型无法判定英文单词在语境中的真实含义，强行翻反而出错。
      * - ★ 35批：无条件执行、没有任何豁免 —— 10秒/人冷却与 200 字符上限已删除，
      *   每条英文消息都触发机翻（白名单玩家/过滤关闭/验证通过等早退路径也补了调度）。
+     * - ★ 35批修订2：触发口径收紧（防乱翻/防浪费 API）——
+     *   ① 整条消息必须包含 ≥3 个英文字母（"a"→「一个」、「abc」→「美国广播公司」属乱翻，跳过）；
+     *   ② 消息内含域名 / IPv4 / IPv6 地址的一律不发机翻（地址由过滤体系管辖，翻了无意义）。
+     * - ★ 35批修订3：在线玩家名内存关 —— 整条消息就是玩家名（无上下文）→ 跳过；
+     *   名字夹在上下文里 → 摘成占位符只翻剩余部分，译文回来换回原名，名字永不被翻译。
      * 异步：HTTP 翻译在线程池执行（每源3s超时，YOUDAO→JIANXIN→GOOGLE 降级），
      * 结果回主线程广播；任何异常静默吞掉，绝不影响聊天主流程。
      */
@@ -6439,24 +6444,73 @@ public class Main extends JavaPlugin
                 if (c >= '\u4e00' && c <= '\u9fff') { hasChinese = true; break; }
             }
             if (hasChinese) return;
-            // 触发口径：至少一个英文字母（纯数字/符号不算英文消息）
-            boolean hasLetter = false;
+            // 触发口径（35批修订2）：整条消息必须包含 ≥3 个英文字母才机翻 ——
+            // "a"→「一个」、「hi」这类单字母/超短串毫无翻译意义，翻译出来纯属乱翻，
+            // 不浪费 API 请求次数。
+            int letterCount = 0;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
-                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) { hasLetter = true; break; }
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) letterCount++;
             }
-            if (!hasLetter) return;
+            if (letterCount < 3) return;
+            // 触发口径（35批修订2）：消息内含域名 / IPv4 / IPv6 地址的一律不发机翻 ——
+            // 这类内容由过滤体系管辖（域名按 illegal_domains.txt 后缀、IP 按加白名单），
+            // 对地址做机翻毫无意义（2408:8352::1 翻出来还是原样），纯浪费 API 次数。
+            if (chatFilter != null) {
+                if (!chatFilter.extractIpAddresses(text).isEmpty()) return;
+                if (!chatFilter.extractUrls(text).isEmpty()) return;
+            }
+            // 触发口径（35批修订3）：在线玩家名内存关 —— 玩家名不是英文，不做翻译对象
+            // ① 整条消息就是玩家名（名字前后无任何上下文）→ 跳过机翻，不浪费 API；
+            // ② 名字夹在上下文里（如 "Notch hi there"）→ 把名字摘成 @@N@@ 占位符、
+            //    只翻剩余部分，译文回来后再把占位符换回原名 —— 玩家名永远原样展示。
+            // 名字按词边界匹配（前后不许紧贴字母/数字），防止玩家 "cat" 误伤 "category"。
+            String toTranslate = text;
+            final java.util.List<String> usedNames = new java.util.ArrayList<>();
+            java.util.List<String> onlineNames = new java.util.ArrayList<>();
+            for (Player online : Bukkit.getOnlinePlayers()) {
+                onlineNames.add(online.getName());
+            }
+            if (!onlineNames.isEmpty()) {
+                // 长名优先，防止短名先吃掉长名的前缀（如 Notch 先匹配 NotchBoy）
+                onlineNames.sort((a, b) -> b.length() - a.length());
+                String stripped = text;
+                for (String nm : onlineNames) {
+                    java.util.regex.Pattern namePat = java.util.regex.Pattern.compile(
+                            "(?<![A-Za-z0-9])" + java.util.regex.Pattern.quote(nm) + "(?![A-Za-z0-9])",
+                            java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE);
+                    java.util.regex.Matcher m = namePat.matcher(stripped);
+                    if (!m.find()) continue;
+                    String token = "@@" + usedNames.size() + "@@";
+                    stripped = m.replaceAll(java.util.regex.Matcher.quoteReplacement(token));
+                    usedNames.add(nm);
+                }
+                if (!usedNames.isEmpty()) {
+                    // 去掉占位符后若已无上下文 → 整条就是玩家名 → 跳过机翻
+                    String bare = stripped.replaceAll("@@[0-9]+@@", "");
+                    if (bare.replaceAll("[^A-Za-z]", "").isEmpty()) return;
+                    toTranslate = stripped;
+                }
+            }
 
             final String original = text;
+            final String toSend = toTranslate;
             final String sender = p.getName();
             java.util.concurrent.CompletableFuture.supplyAsync(
-                    () -> MaterialTranslator.translateChatText(original), chatTransPool)
-                .thenAccept(zh -> {
-                    if (zh == null || zh.isEmpty()) return;
+                    () -> MaterialTranslator.translateChatText(toSend), chatTransPool)
+                .thenAccept(zh0 -> {
+                    if (zh0 == null || zh0.isEmpty()) return;
+                    // 占位符换回玩家原名（容忍翻译API在占位符里插空格，如 "@@ 0 @@"）
+                    String zh = zh0;
+                    for (int i = 0; i < usedNames.size(); i++) {
+                        zh = zh.replaceAll("@@\\s*" + i + "\\s*@@",
+                                java.util.regex.Matcher.quoteReplacement(usedNames.get(i)));
+                    }
+                    final String translated = zh;
                     // 切主线程追加「机翻」双语展示（原始消息已由 MC 自行广播）
                     Bukkit.getScheduler().runTask(this, () ->
                         Bukkit.broadcastMessage("§8[机翻] §7" + sender + ": §f"
-                                + original + " §7→ §a" + zh));
+                                + original + " §7→ §a" + translated));
                 });
         } catch (Throwable ignored) {
             // 机翻任何异常都不影响聊天
