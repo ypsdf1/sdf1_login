@@ -3092,9 +3092,10 @@ function playerWebBanReason($player, $db = null) {
     if ($player === null || $player === '') return null;
     try {
         if ($db === null) $db = getDB();
-        // 表不存在 = 从未同步过封禁名单 → 直接放行（避免读路径执行DDL）
-        $exists = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_bans'");
-        if (!$exists) return null;
+        // ★ 第33批(#212)：禁用 sqlite_master 存在性探测 —— 该句抽不出 web_player_bans，
+        //   SdfDbRouter 按「非 Java 表」判成 web 侧，而本表在 java 侧 → 恒判「表不存在」
+        //   → 封禁拦截全放行（与 sync.php 第16批公示同坑）。改为直接查目标表：
+        //   SQL 自带表名 → 路由到 java 侧；表不存在 → prepare 失败 → 放行（原语义不变）。
         $stmt = $db->prepare("SELECT reason, expire_time FROM web_player_bans WHERE ban_type = 'name' AND LOWER(target) = LOWER(:p)");
         if (!$stmt) return null;
         $stmt->bindValue(':p', $player, SQLITE3_TEXT);
@@ -3125,9 +3126,10 @@ function playerWebBlacklistReason($player, $db = null) {
     if ($player === null || $player === '') return null;
     try {
         if ($db === null) $db = getDB();
-        // 表不存在 = 从未同步过拉黑名单 → 直接放行（避免读路径执行DDL）
-        $exists = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_blacklist'");
-        if (!$exists) return null;
+        // ★ 第33批(#212)：禁用 sqlite_master 存在性探测（同 playerWebBanReason 的坑）——
+        //   该句抽不出 web_player_blacklist → 路由判 web 侧（本表在 java 侧）→ 恒判
+        //   「表不存在」→ 拉黑玩家全部放行进后台（线上实测：表存在 0 行假象即此因）。
+        //   改为直接查目标表：SQL 自带表名 → 路由 java 侧；表不存在 → prepare 失败 → 放行。
         $stmt = $db->prepare("SELECT reason, expire_ms FROM web_player_blacklist WHERE LOWER(name) = LOWER(:p)");
         if (!$stmt) return null;
         $stmt->bindValue(':p', $player, SQLITE3_TEXT);
@@ -3587,9 +3589,11 @@ function isIpBlacklisted($ip) {
     if (!$ip) return false;
     try {
         $db = getDB();
-        $chk = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='web_ip_blacklist'");
-        if (!$chk || !$chk->fetchArray()) return false;
+        // ★ 第33批(#212)：禁用 sqlite_master 探测（同 playerWebBanReason 的坑：
+        //   抽不出 web_ip_blacklist → 路由判 web 侧 → 恒空 → IP黑名单失效）。
+        //   直接查目标表：表不存在 → prepare 失败 → 走 catch 放行（fail-open 原语义）。
         $stmt = $db->prepare("SELECT 1 FROM web_ip_blacklist WHERE ip = :ip AND (expire = 0 OR expire > :now) LIMIT 1");
+        if (!$stmt) return false;
         $stmt->bindValue(':ip', $ip, SQLITE3_TEXT);
         $stmt->bindValue(':now', time(), SQLITE3_INTEGER);
         $row = $stmt->execute()->fetchArray();
