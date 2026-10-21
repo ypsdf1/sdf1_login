@@ -127,6 +127,9 @@ public class BlacklistManager {
                 if (mt != lastMtime || sz != lastSize) {
                     reload();
                 }
+                // ★ 第33批(#213)：文件没动也要扫 wall-clock 到期
+                //   （原实现只比 mtime+size，时长拉黑永远不自动解除）
+                sweepExpired();
             } catch (Exception ignored) {}
         }, 100L, 100L);
     }
@@ -358,6 +361,73 @@ public class BlacklistManager {
     }
 
     /**
+     * ★ 第33批(#213)：墙钟到期扫描 —— 时长拉黑自动解除。
+     * <p>根因：5 秒定时器只比对 mtime+size，md 文件不动就永不 reload，
+     * 而 reload 里只在「解析时」过滤已过期行 —— 于是绝对日期/相对时长
+     * 到期后，处罚（applied、债券冻结、md 行）永远挂着 = 用户反馈的
+     * 「配置时长不生效」。本方法独立于文件变化，每 5 秒按当前时间扫。
+     * <p>到期条目：内存移除 → 恢复处罚 → 删 md 对应行 → 回响 PHP。
+     */
+    private synchronized void sweepExpired() {
+        if (entries.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        List<BlackEntry> expired = new ArrayList<>();
+        for (BlackEntry e : new ArrayList<>(entries.values())) {
+            if (e.isExpired(now)) expired.add(e);
+        }
+        if (expired.isEmpty()) return;
+
+        List<String> names = new ArrayList<>();
+        for (BlackEntry e : expired) {
+            entries.remove(e.name);
+            names.add(e.name);
+            plugin.getLogger().info("[黑名单] 拉黑到期自动解除: " + e.name
+                    + "（" + e.timeText + "）");
+            restoreBlacklist(e.name);
+        }
+
+        // 同步删 md 里对应行（防止文件签名不变、行永远留着）
+        try {
+            List<String> lines = readLines();
+            if (lines != null) {
+                int[] zone = locateZone(lines);
+                if (zone != null) {
+                    List<String> out = new ArrayList<>();
+                    for (int i = 0; i < lines.size(); i++) {
+                        String line = lines.get(i);
+                        boolean drop = false;
+                        if (i > zone[0] && i < zone[1] && line.trim().startsWith("|")
+                                && !isSeparatorRow(line.trim())) {
+                            for (String n : names) {
+                                if (isRowOf(line, AreaProtection.normName(n))) {
+                                    drop = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!drop) out.add(line);
+                    }
+                    if (out.size() != lines.size() && writeLines(out)) {
+                        // 写回成功 → 立即刷新签名，免得下个 tick 又整表 reload 一遍
+                        if (mdFile.exists()) {
+                            lastMtime = mdFile.lastModified();
+                            lastSize = mdFile.length();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            plugin.getLogger().warning("[黑名单] 删除到期 md 行失败: " + ex.getMessage());
+        }
+
+        // 名单变了 → 回响 PHP（web_player_blacklist 同步移除）
+        try {
+            WebManager wm = plugin.webManager;
+            if (wm != null) wm.forceSyncBlacklist();
+        } catch (Exception ignored) {}
+    }
+
+    /**
      * 拉黑时长 → 到期毫秒；0 = 永久。
      * <p>空 / 0 / 终身 / 永久 / forever → 永久；
      * {@code yyyy-MM-dd HH:mm[:ss]} → 该时刻；
@@ -394,6 +464,21 @@ public class BlacklistManager {
                 return c.getTimeInMillis();
             }
         }
+        // ★ 第33批(#213)：相对时长（3天 / 7d / 2小时 / 30分 …）——
+        //   「配置了时长 = 临时拉黑，到期自动解除」。交 DurationParser 统一解析。
+        //   两个护栏：
+        //   ① 只认「数字+单位」形态 —— DurationParser 的纯数字分支=Unix秒时间戳(1970)，
+        //      裸写 "100" 会从原语义「永久」变成「立即过期」，比不识别更危险；
+        //   ② 排除含「年」的中文日期（2026年10月20日）—— 那属绝对日期语义，
+        //      DurationParser 会取当天 00:00 = 配完即过期。
+        if (t.matches(".*\\d+\\s*(周|天|日|时|分|秒|小时|分钟|星期|礼拜|w|d|h|m|s|W|D|H|M|S).*")
+                && !t.contains("年")) {
+            try {
+                long v = DurationParser.parseToExpireMs(t);
+                if (v > 0L) return v;
+            } catch (Throwable ignored) {
+            }
+        }
         // 解析不了 → 永久（宁可拉黑也不放过）
         return 0L;
     }
@@ -422,6 +507,22 @@ public class BlacklistManager {
         }
         plugin.getLogger().info("[黑名单] 拉黑生效: " + name
                 + "（" + e.timeText + " / " + e.reason + "）");
+
+        // ★ 第33批(#213)：拉黑当下即时插播一条「拉黑公示」。
+        //   根因：耻辱台轮播 6 页 × 110~400s 随机间隔，短时拉黑
+        //   （如测试用 30 秒/13 秒）永远轮不到那一页 = 用户反馈
+        //   「没能进入耻辱台」。插播保证拉黑瞬间全服可见。
+        try {
+            SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm");
+            String when = df.format(new Date(e.createdMs > 0 ? e.createdMs
+                    : System.currentTimeMillis()));
+            String expStr = e.expiresMs > 0 ? ("§7至§f" + df.format(new Date(e.expiresMs)))
+                    : "§c永久";
+            Bukkit.broadcastMessage("§c§l⚠ §6拉黑公示 §c☠ §f" + name
+                    + " §7- " + (e.reason == null || e.reason.isEmpty()
+                    ? "违反服务器规则" : e.reason)
+                    + " §8| §7拉黑于§f" + when + " §8| " + expStr);
+        } catch (Exception ignored) {}
 
         // 1) 冻结债券账户（按拉黑到期时间；永久=0）
         try {

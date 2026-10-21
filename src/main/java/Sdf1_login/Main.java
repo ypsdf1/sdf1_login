@@ -5915,6 +5915,61 @@ public class Main extends JavaPlugin
         }
     }
 
+    // ==================== ★ 第33批(#213)：拉黑玩家行为硬拦截 ====================
+
+    /** 拉黑玩家提示节流（同一玩家 2 秒最多一条，防刷屏） */
+    private final Map<UUID, Long> blackMsgAt = new ConcurrentHashMap<>();
+
+    /** 是否为生效中的拉黑玩家 */
+    private boolean isBlackPlayer(Player p) {
+        if (p == null) return false;
+        BlacklistManager bl = getBlacklist();
+        return bl != null && bl.isBlacklisted(p.getName());
+    }
+
+    /** 拉黑拦截统一提示（2 秒节流） */
+    private void blackBlocked(Player p, String what) {
+        long now = System.currentTimeMillis();
+        Long last = blackMsgAt.get(p.getUniqueId());
+        if (last != null && now - last < 2000L) return;
+        blackMsgAt.put(p.getUniqueId(), now);
+        p.sendMessage("§c§l[罪人] §f你已被拉黑，" + what);
+    }
+
+    // ★ 拉黑玩家不能打开任何容器（箱子/木桶/熔炉/末影箱…含村民交易界面）
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlackOpenInventory(
+            org.bukkit.event.inventory.InventoryOpenEvent e) {
+        if (!(e.getPlayer() instanceof Player)) return;
+        Player p = (Player) e.getPlayer();
+        if (!isBlackPlayer(p)) return;
+        e.setCancelled(true);
+        blackBlocked(p, "不能打开任何容器");
+    }
+
+    // ★ 拉黑玩家不能拾取任何物品
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlackPickup(
+            org.bukkit.event.entity.EntityPickupItemEvent e) {
+        if (!(e.getEntity() instanceof Player)) return;
+        Player p = (Player) e.getEntity();
+        if (!isBlackPlayer(p)) return;
+        e.setCancelled(true);
+        blackBlocked(p, "不能拾取任何物品");
+    }
+
+    // ★ 拉黑玩家不能与村民交易（村民交易界面走 InventoryOpenEvent，
+    //   此处拦右键交互入口兜底，防交易界面闪出）
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onBlackVillagerTrade(
+            org.bukkit.event.player.PlayerInteractEntityEvent e) {
+        if (!(e.getRightClicked() instanceof org.bukkit.entity.Villager)) return;
+        Player p = e.getPlayer();
+        if (!isBlackPlayer(p)) return;
+        e.setCancelled(true);
+        blackBlocked(p, "不能与村民交易");
+    }
+
     // ★ 防止玩家右键实体时交出菜单雪球（防恶魂投喂）
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerInteractEntity(
@@ -9252,6 +9307,7 @@ public class Main extends JavaPlugin
             if (args.length < 1) {
                 sender.sendMessage("§c用法: /addblack <玩家名> [时长] [理由]");
                 sender.sendMessage("§7时长: 空/0/终身=永久，2026-10-21 18:00=到点，2026-10-21=当天23:59:59");
+                sender.sendMessage("§7     相对时长: 30分 / 2小时 / 3天 / 1周（到期自动解除，无需改文件）");
                 return true;
             }
             if (blacklist == null) {

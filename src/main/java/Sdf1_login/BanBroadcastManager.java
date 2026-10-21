@@ -772,9 +772,16 @@ public class BanBroadcastManager implements Listener {
         if (bans.isEmpty()) { log("当前无生效封禁，跳过本轮"); return; }
 
         // 由近到远：最新封禁在前；由远到近：最早封禁在前
-        bans.sort((a, b) -> mode == 1
-                ? Long.compare(b.createdMs, a.createdMs)     // 由近到远
-                : Long.compare(a.createdMs, b.createdMs));   // 由远到近
+        // ★ 第33批(#213)：黑名单条目一律置顶（source="黑名单"），
+        //   防止其被分页轮播淹没 —— 短时拉黑等不到自己那一页。
+        bans.sort((a, b) -> {
+            boolean ab = "黑名单".equals(a.source);
+            boolean bb = "黑名单".equals(b.source);
+            if (ab != bb) return ab ? -1 : 1;
+            return mode == 1
+                    ? Long.compare(b.createdMs, a.createdMs)     // 由近到远
+                    : Long.compare(a.createdMs, b.createdMs);    // 由远到近
+        });
 
         int total = bans.size();
         int start = cursor % total;

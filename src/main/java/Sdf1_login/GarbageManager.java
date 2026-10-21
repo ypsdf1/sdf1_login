@@ -225,16 +225,17 @@ public class GarbageManager implements Listener {
     /**
      * ★ 第30批：顶部血条常驻倒计时 + 色段软提醒。
      *
-     * <p>色段按「墙钟已过时间」的绝对时刻判定（第31批 #200 修正，
-     *  不再用百分比，不随清理间隔漂移）：
+     * <p>★ 第33批（#211）：色段改按「剩余时间」纯数值分段（用户明令）：
      * <ul>
-     *   <li>0:00 ~ 3:00（墙钟前 3 分钟）→ 绿 = 安全期</li>
-     *   <li>3:01 ~ 4:29 → 黄 = 警告「垃圾箱快动作了，别丢了」</li>
-     *   <li>4:30 ~ 5:00 → 红 = 危险（另：剩余≤30秒兜底红）</li>
+     *   <li>剩余 ≥ 180 秒 → 绿 = 安全期</li>
+     *   <li>30 秒 < 剩余 < 180 秒 → 黄 = 警告（只提示快动作了，
+     *       丢的时候注意安全控好量，不误导「别丢」）</li>
+     *   <li>剩余 ≤ 30 秒 → 红 = 危险</li>
      * </ul>
+     * 第31批的「墙钟绝对时刻」方案废弃；百分比方案更早废弃（间隔一改就漂移）。
      *
      * <p>★ 第32批：血条与启发式开关解耦 —— 只要垃圾站启用，血条常驻显示；
-     * 启发式开关（垃圾站_启发式拦截）关闭时只关掉「红区title警告 + 双击Q拦截」，
+     * 启发式开关（垃圾站_启发式拦截）关闭时只关掉「黄/红区title警告 + 末5秒双击Q拦截」，
      * 不再撤血条（否则玩家对清理状态一无所知）。
      */
     private void updateBossBars(int remain) {
@@ -242,23 +243,15 @@ public class GarbageManager implements Listener {
         double progress = (double) remain / (double) interval;
         if (progress < 0.0D) progress = 0.0D;
         if (progress > 1.0D) progress = 1.0D;
-        // ★ 第31批（#200）：色段改按「墙钟已过时间」的绝对时刻判定：
-        //   0:00~3:00 绿 / 3:01~4:29 黄 / 4:30~5:00 红（另：剩余≤30秒兜底红）。
-        //   不用 elapsed = interval - remain 的百分比，否则间隔一改、色段就跟着漂移。
-        long wallMs = roundStartMs > 0L
-                ? System.currentTimeMillis() - roundStartMs
-                : (long) (interval - remain) * 1000L;
-        int elapsed = (int) Math.min((long) interval,
-                Math.max(0L, wallMs / 1000L));
 
         BossBar.Color color;
         String label;
-        if (remain <= 30 || elapsed >= 270) {
+        if (remain <= 30) {
             color = BossBar.Color.RED;
             label = "§c§l危险 §7| §c马上清理，抓紧捡";
-        } else if (elapsed > 180) {
+        } else if (remain < 180) {
             color = BossBar.Color.YELLOW;
-            label = "§e§l注意 §7| §e垃圾箱快动作了，别丢了";
+            label = "§e§l注意 §7| §e快动作了，注意安全控好量";
         } else {
             color = BossBar.Color.GREEN;
             label = "§a§l安全期 §7| §a还早，放心丢";
@@ -359,36 +352,42 @@ public class GarbageManager implements Listener {
     }
 
     /**
-     * ★ 第30批：垃圾箱丢弃拦截（仅活跃于本轮最后 10 秒窗口）。
+     * ★ 第30批：垃圾箱丢弃拦截。
      *
-     * <p>最后 30 秒（红区）：对丢弃物品的玩家发小标题警告。
-     * <p>最后 10 秒（拦截窗口）：单击 Q 被拦截，需 2 秒内再按一次 Q 确认才放行；
-     * 其他时段完全不干涉。
+     * <p>★ 第33批（#211）三处改造：
+     * <ul>
+     *   <li>警告期（黄区 30~180 秒）不加任何 title 干预 —— 该期的提示
+     *       只走头顶血条（updateBossBars 文案已改「注意安全控好量」）；</li>
+     *   <li>拦截窗口从末 10 秒收窄到末 5 秒，且仅启发式开关启用时生效；</li>
+     *   <li>确认窗口从 2 秒收窄到 1 秒：拦下第一次 Q，1 秒内连按
+     *       第二次 = 确认丢弃放行；超过 1 秒视为过期跳过（重新计时）。</li>
+     * </ul>
      */
     @EventHandler
     public void onPlayerDropItem(PlayerDropItemEvent e) {
         if (!enabled) return;
         if (!plugin.getConfig2().garbageHeuristic) return;
         int remain = cleanupInterval - countdown;
-        if (remain > 30) return;   // 不在红区 → 不干涉
+        if (remain > 30) return;   // 安全区+警告期（>30秒）→ 不干涉
 
         Player p = e.getPlayer();
-        // 小标题警告（红区）
-        p.sendTitle("", "§c§l垃圾站警告 §f马上就清理了，别乱丢！",
+        // 危险期（红区 ≤30秒）小标题：按用户口径「注意安全控好量」，不写「别丢」
+        p.sendTitle("", "§c§l垃圾站警告 §f马上清理了，注意安全控好量！",
                 3, 30, 5);
 
-        if (remain > 10) return;   // 拦截仅在最后 10 秒窗口
+        if (remain > 5) return;   // ★ 拦截仅在最后 5 秒窗口
 
         long now = System.currentTimeMillis();
         UUID uuid = p.getUniqueId();
         Long first = pendingDrops.get(uuid);
-        if (first != null && now - first <= 2000L) {
+        if (first != null && now - first <= 1000L) {
             pendingDrops.remove(uuid);
-            return;                 // 双击确认 → 放行
+            return;                 // ★ 1 秒窗口内连按 2 次 Q = 确认丢弃 → 放行
         }
+        // 首次按键（或上次按键已超 1 秒窗口 → 视为过期，重新计时）
         pendingDrops.put(uuid, now);
         e.setCancelled(true);
-        p.sendMessage("§e§l[垃圾站] §f马上就清理了！再按一次 §eQ§f 确认丢弃，"
+        p.sendMessage("§e§l[垃圾站] §e马上清理了！1秒内再按一次 §eQ§f 确认丢弃，"
                 + "或用 §e/垃圾抢救§f 取消本轮清理");
     }
 
@@ -415,8 +414,14 @@ public class GarbageManager implements Listener {
     private void doCleanup() {
         // ★ 过期轮次删除是阻塞 DB -> 先异步执行；
         //   轮次递增 / 实体收集 / 广播 必须主线程 -> 异步完成后回主线程
+        // ★ 第33批（#215）：保留轮数语义修正 —— 保留次数 R = 垃圾存活 R 轮，
+        //   第 N 次清理（本方法入口时 currentRound = N-1）删除第 (N-R) 批，
+        //   即 deleteRound = (N-1)+1-R。旧公式 currentRound-maxRounds 少算 1，
+        //   导致 R=1 要到第 3 次清理才删第 1 批（保留轮数形同虚设）。
+        //   验证：R=1 → 第2次清理删第1批；R=3 → 第4次清理删第1批；
+        //   永久清理轮次 = 当前轮 + 保留次数。
         final int deleteRound =
-                currentRound - maxRounds;
+                currentRound + 1 - maxRounds;
         Bukkit.getScheduler().runTaskAsynchronously(
                 plugin, () -> {
                     final int deleted =
