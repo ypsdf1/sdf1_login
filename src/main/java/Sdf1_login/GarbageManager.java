@@ -40,6 +40,11 @@ public class GarbageManager implements Listener {
      *  抢救模式需要外部重置，故提为字段。 */
     private int countdown = 0;
 
+    /** ★ 第31批：本轮开始的墙钟时间戳（毫秒）。
+     *  血条色段按真实时间判定，与 tick 计数解耦，
+     *  避免“第3分30秒还是绿色”的漂移。0 = 本轮未开始。 */
+    private long roundStartMs = 0L;
+
     /** ★ 第30批：顶部血条（玩家 UUID → BossBar） */
     private final Map<UUID, BossBar> bossBars = new HashMap<>();
 
@@ -157,8 +162,13 @@ public class GarbageManager implements Listener {
                 if (Bukkit.getOnlinePlayers()
                         .isEmpty()) {
                     countdown = 0;
+                    roundStartMs = 0L;
                     return;
                 }
+
+                // ★ 第31批：本轮墙钟起点（0=新轮开始，色段按真实时间判定）
+                if (roundStartMs == 0L)
+                    roundStartMs = System.currentTimeMillis();
 
                 // 重新读取配置（支持热更）
                 cleanupInterval =
@@ -170,6 +180,16 @@ public class GarbageManager implements Listener {
 
                 int remain =
                         cleanupInterval - countdown;
+
+                // ★ 第31批（#204/#205）：垃圾箱进入下一节点 → 查一次 插件设置.txt，
+                //   有变化整份重载（ConfigManager 内部比对，无变化静默、有变化打日志）
+                if (remain == 300 || remain == 180
+                        || remain == 60 || remain == 30
+                        || remain == 10 || remain == 0
+                        || (remain <= 5 && remain > 0)) {
+                    plugin.getConfig2()
+                            .reloadSettingsIfChanged();
+                }
                 if (remain == 300)
                     broadcast("§e§l[垃圾站] §f距离清理还有 §e5分钟");
                 else if (remain == 180)
@@ -185,6 +205,7 @@ public class GarbageManager implements Listener {
                 else if (remain == 0) {
                     doCleanup();
                     countdown = 0;
+                    roundStartMs = 0L;
                     return;
                 }
                 countdown++;
@@ -198,11 +219,12 @@ public class GarbageManager implements Listener {
     /**
      * ★ 第30批：顶部血条常驻倒计时 + 色段软提醒。
      *
-     * <p>色段按「已过时间」elapsed = interval - remain 划分（默认 5 分钟一轮）：
+     * <p>色段按「墙钟已过时间」的绝对时刻判定（第31批 #200 修正，
+     *  不再用百分比，不随清理间隔漂移）：
      * <ul>
-     *   <li>前 60%（剩 3 分钟以上）→ 浅绿 = 安全期</li>
-     *   <li>60% ~ 90%（剩 3 分 01 秒 ~ 1 分 30 秒）→ 黄色 = 警告「垃圾箱快动作了，别丢了」</li>
-     *   <li>最后 10%（剩 30 秒内）→ 红色 = 危险</li>
+     *   <li>0:00 ~ 3:00（墙钟前 3 分钟）→ 绿 = 安全期</li>
+     *   <li>3:01 ~ 4:29 → 黄 = 警告「垃圾箱快动作了，别丢了」</li>
+     *   <li>4:30 ~ 5:00 → 红 = 危险（另：剩余≤30秒兜底红）</li>
      * </ul>
      *
      * <p>启发式开关（垃圾站_启发式拦截）关闭时：撤掉血条、不提示、不拦截。
@@ -216,19 +238,26 @@ public class GarbageManager implements Listener {
         double progress = (double) remain / (double) interval;
         if (progress < 0.0D) progress = 0.0D;
         if (progress > 1.0D) progress = 1.0D;
-        int elapsed = interval - remain;
+        // ★ 第31批（#200）：色段改按「墙钟已过时间」的绝对时刻判定：
+        //   0:00~3:00 绿 / 3:01~4:29 黄 / 4:30~5:00 红（另：剩余≤30秒兜底红）。
+        //   不用 elapsed = interval - remain 的百分比，否则间隔一改、色段就跟着漂移。
+        long wallMs = roundStartMs > 0L
+                ? System.currentTimeMillis() - roundStartMs
+                : (long) (interval - remain) * 1000L;
+        int elapsed = (int) Math.min((long) interval,
+                Math.max(0L, wallMs / 1000L));
 
         BossBar.Color color;
         String label;
-        if (elapsed < (int) (interval * 0.6D)) {
-            color = BossBar.Color.GREEN;
-            label = "§a§l安全期 §7| §a还早，放心丢";
-        } else if (elapsed < (int) (interval * 0.9D)) {
+        if (remain <= 30 || elapsed >= 270) {
+            color = BossBar.Color.RED;
+            label = "§c§l危险 §7| §c马上清理，抓紧捡";
+        } else if (elapsed > 180) {
             color = BossBar.Color.YELLOW;
             label = "§e§l注意 §7| §e垃圾箱快动作了，别丢了";
         } else {
-            color = BossBar.Color.RED;
-            label = "§c§l危险 §7| §c马上清理，抓紧捡";
+            color = BossBar.Color.GREEN;
+            label = "§a§l安全期 §7| §a还早，放心丢";
         }
         String title = "§6§l垃圾站 §8| " + label
                 + " §8| §f剩余 " + fmtRemain(remain);
@@ -294,7 +323,21 @@ public class GarbageManager implements Listener {
                 p.sendMessage("§c§l[垃圾站] §f本轮清理已经结束了，来不及抢救");
             return false;
         }
+        // ★ 第31批（#203）：抢救窗口 = 本轮最后 1 分钟；未到时间不可触发
+        int remainSec = cleanupInterval - countdown;
+        if (remainSec > 60) {
+            if (p != null)
+                p.sendMessage("§c§l[垃圾站] §f未到抢救窗口：本轮清理还剩 §e"
+                        + fmtRemain(remainSec)
+                        + "§f，最后 1 分钟内才能发起抢救");
+            else
+                plugin.getLogger().info(
+                        "[垃圾站] 抢救被拒：还剩 " + remainSec
+                                + " 秒，未进入最后1分钟窗口");
+            return false;
+        }
         countdown = 0;
+        roundStartMs = 0L;
         pendingDrops.clear();
         String who = p != null ? p.getName() : "控制台";
         broadcast("§a§l[垃圾站] §f玩家 §e" + who

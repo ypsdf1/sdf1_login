@@ -6236,12 +6236,14 @@ public class Main extends JavaPlugin
                 chatPrefix = highestGroup.displayColor + "[" + highestGroup.name + "]§f";
             }
         }
-        // ★ 第30批：拉黑玩家消息末尾加「----我是罪人user」称号
+        // ★ 第31批（#201）：拉黑玩家签名加在消息【尾部】——
+        //   「你好今天怎么样  ----我是罪人user」（空2格 + 签名），不再放最前面
+        String chatSuffix = "";
         if (isBlacklisted(p)) {
-            chatPrefix = chatPrefix + "----我是罪人" + p.getName() + "§f ";
+            chatSuffix = "  ----我是罪人" + p.getName();
         }
-        if (!chatPrefix.isEmpty()) {
-            e.setFormat(chatPrefix + "%1$s: %2$s");
+        if (!chatPrefix.isEmpty() || !chatSuffix.isEmpty()) {
+            e.setFormat(chatPrefix + "%1$s: %2$s" + chatSuffix);
         }
 
         // ===== 聊天过滤 - 开关检查 =====
@@ -9700,6 +9702,9 @@ public class Main extends JavaPlugin
                 return true;
             }
             reloadConfig();
+            // ★ 第31批（#205）：/reload 此前漏了 loadSettings，
+            //   插件设置.txt 改完 reload 不生效（启发式拦截/垃圾间隔没动静的根因）
+            if (config != null) config.loadSettings();
             if (areaProtection != null) areaProtection.reload();
             if (webManager != null) webManager.reloadWebConfig();
             sender.sendMessage("§a[§2Sdf1_login§a] 插件全部设置已重载");
@@ -10812,7 +10817,15 @@ public class Main extends JavaPlugin
             String playerName, String code) {
         if (cdkManager == null)
             return "fail:CDK未初始化";
-        return cdkManager.redeem(code, playerName);
+        String res = cdkManager.redeem(code, playerName);
+        // ★ 第31批（#202）：web通信关闭时本地未匹配 → 直接返回，
+        //   不再让外部（sdf1）进入「正在查询远程验证」流程干等45秒
+        if ("fail:not_found".equals(res)
+                && webManager != null
+                && !webManager.isEnabled()) {
+            return "fail:web_disabled";
+        }
+        return res;
     }
     // 旧的（可能缺失或拼写错误）
     public SalesStatsManager getSalesStats() {

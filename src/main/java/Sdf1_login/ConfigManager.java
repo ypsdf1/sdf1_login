@@ -409,6 +409,11 @@ public class ConfigManager {
 
     // ==================== 插件设置 ====================
 
+    /** ★ 第31批（#204/#205）：上次加载时 插件设置.txt 的内容指纹与键值快照，
+     *  供 reloadSettingsIfChanged() 做「无变化静默 / 有变化重载并打日志」。 */
+    private String settingsContentHash = null;
+    private Map<String, String> lastSettingsMap = null;
+
     public void loadSettings() {
         File file = new File(dataFolder, "插件设置.txt");
         // ★ 安全交换（2026-10-13）：模板有新字段时自动备份→重建→老值回填
@@ -488,6 +493,94 @@ public class ConfigManager {
                 + tpSendIntervalSeconds + " 秒");
 
         // rewardChannel 已标准化为 bonds/economy，默认bonds
+
+        // ★ 第31批（#204/#205）：记录本次加载的键值快照与内容指纹（增量重载比对基线）
+        lastSettingsMap = new LinkedHashMap<>(m);
+        settingsContentHash = hashSettingsFile(file);
+    }
+
+    /**
+     * ★ 第31批（#204/#205）：插件设置.txt 增量自动重载。
+     *
+     * <p>由 Web 配置热重载（web感知）与垃圾箱倒计时节点两处调用：
+     * <ul>
+     *   <li>文件内容没变 → 直接返回 false，不打任何日志（静默）</li>
+     *   <li>内容变了但键值没变（注释/空行/原样重写）→ 更新指纹，静默返回 false</li>
+     *   <li>键值真的变了 → 整份 loadSettings() 重载，并逐条打出 old → new</li>
+     * </ul>
+     *
+     * @return true = 本次发生了键值变化并已重载
+     */
+    public boolean reloadSettingsIfChanged() {
+        try {
+            File file = new File(dataFolder, "插件设置.txt");
+            if (!file.exists()) return false;
+            String h = hashSettingsFile(file);
+            if (h == null || h.equals(settingsContentHash)) {
+                return false;   // 没变 → 静默
+            }
+            Map<String, String> fresh = new LinkedHashMap<>();
+            loadMap(file, fresh);
+            if (lastSettingsMap != null
+                    && fresh.equals(lastSettingsMap)) {
+                settingsContentHash = h;   // 只有注释/格式变动 → 静默
+                return false;
+            }
+            Map<String, String> old = lastSettingsMap;
+            loadSettings();   // 整份重载（内部会刷新 hash 与快照）
+            java.util.List<String> diffs =
+                    new java.util.ArrayList<>();
+            if (old != null) {
+                for (Map.Entry<String, String> e
+                        : fresh.entrySet()) {
+                    String ov = old.get(e.getKey());
+                    if (ov == null || !ov.equals(e.getValue())) {
+                        diffs.add(e.getKey() + ": "
+                                + (ov == null ? "(无)" : ov)
+                                + " -> " + e.getValue());
+                    }
+                }
+                for (Map.Entry<String, String> e
+                        : old.entrySet()) {
+                    if (!fresh.containsKey(e.getKey())) {
+                        diffs.add(e.getKey() + ": "
+                                + e.getValue() + " -> (已移除)");
+                    }
+                }
+            }
+            Bukkit.getLogger().info(
+                    "[Sdf1配置] 插件设置.txt 检测到变化，已整份重载: "
+                            + (diffs.isEmpty()
+                            ? "(键值集合变化)"
+                            : String.join(" | ", diffs)));
+            return true;
+        } catch (Exception e) {
+            Bukkit.getLogger().warning(
+                    "[Sdf1配置] 插件设置.txt 增量重载失败（沿用旧配置): "
+                            + e.getClass().getSimpleName()
+                            + ": " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 读文件全文做 MD5 指纹（读失败返回 null） */
+    private String hashSettingsFile(File file) {
+        try {
+            byte[] bytes = java.nio.file.Files.readAllBytes(
+                    file.toPath());
+            java.security.MessageDigest md =
+                    java.security.MessageDigest.getInstance("MD5");
+            byte[] d = md.digest(bytes);
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) {
+                sb.append(Character.forDigit(
+                        (b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
     /**
      * 奖励方式标准化：中英文全兼容

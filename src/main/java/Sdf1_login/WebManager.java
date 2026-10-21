@@ -159,6 +159,12 @@ public class WebManager {
 
             settingsFileStamp = stamp;
 
+            // ★ 第31批（#204）：web 感知到 插件设置.txt 变化 → 拉起整份文件重载
+            //   （垃圾站等其他模块的配置字段；ConfigManager 内部比对，无变化静默）
+            if (plugin.getConfig2() != null) {
+                plugin.getConfig2().reloadSettingsIfChanged();
+            }
+
             if (!urlChanged && !secretChanged && !enableChanged && !othersChanged) {
                 return;   // 文件动了但 Web 段没变（如改了别的模块）→ 安静走人
             }
