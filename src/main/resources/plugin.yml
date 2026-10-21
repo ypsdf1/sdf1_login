@@ -84,9 +84,11 @@ commands:
   垃圾抢救:
     description: 紧急取消本轮垃圾站清理（物品误投时抢救）
     usage: /垃圾抢救
-  addblack:/r/n    description: 拉黑玩家（禁止建领地/破坏/兑换码/网页端，债券冻结，背包备份清空）
+  addblack:
+    description: 拉黑玩家（禁止建领地/破坏/兑换码/网页端，债券冻结，背包备份清空）
     usage: /addblack <玩家名> [时长] [理由]
-  removeblack:/r/n    description: 解除拉黑
+  removeblack:
+    description: 解除拉黑
     usage: /removeblack <玩家名>
   # menu:
   #   description: 雪球菜单开关控制
