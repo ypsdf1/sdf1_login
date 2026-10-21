@@ -33,6 +33,19 @@ public class GarbageManager implements Listener {
     private int maxRounds = 1;
     private boolean enabled = true;
     private int currentRound = 0;
+
+    /**
+     * ★ 第36批：上一轮「清扫」进回收站的掉落物数量（血条展示）。
+     * -1 = 还没跑过任何一轮（血条不显示该字段）。
+     */
+    private int lastCleaned = -1;
+
+    /**
+     * ★ 第36批：上一轮「永久倒掉」的过期物品数量（血条展示）。
+     * -1 = 还没跑过任何一轮；非倒垃圾轮固定为 0。
+     */
+    private int lastDumped = -1;
+
     private final Map<String, Integer>
             recyclePages = new HashMap<>();
 
@@ -288,6 +301,12 @@ public class GarbageManager implements Listener {
         }
         String title = "§6§l垃圾站 §8| " + label
                 + " §8| §f剩余 " + fmtRemain(remain);
+        // ★ 第36批：血条插一个字段 —— 上一轮清扫数 / 上一轮倒垃圾数
+        //   （还没跑过任何一轮时不显示，避免出现"上轮扫-1个"）
+        if (lastCleaned >= 0 && lastDumped >= 0) {
+            title += " §8| §7上轮扫§e" + lastCleaned
+                    + "§7个、倒§e" + lastDumped + "§7个";
+        }
 
         Component comp = LegacyComponentSerializer
                 .legacySection().deserialize(title);
@@ -505,13 +524,20 @@ public class GarbageManager implements Listener {
                                                 + deleted + " §f个过期物品");
                                     }
                                 } else {
-                                    // ★ 第35批：明确告知当前轮次 / 下一轮倒垃圾的轮次 /
-                                    //   还剩几轮才倾倒垃圾（用户要求）
-                                    final int nextPurge = k + (n - k % n);
-                                    broadcast("§7[垃圾站] §f当前是第 §e" + k
-                                            + " §f轮，第 §e" + nextPurge
+                                    // ★ 第36批：轮次口径改「周期内轮次」（用户明令）——
+                                    //   currentRound 是永久累加值（跑久了就是2000+），
+                                    //   对用户没意义；用户要的是 1..N 循环轮次：
+                                    //   r = ((k-1) % n) + 1，倒垃圾永远在本周期第 n 轮。
+                                    //   N=2 → k=1 报「第1轮，第2轮倒垃圾，还剩1轮」、
+                                    //           k=3 回到「第1轮」；
+                                    //   N=3 → k=1 还剩2轮 / k=2 还剩1轮 / k=3 走 purge 分支。
+                                    final int roundInCycle =
+                                            ((k - 1) % n) + 1;
+                                    broadcast("§7[垃圾站] §f当前是第 §e"
+                                            + roundInCycle
+                                            + " §f轮，第 §e" + n
                                             + " §f轮倒垃圾，还剩 §e"
-                                            + (nextPurge - k)
+                                            + (n - roundInCycle)
                                             + " §f轮倾倒垃圾");
                                 }
                                 // 递增轮次
@@ -528,6 +554,11 @@ public class GarbageManager implements Listener {
                                 // 收集当前掉落物
                                 // （实体移除必须主线程，落库已在内部转异步）
                                 int count = collectItems();
+                                // ★ 第36批：记录上一轮统计（血条展示）——
+                                //   清扫 = 本轮收进回收站的掉落物数；
+                                //   倒垃圾 = 本轮永久删除的过期物品数（非倒垃圾轮为0）
+                                lastCleaned = count;
+                                lastDumped = deleted;
                                 broadcast("§a§l[垃圾站] §f清理完成，"
                                         + "共清理 §e" + count
                                         + " §f个掉落物，存入回收站");
@@ -952,7 +983,6 @@ public class GarbageManager implements Listener {
         try {
             if (db != null && !db.isClosed())
                 db.close();
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
     }
 }

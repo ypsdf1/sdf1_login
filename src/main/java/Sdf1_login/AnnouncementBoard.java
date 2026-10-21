@@ -20,6 +20,7 @@ import org.bukkit.scoreboard.Objective;
 import org.bukkit.scoreboard.Score;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.ScoreboardManager;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.io.InputStream;
@@ -107,6 +108,21 @@ public class AnnouncementBoard implements Listener {
     private static final Pattern URL_PATTERN =
             Pattern.compile("^(https?://\\S+)$", Pattern.CASE_INSENSITIVE);
 
+    /** ★ 第36批：公告板总开关（公告.md 顶层键 开关状态：true/1=开，false/0=关） */
+    private boolean enabled = true;
+
+    /** ★ 第36批：翻页秒数（公告.md 顶层键 翻页时间：纯数字=秒） */
+    private int pageSeconds = 15;
+
+    /** ★ 第36批：当前页码（0 起，全局统一页切） */
+    private int currentPage = 0;
+
+    /** ★ 第36批：翻页定时任务 */
+    private BukkitTask pagerTask = null;
+
+    /** ★ 第36批：翻页任务当前周期（秒），与配置不一致才重建 */
+    private int pagerSeconds = -1;
+
     /** 解析出的公告条目（排序位 → 条目），按排序位升序 */
     private final Map<Integer, Notice> notices = new LinkedHashMap<>();
 
@@ -126,6 +142,17 @@ public class AnnouncementBoard implements Listener {
             this.msg = msg;
             this.color = color;
             this.url = url;
+        }
+    }
+
+    /** ★ 第36批：渲染用的一行（公告 + 该行文本），用于按页切片 */
+    private static final class Row {
+        final Notice n;
+        final String line;
+
+        Row(Notice n, String line) {
+            this.n = n;
+            this.line = line;
         }
     }
 
@@ -173,6 +200,10 @@ public class AnnouncementBoard implements Listener {
 
     /** 重新解析公告.md */
     public void reload() {
+        // ★ 第36批：配置默认值每次重载重置（md 里没写对应键就回默认）
+        enabled = true;
+        pageSeconds = 15;
+        currentPage = 0;
         List<Notice> list = parse();
         notices.clear();
         for (int i = 0; i < list.size(); i++) {
@@ -182,7 +213,14 @@ public class AnnouncementBoard implements Listener {
         if (mdFile != null && mdFile.exists()) {
             lastModified = mdFile.lastModified();
         }
-        plugin.getLogger().info("[公告板] 已加载 " + notices.size() + " 条公告");
+        int rows = totalRows();
+        int pages = (rows + MAX_SIDEBAR_ROWS - 1) / MAX_SIDEBAR_ROWS;
+        plugin.getLogger().info("[公告板] 已加载 " + notices.size()
+                + " 条公告，开关=" + (enabled ? "开" : "关")
+                + "，翻页=" + pageSeconds + "秒，共 " + rows
+                + " 行 / " + pages + " 页");
+        // ★ 第36批：按当前翻页秒数启动/重建翻页任务
+        restartPager();
     }
 
     /** 重载并立即刷新所有玩家 */
@@ -246,26 +284,35 @@ public class AnnouncementBoard implements Listener {
             reader.beginObject();
             while (reader.hasNext()) {
                 String key = reader.nextName();
+                // ★ 第36批：顶层配置键（开关状态/翻页时间）值是标量，
+                //   必须先识别 —— 否则对 true / 15 调 beginObject() 会抛
+                //   IllegalStateException，整份解析失败、公告板全空。
+                if (isConfigKey(key)) {
+                    readConfig(key, reader);
+                    continue;
+                }
+                if (reader.peek() != JsonToken.BEGIN_OBJECT) {
+                    // 非对象值（标量/数组/NULL）→ 不是公告条目，跳过
+                    reader.skipValue();
+                    continue;
+                }
                 String msg = null;
                 String colorRaw = null;
-                if (reader.peek() == JsonToken.NULL) {
-                    reader.skipValue();
-                } else {
-                    reader.beginObject();
-                    while (reader.hasNext()) {
-                        String vk = reader.nextName();
-                        if ("msg".equals(vk)) {
-                            if (reader.peek() == JsonToken.NULL) reader.skipValue();
-                            else msg = reader.nextString();
-                        } else if ("color".equals(vk)) {
-                            if (reader.peek() == JsonToken.NULL) reader.skipValue();
-                            else colorRaw = reader.nextString();
-                        } else {
-                            reader.skipValue();
-                        }
+                reader.beginObject();
+                while (reader.hasNext()) {
+                    String vk = reader.nextName();
+                    // ★ 第36批：键名兼容中文（默认 msg/color，兼容 消息/颜色）
+                    if ("msg".equals(vk) || "消息".equals(vk)) {
+                        if (reader.peek() == JsonToken.NULL) reader.skipValue();
+                        else msg = reader.nextString();
+                    } else if ("color".equals(vk) || "颜色".equals(vk)) {
+                        if (reader.peek() == JsonToken.NULL) reader.skipValue();
+                        else colorRaw = reader.nextString();
+                    } else {
+                        reader.skipValue();
                     }
-                    reader.endObject();
                 }
+                reader.endObject();
 
                 if (msg == null) continue;
                 msg = msg.trim();
@@ -293,26 +340,128 @@ public class AnnouncementBoard implements Listener {
             return out;
         } finally {
             if (reader != null) {
-                try { reader.close(); } catch (Exception ignored) { }
+                try {
+                    reader.close();
+                } catch (Exception ignored) {
+                }
             }
         }
-
         // ---- 排序（手动选择排序，不用 Comparator/lambda）----
         sortBySlot(raw);
 
         // ---- 排序位冲突 → 自动进位（往后找第一个空位）----
         Set<Integer> used = new LinkedHashSet<>();
+        // ★ 第36批：color 继承（用户明令）—— 未填/非法 → 继承最近一条
+        //   合法 color；一条都没找到 → null（渲染回退 MC 原版白色）
+        TextColor inherit = null;
         for (int i = 0; i < raw.size(); i++) {
             Notice n = raw.get(i);
             int s2 = n.slot;
             if (s2 < 0) s2 = 0;
             while (used.contains(s2)) s2++;
             used.add(s2);
-            out.add(new Notice(s2, n.msg, n.color, n.url));
+            TextColor c = n.color;
+            if (c == null) c = inherit;
+            else inherit = c;
+            out.add(new Notice(s2, n.msg, c, n.url));
         }
         return out;
     }
 
+    // ==================== 第36批：配置 / 翻页 ====================
+
+    /** ★ 第36批：顶层配置键识别（公告板开关 / 翻页秒数，中文键） */
+    private static boolean isConfigKey(String key) {
+        if (key == null) return false;
+        String k = key.trim();
+        return "开关状态".equals(k) || "开关".equals(k)
+                || "翻页时间".equals(k) || "翻页".equals(k);
+    }
+
+    /**
+     * ★ 第36批：读标量配置值。
+     * JSON 的 true/false（BOOLEAN）、15（NUMBER）、"15"（STRING）
+     * 统一转成 String，交给 parseOnOff / parseInt 处理。
+     */
+    private static String readScalar(JsonReader r) throws java.io.IOException {
+        JsonToken t = r.peek();
+        if (t == JsonToken.NULL) {
+            r.nextNull();
+            return null;
+        }
+        if (t == JsonToken.BOOLEAN) return String.valueOf(r.nextBoolean());
+        if (t == JsonToken.NUMBER || t == JsonToken.STRING) {
+            return r.nextString();
+        }
+        r.skipValue();
+        return null;
+    }
+
+    /** ★ 第36批：读取并应用一条顶层配置 */
+    private void readConfig(String key, JsonReader reader) {
+        String k = key.trim();
+        String v;
+        try {
+            v = readScalar(reader);
+        } catch (Exception ex) {
+            try { reader.skipValue(); } catch (Exception ignored) { }
+            return;
+        }
+        if ("开关状态".equals(k) || "开关".equals(k)) {
+            enabled = parseOnOff(v);
+        } else {
+            // 翻页时间：纯数字=秒（非法/<=0 → 保留默认15）
+            int sec = -1;
+            if (v != null) {
+                try { sec = Integer.parseInt(v.trim()); }
+                catch (Exception ignored) { }
+            }
+            if (sec > 0) pageSeconds = sec;
+        }
+    }
+    /**
+     * ★ 第36批：开关值解析（用户明令）——
+     * true / 1 → 开；false / 0 → 关；未识别 → 开（配置写错不至于把板关死）。
+     */
+    static boolean parseOnOff(String v) {
+        if (v == null) return true;
+        String t = v.trim().toLowerCase(Locale.ROOT);
+        if (t.equals("0") || t.equals("false") || t.equals("off")
+                || t.equals("no") || t.equals("关") || t.equals("否")) {
+            return false;
+        }
+        return true;
+    }
+
+    /** ★ 第36批：当前公告拆行后的总行数 */
+    private int totalRows() {
+        int rows = 0;
+        for (Notice n : notices.values()) {
+            rows += splitLine(n.msg).size();
+        }
+        return rows;
+    }
+    /**
+     * ★ 第36批：翻页任务 —— 总行数超过侧边栏 15 行时，
+     * 每「翻页时间」秒切下一页并刷新全员；只有一页时不动作。
+     */
+    private void restartPager() {
+        int sec = Math.max(1, pageSeconds);
+        if (pagerTask != null && sec == pagerSeconds) return;
+        if (pagerTask != null) {
+            try { pagerTask.cancel(); } catch (Throwable ignored) { }
+            pagerTask = null;
+        }
+        pagerSeconds = sec;
+        pagerTask = Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!enabled || notices.isEmpty()) return;
+            int rows = totalRows();
+            int pages = (rows + MAX_SIDEBAR_ROWS - 1) / MAX_SIDEBAR_ROWS;
+            if (pages <= 1) return;   // 只有一页 → 无需翻页
+            currentPage = (currentPage + 1) % pages;
+            applyAll();
+        }, 20L * sec, 20L * sec);
+    }
     /** 按排序位升序（稳定，手动冒泡，规避 JDK26 javac lambda 类型推断崩溃） */
     private static void sortBySlot(List<Notice> list) {
         for (int i = 0; i < list.size(); i++) {
@@ -377,7 +526,6 @@ public class AnnouncementBoard implements Listener {
         }
         return null;
     }
-
     // ==================== 渲染 ====================
 
     /**
@@ -401,6 +549,33 @@ public class AnnouncementBoard implements Listener {
         try {
             ScoreboardManager mgr = Bukkit.getScoreboardManager();
             if (mgr == null) return;
+            // ★ 第36批：开关关闭（开关状态=false/0）→ 归还原版主计分板
+            if (!enabled) {
+                p.setScoreboard(mgr.getMainScoreboard());
+                return;
+            }
+            // ★ 第36批：先把公告拆成「行」，再按当前页切片 ——
+            //   原版侧边栏最多 15 行，超过 15 行自动翻页（翻页时间 秒/页）
+            List<Row> rows = new ArrayList<>();
+            for (Notice n : notices.values()) {
+                List<String> lines = splitLine(n.msg);
+                for (int li = 0; li < lines.size(); li++) {
+                    rows.add(new Row(n, lines.get(li)));
+                }
+            }
+            if (rows.isEmpty()) {
+                // 没有可显示的公告 → 归还原版主计分板
+                p.setScoreboard(mgr.getMainScoreboard());
+                return;
+            }
+            int pages = (rows.size() + MAX_SIDEBAR_ROWS - 1)
+                    / MAX_SIDEBAR_ROWS;
+            int page = currentPage;
+            if (page < 0) page = 0;
+            if (page >= pages) page = pages - 1;
+            int from = page * MAX_SIDEBAR_ROWS;
+            int to = Math.min(from + MAX_SIDEBAR_ROWS, rows.size());
+
             Scoreboard sb = mgr.getNewScoreboard();
             Objective obj = sb.registerNewObjective(
                     OBJECTIVE, Criteria.DUMMY, legacy(TITLE));
@@ -410,32 +585,19 @@ public class AnnouncementBoard implements Listener {
                 obj.numberFormat(NumberFormat.blank());
             } catch (Throwable ignored) {
             }
-
-            int row = 0;          // 已渲染行数
-            int overflow = 0;     // 超出 15 行被丢弃的行数
-            for (Notice n : notices.values()) {
-                List<String> lines = splitLine(n.msg);
-                for (int li = 0; li < lines.size(); li++) {
-                    if (row >= MAX_SIDEBAR_ROWS) {
-                        overflow++;
-                        continue;
-                    }
-                    // entry 用纯 ASCII 唯一串（避免同名条目塌缩）
-                    String entry = "n" + row;
-                    Score sc = obj.getScore(entry);
-                    // 侧边栏默认 descending（高分在上）→ 分数递减，排序位小的排最上
-                    sc.setScore(MAX_SIDEBAR_ROWS - row);
-                    try {
-                        sc.customName(buildComponent(n, lines.get(li)));
-                    } catch (Throwable ignored) {
-                    }
-                    row++;
+            int row = 0;   // 本页已渲染行数
+            for (int i = from; i < to; i++) {
+                Row r = rows.get(i);
+                // entry 用纯 ASCII 唯一串（避免同名条目塌缩）
+                String entry = "n" + row;
+                Score sc = obj.getScore(entry);
+                // 侧边栏默认 descending（高分在上）→ 分数递减，本页首行排最上
+                sc.setScore(MAX_SIDEBAR_ROWS - row);
+                try {
+                    sc.customName(buildComponent(r.n, r.line));
+                } catch (Throwable ignored) {
                 }
-            }
-            if (overflow > 0) {
-                plugin.getLogger().warning("[公告板] 原版侧边栏最多显示 "
-                        + MAX_SIDEBAR_ROWS + " 行，已丢弃 "
-                        + overflow + " 行公告（请精简公告.md）");
+                row++;
             }
             p.setScoreboard(sb);
         } catch (Exception e) {
