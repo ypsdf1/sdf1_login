@@ -318,16 +318,26 @@ public class BlacklistManager {
         }
 
         // ===== 差异应用 =====
+        boolean changed = parsed.size() != entries.size();
         // 1) 新增 → 施加处罚
         for (BlackEntry e : parsed.values()) {
             if (!entries.containsKey(e.name)) {
                 applyBlacklist(e);
+                changed = true;
+            } else {
+                BlackEntry old = entries.get(e.name);
+                if (old == null || old.expiresMs != e.expiresMs
+                        || !old.timeText.equals(e.timeText)
+                        || !old.reason.equals(e.reason)) {
+                    changed = true;   // 条目内容改了（理由/时长）
+                }
             }
         }
         // 2) 移除 → 恢复
         for (BlackEntry e : new ArrayList<>(entries.values())) {
             if (!parsed.containsKey(e.name)) {
                 restoreBlacklist(e.name);
+                changed = true;
             }
         }
         entries.clear();
@@ -338,6 +348,13 @@ public class BlacklistManager {
             lastSize = mdFile.length();
         }
         plugin.getLogger().info("[黑名单] 已重载，当前生效 " + parsed.size() + " 人");
+        // ★ 第32批（#208）：名单变化 → 立即回响PHP（异步；syncBlacklist 内部 hash 门控兜底）
+        if (changed) {
+            try {
+                WebManager wm = plugin.webManager;
+                if (wm != null) wm.forceSyncBlacklist();
+            } catch (Exception ignored) {}
+        }
     }
 
     /**

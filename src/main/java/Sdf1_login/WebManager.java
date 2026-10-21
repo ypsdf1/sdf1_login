@@ -331,6 +331,7 @@ public class WebManager {
     private long lastPushedCutoff = -1;         //    上次推送时的播报起点（变了就再强制推一轮）
     private String lastAdminsHash = "";
     private String lastUserRegistrationHash = "";
+    private String lastBlacklistHash = "";   // ★ 第32批：拉黑名单同步快照
 
     // 嵌入式HTTP服务器（接收PHP回调）
     private java.net.ServerSocket callbackServer;
@@ -3338,7 +3339,14 @@ public class WebManager {
                 // ★ 直接检查sdf1计分板CDK（bond.db只是钱包，不存CDK）
                 String status = "not_found";
                 int amount = 0;
-                try {
+                // ★ 第32批：被拉黑玩家的兑换请求 → 直接回 blacklisted，
+                //   不进验证链、不加债券（PHP cdk.php 据此明确提示「你已被拉黑」）
+                if (plugin.getBlacklist() != null
+                        && plugin.getBlacklist().isBlacklisted(playerName)) {
+                    status = "blacklisted";
+                    plugin.getLogger().info("[CDK远程验证] " + cdkCode
+                            + " 拉黑拦截 player=" + playerName);
+                } else try {
                     Object sdf1Plugin = Bukkit.getPluginManager().getPlugin("sdf1");
                     if (sdf1Plugin != null) {
                         plugin.getLogger().info("[CDK远程验证] 调用sdf1检查计分板: " + cdkCode);
@@ -3443,7 +3451,13 @@ public class WebManager {
                 String status = "not_found";
                 int amount = 0;
                 boolean transientFail = false;   // 瞬时故障 -> 可重试
-                try {
+                // ★ 第32批：被拉黑玩家 → 直接回 blacklisted，不发起远程验证
+                if (plugin.getBlacklist() != null
+                        && plugin.getBlacklist().isBlacklisted(playerName)) {
+                    status = "blacklisted";
+                    plugin.getLogger().info("[CDK-Web验证] " + cdkCode
+                            + " 拉黑拦截 player=" + playerName);
+                } else try {
                     String validateUrl = webBaseUrl + "/api/sync.php?action=check_cdk_exists&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8")
                             + "&code=" + java.net.URLEncoder.encode(cdkCode, "UTF-8");
@@ -5292,6 +5306,8 @@ public class WebManager {
             // ★ 封禁名单和管理员列表独立于领地hash变化，必须每次都同步
             syncBans();
             syncAdmins();
+            // ★ 第32批：拉黑名单同样每轮兜底（PHP重启丢数据时自愈）
+            syncBlacklist();
 
             // ★ 双向对账（多退少补）：PHP 数据齐全就不推 —— 消除「重启必整包推」
             //   （lastLandDataHash 是内存字段，重启清零，旧逻辑每次开服必整包一次）。
@@ -5559,6 +5575,62 @@ public class WebManager {
     public void forceSyncBansAndAdmins() {
         syncBans();
         syncAdmins();
+    }
+
+    // ★ 第32批（#208）：拉黑名单同步到PHP（web_player_blacklist），
+    //   供 PHP 后台识别被拉黑玩家并给出明确提示（登录/兑换码双链路）。
+
+    /**
+     * 同步拉黑名单到PHP。参照 syncBans 模板：
+     * hash 门控（无变化静默）→ POST → 回执 success 才提交 hash（防 404 写脏）。
+     * PHP 侧 sync_blacklist 做全量覆盖，无需对账。
+     */
+    private void syncBlacklist() {
+        if (!enabled) return;
+        try {
+            BlacklistManager blm = plugin.getBlacklist();
+            java.util.List<BlacklistManager.BlackEntry> list =
+                    blm != null ? blm.getActiveEntries() : null;
+            StringBuilder sb = new StringBuilder("[");
+            StringBuilder hb = new StringBuilder();
+            boolean first = true;
+            if (list != null) {
+                for (BlacklistManager.BlackEntry e : list) {
+                    if (!first) sb.append(",");
+                    first = false;
+                    sb.append("{\"name\":\"").append(escapeJson(e.name))
+                      .append("\",\"time\":\"").append(escapeJson(e.timeText))
+                      .append("\",\"reason\":\"").append(escapeJson(e.reason))
+                      .append("\",\"expire\":").append(e.expiresMs)
+                      .append(",\"created\":").append(e.createdMs).append("}");
+                    hb.append(e.name).append(":").append(e.expiresMs)
+                      .append(":").append(e.reason).append("|");
+                }
+            }
+            sb.append("]");
+            String currentHash = hb.toString();
+            if (currentHash.equals(lastBlacklistHash)) return;   // 无变化静默
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("secret", secretKey);
+            body.put("blacks", sb.toString());
+            String resp = httpPost("api/sync.php?action=sync_blacklist", mapToJson(body));
+            if (resp != null && resp.contains("\"success\":true")) {
+                lastBlacklistHash = currentHash;
+                plugin.getLogger().info("[防护-sync] 拉黑名单同步: "
+                        + (list == null ? 0 : list.size()) + "人 → " + resp);
+            } else {
+                plugin.getLogger().warning("[防护-sync] 拉黑名单同步未确认成功，下轮重试（hash 不提交）");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[防护-sync] 拉黑名单同步异常: " + e.getMessage());
+        }
+    }
+
+    /** ★ 第32批：拉黑/解除时立即异步同步（不等定时轮询；内部 hash 门控兜底） */
+    public void forceSyncBlacklist() {
+        if (!enabled) return;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, this::syncBlacklist);
     }
 
     /**

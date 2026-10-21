@@ -57,6 +57,12 @@ public class CDKManager {
      */
     public String redeem(String code, String player) {
         try {
+            // ★ 第32批：拉黑检查提到查码之前 —— 被拉黑玩家一律拒绝，
+            //   不管码在本地是否存在，绝不放行进远程验证链
+            if (plugin.getBlacklist() != null
+                    && plugin.getBlacklist().isBlacklisted(player))
+                return "fail:blacklisted";
+
             PreparedStatement ps = db.prepareStatement(
                     "SELECT amount,type,used FROM cdk "
                             + "WHERE code=?");
@@ -73,11 +79,6 @@ public class CDKManager {
 
             if (used == 1)
                 return "fail:already_used";
-
-            // ★ 第30批：拉黑玩家禁止使用兑换码
-            if (plugin.getBlacklist() != null
-                    && plugin.getBlacklist().isBlacklisted(player))
-                return "fail:blacklisted";
 
             if (plugin.getBonds()
                     .isFrozen(player))

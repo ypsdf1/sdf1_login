@@ -58,7 +58,8 @@ public class ConfigManager {
     public int garbageMaxRounds = 1;
 
 
-    /** ★ 第30批：垃圾站启发式拦截（双击Q抢救窗口 + 倒计时段位提示）。默认开启。 */
+    /** ★ 第30批：垃圾站启发式拦截 —— 仅控制「红区title警告 + 双击Q抢救窗口」。
+     *  ★ 第32批：与顶部血条解耦，关闭时血条照常显示。默认开启。 */
 
     public boolean garbageHeuristic = true;
 
@@ -454,7 +455,7 @@ public class ConfigManager {
         garbageHeuristic = Boolean.parseBoolean(m.getOrDefault("垃圾站_启发式拦截", "true"));
 
         if (!garbageHeuristic) {
-            Bukkit.getLogger().warning("[Sdf1配置] 垃圾站启发式拦截已关闭：不再做倒计时段位提示与双击Q抢救拦截。");
+            Bukkit.getLogger().warning("[Sdf1配置] 垃圾站启发式拦截已关闭：不再做红区title警告与双击Q抢救拦截（顶部血条照常显示）。");
         }
 
 

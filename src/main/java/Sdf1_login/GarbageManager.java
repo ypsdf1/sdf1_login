@@ -36,19 +36,27 @@ public class GarbageManager implements Listener {
     private final Map<String, Integer>
             recyclePages = new HashMap<>();
 
-    /** ★ 第30批：垃圾站倒计时（秒）。原为 startAutoCleanup 内部局部变量，
-     *  抢救模式需要外部重置，故提为字段。 */
+    /**
+     * ★ 第30批：垃圾站倒计时（秒）。原为 startAutoCleanup 内部局部变量，
+     * 抢救模式需要外部重置，故提为字段。
+     */
     private int countdown = 0;
 
-    /** ★ 第31批：本轮开始的墙钟时间戳（毫秒）。
-     *  血条色段按真实时间判定，与 tick 计数解耦，
-     *  避免“第3分30秒还是绿色”的漂移。0 = 本轮未开始。 */
+    /**
+     * ★ 第31批：本轮开始的墙钟时间戳（毫秒）。
+     * 血条色段按真实时间判定，与 tick 计数解耦，
+     * 避免“第3分30秒还是绿色”的漂移。0 = 本轮未开始。
+     */
     private long roundStartMs = 0L;
 
-    /** ★ 第30批：顶部血条（玩家 UUID → BossBar） */
+    /**
+     * ★ 第30批：顶部血条（玩家 UUID → BossBar）
+     */
     private final Map<UUID, BossBar> bossBars = new HashMap<>();
 
-    /** ★ 第30批：双击 Q 确认丢弃的首次按键时间（玩家 UUID → 毫秒） */
+    /**
+     * ★ 第30批：双击 Q 确认丢弃的首次按键时间（玩家 UUID → 毫秒）
+     */
     private final Map<UUID, Long> pendingDrops = new HashMap<>();
 
 
@@ -174,9 +182,6 @@ public class GarbageManager implements Listener {
                 cleanupInterval =
                         plugin.getConfig2()
                                 .garbageInterval;
-                boolean heuristic =
-                        plugin.getConfig2()
-                                .garbageHeuristic;
 
                 int remain =
                         cleanupInterval - countdown;
@@ -211,7 +216,8 @@ public class GarbageManager implements Listener {
                 countdown++;
                 // ★ 第30批：顶部血条常驻倒计时（软提醒）
                 //   用 increment 前的 remain，与广播口径完全一致（避免差 1 秒）
-                updateBossBars(remain, heuristic);
+                // ★ 第32批：血条只受 垃圾站_启用 控制，与启发式开关解耦
+                updateBossBars(remain);
             }
         }.runTaskTimer(plugin, 20L, 20L);
     }
@@ -227,13 +233,11 @@ public class GarbageManager implements Listener {
      *   <li>4:30 ~ 5:00 → 红 = 危险（另：剩余≤30秒兜底红）</li>
      * </ul>
      *
-     * <p>启发式开关（垃圾站_启发式拦截）关闭时：撤掉血条、不提示、不拦截。
+     * <p>★ 第32批：血条与启发式开关解耦 —— 只要垃圾站启用，血条常驻显示；
+     * 启发式开关（垃圾站_启发式拦截）关闭时只关掉「红区title警告 + 双击Q拦截」，
+     * 不再撤血条（否则玩家对清理状态一无所知）。
      */
-    private void updateBossBars(int remain, boolean heuristic) {
-        if (!heuristic) {
-            hideAllBossBars();
-            return;
-        }
+    private void updateBossBars(int remain) {
         int interval = Math.max(1, cleanupInterval);
         double progress = (double) remain / (double) interval;
         if (progress < 0.0D) progress = 0.0D;
@@ -283,7 +287,7 @@ public class GarbageManager implements Listener {
         }
     }
 
-    /** 撤掉所有玩家的顶部血条（启发式关闭时用） */
+    /** 撤掉所有玩家的顶部血条（插件关闭/停服时用；启发式开关不再触发） */
     private void hideAllBossBars() {
         for (Player p : Bukkit.getOnlinePlayers()) {
             BossBar bar = bossBars.get(p.getUniqueId());
@@ -390,8 +394,8 @@ public class GarbageManager implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
-        if (!plugin.getConfig2().garbageHeuristic) return;
-        // 下一轮 tick 会自动建血条，这里只清掉可能残留的按键状态
+        // 下一轮 tick 会自动建血条（第32批：不再受启发式开关守卫），
+        // 这里只清掉可能残留的按键状态
         pendingDrops.remove(e.getPlayer().getUniqueId());
     }
 
