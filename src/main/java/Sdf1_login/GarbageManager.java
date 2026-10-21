@@ -37,17 +37,19 @@ public class GarbageManager implements Listener {
             recyclePages = new HashMap<>();
 
     /**
-     * ★ 第30批：垃圾站倒计时（秒）。原为 startAutoCleanup 内部局部变量，
-     * 抢救模式需要外部重置，故提为字段。
-     */
-    private int countdown = 0;
-
-    /**
      * ★ 第31批：本轮开始的墙钟时间戳（毫秒）。
      * 血条色段按真实时间判定，与 tick 计数解耦，
      * 避免“第3分30秒还是绿色”的漂移。0 = 本轮未开始。
      */
     private long roundStartMs = 0L;
+
+    /**
+     * ★ 第34批：已广播的倒计时节点位图。
+     * 墙钟口径下 remain 可能跨值（如 301→299），原来的 `remain == 300`
+     * 式判断会漏播；改用「<= 命中一次 + 位图去重」，卡顿也不漏。
+     * bit0=5分钟 bit1=3分钟 bit2=1分钟 bit3=30秒 bit4=10秒
+     */
+    private int announcedMask = 0;
 
     /**
      * ★ 第30批：顶部血条（玩家 UUID → BossBar）
@@ -169,8 +171,10 @@ public class GarbageManager implements Listener {
                 // 在线人数≤0时暂停
                 if (Bukkit.getOnlinePlayers()
                         .isEmpty()) {
-                    countdown = 0;
+                    // ★ 第34批：墙钟口径 —— 全员离线则本轮暂停，
+                    //   玩家回来时重新记录起点（重新计时）
                     roundStartMs = 0L;
+                    announcedMask = 0;
                     return;
                 }
 
@@ -183,40 +187,66 @@ public class GarbageManager implements Listener {
                         plugin.getConfig2()
                                 .garbageInterval;
 
-                int remain =
-                        cleanupInterval - countdown;
+                // ★ 第34批：唯一时间源（墙钟）—— 血条 / 广播 / 抢救打印 /
+                //   丢弃拦截 全部读 remainSeconds()，误差 ±0 秒。
+                int remain = remainSeconds();
 
-                // ★ 第31批（#204/#205）：垃圾箱进入下一节点 → 查一次 插件设置.txt，
-                //   有变化整份重载（ConfigManager 内部比对，无变化静默、有变化打日志）
-                if (remain == 300 || remain == 180
-                        || remain == 60 || remain == 30
-                        || remain == 10 || remain == 0
-                        || (remain <= 5 && remain > 0)) {
+                // ★ 第34批：节点广播改「<= 命中一次 + 位图去重」
+                //   （墙钟口径 remain 可能跨值，== 判断会漏播）
+                boolean nodeHit = false;
+                if (cleanupInterval >= 300
+                        && remain <= 300
+                        && (announcedMask & 1) == 0) {
+                    announcedMask |= 1;
+                    nodeHit = true;
+                    broadcast("§e§l[垃圾站] §f距离清理还有 §e5分钟");
+                }
+                if (cleanupInterval >= 180
+                        && remain <= 180
+                        && (announcedMask & 2) == 0) {
+                    announcedMask |= 2;
+                    nodeHit = true;
+                    broadcast("§e§l[垃圾站] §f距离清理还有 §e3分钟");
+                }
+                if (cleanupInterval >= 60
+                        && remain <= 60
+                        && (announcedMask & 4) == 0) {
+                    announcedMask |= 4;
+                    nodeHit = true;
+                    broadcast("§e§l[垃圾站] §f距离清理还有 §e1分钟");
+                }
+                if (cleanupInterval >= 30
+                        && remain <= 30
+                        && (announcedMask & 8) == 0) {
+                    announcedMask |= 8;
+                    nodeHit = true;
+                    broadcast("§e§l[垃圾站] §f距离清理还有 §e30秒");
+                }
+                if (cleanupInterval >= 10
+                        && remain <= 10
+                        && (announcedMask & 16) == 0) {
+                    announcedMask |= 16;
+                    nodeHit = true;
+                    broadcast("§e§l[垃圾站] §f距离清理还有 §e10秒");
+                }
+                if (nodeHit) {
+                    // ★ 第31批（#204/#205）：垃圾箱进入下一节点 → 查一次 插件设置.txt，
+                    //   有变化整份重载（ConfigManager 内部比对，无变化静默、有变化打日志）
                     plugin.getConfig2()
                             .reloadSettingsIfChanged();
                 }
-                if (remain == 300)
-                    broadcast("§e§l[垃圾站] §f距离清理还有 §e5分钟");
-                else if (remain == 180)
-                    broadcast("§e§l[垃圾站] §f距离清理还有 §e3分钟");
-                else if (remain == 60)
-                    broadcast("§e§l[垃圾站] §f距离清理还有 §e1分钟");
-                else if (remain == 30)
-                    broadcast("§e§l[垃圾站] §f距离清理还有 §e30秒");
-                else if (remain == 10)
-                    broadcast("§e§l[垃圾站] §f距离清理还有 §e10秒");
-                else if (remain <= 5 && remain > 0)
+                if (remain <= 5 && remain > 0)
                     broadcast("§e§l[垃圾站] §c" + remain + "§f...");
-                else if (remain == 0) {
+                if (remain == 0) {
                     doCleanup();
-                    countdown = 0;
+                    // ★ 第34批：新一轮开始 —— 清墙钟起点与节点位图
                     roundStartMs = 0L;
+                    announcedMask = 0;
                     return;
                 }
-                countdown++;
                 // ★ 第30批：顶部血条常驻倒计时（软提醒）
-                //   用 increment 前的 remain，与广播口径完全一致（避免差 1 秒）
                 // ★ 第32批：血条只受 垃圾站_启用 控制，与启发式开关解耦
+                // ★ 第34批：remain 取自墙钟唯一时间源，与广播/抢救打印同源
                 updateBossBars(remain);
             }
         }.runTaskTimer(plugin, 20L, 20L);
@@ -304,6 +334,31 @@ public class GarbageManager implements Listener {
     }
 
     /**
+     * ★ 第34批：剩余秒数「唯一时间源」（墙钟推算）。
+     *
+     * <p>根因：旧实现里「血条 / 广播」读的是 tick 计数（increment 前的值），
+     * 而「抢救打印 / 指令显示 / 丢弃拦截」读的是 increment 后的值，
+     * 两者恒差 1 秒（用户截图：血条 02:47 vs 打印 02:46）。
+     *
+     * <p>现统一按墙钟推算：距本轮结束 = roundStartMs + 清理间隔 - now，
+     * 向上取整到秒。血条标题、抢救提示、指令显示、丢弃拦截全部读本方法，
+     * 保证 ±0 秒误差。
+     *
+     * @return 剩余秒数（0 = 本轮已到点 / 未开始）
+     */
+    private int remainSeconds() {
+        if (roundStartMs <= 0L) {
+            // 本轮尚未开始（刚启动 / 抢救后 / 全员离线）→ 视为满格
+            return Math.max(0, cleanupInterval);
+        }
+        long endMs = roundStartMs + (long) cleanupInterval * 1000L;
+        long leftMs = endMs - System.currentTimeMillis();
+        if (leftMs <= 0L) return 0;
+        // 向上取整到秒：剩余 2.001s 显示 3 秒，2.000s 显示 2 秒
+        return (int) ((leftMs + 999L) / 1000L);
+    }
+
+    /**
      * ★ 第30批：抢救模式 —— 跳过本轮清理并重新开始计时。
      * 玩家物品被错误投入垃圾箱时可急停抢救。
      *
@@ -315,13 +370,15 @@ public class GarbageManager implements Listener {
                 p.sendMessage("§c§l[垃圾站] §f垃圾站未启用，无法抢救");
             return false;
         }
-        if (countdown <= 0) {
+        // ★ 第34批：改用墙钟唯一时间源（与头顶血条显示值完全一致）
+        if (remainSeconds() <= 0) {
             if (p != null)
                 p.sendMessage("§c§l[垃圾站] §f本轮清理已经结束了，来不及抢救");
             return false;
         }
         // ★ 第31批（#203）：抢救窗口 = 本轮最后 1 分钟；未到时间不可触发
-        int remainSec = cleanupInterval - countdown;
+        // ★ 第34批：与血条同源（墙钟）—— 打印值 = 头顶血条值（±0 秒）
+        int remainSec = remainSeconds();
         if (remainSec > 60) {
             if (p != null)
                 p.sendMessage("§c§l[垃圾站] §f未到抢救窗口：本轮清理还剩 §e"
@@ -333,8 +390,9 @@ public class GarbageManager implements Listener {
                                 + " 秒，未进入最后1分钟窗口");
             return false;
         }
-        countdown = 0;
+        // ★ 第34批：取消本轮 —— 清墙钟起点与节点位图，计时重新开始
         roundStartMs = 0L;
+        announcedMask = 0;
         pendingDrops.clear();
         String who = p != null ? p.getName() : "控制台";
         broadcast("§a§l[垃圾站] §f玩家 §e" + who
@@ -345,10 +403,12 @@ public class GarbageManager implements Listener {
         return true;
     }
 
-    /** 当前剩余秒数（指令/UI 显示用） */
+    /**
+     * 当前剩余秒数（指令/UI 显示用）。
+     * ★ 第34批：与头顶血条、抢救打印完全同源（墙钟），不再有 ±1 秒差。
+     */
     public int getRemainSeconds() {
-        int r = cleanupInterval - countdown;
-        return r < 0 ? 0 : r;
+        return remainSeconds();
     }
 
     /**
@@ -367,7 +427,8 @@ public class GarbageManager implements Listener {
     public void onPlayerDropItem(PlayerDropItemEvent e) {
         if (!enabled) return;
         if (!plugin.getConfig2().garbageHeuristic) return;
-        int remain = cleanupInterval - countdown;
+        // ★ 第34批：与血条同源（墙钟）
+        int remain = remainSeconds();
         if (remain > 30) return;   // 安全区+警告期（>30秒）→ 不干涉
 
         Player p = e.getPlayer();
@@ -414,27 +475,43 @@ public class GarbageManager implements Listener {
     private void doCleanup() {
         // ★ 过期轮次删除是阻塞 DB -> 先异步执行；
         //   轮次递增 / 实体收集 / 广播 必须主线程 -> 异步完成后回主线程
-        // ★ 第33批（#215）：保留轮数语义修正 —— 保留次数 R = 垃圾存活 R 轮，
-        //   第 N 次清理（本方法入口时 currentRound = N-1）删除第 (N-R) 批，
-        //   即 deleteRound = (N-1)+1-R。旧公式 currentRound-maxRounds 少算 1，
-        //   导致 R=1 要到第 3 次清理才删第 1 批（保留轮数形同虚设）。
-        //   验证：R=1 → 第2次清理删第1批；R=3 → 第4次清理删第1批；
-        //   永久清理轮次 = 当前轮 + 保留次数。
-        final int deleteRound =
-                currentRound + 1 - maxRounds;
+        // ★ 第34批（#217）：保留轮次语义按用户思维导图重写 ——
+        //   N = 目标保留轮次（配置 垃圾站_保留轮数）
+        //   k = 当前轮次（本方法入口时 currentRound = k-1）
+        //   公式余数 = N - k；余数为 0（k % N == 0）的那一轮才「永久倒垃圾」，
+        //   其余轮次只把地面掉落物收进回收站，跳过永久删除。
+        //   N=3 → k=1(余2)跳过 / k=2(余1)跳过 / k=3(余0)倒垃圾。
+        //   到期批次 = 存活满 N 轮的批次（批次 j 存于第 j 轮，
+        //   到第 j+N 轮才满 N 轮）→ j <= k - N。
+        //   验证 N=2：k=1 跳过；k=2 倒垃圾(第1批尚未满2轮，删0件)；
+        //             k=3 跳过；k=4 倒垃圾(第1、2批满2轮，删除)。
+        //   验证 N=3：k=1/2 跳过；k=3 倒垃圾(无到期)；k=6 倒垃圾(删第1、2、3批)。
+        //   性质：每个倒垃圾轮次结束后，回收站恰好保留 N 个批次的垃圾。
+        final int k = currentRound + 1;         // 当前轮次（1 起）
+        final int n = Math.max(1, maxRounds);   // 目标保留轮次
+        final boolean purgeThisRound = (k % n == 0);
+        final int deleteRound = k - n;           // <= 该批次的都存活满 n 轮
         Bukkit.getScheduler().runTaskAsynchronously(
                 plugin, () -> {
                     final int deleted =
-                            deleteRound >= 0
+                            (purgeThisRound && deleteRound >= 0)
                                     ? deleteOldItems(deleteRound)
                                     : 0;
                     Bukkit.getScheduler().runTask(
                             plugin, () -> {
-                                if (deleted > 0) {
-                                    broadcast("§7[垃圾站] §f永久清理了 §e"
-                                            + deleted + " §f个过期物品");
+                                if (purgeThisRound) {
+                                    if (deleted > 0) {
+                                        broadcast("§7[垃圾站] §f永久清理了 §e"
+                                                + deleted + " §f个过期物品");
+                                    }
+                                } else {
+                                    // ★ 第34批：非倒垃圾轮次明确告知，避免
+                                    //   「每轮都在清理」的误解
+                                    broadcast("§7[垃圾站] §f本轮跳过永久清理"
+                                            + "（保留 §e" + n
+                                            + " §f轮，每 §e" + n
+                                            + " §f轮才永久倒一次垃圾）");
                                 }
-
                                 // 递增轮次
                                 currentRound++;
                                 final int roundNow =
@@ -496,7 +573,6 @@ public class GarbageManager implements Listener {
         }
         return count;
     }
-
     public void saveItem(ItemStack stack) {
         try {
             // ★ SN 物品进垃圾箱 = 脱离玩家本人管控，起算 12 小时找回期。
