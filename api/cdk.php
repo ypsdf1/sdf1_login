@@ -94,6 +94,15 @@ function cdkExchange($token) {
 
     $db = getDB();
 
+    // ★ 第32批拉黑拦截：本地兑换前先查拉黑名单
+    //   （web_player_blacklist 由 Java BlacklistManager 经 sync_blacklist 同步；
+    //    本地CDK存在也一律拒绝，与 Java CDKManager.redeem 的检查口径一致）
+    $blackReason = playerWebBlacklistReason($player);
+    if ($blackReason !== null) {
+        @error_log("[cdk] 拉黑拦截兑换: player={$player}");
+        error('你已被拉黑：' . $blackReason);
+    }
+
     // 查询CDK
     $stmt = $db->prepare("SELECT * FROM cdk WHERE code = :code");
     $stmt->bindValue(':code', strtoupper(trim($code)), SQLITE3_TEXT);
@@ -455,6 +464,14 @@ function tryRemoteCdkValidation($db, $code, $player = '') {
     }
 
     @error_log("[cdk] 远程验证结果: status={$result['status']} amount={$result['amount']}");
+
+    // ★ 第32批：Java端拉黑拦截信号 → 直接提示被拉黑
+    //   （若当 null 返回，上层会误报「CDK不存在」，掩盖真实原因）
+    if ($result['status'] === 'blacklisted') {
+        $blReason = playerWebBlacklistReason($player);
+        @error_log("[cdk] 远程验证 blacklisted: player={$player}");
+        error('你已被拉黑：' . ($blReason !== null ? $blReason : '违反服务器规则'));
+    }
 
     if ($result['status'] === 'success') {
         // ★ Java端已标记used并加债券，Web端只做记录不重复加钱

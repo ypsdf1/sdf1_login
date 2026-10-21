@@ -44,7 +44,7 @@ function debugLog($message, $context = []) {
 // 本层只负责「按语句里的表名判侧别」，真正给哪个连接由 dbOpen() 按运行模式决定。
 
 if (!function_exists('dbJavaTables')) {
-    /** Java 专属表清单（api/sync.php 通信组，40 张，精确匹配不做前缀匹配） */
+    /** Java 专属表清单（api/sync.php 通信组，41 张，精确匹配不做前缀匹配） */
     function dbJavaTables() {
         static $t = null;
         if ($t === null) {
@@ -58,7 +58,8 @@ if (!function_exists('dbJavaTables')) {
                 'web_admin_changes', 'web_area_config', 'web_area_lands',
                 'web_area_permissions', 'web_area_shop', 'web_ip_blacklist',
                 'web_login_confirmations', 'web_login_requests', 'web_login_verified',
-                'web_player_bans', 'web_plugin_admins', 'web_register_requests',
+                'web_player_bans', 'web_player_blacklist', 'web_plugin_admins',
+                'web_register_requests',
                 'web_service_providers', 'web_session_log', 'web_transactions',
                 'web_user_group_members', 'web_user_groups', 'weblogin_credentials',
                 'weblogin_tokens',
@@ -3114,6 +3115,38 @@ function playerWebBanReason($player, $db = null) {
     return null;
 }
 
+/**
+ * ★ 第32批拉黑拦截：查询玩家是否处于【拉黑】生效期（Java BlacklistManager
+ * 通过 sync_blacklist 同步的 web_player_blacklist）。
+ * 返回 null = 未拉黑（或表不存在 → 放行）；否则返回拉黑理由字符串（供前端提示）。
+ * expire_ms 单位：Java 推送的是毫秒（BlackEntry.expiresMs），0 = 永久。
+ */
+function playerWebBlacklistReason($player, $db = null) {
+    if ($player === null || $player === '') return null;
+    try {
+        if ($db === null) $db = getDB();
+        // 表不存在 = 从未同步过拉黑名单 → 直接放行（避免读路径执行DDL）
+        $exists = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='web_player_blacklist'");
+        if (!$exists) return null;
+        $stmt = $db->prepare("SELECT reason, expire_ms FROM web_player_blacklist WHERE LOWER(name) = LOWER(:p)");
+        if (!$stmt) return null;
+        $stmt->bindValue(':p', $player, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        if (!$res) return null;
+        $nowMs = time() * 1000;
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $exp = (int)$row['expire_ms'];
+            if ($exp === 0 || $exp > $nowMs) {
+                $reason = trim((string)($row['reason'] ?? ''));
+                return $reason !== '' ? $reason : '违反服务器规则';
+            }
+        }
+    } catch (\Throwable $e) {
+        @error_log('[playerWebBlacklistReason] ' . $e->getMessage());
+    }
+    return null;
+}
+
 function validateWebAccess($webToken, $action = 'view', $password = null, $ipAddress = null) {
     if (!$ipAddress) $ipAddress = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 
@@ -3147,6 +3180,14 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
     if ($banReason !== null) {
         @error_log("[validateWebAccess] DENIED: player banned. player=$playerName");
         return ['ok' => false, 'mode' => 'denied', 'message' => '账号已被封禁：' . $banReason];
+    }
+
+    // ★ 第32批拉黑拦截：被拉黑玩家禁止使用Web端（Java BlacklistManager 同步）
+    $blackReason = playerWebBlacklistReason($playerName, $db);
+    if ($blackReason !== null) {
+        @error_log("[validateWebAccess] DENIED: player blacklisted. player=$playerName");
+        return ['ok' => false, 'mode' => 'blacklisted', 'player' => $playerName,
+                'message' => '你已被拉黑：' . $blackReason];
     }
 
     // 在线玩家表（Java插件同步，这里确保表存在）

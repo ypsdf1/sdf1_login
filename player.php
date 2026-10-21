@@ -531,6 +531,13 @@ if ($currentVersion !== $BUILD_VERSION) {
                 document.getElementById('playerInfo').textContent = '请先在游戏内注册';
                 if (callback) callback({ok: false, need_register: true, player: currentPlayer});
                 showRegisterMessage(data.message || '请先在游戏内注册账号');
+            } else if (data.blacklisted) {
+                // ★ 第32批：玩家已被拉黑（Java BlacklistManager 同步）→ 明确提示，不按Token无效处理
+                AUTHENTICATED = false;
+                currentPlayer = data.player || currentPlayer;
+                document.getElementById('playerInfo').textContent = '已被拉黑';
+                if (callback) callback({ok: false, blacklisted: true, player: currentPlayer, message: data.message});
+                showBlacklistedMessage(data.message || '你已被拉黑');
             } else {
                 // Token无效 → 清除缓存，进入游客模式
                 AUTHENTICATED = false;
@@ -570,6 +577,21 @@ if ($currentVersion !== $BUILD_VERSION) {
                 <p style="color:var(--dim);font-size:14px;margin-bottom:20px">${message}</p>
                 <div style="background:rgba(59,130,246,0.1);border:1px solid var(--accent);border-radius:8px;padding:16px;margin-bottom:20px">
                     <p style="color:var(--text);font-size:13px;margin:0">请在Minecraft游戏中使用 <code style="background:rgba(255,255,255,0.1);padding:2px 6px;border-radius:3px">/sdf1_login</code> 命令登录后再访问Web端</p>
+                </div>
+                <button class="btn" onclick="location.reload()" style="margin-top:8px">刷新页面</button>
+            </div>`;
+        document.getElementById('modalOverlay').style.display = 'flex';
+    }
+
+    // ★ 第32批：拉黑提示弹层（不清理本地缓存，保留玩家名用于展示）
+    function showBlacklistedMessage(message) {
+        document.getElementById('modalTitle').textContent = '账号已被拉黑';
+        document.getElementById('modalBody').innerHTML = `
+            <div style="text-align:center;padding:20px">
+                <div style="font-size:48px;margin-bottom:16px">🚫</div>
+                <p style="color:var(--red);font-size:14px;margin-bottom:20px">${message}</p>
+                <div style="background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:8px;padding:16px;margin-bottom:20px">
+                    <p style="color:var(--text);font-size:13px;margin:0">你已被服务器拉黑，禁止使用商城、CDK与充值功能。如有异议请联系管理员。</p>
                 </div>
                 <button class="btn" onclick="location.reload()" style="margin-top:8px">刷新页面</button>
             </div>`;
@@ -1526,7 +1548,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             
             if (!data.success) {
                 // Token可能已失效或过期
-                if (data.need_password || data.need_game_login || data.need_register) {
+                if (data.need_password || data.need_game_login || data.need_register || data.blacklisted) {
                     // 需要进一步验证，不视为token无效
                     return;
                 }

@@ -366,6 +366,10 @@ switch ($action) {
     case 'sync_bans':
         syncBans();
         break;
+    // ★ 第32批：拉黑名单同步（Java BlacklistManager → web_player_blacklist）
+    case 'sync_blacklist':
+        syncBlacklist();
+        break;
     // ★ 第十六批：公开封禁公示（玩家端首页卡片数据源，无需SECRET，限流保护）
     case 'get_ban_board':
         getBanBoard();
@@ -2817,6 +2821,12 @@ function apiValidateWebloginToken() {
             error('账号已被封禁：' . $banReason);
         }
 
+        // ★ 第32批拉黑拦截：被拉黑玩家禁止登录Web后台
+        $blackReason = playerWebBlacklistReason($row['player_name'], $db);
+        if ($blackReason !== null) {
+            error('你已被拉黑：' . $blackReason);
+        }
+
         success(['player' => $row['player_name']], 'Token有效');
     } catch (\Throwable $e) {
         error('Token验证失败: ' . $e->getMessage());
@@ -3208,6 +3218,12 @@ function webLoginRequest() {
     $banReason = playerWebBanReason($player, $db);
     if ($banReason !== null) {
         error('账号已被封禁：' . $banReason);
+    }
+
+    // ★ 第32批拉黑拦截：被拉黑玩家禁止走密码登录
+    $blackReason = playerWebBlacklistReason($player, $db);
+    if ($blackReason !== null) {
+        error('你已被拉黑：' . $blackReason);
     }
 
     // 检查玩家是否已注册
@@ -3639,6 +3655,14 @@ function webAccessCheck() {
                 'player' => $result['player'] ?? '',
                 'online' => $result['online'] ?? false,
                 'registered' => $result['registered'] ?? false,
+                'message' => $result['message']
+            ], 401);
+        } elseif ($result['mode'] === 'blacklisted') {
+            // ★ 第32批：玩家已被拉黑（Java BlacklistManager 同步）
+            jsonResponse([
+                'success' => false,
+                'blacklisted' => true,
+                'player' => $result['player'] ?? '',
                 'message' => $result['message']
             ], 401);
         } elseif ($result['mode'] === 'need_register') {
@@ -4332,6 +4356,12 @@ function sendEmailCode() {
         error('账号已被封禁：' . $banReason);
     }
 
+    // ★ 第32批拉黑拦截：被拉黑玩家禁止发送登录验证码
+    $blackReason = playerWebBlacklistReason($player);
+    if ($blackReason !== null) {
+        error('你已被拉黑：' . $blackReason);
+    }
+
     // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
     $db = getDB();
     $stmt = $db->prepare("SELECT email FROM users WHERE player_name = :player");
@@ -4444,6 +4474,12 @@ function verifyEmailCode() {
     $banReason = playerWebBanReason($player);
     if ($banReason !== null) {
         error('账号已被封禁：' . $banReason);
+    }
+
+    // ★ 第32批拉黑拦截：被拉黑玩家禁止走邮箱验证码登录
+    $blackReason = playerWebBlacklistReason($player);
+    if ($blackReason !== null) {
+        error('你已被拉黑：' . $blackReason);
     }
 
     // ★ 从数据库读取玩家绑定的邮箱（唯一可信来源）
@@ -5558,6 +5594,57 @@ function syncBans() {
     }
 
     success(['count' => count($bans), 'ip_blacklist' => $ipCount]);
+}
+
+// ===== Java端推送拉黑名单到PHP（第32批）=====
+// 数据源唯一：Java BlacklistManager（黑名单.md），PHP 只读不写。
+// 全量覆盖式同步（DELETE + INSERT），已过期条目不入表。
+function syncBlacklist() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $blacksRaw = getParam('blacks', '[]');
+    $blacks = json_decode($blacksRaw, true);
+    if (!is_array($blacks)) error('blacks格式无效');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_player_blacklist (
+        name TEXT PRIMARY KEY,
+        reason TEXT DEFAULT '',
+        time_text TEXT DEFAULT '',
+        expire_ms INTEGER DEFAULT 0,
+        created_ms INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0
+    )");
+
+    $now = time();
+    $nowMs = $now * 1000;
+    $count = 0;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $db->exec("DELETE FROM web_player_blacklist");
+        $stmt = $db->prepare("INSERT OR REPLACE INTO web_player_blacklist (name, reason, time_text, expire_ms, created_ms, synced_at) VALUES (:n, :r, :t, :e, :c, :s)");
+        foreach ($blacks as $b) {
+            if (empty($b['name'])) continue;
+            $exp = (int)($b['expire'] ?? 0);
+            if ($exp > 0 && $exp <= $nowMs) continue;   // 已过期不入表
+            $stmt->bindValue(':n', (string)$b['name'], SQLITE3_TEXT);
+            $stmt->bindValue(':r', (string)($b['reason'] ?? ''), SQLITE3_TEXT);
+            $stmt->bindValue(':t', (string)($b['time'] ?? ''), SQLITE3_TEXT);
+            $stmt->bindValue(':e', $exp, SQLITE3_INTEGER);
+            $stmt->bindValue(':c', (int)($b['created'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':s', $now, SQLITE3_INTEGER);
+            $stmt->execute();
+            $count++;
+        }
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        try { $db->exec('ROLLBACK'); } catch (\Throwable $ignored) {}
+        @error_log('[syncBlacklist] Error: ' . $e->getMessage());
+        error('拉黑名单写入失败: ' . $e->getMessage());
+    }
+
+    success(['count' => $count]);
 }
 
 /**
