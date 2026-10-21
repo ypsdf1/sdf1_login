@@ -9,6 +9,14 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.scheduler.BukkitRunnable;
+import net.kyori.adventure.bossbar.BossBar;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -17,7 +25,7 @@ import java.sql.Date;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-public class GarbageManager {
+public class GarbageManager implements Listener {
 
     private final Main plugin;
     private Connection db;
@@ -27,6 +35,16 @@ public class GarbageManager {
     private int currentRound = 0;
     private final Map<String, Integer>
             recyclePages = new HashMap<>();
+
+    /** ★ 第30批：垃圾站倒计时（秒）。原为 startAutoCleanup 内部局部变量，
+     *  抢救模式需要外部重置，故提为字段。 */
+    private int countdown = 0;
+
+    /** ★ 第30批：顶部血条（玩家 UUID → BossBar） */
+    private final Map<UUID, BossBar> bossBars = new HashMap<>();
+
+    /** ★ 第30批：双击 Q 确认丢弃的首次按键时间（玩家 UUID → 毫秒） */
+    private final Map<UUID, Long> pendingDrops = new HashMap<>();
 
 
     public GarbageManager(Main plugin) {
@@ -133,8 +151,6 @@ public class GarbageManager {
     public void startAutoCleanup() {
         if (!enabled) return;
         new BukkitRunnable() {
-            int countdown = 0;
-
             @Override
             public void run() {
                 // 在线人数≤0时暂停
@@ -148,6 +164,9 @@ public class GarbageManager {
                 cleanupInterval =
                         plugin.getConfig2()
                                 .garbageInterval;
+                boolean heuristic =
+                        plugin.getConfig2()
+                                .garbageHeuristic;
 
                 int remain =
                         cleanupInterval - countdown;
@@ -169,8 +188,181 @@ public class GarbageManager {
                     return;
                 }
                 countdown++;
+                // ★ 第30批：顶部血条常驻倒计时（软提醒）
+                //   用 increment 前的 remain，与广播口径完全一致（避免差 1 秒）
+                updateBossBars(remain, heuristic);
             }
         }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /**
+     * ★ 第30批：顶部血条常驻倒计时 + 色段软提醒。
+     *
+     * <p>色段按「已过时间」elapsed = interval - remain 划分（默认 5 分钟一轮）：
+     * <ul>
+     *   <li>前 60%（剩 3 分钟以上）→ 浅绿 = 安全期</li>
+     *   <li>60% ~ 90%（剩 3 分 01 秒 ~ 1 分 30 秒）→ 黄色 = 警告「垃圾箱快动作了，别丢了」</li>
+     *   <li>最后 10%（剩 30 秒内）→ 红色 = 危险</li>
+     * </ul>
+     *
+     * <p>启发式开关（垃圾站_启发式拦截）关闭时：撤掉血条、不提示、不拦截。
+     */
+    private void updateBossBars(int remain, boolean heuristic) {
+        if (!heuristic) {
+            hideAllBossBars();
+            return;
+        }
+        int interval = Math.max(1, cleanupInterval);
+        double progress = (double) remain / (double) interval;
+        if (progress < 0.0D) progress = 0.0D;
+        if (progress > 1.0D) progress = 1.0D;
+        int elapsed = interval - remain;
+
+        BossBar.Color color;
+        String label;
+        if (elapsed < (int) (interval * 0.6D)) {
+            color = BossBar.Color.GREEN;
+            label = "§a§l安全期 §7| §a还早，放心丢";
+        } else if (elapsed < (int) (interval * 0.9D)) {
+            color = BossBar.Color.YELLOW;
+            label = "§e§l注意 §7| §e垃圾箱快动作了，别丢了";
+        } else {
+            color = BossBar.Color.RED;
+            label = "§c§l危险 §7| §c马上清理，抓紧捡";
+        }
+        String title = "§6§l垃圾站 §8| " + label
+                + " §8| §f剩余 " + fmtRemain(remain);
+
+        Component comp = LegacyComponentSerializer
+                .legacySection().deserialize(title);
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            UUID uuid = p.getUniqueId();
+            BossBar bar = bossBars.get(uuid);
+            if (bar == null) {
+                // Adventure 的 BossBar 按观众分发，必须每人一份
+                bar = BossBar.bossBar(comp, (float) progress,
+                        color, BossBar.Overlay.NOTCHED_10);
+                bossBars.put(uuid, bar);
+                p.showBossBar(bar);
+            } else {
+                bar.name(comp);
+                bar.color(color);
+                if (Math.abs(bar.progress() - progress) > 0.001D) {
+                    bar.progress((float) progress);
+                }
+            }
+        }
+    }
+
+    /** 撤掉所有玩家的顶部血条（启发式关闭时用） */
+    private void hideAllBossBars() {
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            BossBar bar = bossBars.get(p.getUniqueId());
+            if (bar != null) {
+                try {
+                    p.hideBossBar(bar);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        bossBars.clear();
+    }
+
+    /** 剩余秒数格式化为 mm:ss */
+    private String fmtRemain(int remain) {
+        if (remain < 0) remain = 0;
+        int m = remain / 60;
+        int s = remain % 60;
+        return (m < 10 ? "0" + m : String.valueOf(m))
+                + ":" + (s < 10 ? "0" + s : String.valueOf(s));
+    }
+
+    /**
+     * ★ 第30批：抢救模式 —— 跳过本轮清理并重新开始计时。
+     * 玩家物品被错误投入垃圾箱时可急停抢救。
+     *
+     * @return true=抢救成功（本轮清理已取消）
+     */
+    public boolean rescueRound(Player p) {
+        if (!enabled) {
+            if (p != null)
+                p.sendMessage("§c§l[垃圾站] §f垃圾站未启用，无法抢救");
+            return false;
+        }
+        if (countdown <= 0) {
+            if (p != null)
+                p.sendMessage("§c§l[垃圾站] §f本轮清理已经结束了，来不及抢救");
+            return false;
+        }
+        countdown = 0;
+        pendingDrops.clear();
+        String who = p != null ? p.getName() : "控制台";
+        broadcast("§a§l[垃圾站] §f玩家 §e" + who
+                + " §f发起抢救，本轮清理已取消，计时重新开始");
+        if (p != null)
+            p.sendMessage("§a§l[垃圾站] §f抢救成功！本轮清理已取消，"
+                    + "倒计时重新开始");
+        return true;
+    }
+
+    /** 当前剩余秒数（指令/UI 显示用） */
+    public int getRemainSeconds() {
+        int r = cleanupInterval - countdown;
+        return r < 0 ? 0 : r;
+    }
+
+    /**
+     * ★ 第30批：垃圾箱丢弃拦截（仅活跃于本轮最后 10 秒窗口）。
+     *
+     * <p>最后 30 秒（红区）：对丢弃物品的玩家发小标题警告。
+     * <p>最后 10 秒（拦截窗口）：单击 Q 被拦截，需 2 秒内再按一次 Q 确认才放行；
+     * 其他时段完全不干涉。
+     */
+    @EventHandler
+    public void onPlayerDropItem(PlayerDropItemEvent e) {
+        if (!enabled) return;
+        if (!plugin.getConfig2().garbageHeuristic) return;
+        int remain = cleanupInterval - countdown;
+        if (remain > 30) return;   // 不在红区 → 不干涉
+
+        Player p = e.getPlayer();
+        // 小标题警告（红区）
+        p.sendTitle("", "§c§l垃圾站警告 §f马上就清理了，别乱丢！",
+                3, 30, 5);
+
+        if (remain > 10) return;   // 拦截仅在最后 10 秒窗口
+
+        long now = System.currentTimeMillis();
+        UUID uuid = p.getUniqueId();
+        Long first = pendingDrops.get(uuid);
+        if (first != null && now - first <= 2000L) {
+            pendingDrops.remove(uuid);
+            return;                 // 双击确认 → 放行
+        }
+        pendingDrops.put(uuid, now);
+        e.setCancelled(true);
+        p.sendMessage("§e§l[垃圾站] §f马上就清理了！再按一次 §eQ§f 确认丢弃，"
+                + "或用 §e/垃圾抢救§f 取消本轮清理");
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent e) {
+        if (!plugin.getConfig2().garbageHeuristic) return;
+        // 下一轮 tick 会自动建血条，这里只清掉可能残留的按键状态
+        pendingDrops.remove(e.getPlayer().getUniqueId());
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent e) {
+        UUID uuid = e.getPlayer().getUniqueId();
+        pendingDrops.remove(uuid);
+        BossBar bar = bossBars.remove(uuid);
+        if (bar != null) {
+            try {
+                e.getPlayer().hideBossBar(bar);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private void doCleanup() {
@@ -622,6 +814,11 @@ public class GarbageManager {
     }
 
     public void close() {
+        try {
+            hideAllBossBars();
+            pendingDrops.clear();
+        } catch (Exception ignored) {
+        }
         try {
             if (db != null && !db.isClosed())
                 db.close();

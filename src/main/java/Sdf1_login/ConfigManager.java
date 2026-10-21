@@ -57,6 +57,12 @@ public class ConfigManager {
     public int garbageInterval = 300;
     public int garbageMaxRounds = 1;
 
+
+    /** ★ 第30批：垃圾站启发式拦截（双击Q抢救窗口 + 倒计时段位提示）。默认开启。 */
+
+    public boolean garbageHeuristic = true;
+
+
     // ===== 区域防护配置 =====
     public String areaProtectAdminMode = "tag"; // "tag" 或 "op"，不共存
     public String areaProtectAdminTag = "admin"; // 管理员Tag名
@@ -439,6 +445,14 @@ public class ConfigManager {
         garbageInterval = parseInt(m.getOrDefault("垃圾站_清理间隔秒", "300"), 300);
         garbageMaxRounds = parseInt(m.getOrDefault("垃圾站_保留轮数", "1"), 1);
 
+
+        garbageHeuristic = Boolean.parseBoolean(m.getOrDefault("垃圾站_启发式拦截", "true"));
+
+        if (!garbageHeuristic) {
+            Bukkit.getLogger().warning("[Sdf1配置] 垃圾站启发式拦截已关闭：不再做倒计时段位提示与双击Q抢救拦截。");
+        }
+
+
         checkinRewardFixed = parseDouble(m.getOrDefault("签到固定金额", "0"), 0);
         checkinRewardMin = parseDouble(m.getOrDefault("签到最小金额", "0"), 0);
         checkinRewardMax = parseDouble(m.getOrDefault("签到最大金额", "0"), 0);
@@ -531,6 +545,10 @@ public class ConfigManager {
         managed.put("垃圾站_启用", String.valueOf(garbageEnabled));
         managed.put("垃圾站_清理间隔秒", String.valueOf(garbageInterval));
         managed.put("垃圾站_保留轮数", String.valueOf(garbageMaxRounds));
+
+
+        managed.put("垃圾站_启发式拦截", String.valueOf(garbageHeuristic));
+
         managed.put("签到固定金额", String.valueOf(checkinRewardFixed));
         managed.put("签到最小金额", String.valueOf(checkinRewardMin));
         managed.put("签到最大金额", String.valueOf(checkinRewardMax));
@@ -619,6 +637,10 @@ public class ConfigManager {
         L.add("垃圾站_启用=true");
         L.add("垃圾站_清理间隔秒=300");
         L.add("垃圾站_保留轮数=1");
+
+
+        L.add("垃圾站_启发式拦截=true");
+
         L.add("签到固定金额=0");
         L.add("签到最小金额=50");
         L.add("签到最大金额=500");

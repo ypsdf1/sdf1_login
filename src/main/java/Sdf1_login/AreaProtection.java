@@ -2960,6 +2960,44 @@ public class AreaProtection implements Listener {
         }
     }
 
+    /**
+     * 拉黑时撤销该玩家在所有领地的管理员身份（admin -> visitor）。
+     * 走 normName 定位（历史数据大小写可能不一致），逐行 UPDATE。
+     * @return 撤销的管理员身份数量
+     */
+    public int demoteBlacklistAdmins(String playerName) {
+        if (dbConnection == null || playerName == null || playerName.isEmpty()) return 0;
+        int count = 0;
+        String target = normName(playerName);
+        java.util.List<Integer> ids = new java.util.ArrayList<>();
+        try {
+            PreparedStatement sel = dbConnection.prepareStatement(
+                    "SELECT id, player_name FROM area_land_permissions WHERE role = 'admin'");
+            ResultSet rs = sel.executeQuery();
+            while (rs.next()) {
+                String pn = rs.getString("player_name");
+                if (pn != null && normName(pn).equals(target)) {
+                    ids.add(rs.getInt("id"));
+                }
+            }
+            rs.close();
+            sel.close();
+        } catch (SQLException e) {
+            return 0;
+        }
+        for (int id : ids) {
+            try {
+                PreparedStatement up = dbConnection.prepareStatement(
+                        "UPDATE area_land_permissions SET role = 'visitor' WHERE id = ?");
+                up.setInt(1, id);
+                count += up.executeUpdate();
+                up.close();
+            } catch (SQLException ignored) {
+            }
+        }
+        return count;
+    }
+
     /**
      * 插入一条领地权限记录（角色为 member/visitor），已存在则忽略
      * 用于 PHP 端添加成员时同步到 Java
@@ -7613,6 +7651,12 @@ public class AreaProtection implements Listener {
                 return true;
             }
             Player p = (Player) sender;
+            // ★ 第30批：拉黑玩家禁止创建新领地
+            if (plugin.getBlacklist() != null
+                    && plugin.getBlacklist().isBlacklisted(p.getName())) {
+                p.sendMessage("§c§l[罪人] §f你已被拉黑，禁止创建领地");
+                return true;
+            }
             UUID u = p.getUniqueId();
 
             // ★ 无参数 → 快速创建（3×3以自身为中心）
@@ -7723,6 +7767,12 @@ public class AreaProtection implements Listener {
             if (!(sender instanceof Player)) { sender.sendMessage("§c仅玩家可用"); return true; }
             if (args.length < 2) { sender.sendMessage("§c用法: /protect confirm_create <领地名>"); return true; }
             Player cp = (Player) sender;
+            // ★ 第30批：拉黑玩家禁止创建新领地（交互链接可被直接拼装，必须再校验一次）
+            if (plugin.getBlacklist() != null
+                    && plugin.getBlacklist().isBlacklisted(cp.getName())) {
+                cp.sendMessage("§c§l[罪人] §f你已被拉黑，禁止创建领地");
+                return true;
+            }
             String confirmName = args[1].trim();
             // ★ 领地名格式校验（交互链接可被直接拼装，必须在这里再校验一次）
             String cnErr = validateAreaName(confirmName);
@@ -9648,6 +9698,13 @@ public class AreaProtection implements Listener {
                         return true;
                     }
                 }
+                // ★ 第30批：被拉黑的玩家不能被授予领地权限
+                if (plugin.getBlacklist() != null
+                        && plugin.getBlacklist().isBlacklisted(args[1])) {
+                    sender.sendMessage("§c§l[罪人] §f玩家 §e" + args[1]
+                            + " §f已被拉黑，不能被授予领地权限");
+                    return true;
+                }
                 addPlayerToAreaWhitelist(ac.name, args[1]);
                 insertLandPermission(ac.name, args[1], "visitor");
                 sender.sendMessage("§a已添加 §e" + args[1] + " §a为 §e" + ac.name + " §a的访客");
@@ -9677,6 +9734,13 @@ public class AreaProtection implements Listener {
             if (hasPendingDelete(areaName)) {
                 cancelPendingDelete(areaName);
                 p.sendMessage("§e§l[防护] §f检测到成员变更，已自动取消领地删除");
+            }
+            // ★ 第30批：被拉黑的玩家不能被授予领地权限
+            if (plugin.getBlacklist() != null
+                    && plugin.getBlacklist().isBlacklisted(playerName)) {
+                sender.sendMessage("§c§l[罪人] §f玩家 §e" + playerName
+                        + " §f已被拉黑，不能被授予领地权限");
+                return true;
             }
             addPlayerToAreaWhitelist(areaName, playerName);
             insertLandPermission(areaName, playerName, "visitor");
@@ -13850,6 +13914,12 @@ public class AreaProtection implements Listener {
      */
     public boolean quickCreateLand(Player p) {
         if (p == null || dbConnection == null) return false;
+        // ★ 第30批：拉黑玩家禁止创建新领地
+        if (plugin.getBlacklist() != null
+                && plugin.getBlacklist().isBlacklisted(p.getName())) {
+            p.sendMessage("§c§l[罪人] §f你已被拉黑，禁止创建领地");
+            return false;
+        }
 
         // ★ 检查领地上限
         UserGroupManager ugm = plugin.getUserGroup();

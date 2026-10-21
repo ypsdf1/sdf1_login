@@ -52,7 +52,6 @@ import java.util.regex.Pattern;
  *   间隔或模式为 0 → 关闭播报。
  */
 public class BanBroadcastManager implements Listener {
-
     private final Main plugin;
     private final Random rnd = new Random();
 
@@ -736,9 +735,40 @@ public class BanBroadcastManager implements Listener {
         return 0L;
     }
 
+    /**
+     * ★ 第30批：黑名单数据源（群控黑名单 = 软折磨，与封禁公示并列）。
+     * 复用 JsonBan 结构，source 标 "黑名单"，理由取黑名单条目的理由。
+     */
+    private List<JsonBan> collectBlacklistBans() {
+        List<JsonBan> out = new ArrayList<>();
+        BlacklistManager bl = plugin.getBlacklist();
+        if (bl == null) return out;
+        try {
+            for (BlacklistManager.BlackEntry e : bl.getActiveEntries()) {
+                if (e == null || e.name == null || e.name.isEmpty()) continue;
+                out.add(new JsonBan(e.name,
+                        e.reason != null && !e.reason.isEmpty()
+                                ? e.reason : "违反服务器规则",
+                        "黑名单",
+                        e.createdMs > 0 ? e.createdMs : System.currentTimeMillis(),
+                        e.expiresMs));
+            }
+        } catch (Exception ex) {
+            warn("读取黑名单失败: " + ex.getMessage());
+        }
+        return out;
+    }
+
     /** 轮播当前页并广播给全服 */
     private void broadcastOnce() {
         List<JsonBan> bans = collectBans();
+        // ★ 第30批：并入黑名单玩家（独立数据源，不受 banned-players.json 是否存在影响）
+        int blackCount = 0;
+        try {
+            List<JsonBan> bl = collectBlacklistBans();
+            blackCount = bl.size();
+            bans.addAll(bl);
+        } catch (Exception ignored) {}
         if (bans.isEmpty()) { log("当前无生效封禁，跳过本轮"); return; }
 
         // 由近到远：最新封禁在前；由远到近：最早封禁在前
@@ -768,6 +798,7 @@ public class BanBroadcastManager implements Listener {
         }
         Bukkit.broadcastMessage("§7§o请各位玩家引以为戒，遵守服务器规则。");
         log("本轮已播报 " + page.size() + "/" + total + " 条封禁"
+                + "（含黑名单 " + blackCount + " 条）"
                 + "（本次随机间隔 " + lastDelaySec + "s，区间 "
                 + minInterval + "~" + maxInterval + "s；banned-players.json 原始 "
                 + lastFileRawCount + " 条，过滤后 " + lastFileKeptCount + " 条）");

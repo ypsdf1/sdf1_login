@@ -45,6 +45,12 @@ public class InventoryAutoBackup {
     private void backupPlayer(Player p) {
         String name = p.getName();
 
+        // ★ 第30批：黑名单玩家跳过自动备份
+        //   （拉黑时的背包快照由 BlacklistManager 单独落库，不能被自动备份覆盖）
+        if (plugin.getBlacklist() != null
+                && plugin.getBlacklist().isBlacklisted(name)) {
+            return;
+        }
         // ★ 跳过 PVP 竞技场：竞技场内不备份，避免 PVP 装备覆盖真实背包
         if (plugin.getPVPArenaManager().isInPVPArena(name)) {
             return;

@@ -70,6 +70,33 @@ public class AreaCLIManager {
         return Component.text(text).color(color);
     }
 
+    /**
+     * ★ 第30批：拉黑玩家禁止管理已有领地（降级访客后不再有任何管理权）。
+     * @return true=被拦截（调用方应直接 return）
+     */
+    private boolean denyIfBlacklisted(Player p) {
+        if (p == null) return false;
+        BlacklistManager bl = plugin.getBlacklist();
+        if (bl == null) return false;
+        if (!bl.isBlacklisted(p.getName())) return false;
+        p.sendMessage("§c§l[罪人] §f你已被拉黑，禁止管理领地");
+        return true;
+    }
+
+    /**
+     * ★ 第30批：禁止把被拉黑的玩家加进领地授权名单。
+     * @return true=目标玩家在黑名单（调用方应直接 return）
+     */
+    private boolean denyIfTargetBlacklisted(Player p, String targetPlayer) {
+        if (targetPlayer == null || targetPlayer.isEmpty()) return false;
+        BlacklistManager bl = plugin.getBlacklist();
+        if (bl == null) return false;
+        if (!bl.isBlacklisted(targetPlayer)) return false;
+        p.sendMessage("§c§l[罪人] §f玩家 §e" + targetPlayer
+                + " §f已被拉黑，不能被授予领地权限");
+        return true;
+    }
+
     public static Component header(String title) {
         return Component.text("\n§6§l═══════ " + title + " ═══════\n");
     }
@@ -316,6 +343,7 @@ public class AreaCLIManager {
     // ==================== 领地管理 ====================
 
     public void showLandManage(Player p, String landName, int permPage) {
+        if (denyIfBlacklisted(p)) return;
         savePageInfo(p, "manage", landName, 1);
 
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
@@ -532,6 +560,7 @@ public class AreaCLIManager {
     // ==================== 切换权限 ====================
 
     public void togglePerm(Player p, String landName, String permKey, int page) {
+        if (denyIfBlacklisted(p)) return;
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -1029,6 +1058,8 @@ public class AreaCLIManager {
      * ★ 切换玩家的管理员身份（仅领地主可操作）
      */
     public void toggleAdmin(Player p, String landName, String targetPlayer, int page) {
+        if (denyIfBlacklisted(p)) return;
+        if (denyIfTargetBlacklisted(p, targetPlayer)) return;
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));
@@ -1116,6 +1147,7 @@ public class AreaCLIManager {
      * 清除某成员所有per-player权限覆盖
      */
     public void clearPlayerPerm(Player p, String landName, String targetPlayer) {
+        if (denyIfBlacklisted(p)) return;
         AreaProtection.AreaConfig land = areaProtect.getLand(landName);
         if (land == null) {
             p.sendMessage(Component.text("§c领地不存在: " + landName));

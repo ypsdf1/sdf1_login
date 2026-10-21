@@ -8583,6 +8583,12 @@ public class WebManager {
             sender.sendMessage("§c[Web] Web通信未启用");
             return;
         }
+        // ★ 第30批：拉黑玩家禁止访问 PHP 后端
+        if (plugin.getBlacklist() != null
+                && plugin.getBlacklist().isBlacklisted(sender.getName())) {
+            sender.sendMessage("§c§l[罪人] §f你已被拉黑，禁止使用网页端功能");
+            return;
+        }
 
         String playerName = sender.getName();
         long now = System.currentTimeMillis();
@@ -8678,6 +8684,11 @@ public class WebManager {
      */
     public void autoGenerateWebLoginToken(Player player) {
         if (!enabled) return;
+        // ★ 第30批：拉黑玩家禁止访问 PHP 后端（不签发 token）
+        if (plugin.getBlacklist() != null
+                && plugin.getBlacklist().isBlacklisted(player.getName())) {
+            return;
+        }
 
         String playerName = player.getName();
         // 生成weblogin专用Token

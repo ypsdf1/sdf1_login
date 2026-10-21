@@ -74,6 +74,11 @@ public class CDKManager {
             if (used == 1)
                 return "fail:already_used";
 
+            // ★ 第30批：拉黑玩家禁止使用兑换码
+            if (plugin.getBlacklist() != null
+                    && plugin.getBlacklist().isBlacklisted(player))
+                return "fail:blacklisted";
+
             if (plugin.getBonds()
                     .isFrozen(player))
                 return "fail:frozen";

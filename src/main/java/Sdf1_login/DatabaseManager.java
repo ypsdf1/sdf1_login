@@ -2171,6 +2171,44 @@ public class DatabaseManager {
     }
 
 
+    /**
+     * 获取玩家最新一份自动背包备份（黑名单解除时返还用）。
+     * @return String[]{contents_b64, armor_b64, extra_b64, level, experience}，无备份返回 null
+     */
+    public String[] getLatestAutoBackup(String playerName) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT contents_b64, "
+                                    + "armor_b64, "
+                                    + "extra_b64, "
+                                    + "level, "
+                                    + "experience "
+                                    + "FROM inv_backup_auto "
+                                    + "WHERE player_name=? "
+                                    + "ORDER BY save_time DESC "
+                                    + "LIMIT 1");
+            ps.setString(1, playerName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String[] result = new String[5];
+                result[0] = rs.getString("contents_b64");
+                result[1] = rs.getString("armor_b64");
+                result[2] = rs.getString("extra_b64");
+                result[3] = String.valueOf(rs.getInt("level"));
+                result[4] = String.valueOf(rs.getDouble("experience"));
+                rs.close();
+                ps.close();
+                return result;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     /**
      * 获取玩家最新背包备份
      */

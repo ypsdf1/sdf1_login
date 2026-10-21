@@ -195,6 +195,8 @@ public class Main extends JavaPlugin
     public ChestCarryManager chestCarryManager;
     /** 26批：/json JSON消息构造器（tellraw/大标题/小标题 + 颜色 + 报错接管） */
     public JsonMessageGui jsonGui;
+    /** ★ 第30批：群控黑名单（软折磨） */
+    public BlacklistManager blacklist;
     private TeleportManager teleportMgr;
     private HomeManager homeMgr;
     private DeathReport deathReport;
@@ -353,6 +355,17 @@ public class Main extends JavaPlugin
         return garbage;
     }
 
+    /** ★ 第30批：黑名单管理器 */
+    public BlacklistManager getBlacklist() {
+        return blacklist;
+    }
+
+    /** ★ 第30批：判断玩家是否被拉黑（未初始化时返回 false） */
+    public boolean isBlacklisted(Player p) {
+        if (blacklist == null || p == null) return false;
+        return blacklist.isBlacklisted(p.getName());
+    }
+
     public Set<String> getLoggedIn() {
         return loggedIn;
     }
@@ -490,8 +503,12 @@ public class Main extends JavaPlugin
         // ===== 6. 垃圾箱 =====
         garbage = new GarbageManager(this);
         garbage.init();
+
         garbage.loadConfig();
         garbage.startAutoCleanup();
+        // ★ 第30批：垃圾站事件（顶部血条 / 双击Q抢救拦截）
+        getServer().getPluginManager()
+                .registerEvents(garbage, this);
 
         // ===== 7. Radio =====
         radio = new RadioManager(this);
@@ -740,7 +757,11 @@ public class Main extends JavaPlugin
 // 15.1.1 ====MC官方中文翻译加载（异步下载 zh_cn.json）====
         OfficialTranslations.init(this);
 
-// 15.2 ====背包滚动自动备份（每小时 0/15/30/45 分准点）====
+// ★ 第30批：群控黑名单（依赖 bondManager + areaProtection，必须在其后初始化）
+        blacklist = new BlacklistManager(this);
+        blacklist.init();
+
+        // 15.2 ====背包滚动自动备份（每小时 0/15/30/45 分准点）====
         inventoryAutoBackup = new InventoryAutoBackup(this);
         // ★ 第26批：改准点备份。原 runTaskTimer 从【启动时刻】起算 15 分钟周期，
         //   落点永远带启动偏移（如 10:07/10:22/10:37…）。改为墙钟自对齐、每轮
@@ -3833,6 +3854,12 @@ public class Main extends JavaPlugin
             e.setCancelled(true);
             return;
         }
+        // ★ 第30批：拉黑玩家禁止破坏方块
+        if (isBlacklisted(p)) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[罪人] §f你已被拉黑，禁止破坏方块");
+            return;
+        }
         afk.recordAction(p.getUniqueId());
         // [ADDED] 任务计数
         if (questTracker != null)
@@ -3845,6 +3872,12 @@ public class Main extends JavaPlugin
     public void onBlockPlace2(BlockPlaceEvent e) {
         Player p = e.getPlayer();
         if (isFrozen(p)) return;
+        // ★ 第30批：拉黑玩家禁止放置方块
+        if (isBlacklisted(p)) {
+            e.setCancelled(true);
+            p.sendMessage("§c§l[罪人] §f你已被拉黑，禁止放置方块");
+            return;
+        }
         afk.recordAction(p.getUniqueId());
         if (questTracker != null)
             questTracker.onBlockPlaced(
@@ -3973,6 +4006,12 @@ public class Main extends JavaPlugin
     public void onBlockPlace(BlockPlaceEvent e) {
         if (isFrozen(e.getPlayer())) {
             e.setCancelled(true);
+            return;
+        }
+        // ★ 第30批：拉黑玩家禁止放置方块（兜底）
+        if (isBlacklisted(e.getPlayer())) {
+            e.setCancelled(true);
+            e.getPlayer().sendMessage("§c§l[罪人] §f你已被拉黑，禁止放置方块");
             return;
         }
     }
@@ -6190,12 +6229,19 @@ public class Main extends JavaPlugin
         }
 
         // ★ 用户组聊天前缀：检查玩家所属组，在名字前加 [组名] 前缀（颜色由组配置决定）
+        String chatPrefix = "";
         if (userGroupManager != null) {
             UserGroupManager.UserGroupConfig highestGroup = userGroupManager.getHighestGroup(p.getName());
             if (highestGroup != null) {
-                String prefix = highestGroup.displayColor + "[" + highestGroup.name + "]§f";
-                e.setFormat(prefix + "%1$s: %2$s");
+                chatPrefix = highestGroup.displayColor + "[" + highestGroup.name + "]§f";
             }
+        }
+        // ★ 第30批：拉黑玩家消息末尾加「----我是罪人user」称号
+        if (isBlacklisted(p)) {
+            chatPrefix = chatPrefix + "----我是罪人" + p.getName() + "§f ";
+        }
+        if (!chatPrefix.isEmpty()) {
+            e.setFormat(chatPrefix + "%1$s: %2$s");
         }
 
         // ===== 聊天过滤 - 开关检查 =====
@@ -9194,6 +9240,70 @@ public class Main extends JavaPlugin
             return true;
         }
 
+
+        // ★ 第30批：/addblack <玩家> [时长] [理由] —— 拉黑
+        if (cmdName.equals("addblack")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length < 1) {
+                sender.sendMessage("§c用法: /addblack <玩家名> [时长] [理由]");
+                sender.sendMessage("§7时长: 空/0/终身=永久，2026-10-21 18:00=到点，2026-10-21=当天23:59:59");
+                return true;
+            }
+            if (blacklist == null) {
+                sender.sendMessage("§c黑名单模块未初始化");
+                return true;
+            }
+            String bTime = args.length >= 2 ? args[1] : "";
+            String bReason = args.length >= 3 ? String.join(" ",
+                    java.util.Arrays.copyOfRange(args, 2, args.length)) : "";
+            String err = blacklist.addBlacklist(args[0], bTime, bReason);
+            if (err == null) {
+                sender.sendMessage("§a§l[黑名单] §f已拉黑 §e" + args[0]);
+            } else {
+                sender.sendMessage("§c§l[黑名单] §f添加失败: §e" + err);
+            }
+            return true;
+        }
+
+        // ★ 第30批：/removeblack <玩家> —— 解除拉黑
+        if (cmdName.equals("removeblack")) {
+            if (!isAdmin(sender)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (args.length < 1) {
+                sender.sendMessage("§c用法: /removeblack <玩家名>");
+                return true;
+            }
+            if (blacklist == null) {
+                sender.sendMessage("§c黑名单模块未初始化");
+                return true;
+            }
+            String err = blacklist.removeBlacklist(args[0]);
+            if (err == null) {
+                sender.sendMessage("§a§l[黑名单] §f已解除 §e" + args[0] + " §f的拉黑");
+            } else {
+                sender.sendMessage("§c§l[黑名单] §f解除失败: §e" + err);
+            }
+            return true;
+        }
+
+        // ★ 第30批：/垃圾抢救 —— 紧急取消本轮垃圾站清理
+        if (cmdName.equals("垃圾抢救")) {
+            if (!isAdmin(sender) && !(sender instanceof Player)) {
+                sender.sendMessage("§c权限不足");
+                return true;
+            }
+            if (garbage == null) {
+                sender.sendMessage("§c垃圾站模块未初始化");
+                return true;
+            }
+            garbage.rescueRound(sender instanceof Player ? (Player) sender : null);
+            return true;
+        }
 
         // /垃圾清理
         if (cmdName.equals("垃圾清理")) {
