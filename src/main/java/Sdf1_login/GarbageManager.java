@@ -199,6 +199,11 @@ public class GarbageManager implements Listener {
                 cleanupInterval =
                         plugin.getConfig2()
                                 .garbageInterval;
+                // ★ 第37批：保留轮数同样纳入热更（节点重载 插件设置.txt 后
+                //   垃圾站_保留轮数 即时生效，无需重启）
+                maxRounds =
+                        plugin.getConfig2()
+                                .garbageMaxRounds;
 
                 // ★ 第34批：唯一时间源（墙钟）—— 血条 / 广播 / 抢救打印 /
                 //   丢弃拦截 全部读 remainSeconds()，误差 ±0 秒。

@@ -1045,12 +1045,15 @@ public class ConfigManager {
      */
     public boolean safeUpgradeDoc(File file, List<String> template, String label) {
         if (file == null || template == null) return false;
+        boolean jsonMerged = false; // ★ 第37批：md 内嵌 json 数据块是否已补入（返回值组合）
         try {
             if (!file.exists()) {
                 // 首装：直接落盘模板
                 writeLines(file, template);
                 return false;
             }
+            // ★ 第37批：md 内嵌 json 数据块缺键补入（先于表格逻辑执行，随后重读快照）
+            jsonMerged = mergeMdJsonBlock(file, template, label);
             // ① 原文件快照进内存（保留原始行，不 trim，用户文字逐字不动）
             List<String> orig = new ArrayList<>();
             try (BufferedReader br = new BufferedReader(new InputStreamReader(
@@ -1083,14 +1086,14 @@ public class ConfigManager {
             List<String> missingRows = new ArrayList<>();
             List<String> tplCfgBlocks = new ArrayList<>();
             Set<String> tplKeys = new LinkedHashSet<>();
-            boolean tplInCfg = false, tplInBlock = false, tplHasCfgBlock = false;
+            boolean tplInCfg = false, tplInBlock = false, tplHasCfgBlock = false, tplHasCfgZone = false;
             for (String raw : template) {
                 String t = raw.trim();
                 if (t.startsWith("##") && t.contains("配置区") && t.contains("开始")) {
                     tplInCfg = true; continue;
                 }
                 if (t.startsWith("##") && t.contains("配置区") && t.contains("结束")) {
-                    tplInCfg = false; continue;
+                    tplInCfg = false; tplHasCfgZone = true; continue;
                 }
                 if (tplInBlock) {
                     tplCfgBlocks.add(raw);
@@ -1121,9 +1124,14 @@ public class ConfigManager {
                 }
             }
             if (endIdx < 0) {
-                logger.warning("[" + label + "] ★升级取消：原文件缺少配置区结束标记，"
-                        + "结构异常，原文件未改动");
-                return false;
+                // ★ 第37批：模板本身无配置区（如 公告.md 用「公告区域」+ 纯 json 块）属
+                //   正常形态，静默放行（表格无事可做，json 块结果由返回值带回）；
+                //   模板有配置区而原文件丢了结束标记才是结构异常，照旧告警
+                if (tplHasCfgZone) {
+                    logger.warning("[" + label + "] ★升级取消：原文件缺少配置区结束标记，"
+                            + "结构异常，表格部分未改动");
+                }
+                return jsonMerged;
             }
             // ⑤ 定位主表格段（配置区开始→结束之间第一段连续 | 行）的末行；
             //    并收集「孤儿行」= 主表格段之后游离在表格外的模板配置行
@@ -1159,17 +1167,17 @@ public class ConfigManager {
             boolean hasTable = tableEndIdx >= 0;
             boolean needOrphan = !orphanIdxs.isEmpty();
             if (missingRows.isEmpty() && !needBlocks && !needOrphan) {
-                return false; // 无新增、无归位，幂等
+                return jsonMerged; // 无新增、无归位（json 块可能已补入）
             }
-            // ⑥ 备份原文件 → .bak（失败=整个操作取消，原文件不动）
+            // ⑥ 备份原文件 → .bak（失败=表格部分取消，json 块结果保留）
             File bak = new File(file.getParentFile(), file.getName() + ".bak");
             try {
                 java.nio.file.Files.copy(file.toPath(), bak.toPath(),
                         java.nio.file.StandardCopyOption.REPLACE_EXISTING);
             } catch (Exception e) {
                 logger.warning("[" + label + "] ★升级取消：备份 .bak 失败（" + e.getMessage()
-                        + "），原文件未改动");
-                return false;
+                        + "），表格部分未改动");
+                return jsonMerged;
             }
             boolean bakOk = bak.exists() && bak.length() == file.length();
             if (bakOk) {
@@ -1181,8 +1189,8 @@ public class ConfigManager {
             }
             if (!bakOk) {
                 bak.delete();
-                logger.warning("[" + label + "] ★升级取消：备份校验不通过，原文件未改动");
-                return false;
+                logger.warning("[" + label + "] ★升级取消：备份校验不通过，表格部分未改动");
+                return jsonMerged;
             }
             // ⑦ 以原文件为基底组装新文件：
             //    a) 先摘掉孤儿行（归位准备）
@@ -1232,7 +1240,7 @@ public class ConfigManager {
                     logger.severe("[" + label + "] ★升级失败且还原失败！原文件完整备份仍在: "
                             + bak.getAbsolutePath());
                 }
-                return false;
+                return jsonMerged;
             }
             logger.info("[" + label + "] 文档配置安全交换完成：补入 " + missingRows.size()
                     + " 行配置" + (needOrphan ? "，归位 " + orphans.size() + " 行到表格内" : "")
@@ -1241,6 +1249,183 @@ public class ConfigManager {
             return true;
         } catch (Exception e) {
             logger.warning("[" + label + "] 文档配置升级异常（已跳过，保持原文件）: " + e.getMessage());
+            return jsonMerged;
+        }
+    }
+
+    // ==================== ★ 第37批：md 内嵌 json 数据块缺键补入 ====================
+
+    /** md 中第一个可解析为 JsonObject 的 ```json 围栏块（供 mergeMdJsonBlock 用） */
+    private static final class MdJsonBlock {
+        int contentStart;          // 内容首行下标（fence 开闭行之间）
+        int contentEndExclusive;   // 内容结束行下标（不含，= 闭合 fence 行）
+        String json;               // 块内文本
+        String heading;            // 最近前置 ## 标题（trim），无标题 = ""
+    }
+
+    /**
+     * 找文件中第一个内容能解析成 JsonObject 的 ```json 围栏块；
+     * 解析不出的块（说明示例、坏 JSON）继续往后找；找不到返回 null。
+     * heading 取 fence 之前最近的 ## 行，用于模板/原文件块配对防错位。
+     */
+    private static MdJsonBlock findFirstJsonObjectBlock(List<String> lines) {
+        boolean inFence = false;
+        boolean jsonFence = false;
+        int bodyStart = -1;
+        String heading = "";
+        for (int i = 0; i < lines.size(); i++) {
+            String t = lines.get(i).trim();
+            if (!inFence) {
+                if (t.startsWith("##")) { heading = t; continue; }
+                if (t.startsWith("```")) {
+                    inFence = true;
+                    jsonFence = t.equals("```json") || t.startsWith("```json");
+                    bodyStart = i + 1;
+                }
+                continue;
+            }
+            if (t.startsWith("```")) {
+                if (jsonFence && bodyStart < i) {
+                    StringBuilder sb = new StringBuilder();
+                    for (int j = bodyStart; j < i; j++) {
+                        if (sb.length() > 0) sb.append('\n');
+                        sb.append(lines.get(j));
+                    }
+                    try {
+                        com.google.gson.JsonElement el =
+                                com.google.gson.JsonParser.parseString(sb.toString());
+                        if (el != null && el.isJsonObject()) {
+                            MdJsonBlock b = new MdJsonBlock();
+                            b.contentStart = bodyStart;
+                            b.contentEndExclusive = i;
+                            b.json = sb.toString();
+                            b.heading = heading;
+                            return b;
+                        }
+                    } catch (Exception ignore) {
+                        // 非 JSON 对象块（示例/坏块）→ 继续找后面的块
+                    }
+                }
+                inFence = false;
+                jsonFence = false;
+                continue;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * ★ 第37批：md 内嵌 json 数据块缺键补入（用户口径「模板内公告.md 发生变动，
+     * 有新加入的键值对，更新器没动作」—— safeUpgradeDoc 只补表格行，头部 ```json
+     * 数据块里的新增键永远不会被合并）。
+     *
+     * <p>取块口径与各 md 解析器一致：文件中第一个可解析成 JsonObject 的 ```json
+     * 围栏块即数据块（公告.md 第一块在公告区域内，示例模板等后续块属说明文档，
+     * 永不触碰）；模板块与原文件块的最近前置 ## 标题必须一致才合并，防止错位补键。
+     * 合并语义与 upgradeJsonMissing 相同：只补模板有而原文件缺失的键（顶层与嵌套
+     * 对象递归），已有值 / 自定义键 / 数组一律原样保留。原文件块解析失败（用户改坏）
+     * → 跳过不动。动手前备份 .bak 逐字节校验，写后复解析校验，失败从 .bak 还原。
+     *
+     * @return true=本次执行了写入
+     */
+    private boolean mergeMdJsonBlock(File file, List<String> template, String label) {
+        try {
+            // ① 模板与原文件各取第一个 json 数据块
+            MdJsonBlock tpl = findFirstJsonObjectBlock(template);
+            if (tpl == null) return false; // 模板无 json 数据块（纯表格 md，正常）
+            List<String> orig = readUtf8Lines(java.nio.file.Files.readAllBytes(file.toPath()));
+            MdJsonBlock have = findFirstJsonObjectBlock(orig);
+            if (have == null) {
+                logger.info("[" + label + "] 原文件没有 json 数据块，跳过块合并");
+                return false;
+            }
+            // ② 前置标题配对（防错位：模板块与原文件块必须处在同一 ## 标题下）
+            if (!java.util.Objects.equals(tpl.heading, have.heading)) {
+                logger.info("[" + label + "] json 块前置标题不一致（模板「" + tpl.heading
+                        + "」/ 原文件「" + have.heading + "」），跳过块合并，原文件未改动");
+                return false;
+            }
+            // ③ 两边解析（原文件解析失败=用户改坏，跳过不动）
+            com.google.gson.JsonElement tplEl;
+            try {
+                tplEl = com.google.gson.JsonParser.parseString(tpl.json);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] 模板 json 数据块解析失败，跳过块合并");
+                return false;
+            }
+            com.google.gson.JsonElement oldEl;
+            try {
+                oldEl = com.google.gson.JsonParser.parseString(have.json);
+            } catch (Exception e) {
+                logger.warning("[" + label + "] 原文件 json 数据块解析失败（可能被改坏），跳过块合并");
+                return false;
+            }
+            if (!tplEl.isJsonObject() || !oldEl.isJsonObject()) return false;
+            // ④ 只补缺失键（已有值 / 自定义键 / 数组一律不碰）
+            com.google.gson.JsonObject root = oldEl.getAsJsonObject();
+            List<String> added = new ArrayList<>();
+            if (!mergeJsonMissing(root, tplEl.getAsJsonObject(), "", added)) {
+                return false; // 无缺失键，幂等
+            }
+            // ⑤ 备份原文件 → .bak 并逐字节校验（失败=取消，原文件不动）
+            File bak = new File(file.getParentFile(), file.getName() + ".bak");
+            java.nio.file.Files.copy(file.toPath(), bak.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            boolean bakOk = bak.exists() && bak.length() == file.length();
+            if (bakOk) {
+                try {
+                    bakOk = Arrays.equals(java.nio.file.Files.readAllBytes(file.toPath()),
+                            java.nio.file.Files.readAllBytes(bak.toPath()));
+                } catch (Exception e) { bakOk = false; }
+            }
+            if (!bakOk) {
+                bak.delete();
+                logger.warning("[" + label + "] ★块合并取消：备份 .bak 校验不通过，原文件未改动");
+                return false;
+            }
+            // ⑥ 用合并后 pretty JSON 替换块内容行（fence 行与文件其余部分逐字不动）
+            com.google.gson.Gson g = new com.google.gson.GsonBuilder()
+                    .setPrettyPrinting().disableHtmlEscaping().create();
+            String pretty = g.toJson(root);
+            String[] pl = pretty.split("\n", -1);
+            List<String> out = new ArrayList<>(orig.subList(0, have.contentStart));
+            for (String p : pl) out.add(p);
+            out.addAll(orig.subList(have.contentEndExclusive, orig.size()));
+            // ⑦ 原子写入 + 复解析校验，失败从 .bak 还原
+            if (!writeLines(file, out)) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★块合并失败：写入出错，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★块合并失败且还原失败！完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            try {
+                List<String> chk = readUtf8Lines(java.nio.file.Files.readAllBytes(file.toPath()));
+                MdJsonBlock vb = findFirstJsonObjectBlock(chk);
+                if (vb == null) throw new IllegalStateException("写回后 json 块丢失");
+                com.google.gson.JsonParser.parseString(vb.json).getAsJsonObject();
+            } catch (Exception e) {
+                try {
+                    java.nio.file.Files.copy(bak.toPath(), file.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    logger.warning("[" + label + "] ★块合并失败：写后校验不过，已从 "
+                            + bak.getName() + " 还原原文件");
+                } catch (Exception e2) {
+                    logger.severe("[" + label + "] ★块合并失败且还原失败！完整备份仍在: "
+                            + bak.getAbsolutePath());
+                }
+                return false;
+            }
+            logger.info("[" + label + "] json 数据块安全交换完成：补入 " + added.size()
+                    + " 个缺失键 " + added + "，已有配置值与其它内容原样保留；备份: " + bak.getName());
+            return true;
+        } catch (Exception e) {
+            logger.warning("[" + label + "] json 数据块升级异常（已跳过，保持原文件）: " + e.getMessage());
             return false;
         }
     }
