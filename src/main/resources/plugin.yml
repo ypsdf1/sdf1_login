@@ -78,6 +78,9 @@ commands:
   recycle:
     description: 打开垃圾回收站
     usage: /recycle
+  公告板:
+    description: 刷新/查看服务器公告计分板
+    usage: /公告板
   垃圾清理:
     description: 手动清理掉落物
     usage: /垃圾清理

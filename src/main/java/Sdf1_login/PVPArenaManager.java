@@ -512,8 +512,13 @@ public class PVPArenaManager implements Listener {
         if (p == null) return;
         String name = p.getName();
         // 仅将离场玩家个人记分板切回主世界（其战绩行仍保留在PVP记分板供其余玩家查看）
+        // ★ 第35批：优先归还公告板，避免玩家看到空白侧边栏
         if (p.isOnline()) {
-            p.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());
+            if (plugin.getAnnouncementBoard() != null) {
+                plugin.getAnnouncementBoard().applyTo(p, true);
+            } else {
+                p.setScoreboard(Bukkit.getScoreboardManager().getMainScoreboard());
+            }
         }
         // 世界未被销毁 → 保留所有参与者战绩，仅刷新榜面（含已离开玩家）
         if (pvpScoreboard != null) {

@@ -417,6 +417,16 @@ public class PVPManager implements Listener {
         return regions.keySet();
     }
 
+    /**
+     * ★ 第35批：玩家当前是否在某个 PVP 区域内。
+     * 公告计分板据此避让 —— PVP 区域/竞技场内的侧边栏归 PVP 模块管，
+     * 玩家离开 PVP 区域后由公告板接管回去。
+     */
+    public boolean isInPVPRegion(String playerName) {
+        if (playerName == null) return false;
+        return inRegion.get(playerName) != null;
+    }
+
     // ===== 加载 =====
 
     private void loadRegions() {
@@ -1017,6 +1027,14 @@ public class PVPManager implements Listener {
 
     private void removeScoreboard(
             Player p) {
+        // ★ 第35批：PVP 区域结束后把侧边栏还给公告板
+        //   （原实现塞一个空计分板，玩家看到空白侧边栏）
+        //   force=true：此时 inRegion 已移除，强制归还公告板
+        if (plugin.getAnnouncementBoard() != null) {
+            plugin.getAnnouncementBoard()
+                    .applyTo(p, true);
+            return;
+        }
         ScoreboardManager mgr =
                 Bukkit.getScoreboardManager();
         p.setScoreboard(

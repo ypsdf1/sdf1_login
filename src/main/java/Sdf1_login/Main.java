@@ -225,6 +225,11 @@ public class Main extends JavaPlugin
 
     //pvp
     private PVPManager pvpManager;
+
+    /**
+     * ★ 第35批：公告计分板（侧边栏），数据源 公告/公告.md。
+     */
+    private AnnouncementBoard announcementBoard;
     //pvp竞技场（独立世界模式）
     private PVPArenaManager pvPArenaManager;
     //pvp练习测试场（独立世界 pvp_test）
@@ -509,6 +514,13 @@ public class Main extends JavaPlugin
         // ★ 第30批：垃圾站事件（顶部血条 / 双击Q抢救拦截）
         getServer().getPluginManager()
                 .registerEvents(garbage, this);
+
+        // ===== 6.5 公告计分板（第35批）=====
+        announcementBoard = new AnnouncementBoard(this);
+        announcementBoard.init();
+        // 监听切世界（部分插件/世界会重置玩家计分板 -> 需重刷公告板）
+        getServer().getPluginManager()
+                .registerEvents(announcementBoard, this);
 
         // ===== 7. Radio =====
         radio = new RadioManager(this);
@@ -2971,6 +2983,19 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         String ip = getPlayerIP(p);
+
+        // ===== 公告计分板（第35批）=====
+        // 延后 1 秒：避免与登录/权限流程抢计分板
+        // （applyTo 内部自带 PVP 区域/竞技场避让，这里不再重复判定）
+        if (announcementBoard != null) {
+            final Player ap = p;
+            getServer().getScheduler()
+                    .runTaskLater(this, () -> {
+                        if (ap.isOnline()) {
+                            announcementBoard.applyTo(ap);
+                        }
+                    }, 20L);
+        }
 
         // ===== 风控封禁检查：密码错误阈值封禁期间拒绝加入 =====
         if (riskControl != null && riskControl.isBanned(name)) {
@@ -6662,6 +6687,13 @@ public class Main extends JavaPlugin
         return pvpManager;
     }
     
+    /**
+     * ★ 第35批：公告计分板（可能被置 null）。
+     */
+    public AnnouncementBoard getAnnouncementBoard() {
+        return announcementBoard;
+    }
+
     public PVPArenaManager getPVPArenaManager() {
         return pvPArenaManager;
     }
@@ -6669,7 +6701,6 @@ public class Main extends JavaPlugin
     public PVPTestManager getPVPTestManager() {
         return pvpTestManager;
     }
-
     /** 统一离开 PVP 场景：测试场优先，否则竞技场 */
     public void leavePVP(Player p) {
         if (pvpTestManager != null && pvpTestManager.isInTest(p)) {
@@ -9268,6 +9299,35 @@ public class Main extends JavaPlugin
                 return true;
             }
             garbage.openRecycle(pr);
+            return true;
+        }
+
+        // ===== /公告板（第35批）：刷新/查看公告计分板 =====
+        if (cmdName.equals("公告板")) {
+            if (announcementBoard == null) {
+                sender.sendMessage("§c公告板模块未初始化");
+                return true;
+            }
+            if (sender instanceof Player) {
+                Player ap = (Player) sender;
+                if (isAdmin(sender)) {
+                    // OP/管理员 → 重载公告文件并刷新全员
+                    announcementBoard.reloadAndApply();
+                    sender.sendMessage("§a[公告板] §f已重载并刷新，共 §e"
+                            + announcementBoard.getNoticeCount()
+                            + " §f条公告");
+                } else {
+                    announcementBoard.applyTo(ap);
+                    sender.sendMessage("§a[公告板] §f已刷新，共 §e"
+                            + announcementBoard.getNoticeCount()
+                            + " §f条公告");
+                }
+            } else {
+                announcementBoard.reload();
+                sender.sendMessage("§a[公告板] §f已重载，共 §e"
+                        + announcementBoard.getNoticeCount()
+                        + " §f条公告");
+            }
             return true;
         }
 

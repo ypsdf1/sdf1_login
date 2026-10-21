@@ -505,12 +505,14 @@ public class GarbageManager implements Listener {
                                                 + deleted + " §f个过期物品");
                                     }
                                 } else {
-                                    // ★ 第34批：非倒垃圾轮次明确告知，避免
-                                    //   「每轮都在清理」的误解
-                                    broadcast("§7[垃圾站] §f本轮跳过永久清理"
-                                            + "（保留 §e" + n
-                                            + " §f轮，每 §e" + n
-                                            + " §f轮才永久倒一次垃圾）");
+                                    // ★ 第35批：明确告知当前轮次 / 下一轮倒垃圾的轮次 /
+                                    //   还剩几轮才倾倒垃圾（用户要求）
+                                    final int nextPurge = k + (n - k % n);
+                                    broadcast("§7[垃圾站] §f当前是第 §e" + k
+                                            + " §f轮，第 §e" + nextPurge
+                                            + " §f轮倒垃圾，还剩 §e"
+                                            + (nextPurge - k)
+                                            + " §f轮倾倒垃圾");
                                 }
                                 // 递增轮次
                                 currentRound++;
