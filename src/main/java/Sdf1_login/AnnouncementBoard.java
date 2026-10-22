@@ -269,6 +269,9 @@ public class AnnouncementBoard implements Listener {
         String zone = text.substring(zStart + ZONE_START.length(), zEnd);
 
         String json = extractJsonBlock(zone);
+        // ★ 第38批：剥掉尾逗号（实测 Gson 连 lenient 都不认尾逗号，用户手抖多打
+        //   一个逗号就会让整块 json 解析失败、公告板一条都加载不出来）
+        if (json != null) json = ConfigManager.stripTrailingCommas(json);
         if (json == null || json.trim().isEmpty()) {
             plugin.getLogger().warning("[公告板] 公告区域内没有 json 代码块");
             return out;

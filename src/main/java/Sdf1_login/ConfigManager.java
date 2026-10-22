@@ -1264,6 +1264,41 @@ public class ConfigManager {
     }
 
     /**
+     * ★ 第38批：剥掉 json 文本里的「尾逗号」（对象/数组末尾多余的逗号）。
+     *
+     * <p>实测 Gson 2.13：{@code JsonReader.setLenient(true)} 与
+     * {@code JsonParser.parseString} <b>都不接受</b>尾逗号（报
+     * {@code Expected name at line N column M path $.x}）。用户手抖多打一个逗号
+     * 就让整块 json 解析失败 → 公告板一条都加载不出来。这里做容错清洗：
+     * 只删「逗号后面（忽略空白）紧跟 } 或 ]」的逗号，字符串内的逗号不受影响。
+     */
+    public static String stripTrailingCommas(String s) {
+        if (s == null || s.isEmpty()) return s;
+        StringBuilder sb = new StringBuilder(s.length());
+        boolean inStr = false, esc = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inStr) {
+                sb.append(c);
+                if (esc) { esc = false; continue; }
+                if (c == '\\') { esc = true; continue; }
+                if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') { inStr = true; sb.append(c); continue; }
+            if (c == ',') {
+                int j = i + 1;
+                while (j < s.length() && Character.isWhitespace(s.charAt(j))) j++;
+                if (j < s.length() && (s.charAt(j) == '}' || s.charAt(j) == ']')) {
+                    continue; // 尾逗号 → 丢弃
+                }
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /**
      * 找文件中第一个内容能解析成 JsonObject 的 ```json 围栏块；
      * 解析不出的块（说明示例、坏 JSON）继续往后找；找不到返回 null。
      * heading 取 fence 之前最近的 ## 行，用于模板/原文件块配对防错位。
@@ -1292,8 +1327,14 @@ public class ConfigManager {
                         sb.append(lines.get(j));
                     }
                     try {
+                        // ★ 第38批：剥掉尾逗号再判定 —— 实测 Gson 2.13 连 lenient 都不接受
+                        //   尾逗号（Expected name at line N）。若不剥，用户手抖多打的
+                        //   逗号会让**数据块**解析失败 → 本函数跳过它继续往后找 →
+                        //   选中「示例模板」块 → 更新器把新键插进了示例块（用户第39批
+                        //   截图实证）。剥掉后数据块永远能被正确选中。
                         com.google.gson.JsonElement el =
-                                com.google.gson.JsonParser.parseString(sb.toString());
+                                com.google.gson.JsonParser.parseString(
+                                        stripTrailingCommas(sb.toString()));
                         if (el != null && el.isJsonObject()) {
                             MdJsonBlock b = new MdJsonBlock();
                             b.contentStart = bodyStart;
@@ -1348,23 +1389,56 @@ public class ConfigManager {
             // ③ 两边解析（原文件解析失败=用户改坏，跳过不动）
             com.google.gson.JsonElement tplEl;
             try {
-                tplEl = com.google.gson.JsonParser.parseString(tpl.json);
+                // ★ 第38批：剥尾逗号后解析（用户手抖多打的逗号不再致命）
+                tplEl = com.google.gson.JsonParser.parseString(stripTrailingCommas(tpl.json));
             } catch (Exception e) {
                 logger.warning("[" + label + "] 模板 json 数据块解析失败，跳过块合并");
                 return false;
             }
             com.google.gson.JsonElement oldEl;
             try {
-                oldEl = com.google.gson.JsonParser.parseString(have.json);
+                oldEl = com.google.gson.JsonParser.parseString(stripTrailingCommas(have.json));
             } catch (Exception e) {
                 logger.warning("[" + label + "] 原文件 json 数据块解析失败（可能被改坏），跳过块合并");
                 return false;
             }
             if (!tplEl.isJsonObject() || !oldEl.isJsonObject()) return false;
             // ④ 只补缺失键（已有值 / 自定义键 / 数组一律不碰）
-            com.google.gson.JsonObject root = oldEl.getAsJsonObject();
+            // ★ 第38批：新补入的键必须落在**顶层最前**（用户口径「模板里 开关状态/
+            //   翻页时间 都在最顶层，代码插到了最底层」）——Gson 的 JsonObject.add()
+            //   是追加语义，直接补会追加到对象末尾。这里按「模板键顺序」重建顶层：
+            //   模板有的键取用户原值（嵌套对象递归补缺键）/ 缺失键取模板默认值，
+            //   模板没有而原文件有的用户自定义键追加保留（用户内容不丢）。
+            com.google.gson.JsonObject oldRoot = oldEl.getAsJsonObject();
+            com.google.gson.JsonObject tplRoot = tplEl.getAsJsonObject();
+            com.google.gson.JsonObject root = new com.google.gson.JsonObject();
             List<String> added = new ArrayList<>();
-            if (!mergeJsonMissing(root, tplEl.getAsJsonObject(), "", added)) {
+            boolean changed = false;
+            for (Map.Entry<String, com.google.gson.JsonElement> en : tplRoot.entrySet()) {
+                String k = en.getKey();
+                if (k.startsWith("#")) continue; // 模板示例说明键，不算配置
+                // ★ 变量名避开 have（外层已有 MdJsonBlock have，同方法内不可重名）
+                com.google.gson.JsonElement curVal = oldRoot.get(k);
+                if (curVal == null || curVal.isJsonNull()) {
+                    root.add(k, en.getValue().deepCopy());
+                    added.add(k);
+                    changed = true;
+                } else {
+                    // 已有键 → 保留用户原值；对象则递归补其内部缺失键
+                    if (curVal.isJsonObject() && en.getValue().isJsonObject()) {
+                        changed |= mergeJsonMissing(curVal.getAsJsonObject(),
+                                en.getValue().getAsJsonObject(), k + ".", added);
+                    }
+                    root.add(k, curVal.deepCopy());
+                }
+            }
+            // 模板没有、原文件有的键（用户自定义）→ 追加保留
+            for (Map.Entry<String, com.google.gson.JsonElement> en : oldRoot.entrySet()) {
+                if (!root.has(en.getKey())) {
+                    root.add(en.getKey(), en.getValue().deepCopy());
+                }
+            }
+            if (!changed || added.isEmpty()) {
                 return false; // 无缺失键，幂等
             }
             // ⑤ 备份原文件 → .bak 并逐字节校验（失败=取消，原文件不动）
@@ -1408,7 +1482,8 @@ public class ConfigManager {
                 List<String> chk = readUtf8Lines(java.nio.file.Files.readAllBytes(file.toPath()));
                 MdJsonBlock vb = findFirstJsonObjectBlock(chk);
                 if (vb == null) throw new IllegalStateException("写回后 json 块丢失");
-                com.google.gson.JsonParser.parseString(vb.json).getAsJsonObject();
+                com.google.gson.JsonParser.parseString(
+                        stripTrailingCommas(vb.json)).getAsJsonObject();
             } catch (Exception e) {
                 try {
                     java.nio.file.Files.copy(bak.toPath(), file.toPath(),
