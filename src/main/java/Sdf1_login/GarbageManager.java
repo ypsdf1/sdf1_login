@@ -523,27 +523,12 @@ public class GarbageManager implements Listener {
                                     : 0;
                     Bukkit.getScheduler().runTask(
                             plugin, () -> {
-                                if (purgeThisRound) {
-                                    if (deleted > 0) {
-                                        broadcast("§7[垃圾站] §f永久清理了 §e"
-                                                + deleted + " §f个过期物品");
-                                    }
-                                } else {
-                                    // ★ 第36批：轮次口径改「周期内轮次」（用户明令）——
-                                    //   currentRound 是永久累加值（跑久了就是2000+），
-                                    //   对用户没意义；用户要的是 1..N 循环轮次：
-                                    //   r = ((k-1) % n) + 1，倒垃圾永远在本周期第 n 轮。
-                                    //   N=2 → k=1 报「第1轮，第2轮倒垃圾，还剩1轮」、
-                                    //           k=3 回到「第1轮」；
-                                    //   N=3 → k=1 还剩2轮 / k=2 还剩1轮 / k=3 走 purge 分支。
-                                    final int roundInCycle =
-                                            ((k - 1) % n) + 1;
-                                    broadcast("§7[垃圾站] §f当前是第 §e"
-                                            + roundInCycle
-                                            + " §f轮，第 §e" + n
-                                            + " §f轮倒垃圾，还剩 §e"
-                                            + (n - roundInCycle)
-                                            + " §f轮倾倒垃圾");
+                                // ★ 第39批：倒垃圾轮的「永久清理」播报保留，
+                                //   轮次提示改为**恒发**（原来只写在 else 分支
+                                //   → 倒垃圾轮整轮静默，用户看不到任何轮次信息）。
+                                if (purgeThisRound && deleted > 0) {
+                                    broadcast("§7[垃圾站] §f永久清理了 §e"
+                                            + deleted + " §f个过期物品");
                                 }
                                 // 递增轮次
                                 currentRound++;
@@ -567,6 +552,26 @@ public class GarbageManager implements Listener {
                                 broadcast("§a§l[垃圾站] §f清理完成，"
                                         + "共清理 §e" + count
                                         + " §f个掉落物，存入回收站");
+
+                                // ★ 第39批：轮次提示**恒发**，且口径改「刚开启的新一轮」。
+                                //   原实现算的是*刚跑完*的轮次 k（r=((k-1)%n)+1），
+                                //   而玩家屏幕上正在倒计时的其实是**刚开启的新一轮 k+1**
+                                //   → 播报与实际轮次差一轮（用户截图那轮：k=25402 跑完，
+                                //   开启 25403 = 周期内第1轮 → 应播「当前是第1轮，
+                                //   第2轮倒垃圾，还剩1轮倾倒垃圾」）。
+                                //   周期内轮次 r = ((nextRound-1) % n) + 1 ∈ [1, n]；
+                                //   r == n 即「本轮结束时倾倒垃圾」（下一轮才真正倒）。
+                                final int nextRound = roundNow + 1;   // 清理后开启的新一轮
+                                final int r = ((nextRound - 1) % n) + 1;
+                                if (r < n) {
+                                    broadcast("§7[垃圾站] §f当前是第 §e" + r
+                                            + " §f轮，第 §e" + n
+                                            + " §f轮倒垃圾，还剩 §e" + (n - r)
+                                            + " §f轮倾倒垃圾");
+                                } else {
+                                    broadcast("§7[垃圾站] §f当前是第 §e" + n
+                                            + " §f轮，本轮结束时倾倒垃圾");
+                                }
 
                                 // 打印下次清理时间
                                 long nextMs = System.currentTimeMillis()
