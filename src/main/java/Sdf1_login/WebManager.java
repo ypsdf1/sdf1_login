@@ -3990,6 +3990,8 @@ public class WebManager {
      * 解码JSON中的 Unicode转义序列
      */
     private static String decodeUnicodeEscapes(String str) {
+        // 这里的 "\\u" 是「反斜杠 + u」两个字符（PHP 端 JSON 的转义标记），
+        // 不是 Java 的 Unicode 转义——探测原始字符串里是否带转义标记。
         if (str == null || !str.contains("\\u")) return str;
         try {
             StringBuilder sb = new StringBuilder(str.length());
@@ -6000,9 +6002,10 @@ public class WebManager {
         }
     }
 
-    /** 解码JSON中的 Unicode 转义（\\uXXXX 形式，如 \\u00a7 → §） */
+    /** 解码JSON中的 Unicode 转义（U+XXXX 形式，如 U+00A7 即 §） */
     private String decodeJsonUnicode(String s) {
         if (s == null || s.isEmpty()) return s;
+        // 同上：这里探测的是 JSON 里的反斜杠+u 转义标记，不是 Java Unicode 转义。
         if (!s.contains("\\u")) return s;
         StringBuilder sb = new StringBuilder(s.length());
         for (int i = 0; i < s.length(); i++) {

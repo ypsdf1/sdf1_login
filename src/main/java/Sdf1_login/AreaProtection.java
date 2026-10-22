@@ -1301,8 +1301,8 @@ public class AreaProtection implements Listener {
         List<String> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
         String trimmed = s.trim();
-        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"] 或 ["\\u8bd5\\u70bc..."]
-        //   （PHP 端 JSON 存储时中文会被转义成 \\uXXXX 形式，此处展示的是 PHP 侧原样）
+        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"]
+        //   （PHP 端 JSON 存储时中文会被转义成 U+XXXX 形式，例如 "试" 对应 U+8BD5，此处展示的是 PHP 侧原样）
         if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
             try {
                 String inner = trimmed.substring(1, trimmed.length() - 1);

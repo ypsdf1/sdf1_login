@@ -181,7 +181,7 @@ public class DurationParser {
 
     /** 中文日期+时间：2026年10月8日 14:43（“日”已界定日期边界，时间可紧贴） */
     private static final Pattern DT_CN = Pattern.compile(
-            "(\\d{4})年(\\d{1,2})月(\\d{1,2})日(?:[ T\\u3000]+)?"
+            "(\\d{4})年(\\d{1,2})月(\\d{1,2})日(?:[ T" + UnicodeChars.IDEOGRAPHIC_SPACE_TEXT + "]+)?"
             + "(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d|[A-Za-z])");
 
     /** 分隔日期+时间：26-10-08 14:43 / 2026-10-08 14:43 / 2026.10.08T14:43:00
@@ -189,7 +189,7 @@ public class DurationParser {
      *  防止 2026-1-8 14:43 被粘连误读成「日=81、时=4」 */
     private static final Pattern DT_SEP = Pattern.compile(
             "(?<!\\d)(\\d{4}|\\d{2})[-/.](\\d{1,2})[-/.](\\d{1,2})"
-            + "[ T\\u3000]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d|[A-Za-z])");
+            + "[ T" + UnicodeChars.IDEOGRAPHIC_SPACE_TEXT + "]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?!\\d|[A-Za-z])");
 
     /** 两位年份无时间：26-10-08
      *  lookbehind 防止吃掉 4 位年份的后半段（2026-07-09 不能被读成 07-09） */

@@ -689,7 +689,9 @@ public class ChatFilterManager {
     /** 点周带空白的变形域名：baidu . com（2026-10-08 加强拦截） */
     private static final Pattern SPACED_DOT_URL =
             Pattern.compile(
-                    "(?i)(?:[\\p{L}0-9](?:[\\p{L}0-9\\-]*[\\p{L}0-9])?[\\s\\u3000]*\\.)+[\\s\\u3000]*[\\p{L}]{2,}");
+                    "(?i)(?:[\\p{L}0-9](?:[\\p{L}0-9\\-]*[\\p{L}0-9])?[\\s"
+                            + UnicodeChars.IDEOGRAPHIC_SPACE_TEXT + "]*\\.)+[\\s"
+                            + UnicodeChars.IDEOGRAPHIC_SPACE_TEXT + "]*[\\p{L}]{2,}");
     private static final Pattern COLOR_CODES =
             Pattern.compile(
                     "§[0-9a-fk-orA-FK-OR]");

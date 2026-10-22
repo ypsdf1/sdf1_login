@@ -69,7 +69,8 @@ public class MaintenanceManager implements Listener {
             "&c&l[服务器维护] &7服务器正在维护中，请稍后再试&7（结束时间: &e{结束时间}&7）";
 
     private static final Pattern NUM_PAT = Pattern.compile("\\d+");
-    private static final Pattern DUR_PAT = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*([a-zA-Z\\u4e00-\\u9fa5]*)");
+    /** 时长单位正则：单位部分匹配「字母 + 汉字区（一～龥）」，例：10秒 / 5分 / 2小时 */
+    private static final Pattern DUR_PAT = Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*([a-zA-Z一-龥]*)");
     private static final Pattern AMP_COLOR_PAT = Pattern.compile("&([0-9a-fk-orA-FK-OR])");
 
     private final Main plugin;
@@ -701,8 +702,7 @@ public class MaintenanceManager implements Listener {
         String body = s.replaceAll("^[=\\-_:：·*#\\s]+|[=\\-_:：·*#\\s]+$", "");
         if (body.indexOf('=') >= 0) return false;
         // 剥离各类括号与装饰符号（含全角【】〔〕「」『』（）），只留标题正文
-        String stripped = s.replaceAll("[\\[\\]\\u3010\\u3011\\u3014\\u3015\\u300c\\u300d\\u300e\\u300f"
-                + "\\uff08\\uff09()\\-=_:：·*#\\s]+", "");
+        String stripped = s.replaceAll("[\\[\\]【】〔〕「」『』（）()\\-=_:：·*#\\s]+", "");
         String low = stripped.toLowerCase(Locale.ROOT);
         // 精确匹配常见写法；再兜底 endsWith 兼容「玩家白名单」「ALLOWLIST」这类变体标题
         //（有了上面的 = 门槛，endsWith 已经不会再吞掉控制段键值对）
@@ -781,7 +781,7 @@ public class MaintenanceManager implements Listener {
             s = s.substring(0, c).trim();
         }
         // 列表装饰前缀：- > * · •（合法 MC 名不会以这些字符开头）
-        String noDecor = s.replaceFirst("^[-*>\\u00b7\\u2022]\\s+", "");
+        String noDecor = s.replaceFirst("^[-*>·•]\\s+", "");
         if (!noDecor.equals(s)) {
             warn(log, "白名单条目前缀符号已忽略: [" + s + "] -> [" + noDecor + "]");
             s = noDecor;
@@ -801,7 +801,7 @@ public class MaintenanceManager implements Listener {
     /** 去掉肉眼看不见却会让匹配失败的字符：零宽/BOM/不间断空格/全角空格 */
     private static String stripInvisible(String s) {
         if (s == null) return null;
-        return s.replaceAll("[\\u200B-\\u200D\\u2060\\uFEFF\\u00A0\\u3000]", "");
+        return s.replaceAll(UnicodeChars.INVISIBLE_STRIP_CLASS, "");
     }
 
     /** 行内注释起点（# / ＃ / //），返回 -1 表示没有 */
