@@ -84,6 +84,13 @@ public class TwoFactorManager {
 
     /** /2fa 命令分发，恒返回 true */
     public boolean handleCommand(Player p, String[] args) {
+        // 第47批：先异步同步网页端绑定状态再分发（网页已绑定 → 游戏内立即显示/生效，
+        // add 也不会对着网页绑定重复申请）；网络失败静默按本地状态走
+        syncWithWebThen(p, pl -> dispatchSub(pl, args));
+        return true;
+    }
+
+    private void dispatchSub(Player p, String[] args) {
         String sub = args.length >= 1 ? args[0].toLowerCase() : "";
         switch (sub) {
             case "add":
@@ -113,7 +120,6 @@ public class TwoFactorManager {
                 sendHelp(p);
                 break;
         }
-        return true;
     }
 
     public void sendHelp(Player p) {
@@ -271,6 +277,10 @@ public class TwoFactorManager {
         plugin.getDb().setField(name, "twofa_enabled", 1);
         plugin.getDb().setField(name, "twofa_pending_secret", "");
         plugin.getDb().setField(name, "twofa_pending_at", 0L);
+        markBoundNow(name);
+        // 第47批：绑定结果同步到网页端（网页安全卡随之显示已绑定）
+        pushStateAsync(name, true, pending,
+                System.currentTimeMillis() / 1000L);
 
         p.sendMessage("§a§l[2FA] §a二次验证绑定成功！");
         p.sendMessage("§7  此后敏感操作需提供认证器动态码");
@@ -370,6 +380,9 @@ public class TwoFactorManager {
             plugin.getDb().setField(name, "twofa_secret", "");
             plugin.getDb().setField(name, "twofa_enabled", 0);
             plugin.getDb().setField(name, "twofa_recovery_codes", "");
+            plugin.getDb().setField(name, "twofa_bound_at", 0L);
+            // 第47批：解绑结果同步到网页端
+            pushStateAsync(name, false, "", System.currentTimeMillis() / 1000L);
             plugin.getLogger().info("[2FA] 玩家 " + name
                     + " 使用恢复代码通过验证，已自动解绑二次验证");
             sendUnbindAlarm(name, "恢复代码解绑", "玩家本人（恢复代码）",
@@ -653,6 +666,9 @@ public class TwoFactorManager {
                 plugin.getDb().setField(name, "twofa_enabled", 0);
                 // 解绑要彻底：恢复代码一并作废，避免残留可再次触发解绑/验证
                 plugin.getDb().setField(name, "twofa_recovery_codes", "");
+                plugin.getDb().setField(name, "twofa_bound_at", 0L);
+                // 第47批：解绑结果同步到网页端
+                pushStateAsync(name, false, "", System.currentTimeMillis() / 1000L);
                 Player pl = Bukkit.getPlayer(uuid);
                 String srcIp = "";
                 if (pl != null && pl.isOnline()) {
@@ -810,6 +826,9 @@ public class TwoFactorManager {
             plugin.getDb().setField(target, "twofa_recovery_codes", "");
             plugin.getDb().setField(target, "twofa_pending_secret", "");
             plugin.getDb().setField(target, "twofa_pending_at", 0L);
+            plugin.getDb().setField(target, "twofa_bound_at", 0L);
+            // 第47批：解绑结果同步到网页端
+            pushStateAsync(target, false, "", System.currentTimeMillis() / 1000L);
 
             out.sendMessage("§a[2FA] 强制解绑成功：玩家 " + target);
             out.sendMessage("§7  已清空 twofa_secret / twofa_enabled / "
@@ -894,6 +913,153 @@ public class TwoFactorManager {
                     : "发送失败") + "（玩家=" + playerName + " 方式=" + mode + "）");
         });
         return true;
+    }
+
+    // ==================== 网页端绑定状态双向同步（第47批） ====================
+
+    /**
+     * 异步拉取网页端 2FA 状态并合并到本地，回主线程后执行后续动作。
+     * 网络失败/未启用：静默按本地状态直接继续，绝不阻塞命令。
+     */
+    private void syncWithWebThen(Player p, java.util.function.Consumer<Player> next) {
+        if (plugin.webManager == null) {
+            next.accept(p);
+            return;
+        }
+        final UUID uuid = p.getUniqueId();
+        final String name = p.getName();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            WebManager.TwoFaWebState web = null;
+            try {
+                web = plugin.webManager.pullTwoFactorState(name);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[2FA] 网页状态拉取异常: " + e.getMessage());
+            }
+            final WebManager.TwoFaWebState st = web;
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                Player pl = Bukkit.getPlayer(uuid);
+                if (pl == null || !pl.isOnline()) return;
+                try {
+                    applyWebState(pl, st);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[2FA] 网页状态合并异常: " + e.getMessage());
+                }
+                next.accept(pl);
+            });
+        });
+    }
+
+    /**
+     * 合并网页端状态到本地（主线程）。
+     * 规则：网页绑定而本地未绑定 → 导入；两端都绑定但密钥不同 → bound_at 新者胜；
+     * 网页已解绑且比本地绑定更新 → 本地解绑；本地新 → 反向推送覆盖网页。
+     * 恢复代码不做跨端同步（网页 16 位明文 vs 游戏 6 位 SHA-256，格式不兼容，各自维护）。
+     */
+    private void applyWebState(Player p, WebManager.TwoFaWebState web) {
+        if (web == null) return;   // 拉取失败：保持本地状态
+        String name = p.getName();
+        boolean localBound = isEnabled(name);
+        String localSecret = str(plugin.getDb().getField(name, "twofa_secret"));
+        long localBoundAt = longOf(plugin.getDb().getField(name, "twofa_bound_at"));
+
+        if (web.bound && !web.secret.isEmpty()) {
+            if (!localBound) {
+                // 网页已绑定、本地未绑定 → 导入（修复截图场景）
+                plugin.getDb().setField(name, "twofa_secret", web.secret);
+                plugin.getDb().setField(name, "twofa_enabled", 1);
+                plugin.getDb().setField(name, "twofa_bound_at", web.boundAt);
+                plugin.getDb().setField(name, "twofa_pending_secret", "");
+                plugin.getDb().setField(name, "twofa_pending_at", 0L);
+                p.sendMessage("§a§l[2FA] §a已同步网页端的二次验证绑定");
+                p.sendMessage("§7  此后敏感操作需提供认证器动态码；网页端恢复代码在游戏内不可用");
+                plugin.getLogger().info("[2FA] 已导入网页端绑定: " + name
+                        + " (bound_at=" + web.boundAt + ")");
+            } else if (!localSecret.equals(web.secret)) {
+                if (web.boundAt > localBoundAt) {
+                    // 网页端换绑更新 → 覆盖本地
+                    plugin.getDb().setField(name, "twofa_secret", web.secret);
+                    plugin.getDb().setField(name, "twofa_bound_at", web.boundAt);
+                    p.sendMessage("§e§l[2FA] §e检测到网页端更新的绑定，已切换为新密钥");
+                    plugin.getLogger().info("[2FA] 密钥冲突取网页端(更新): " + name);
+                } else {
+                    // 本地更新 → 反向推送覆盖网页
+                    plugin.getLogger().info("[2FA] 密钥冲突取本地(更新): " + name);
+                    pushStateAsync(name, true, localSecret, localBoundAt);
+                }
+            }
+            return;
+        }
+
+        // 网页端未绑定/无记录
+        if (localBound) {
+            if (web.exists && web.updatedAt > localBoundAt) {
+                // 网页端主动解绑且更晚 → 本地跟随解绑
+                plugin.getDb().setField(name, "twofa_secret", "");
+                plugin.getDb().setField(name, "twofa_enabled", 0);
+                plugin.getDb().setField(name, "twofa_recovery_codes", "");
+                plugin.getDb().setField(name, "twofa_bound_at", 0L);
+                p.sendMessage("§e§l[2FA] §e网页端已解除二次验证，游戏内同步解绑");
+                plugin.getLogger().info("[2FA] 网页端解绑传播到本地: " + name);
+            } else if (!web.exists) {
+                // 网页端无记录（本地绑定未推送过）→ 推送本地绑定到网页
+                pushStateAsync(name, true, localSecret, localBoundAt);
+            }
+        }
+        // 两端都未绑定：无需动作（网页端 pending 待确认态不导入）
+    }
+
+    /** 异步推送本地绑定状态到网页端（解绑/绑定收口统一走这里） */
+    private void pushStateAsync(String name, boolean bound, String secret, long boundAt) {
+        if (plugin.webManager == null) return;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                plugin.webManager.pushTwoFactorState(name, bound, secret, boundAt);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[2FA] 推送绑定状态异常: " + e.getMessage());
+            }
+        });
+    }
+
+    /**
+     * 玩家进服时静默同步（第47批，Main.PlayerJoinEvent 调用）：
+     * 网页端绑定在进服即落本地，登录 IP 风控的 isEnabled() 读到的就是同步后状态。
+     * 无回调、无提示（除非真的导入了网页绑定）；网络失败静默跳过。
+     */
+    public void syncOnJoin(String playerName) {
+        if (plugin.webManager == null || playerName == null || playerName.isEmpty()) return;
+        final String name = playerName;
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            WebManager.TwoFaWebState web = null;
+            try {
+                web = plugin.webManager.pullTwoFactorState(name);
+            } catch (Exception e) {
+                plugin.getLogger().warning("[2FA] 进服同步拉取异常: " + e.getMessage());
+            }
+            final WebManager.TwoFaWebState st = web;
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    Player pl = Bukkit.getPlayerExact(name);
+                    if (pl == null || !pl.isOnline()) return;   // 已下线：跳过（无处提示，/2fa 时还会再同步）
+                    applyWebState(pl, st);
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[2FA] 进服同步合并异常: " + e.getMessage());
+                }
+            });
+        });
+    }
+
+    /** 本地绑定时刻（秒）—— 绑定完成时写入，供与网页端 bound_at 比新旧 */
+    private void markBoundNow(String name) {
+        plugin.getDb().setField(name, "twofa_bound_at", System.currentTimeMillis() / 1000L);
+    }
+
+    private static long longOf(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        try {
+            return Long.parseLong(String.valueOf(v).trim());
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     // ==================== 状态读取 ====================

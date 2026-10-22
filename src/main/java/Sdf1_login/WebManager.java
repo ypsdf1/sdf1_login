@@ -3755,6 +3755,94 @@ public class WebManager {
         }
     }
 
+    // ==================== 2FA 绑定状态双向同步（第47批） ====================
+
+    /** pull_state 返回的网页端 2FA 状态快照（Java 侧不可变结果） */
+    public static final class TwoFaWebState {
+        /** 网页端是否有 2FA 记录（含未绑定的待确认态） */
+        public final boolean exists;
+        /** 网页端是否已完成绑定 */
+        public final boolean bound;
+        /** 网页端 TOTP 密钥（仅 bound 时非空） */
+        public final String secret;
+        /** 网页端绑定时间（秒） */
+        public final long boundAt;
+        /** 网页端最后更新时间（秒） */
+        public final long updatedAt;
+
+        public TwoFaWebState(boolean exists, boolean bound, String secret,
+                             long boundAt, long updatedAt) {
+            this.exists = exists;
+            this.bound = bound;
+            this.secret = secret == null ? "" : secret;
+            this.boundAt = boundAt;
+            this.updatedAt = updatedAt;
+        }
+    }
+
+    /**
+     * 拉取网页端 2FA 绑定状态（api/twofa.php?action=pull_state）。
+     * 网络失败/未启用返回 null —— 调用方静默保持本地状态，绝不误清。
+     */
+    public TwoFaWebState pullTwoFactorState(String player) {
+        if (!isEnabled()) return null;
+        try {
+            String url = webBaseUrl
+                    + "/api/twofa.php?action=pull_state&player="
+                    + java.net.URLEncoder.encode(player, "UTF-8")
+                    + "&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String resp = doGet(url, 8);
+            if (resp == null || !resp.contains("\"success\":true")) {
+                plugin.getLogger().warning("[2FA] 拉取网页端状态失败: " + resp);
+                return null;
+            }
+            boolean exists = resp.contains("\"exists\":true");
+            boolean bound  = resp.contains("\"bound\":true");
+            String sec = extractJsonString(resp, "secret");
+            String bAt = extractJsonNumber(resp, "bound_at");
+            String uAt = extractJsonNumber(resp, "updated_at");
+            return new TwoFaWebState(exists, bound, sec,
+                    bAt == null ? 0L : Long.parseLong(bAt),
+                    uAt == null ? 0L : Long.parseLong(uAt));
+        } catch (Exception e) {
+            plugin.getLogger().warning("[2FA] 拉取网页端状态异常: "
+                    + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 推送 Java 端 2FA 绑定/解绑结果（api/twofa.php?action=push_state）。
+     * PHP 侧按 bound_at 时间戳决定是否采纳（网页端更新则拒绝，applied=false）。
+     *
+     * @param boundAt 绑定时间（秒）；解绑时传解绑动作发生时刻，供 PHP 判新旧
+     * @return PHP 是否采纳了本次推送；网络失败返回 false
+     */
+    public boolean pushTwoFactorState(String player, boolean bound,
+                                      String secret, long boundAt) {
+        if (!isEnabled()) return false;
+        try {
+            JsonObject json = new JsonObject();
+            json.addProperty("secret", secretKey);
+            json.addProperty("player", player);
+            json.addProperty("bound", bound ? "1" : "0");
+            json.addProperty("twofa_secret", secret == null ? "" : secret);
+            json.addProperty("bound_at", boundAt);
+            String resp = httpPost(
+                    "api/twofa.php?action=push_state", json.toString());
+            boolean ok = resp != null && resp.contains("\"success\":true");
+            if (!ok) {
+                plugin.getLogger().warning("[2FA] 推送绑定状态被拒/失败: " + resp);
+            }
+            return ok;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[2FA] 推送绑定状态异常: "
+                    + e.getMessage());
+            return false;
+        }
+    }
+
     /**
      * 发送POST请求（带token）
      */

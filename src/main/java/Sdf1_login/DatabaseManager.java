@@ -133,6 +133,10 @@ public class DatabaseManager {
                     "TEXT DEFAULT ''");
             safeAdd(st, "twofa_pending_at",
                     "INTEGER DEFAULT 0");
+            // ★ 第47批：绑定时间（秒）——与网页端 web_account_2fa.bound_at 对齐，
+            //   双向同步冲突时"取时间新者"用
+            safeAdd(st, "twofa_bound_at",
+                    "INTEGER DEFAULT 0");
             // ===== 2FA 恢复代码（SHA-256 逗号连接存库，明文只发邮件，一次性有效）=====
             safeAdd(st, "twofa_recovery_codes",
                     "TEXT DEFAULT ''");

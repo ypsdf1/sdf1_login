@@ -3181,6 +3181,10 @@ public class Main extends JavaPlugin
             if (!db.userExists(name)) {
                 webManager.syncUserOnJoin(name);
             }
+            // 第47批：进服静默同步网页端 2FA 绑定状态（登录风控 isEnabled 读到同步后结果）
+            if (twofa != null) {
+                twofa.syncOnJoin(name);
+            }
         }
         
         // ★ 同IP判断：只作为开启自动登录验证的钥匙，不作为自动登录依据
