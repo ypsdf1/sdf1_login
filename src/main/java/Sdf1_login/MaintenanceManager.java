@@ -790,9 +790,9 @@ public class MaintenanceManager implements Listener {
         if (s.isEmpty()) return;
         if (note != null) warn(log, note + ": " + raw);
         // 仍坚持「一行一个玩家名」：整行收录，但格式不规范必须能被看见
-        if (s.indexOf(',') >= 0 || s.indexOf('\uFF0C') >= 0 || s.indexOf('\u3001') >= 0
-                || s.indexOf(';') >= 0 || s.indexOf('\uFF1B') >= 0 || s.indexOf(' ') >= 0
-                || s.indexOf('\u3000') >= 0 || s.indexOf('\t') >= 0) {
+        if (s.indexOf(',') >= 0 || s.indexOf('，') >= 0 || s.indexOf('、') >= 0
+                || s.indexOf(';') >= 0 || s.indexOf('；') >= 0 || s.indexOf(' ') >= 0
+                || s.indexOf(UnicodeChars.IDEOGRAPHIC_SPACE) >= 0 || s.indexOf('\t') >= 0) {
             warn(log, "白名单条目不符合「一行一个玩家名」，已按整行收录: " + s);
         }
         wl.add(s);
@@ -807,7 +807,7 @@ public class MaintenanceManager implements Listener {
     /** 行内注释起点（# / ＃ / //），返回 -1 表示没有 */
     private static int indexOfInlineComment(String s) {
         int h = s.indexOf('#');
-        if (h < 0) h = s.indexOf('\uFF03');
+        if (h < 0) h = s.indexOf('＃');
         if (h < 0) h = s.indexOf("//");
         return h <= 0 ? -1 : h;
     }

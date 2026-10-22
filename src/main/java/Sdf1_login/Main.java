@@ -3537,7 +3537,7 @@ public class Main extends JavaPlugin
                     originalName = "自定义物品";
                 }
                 cm.setDisplayName(
-                        "\u00a7e\u00a7l[菜单] \u00a7f"
+                        "§e§l[菜单] §f"
                                 + originalName);
                 List<String> cmLore =
                         cm.hasLore()
@@ -3546,9 +3546,9 @@ public class Main extends JavaPlugin
                 // 避免重复添加
                 if (cmLore.isEmpty()
                         || !cmLore.get(0).contains(
-                        "\u00a77右键打开主菜单")) {
+                        "§7右键打开主菜单")) {
                     cmLore.add(0,
-                            "\u00a77右键打开主菜单");
+                            "§7右键打开主菜单");
                 }
                 cm.setLore(cmLore);
                 customIcon.setItemMeta(cm);
@@ -3575,10 +3575,10 @@ public class Main extends JavaPlugin
         ItemMeta im = snow.getItemMeta();
         if (im != null) {
             im.setDisplayName(
-                    "\u00a7e\u00a7l[菜单] \u00a7f右键打开主菜单");
+                    "§e§l[菜单] §f右键打开主菜单");
             List<String> lore = new ArrayList<>();
-            lore.add("\u00a77右键点击打开功能菜单");
-            lore.add("\u00a78" + MENU_SNOWBALL_TAG);
+            lore.add("§7右键点击打开功能菜单");
+            lore.add("§8" + MENU_SNOWBALL_TAG);
             im.setLore(lore);
             snow.setItemMeta(im);
         }
@@ -3767,7 +3767,7 @@ public class Main extends JavaPlugin
             // Sdf1_game宝箱物品标记格式: §0§kCUSTOM|玩家|...
             // 同时检查两种标记格式
             if (line.contains("CUSTOM")
-                    || line.contains("\u00a70\u00a7k"))
+                    || line.contains("§0§k"))
                 return true;
         }
         return false;
@@ -5366,7 +5366,7 @@ public class Main extends JavaPlugin
         if (raw == null || raw.isEmpty())
             return Component.text("管理员", NamedTextColor.WHITE);
         // 先剥掉可能混进来的 § 原生色码，避免与 & 转换叠加出乱码
-        String s = raw.replace("\u00a7", "&");
+        String s = raw.replace("§", "&");
         // 压掉换行与制表，保证单行
         s = s.replaceAll("[\\r\\n\\t]+", " ").trim();
         return LegacyComponentSerializer.legacyAmpersand()
@@ -6569,7 +6569,7 @@ public class Main extends JavaPlugin
             boolean hasChinese = false;
             for (int i = 0; i < text.length(); i++) {
                 char c = text.charAt(i);
-                if (c >= '\u4e00' && c <= '\u9fff') { hasChinese = true; break; }
+                if (c >= '一' && c <= '鿿') { hasChinese = true; break; }
             }
             if (hasChinese) return;
             // 触发口径（35批修订2）：整条消息必须包含 ≥3 个英文字母才机翻 ——
@@ -7378,7 +7378,7 @@ public class Main extends JavaPlugin
                             String cmd = subLn
                                     .replace("§7指令: §f", "")
                                     .trim()
-                                    .replaceAll("\u00A7[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
+                                    .replaceAll("§[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
                             if (cmd.isEmpty()
                                     || cmd.equals("/")
                                     || cmd.equals("null")) {
@@ -7672,7 +7672,7 @@ public class Main extends JavaPlugin
                         if (ln.contains("§7指令: §f")) {
                             String cmd = ln.replace(
                                     "§7指令: §f", "").trim()
-                                    .replaceAll("\u00A7[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
+                                    .replaceAll("§[0-9a-fk-or]", ""); // 剥离残留MC颜色代码
                             if (cmd.isEmpty()
                                     || cmd.equals("/")
                                     || cmd.equals("null")) {

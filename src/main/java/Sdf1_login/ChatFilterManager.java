@@ -681,18 +681,18 @@ public class ChatFilterManager {
                     + "[_.][\\p{L}]{2,}");
     private static final Pattern DOT_VARIANTS =
             Pattern.compile(
-                    "[\uff0e\u3002\u2025\u2026\u00b7\uff65\ufe52]");
+                    "[．。‥…·･﹒]");
     /** 零宽/不可见字符：变形URL归一前剔除（如 baidu.<零宽空格>com） */
     private static final Pattern INVISIBLE =
             Pattern.compile(
-                    "[\u200b\u200c\u200d\u2060\ufeff\u00ad]");
+                    UnicodeChars.INVISIBLE_CHARS + "]");
     /** 点周带空白的变形域名：baidu . com（2026-10-08 加强拦截） */
     private static final Pattern SPACED_DOT_URL =
             Pattern.compile(
                     "(?i)(?:[\\p{L}0-9](?:[\\p{L}0-9\\-]*[\\p{L}0-9])?[\\s\\u3000]*\\.)+[\\s\\u3000]*[\\p{L}]{2,}");
     private static final Pattern COLOR_CODES =
             Pattern.compile(
-                    "\u00a7[0-9a-fk-orA-FK-OR]");
+                    "§[0-9a-fk-orA-FK-OR]");
 
     private static final Set<String> FILE_EXT;
     static {
@@ -747,7 +747,7 @@ public class ChatFilterManager {
             String section = "";
             String line;
             while ((line = r.readLine()) != null) {
-                if (line.startsWith("\uFEFF"))
+                if (line.startsWith(UnicodeChars.BOM_TEXT))
                     line = line.substring(1);
                 String t = line.trim();
 
@@ -1058,8 +1058,8 @@ public class ChatFilterManager {
         while (m2.find()) {
             String token = m2.group();
             if (token.indexOf(' ') < 0 && token.indexOf('\t') < 0
-                    && token.indexOf('\u3000') < 0) continue;   // 无空白 = 常规域名，上面已提取
-            String compact = token.replaceAll("[\\s\u3000]+", "").toLowerCase();
+                    && token.indexOf(UnicodeChars.IDEOGRAPHIC_SPACE) < 0) continue;   // 无空白 = 常规域名，上面已提取
+            String compact = token.replaceAll("[\\s" + UnicodeChars.IDEOGRAPHIC_SPACE + "]+", "").toLowerCase();
             int dot = compact.lastIndexOf('.');
             if (dot < 0) continue;
             if (!illegalDomainSuffixes.contains(compact.substring(dot + 1))) continue;

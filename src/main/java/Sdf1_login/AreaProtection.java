@@ -1301,7 +1301,8 @@ public class AreaProtection implements Listener {
         List<String> result = new ArrayList<>();
         if (s == null || s.isEmpty()) return result;
         String trimmed = s.trim();
-        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"] 或 ["\u8bd5\u70bc..."]
+        // ★ 支持JSON数组格式（PHP端存储格式），如 ["速度","急迫"] 或 ["\\u8bd5\\u70bc..."]
+        //   （PHP 端 JSON 存储时中文会被转义成 \\uXXXX 形式，此处展示的是 PHP 侧原样）
         if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
             try {
                 String inner = trimmed.substring(1, trimmed.length() - 1);
@@ -1821,27 +1822,27 @@ public class AreaProtection implements Listener {
             char c = input.charAt(i);
 
             // 跳过零宽字符和不可见字符
-            if (c == '\u200B'   // 零宽空格
-                    || c == '\u200C'   // 零宽非连接
-                    || c == '\u200D'   // 零宽连接
-                    || c == '\uFEFF'   // BOM
-                    || c == '\u00A0'   // 不间断空格
-                    || c == '\u2028'   // 行分隔符
-                    || c == '\u2029'   // 段分隔符
-                    || c == '\u200E'   // LTR标记
-                    || c == '\u200F'   // RTL标记
-                    || c == '\u2060'   // 字连接符
-                    || (c >= '\u2000' && c <= '\u200A')) { // 各种空格
+            if (c == UnicodeChars.ZERO_WIDTH_SPACE   // 零宽空格
+                    || c == UnicodeChars.ZERO_WIDTH_NON_JOINER   // 零宽非连接
+                    || c == UnicodeChars.ZERO_WIDTH_JOINER   // 零宽连接
+                    || c == UnicodeChars.BOM   // BOM
+                    || c == UnicodeChars.NBSP   // 不间断空格
+                    || c == UnicodeChars.LINE_SEPARATOR   // 行分隔符
+                    || c == UnicodeChars.PARAGRAPH_SEPARATOR   // 段分隔符
+                    || c == UnicodeChars.LTR_MARK   // LTR标记
+                    || c == UnicodeChars.RTL_MARK   // RTL标记
+                    || c == UnicodeChars.WORD_JOINER   // 字连接符
+                    || (c >= UnicodeChars.SPACE_U2000 && c <= UnicodeChars.SPACE_U200A)) { // 各种空格
                 continue;
             }
 
             // 全角→半角映射
-            if (c >= '\uFF01' && c <= '\uFF5E') {
+            if (c >= '！' && c <= '～') {
                 c = (char) (c - 0xFEE0);
             }
 
             // 全角空格→半角空格
-            if (c == '\u3000') {
+            if (c == UnicodeChars.IDEOGRAPHIC_SPACE) {
                 c = ' ';
             }
 
@@ -6930,7 +6931,7 @@ public class AreaProtection implements Listener {
         }
         String n = name.trim();
         if (n.length() > 20) return "名字不能超过20个字符";
-        if (!n.matches("^[A-Za-z0-9\u4e00-\u9fa5_-]{1,20}$")) {
+        if (!n.matches("^[A-Za-z0-9一-龥_-]{1,20}$")) {
             return "名字只能包含中英文、数字、下划线和连字符";
         }
         if (n.equalsIgnoreCase("global")) {
@@ -11470,7 +11471,7 @@ public class AreaProtection implements Listener {
             String[] parts = inner.split("\"");
             java.util.List<String> result = new java.util.ArrayList<>();
             for (String part : parts) {
-                String trimmed = part.trim().replaceAll("\u00A7[0-9a-fk-or]", "");
+                String trimmed = part.trim().replaceAll("§[0-9a-fk-or]", "");
                 if (!trimmed.isEmpty()) result.add(trimmed);
             }
             return result.toArray(new String[0]);

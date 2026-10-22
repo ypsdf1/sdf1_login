@@ -6000,7 +6000,7 @@ public class WebManager {
         }
     }
 
-    /** 解码JSON中的 \\uXXXX Unicode转义（如 \\u00a7 → §） */
+    /** 解码JSON中的 Unicode 转义（\\uXXXX 形式，如 \\u00a7 → §） */
     private String decodeJsonUnicode(String s) {
         if (s == null || s.isEmpty()) return s;
         if (!s.contains("\\u")) return s;

@@ -399,7 +399,7 @@ public class GUIManager implements Listener {
     public void openSubMenu(
             Player p, String fileName) {
         // ★ 剥离MC颜色代码（§f、§7等），防止污染文件名
-        fileName = fileName.replaceAll("\u00A7[0-9a-fk-or]", "").trim();
+        fileName = fileName.replaceAll("§[0-9a-fk-or]", "").trim();
         String menuTitle =
                 "§6§l" + fileName
                         .replace(".txt", "");
@@ -632,7 +632,7 @@ public class GUIManager implements Listener {
         for (String line : block.split("\n")) {
             line = line.trim();
             String v = "";
-            int idx = line.indexOf('\uff1a');
+            int idx = line.indexOf('：');
             if (idx < 0)
                 idx = line.indexOf(':');
             if (idx >= 0) {
@@ -1766,13 +1766,13 @@ public class GUIManager implements Listener {
                 oldName = "自定义物品";
             }
             mm.setDisplayName(
-                    "\u00a7e\u00a7l[菜单] \u00a7f"
+                    "§e§l[菜单] §f"
                             + oldName);
             List<String> lore = mm.hasLore()
                     ? new ArrayList<>(mm.getLore())
                     : new ArrayList<>();
             lore.add(0,
-                    "\u00a77右键打开主菜单");
+                    "§7右键打开主菜单");
             mm.setLore(lore);
             mm.getPersistentDataContainer().set(
                     new org.bukkit.NamespacedKey(
@@ -1877,7 +1877,7 @@ public class GUIManager implements Listener {
         List<String> lore = meta.getLore();
         if (lore == null) return false;
         for (String line : lore) {
-            if (line.contains("\u00a70\u00a7k")
+            if (line.contains("§0§k")
                     || line.contains("CUSTOM")) {
                 return true;
             }
@@ -1986,7 +1986,7 @@ public class GUIManager implements Listener {
                         && im.getLore() != null) {
                     for (String ln : im.getLore()) {
                         if (ln.contains(
-                                "\u00a78")) {
+                                "§8")) {
                             p.getInventory()
                                     .setItem(i,
                                             null);
@@ -2010,7 +2010,7 @@ public class GUIManager implements Listener {
             return true;
         ItemMeta im = item.getItemMeta();
         if (im == null) return true;
-        if ("\u00a77默认菜单（雪球）"
+        if ("§7默认菜单（雪球）"
                 .equals(im.getDisplayName()))
             return true;
         if (im.hasLore() && im.getLore() != null
@@ -2040,7 +2040,7 @@ public class GUIManager implements Listener {
                 && im.hasLore()
                 && im.getLore() != null) {
             for (String ln : im.getLore()) {
-                if (ln.contains("\u00a77右键打开主菜单"))
+                if (ln.contains("§7右键打开主菜单"))
                     return true;
             }
         }
@@ -2053,7 +2053,7 @@ public class GUIManager implements Listener {
             return true;
         ItemMeta im = item.getItemMeta();
         if (im == null) return true;
-        if ("\u00a77默认菜单（雪球）"
+        if ("§7默认菜单（雪球）"
                 .equals(im.getDisplayName())) {
             return true;
         }

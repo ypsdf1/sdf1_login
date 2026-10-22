@@ -1517,6 +1517,6 @@ public class OpWhiteListManager implements Listener {
 
     /** 日志里去掉颜色符号，避免控制台刷屏乱码 */
     private static String stripColor(String s) {
-        return s == null ? "" : s.replaceAll("(?i)&[0-9a-k]", "").replaceAll("\u00a7[0-9a-k]", "");
+        return s == null ? "" : s.replaceAll("(?i)&[0-9a-k]", "").replaceAll("§[0-9a-k]", "");
     }
 }

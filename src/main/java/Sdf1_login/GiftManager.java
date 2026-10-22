@@ -59,7 +59,7 @@ public class GiftManager {
                         || line.contains("任务内容")) {
                     int colon = line.indexOf(':');
                     if (colon < 0)
-                        colon = line.indexOf('\uff1a');
+                        colon = line.indexOf('：');
                     if (colon >= 0) {
                         rewards.add(
                                 line.substring(colon + 1)

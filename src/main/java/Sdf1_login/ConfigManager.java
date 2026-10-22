@@ -827,7 +827,7 @@ public class ConfigManager {
                 // 处理UTF-8 BOM头
                 if (firstLine) {
                     firstLine = false;
-                    if (line.startsWith("\uFEFF")) {
+                    if (line.startsWith(UnicodeChars.BOM_TEXT)) {
                         line = line.substring(1);
                     }
                 }
@@ -1601,7 +1601,7 @@ public class ConfigManager {
     /** 字节数组 → 行列表（UTF-8，去 BOM，去 CR，去文件末空行） */
     private static List<String> readUtf8Lines(byte[] data) {
         String s = new String(data, StandardCharsets.UTF_8);
-        if (!s.isEmpty() && s.charAt(0) == '\uFEFF') s = s.substring(1);
+        if (!s.isEmpty() && s.charAt(0) == UnicodeChars.BOM) s = s.substring(1);
         List<String> L = new ArrayList<>();
         for (String line : s.split("\n", -1)) {
             if (line.endsWith("\r")) line = line.substring(0, line.length() - 1);
@@ -1623,10 +1623,10 @@ public class ConfigManager {
     private boolean upgradeJsonMissing(File file, byte[] tplBytes, String label) {
         try {
             String tplText = new String(tplBytes, StandardCharsets.UTF_8);
-            if (!tplText.isEmpty() && tplText.charAt(0) == '\uFEFF') tplText = tplText.substring(1);
+            if (!tplText.isEmpty() && tplText.charAt(0) == UnicodeChars.BOM) tplText = tplText.substring(1);
             byte[] cur = java.nio.file.Files.readAllBytes(file.toPath());
             String oldText = new String(cur, StandardCharsets.UTF_8);
-            if (!oldText.isEmpty() && oldText.charAt(0) == '\uFEFF') oldText = oldText.substring(1);
+            if (!oldText.isEmpty() && oldText.charAt(0) == UnicodeChars.BOM) oldText = oldText.substring(1);
             com.google.gson.JsonElement tplEl;
             try {
                 tplEl = com.google.gson.JsonParser.parseString(tplText);
@@ -1796,7 +1796,7 @@ public class ConfigManager {
         boolean hasChinese = false;
         for (int ci = 0; ci < testTrimmed.length(); ci++) {
             char cc = testTrimmed.charAt(ci);
-            if (cc >= '\u4e00' && cc <= '\u9fff') { hasChinese = true; break; }
+            if (cc >= '一' && cc <= '鿿') { hasChinese = true; break; }
         }
         if (hasChinese) {
             int cnResult = parseChineseTime(testTrimmed);
@@ -1877,7 +1877,7 @@ public class ConfigManager {
     private int parseChineseTime(String raw) {
         // 中文数字映射（含繁体/大写/各种变体）
         java.util.Map<String, Integer> cnDigit = new java.util.LinkedHashMap<>();
-        cnDigit.put("零", 0); cnDigit.put("\u3007", 0);
+        cnDigit.put("零", 0); cnDigit.put("〇", 0);
         cnDigit.put("一", 1); cnDigit.put("壹", 1); cnDigit.put("幺", 1);
         cnDigit.put("二", 2); cnDigit.put("贰", 2); cnDigit.put("貳", 2); cnDigit.put("两", 2); cnDigit.put("弐", 2);
         cnDigit.put("三", 3); cnDigit.put("叁", 3); cnDigit.put("參", 3);
@@ -1929,9 +1929,9 @@ public class ConfigManager {
         int i = 0;
         while (i < s.length()) {
             char c = s.charAt(i);
-            if (c >= '\u4e00' && c <= '\u9fff') {
+            if (c >= '一' && c <= '鿿') {
                 // 尝试2字符匹配（先匹配单位复合词）
-                if (i + 1 < s.length() && s.charAt(i+1) >= '\u4e00' && s.charAt(i+1) <= '\u9fff') {
+                if (i + 1 < s.length() && s.charAt(i+1) >= '一' && s.charAt(i+1) <= '鿿') {
                     String two = s.substring(i, i+2);
                     boolean matchedUnit = false;
                     for (var entry : unitsList) {
@@ -1987,7 +1987,7 @@ public class ConfigManager {
             // 检查是否是多字符中文数字组合（如"十五"）
             boolean isMultiCharNum = false;
             for (String t : tokens) {
-                if (t.equals(tok) && t.length() > 1 && t.chars().allMatch(c -> (c >= '\u4e00' && c <= '\u9fff') || (c >= '0' && c <= '9'))) {
+                if (t.equals(tok) && t.length() > 1 && t.chars().allMatch(c -> (c >= '一' && c <= '鿿') || (c >= '0' && c <= '9'))) {
                     // 所有字符都是中文数字或乘法器 → 解析中文数字组合
                     int val = evalChineseCompoundNum(tok, cnDigit, multipliers);
                     if (val >= 0) {

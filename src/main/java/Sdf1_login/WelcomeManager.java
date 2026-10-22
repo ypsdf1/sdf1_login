@@ -41,7 +41,7 @@ public class WelcomeManager {
             String section = "";
             String line;
             while ((line = r.readLine()) != null) {
-                if (line.startsWith("\uFEFF"))
+                if (line.startsWith(UnicodeChars.BOM_TEXT))
                     line = line.substring(1);
                 String t = line.trim();
                 if (t.isEmpty()
@@ -135,7 +135,7 @@ public class WelcomeManager {
     }
 
     private String colorize(String msg) {
-        return msg.replace("&", "\u00a7");
+        return msg.replace("&", "§");
     }
 
     private void writeDefault(File f) {

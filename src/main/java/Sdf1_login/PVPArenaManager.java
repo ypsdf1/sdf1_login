@@ -1805,7 +1805,7 @@ public class PVPArenaManager implements Listener {
                         killerSession);
             }
 
-            ((Player) killer).sendMessage("\u00a7a\u00a7l击杀 " + vName + "\u00a7a 当前击杀: " + pvpKills.get(kName));
+            ((Player) killer).sendMessage("§a§l击杀 " + vName + "§a 当前击杀: " + pvpKills.get(kName));
         }
         pvpDeaths.put(player.getName(), pvpDeaths.getOrDefault(player.getName(), 0) + 1);
         // ★ 非击杀死亡也持久化（如摔死/溺水）

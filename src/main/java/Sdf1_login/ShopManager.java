@@ -2874,19 +2874,19 @@ public class ShopManager implements Listener {
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
             // 全角数字→半角
-            if (c >= '\uFF10' && c <= '\uFF19') {
+            if (c >= '０' && c <= '９') {
                 sb.append((char)(c - 0xFF10 + '0'));
             }
             // 全角字母→半角
-            else if (c >= '\uFF21' && c <= '\uFF3A') {
+            else if (c >= 'Ａ' && c <= 'Ｚ') {
                 sb.append((char)(c - 0xFF21 + 'A'));
             }
-            else if (c >= '\uFF41' && c <= '\uFF5A') {
+            else if (c >= 'ａ' && c <= 'ｚ') {
                 sb.append((char)(c - 0xFF41 + 'a'));
             }
             // ★ 保留中文字符（Unicode CJK统一汉字范围）
-            else if ((c >= '\u4E00' && c <= '\u9FFF')
-                    || (c >= '\u3400' && c <= '\u4DBF')) {
+            else if ((c >= '一' && c <= '鿿')
+                    || (c >= '㐀' && c <= '䶿')) {
                 sb.append(c);
             }
             // 保留半角字母和数字

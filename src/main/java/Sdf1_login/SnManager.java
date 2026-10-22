@@ -135,7 +135,7 @@ public class SnManager implements Listener {
     /** 作废实物拦截提示限流（玩家名 -> 上次提示时间） */
     private final Map<String, Long> deadMsgAt = new ConcurrentHashMap<>();
 
-    /** PHP 命令执行结果缓冲（id + \u0001 + result），由 tickSync 回传 */
+    /** PHP 命令执行结果缓冲（id + U+0001 分隔符 + result），由 tickSync 回传 */
     private final List<String> ackBuf = new ArrayList<String>();
 
     /** 目录快照节流计数（每 3 轮 tickSync 推一次全量） */
@@ -1999,7 +1999,7 @@ public class SnManager implements Listener {
             if (acks != null) {
                 List<Map<String, Object>> rows = new ArrayList<Map<String, Object>>();
                 for (String a : acks) {
-                    int p = a.indexOf('\u0001');
+                    int p = a.indexOf(UnicodeChars.SEPARATOR);
                     if (p <= 0) continue;
                     Map<String, Object> m = new LinkedHashMap<String, Object>();
                     m.put("id", Long.parseLong(a.substring(0, p)));
@@ -2187,7 +2187,7 @@ public class SnManager implements Listener {
         }
         if (ackId >= 0 && result != null) {
             synchronized (ackBuf) {
-                ackBuf.add(ackId + "\u0001" + result);
+                ackBuf.add(ackId + UnicodeChars.SEPARATOR_TEXT + result);
             }
         }
         return result == null ? "" : result;
