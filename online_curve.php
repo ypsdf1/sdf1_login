@@ -5,59 +5,25 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 
 $action = getParam('action', 'page');
 
-// ===== 初始化快照表 =====
+// ===== 快照采集已上收 core.php（3.11内测版）=====
+// 全站唯一采集函数 onlineCurveEnsureSnapshot() 由 core.php 提供：
+// sync.php 三个入口(sync_online_players / online_heartbeat / 对账兜底) + 本页面
+// 多路触发统一写入，60秒节流，心跳判据(>120秒记0防停服假曲线)，保留7天。
+// 本地三个函数改薄壳保持旧调用点兼容。
 function ensureSnapshotTable() {
-    try {
-        $db = getDB();
-        $db->exec("CREATE TABLE IF NOT EXISTS online_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            snapshot_time INTEGER NOT NULL,
-            online_count INTEGER NOT NULL DEFAULT 0
-        )");
-        $db->exec("CREATE INDEX IF NOT EXISTS idx_snap_time ON online_snapshots(snapshot_time)");
-        // 清理24小时前的旧快照（保留24小时数据）
-        $db->exec("DELETE FROM online_snapshots WHERE snapshot_time < " . (time() - 86400));
-    } catch (\Throwable $e) {
-        debugLog('[online_curve] 建表异常: ' . $e->getMessage());
-    }
+    onlineCurveEnsureSnapshot(false, 'page');
 }
 
-// ===== 记录快照 =====
+// ===== 记录快照（薄壳：是否真正落样本由 core 60秒节流裁决） =====
 function recordSnapshot() {
-    ensureSnapshotTable();
-    $count = 0;
-    try {
-        $db = getDB();
-        $res = $db->query("SELECT COUNT(*) AS cnt FROM online_players");
-        $row = $res->fetchArray(SQLITE3_ASSOC);
-        $count = (int)($row['cnt'] ?? 0);
-        $now = time();
-        $stmt = $db->prepare("INSERT INTO online_snapshots (snapshot_time, online_count) VALUES (:t, :c)");
-        $stmt->bindValue(':t', $now, SQLITE3_INTEGER);
-        $stmt->bindValue(':c', $count, SQLITE3_INTEGER);
-        $stmt->execute();
-    } catch (\Throwable $e) {
-        debugLog('[online_curve] 记录快照异常: ' . $e->getMessage());
-    }
-    return $count;
+    $r = onlineCurveEnsureSnapshot(false, 'page');
+    return $r['count'];
 }
 
-// ===== 确保有最新快照（如果上次快照超过60秒则自动记录） =====
+// ===== 确保有最新快照（薄壳：节流由 core 统一处理） =====
 function ensureRecentSnapshot() {
-    try {
-        $db = getDB();
-        $res = $db->query("SELECT MAX(snapshot_time) AS last_time FROM online_snapshots");
-        $row = $res->fetchArray(SQLITE3_ASSOC);
-        $lastTime = (int)($row['last_time'] ?? 0);
-        $now = time();
-        // 没有快照，或上次快照超过 55 秒（留 5 秒余量防止频繁写）
-        if ($lastTime === 0 || ($now - $lastTime) > 55) {
-            return recordSnapshot();
-        }
-    } catch (\Throwable $e) {
-        debugLog('[online_curve] ensureRecentSnapshot 异常: ' . $e->getMessage());
-    }
-    return null;
+    $r = onlineCurveEnsureSnapshot(false, 'page');
+    return $r['recorded'] ? $r['count'] : null;
 }
 
 // ===== 获取24小时聚合数据（按小时） =====
@@ -69,7 +35,7 @@ function getHourlyData() {
     $since = time() - 86400;
     // 按自然小时聚合：分桶到 h0~h23，取平均值
     $buckets = [];
-    for ($i = 0; $i < 24; $i++) $buckets[$i] = ['hour' => $i, 'count' => 0, 'samples' => 0];
+    for ($i = 0; $i < 24; $i++) $buckets[$i] = ['hour' => $i, 'count' => 0, 'samples' => 0, 'max' => 0];
     try {
         $db = getDB();
         $stmt = $db->prepare("SELECT snapshot_time, online_count FROM online_snapshots WHERE snapshot_time >= :since ORDER BY snapshot_time ASC");
@@ -81,6 +47,7 @@ function getHourlyData() {
             $h = (int)date('G', $snapshotTime);
             $buckets[$h]['count'] += (int)$row['online_count'];
             $buckets[$h]['samples']++;
+            if ((int)$row['online_count'] > $buckets[$h]['max']) $buckets[$h]['max'] = (int)$row['online_count'];
         }
     } catch (\Throwable $e) {
         debugLog('[online_curve] 查询异常: ' . $e->getMessage());
@@ -91,7 +58,7 @@ function getHourlyData() {
         $result[] = [
             'hour' => sprintf('%02d:00', $b['hour']),
             'avg' => $avg,
-            'max' => $b['samples'] > 0 ? round($b['count'] / max(1,$b['samples']), 1) : 0, // same as avg for now
+            'max' => $b['max'],
             'samples' => $b['samples'],
         ];
     }
@@ -156,7 +123,7 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
 <body>
 <div class="header">
     <h1>📈 24小时在线曲线</h1>
-    <div class="info">每60秒刷新 · 自动记录快照</div>
+    <div class="info">每60秒刷新 · Java同步自动采集</div>
 </div>
 <div class="container">
     <div id="loading">加载中...</div>
@@ -174,7 +141,7 @@ body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
             </div>
             <div id="emptyHint" class="empty-chart" style="display:none">
                 <div class="msg">📊 数据收集中</div>
-                <div class="sub">页面每60秒记录一次快照，积累数据后将自动生成曲线</div>
+                <div class="sub">Java 插件同步/心跳每60秒自动采集（停服时段记0防假数据），积累后自动生成曲线</div>
             </div>
         </div>
         <div class="refresh-hint" id="refreshHint"></div>

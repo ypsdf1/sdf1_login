@@ -1558,6 +1558,8 @@ function checkAlignment() {
                 @error_log("[checkAlignment] online心跳兜底刷新失败: " . $e->getMessage());
                 // 失败不影响对账本身
             }
+            // ★ 3.11内测版：对账链路通也视为 Java 活着，顺手留曲线样本
+            onlineCurveEnsureSnapshot(false, 'align');
         }
 
         // ---- Java 报上来的本机 key + 指纹 ----
@@ -2249,6 +2251,9 @@ function syncOnlinePlayers() {
     $verifyRow = $verifyStmt->fetchArray(SQLITE3_ASSOC);
     @error_log("[syncOnlinePlayers] Synced $synced/$playerCount, DB now has " . ($verifyRow['cnt'] ?? 0) . " records");
 
+    // ★ 3.11内测版：在线曲线快照统一采集（名单有变化的全量同步路径）
+    onlineCurveEnsureSnapshot(false, 'sync');
+
     success(['synced' => $synced, 'server_time' => $now], "同步了" . $synced . "个在线玩家");
 }
 
@@ -2307,6 +2312,10 @@ function onlineHeartbeat() {
         // 心跳失败不致命：Java 下轮仍会重试
         error('心跳写入失败: ' . $e->getMessage());
     }
+
+    // ★ 3.11内测版：在线曲线快照统一采集（名单无变化的轻量保活路径——
+    //   玩家稳定在线时 Java 只走这条出口，采集必须挂这里才不会整段丢样本）
+    onlineCurveEnsureSnapshot(false, 'heartbeat');
 
     success([
         'last_seen'   => $fresh,

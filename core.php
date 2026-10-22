@@ -2664,6 +2664,97 @@ function jsonResponse($data, $code = 200) {
     exit;
 }
 
+
+/**
+ * ===== 在线曲线快照统一采集（3.11内测版 · 2026-10-22）=====
+ *
+ * 背景：此前快照只在有人打开 online_curve.php 页面时才记录（页面加载 + 60秒
+ * JS定时器 + ensureRecentSnapshot），三环根因导致数据丢失：
+ *   ① 没人开页面 = 全天零样本，曲线空白；
+ *   ② 停服后若浏览器页面仍开着，定时器拿冻结的 online_players 旧值记账 →
+ *      停服时段出现假在线曲线（如15点假数据）；
+ *   ③ Java 短暂抽风(<120秒)时恰无人看页 → 该分钟样本永久丢失。
+ *
+ * 修法：采集上收到 core.php 全站唯一入口，多路触发统一挂载——
+ *   sync.php 的 syncOnlinePlayers / onlineHeartbeat / checkAlignment(cat=online)
+ *   以及 online_curve.php 页面。只要 Java 与 PHP 的同步链路活着（名单变化推送、
+ *   轻量心跳、对账任一），就自动留样本，不再依赖有没有人开页面。
+ *
+ * 心跳判据（与 admin 后台 120 秒归零口径一致）：
+ *   online_player_hb.last_seen 距现在 <=120秒 → Java 活着 → 记 COUNT(online_players)；
+ *     Java 短抽风(<120秒)时表里是最后已知值，样本不丢；
+ *   >120秒 → 记 0（服务端已停/抽风超阈值，杜绝停服后伪造曲线）。
+ *
+ * 其余：60秒节流（全站唯一写者，force 可穿透）；保留7天（聚合只取近24小时，
+ * 多留供回溯排障）；source 列标记样本来源(sync/heartbeat/align/page)便于排障。
+ *
+ * @return array ['count'=>int 当前在线(陈旧记0口径), 'recorded'=>bool 本次是否落样本, 'stale'=>bool 心跳是否陈旧]
+ */
+function onlineCurveEnsureSnapshot($force = false, $source = 'page') {
+    $now = time();
+    $res = ['count' => 0, 'recorded' => false, 'stale' => true];
+    try {
+        $db = getDB();
+        $db->exec('PRAGMA busy_timeout=5000');
+        $db->exec("CREATE TABLE IF NOT EXISTS online_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_time INTEGER NOT NULL,
+            online_count INTEGER NOT NULL DEFAULT 0,
+            source TEXT DEFAULT ''
+        )");
+        $db->exec("CREATE INDEX IF NOT EXISTS idx_snap_time ON online_snapshots(snapshot_time)");
+        // 老表无 source 列 → 幂等迁移补列
+        $hasSource = false;
+        $cols = @$db->query("PRAGMA table_info(online_snapshots)");
+        while ($cols && ($c = $cols->fetchArray(SQLITE3_ASSOC))) {
+            if (($c['name'] ?? '') === 'source') { $hasSource = true; break; }
+        }
+        if (!$hasSource) @$db->exec("ALTER TABLE online_snapshots ADD COLUMN source TEXT DEFAULT ''");
+
+        // 心跳判据：<=120秒新鲜 → Java 活着（与 admin 后台归零口径一致）
+        $stale = true;
+        try {
+            @$db->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+            $hb = $db->query("SELECT last_seen FROM online_player_hb WHERE id = 1");
+            $hbRow = $hb ? $hb->fetchArray(SQLITE3_ASSOC) : null;
+            if ($hbRow && (int)$hbRow['last_seen'] > 0 && ($now - (int)$hbRow['last_seen']) <= 120) {
+                $stale = false;
+            }
+        } catch (\Throwable $eHeartbeat) {
+            // 心跳表异常按陈旧处理（记0），不影响采集函数本身
+        }
+        $count = 0;
+        if (!$stale) {
+            $r = $db->query("SELECT COUNT(*) AS cnt FROM online_players");
+            $row = $r ? $r->fetchArray(SQLITE3_ASSOC) : null;
+            $count = (int)($row['cnt'] ?? 0);
+        }
+        $res = ['count' => $count, 'recorded' => false, 'stale' => $stale];
+
+        // 60秒节流：全站唯一写者，防止多路触发在同分钟内重复落样本
+        if (!$force) {
+            $mx = $db->query("SELECT MAX(snapshot_time) AS t FROM online_snapshots");
+            $mxRow = $mx ? $mx->fetchArray(SQLITE3_ASSOC) : null;
+            $last = (int)($mxRow['t'] ?? 0);
+            if ($last > 0 && ($now - $last) < 60) return $res;
+        }
+
+        $stmt = $db->prepare("INSERT INTO online_snapshots (snapshot_time, online_count, source) VALUES (:t, :c, :s)");
+        $stmt->bindValue(':t', $now, SQLITE3_INTEGER);
+        $stmt->bindValue(':c', $count, SQLITE3_INTEGER);
+        $stmt->bindValue(':s', (string)$source, SQLITE3_TEXT);
+        $stmt->execute();
+        $res['recorded'] = true;
+
+        // 保留7天（聚合取近24小时，多留供回溯排障）
+        $db->exec("DELETE FROM online_snapshots WHERE snapshot_time < " . ($now - 604800));
+        $GLOBALS['ONLINE_CURVE_SOURCE'] = $source;
+    } catch (\Throwable $e) {
+        debugLog('[onlineCurve] 采集异常(' . $source . '): ' . $e->getMessage());
+    }
+    return $res;
+}
+
 function success($data = null, $message = 'ok') {
     jsonResponse(['success' => true, 'message' => $message, 'data' => $data]);
 }

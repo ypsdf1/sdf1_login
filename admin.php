@@ -2682,65 +2682,180 @@ async function loadLands(el) {
         </div>`;
         html += '</div>';
 
-        // 领地列表
-        html += '<h3 style="color:var(--fg);margin-bottom:8px">📍 领地列表</h3>';
-        if (lands.length === 0) {
-            html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无领地数据<br><span style="font-size:11px">Java端会自动同步领地数据到此</span></div>';
-        } else {
-            html += '<div style="overflow-x:auto"><table class="table"><tr>';
-            html += '<th>ID</th><th>名称</th><th>所有者</th><th>世界</th><th>坐标</th><th>面积</th><th>操作</th>';
-            html += '</tr>';
-            for (const l of lands) {
-                const size = l.area_size || Math.abs((l.x2-l.x1+1)*(l.z2-l.z1+1));
-                html += `<tr>
-                    <td>${l.id}</td>
-                    <td><strong>${escAdmHtml(l.name)}</strong></td>
-                    <td>${escAdmHtml(l.owner || '无')}</td>
-                    <td>${escAdmHtml(l.world)}</td>
-                    <td style="font-size:11px">${l.x1},${l.z1} → ${l.x2},${l.z2}</td>
-                    <td>${size} 格²</td>
-                    <td>
-                        <button onclick="adminTransferLand('${escAdmHtml(l.name)}','${escAdmHtml(l.owner)}')" style="padding:2px 8px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">改主</button>
-                        <button onclick="deleteLand('${escAdmHtml(l.name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">删除</button>
-                    </td>
-                </tr>`;
-            }
-            html += '</table></div>';
-        }
+        // 领地列表（3.11内测版：分页渲染，表格挪到 renderLandListSec）
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">';
+        html += '<h3 style="color:var(--fg);margin:0">📍 领地列表</h3>';
+        html += landPerCtlHtml();
+        html += '</div>';
+        html += '<div id="landListSec"></div>';
 
-        // 权限商店
-        html += '<h3 style="color:var(--fg);margin:20px 0 8px">🛒 权限商店</h3>';
+        // 权限商店（3.11内测版：分页渲染，表格挪到 renderLandShopSec）
         const allShop = shopRes.items || [];
-        if (allShop.length === 0) {
-            html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无权限商品</div>';
-        } else {
-            html += '<div style="overflow-x:auto"><table class="table"><tr>';
-            html += '<th>ID</th><th>领地</th><th>卖家</th><th>价格</th><th>时长</th><th>状态</th><th>买家</th><th>操作</th>';
-            html += '</tr>';
-            for (const s of allShop) {
-                const dur = s.duration >= 86400 ? Math.floor(s.duration/86400)+'天' : s.duration >= 3600 ? Math.floor(s.duration/3600)+'小时' : Math.floor(s.duration/60)+'分钟';
-                const statusColor = s.status === 'active' ? '#4caf50' : s.status === 'sold' ? '#ff9800' : '#f44336';
-                html += `<tr>
-                    <td>${s.id}</td>
-                    <td>${escAdmHtml(s.land_name)}</td>
-                    <td>${escAdmHtml(s.seller)}</td>
-                    <td style="color:#ff9800">${s.price}💰</td>
-                    <td>${dur}</td>
-                    <td style="color:${statusColor}">${s.status === 'active' ? '在售' : s.status === 'sold' ? '已售' : '已下架'}</td>
-                    <td>${s.buyer ? escAdmHtml(s.buyer) : '-'}</td>
-                    <td>
-                        ${s.status === 'active' ? `<button onclick="deleteShopItem(${s.id})" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">下架</button>` : ''}
-                    </td>
-                </tr>`;
-            }
-            html += '</table></div>';
-        }
+        html += '<h3 style="color:var(--fg);margin:20px 0 8px">🛒 权限商店</h3>';
+        html += '<div id="landShopSec"></div>';
 
+        // 缓存全量数据供分页渲染（3.11内测版）
+        window._landCache = { lands: lands, shopAll: allShop, cfg: cfg };
         el.innerHTML = html;
+        renderLandListSec();
+        renderLandShopSec();
     } catch(e) {
         console.error('[LANDS] Error:', e);
         el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
     }
+}
+
+// ===== 领地管理分页（3.11内测版）=====
+// 全量数据缓存在 window._landCache，渲染函数只画当前页；
+// 每页条数：预制10/20/30 + 自定义(不设封顶)，localStorage 记忆。
+window._landPg = { list: 1, shop: 1 };
+function landPerPage() {
+    const v = parseInt(localStorage.getItem('sdf_land_perpage') || '10', 10);
+    return v > 0 ? v : 10; // 自定义不设封顶，仅下限1
+}
+function landSetPer(v) {
+    let n = parseInt(v, 10);
+    if (!(n > 0)) n = 10;
+    localStorage.setItem('sdf_land_perpage', String(n));
+    window._landPg.list = 1;
+    window._landPg.shop = 1;
+    renderLandListSec();
+    renderLandShopSec();
+}
+function landPerSelChange(v) {
+    if (v === 'custom') {
+        const inp = document.getElementById('landPerNum');
+        if (inp) { inp.focus(); inp.select(); }
+    } else {
+        landSetPer(v);
+    }
+}
+function landPerCtlHtml() {
+    const per = landPerPage();
+    const custom = !(per === 10 || per === 20 || per === 30);
+    return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)">每页
+        <select onchange="landPerSelChange(this.value)" style="padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px">
+            <option value="10" ${per===10?'selected':''}>10个</option>
+            <option value="20" ${per===20?'selected':''}>20个</option>
+            <option value="30" ${per===30?'selected':''}>30个</option>
+            <option value="custom" ${custom?'selected':''}>自定义</option>
+        </select>
+        <input id="landPerNum" type="number" min="1" value="${per}" onchange="landSetPer(this.value)" style="width:62px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px" title="自定义每页条数，不设封顶">
+        个/页
+    </div>`;
+}
+function landPageBox(total) {
+    const per = landPerPage();
+    return Math.max(1, Math.ceil(total / per));
+}
+function landPagerHtml(kind, total) {
+    if (total === 0) return '';
+    const per = landPerPage();
+    const pages = landPageBox(total);
+    let pg = window._landPg[kind] || 1;
+    if (pg > pages) pg = pages;
+    if (pg < 1) pg = 1;
+    window._landPg[kind] = pg;
+    const from = (pg - 1) * per + 1;
+    const to = Math.min(total, pg * per);
+    let s = Math.max(1, pg - 4), e = Math.min(pages, s + 8);
+    s = Math.max(1, e - 8);
+    let btns = '';
+    const base = 'padding:3px 9px;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px;';
+    for (let i = s; i <= e; i++) {
+        btns += i === pg
+            ? `<button style="${base}background:var(--accent);color:#fff;border-color:var(--accent)">${i}</button>`
+            : `<button onclick="landGoPage('${kind}',${i})" style="${base}background:var(--card);color:var(--dim)">${i}</button>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--dim)">显示 ${from}-${to} / ${total} 条 · 共 ${pages} 页</span>
+        <button onclick="landGoPage('${kind}',1)" style="${base}background:var(--card);color:var(--dim)">⏮ 首页</button>
+        <button onclick="landGoPage('${kind}',${pg-1})" style="${base}background:var(--card);color:var(--dim)">‹ 上一页</button>
+        ${btns}
+        <button onclick="landGoPage('${kind}',${pg+1})" style="${base}background:var(--card);color:var(--dim)">下一页 ›</button>
+        <button onclick="landGoPage('${kind}',${pages})" style="${base}background:var(--card);color:var(--dim)">末页 ⏭</button>
+    </div>`;
+}
+function landGoPage(kind, p) {
+    const cache = window._landCache || {};
+    const total = kind === 'list' ? ((cache.lands || []).length) : ((cache.shopAll || []).length);
+    const pages = landPageBox(total);
+    let n = parseInt(p, 10);
+    if (!(n >= 1)) n = 1;
+    if (n > pages) n = pages;
+    window._landPg[kind] = n;
+    if (kind === 'list') renderLandListSec(); else renderLandShopSec();
+}
+function renderLandListSec() {
+    const box = document.getElementById('landListSec');
+    if (!box) return;
+    const lands = ((window._landCache || {}).lands) || [];
+    if (lands.length === 0) {
+        box.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无领地数据<br><span style="font-size:11px">Java端会自动同步领地数据到此</span></div>';
+        return;
+    }
+    const per = landPerPage();
+    const pages = landPageBox(lands.length);
+    if (window._landPg.list > pages) window._landPg.list = pages;
+    if (window._landPg.list < 1) window._landPg.list = 1;
+    const rows = lands.slice((window._landPg.list - 1) * per, window._landPg.list * per);
+    let html = '<div style="overflow-x:auto"><table class="table"><tr>';
+    html += '<th>ID</th><th>名称</th><th>所有者</th><th>世界</th><th>坐标</th><th>面积</th><th>操作</th>';
+    html += '</tr>';
+    for (const l of rows) {
+        const size = l.area_size || Math.abs((l.x2-l.x1+1)*(l.z2-l.z1+1));
+        html += `<tr>
+            <td>${l.id}</td>
+            <td><strong>${escAdmHtml(l.name)}</strong></td>
+            <td>${escAdmHtml(l.owner || '无')}</td>
+            <td>${escAdmHtml(l.world)}</td>
+            <td style="font-size:11px">${l.x1},${l.z1} → ${l.x2},${l.z2}</td>
+            <td>${size} 格²</td>
+            <td>
+                <button onclick="adminTransferLand('${escAdmHtml(l.name)}','${escAdmHtml(l.owner)}')" style="padding:2px 8px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">改主</button>
+                <button onclick="deleteLand('${escAdmHtml(l.name)}')" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">删除</button>
+            </td>
+        </tr>`;
+    }
+    html += '</table></div>';
+    html += landPagerHtml('list', lands.length);
+    box.innerHTML = html;
+}
+function renderLandShopSec() {
+    const box = document.getElementById('landShopSec');
+    if (!box) return;
+    const allShop = ((window._landCache || {}).shopAll) || [];
+    if (allShop.length === 0) {
+        box.innerHTML = '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">暂无权限商品</div>';
+        return;
+    }
+    const per = landPerPage();
+    const pages = landPageBox(allShop.length);
+    if (window._landPg.shop > pages) window._landPg.shop = pages;
+    if (window._landPg.shop < 1) window._landPg.shop = 1;
+    const rows = allShop.slice((window._landPg.shop - 1) * per, window._landPg.shop * per);
+    let html = '<div style="overflow-x:auto"><table class="table"><tr>';
+    html += '<th>ID</th><th>领地</th><th>卖家</th><th>价格</th><th>时长</th><th>状态</th><th>买家</th><th>操作</th>';
+    html += '</tr>';
+    for (const s of rows) {
+        const dur = s.duration >= 86400 ? Math.floor(s.duration/86400)+'天' : s.duration >= 3600 ? Math.floor(s.duration/3600)+'小时' : Math.floor(s.duration/60)+'分钟';
+        const statusColor = s.status === 'active' ? '#4caf50' : s.status === 'sold' ? '#ff9800' : '#f44336';
+        html += `<tr>
+            <td>${s.id}</td>
+            <td>${escAdmHtml(s.land_name)}</td>
+            <td>${escAdmHtml(s.seller)}</td>
+            <td style="color:#ff9800">${s.price}💰</td>
+            <td>${dur}</td>
+            <td style="color:${statusColor}">${s.status === 'active' ? '在售' : s.status === 'sold' ? '已售' : '已下架'}</td>
+            <td>${s.buyer ? escAdmHtml(s.buyer) : '-'}</td>
+            <td>
+                ${s.status === 'active' ? `<button onclick="deleteShopItem(${s.id})" style="padding:2px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">下架</button>` : ''}
+            </td>
+        </tr>`;
+    }
+    html += '</table></div>';
+    html += landPagerHtml('shop', allShop.length);
+    box.innerHTML = html;
 }
 
 function showLandConfig() {
@@ -4177,9 +4292,9 @@ async function loadOnlineCurve(el) {
                         return `<div class="cbar-item" title="${b.hour} 平均 ${b.avg} 人 (采样 ${b.samples})"><div class="cbar ${empty?'empty-bar':''}" style="height:${empty?'2px':h+'%'}"></div><div class="cbar-lbl">${b.hour.slice(0,2)}</div></div>`;
                     }).join('')}
                 </div>
-                <div class="curve-peak">横轴为 00–23 时，每个柱为该时段<b>平均在线人数</b>；快照每60秒自动记录一次。</div>
+                <div class="curve-peak">横轴为 00–23 时，每个柱为该时段<b>平均在线人数</b>；快照由 Java 同步/心跳每60秒自动采集（停服时段记0）。</div>
                 ` : `
-                <div style="text-align:center;color:var(--dim);padding:50px">📊 数据收集中 — 页面每60秒记录一次快照，积累后将自动生成曲线</div>
+                <div style="text-align:center;color:var(--dim);padding:50px">📊 数据收集中 — Java 同步/心跳每60秒自动采集，积累后将自动生成曲线</div>
                 `}
             </div>`;
     };
