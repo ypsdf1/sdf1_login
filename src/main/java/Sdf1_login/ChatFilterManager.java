@@ -685,7 +685,7 @@ public class ChatFilterManager {
     /** 零宽/不可见字符：变形URL归一前剔除（如 baidu.<零宽空格>com） */
     private static final Pattern INVISIBLE =
             Pattern.compile(
-                    UnicodeChars.INVISIBLE_CHARS + "]");
+                    "[" + UnicodeChars.INVISIBLE_CHARS + "]");
     /** 点周带空白的变形域名：baidu . com（2026-10-08 加强拦截） */
     private static final Pattern SPACED_DOT_URL =
             Pattern.compile(

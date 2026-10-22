@@ -29,9 +29,11 @@ public class ConfigManager {
     public String smtpVerifyCode = "";
     public long smtpVerifyExpire = 0;
     public long smtpLastSendTime = 0;
+    /** 历史遗留字段：SMTP 配置过程中操作者名。当前版本未读取，保留以兼容外部/历史引用。 */
     public String smtpConfiguringPlayer = "";
     public String broadcastServerUrl = "";
     public int httpPort = 8080;
+    /** 历史遗留字段：垃圾站管理员标签。当前版本改用领地权限体系判定，保留以兼容历史引用。 */
     public String garbageTag = "admin";
 
     public double checkinRewardFixed = 0;
@@ -1956,10 +1958,9 @@ public class ConfigManager {
                         i += 2;
                         continue;
                     }
-                    if (dFirst != null && multipliers.contains(secondChar)) {
-                        // 数字+乘法器（如"一二"中"二"不是乘法器，跳过这分支）
-                        // 实际上这种情况不会发生因为multipliers是{十,百,千,万}
-                    }
+                    // 注：原此处有一个恒为空的 if 分支（"数字+乘法器"），
+                    // 条件为真时也只是什么都不做，等价于直接落到下面的「拆开」逻辑，
+                    // 故已删除该死分支（避免空 if 体）。
                     // 不满足组合条件 → 拆开
                     tokens.add(firstChar);
                     i++;
@@ -2090,7 +2091,8 @@ public class ConfigManager {
                 if (current > 0) current = current * 10 + d;
                 else current = d;
             } else if (d != null && d == 0) {
-                // zero - skip
+                // 数字 0：跳过，不参与累加（原为空体，在 for 循环里等价于 continue）
+                continue;
             } else if (multipliers.contains(ch)) {
                 if (ch.equals("十") || ch.equals("拾")) current = (current == 0 ? 1 : current) * 10;
                 else if (ch.equals("百") || ch.equals("佰")) current = (current == 0 ? 1 : current) * 100;
