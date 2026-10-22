@@ -161,8 +161,12 @@ public class WebManager {
 
             // ★ 第31批（#204）：web 感知到 插件设置.txt 变化 → 拉起整份文件重载
             //   （垃圾站等其他模块的配置字段；ConfigManager 内部比对，无变化静默）
-            if (plugin.getConfig2() != null) {
-                plugin.getConfig2().reloadSettingsIfChanged();
+            // ★ 第42批：重载成功后把垃圾站启停应用到运行态（否则只改字段不生效）
+            if (plugin.getConfig2() != null
+                    && plugin.getConfig2().reloadSettingsIfChanged()) {
+                if (plugin.getGarbage() != null) {
+                    plugin.getGarbage().applyEnabledState();
+                }
             }
 
             if (!urlChanged && !secretChanged && !enableChanged && !othersChanged) {

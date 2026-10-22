@@ -35,6 +35,12 @@ public class GarbageManager implements Listener {
     private int currentRound = 0;
 
     /**
+     * ★ 第42批：自动清理任务引用（BukkitRunnable）。
+     * 热停用时 cancel 该任务；applyEnabledState() 用它判断是否已在跑。
+     */
+    private BukkitRunnable cleanupTask = null;
+
+    /**
      * ★ 第36批：上一轮「清扫」进回收站的掉落物数量（血条展示）。
      * -1 = 还没跑过任何一轮（血条不显示该字段）。
      */
@@ -178,9 +184,28 @@ public class GarbageManager implements Listener {
 
     public void startAutoCleanup() {
         if (!enabled) return;
-        new BukkitRunnable() {
+        // ★ 第42批：已在跑则不再重复调度（applyEnabledState 可能被多路热重载同时触发）
+        if (cleanupTask != null) return;
+        cleanupTask = new BukkitRunnable() {
             @Override
             public void run() {
+                // ★ 第42批：启停状态热更兜底 —— ConfigManager.garbageEnabled 变 false 后
+                //   （插件设置.txt 热重载），任务自己收摊：撤血条+清状态+取消自身。
+                //   反向 false→true 时任务已不存在，靠 applyEnabledState() 重新拉起。
+                if (!plugin.getConfig2().garbageEnabled) {
+                    enabled = false;
+                    hideAllBossBars();
+                    roundStartMs = 0L;
+                    announcedMask = 0;
+                    pendingDrops.clear();
+                    cleanupTask = null;
+                    plugin.getLogger().info(
+                            "[Garbage] 垃圾站_启用 热更关闭：自动清理任务已自停、血条已撤");
+                    this.cancel();
+                    return;
+                }
+                enabled = true;
+
                 // 在线人数≤0时暂停
                 if (Bukkit.getOnlinePlayers()
                         .isEmpty()) {
@@ -250,8 +275,14 @@ public class GarbageManager implements Listener {
                 if (nodeHit) {
                     // ★ 第31批（#204/#205）：垃圾箱进入下一节点 → 查一次 插件设置.txt，
                     //   有变化整份重载（ConfigManager 内部比对，无变化静默、有变化打日志）
-                    plugin.getConfig2()
-                            .reloadSettingsIfChanged();
+                    // ★ 第42批：重载成功后把「垃圾站_启用」应用到运行态 ——
+                    //   此前只更新 ConfigManager 字段，GarbageManager.enabled 没人回写，
+                    //   导致日志喊了「true→false」但任务照跑、血条照显示（用户截图根因）。
+                    if (plugin.getConfig2()
+                            .reloadSettingsIfChanged()) {
+                        applyEnabledState();
+                        if (!enabled) return;   // 本轮已被热停 → 不再往下跑
+                    }
                 }
                 if (remain <= 5 && remain > 0)
                     broadcast("§e§l[垃圾站] §c" + remain + "§f...");
@@ -267,7 +298,59 @@ public class GarbageManager implements Listener {
                 // ★ 第34批：remain 取自墙钟唯一时间源，与广播/抢救打印同源
                 updateBossBars(remain);
             }
-        }.runTaskTimer(plugin, 20L, 20L);
+        };
+        cleanupTask.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /**
+     * ★ 第42批：停止自动清理任务并复位运行态（热停用时用）。
+     * 撤血条 + 清按键状态 + 复位墙钟起点与节点位图，下次启用从满格重新计时。
+     */
+    public void stopAutoCleanup() {
+        if (cleanupTask != null) {
+            try {
+                cleanupTask.cancel();
+            } catch (IllegalStateException ignored) {
+            }
+            cleanupTask = null;
+        }
+        enabled = false;
+        hideAllBossBars();
+        roundStartMs = 0L;
+        announcedMask = 0;
+        pendingDrops.clear();
+    }
+
+    /**
+     * ★ 第42批：把 ConfigManager.garbageEnabled（插件设置.txt 的「垃圾站_启用」）
+     * 应用到 GarbageManager 运行态（双向：false→true 重新拉起任务 / true→false 停任务撤血条）。
+     *
+     * <p>根因（第42批用户截图）：reloadSettingsIfChanged() 整份重载后只更新了
+     * ConfigManager 的字段并打了「已整份重载」日志，但 GarbageManager.enabled
+     * 是启动时 loadConfig() 拷贝的运行态快照，没人回写 → 日志喊了 true→false，
+     * 垃圾站照常运行。反向（false→true）更糟：启动时任务就没创建，
+     * 之后改 true 也没人调 startAutoCleanup()，垃圾站永远起不来。
+     *
+     * <p>调用点：Web 热重载 / 垃圾站节点热重载 / /sdf1_login reload 命令。
+     * 非主线程调用会自动切回主线程（BossBar 撤除必须主线程）。
+     */
+    public void applyEnabledState() {
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, this::applyEnabledState);
+            return;
+        }
+        boolean want = plugin.getConfig2().garbageEnabled;
+        if (want == enabled) return;   // 状态一致 → no-op（防多路触发重复打日志）
+        if (want) {
+            enabled = true;
+            startAutoCleanup();
+            plugin.getLogger().info(
+                    "[Garbage] 垃圾站_启用 热更生效：自动清理任务已启动");
+        } else {
+            stopAutoCleanup();
+            plugin.getLogger().info(
+                    "[Garbage] 垃圾站_启用 热更生效：自动清理任务已停止、血条已撤");
+        }
     }
 
     /**

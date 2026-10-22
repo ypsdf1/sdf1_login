@@ -9821,6 +9821,8 @@ public class Main extends JavaPlugin
             // ★ 第31批（#205）：/reload 此前漏了 loadSettings，
             //   插件设置.txt 改完 reload 不生效（启发式拦截/垃圾间隔没动静的根因）
             if (config != null) config.loadSettings();
+            // ★ 第42批：整份重载后把垃圾站启停应用到运行态
+            if (garbage != null) garbage.applyEnabledState();
             if (areaProtection != null) areaProtection.reload();
             if (webManager != null) webManager.reloadWebConfig();
             sender.sendMessage("§a[§2Sdf1_login§a] 插件全部设置已重载");
@@ -10011,6 +10013,8 @@ public class Main extends JavaPlugin
             config.loadMessages();
             config.loadSmtp();
             config.loadSettings();
+            // ★ 第42批：整份重载后把垃圾站启停应用到运行态
+            if (garbage != null) garbage.applyEnabledState();
             chatFilter.loadConfig();
             if (radio != null) radio.reload();
             if (getMenu() != null) {
