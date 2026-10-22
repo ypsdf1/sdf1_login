@@ -4845,7 +4845,7 @@ function changePassword() {
     }
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT password_hash, password_salt FROM weblogin_credentials WHERE player_name = :player");
+    $stmt = $db->prepare("SELECT password_hash, salt, temp_password_hash, temp_pw_expire FROM weblogin_credentials WHERE player_name = :player");
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
     $result = $stmt->execute();
     $row = $result->fetchArray(SQLITE3_ASSOC);
@@ -4855,7 +4855,7 @@ function changePassword() {
     }
 
     // 验证旧密码
-    $saltBytes = base64_decode($row['password_salt'], true);
+    $saltBytes = base64_decode($row['salt'], true);
     if ($saltBytes === false || $saltBytes === '') {
         error('密码盐值无效');
     }

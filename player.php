@@ -316,6 +316,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
             <div class="sidebar-item" data-page="sn" onclick="switchPage('sn')">🔢 SN设备管理</div>
+            <div class="sidebar-item" data-page="account" onclick="switchPage('account')">🛡️ 账号安全</div>
         </div>
 
         <div class="content" id="content">
@@ -369,6 +370,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         </div>
     </div>
 
+    <script src="qrcode.min.js?v=<?php echo filemtime(__DIR__ . '/qrcode.min.js'); ?>"></script>
     <script>
     // ★ 人机验证挂件HTML：由 config.php 的 CAPTCHA_PROVIDER 单点决定 CF/VA（全项目只用一家，不混用）。
     //   未启用（off / 密钥未配）时为空串，前端不挂件、服务端同步放行，
@@ -2462,7 +2464,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         }
     }
 
-    // ===== 账号 =====
+    // ===== 账号（2026-10-22 第44批：账号信息 + 账号安全双卡） =====
     function renderAccount(el) {
         if (IS_PREVIEW || (!AUTHENTICATED && NEED_PASSWORD)) {
             el.innerHTML = `<div class="card"><h2>账号信息</h2><div style="text-align:center;padding:40px 20px"><div style="font-size:48px;margin-bottom:16px">🔒</div><p style="color:var(--dim);font-size:14px;margin-bottom:20px">游客模式下无法查看账号信息</p><p style="color:var(--dim);font-size:12px">请先登录游戏获取Web访问令牌</p></div></div>`;
@@ -2476,22 +2478,94 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="card">
                 <h2>账号信息</h2>
                 <div id="accountResult" style="margin-top:16px"></div>
+            </div>
+            <div class="card">
+                <h2 style="display:flex;align-items:center;justify-content:space-between">🛡️ 账号安全
+                    <button class="btn" style="font-size:12px;padding:4px 10px" onclick="acctRefreshStatus()">🔄 刷新</button>
+                </h2>
+                <p style="color:var(--dim);font-size:12px;margin:4px 0 12px">修改任何账号信息前需完成两层验证：① 输入一次完整登录密码（强制）→ ② 邮箱验证码 / 认证器动态码 / 恢复代码（三选一）。</p>
+                <div id="accountSecurity" style="margin-top:4px"><div style="color:var(--dim);font-size:13px;padding:12px 0">加载中...</div></div>
             </div>`;
         doQueryAccount();
+        acctRefreshStatus();
     }
 
     async function doQueryAccount() {
         if (!currentPlayer) return;
         const res = await api('register.php', {action: 'query', player: currentPlayer, token: TOKEN});
         const div = document.getElementById('accountResult');
+        if (!div) return;
         if (res.success) {
             const d = res.data;
             const regTime = d.register_time ? new Date(d.register_time * 1000).toLocaleString() : '未知';
             const loginTime = d.last_login_time ? new Date(d.last_login_time * 1000).toLocaleString() : '未知';
             div.innerHTML = `<table class="table"><tr><td style="color:var(--dim)">用户名</td><td>${d.player_name}</td></tr><tr><td style="color:var(--dim)">注册时间</td><td>${regTime}</td></tr><tr><td style="color:var(--dim)">最后登录</td><td>${loginTime}</td></tr><tr><td style="color:var(--dim)">积分</td><td>${d.points || 0}</td></tr><tr><td style="color:var(--dim)">礼包阶段</td><td>${d.gift_stage || 0}</td></tr><tr><td style="color:var(--dim)">在线时长</td><td>${Math.floor((d.total_online_time||0)/3600)}小时</td></tr></table>`;
         } else {
-            div.innerHTML = `<div class="card" style="border-color:var(--red)">${res.message}</div>`;
+            div.innerHTML = `<div class="card" style="border-color:var(--red)">${escapeHtml(res.message || '查询失败')}</div>`;
         }
+    }
+
+    // ===== 账号安全状态（api/account.php?action=status） =====
+    let _acctStatus = null;
+
+    async function acctRefreshStatus() {
+        const box = document.getElementById('accountSecurity');
+        if (!box) return;
+        box.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 0">加载中...</div>';
+        const retry = '<button class="btn" style="font-size:12px;padding:2px 8px;margin-left:6px" onclick="acctRefreshStatus()">重试</button>';
+        try {
+            const res = await apiPost('account.php', {action: 'status'});
+            if (!res.success) {
+                box.innerHTML = `<div style="color:var(--red);font-size:13px;padding:8px 0">${escapeHtml(res.message || '加载失败')}${retry}</div>`;
+                return;
+            }
+            _acctStatus = res.data;
+            box.innerHTML = acctStatusHtml(res.data);
+        } catch (e) {
+            box.innerHTML = `<div style="color:var(--red);font-size:13px;padding:8px 0">连接失败: ${escapeHtml(e.message)}${retry}</div>`;
+        }
+    }
+
+    function acctRow(label, valueHtml, actionHtml) {
+        return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
+            <div style="min-width:0"><div style="font-size:13px;color:var(--dim)">${label}</div><div style="font-size:14px;margin-top:2px;word-break:break-all">${valueHtml}</div></div>
+            <div style="flex-shrink:0;display:flex;gap:8px;align-items:center">${actionHtml || ''}</div>
+        </div>`;
+    }
+
+    function acctStatusHtml(d) {
+        let html = '';
+        if (!d.can_verify) {
+            html += `<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:8px;padding:10px 12px;font-size:12.5px;color:var(--red);margin-bottom:10px">⚠️ ${escapeHtml(d.hint || '当前无法完成第二层验证')}</div>`;
+        }
+        html += acctRow('登录密码', '已设置（6-20位）',
+            `<button class="btn btn-primary" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('change_password','修改登录密码')">修改</button>`);
+        html += acctRow('绑定邮箱', d.has_email ? escapeHtml(d.email_masked) : '<span style="color:var(--red)">未绑定</span>',
+            d.has_email ? '<span style="font-size:12px;color:var(--dim)">第二层验证可用</span>'
+                        : '<span style="font-size:12px;color:var(--dim)">请先游戏中 /bindemail</span>');
+        const twofaVal = d.twofa_bound
+            ? '✅ 已绑定认证器（TOTP）'
+            : (d.pending_setup ? '⏳ 密钥已生成但未确认' : '<span style="color:var(--dim)">未绑定</span>');
+        let twofaBtns = '';
+        if (d.twofa_bound) {
+            twofaBtns += `<button class="btn btn-dim" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('totp_unbind','解绑二次验证')">解绑</button>`;
+        } else if (d.can_verify) {
+            twofaBtns += `<button class="btn btn-primary" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('totp_setup','绑定二次验证器')">绑定</button>`;
+        }
+        html += acctRow('二次验证器', twofaVal, twofaBtns);
+        const recVal = d.has_recovery
+            ? '已生成（未用完）'
+            : (d.twofa_bound ? '<span style="color:var(--dim)">未生成</span>' : '<span style="color:var(--dim)">绑定认证器后生成</span>');
+        let recBtns = '';
+        if (d.has_recovery) {
+            recBtns += `<button class="btn" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('recovery_list','查看恢复代码')">查看</button>`;
+        }
+        if (d.twofa_bound || d.has_recovery) {
+            recBtns += `<button class="btn btn-yellow" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('recovery_regenerate','重新生成恢复代码')">${d.has_recovery ? '重新生成' : '生成'}</button>`;
+        }
+        html += acctRow('恢复代码', recVal, recBtns);
+        html += `<p style="color:var(--dim);font-size:12px;margin-top:12px;line-height:1.6">💡 恢复代码是认证器丢失时的备用第二层验证方式（每组一次性使用）。修改密码、绑定/解绑认证器、查看/重生成恢复代码，均需先完成两层验证。</p>`;
+        return html;
     }
 
     // ===== 通用 =====
@@ -2738,49 +2812,345 @@ if ($currentVersion !== $BUILD_VERSION) {
         document.getElementById('modalOverlay').style.display = 'flex';
     }
 
-    // ===== 修改密码 =====
-    function showChangePasswordModal() {
+    // ===== 双层验证向导（2026-10-22 第44批 · api/account.php） =====
+    // 流程：完整密码(第一层) → 邮箱码/动态码/恢复代码(第二层) → ticket(10分钟一次性) → 执行动作
+    async function apiPost(endpoint, params = {}) {
+        const url = new URL(API + endpoint, location.href);
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(params)
+        });
+        return await res.json();
+    }
+
+    let _acctState = null;
+    let _lastRecoveryCodes = [];
+
+    function startAccountVerify(action, label) {
+        if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
+        _acctState = { action: action, label: label || action, challenge: null, methods: [], method: null, ticket: null, emailMasked: '' };
+        acctStepPassword();
+    }
+
+    function acctModalOpen(title) {
         closeModal();
-        document.getElementById('modalTitle').textContent = '修改密码';
-        document.getElementById('modalBody').innerHTML = `
-            <p style="color:var(--dim);font-size:13px;margin-bottom:12px">修改您的登录密码</p>
-            <div class="row"><label>当前密码</label><input type="password" id="changePwdOld" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
-            <div class="row"><label>新密码</label><input type="password" id="changePwdNew" placeholder="6-20位" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
-            <div class="row"><label>确认新密码</label><input type="password" id="changePwdConfirm" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
-            <div id="changePwdError" style="color:var(--red);font-size:12px;margin-top:4px"></div>`;
-        document.getElementById('modalConfirm').textContent = '修改密码';
-        document.getElementById('modalConfirm').onclick = () => doChangePassword();
+        document.getElementById('modalTitle').textContent = title;
         document.getElementById('modalOverlay').style.display = 'flex';
     }
 
-    async function doChangePassword() {
-        const oldPwd = document.getElementById('changePwdOld').value.trim();
-        const newPwd = document.getElementById('changePwdNew').value.trim();
-        const confirmPwd = document.getElementById('changePwdConfirm').value.trim();
+    function acctModalSet(html, confirmText, onConfirm) {
+        document.getElementById('modalBody').innerHTML = html;
+        const btn = document.getElementById('modalConfirm');
+        btn.textContent = confirmText;
+        btn.disabled = false;
+        btn.onclick = onConfirm;
+    }
 
-        if (!oldPwd || !newPwd || !confirmPwd) { document.getElementById('changePwdError').textContent = '请填写所有字段'; return; }
-        if (newPwd !== confirmPwd) { document.getElementById('changePwdError').textContent = '两次输入的密码不一致'; return; }
-        if (newPwd.length < 6 || newPwd.length > 20) { document.getElementById('changePwdError').textContent = '密码长度必须为6-20位'; return; }
+    function acctErr(msg) {
+        const e = document.getElementById('acctErr');
+        if (e) e.textContent = msg || '';
+    }
 
-        document.getElementById('changePwdError').textContent = '处理中...';
+    // ---- 第一步：完整登录密码（强制层） ----
+    function acctStepPassword() {
+        acctModalOpen('🛡️ ' + _acctState.label);
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px">第一步（必填）：输入一次完整登录密码</div>
+            <input type="password" id="acctPwd" placeholder="当前登录密码" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+            '下一步 →', acctDoStep1);
+        setTimeout(() => { const p = document.getElementById('acctPwd'); if (p) p.focus(); }, 120);
+    }
+
+    async function acctDoStep1() {
+        const st = _acctState;
+        const pwd = document.getElementById('acctPwd') ? document.getElementById('acctPwd').value : '';
+        if (!pwd) { acctErr('请输入密码'); return; }
+        const btn = document.getElementById('modalConfirm');
+        btn.disabled = true; acctErr('验证中...');
         try {
-            const url = new URL(API + 'sync.php', location.href);
-            url.searchParams.set('action', 'change_password');
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({player: currentPlayer, old_password: oldPwd, new_password: newPwd})
-            });
-            const data = await res.json();
-            if (data.success) {
-                document.getElementById('changePwdError').innerHTML = '<span style="color:var(--green)">密码修改成功，请重新登录</span>';
-                setTimeout(() => { closeModal(); location.reload(); }, 2000);
-            } else {
-                document.getElementById('changePwdError').textContent = data.message || '修改失败';
-            }
+            const res = await apiPost('account.php', {action: 'verify_start', password: pwd});
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '密码错误'); return; }
+            st.challenge = res.data.challenge;
+            st.methods = res.data.methods || [];
+            st.emailMasked = res.data.email_masked || '';
+            if (!st.methods.length) { acctErr('没有可用的第二层验证方式'); return; }
+            acctStep2(st.methods[0]);
         } catch (e) {
-            document.getElementById('changePwdError').textContent = '连接失败: ' + e.message;
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
         }
+    }
+
+    // ---- 第二步：三选一（邮箱码 / 动态码 / 恢复代码） ----
+    function acctStep2(method) {
+        const st = _acctState;
+        const methods = st.methods || [];
+        if (!method) method = st.method || methods[0];
+        st.method = method;
+        const names = { email: '📧 邮箱验证码', totp: '📱 认证器动态码', recovery: '🔑 恢复代码' };
+        let tabs = '';
+        if (methods.length > 1) {
+            tabs = '<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">';
+            for (const m of methods) {
+                const act = m === method;
+                tabs += `<button class="btn${act ? ' btn-primary' : ''}" style="font-size:12px;padding:6px 10px" onclick="acctStep2('${m}')">${names[m] || m}</button>`;
+            }
+            tabs += '</div>';
+        }
+        let body = `<div style="font-size:13px;color:var(--dim);margin-bottom:8px">第二步（三选一）：${names[method] || method}</div>${tabs}`;
+        if (method === 'email') {
+            body += `
+            <div style="font-size:12.5px;color:var(--dim);margin-bottom:8px">验证码将发送至 ${escapeHtml(st.emailMasked || '绑定邮箱')}（5分钟有效）</div>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+                <button class="btn" id="acctSendBtn" onclick="acctSendCode()" style="flex-shrink:0">发送验证码</button>
+                <input type="text" id="acctEmailCode" maxlength="6" placeholder="6位验证码" inputmode="numeric" autocomplete="off" style="flex:1;min-width:0;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:15px;letter-spacing:4px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            </div>`;
+        } else if (method === 'totp') {
+            body += `
+            <div style="font-size:12.5px;color:var(--dim);margin-bottom:8px">打开认证器 App（Google/Microsoft Authenticator 等），输入当前显示的 6 位动态码</div>
+            <input type="text" id="acctTotpCode" maxlength="6" placeholder="6位动态码" inputmode="numeric" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;letter-spacing:6px;text-align:center" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">`;
+        } else {
+            body += `
+            <div style="font-size:12.5px;color:var(--dim);margin-bottom:8px">输入一组恢复代码（形如 XXXX-XXXX-XXXX-XXXX，横线可省略），每组只能用一次</div>
+            <input type="text" id="acctRecCode" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;letter-spacing:1px;font-family:monospace" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">`;
+        }
+        body += '<div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>';
+        acctModalSet(body, '验证并继续 →', acctDoStep2);
+    }
+
+    async function acctSendCode() {
+        const st = _acctState;
+        const btn = document.getElementById('acctSendBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '发送中...'; }
+        try {
+            const res = await apiPost('account.php', {action: 'send_email_code', challenge: st.challenge});
+            if (!res.success) {
+                if (btn) { btn.disabled = false; btn.textContent = '发送验证码'; }
+                acctErr(res.message || '发送失败');
+                return;
+            }
+            acctErr('');
+            showToast(res.message || '验证码已发送', 'success');
+            acctCountdown(60);
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.textContent = '发送验证码'; }
+            acctErr('发送失败: ' + e.message);
+        }
+    }
+
+    function acctCountdown(sec) {
+        const btn = document.getElementById('acctSendBtn');
+        if (sec <= 0) { if (btn) { btn.disabled = false; btn.textContent = '重新发送'; } return; }
+        if (btn) { btn.disabled = true; btn.textContent = '重新发送(' + sec + 's)'; }
+        setTimeout(() => acctCountdown(sec - 1), 1000);
+    }
+
+    async function acctDoStep2() {
+        const st = _acctState;
+        const m = st.method;
+        const btn = document.getElementById('modalConfirm');
+        let code = '';
+        if (m === 'email') code = (document.getElementById('acctEmailCode') || {}).value || '';
+        else if (m === 'totp') code = (document.getElementById('acctTotpCode') || {}).value || '';
+        else code = (document.getElementById('acctRecCode') || {}).value || '';
+        code = (code || '').trim();
+        if (!code) { acctErr(m === 'email' ? '请先获取并输入邮箱验证码' : '请输入验证码'); return; }
+        btn.disabled = true; acctErr('验证中...');
+        const payload = { action: 'verify_step2', challenge: st.challenge };
+        if (m === 'email') payload.email_code = code;
+        else if (m === 'totp') payload.totp_code = code;
+        else payload.recovery_code = code;
+        try {
+            const res = await apiPost('account.php', payload);
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '验证失败'); return; }
+            st.ticket = res.data.ticket;
+            await acctRunAction();
+        } catch (e) {
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    // ---- 两层验证通过后的动作执行器（持 ticket 分发） ----
+    async function acctRunAction() {
+        const st = _acctState;
+        const ticket = st.ticket;
+        try {
+            if (st.action === 'change_password') { acctPromptNewPassword(ticket); return; }
+            if (st.action === 'totp_setup') { await acctFlowTotp(ticket); return; }
+            if (st.action === 'totp_unbind') {
+                const hasEmail = _acctStatus && _acctStatus.has_email;
+                const warn = hasEmail
+                    ? '确认解绑二次验证器？\n解绑后恢复代码将全部作废，第二层验证只剩邮箱验证码。'
+                    : '⚠️ 账号未绑定邮箱！\n解绑后将没有任何第二层验证方式，届时将无法再修改密码等账号信息（需先在游戏中 /bindemail 绑定邮箱）。确认仍要解绑？';
+                if (!(await showConfirm(warn))) { closeModal(); return; }
+                const res = await apiPost('account.php', {action: 'totp_unbind', ticket: ticket});
+                if (!res.success) { showToast(res.message || '解绑失败', 'error'); return; }
+                closeModal();
+                showToast('已解绑二次验证器', 'success');
+                acctRefreshStatus();
+                return;
+            }
+            if (st.action === 'recovery_list') {
+                const res = await apiPost('account.php', {action: 'recovery_list', ticket: ticket});
+                if (!res.success) { showToast(res.message || '获取失败', 'error'); return; }
+                acctShowRecoveryCodes(res.data.recovery_codes || [], '以下为当前有效的恢复代码（未用完的）：');
+                return;
+            }
+            if (st.action === 'recovery_regenerate') {
+                if (!(await showConfirm('重新生成恢复代码？\n旧的恢复代码将全部立即作废。'))) { closeModal(); return; }
+                const res = await apiPost('account.php', {action: 'recovery_regenerate', ticket: ticket});
+                if (!res.success) { showToast(res.message || '生成失败', 'error'); return; }
+                acctShowRecoveryCodes(res.data.recovery_codes || [], '新的恢复代码已生成（旧代码全部作废），只显示这一次：');
+                return;
+            }
+            showToast('未知操作: ' + st.action, 'error');
+        } catch (e) {
+            showToast('请求失败: ' + e.message, 'error');
+        }
+    }
+
+    // ---- 修改登录密码（两层验证通过后进入） ----
+    function acctPromptNewPassword(ticket) {
+        acctModalOpen('🛡️ 修改登录密码');
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px">两层验证已通过，请设置新密码</div>
+            <div class="row"><label>新密码</label><input type="password" id="acctNewPwd" placeholder="6-20位" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
+            <div class="row"><label>确认新密码</label><input type="password" id="acctNewPwd2" placeholder="再输入一次" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()"></div>
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px"></div>`,
+            '确认修改', () => acctDoChangePassword(ticket));
+        setTimeout(() => { const p = document.getElementById('acctNewPwd'); if (p) p.focus(); }, 120);
+    }
+
+    async function acctDoChangePassword(ticket) {
+        const p1 = (document.getElementById('acctNewPwd') || {}).value || '';
+        const p2 = (document.getElementById('acctNewPwd2') || {}).value || '';
+        if (!p1 || !p2) { acctErr('请填写两遍新密码'); return; }
+        if (p1 !== p2) { acctErr('两次输入的密码不一致'); return; }
+        if (p1.length < 6 || p1.length > 20) { acctErr('密码长度必须为6-20位'); return; }
+        const btn = document.getElementById('modalConfirm');
+        btn.disabled = true; acctErr('提交中...');
+        try {
+            const res = await apiPost('account.php', {action: 'change_password', ticket: ticket, new_password: p1, confirm_password: p2});
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '修改失败'); return; }
+            closeModal();
+            showToast('✅ 密码修改成功', 'success');
+            try { notifyJavaSync(); } catch (e) {}
+            acctRefreshStatus();
+        } catch (e) {
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    // ---- 绑定二次验证器：生成密钥 → 扫码 → 动态码确认 → 一次性返回恢复代码 ----
+    async function acctFlowTotp(ticket) {
+        acctModalOpen('🛡️ 绑定二次验证器');
+        acctModalSet('<div style="color:var(--dim);font-size:13px;padding:12px 0">正在生成密钥...</div>', '关闭', () => closeModal());
+        let res;
+        try {
+            res = await apiPost('account.php', {action: 'totp_setup', ticket: ticket});
+        } catch (e) {
+            acctModalSet('<div style="color:var(--red);font-size:13px">连接失败: ' + escapeHtml(e.message) + '</div>', '关闭', () => closeModal());
+            return;
+        }
+        if (!res.success) {
+            acctModalSet('<div style="color:var(--red);font-size:13px">' + escapeHtml(res.message || '生成失败') + '</div>', '关闭', () => closeModal());
+            return;
+        }
+        const secret = res.data.secret, otpauth = res.data.otpauth;
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:8px">① 用认证器 App 扫描下方二维码（或手动输入密钥）</div>
+            <div id="acctQr" style="text-align:center;padding:6px 0;min-height:12px"></div>
+            <div style="display:flex;gap:8px;align-items:center;margin:6px 0 14px">
+                <input id="acctSecret" readonly value="${escapeHtml(secret)}" style="flex:1;min-width:0;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:monospace;font-size:13px" onclick="this.select()">
+                <button class="btn" style="flex-shrink:0;font-size:12px;padding:6px 10px" onclick="acctCopy(document.getElementById('acctSecret').value)">复制密钥</button>
+            </div>
+            <div style="font-size:13px;color:var(--dim);margin-bottom:8px">② 输入认证器显示的 6 位动态码完成确认</div>
+            <input type="text" id="acctBindCode" maxlength="6" placeholder="6位动态码" inputmode="numeric" autocomplete="off" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;letter-spacing:6px;text-align:center" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+            '确认绑定 →', () => acctDoBind(ticket));
+        acctRenderQr(otpauth);
+    }
+
+    function acctRenderQr(text) {
+        const box = document.getElementById('acctQr');
+        if (!box) return;
+        if (typeof QRCode === 'undefined') {
+            box.innerHTML = '<div style="color:var(--red);font-size:12px;padding:6px">二维码组件未加载，请手动复制下方密钥录入认证器</div>';
+            return;
+        }
+        box.innerHTML = '';
+        try {
+            new QRCode(box, {text: text, width: 180, height: 180, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M});
+        } catch (e) {
+            box.innerHTML = '<div style="color:var(--red);font-size:12px">二维码渲染失败，请手动复制下方密钥</div>';
+        }
+    }
+
+    async function acctDoBind(ticket) {
+        const code = ((document.getElementById('acctBindCode') || {}).value || '').trim();
+        if (!/^\d{6}$/.test(code)) { acctErr('请输入6位动态码'); return; }
+        const btn = document.getElementById('modalConfirm');
+        btn.disabled = true; acctErr('确认中...');
+        try {
+            const res = await apiPost('account.php', {action: 'totp_bind', ticket: ticket, code: code});
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '动态码错误'); return; }
+            acctShowRecoveryCodes(res.data.recovery_codes || [], '✅ 绑定成功！以下恢复代码只显示这一次，请立即保存：');
+            acctRefreshStatus();
+        } catch (e) {
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    // ---- 恢复代码展示（明文，一次性查看/生成结果） ----
+    function acctShowRecoveryCodes(codes, title) {
+        _lastRecoveryCodes = codes.slice();
+        acctModalOpen('🔑 恢复代码');
+        let list = '';
+        for (const c of codes) {
+            list += `<div style="font-family:monospace;font-size:14px;letter-spacing:1px;padding:7px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;text-align:center">${escapeHtml(c)}</div>`;
+        }
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--red);margin-bottom:10px">⚠️ ${escapeHtml(title)}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">${list || '<div style="color:var(--dim);font-size:13px">（无）</div>'}</div>
+            <button class="btn" style="width:100%;font-size:13px" onclick="acctCopy(_lastRecoveryCodes.join(String.fromCharCode(10)))">📋 复制全部</button>
+            <div style="color:var(--dim);font-size:12px;margin-top:10px;line-height:1.6">每组恢复代码只能使用一次，用后自动作废。请离线保存，勿截图外传。</div>`,
+            '我已保存', () => { closeModal(); acctRefreshStatus(); });
+    }
+
+    async function acctCopy(text) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+            }
+            showToast('已复制到剪贴板', 'success');
+        } catch (e) {
+            showToast('复制失败，请手动选择复制', 'error');
+        }
+    }
+
+    // ===== 修改密码（旧入口已并入双层验证流程，保留函数名兼容旧调用点） =====
+    function showChangePasswordModal() {
+        startAccountVerify('change_password', '修改登录密码');
+    }
+
+    async function doChangePassword() {
+        showChangePasswordModal();
     }
 
     // ===== 重置密码（后端判断有无邮箱） =====

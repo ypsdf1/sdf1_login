@@ -971,7 +971,12 @@ let lazyLoadState = {
 let isFirstLoad = true; // ★ 标记是否为首次加载
 
 function lazyLoadUsersPage(page, limit, search, onlineSet) {
-    if (lazyLoadState.isLoading) return;
+    // ★ 第44批根因修复：此前 isLoading=true 时直接 return —— 搜索请求(IP查询最长15-30秒)进行中
+    //   清空搜索词，新请求被静默丢弃 → 旧搜索结果滞留（10次里6次卡住的元凶）。
+    //   改为抢占式：中止在飞旧请求 + 代际令牌 _lazyUsersGen，旧回调全部作废。
+    if (window._lazyUsersCtl) { try { window._lazyUsersCtl.abort(); } catch (e) {} }
+    window._lazyUsersGen = (window._lazyUsersGen || 0) + 1;
+    const myGen = window._lazyUsersGen;
     lazyLoadState.isLoading = true;
     lazyLoadState.currentPage = page;
     lazyLoadState.currentSearch = search;
@@ -986,7 +991,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
         page: page,
         limit: batchSize,
         _t: Date.now(), // ★ 缓存失效：每次请求带时间戳
-        ...(search ? { search: encodeURIComponent(search) } : {})
+        ...(search ? { search: search } : {})   // ★ 第44批：URLSearchParams 自会编码，手动 encodeURIComponent 会二次转义(%2520)
     };
     const queryString = new URLSearchParams(queryParams).toString();
     
@@ -997,6 +1002,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
     
     // 使用fetch的timeout（AbortController）
     const controller = new AbortController();
+    window._lazyUsersCtl = controller;   // ★ 第44批：挂全局，供下一个请求抢占中止
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
     fetch('api/admin.php?' + queryString, { 
@@ -1006,6 +1012,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
     })
         .finally(() => clearTimeout(timeoutId))
         .then(r => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad] 旧请求已被新请求抢占(第1段)，丢弃'); return; }
             clearTimeout(timeoutId);
             console.log('[LazyLoad] Response status: ' + r.status);
             // 先获取text再解析JSON，防止r.json()直接崩溃
@@ -1025,6 +1032,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
             });
         })
         .then(r => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad] 旧请求已被新请求抢占(第2段)，丢弃'); return; }
             console.log('[LazyLoad] ★★★ 进入第二个then块, r:', typeof r, r ? Object.keys(r).join(',') : 'null');
             lazyLoadState.isLoading = false;
             
@@ -1244,6 +1252,7 @@ function lazyLoadUsersPage(page, limit, search, onlineSet) {
             }
         })
         .catch(e => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad] 旧请求被抢占/中止，忽略:', e.name, e.message); return; }
             clearTimeout(timeoutId);
             lazyLoadState.isLoading = false;
             document.getElementById('userLazyContainer').innerHTML = '<div class="empty">加载失败: ' + (e.name === 'AbortError' ? '请求超时，请重试' : e.message) + '</div>';
@@ -1371,13 +1380,17 @@ function updateIpLocationDisplay(ipLocationMap) {
 
 function doLazyLoadMore() {
     if (!lazyLoadState.hasMore || lazyLoadState.isLoading) return;
+    // ★ 第44批：进入新请求前换代，旧代回调（含被抢占的）一律作废
+    if (window._lazyUsersCtl) { try { window._lazyUsersCtl.abort(); } catch (e) {} }
+    window._lazyUsersGen = (window._lazyUsersGen || 0) + 1;
+    const myGen = window._lazyUsersGen;
     lazyLoadState.currentPage++;
     const queryParams = {
         action: 'list_users_paginated',
         page: lazyLoadState.currentPage,
         limit: 20,
         _t: Date.now(),
-        ...(lazyLoadState.currentSearch ? { search: encodeURIComponent(lazyLoadState.currentSearch) } : {})
+        ...(lazyLoadState.currentSearch ? { search: lazyLoadState.currentSearch } : {})   // ★ 第44批：URLSearchParams 自会编码
     };
     const queryString = new URLSearchParams(queryParams).toString();
     
@@ -1388,6 +1401,7 @@ function doLazyLoadMore() {
     
     // 设置30秒超时（IP查询需要时间）
     const controller = new AbortController();
+    window._lazyUsersCtl = controller;   // ★ 第44批
     const timeoutId = setTimeout(() => controller.abort(), 30000);
     
     fetch('api/admin.php?' + queryString, { 
@@ -1397,6 +1411,7 @@ function doLazyLoadMore() {
     })
         .finally(() => clearTimeout(timeoutId))
         .then(r => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad More] 旧请求已被抢占(第1段)，丢弃'); return; }
             clearTimeout(timeoutId);
             console.log('[LazyLoad More] Response status: ' + r.status);
             return r.text().then(text => {
@@ -1412,6 +1427,7 @@ function doLazyLoadMore() {
             });
         })
         .then(r => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad More] 旧请求已被抢占(第2段)，丢弃'); return; }
             console.log('[LazyLoad More] ★ Parsed OK, success:', r.success, 'data count:', r.data?.length);
             lazyLoadState.isLoading = false;
             
@@ -1530,6 +1546,7 @@ function doLazyLoadMore() {
             }
         })
         .catch(e => {
+            if (myGen !== window._lazyUsersGen) { console.log('[LazyLoad More] 旧请求被抢占/中止，忽略:', e.name, e.message); return; }
             console.error('[LazyLoad More] ★ Error:', e.name, e.message);
             clearTimeout(timeoutId);
             lazyLoadState.isLoading = false;
@@ -1568,6 +1585,11 @@ function doLazyLoadSearch() {
 
 // ===== ban/tempban 搜索：客户端筛选封禁玩家 =====
 function renderBanSearchResults(type) {
+    // ★ 第44批：抢占在飞的懒加载请求并换代（否则旧搜索结果可能稍后覆盖封禁列表，反之亦然）
+    if (window._lazyUsersCtl) { try { window._lazyUsersCtl.abort(); } catch (e) {} }
+    window._lazyUsersGen = (window._lazyUsersGen || 0) + 1;
+    const myGen = window._lazyUsersGen;
+    lazyLoadState.isLoading = false;
     const div = document.getElementById('userLazyContainer');
     if (!div) return;
     div.innerHTML = '<div class="empty">加载中...</div>';
@@ -1576,6 +1598,7 @@ function renderBanSearchResults(type) {
     document.getElementById('userLazyLoadMore').style.display = 'none';
 
     jsonApi('admin.php?action=list_users').then(r => {
+        if (myGen !== window._lazyUsersGen) { console.log('[BanSearch] 已被新请求抢占，丢弃封禁列表结果'); return; }
         if (!r.success || !r.data) {
             div.innerHTML = '<div class="empty">加载失败: ' + escAdmHtml(r.message || '未知错误') + '</div>';
             return;
