@@ -646,14 +646,21 @@ public class GarbageManager implements Listener {
                                 //   r == n 即「本轮结束时倾倒垃圾」（下一轮才真正倒）。
                                 final int nextRound = roundNow + 1;   // 清理后开启的新一轮
                                 final int r = ((nextRound - 1) % n) + 1;
-                                if (r < n) {
-                                    broadcast("§7[垃圾站] §f当前是第 §e" + r
-                                            + " §f轮，第 §e" + n
-                                            + " §f轮倒垃圾，还剩 §e" + (n - r)
-                                            + " §f轮倾倒垃圾");
-                                } else {
-                                    broadcast("§7[垃圾站] §f当前是第 §e" + n
-                                            + " §f轮，本轮结束时倾倒垃圾");
+                                // ★ 第45批：保留只有1轮(n==1)时
+                                //   每一轮都是倒垃圾轮，「本轮结束时
+                                //   倾倒垃圾」无增量信息 → 不播报；
+                                //   仅保留>1才提示轮次进度（用户
+                                //   2026-10-22 截图反馈）。
+                                if (n > 1) {
+                                    if (r < n) {
+                                        broadcast("§7[垃圾站] §f当前是第 §e" + r
+                                                + " §f轮，第 §e" + n
+                                                + " §f轮倒垃圾，还剩 §e" + (n - r)
+                                                + " §f轮倾倒垃圾");
+                                    } else {
+                                        broadcast("§7[垃圾站] §f当前是第 §e" + n
+                                                + " §f轮，本轮结束时倾倒垃圾");
+                                    }
                                 }
 
                                 // 打印下次清理时间
