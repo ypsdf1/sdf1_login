@@ -91,6 +91,15 @@ if ($currentVersion !== $BUILD_VERSION) {
             background: var(--card); border: 1px solid var(--border); border-radius: 8px;
             padding: 20px; margin-bottom: 16px;
         }
+        /* 第47批：图片壁纸模式下卡片/侧栏自适应半透明+毛玻璃；纯色/默认模式不受影响 */
+        body.bg-img-mode .card, body.bg-img-mode .sidebar {
+            background: rgba(22,27,34,0.55);
+            backdrop-filter: blur(14px) saturate(1.4);
+            -webkit-backdrop-filter: blur(14px) saturate(1.4);
+        }
+        body.bg-img-mode.light-theme .card, body.bg-img-mode.light-theme .sidebar {
+            background: rgba(255,255,255,0.55);
+        }
         .card h2 { font-size: 16px; margin-bottom: 12px; color: var(--accent); }
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
         .item-card {
@@ -2711,6 +2720,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         b.style.backgroundPosition = 'center center';
         b.style.backgroundRepeat = 'no-repeat';
         b.style.backgroundAttachment = 'fixed';
+        b.classList.add('bg-img-mode');
         document.documentElement.style.setProperty('--bg', 'rgba(13,17,23,' + Math.min(0.9, dim + 0.25) + ')');
         localStorage.setItem('sdf1_player_bgimg', JSON.stringify({ type: 'img', url: url, dim: dim }));
         if (!silent) toast('背景图片已应用', 'success');
@@ -2798,6 +2808,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         b.style.backgroundPosition = '';
         b.style.backgroundRepeat = '';
         b.style.backgroundAttachment = '';
+        b.classList.remove('bg-img-mode');
         document.documentElement.style.removeProperty('--bg');
         b.style.background = '';
         const ov = document.getElementById('themePickerOverlay');
@@ -2854,7 +2865,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                     <div style="color:var(--dim);font-size:11px;margin-top:6px">支持任意直链 jpg/png/webp；对方站点防盗链可能导致加载失败</div>
                 </div>
                 <div id="wpPaneApi" style="display:none">
-                    <button class="btn btn-blue" onclick="wpFetchBing()">获取必应每日壁纸</button>
+                    <button class="btn btn-blue" onclick="wpFetchBing()">获取每日壁纸（多源）</button>
                     <div id="wpApiInfo" style="margin-top:10px;color:var(--dim);font-size:12px">点击获取后自动预览，再点应用生效</div>
                 </div>
                 <div id="wpDimRow" style="display:none;margin-top:14px">
@@ -2886,6 +2897,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         b.style.backgroundPosition = '';
         b.style.backgroundRepeat = '';
         b.style.backgroundAttachment = '';
+        b.classList.remove('bg-img-mode');
         document.documentElement.style.setProperty('--bg', color);
         b.style.background = color;
         localStorage.removeItem('sdf1_player_bgimg');
