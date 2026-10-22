@@ -2513,6 +2513,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (!box) return;
         box.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 0">加载中...</div>';
         const retry = '<button class="btn" style="font-size:12px;padding:2px 8px;margin-left:6px" onclick="acctRefreshStatus()">重试</button>';
+        if (!TOKEN) { box.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 0">请先登录游戏后再查看账号安全信息</div>'; return; }
         try {
             const res = await apiPost('account.php', {action: 'status'});
             if (!res.success) {
@@ -2816,10 +2817,13 @@ if ($currentVersion !== $BUILD_VERSION) {
     // 流程：完整密码(第一层) → 邮箱码/动态码/恢复代码(第二层) → ticket(10分钟一次性) → 执行动作
     async function apiPost(endpoint, params = {}) {
         const url = new URL(API + endpoint, location.href);
+        // ★ 第44批修复：账号安全接口统一注入 web_token（游戏拿token登录时 TOKEN 有值）
+        const body = Object.assign({}, params);
+        if (!body.web_token && TOKEN) body.web_token = TOKEN;
         const res = await fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(params)
+            body: JSON.stringify(body)
         });
         return await res.json();
     }
