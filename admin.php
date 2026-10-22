@@ -2109,47 +2109,217 @@ function showModal(title, message, defaultValue, customHtml) {
     });
 }
 
-// ===== 主题选择器 =====
+// ===== 自定义背景系统（第46批）：纯色 / 图片URL / API壁纸(必应) 三模式 =====
+let _wpPendingUrl = null;   // 待应用的图片URL（预览/获取后暂存，点应用才生效）
+
+function wpEsc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 读取已保存的图片背景配置 {url, dim}，非法数据返回 null
+function getAdminBgImg() {
+    try {
+        const s = localStorage.getItem('sdf1_admin_bgimg');
+        if (!s) return null;
+        const o = JSON.parse(s);
+        if (o && typeof o.url === 'string' && /^https?:\/\//i.test(o.url)) {
+            return { url: o.url, dim: (typeof o.dim === 'number' ? o.dim : 0.35) };
+        }
+    } catch (e) {}
+    return null;
+}
+
+// 应用图片背景：linear-gradient 遮罩 + url 图片，cover 铺满，fixed 不随滚动
+function applyAdminBgImage(url, dim, silent) {
+    dim = Math.max(0, Math.min(0.8, parseFloat(dim)));
+    if (isNaN(dim)) dim = 0.35;
+    const safe = url.replace(/"/g, '%22');
+    const b = document.body;
+    b.style.backgroundImage = 'linear-gradient(rgba(13,17,23,' + dim + '),rgba(13,17,23,' + dim + ')), url("' + safe + '")';
+    b.style.backgroundSize = 'cover';
+    b.style.backgroundPosition = 'center center';
+    b.style.backgroundRepeat = 'no-repeat';
+    b.style.backgroundAttachment = 'fixed';
+    document.documentElement.style.setProperty('--bg', 'rgba(13,17,23,' + Math.min(0.9, dim + 0.25) + ')');
+    localStorage.setItem('sdf1_admin_bgimg', JSON.stringify({ type: 'img', url: url, dim: dim }));
+    if (!silent) toast('背景图片已应用', 'ok');
+}
+
+function wpShowPreview(url) {
+    const pv = document.getElementById('wpPreviewBox');
+    if (!pv) return;
+    pv.style.backgroundImage = 'url("' + url.replace(/"/g, '%22') + '")';
+    pv.style.display = 'block';
+}
+
+// 选项卡切换：color / url / api
+function wpTab(m) {
+    const paneColor = document.getElementById('wpPaneColor');
+    const paneUrl = document.getElementById('wpPaneUrl');
+    const paneApi = document.getElementById('wpPaneApi');
+    const dimRow = document.getElementById('wpDimRow');
+    if (!paneColor) return;
+    paneColor.style.display = (m === 'color') ? '' : 'none';
+    paneUrl.style.display = (m === 'url') ? '' : 'none';
+    paneApi.style.display = (m === 'api') ? '' : 'none';
+    dimRow.style.display = (m === 'color') ? 'none' : '';
+    document.getElementById('wpTabColor').className = 'btn' + (m === 'color' ? ' btn-blue' : '');
+    document.getElementById('wpTabUrl').className = 'btn' + (m === 'url' ? ' btn-blue' : '');
+    document.getElementById('wpTabApi').className = 'btn' + (m === 'api' ? ' btn-blue' : '');
+}
+
+// 图片URL预览：new Image 预检，失败不入暂存
+function wpPreviewUrl() {
+    const input = document.getElementById('bgImgUrl');
+    const url = (input ? input.value : '').trim();
+    if (!/^https?:\/\//i.test(url)) { toast('请输入以 http(s):// 开头的图片地址', 'err'); return; }
+    const probe = new Image();
+    probe.onload = function () {
+        _wpPendingUrl = url;
+        wpShowPreview(url);
+        toast('预览就绪，点击应用生效', 'ok');
+    };
+    probe.onerror = function () { toast('图片加载失败，请检查地址或防盗链设置', 'err'); };
+    probe.src = url;
+}
+
+// API壁纸：取必应每日壁纸，成功后预览
+function wpFetchBing() {
+    const info = document.getElementById('wpApiInfo');
+    if (info) info.textContent = '获取中...';
+    fetch('api/wallpaper.php?action=bing', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+            if (!j.success || !j.data || !j.data.url) {
+                if (info) info.textContent = '获取失败，可稍后重试或改用图片URL';
+                toast(j.message || '壁纸获取失败', 'err');
+                return;
+            }
+            _wpPendingUrl = j.data.url;
+            wpShowPreview(j.data.url);
+            const meta = [j.data.title, j.data.copyright].filter(Boolean).join(' — ');
+            if (info) info.textContent = meta || ('日期 ' + (j.data.date || ''));
+            toast('壁纸已预览，点击应用生效', 'ok');
+        })
+        .catch(function () {
+            if (info) info.textContent = '网络错误，可稍后重试或改用图片URL';
+            toast('壁纸获取失败', 'err');
+        });
+}
+
+// 应用图片背景（读遮罩滑条 + 暂存URL）
+function wpApplyBg() {
+    if (!_wpPendingUrl) { toast('请先预览或获取一张图片', 'err'); return; }
+    const dimEl = document.getElementById('bgDim');
+    const dim = dimEl ? (parseInt(dimEl.value, 10) / 100) : 0.35;
+    applyAdminBgImage(_wpPendingUrl, dim, false);
+    const ov = document.getElementById('themePickerOverlay');
+    if (ov) ov.remove();
+}
+
+// 恢复默认背景（清纯色+图片配置）
+function resetBg() {
+    localStorage.removeItem('sdf1_theme');
+    localStorage.removeItem('sdf1_admin_bgimg');
+    const b = document.body;
+    b.style.backgroundImage = 'none';
+    b.style.backgroundSize = '';
+    b.style.backgroundPosition = '';
+    b.style.backgroundRepeat = '';
+    b.style.backgroundAttachment = '';
+    document.documentElement.style.removeProperty('--bg');
+    b.style.background = '';
+    const ov = document.getElementById('themePickerOverlay');
+    if (ov) ov.remove();
+    toast('已恢复默认背景', 'ok');
+}
+// ===== 主题选择器（第46批：三模式背景） =====
 function showThemePicker() {
+    const savedImg = getAdminBgImg();
+    _wpPendingUrl = savedImg ? savedImg.url : null;
+    const dimPct = savedImg ? Math.round(savedImg.dim * 100) : 35;
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:2000';
+    overlay.id = 'themePickerOverlay';
     overlay.innerHTML = `
-        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:500px;max-width:90%">
-            <h3 style="margin-bottom:12px">🎨 选择背景颜色</h3>
-            <div class="theme-picker">
-                <div class="color-btn" style="background:#0d1117" onclick="setTheme('#0d1117')"></div>
-                <div class="color-btn" style="background:#1a1e2e" onclick="setTheme('#1a1e2e')"></div>
-                <div class="color-btn" style="background:#0f4c75" onclick="setTheme('#0f4c75')"></div>
-                <div class="color-btn" style="background:#1b2631" onclick="setTheme('#1b2631')"></div>
-                <div class="color-btn" style="background:#2c3e50" onclick="setTheme('#2c3e50')"></div>
-                <div class="color-btn" style="background:#23272a" onclick="setTheme('#23272a')"></div>
+        <div id="themePickerModal" style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:520px;max-width:94%;position:relative;max-height:90vh;overflow-y:auto">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="margin:0">🎨 自定义背景</h3>
+                <button onclick="document.getElementById('themePickerOverlay').remove()" style="background:none;border:none;color:var(--dim);font-size:20px;cursor:pointer">✕</button>
             </div>
-            <div style="margin-top:16px">
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">R</span>
-                    <input type="number" id="rgbR" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
-                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">G</span>
-                    <input type="number" id="rgbG" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
-                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">B</span>
-                    <input type="number" id="rgbB" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
-                    <span style="color:var(--dim);font-size:11px">或</span>
-                    <input type="text" id="customColor" placeholder="#1a237e" class="color-input" style="flex:1;min-width:120px">
+            <div style="display:flex;gap:6px;margin-bottom:14px">
+                <button class="btn" id="wpTabColor" onclick="wpTab('color')">纯色</button>
+                <button class="btn" id="wpTabUrl" onclick="wpTab('url')">图片URL</button>
+                <button class="btn" id="wpTabApi" onclick="wpTab('api')">API壁纸</button>
+            </div>
+            <div id="wpPaneColor">
+                <div class="theme-picker" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+                    <div class="color-btn" style="background:#0d1117" onclick="setTheme('#0d1117')"></div>
+                    <div class="color-btn" style="background:#1a1e2e" onclick="setTheme('#1a1e2e')"></div>
+                    <div class="color-btn" style="background:#0f4c75" onclick="setTheme('#0f4c75')"></div>
+                    <div class="color-btn" style="background:#1b2631" onclick="setTheme('#1b2631')"></div>
+                    <div class="color-btn" style="background:#2c3e50" onclick="setTheme('#2c3e50')"></div>
+                    <div class="color-btn" style="background:#23272a" onclick="setTheme('#23272a')"></div>
+                </div>
+                <div>
+                    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">R</span>
+                        <input type="number" id="rgbR" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">G</span>
+                        <input type="number" id="rgbG" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:12px;white-space:nowrap">B</span>
+                        <input type="number" id="rgbB" min="0" max="255" placeholder="0-255" style="width:70px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;text-align:center">
+                        <span style="color:var(--dim);font-size:11px">或</span>
+                        <input type="text" id="customColor" placeholder="#1a237e" class="color-input" style="flex:1;min-width:120px">
+                    </div>
+                    <div style="margin-top:10px"><button class="btn btn-blue" onclick="applyCustomColor()">应用纯色</button></div>
                 </div>
             </div>
-            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-                <button class="btn" id="themeCancel">取消</button>
-                <button class="btn btn-blue" onclick="applyCustomColor()">应用</button>
+            <div id="wpPaneUrl" style="display:none">
+                <div style="display:flex;gap:8px;align-items:center">
+                    <input type="text" id="bgImgUrl" placeholder="https://example.com/wallpaper.jpg" value="${wpEsc(savedImg ? savedImg.url : '')}" style="flex:1;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+                    <button class="btn" onclick="wpPreviewUrl()">预览</button>
+                </div>
+                <div style="color:var(--dim);font-size:11px;margin-top:6px">支持任意直链 jpg/png/webp；对方站点防盗链可能导致加载失败</div>
+            </div>
+            <div id="wpPaneApi" style="display:none">
+                <button class="btn btn-blue" onclick="wpFetchBing()">获取必应每日壁纸</button>
+                <div id="wpApiInfo" style="margin-top:10px;color:var(--dim);font-size:12px">点击获取后自动预览，再点应用生效</div>
+            </div>
+            <div id="wpDimRow" style="display:none;margin-top:14px">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="color:var(--dim);font-size:12px;white-space:nowrap">遮罩强度</span>
+                    <input type="range" id="bgDim" min="0" max="80" value="${dimPct}" oninput="document.getElementById('bgDimVal').textContent=this.value+'%';" style="flex:1">
+                    <span id="bgDimVal" style="color:var(--dim);font-size:12px;width:44px;text-align:right">${dimPct}%</span>
+                </div>
+            </div>
+            <div id="wpPreviewBox" style="display:none;margin-top:14px;border-radius:8px;height:120px;background-size:cover;background-position:center;border:1px solid var(--border)"></div>
+            <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px;flex-wrap:wrap">
+                <button class="btn" onclick="resetBg()">恢复默认背景</button>
+                <div style="display:flex;gap:8px">
+                    <button class="btn" onclick="document.getElementById('themePickerOverlay').remove()">取消</button>
+                    <button class="btn btn-blue" onclick="wpApplyBg()">应用图片</button>
+                </div>
             </div>
         </div>`;
     document.body.appendChild(overlay);
-    overlay.querySelector('#themeCancel').onclick = () => overlay.remove();
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    wpTab(savedImg ? 'url' : 'color');
+    if (savedImg) wpShowPreview(savedImg.url);
 }
 
 function setTheme(color) {
+    const b = document.body;
+    b.style.backgroundImage = 'none';
+    b.style.backgroundSize = '';
+    b.style.backgroundPosition = '';
+    b.style.backgroundRepeat = '';
+    b.style.backgroundAttachment = '';
     document.documentElement.style.setProperty('--bg', color);
-    document.body.style.background = color;
+    b.style.background = color;
+    localStorage.removeItem('sdf1_admin_bgimg');
     localStorage.setItem('sdf1_theme', color);
+    _wpPendingUrl = null;
     toast('主题已应用', 'ok');
 }
 
@@ -2197,8 +2367,10 @@ function applyCustomColor() {
     }
 }
 
-// 加载保存的主题
+// 加载保存的主题（第46批：图片背景优先，其次纯色）
 (function() {
+    const savedImg = getAdminBgImg();
+    if (savedImg) { applyAdminBgImage(savedImg.url, savedImg.dim, true); return; }
     const savedTheme = localStorage.getItem('sdf1_theme');
     if (savedTheme) setTheme(savedTheme);
 })();
