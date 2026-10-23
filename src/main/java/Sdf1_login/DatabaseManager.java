@@ -150,6 +150,20 @@ public class DatabaseManager {
             } catch (SQLException ignored) {
             }
 
+            // ★ 第52批：存量脏凭证一次性清洗——PHP json_encode 把 base64 中的
+            //   / 转义成 \/，历史解析层漏还原曾把反斜杠写进库（hash 脏 → 密码恒错）。
+            //   base64 合法字符永不含反斜杠(char92)，删除即还原正确值；WHERE 带
+            //   instr 条件，无脏值时为近似 no-op，可每次启动安全重跑。
+            try {
+                st.executeUpdate("UPDATE users SET password_hash=REPLACE(password_hash, char(92), '') "
+                        + "WHERE instr(password_hash, char(92))>0");
+                st.executeUpdate("UPDATE users SET password_salt=REPLACE(password_salt, char(92), '') "
+                        + "WHERE instr(password_salt, char(92))>0");
+                st.executeUpdate("UPDATE users SET temp_password=REPLACE(temp_password, char(92), '') "
+                        + "WHERE instr(temp_password, char(92))>0");
+            } catch (SQLException ignored) {
+            }
+
             // ===== 背包备份表：安全迁移 =====
             // 检查旧表是否存在（用 inventory_data 列判断）
             boolean hasOldTable = false;
@@ -748,8 +762,22 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * ★ 第52批：base64 凭证白名单清洗。
+     * PHP json_encode 默认把 base64 中的 / 转义成 \/，历史解析层漏还原
+     * 会把反斜杠写进库（hash 脏值 → 游戏/网页两端密码恒错）。
+     * base64 合法字符永不含反斜杠，先还原 \/ 再按白名单清洗即得正确值；
+     * 写库与比对两侧同款清洗，保证对称。
+     */
+    public static String b64Clean(String v) {
+        if (v == null) return null;
+        return v.replace("\\/", "/").replaceAll("[^A-Za-z0-9+/=]", "");
+    }
+
     public void createUser(String name, String hash,
                            String salt) {
+        hash = b64Clean(hash);
+        salt = b64Clean(salt);
         try {
             PreparedStatement ps = db.prepareStatement(
                     "INSERT INTO users "
@@ -774,6 +802,8 @@ public class DatabaseManager {
      * 更新玩家密码凭证（salt + hash），用于Web重新注册时同步
      */
     public void updatePassword(String name, String hash, String salt) {
+        hash = b64Clean(hash);
+        salt = b64Clean(salt);
         try {
             PreparedStatement ps = db.prepareStatement(
                     "UPDATE users SET password_hash = ?, password_salt = ? WHERE player_name = ?");
@@ -835,7 +865,8 @@ public class DatabaseManager {
                         rs.getString("password_hash");
                 rs.close();
                 ps.close();
-                return hash.equals(mainHash);
+                // ★ 第52批：比对前双侧清洗（存量脏 hash 容错，见 b64Clean）
+                return b64Clean(hash).equals(b64Clean(mainHash));
             } else {
                 rs.close();
                 ps.close();
@@ -874,7 +905,7 @@ public class DatabaseManager {
                 ps.close();
                 if (tempHash != null
                         && !tempHash.isEmpty()
-                        && mainHash.equals(tempHash)
+                        && b64Clean(mainHash).equals(b64Clean(tempHash))
                         && System.currentTimeMillis() < expire
                         && used != 1) {
                     return "temp";
@@ -923,7 +954,7 @@ public class DatabaseManager {
                 ps.close();
                 if (tempHash != null
                         && !tempHash.isEmpty()
-                        && hash.equals(tempHash)
+                        && b64Clean(hash).equals(b64Clean(tempHash))
                         && used != 1) {
                     return "temp";
                 }

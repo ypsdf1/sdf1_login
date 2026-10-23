@@ -4222,7 +4222,10 @@ public class WebManager {
         }
 
         // 字符串（去掉引号）
+        // ★ 第52批：\/ 必须先于 \\ 还原——PHP json_encode 默认把 base64 中的
+        //   / 转义成 \/，历史解析层漏还原会把反斜杠写进 login.db（hash 脏值 → 密码恒错）。
         String cleaned = value.replaceAll("^\"|\"$", "")
+                .replace("\\/", "/")
                 .replace("\\\"", "\"")
                 .replace("\\n", "\n")
                 .replace("\\\\", "\\");
@@ -4290,7 +4293,9 @@ public class WebManager {
             return parseJson(item);
         }
         if (item.startsWith("\"") && item.endsWith("\"")) {
+            // ★ 第52批：\/ 先于 \\ 还原（PHP json_encode 的 base64 斜杠转义）
             return item.substring(1, item.length() - 1)
+                    .replace("\\/", "/")
                     .replace("\\\"", "\"")
                     .replace("\\n", "\n")
                     .replace("\\\\", "\\");
@@ -4827,8 +4832,9 @@ public class WebManager {
                     DatabaseManager dbMgr = plugin.getDb();
                     if (dbMgr == null) return false;
                     String name = strOf(row.get("player_name"));
-                    String hash = strOf(row.get("password_hash"));
-                    String salt = strOf(row.get("password_salt"));
+                    // ★ 第52批：写库前白名单清洗（PHP json_encode 的 \/ 转义残留兜底）
+                    String hash = DatabaseManager.b64Clean(strOf(row.get("password_hash")));
+                    String salt = DatabaseManager.b64Clean(strOf(row.get("password_salt")));
                     if (name.isEmpty() || hash.isEmpty() || salt.isEmpty()) return false;
                     // [凭证诊断49] 收回写库前抓本地旧值，写库后回读，完整新旧值入日志抓 ping-pong 现行
                     boolean ex49 = dbMgr.userExists(name);
@@ -4851,7 +4857,7 @@ public class WebManager {
                         plugin.getLogger().info("[凭证诊断49] 收回写库(无变化) name=" + name
                                 + " hash=" + newH49 + " salt=" + newS49);
                     }
-                    String tmpHash = strOf(row.get("temp_password"));
+                    String tmpHash = DatabaseManager.b64Clean(strOf(row.get("temp_password")));
                     long tmpExpire = longOf(row.get("temp_pw_expire"));
                     if (!tmpHash.isEmpty() && tmpExpire > 0) {
                         dbMgr.setField(name, "temp_password", tmpHash);
@@ -11469,9 +11475,24 @@ public class WebManager {
         int start = json.indexOf(search);
         if (start == -1) return null;
         start += search.length();
-        int end = json.indexOf("\"", start);
+        // ★ 第52批：扫描跳过转义序列（\" \/ \\ 等），避免值内转义引号提前截断；
+        //   取到原文后按 JSON 规则反转义，\/ 先于 \\ 还原（PHP json_encode 的
+        //   base64 斜杠转义），否则 password_hash/salt 会带反斜杠直接入库。
+        int i = start;
+        int end = -1;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == '\\' && i + 1 < json.length()) { i += 2; continue; }
+            if (c == '"') { end = i; break; }
+            i++;
+        }
         if (end == -1) return null;
-        return json.substring(start, end);
+        String raw = json.substring(start, end);
+        return raw.replace("\\/", "/")
+                .replace("\\\"", "\"")
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\\\", "\\");
     }
 
     // ==================== Web注册请求轮询 ====================
