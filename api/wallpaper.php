@@ -80,7 +80,8 @@ $act = isset($_GET['action']) ? $_GET['action'] : '';
 
 /* ===== 每日壁纸元数据（第47批：多源 fallback 链） ===== */
 if ($act === 'bing') {
-    $cached = wpjCacheGet('bing', WPJ_BING_TTL);
+    // ★第48批#247：key 版本化 bing -> bing_v2（旧缓存存着无 api/ 前缀的坏 URL，须失效）
+    $cached = wpjCacheGet('bing_v2', WPJ_BING_TTL);
     if ($cached !== null) { wpjOut(true, 'ok', $cached); }
 
     $data = null;
@@ -94,7 +95,8 @@ if ($act === 'bing') {
         $direct = $base . $img['urlbase'] . '_1920x1080.jpg';
         $data = array(
             // 前端优先用代理地址（防防盗链），direct 作兜底直连
-            'url'       => 'wallpaper.php?action=image&u=' . rawurlencode($direct),
+            // ★第48批#247：补 api/ 前缀（原相对路径经前端路由转发后 404，图片取不到）
+            'url'       => 'api/wallpaper.php?action=image&u=' . rawurlencode($direct),
             'direct'    => $direct,
             'source'    => 'bing',
             'title'     => isset($img['title'])     ? $img['title']     : '',
@@ -111,7 +113,8 @@ if ($act === 'bing') {
         if (is_array($j) && !empty($j['hdurl']) && preg_match('#^https?://#i', $j['hdurl'])) {
             $direct = $j['hdurl'];
             $data = array(
-                'url'       => 'wallpaper.php?action=image&u=' . rawurlencode($direct),
+                // ★第48批#247：补 api/ 前缀（同 bing）
+                'url'       => 'api/wallpaper.php?action=image&u=' . rawurlencode($direct),
                 'direct'    => $direct,
                 'source'    => 'nasa',
                 'title'     => isset($j['title'])     ? $j['title']     : 'NASA 每日天文图',
@@ -134,7 +137,7 @@ if ($act === 'bing') {
         );
     }
 
-    wpjCacheSet('bing', $data);
+    wpjCacheSet('bing_v2', $data);
     wpjOut(true, 'ok', $data);
 }
 

@@ -314,7 +314,7 @@ function acctCredentials($player) {
 /** 第一层密码比对：只认主密码（"完整密码"语义，临时密码不算）。 */
 function acctPwdCheck($cred, $pwd) {
     if (!$cred || !isset($cred['password_hash']) || $cred['password_hash'] === '') return false;
-    $saltBytes = base64_decode((string)$cred['salt'], true);
+    $saltBytes = saltDecode((string)$cred['salt']);   // ★第48批：容错解盐（core.php saltDecode）
     if ($saltBytes === false || $saltBytes === '') return false;
     $calc = base64_encode(hash('sha256', $saltBytes . $pwd, true));
     return hash_equals((string)$cred['password_hash'], $calc);
@@ -693,7 +693,9 @@ function acctChangePassword() {
     $confirm = (string)getParam('confirm_password', '');
     if ($newPwd === '') error('请输入新密码');
     if ($confirm !== '' && $confirm !== $newPwd) error('两次输入的新密码不一致');
-    if (strlen($newPwd) < 6 || strlen($newPwd) > 20) error('密码长度必须为6-20位');
+    // ★第48批#245：与游戏 PasswordUtils.validate 同一把尺子（6-20位+大写+小写+数字）
+    $ruleErr = pwdRuleError($newPwd);
+    if ($ruleErr !== null) error($ruleErr);
 
     $cred = acctCredentials($player);
     if (!$cred) error('账号未设置密码');

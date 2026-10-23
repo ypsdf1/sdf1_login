@@ -3041,6 +3041,39 @@ function storeTempPassword($playerName, $tempHash, $expire) {
 }
 
 /**
+ * 游戏同款密码强度规则（第48批#245，与 Java PasswordUtils.validate 对齐）：
+ * 长度 6-20 位 + 至少 1 个大写字母 + 至少 1 个小写字母 + 至少 1 个数字。
+ * 网页端改密/重置必须走同一把尺子，避免出现「网页能设、游戏登不上」的密码。
+ *
+ * @return string|null 通过返回 null；不通过返回错误文案（可直接 error()）
+ */
+function pwdRuleError($pwd) {
+    $pwd = (string)$pwd;
+    $len = strlen($pwd);
+    if ($len < 6 || $len > 20) return '密码长度必须为6-20位';
+    if (!preg_match('/[A-Z]/', $pwd)) return '密码需包含大写字母';
+    if (!preg_match('/[a-z]/', $pwd)) return '密码需包含小写字母';
+    if (!preg_match('/[0-9]/', $pwd)) return '密码需包含数字';
+    return null;
+}
+
+/**
+ * 容错解盐（第48批）：镜像 Java PasswordUtils 的清洗逻辑。
+ * 游戏侧偶发脏盐（含 JSON 转义反斜杠等非 base64 字符），
+ * Java 端 hash 前会 replaceAll("[^A-Za-z0-9+/=]") 清洗后再用，游戏端正常；
+ * PHP strict base64_decode 却直接失败 → 该玩家网页端永远密码错误。
+ * 故 PHP 侧同款清洗后再 strict 解码——清洗等价于 Java，哈希结果不变。
+ * @return string|false 解出的原始盐字节；清洗后仍无法解码返回 false
+ */
+function saltDecode($salt) {
+    $clean = preg_replace('/[^A-Za-z0-9+\/=]/', '', (string)$salt);
+    if ($clean === '' || $clean === null) return false;
+    $bytes = base64_decode($clean, true);
+    if ($bytes === false || $bytes === '') return false;
+    return $bytes;
+}
+
+/**
  * 验证Web登录密码（优先校验临时密码，再校验主密码）
  * 返回: 'temp' 表示临时密码, 'main' 表示主密码, false 表示失败
  */
@@ -3067,7 +3100,7 @@ function verifyWebLoginPassword($playerName, $password) {
         $tempExpire = (int)$row['temp_pw_expire'];
         if (time() < $tempExpire && $row['temp_password_hash'] !== '') {
             $salt = $row['salt'];
-            $saltBytes = base64_decode($salt, true);
+            $saltBytes = saltDecode($salt);   // ★第48批：容错解盐（镜像Java清洗）
             if ($saltBytes !== false && $saltBytes !== '') {
                 $rawHash = hash('sha256', $saltBytes . $password, true);
                 $computedHash = base64_encode($rawHash);
@@ -3081,7 +3114,7 @@ function verifyWebLoginPassword($playerName, $password) {
     // 2. 再检查主密码
     $storedHash = $row['password_hash'];
     $salt = $row['salt'];
-    $saltBytes = base64_decode($salt, true);
+    $saltBytes = saltDecode($salt);   // ★第48批：容错解盐（镜像Java清洗）
     if ($saltBytes === false || $saltBytes === '') return false;
 
     $rawHash = hash('sha256', $saltBytes . $password, true);

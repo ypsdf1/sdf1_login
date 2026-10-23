@@ -3011,6 +3011,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     let _acctState = null;
     let _lastRecoveryCodes = [];
+    let _lastChangedPwd = '';   // ★第48批#246：改密成功面板明文密码（复制按钮用）
 
     function startAccountVerify(action, label) {
         if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
@@ -3203,12 +3204,42 @@ if ($currentVersion !== $BUILD_VERSION) {
     function acctPromptNewPassword(ticket) {
         acctModalOpen('🛡️ 修改登录密码');
         acctModalSet(`
-            <div style="font-size:13px;color:var(--dim);margin-bottom:10px">两层验证已通过，请设置新密码</div>
-            <div class="row"><label>新密码</label><input type="password" id="acctNewPwd" placeholder="6-20位" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px">两层验证已通过，请设置新密码（与游戏内同一套规则）</div>
+            <div class="row"><label>新密码</label><input type="password" id="acctNewPwd" placeholder="6-20位" autocomplete="new-password" oninput="acctPwdChecklist()" style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px"></div>
+            <div id="acctPwdRules" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;margin:8px 0 4px;font-size:12px">
+                <div id="pwrLen">○ 长度 6-20 位</div>
+                <div id="pwrUp">○ 含大写字母</div>
+                <div id="pwrLow">○ 含小写字母</div>
+                <div id="pwrNum">○ 含数字</div>
+            </div>
             <div class="row"><label>确认新密码</label><input type="password" id="acctNewPwd2" placeholder="再输入一次" autocomplete="new-password" style="width:100%;box-sizing:border-box;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()"></div>
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px"></div>`,
             '确认修改', () => acctDoChangePassword(ticket));
+        acctPwdChecklist();
         setTimeout(() => { const p = document.getElementById('acctNewPwd'); if (p) p.focus(); }, 120);
+    }
+
+    // ---- ★第48批#245：密码强度实时校验清单（与游戏 PasswordUtils.validate 同一把尺子） ----
+    function acctPwdChecklist() {
+        const v = (document.getElementById('acctNewPwd') || {}).value || '';
+        const checks = [
+            ['pwrLen', v.length >= 6 && v.length <= 20],
+            ['pwrUp',  /[A-Z]/.test(v)],
+            ['pwrLow', /[a-z]/.test(v)],
+            ['pwrNum', /[0-9]/.test(v)]
+        ];
+        let allOk = v.length > 0;
+        for (const [id, ok] of checks) {
+            const el = document.getElementById(id);
+            if (el) {
+                el.textContent = (ok ? '✓ ' : '✗ ') + el.textContent.slice(2);
+                el.style.color = ok ? 'var(--green, #4caf50)' : 'var(--dim)';
+            }
+            if (!ok) allOk = false;
+        }
+        const btn = document.getElementById('modalConfirm');
+        if (btn && !btn.disabled) btn.disabled = !allOk;   // 全绿才允许提交
+        return allOk;
     }
 
     async function acctDoChangePassword(ticket) {
@@ -3216,21 +3247,33 @@ if ($currentVersion !== $BUILD_VERSION) {
         const p2 = (document.getElementById('acctNewPwd2') || {}).value || '';
         if (!p1 || !p2) { acctErr('请填写两遍新密码'); return; }
         if (p1 !== p2) { acctErr('两次输入的密码不一致'); return; }
-        if (p1.length < 6 || p1.length > 20) { acctErr('密码长度必须为6-20位'); return; }
+        if (!acctPwdChecklist()) { acctErr('密码需满足全部4项要求（6-20位 + 大写 + 小写 + 数字）'); return; }
         const btn = document.getElementById('modalConfirm');
         btn.disabled = true; acctErr('提交中...');
         try {
             const res = await apiPost('account.php', {action: 'change_password', ticket: ticket, new_password: p1, confirm_password: p2});
             btn.disabled = false;
-            if (!res.success) { acctErr(res.message || '修改失败'); return; }
-            closeModal();
-            showToast('✅ 密码修改成功', 'success');
+            if (!res.success) { acctErr(res.message || '修改失败'); acctPwdChecklist(); return; }
             try { notifyJavaSync(); } catch (e) {}
+            acctShowPwdSuccess(p1);
             acctRefreshStatus();
         } catch (e) {
             btn.disabled = false;
             acctErr('连接失败: ' + e.message);
+            acctPwdChecklist();
         }
+    }
+
+    // ---- ★第48批#246：改密成功面板（不关弹窗，明文密码留屏供截屏保存） ----
+    function acctShowPwdSuccess(newPwd) {
+        _lastChangedPwd = newPwd;
+        acctModalOpen('✅ 密码修改成功');
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px">请立即截屏或复制保存以下新密码</div>
+            <div style="font-family:monospace;font-size:16px;letter-spacing:1px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;text-align:center;word-break:break-all;user-select:all">${escapeHtml(newPwd)}</div>
+            <button class="btn" style="width:100%;font-size:13px;margin-top:8px" onclick="acctCopy(_lastChangedPwd)">📋 复制密码</button>
+            <div style="color:var(--dim);font-size:12px;margin-top:12px;line-height:1.6">已请求同步到游戏端（通常 1-2 分钟内生效）。<br>若游戏内仍提示密码错误，请退出重进后再试一次。</div>`,
+            '我已保存，关闭', () => { closeModal(); acctRefreshStatus(); });
     }
 
     // ---- 绑定二次验证器：生成密钥 → 扫码 → 动态码确认 → 一次性返回恢复代码 ----

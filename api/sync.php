@@ -4683,7 +4683,9 @@ function resetPassword() {
 
     if (!$resetToken) error('缺少reset_token参数');
     if (!$newPassword) error('缺少new_password参数');
-    if (strlen($newPassword) < 6) error('密码长度至少6位');
+    // ★第48批#245：与游戏 PasswordUtils.validate 同一把尺子（6-20位+大写+小写+数字）
+    $ruleErr = pwdRuleError($newPassword);
+    if ($ruleErr !== null) error($ruleErr);
 
     $db = getDB();
 
@@ -4839,9 +4841,10 @@ function changePassword() {
         error('缺少必要参数');
     }
 
-    // 验证新密码格式
-    if (strlen($newPwd) < 6 || strlen($newPwd) > 20) {
-        error('密码长度必须为6-20位');
+    // ★第48批#245：与游戏 PasswordUtils.validate 同一把尺子（6-20位+大写+小写+数字）
+    $ruleErr = pwdRuleError($newPwd);
+    if ($ruleErr !== null) {
+        error($ruleErr);
     }
 
     $db = getDB();
@@ -4854,8 +4857,8 @@ function changePassword() {
         error('玩家不存在');
     }
 
-    // 验证旧密码
-    $saltBytes = base64_decode($row['salt'], true);
+    // 验证旧密码（★第48批#244：容错解盐，脏盐玩家也能在网页改密）
+    $saltBytes = saltDecode($row['salt']);
     if ($saltBytes === false || $saltBytes === '') {
         error('密码盐值无效');
     }
