@@ -3012,6 +3012,7 @@ if ($currentVersion !== $BUILD_VERSION) {
     let _acctState = null;
     let _lastRecoveryCodes = [];
     let _lastChangedPwd = '';   // ★第48批#246：改密成功面板明文密码（复制按钮用）
+    let _acctPwdSubmitting = false;   // ★第48批修复：改密弹窗提交中标志（配合 checklist 启停按钮，废除 !btn.disabled 守卫）
 
     function startAccountVerify(action, label) {
         if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
@@ -3238,7 +3239,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             if (!ok) allOk = false;
         }
         const btn = document.getElementById('modalConfirm');
-        if (btn && !btn.disabled) btn.disabled = !allOk;   // 全绿才允许提交
+        if (btn && !_acctPwdSubmitting) btn.disabled = !allOk;   // 全绿才允许提交（★48批修复：原 !btn.disabled 守卫致按钮永久禁用）
         return allOk;
     }
 
@@ -3249,15 +3250,17 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (p1 !== p2) { acctErr('两次输入的密码不一致'); return; }
         if (!acctPwdChecklist()) { acctErr('密码需满足全部4项要求（6-20位 + 大写 + 小写 + 数字）'); return; }
         const btn = document.getElementById('modalConfirm');
-        btn.disabled = true; acctErr('提交中...');
+        _acctPwdSubmitting = true; btn.disabled = true; acctErr('提交中...');
         try {
             const res = await apiPost('account.php', {action: 'change_password', ticket: ticket, new_password: p1, confirm_password: p2});
+            _acctPwdSubmitting = false;
             btn.disabled = false;
             if (!res.success) { acctErr(res.message || '修改失败'); acctPwdChecklist(); return; }
             try { notifyJavaSync(); } catch (e) {}
             acctShowPwdSuccess(p1);
             acctRefreshStatus();
         } catch (e) {
+            _acctPwdSubmitting = false;
             btn.disabled = false;
             acctErr('连接失败: ' + e.message);
             acctPwdChecklist();
