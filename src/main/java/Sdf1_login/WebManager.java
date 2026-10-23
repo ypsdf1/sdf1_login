@@ -4513,8 +4513,13 @@ public class WebManager {
     private void saveAlignSeen(boolean force) {
         long now = System.currentTimeMillis();
         if (!force) {
-            if (alignSeenDirtyAt == 0 || now - alignSeenDirtyAt < 5000) return;
-            if (now - alignSeenLastWrite < 5000) return;
+            // ★第48批根因修复：原写法 now - alignSeenDirtyAt < 5000 恒成立（调用点
+            //   先把 dirtyAt 设为 now 再调本方法）→ 永远 return，文件从未落盘，
+            //   重启后 seen 全空 → 网页新密码被游戏旧密码反向覆盖。
+            //   改为：无待写变更才短路；节流以「上次成功写入」为基准。
+            if (alignSeenDirtyAt == 0) return;
+            if (alignSeenLastWrite != 0
+                    && now - alignSeenLastWrite < 5000) return;
         }
         alignSeenLastWrite = now;
         alignSeenDirtyAt = 0;

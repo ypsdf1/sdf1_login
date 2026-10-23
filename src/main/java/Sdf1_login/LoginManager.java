@@ -12,6 +12,13 @@ public class LoginManager {
         this.plugin = plugin;
     }
 
+    /** ★第48批#244：/login 失败自动对账重试的每人限流（值=上次对账触发时刻） */
+    private final java.util.Map<String, Long> pwSyncRetryAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** ★第48批#244：正在对账重试中的玩家（防递归） */
+    private final java.util.Set<String> pwSyncRetrying =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public boolean handleRegister(Player p,
                                   String[] args) {
         String name = p.getName();
@@ -191,6 +198,8 @@ public class LoginManager {
             if (matchMain) {
                 // ★ IP风控双验证第一步：只认密码，不解冻、不恢复背包
                 if (markDualStep1(p, false)) return true;
+                // ★第48批#249：已绑定2FA → 密码过后强制第二关 /2fa code
+                if (requireTwoFaIfEnabled(p, false)) return true;
                 finishPasswordLogin(p, false);
                 return true;
             }
@@ -202,10 +211,16 @@ public class LoginManager {
             if (pwdResult != null) {
                 // ★ IP风控双验证第一步：只认密码，不解冻、不恢复背包
                 if (markDualStep1(p, true)) return true;
+                // ★第48批#249：已绑定2FA → 密码过后强制第二关 /2fa code
+                if (requireTwoFaIfEnabled(p, true)) return true;
                 finishPasswordLogin(p, true);
                 return true;
             }
 
+
+            // ★第48批#244：密码不匹配 → 先尝试与网页端即时对账（网页可能刚改密被覆盖），
+            //   15秒/人限流；对账完成后主线程自动重校验，仍未过才计失败次数
+            if (maybeRetryAfterWebSync(p, pwd)) return true;
 
             // ★ 密码错误，记录风控
             int remaining = plugin.getRiskControl()
@@ -248,6 +263,67 @@ public class LoginManager {
         p.sendMessage("§a§l[双重验证] §a第一步密码验证通过（尚未解冻）");
         p.sendMessage("§7第二步: 执行 §f/2fa code <动态码|恢复代码>");
         p.sendMessage("§c两步全部通过后才会解冻并恢复背包");
+        return true;
+    }
+
+    /**
+     * ★第48批#249：已绑定 2FA（twofa_enabled=1）的玩家，密码通过后不直接放行，
+     * 转入「密码 + 2FA」双验证第二步（等 /2fa code）。
+     * 仅在该玩家当前不在双验证流程时生效（IP风控已 mark 的走 markDualStep1）。
+     *
+     * @return true = 已进入双验证流程，本轮 /login 到此为止
+     */
+    private boolean requireTwoFaIfEnabled(Player p, boolean tempPassword) {
+        TwoFactorManager twofa = plugin.getTwofa();
+        String name = p.getName();
+        if (twofa == null) return false;
+        if (twofa.isDualVerify(p)) return false;   // IP风控路径已处理
+        if (!plugin.getDb().userExists(name)) return false;
+        if (!twofa.isEnabled(name)) return false;   // 未绑定2FA：维持原单步登录
+        // 密码这一步确实对了 → 建立双验证状态并记录进度（不解冻、不恢复背包）
+        twofa.markDualVerify(p, plugin.getPlayerIP(p));
+        twofa.onDualPasswordPassed(p, tempPassword);
+        // 重置「密码错误次数」风控（密码对了，但仍未完成登录）
+        plugin.getRiskControl().onLoginSuccess(name);
+        p.sendMessage("§a§l[双重验证] §a第一步密码验证通过（尚未解冻）");
+        p.sendMessage("§7第二步: 执行 §f/2fa code <动态码|恢复代码>");
+        p.sendMessage("§c两步全部通过后才会解冻并恢复背包");
+        return true;
+    }
+
+    /**
+     * ★第48批#244：密码校验失败时先与网页端对账（拉回网页新密码）再自动重试一次。
+     * 15秒/人限流；重试仍失败走正常风控计数。
+     *
+     * @return true = 本轮 /login 已交给异步对账流程处理（调用方直接 return）
+     */
+    private boolean maybeRetryAfterWebSync(Player p, String pwd) {
+        if (plugin.webManager == null) return false;
+        String name = p.getName();
+        if (pwSyncRetrying.contains(name)) return false;   // 重试轮失败：不再触发
+        long now = System.currentTimeMillis();
+        Long last = pwSyncRetryAt.get(name);
+        if (last != null && now - last < 15000L) return false;   // 15秒/人限流
+        pwSyncRetryAt.put(name, now);
+        pwSyncRetrying.add(name);
+        p.sendMessage("§e§l[登录] §e正在核对网页端最新密码…");
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                plugin.webManager.pushWebLoginCredentials();   // 含 alignGate 拉回
+            } catch (Throwable t) {
+                plugin.getLogger().warning("[登录] 对账重试同步异常: " + t.getMessage());
+            }
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    Player online = Bukkit.getPlayerExact(name);
+                    if (online == null || !online.isOnline()) return;
+                    // 主线程重新走一次完整登录校验（含2FA/风控前置）
+                    handleLogin(online, new String[]{pwd});
+                } finally {
+                    pwSyncRetrying.remove(name);
+                }
+            });
+        });
         return true;
     }
 
