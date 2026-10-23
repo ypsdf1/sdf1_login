@@ -2638,6 +2638,11 @@ public class WebManager {
                                 lastPollWebLoginExceptionLog = t;
                             }
                         }
+                        // ★ 第53批：网页绑邮箱请求轮询（游戏内批准流，60秒时效）
+                        try { pollWebEmailBindRequests(); }
+                        catch (Exception e) {
+                            plugin.getLogger().warning("[合并A-网页绑邮箱] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                        }
                     });
                 }
 
@@ -11818,6 +11823,121 @@ public class WebManager {
                 } catch (Exception e) {
                     // 静默处理
                 }
+            }
+        }.runTaskAsynchronously(plugin);
+    }
+
+    // ==================== 第53批：网页端绑邮箱 · 游戏内批准 ====================
+
+    /**
+     * 轮询网页端发起的绑邮箱请求（60秒时效）。
+     * 在线 → 主线程发 clickable 批准/拒绝通知；离线 → 回调 offline；
+     * 后缀白名单不通过 → 回调 failed（超时由PHP侧惰性终结兜底）。
+     */
+    private void pollWebEmailBindRequests() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=check_pending_web_email_bind_requests&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String json = doGet(urlStr);
+            if (json == null || json.contains("database is locked")) return;
+            if (!json.contains("\"success\":true")) return;
+
+            int countStart = json.indexOf("\"count\":");
+            if (countStart < 0) return;
+            int countValStart = countStart + 8;
+            int countValEnd = countValStart;
+            while (countValEnd < json.length() && Character.isDigit(json.charAt(countValEnd))) countValEnd++;
+            if (countValEnd == countValStart) return;
+            int count = Integer.parseInt(json.substring(countValStart, countValEnd));
+            if (count == 0) return;
+
+            int requestsStart = json.indexOf("\"requests\":[");
+            if (requestsStart < 0) return;
+            int arrStart = requestsStart + 12;
+            int arrEnd = findMatchingBracket(json, arrStart - 1);
+            if (arrEnd < 0) return;
+            String arrStr = json.substring(arrStart, arrEnd);
+
+            int idx = 0;
+            while (idx < arrStr.length()) {
+                int objStart = arrStr.indexOf('{', idx);
+                if (objStart == -1) break;
+                int objEnd = arrStr.indexOf('}', objStart);
+                if (objEnd == -1) break;
+                String item = arrStr.substring(objStart, objEnd + 1);
+                idx = objEnd + 1;
+
+                final String reqId = extractJsonNumber(item, "id");
+                final String playerName = extractJsonString(item, "player_name");
+                final String emailAddr = extractJsonString(item, "email");
+                if (reqId == null || playerName == null || emailAddr == null) continue;
+
+                // ★ 邮箱后缀黑白名单：游戏配置为唯一权威（PHP侧无此配置）
+                if (config != null && !config.isEmailSuffixAllowed(emailAddr)) {
+                    submitWebEmailBindResult(reqId, playerName, "failed",
+                            "邮箱后缀不在允许范围内", null);
+                    plugin.getLogger().info("[网页绑邮箱] 后缀校验拒绝: " + playerName + " -> " + emailAddr);
+                    continue;
+                }
+
+                // ★ Bukkit API 必须主线程：查在线 + 发 clickable 通知
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    Player target = Bukkit.getPlayerExact(playerName);
+                    if (target == null || !target.isOnline()) {
+                        submitWebEmailBindResult(reqId, playerName, "offline", "", null);
+                        return;
+                    }
+                    target.sendMessage(net.kyori.adventure.text.Component.text("\n§6§l═══════ 网页端邮箱绑定请求 ═══════\n"));
+                    target.sendMessage(net.kyori.adventure.text.Component.text(
+                            "§f网页端请求为 §b" + playerName + " §f绑定邮箱 §b" + emailAddr));
+                    target.sendMessage(net.kyori.adventure.text.Component.empty()
+                            .append(net.kyori.adventure.text.Component.text("§a✔ [§f批准§a] §7点击后到网页输入登录密码完成绑定")
+                                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                                            net.kyori.adventure.text.Component.text("§e点击批准（1分钟内有效）")))
+                                    .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/webbind approve " + reqId))));
+                    target.sendMessage(net.kyori.adventure.text.Component.empty()
+                            .append(net.kyori.adventure.text.Component.text("§c✘ [§f拒绝§c] §7拒绝后网页端直接返回，不做处置")
+                                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                                            net.kyori.adventure.text.Component.text("§e点击拒绝")))
+                                    .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/webbind reject " + reqId))));
+                    target.sendMessage(net.kyori.adventure.text.Component.text("§7时效 §e1分钟 §7，超时自动作废。"));
+                });
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[网页绑邮箱轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        }
+    }
+
+    /**
+     * 将游戏内批准/拒绝结果回传PHP（callback 可为 null，回调回主线程执行）。
+     */
+    public void submitWebEmailBindResult(final String reqId, final String playerName,
+            final String action, final String failReason,
+            final java.util.function.Consumer<String> callback) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                String status = null;
+                try {
+                    String bodyJson = "{\"request_id\":" + reqId
+                            + ",\"player\":\"" + escapeJson(playerName) + "\""
+                            + ",\"action\":\"" + escapeJson(action) + "\""
+                            + ",\"fail_reason\":\"" + escapeJson(failReason == null ? "" : failReason) + "\"}";
+                    String postUrl = webBaseUrl + "/api/sync.php?action=web_email_bind_result&secret="
+                            + java.net.URLEncoder.encode(secretKey, "UTF-8");
+                    String resp = doPost(postUrl, bodyJson);
+                    if (resp != null && resp.contains("\"success\":true")) {
+                        status = extractJsonString(resp, "status");
+                    }
+                } catch (Exception e) {
+                    status = null;
+                }
+                final String fStatus = status;
+                Bukkit.getScheduler().runTask(plugin, () -> {
+                    try {
+                        if (callback != null) callback.accept(fStatus);
+                    } catch (Exception ignored) {}
+                });
             }
         }.runTaskAsynchronously(plugin);
     }

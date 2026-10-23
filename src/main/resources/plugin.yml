@@ -72,6 +72,9 @@ commands:
   绑定邮箱:
     description: 绑定邮箱
     usage: /绑定邮箱
+  webbind:
+    description: 网页邮箱绑定批准/拒绝
+    usage: /webbind <approve|reject> <id>
   chat:
     description: 聊天过滤管理
     usage: /chat

@@ -9610,6 +9610,51 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ★ 第53批：网页端绑邮箱 · 游戏内批准/拒绝（/webbind approve|reject <id>）
+        if (cmdName.equals("webbind")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            final Player wp = (Player) sender;
+            if (isFrozen(wp)) {
+                wp.sendMessage("§c§l[登录] §f你还未登录，无法使用该命令。请先使用 §e/l <密码> §f登录");
+                return true;
+            }
+            if (args.length < 2
+                    || (!args[0].equalsIgnoreCase("approve")
+                            && !args[0].equalsIgnoreCase("reject"))) {
+                wp.sendMessage("§c用法: /webbind approve|reject <id>");
+                return true;
+            }
+            final String bindReqId = args[1];
+            if (!bindReqId.matches("[0-9]+")) {
+                wp.sendMessage("§c无效的请求ID");
+                return true;
+            }
+            if (webManager == null) {
+                wp.sendMessage("§cWeb通信未启用，无法处理");
+                return true;
+            }
+            final boolean bindApprove = args[0].equalsIgnoreCase("approve");
+            wp.sendMessage(bindApprove ? "§e正在提交批准…" : "§e正在提交拒绝…");
+            webManager.submitWebEmailBindResult(bindReqId, wp.getName(),
+                    bindApprove ? "approve" : "reject", "", status -> {
+                        if (status == null) {
+                            wp.sendMessage("§c提交失败，请稍后重试");
+                        } else if ("approved".equals(status)) {
+                            wp.sendMessage("§a已批准！§f请回到网页输入登录密码完成绑定（3分钟内有效）");
+                        } else if ("rejected".equals(status)) {
+                            wp.sendMessage("§e已拒绝，网页端将直接返回，不做任何处置");
+                        } else if ("expired".equals(status)) {
+                            wp.sendMessage("§c请求已超时，未做任何处置");
+                        } else {
+                            wp.sendMessage("§7请求当前状态: §f" + status + " §7（重复操作已忽略）");
+                        }
+                    });
+            return true;
+        }
+
         // 绑定邮箱
         if (cmdName.equals("绑定邮箱")) {
             // ★ 3.0 安全修复：邮箱绑定必须登录后才能执行（未登录越权绑邮箱 + 任意收件人 SMTP 滥发）
