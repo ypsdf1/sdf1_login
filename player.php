@@ -2552,7 +2552,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             `<button class="btn btn-primary" style="font-size:12px;padding:6px 12px" onclick="startAccountVerify('change_password','修改登录密码')">修改</button>`);
         html += acctRow('绑定邮箱', d.has_email ? escapeHtml(d.email_masked) : '<span style="color:var(--red)">未绑定</span>',
             d.has_email ? '<span style="font-size:12px;color:var(--dim)">第二层验证可用</span>'
-                        : '<span style="font-size:12px;color:var(--dim)">请先游戏中 /bindemail</span>');
+                        : '<button class="btn btn-primary" style="font-size:12px;padding:6px 12px" onclick="acctBindEmailWizard()">网页绑定</button>');
         const twofaVal = d.twofa_bound
             ? '✅ 已绑定认证器（TOTP）'
             : (d.pending_setup ? '⏳ 密钥已生成但未确认' : '<span style="color:var(--dim)">未绑定</span>');
@@ -2576,6 +2576,131 @@ if ($currentVersion !== $BUILD_VERSION) {
         html += acctRow('恢复代码', recVal, recBtns);
         html += `<p style="color:var(--dim);font-size:12px;margin-top:12px;line-height:1.6">💡 恢复代码是认证器丢失时的备用第二层验证方式（每组一次性使用）。修改密码、绑定/解绑认证器、查看/重生成恢复代码，均需先完成两层验证。</p>`;
         return html;
+    }
+
+    // ===== 第53批：网页绑定邮箱向导（游戏内批准流，60秒时效） =====
+    let _bindWizTimer = null;
+    let _bindWizId = 0;
+
+    function acctBindEmailWizard() {
+        if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
+        if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+        acctModalOpen('📧 网页绑定邮箱');
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
+            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+            '发送批准请求 →', acctBindEmailStart);
+        setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
+    }
+
+    async function acctBindEmailStart() {
+        const el = document.getElementById('bindEmailInput');
+        const email = el ? el.value.trim() : '';
+        if (!email) { acctErr('请输入邮箱地址'); return; }
+        const btn = document.getElementById('modalConfirm');
+        btn.disabled = true; acctErr('发送中...');
+        try {
+            const res = await apiPost('account.php', {action: 'bind_email_start', email: email});
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '发起失败'); return; }
+            _bindWizId = res.data.id;
+            acctBindEmailWait(res.data.expire_in || 60);
+        } catch (e) {
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    function acctBindEmailWait(expireIn) {
+        acctModalSet(`
+            <div style="font-size:13.5px;line-height:1.8;text-align:center">
+                <div style="font-size:26px">🎮</div>
+                <div style="margin-top:4px">等待游戏内批准…</div>
+                <div style="color:var(--dim);font-size:12.5px;margin-top:4px">请到游戏中点击聊天栏的 <b style="color:var(--green)">✔ 批准</b>，再回来输入登录密码</div>
+                <div style="margin-top:10px;font-size:22px;font-family:monospace" id="bindLeft">${expireIn}s</div>
+                <div id="bindWizStatus" style="margin-top:6px;font-size:12.5px;color:var(--dim)">已向游戏发送通知…</div>
+            </div>
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+            '取消', () => { if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; } closeModal(); });
+        if (_bindWizTimer) clearInterval(_bindWizTimer);
+        _bindWizTimer = setInterval(acctBindEmailPollTick, 1000);
+        acctBindEmailPollTick();
+    }
+
+    async function acctBindEmailPollTick() {
+        const leftEl = document.getElementById('bindLeft');
+        if (leftEl) {
+            const v = parseInt(leftEl.textContent) || 0;
+            if (v > 0) leftEl.textContent = (v - 1) + 's';
+        }
+        try {
+            const res = await apiPost('account.php', {action: 'bind_email_poll', id: _bindWizId});
+            if (!res.success) return;
+            const d = res.data || {};
+            const stEl = document.getElementById('bindWizStatus');
+            if (d.status === 'pending' || d.status === 'notified') {
+                if (stEl) stEl.textContent = d.status === 'pending' ? '正在通知游戏…' : '已发送游戏内通知，等待点击批准…';
+                if (!d.left) acctBindEmailFinish('expired');
+                return;
+            }
+            if (d.status === 'approved') {
+                if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+                acctBindEmailPwdStep();
+                return;
+            }
+            acctBindEmailFinish(d.status, d.fail_reason);
+        } catch (e) { /* 网络抖动忽略，下一轮重试 */ }
+    }
+
+    function acctBindEmailPwdStep() {
+        acctModalSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">✅ 游戏内已批准。输入登录密码完成绑定（<b>3分钟内有效</b>；密码错误不生效、可重试，连错 5 次将封锁 IP 5 分钟）</div>
+            <input type="password" id="bindPwdInput" placeholder="当前登录密码" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+            '确认绑定', acctBindEmailConfirm);
+        setTimeout(() => { const p = document.getElementById('bindPwdInput'); if (p) p.focus(); }, 120);
+    }
+
+    async function acctBindEmailConfirm() {
+        const el = document.getElementById('bindPwdInput');
+        const pwd = el ? el.value : '';
+        if (!pwd) { acctErr('请输入密码'); return; }
+        const btn = document.getElementById('modalConfirm');
+        btn.disabled = true; acctErr('验证中...');
+        try {
+            const res = await apiPost('account.php', {action: 'bind_email_confirm', id: _bindWizId, password: pwd});
+            btn.disabled = false;
+            if (!res.success) { acctErr(res.message || '密码错误'); return; }
+            if (res.data && res.data.status === 'completed') {
+                acctModalSet(`
+                    <div style="text-align:center;padding:10px 0;line-height:1.8">
+                        <div style="font-size:34px">🎉</div>
+                        <div style="font-size:15px;margin-top:4px">邮箱绑定成功</div>
+                        <div style="font-size:13px;color:var(--dim)">${escapeHtml(res.data.email_masked || '')}</div>
+                        <div style="font-size:12px;color:var(--dim);margin-top:6px">现在可以完成第二层验证了，请重新发起刚才的操作</div>
+                    </div>`,
+                    '完成', () => { closeModal(); acctRefreshStatus(); });
+            }
+        } catch (e) {
+            btn.disabled = false;
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    function acctBindEmailFinish(status, reason) {
+        if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+        const msgs = {
+            rejected: '❌ 你在游戏内拒绝了本次绑定，已折返、不做任何处置',
+            offline: '📴 你当前不在线，无法批准。请先登录游戏后重新发起',
+            expired: '⌛ 1分钟内未处理，请求已超时作废（未做任何处置）',
+            failed: '⚠️ 绑定失败：' + (reason || '未知原因'),
+            completed: '✅ 邮箱已绑定'
+        };
+        const msg = msgs[status] || ('状态: ' + status);
+        acctModalSet(`
+            <div style="text-align:center;padding:12px 0;font-size:14px;line-height:1.8">${escapeHtml(msg)}</div>`,
+            '知道了', () => { closeModal(); acctRefreshStatus(); });
     }
 
     // ===== 通用 =====
@@ -3059,7 +3184,11 @@ if ($currentVersion !== $BUILD_VERSION) {
         try {
             const res = await apiPost('account.php', {action: 'verify_start', password: pwd});
             btn.disabled = false;
-            if (!res.success) { acctErr(res.message || '密码错误'); return; }
+            if (!res.success) {
+                // ★第53批：第一层密码已过但未绑邮箱 → 不拦截，直接进入网页绑定定向导
+                if (res.need_bind_email) { acctBindEmailWizard(); return; }
+                acctErr(res.message || '密码错误'); return;
+            }
             st.challenge = res.data.challenge;
             st.methods = res.data.methods || [];
             st.emailMasked = res.data.email_masked || '';

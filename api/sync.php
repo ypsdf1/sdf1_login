@@ -303,6 +303,12 @@ switch ($action) {
     case 'complete_web_register_request':
         completeWebRegisterRequest();
         break;
+    case 'check_pending_web_email_bind_requests':
+        checkPendingWebEmailBindRequests();
+        break;
+    case 'web_email_bind_result':
+        webEmailBindResult();
+        break;
     case 'delete_user':
         deleteUser();
         break;
@@ -5023,6 +5029,120 @@ function completeWebRegisterRequest() {
     }
 
     success(['request_id' => $requestId, 'status' => $status]);
+}
+
+// ===== 第53批：插件轮询待处理的网页邮箱绑定请求（SECRET_KEY认证）=====
+function checkPendingWebEmailBindRequests() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
+    }
+
+    $db = getDB();
+    try {
+        $db->exec("SELECT id FROM web_email_bind_requests LIMIT 0");
+    } catch (\Throwable $e) {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_email_bind_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            ip_address TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            expire_at INTEGER NOT NULL,
+            approved_at INTEGER DEFAULT 0,
+            processed_at INTEGER DEFAULT 0,
+            fail_reason TEXT DEFAULT ''
+        )");
+    }
+
+    $now = time();
+    // 惰性终结超时未处理的请求（CLI通知1分钟时效）
+    try {
+        $db->exec("UPDATE web_email_bind_requests SET status = 'expired', processed_at = " . $now . " WHERE status IN ('pending','notified') AND expire_at < " . $now);
+    } catch (\Throwable $e) {
+        @error_log("[checkPendingWebEmailBindRequests] expire error: " . $e->getMessage());
+    }
+
+    // ★ 只读查询不需要BEGIN IMMEDIATE（避免与其它并发请求抢锁导致500）
+    $stmt = $db->prepare("SELECT id, player_name, email, created_at, expire_at FROM web_email_bind_requests WHERE status = 'pending' ORDER BY created_at ASC");
+    $result = $stmt->execute();
+
+    $requests = array();
+    $ids = array();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $requests[] = $row;
+        $ids[] = (int)$row['id'];
+    }
+
+    // 拉取即标记notified（防重复通知；允许失败，下次还会拉到）
+    if (!empty($ids)) {
+        try {
+            $idList = implode(',', $ids);
+            $db->exec("UPDATE web_email_bind_requests SET status = 'notified' WHERE id IN ($idList) AND status = 'pending'");
+        } catch (\Throwable $e) {
+            @error_log("[checkPendingWebEmailBindRequests] mark notified error: " . $e->getMessage());
+        }
+    }
+
+    success(['requests' => $requests, 'count' => count($requests)]);
+}
+
+// ===== 第53批：插件回传游戏内玩家对邮箱绑定请求的处理结果（SECRET_KEY认证）=====
+function webEmailBindResult() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) {
+        error('密钥验证失败', 403);
+    }
+
+    $requestId = getParam('request_id');
+    $action = getParam('action', '');      // approve / reject / offline / failed
+    $player = getParam('player', '');
+    $failReason = getParam('fail_reason', '');
+
+    if (!$requestId) error('缺少request_id');
+    if (!in_array($action, array('approve', 'reject', 'offline', 'failed'), true)) error('非法action');
+    if (!$player) error('缺少player');
+
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, player_name, status, expire_at FROM web_email_bind_requests WHERE id = :id");
+    $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row) error('请求不存在');
+    if ((string)$row['player_name'] !== (string)$player) error('玩家名不匹配');
+
+    $now = time();
+    $current = (string)$row['status'];
+    $open = in_array($current, array('pending', 'notified'), true);
+
+    if (!$open) {
+        // 已终结：幂等返回当前状态（重复点击/迟到回调直接忽略，不做任何处置）
+        success(['request_id' => (int)$requestId, 'status' => $current], '请求已终结，忽略');
+        return;
+    }
+
+    if ($action === 'approve') {
+        $newStatus = ($now > (int)$row['expire_at']) ? 'expired' : 'approved';
+    } elseif ($action === 'reject') {
+        $newStatus = 'rejected';
+    } elseif ($action === 'offline') {
+        $newStatus = 'offline';
+    } else {
+        $newStatus = 'failed';
+    }
+
+    $approvedAt = ($newStatus === 'approved') ? $now : 0;
+    $reason = ($newStatus === 'failed') ? (string)$failReason : '';
+
+    $upd = $db->prepare("UPDATE web_email_bind_requests SET status = :status, approved_at = :approved, processed_at = :time, fail_reason = :reason WHERE id = :id");
+    $upd->bindValue(':status', $newStatus, SQLITE3_TEXT);
+    $upd->bindValue(':approved', $approvedAt, SQLITE3_INTEGER);
+    $upd->bindValue(':time', $now, SQLITE3_INTEGER);
+    $upd->bindValue(':reason', $reason, SQLITE3_TEXT);
+    $upd->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+    $upd->execute();
+
+    success(['request_id' => (int)$requestId, 'status' => $newStatus]);
 }
 
 // ===== CDK验证（供sdf1插件调用）=====

@@ -62,6 +62,9 @@ try {
         case 'totp_unbind':         acctTotpUnbind(); break;
         case 'recovery_list':       acctRecoveryList(); break;
         case 'recovery_regenerate': acctRecoveryRegen(); break;
+        case 'bind_email_start':    acctBindEmailStart(); break;
+        case 'bind_email_poll':     acctBindEmailPoll(); break;
+        case 'bind_email_confirm':  acctBindEmailConfirm(); break;
         default:
             error('未知操作: ' . $action);
     }
@@ -271,6 +274,19 @@ function acctEnsureTables() {
     )");
     // 顺手清理过期超过 1 天的会话行
     $db->exec("DELETE FROM web_account_verify WHERE expire_at < " . (time() - 86400));
+    // ★第53批：网页绑定邮箱请求表（schema 必须与 sync.php checkPendingWebEmailBindRequests 完全一致）
+    $db->exec("CREATE TABLE IF NOT EXISTS web_email_bind_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        ip_address TEXT DEFAULT '',
+        status TEXT DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        expire_at INTEGER NOT NULL,
+        approved_at INTEGER DEFAULT 0,
+        processed_at INTEGER DEFAULT 0,
+        fail_reason TEXT DEFAULT ''
+    )");
 }
 
 // ===================== 公共辅助 =====================
@@ -457,7 +473,7 @@ function acctStatus() {
 
     $hint = '';
     if (!$methods) {
-        $hint = '账号未绑定邮箱，也未绑定二次验证器 —— 无法完成第二层验证。请先在游戏中使用 /bindemail 绑定邮箱，否则无法修改密码等账号信息。';
+        $hint = '账号未绑定邮箱，也未绑定二次验证器 —— 无法完成第二层验证。可在下方点击「网页绑定邮箱」，游戏内批准后即可完成绑定。';
     }
 
     success([
@@ -495,7 +511,8 @@ function acctVerifyStart() {
     $email = acctEmailOf($player);
     $methods = acctMethods($player, $email);
     if (!$methods) {
-        error('无法完成第二层验证：账号未绑定邮箱且未绑定二次验证器，请先在游戏中使用 /bindemail 绑定邮箱');
+        // ★第53批：不再硬拦截——密码第一层已过，返回导航标记让前端直接进入「网页绑定邮箱」定向导
+        jsonResponse(['success' => false, 'message' => '账号未绑定邮箱且未绑定二次验证器，请先完成邮箱绑定', 'need_bind_email' => true], 409);
     }
 
     $challenge = acctIssueToken($player, 'challenge', 300, json_encode($methods, JSON_UNESCAPED_UNICODE), acctClientIp());
@@ -840,4 +857,183 @@ function acctRecoveryRegen() {
 
     debugLog('[account.php] 恢复代码已重新生成', ['player' => $player, 'ip' => acctClientIp()]);
     success(['recovery_codes' => $codes], '恢复代码已重新生成，旧代码全部作废');
+}
+
+// ===================== 第53批：网页端绑定邮箱（游戏内批准流） =====================
+//
+// 流程：bind_email_start 建 60 秒请求（要求玩家在线）→ Java 定时器A 拉取并游戏内发
+// clickable 通知（/webbind approve|reject <id>）→ sync.php web_email_bind_result 回写
+// approved/rejected/offline/expired → bind_email_poll 前端轮询 → approved 后
+// bind_email_confirm 复核登录密码才写 users.email。
+// 防盗绑三重：①游戏内本人批准 ②批准后重验登录密码 ③IP 连错 5 次封 5 分钟。
+
+/** 玩家当前是否在线：online_players 有行 且 Java 心跳(online_player_hb)<=120秒（Java 死了通知发不出，等同不在线） */
+function acctPlayerOnlineNow($player) {
+    $db = getDB();
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS online_players (player_name TEXT PRIMARY KEY, login_time INTEGER DEFAULT 0)");
+        $db->exec("CREATE TABLE IF NOT EXISTS online_player_hb (id INTEGER PRIMARY KEY DEFAULT 1, last_seen INTEGER DEFAULT 0)");
+        $hb = $db->query("SELECT last_seen FROM online_player_hb WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+        if (!$hb || time() - (int)$hb['last_seen'] > 120) return false;
+        $stmt = $db->prepare("SELECT 1 FROM online_players WHERE player_name = :p");
+        $stmt->bindValue(':p', $player, SQLITE3_TEXT);
+        return ($stmt->execute()->fetchArray() !== false);
+    } catch (\Throwable $e) {
+        @error_log("[acctPlayerOnlineNow] error: " . $e->getMessage());
+        return false;
+    }
+}
+
+/** 发起绑定：校验邮箱格式 + 在线 → 建 60 秒请求（同玩家旧未终结请求全部作废） */
+function acctBindEmailStart() {
+    $player = acctAuthPlayer();
+    $email = strtolower(trim((string)getParam('email', '')));
+    if ($email === '') error('请输入邮箱地址');
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) error('邮箱格式不正确');
+
+    $cur = acctEmailOf($player);
+    if ($cur !== '') error('账号已绑定邮箱，无需重复绑定');
+
+    if (!acctPlayerOnlineNow($player)) {
+        error('你当前未在线或未登录游戏，请先登录游戏后再发起绑定（需在游戏内点击批准）');
+    }
+
+    $db = getDB();
+    $now = time();
+    // 同一玩家任何时刻只允许一条活跃请求（含已批准未输密码的，重新发起即作废旧的）
+    $void = $db->prepare("UPDATE web_email_bind_requests SET status = 'expired', processed_at = :t WHERE player_name = :p AND status IN ('pending','notified','approved')");
+    $void->bindValue(':t', $now, SQLITE3_INTEGER);
+    $void->bindValue(':p', $player, SQLITE3_TEXT);
+    $void->execute();
+
+    $ins = $db->prepare("INSERT INTO web_email_bind_requests (player_name, email, ip_address, status, created_at, expire_at, processed_at)
+                        VALUES (:p, :e, :ip, 'pending', :c, :x, 0)");
+    $ins->bindValue(':p', $player, SQLITE3_TEXT);
+    $ins->bindValue(':e', $email, SQLITE3_TEXT);
+    $ins->bindValue(':ip', acctClientIp(), SQLITE3_TEXT);
+    $ins->bindValue(':c', $now, SQLITE3_INTEGER);
+    $ins->bindValue(':x', $now + 60, SQLITE3_INTEGER);   // CLI通知1分钟时效
+    $ins->execute();
+    $id = (int)$db->lastInsertRowID();
+
+    debugLog('[account.php] 发起网页绑邮箱', ['player' => $player, 'id' => $id, 'ip' => acctClientIp()]);
+    success(['id' => $id, 'expire_in' => 60], '请求已发送，等待游戏内批准');
+}
+
+/** 前端轮询请求状态（1秒一次）：pending/notified/approved/rejected/offline/expired/completed/failed */
+function acctBindEmailPoll() {
+    $player = acctAuthPlayer();
+    $id = (int)getParam('id', 0);
+    if ($id <= 0) error('缺少请求id');
+
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, player_name, status, created_at, expire_at, approved_at, fail_reason FROM web_email_bind_requests WHERE id = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row) error('请求不存在');
+    if ((string)$row['player_name'] !== $player) error('无权查看该请求');
+
+    $now = time();
+    $status = (string)$row['status'];
+    $left = 0;
+
+    // 惰性超时：不等 Java 拉，前端轮询到就地终结（批准时效60秒）
+    if (in_array($status, array('pending', 'notified'), true) && $now > (int)$row['expire_at']) {
+        $status = 'expired';
+    }
+    // 批准后密码窗口 180 秒，超窗即折返终结
+    if ($status === 'approved') {
+        $left = max(0, ((int)$row['approved_at'] + 180) - $now);
+        if ($left <= 0) $status = 'expired';
+    } elseif (in_array($status, array('pending', 'notified'), true)) {
+        $left = max(0, (int)$row['expire_at'] - $now);
+    }
+
+    if ($status === 'expired' && (string)$row['status'] !== 'expired') {
+        $upd = $db->prepare("UPDATE web_email_bind_requests SET status = 'expired', processed_at = :t WHERE id = :id AND status IN ('pending','notified','approved')");
+        $upd->bindValue(':t', $now, SQLITE3_INTEGER);
+        $upd->bindValue(':id', $id, SQLITE3_INTEGER);
+        $upd->execute();
+    }
+
+    success([
+        'id' => $id,
+        'status' => $status,
+        'left' => $left,
+        'fail_reason' => (string)$row['fail_reason'],
+    ], 'ok');
+}
+
+/** 终态确认：批准窗口内复核登录密码 → 写 users.email（IP 连错5次封5分钟） */
+function acctBindEmailConfirm() {
+    $player = acctAuthPlayer();
+    $id = (int)getParam('id', 0);
+    $pwd = (string)getParam('password', '');
+    if ($id <= 0) error('缺少请求id');
+    if ($pwd === '') error('请输入登录密码');
+
+    $ip = acctClientIp();
+    // ★第53批风控：绑定确认按 IP 计数，连错 5 次封锁 5 分钟（防密码爆破盗绑）
+    $locked = acctThrottleLocked('bindip', $ip, 5, 300);
+    if ($locked > 0) error('密码错误次数过多，IP 已被限制，请 ' . $locked . ' 秒后再试', 429);
+
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, player_name, email, status, approved_at FROM web_email_bind_requests WHERE id = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row) error('请求不存在');
+    if ((string)$row['player_name'] !== $player) error('无权操作该请求');
+
+    $status = (string)$row['status'];
+    if ($status === 'completed') success(['id' => $id, 'status' => 'completed'], '邮箱已绑定');
+    if ($status !== 'approved') error('该请求未获游戏内批准或已失效，请重新发起绑定');
+
+    $now = time();
+    if ($now > ((int)$row['approved_at'] + 180)) {
+        $exp = $db->prepare("UPDATE web_email_bind_requests SET status = 'expired', processed_at = :t WHERE id = :id");
+        $exp->bindValue(':t', $now, SQLITE3_INTEGER);
+        $exp->bindValue(':id', $id, SQLITE3_INTEGER);
+        $exp->execute();
+        error('批准已超时，未做任何处置，请重新发起绑定');
+    }
+
+    $email = (string)$row['email'];
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        error('请求数据异常，请重新发起绑定');
+    }
+    if (acctEmailOf($player) !== '') {
+        // 绑定期间已被别处绑定 → 幂等终结本请求
+        $dup = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
+        $dup->bindValue(':t', $now, SQLITE3_INTEGER);
+        $dup->bindValue(':id', $id, SQLITE3_INTEGER);
+        $dup->execute();
+        success(['id' => $id, 'status' => 'completed'], '邮箱已绑定');
+    }
+
+    // 密码复核（只认主密码，同第一层）——错：保持 approved 可在窗口内重试，IP 计数
+    $cred = acctCredentials($player);
+    if (!acctPwdCheck($cred, $pwd)) {
+        $remain = acctThrottleFail('bindip', $ip, 5, 300);
+        debugLog('[account.php] 网页绑邮箱密码错误', ['player' => $player, 'ip' => $ip, 'id' => $id]);
+        if ($remain > 0) error('密码错误（连续错误 5 次将封锁 IP 5 分钟），IP 即将被限制', 403);
+        error('密码错误', 403);
+    }
+    acctThrottleReset('bindip', $ip);
+
+    // 写库：users.email —— users 类别对账 pull 会在几十秒内同步到 Java login.db
+    $upd = $db->prepare("UPDATE users SET email = :e WHERE player_name = :p");
+    $upd->bindValue(':e', $email, SQLITE3_TEXT);
+    $upd->bindValue(':p', $player, SQLITE3_TEXT);
+    $upd->execute();
+    if ($db->changes() <= 0) {
+        error('绑定失败：玩家数据不存在，请重新发起');
+    }
+
+    $done = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
+    $done->bindValue(':t', time(), SQLITE3_INTEGER);
+    $done->bindValue(':id', $id, SQLITE3_INTEGER);
+    $done->execute();
+
+    debugLog('[account.php] 网页绑邮箱成功', ['player' => $player, 'id' => $id, 'ip' => $ip]);
+    success(['id' => $id, 'status' => 'completed', 'email_masked' => acctMaskEmail($email)], '邮箱绑定成功');
 }
