@@ -4830,8 +4830,27 @@ public class WebManager {
                     String hash = strOf(row.get("password_hash"));
                     String salt = strOf(row.get("password_salt"));
                     if (name.isEmpty() || hash.isEmpty() || salt.isEmpty()) return false;
-                    if (!dbMgr.userExists(name)) dbMgr.createUser(name, hash, salt);
+                    // [凭证诊断49] 收回写库前抓本地旧值，写库后回读，完整新旧值入日志抓 ping-pong 现行
+                    boolean ex49 = dbMgr.userExists(name);
+                    String oldH49 = strOf(ex49 ? dbMgr.getField(name, "password_hash") : null);
+                    String oldS49 = strOf(ex49 ? dbMgr.getField(name, "password_salt") : null);
+                    if (!ex49) dbMgr.createUser(name, hash, salt);
                     else dbMgr.updatePassword(name, hash, salt);
+                    String newH49 = strOf(dbMgr.getField(name, "password_hash"));
+                    String newS49 = strOf(dbMgr.getField(name, "password_salt"));
+                    boolean hChg49 = !oldH49.equals(newH49);
+                    boolean sChg49 = !oldS49.equals(newS49);
+                    if (hChg49 || sChg49) {
+                        plugin.getLogger().warning("[凭证诊断49] 收回写库 name=" + name
+                                + " | 本地旧hash=" + oldH49 + " 本地旧salt=" + oldS49
+                                + " | PHP新hash=" + hash + " PHP新salt=" + salt
+                                + " | 写后hash=" + newH49 + " 写后salt=" + newS49
+                                + " | hash变=" + hChg49 + " salt变=" + sChg49
+                                + " | 写库失败=" + (!newH49.equals(hash) || !newS49.equals(salt)));
+                    } else {
+                        plugin.getLogger().info("[凭证诊断49] 收回写库(无变化) name=" + name
+                                + " hash=" + newH49 + " salt=" + newS49);
+                    }
                     String tmpHash = strOf(row.get("temp_password"));
                     long tmpExpire = longOf(row.get("temp_pw_expire"));
                     if (!tmpHash.isEmpty() && tmpExpire > 0) {
