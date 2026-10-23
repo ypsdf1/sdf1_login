@@ -317,7 +317,7 @@ function acctPwdCheck($cred, $pwd) {
     $saltBytes = saltDecode((string)$cred['salt']);   // ★第48批：容错解盐（core.php saltDecode）
     if ($saltBytes === false || $saltBytes === '') return false;
     $calc = base64_encode(hash('sha256', $saltBytes . $pwd, true));
-    return hash_equals((string)$cred['password_hash'], $calc);
+    return hash_equals(b64Clean((string)$cred['password_hash']), $calc);   // ★第52批：存量 \/ 脏值容错
 }
 
 function acctEmailOf($player) {
@@ -717,7 +717,7 @@ function acctChangePassword() {
 
     // 回读核对（不依赖 changes()，SQLite/MySQL 双模式同形）
     $after = acctCredentials($player);
-    if (!$after || !hash_equals((string)$after['password_hash'], $newHash)) {
+    if (!$after || !hash_equals(b64Clean((string)$after['password_hash']), $newHash)) {   // ★第52批：回读值清洗后比对
         debugLog('[account.php] 改密写入核对失败', ['player' => $player, 'ip' => acctClientIp()]);
         error('密码写入失败，请重试', 500);
     }

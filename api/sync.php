@@ -4864,7 +4864,7 @@ function changePassword() {
     }
 
     $oldHashComputed = base64_encode(hash('sha256', $saltBytes . $oldPwd, true));
-    if ($oldHashComputed !== $row['password_hash']) {
+    if ($oldHashComputed !== b64Clean($row['password_hash'])) {   // ★第52批：存量 \/ 脏值容错
         error('当前密码错误');
     }
 

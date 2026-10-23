@@ -1776,6 +1776,8 @@ function walCheckpoint($db = null) {
  */
 function migrateDatabase($db, $side = null) {
     if ($side !== null) { $db = new SdfDbSideFilter($db, $side); }
+    // ★ 第52批：存量脏凭证清洗挂在 .migrated 锁短路之前（自备 .b64clean 锁，首次 O(1) 短路）
+    cleanB64DirtyOnce($db, $side);
     // 检查是否已迁移（用文件标记，避免每次都做 PRAGMA 查询）
     $migrateLock = sqlDbFile($side === 'java' ? 'java' : 'web') . '.migrated';
     if (file_exists($migrateLock)) {
@@ -3074,6 +3076,37 @@ function saltDecode($salt) {
 }
 
 /**
+ * ★ 第52批：base64 凭证白名单清洗。
+ * PHP json_encode 默认把 base64 中的 / 转义成 \/，Java 历史解析层漏还原
+ * 曾把反斜杠写进 login.db / weblogin_credentials（hash 脏值 → 两端密码恒错）。
+ * base64 合法字符永不含反斜杠，先还原 \/ 再按白名单清洗即得正确值；
+ * 比对两侧同款清洗，保证对称。
+ */
+function b64Clean($v) {
+    $v = str_replace('\\/', '/', (string)$v);
+    return preg_replace('/[^A-Za-z0-9+\/=]/', '', $v);
+}
+
+/**
+ * ★ 第52批：存量脏凭证一次性清洗（\/ JSON 转义残留）。
+ * 挂在 migrateDatabase 锁短路之前、自备 .b64clean 标记文件：
+ * 首次请求全表清洗一遍（WHERE instr 命中才改行），之后 O(1) 短路；
+ * 表未建时不写标记，下次请求重试。
+ */
+function cleanB64DirtyOnce($db, $side = null) {
+    $lock = sqlDbFile($side === 'java' ? 'java' : 'web') . '.b64clean';
+    if (file_exists($lock)) return;
+    try {
+        $db->exec("UPDATE weblogin_credentials SET password_hash=REPLACE(password_hash, char(92), '') WHERE instr(password_hash, char(92))>0");
+        $db->exec("UPDATE weblogin_credentials SET salt=REPLACE(salt, char(92), '') WHERE instr(salt, char(92))>0");
+        $db->exec("UPDATE weblogin_credentials SET temp_password_hash=REPLACE(temp_password_hash, char(92), '') WHERE instr(temp_password_hash, char(92))>0");
+        file_put_contents($lock, time());
+    } catch (Exception $e) {
+        // 表可能尚未创建（initTables 会建），不写标记，下次重试
+    }
+}
+
+/**
  * 验证Web登录密码（优先校验临时密码，再校验主密码）
  * 返回: 'temp' 表示临时密码, 'main' 表示主密码, false 表示失败
  */
@@ -3104,7 +3137,8 @@ function verifyWebLoginPassword($playerName, $password) {
             if ($saltBytes !== false && $saltBytes !== '') {
                 $rawHash = hash('sha256', $saltBytes . $password, true);
                 $computedHash = base64_encode($rawHash);
-                if ($computedHash === $row['temp_password_hash']) {
+                // ★ 第52批：库值比对前白名单清洗（存量 \/ 脏值容错）
+                if ($computedHash === b64Clean($row['temp_password_hash'])) {
                     return 'temp'; // 临时密码匹配
                 }
             }
@@ -3112,7 +3146,7 @@ function verifyWebLoginPassword($playerName, $password) {
     }
 
     // 2. 再检查主密码
-    $storedHash = $row['password_hash'];
+    $storedHash = b64Clean($row['password_hash']);   // ★ 第52批：存量 \/ 脏值容错（比对前清洗）
     $salt = $row['salt'];
     $saltBytes = saltDecode($salt);   // ★第48批：容错解盐（镜像Java清洗）
     if ($saltBytes === false || $saltBytes === '') return false;
