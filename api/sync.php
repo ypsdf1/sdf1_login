@@ -5109,33 +5109,8 @@ function checkPendingWebEmailBindRequests() {
     success(['requests' => $requests, 'count' => count($requests)]);
 }
 
-// ===== 第56批：邮箱后缀校验（与Java端ConfigManager.isEmailSuffixAllowed逻辑一致）=====
-function checkEmailSuffix($email) {
-    $db = getDB();
-    $cfgRow = $db->query("SELECT mode, suffix_list FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
-    if (!$cfgRow) return true; // 无配置=默认模式=不校验
-    $mode = (string)$cfgRow['mode'];
-    $suffixList = (string)$cfgRow['suffix_list'];
-    if ($mode === '默认' || $suffixList === '') return true;
-
-    $suffix = '';
-    $atIdx = strpos($email, '@');
-    if ($atIdx !== false && $atIdx < strlen($email) - 1) {
-        $suffix = strtolower(trim(substr($email, $atIdx + 1)));
-    }
-
-    $suffixes = preg_split('/[,;\\n]+/', $suffixList);
-    $found = false;
-    foreach ($suffixes as $s) {
-        $t = strtolower(trim($s));
-        if ($t !== '' && $t === $suffix) { $found = true; break; }
-    }
-    if ($mode === '白名单') return $found;
-    if ($mode === '黑名单') return !$found;
-    return true;
-}
-
 // ===== 第53批：插件回传游戏内玩家对邮箱绑定请求的处理结果（SECRET_KEY认证）=====
+// 注：checkEmailSuffix() 已移至 core.php 共享（第56批）
 function webEmailBindResult() {
     $secret = getParam('secret');
     if (!$secret || $secret !== SECRET_KEY) {

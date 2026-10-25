@@ -2796,6 +2796,38 @@ function getParam($key, $default = null) {
     return $default;
 }
 
+// ===== 第56批：邮箱后缀校验（与Java端ConfigManager.isEmailSuffixAllowed逻辑一致）=====
+// 白名单模式：仅允许列表中的后缀；黑名单模式：禁止列表中的后缀；默认模式：不校验
+// 配置由 Java 端推送（push_player_login_status），存于 email_suffix_config 表
+function checkEmailSuffix($email) {
+    $db = getDB();
+    try {
+        $cfgRow = $db->query("SELECT mode, suffix_list FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+    } catch (\Throwable $e) {
+        return true; // 表不存在/异常=默认模式=不校验
+    }
+    if (!$cfgRow) return true;
+    $mode = (string)$cfgRow['mode'];
+    $suffixList = (string)$cfgRow['suffix_list'];
+    if ($mode === '默认' || $suffixList === '') return true;
+
+    $suffix = '';
+    $atIdx = strpos($email, '@');
+    if ($atIdx !== false && $atIdx < strlen($email) - 1) {
+        $suffix = strtolower(trim(substr($email, $atIdx + 1)));
+    }
+
+    $suffixes = preg_split('/[,;\\n]+/', $suffixList);
+    $found = false;
+    foreach ($suffixes as $s) {
+        $t = strtolower(trim($s));
+        if ($t !== '' && $t === $suffix) { $found = true; break; }
+    }
+    if ($mode === '白名单') return $found;
+    if ($mode === '黑名单') return !$found;
+    return true;
+}
+
 function requireToken($purpose = 'general') {
     $token = getParam('token');
     if (!$token) {
