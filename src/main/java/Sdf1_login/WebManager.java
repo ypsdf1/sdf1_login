@@ -8817,6 +8817,7 @@ public class WebManager {
         // 实际上玩家就在游戏里，所以online=1
         // ★ 使用push_player_login_status端点，带上online=1（玩家就在游戏里，已认证）
         boolean isRegistered = plugin.getDb().userExists(playerName);
+        boolean isLoggedIn = plugin.getLoggedIn().contains(playerName);
         final String tokenFinal = token;
 
         // ★★★ 致命修复：原实现在主线程(命令处理)同步调用 doGet() → HttpClient.send()，
@@ -8840,7 +8841,7 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=1"; // ★ 玩家在游戏里已认证，直接告诉PHP放行
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0"); // ★ 按实际登录状态告知PHP（未登录推0让PHP清除旧记录）
 
                 String response = doGet(urlStr);
                 if (response != null) {
@@ -8904,6 +8905,7 @@ public class WebManager {
 
         // ★ 生成token时检查login.db并推送注册状态给PHP
         boolean isRegistered = plugin.getDb().userExists(playerName);
+        boolean isLoggedIn = plugin.getLoggedIn().contains(playerName);
 
         // ★ 使用push_player_login_status端点，推送玩家在线状态+token到PHP
         // ★ 必须异步执行，不能在server thread上同步HTTP（会导致10秒阻塞！）
@@ -8923,7 +8925,7 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=1";
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0");
 
                 String response = doGet(urlStr);
                 if (response != null) {
