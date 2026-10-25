@@ -146,6 +146,7 @@ public class BanBroadcastManager implements Listener {
         } catch (Exception ignored) {}
         long cut0 = resolveStartCutoff();
         File bf0 = bannedPlayersFile();
+        ensureTimestampFile();
         plugin.getLogger().info("[封禁播报] 已启动，模式=" + modeName()
                 + " 间隔=" + minInterval + "~" + maxInterval + "s 每页" + pageSize + "条"
                 + " 起点=" + (cut0 > 0 ? new SimpleDateFormat("yyyy-MM-dd").format(new Date(cut0)) : "不限")
@@ -497,37 +498,82 @@ public class BanBroadcastManager implements Listener {
         if (!startCutoffAuto) return startCutoffMs;
         if (autoCutoffMs < 0) {
             autoCutoffMs = 0;
-            long folderCreated = 0;
-            try {
-                File df = plugin.getDataFolder();
-                if (df != null && df.exists()) {
-                    long t = java.nio.file.Files.readAttributes(df.toPath(),
-                            java.nio.file.attribute.BasicFileAttributes.class)
-                            .creationTime().toMillis();
-                    if (t > 0) folderCreated = t;
+            long tsFile = readTimestampFile();
+            if (tsFile > 0) {
+                autoCutoffMs = tsFile;
+            } else {
+                long folderCreated = 0;
+                try {
+                    File df = plugin.getDataFolder();
+                    if (df != null && df.exists()) {
+                        long t = java.nio.file.Files.readAttributes(df.toPath(),
+                                java.nio.file.attribute.BasicFileAttributes.class)
+                                .creationTime().toMillis();
+                        if (t > 0) folderCreated = t;
+                    }
+                } catch (Exception e) {
+                    warn("读取插件数据目录创建时间失败，本次不过滤历史封禁: "
+                            + e.getMessage());
                 }
-            } catch (Exception e) {
-                warn("读取插件数据目录创建时间失败，本次不过滤历史封禁: "
-                        + e.getMessage());
-            }
-            if (folderCreated > 0) {
-                long cap = System.currentTimeMillis() - MAX_AUTO_CUTOFF_WINDOW_MS;
-                autoCutoffMs = Math.min(folderCreated, cap);
-                if (folderCreated > cap) {
-                    warn("插件数据目录创建时间 " + fmtCutoff(folderCreated)
-                            + " 晚于180天前（目录可能被重建/迁移），"
-                            + "自动起点回退为 " + fmtCutoff(cap)
-                            + "，近半年内的生效封禁照常播报"
-                            + "（可在 ban/规则配置.md 手动填「播报起点」精确控制）");
+                if (folderCreated > 0) {
+                    long cap = System.currentTimeMillis() - MAX_AUTO_CUTOFF_WINDOW_MS;
+                    autoCutoffMs = Math.min(folderCreated, cap);
+                    if (folderCreated > cap) {
+                        warn("插件数据目录创建时间 " + fmtCutoff(folderCreated)
+                                + " 晚于180天前（目录可能被重建/迁移），"
+                                + "自动起点回退为 " + fmtCutoff(cap)
+                                + "，近半年内的生效封禁照常播报"
+                                + "（可在 ban/规则配置.md 手动填「播报起点」精确控制）");
+                    }
                 }
-            }
-            if (autoCutoffMs <= 0) {
-                warn("取不到插件数据目录创建时间，历史封禁过滤已关闭"
-                        + "（可在 ban/规则配置.md 里手动填「播报起点」锁定时间）");
+                if (autoCutoffMs <= 0) {
+                    warn("取不到插件数据目录创建时间，历史封禁过滤已关闭"
+                            + "（可在 ban/规则配置.md 里手动填「播报起点」锁定时间）");
+                }
             }
         }
         return autoCutoffMs;
     }
+    /** ★ 第57批：读插件数据目录中的时间戳文件（10位数字无后缀）
+     *  优先级：用户配置 > 时间戳文件 > 插件数据目录创建时间
+     */
+    private long readTimestampFile() {
+        try {
+            File df = plugin.getDataFolder();
+            if (df == null) return 0;
+            File[] files = df.listFiles();
+            if (files == null) return 0;
+            for (File f : files) {
+                String name = f.getName();
+                if (name.length() == 10 && name.chars().allMatch(Character::isDigit)) {
+                    long ts = Long.parseLong(name);
+                    if (ts > 0) return ts * 1000L;
+                }
+            }
+        } catch (Exception e) {
+            warn("读时间戳文件失败: " + e.getMessage());
+        }
+        return 0;
+    }
+
+    /** ★ 第57批：插件启动时创建时间戳文件（如果不存在）
+     *  文件名 = 当前时间戳（秒），内容为空
+     */
+    private void ensureTimestampFile() {
+        try {
+            File df = plugin.getDataFolder();
+            if (df == null || !df.exists()) return;
+            long tsSec = System.currentTimeMillis() / 1000L;
+            File tsFile = new File(df, String.valueOf(tsSec));
+            if (!tsFile.exists()) {
+                java.nio.file.Files.createFile(tsFile.toPath());
+                plugin.getLogger().info("[封禁播报] 已创建时间戳文件: " + tsFile.getName());
+            }
+        } catch (Exception e) {
+            warn("创建时间戳文件失败: " + e.getMessage());
+        }
+    }
+
 
     /** 28批：自动播报起点最多回溯 180 天（约半年）——数据目录重建时起点不得过新 */
     private static final long MAX_AUTO_CUTOFF_WINDOW_MS = 180L * 24 * 3600 * 1000;
