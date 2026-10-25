@@ -2961,6 +2961,14 @@ function pushPlayerLoginStatus() {
         $verifiedStmt->execute();
         @error_log("[pushPlayerLoginStatus] 写入web_login_verified: player=$player (Java已验证)");
     }
+    // ★ login_verified=0：Java标记未登录，清除旧记录防止Web端误放行
+    else {
+        $db->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+        $delStmt = $db->prepare("DELETE FROM web_login_verified WHERE player_name = :player");
+        $delStmt->bindValue(':player', $player, SQLITE3_TEXT);
+        $delStmt->execute();
+        @error_log("[pushPlayerLoginStatus] 清除web_login_verified: player=$player (Java未登录)");
+    }
 
     // 2. 如果玩家在游戏中已登录，更新online_players表（只更新已存在的记录，不凭空插入）
     if ($isOnline) {
