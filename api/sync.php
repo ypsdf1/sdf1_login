@@ -371,6 +371,11 @@ switch ($action) {
         break;
     case 'sync_bans':
         syncBans();
+
+    // ★ 第57批：确认解封——清空PHP端web_player_bans，不写回banned-players.json
+    case 'clear_bans':
+        clearBans();
+        break;
         break;
     // ★ 第32批：拉黑名单同步（Java BlacklistManager → web_player_blacklist）
     case 'sync_blacklist':
@@ -5757,6 +5762,30 @@ function syncBans() {
 // ===== Java端推送拉黑名单到PHP（第32批）=====
 // 数据源唯一：Java BlacklistManager（黑名单.md），PHP 只读不写。
 // 全量覆盖式同步（DELETE + INSERT），已过期条目不入表。
+
+
+// ===== 第57批：确认解封——清空PHP端封禁数据 =====
+// cancel ban 时调用：DELETE FROM web_player_bans，不写回banned-players.json
+function clearBans() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('认证失败');
+
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS web_player_bans (
+        target TEXT NOT NULL,
+        ban_type TEXT NOT NULL DEFAULT 'name',
+        reason TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        expire_time INTEGER DEFAULT 0,
+        synced_at INTEGER DEFAULT 0,
+        created_time INTEGER DEFAULT 0,
+        PRIMARY KEY (target, ban_type)
+    )");
+    $db->exec("DELETE FROM web_player_bans");
+
+    success(['count' => 0]);
+}
+
 function syncBlacklist() {
     $secret = getParam('secret');
     if (!$secret || $secret !== SECRET_KEY) error('认证失败');
