@@ -5103,10 +5103,14 @@ function webEmailBindResult() {
         error('密钥验证失败', 403);
     }
 
+    // ★ action 只从 POST body 读：URL 路由参数 action=web_email_bind_result 会污染 getParam($_GET优先)
+    $savedGetAction = $_GET['action'] ?? null;
+    unset($_GET['action']);
     $requestId = getParam('request_id');
     $action = getParam('action', '');      // approve / reject / offline / failed
     $player = getParam('player', '');
     $failReason = getParam('fail_reason', '');
+    if ($savedGetAction !== null) $_GET['action'] = $savedGetAction;
 
     if (!$requestId) error('缺少request_id');
     if (!in_array($action, array('approve', 'reject', 'offline', 'failed'), true)) error('非法action');
