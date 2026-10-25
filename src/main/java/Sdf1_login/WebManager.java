@@ -6547,7 +6547,7 @@ public class WebManager {
                             // ★ 玩家主动冻结账号（异地登录邮件触发）：Bukkit 原生封禁
                             String target = targetName;
                             if (!target.isEmpty()) {
-                                String reason = "§c§l您的账号已被临时冻结（疑似被盗）\n§7请到网页修改密码后自动解冻";
+                                String reason = "§c§l您的账号已被临时冻结（疑似被盗）\n§7请在游戏内执行 /sdf1_login pw 修改密码后自动解冻";
                                 Bukkit.getBanList(
                                         org.bukkit.BanList.Type.NAME)
                                         .addBan(target, reason,

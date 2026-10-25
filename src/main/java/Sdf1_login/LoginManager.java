@@ -218,8 +218,8 @@ public class LoginManager {
             }
 
 
-            // ★第48批#244：密码不匹配 → 先尝试与网页端即时对账（网页可能刚改密被覆盖），
-            //   15秒/人限流；对账完成后主线程自动重校验，仍未过才计失败次数
+            // ★第54批：密码不匹配 → 先同步账号数据（拉回PHP侧凭证入库为主密码），
+            //   15秒/人限流；同步完成后主线程自动重校验（以Java本地login.db为准），仍未过才计失败次数
             if (maybeRetryAfterWebSync(p, pwd)) return true;
 
             // ★ 密码错误，记录风控
@@ -292,7 +292,7 @@ public class LoginManager {
     }
 
     /**
-     * ★第48批#244：密码校验失败时先与网页端对账（拉回网页新密码）再自动重试一次。
+     * ★第54批：密码校验失败时先同步账号数据（拉回PHP侧凭证入库）再自动重试一次。
      * 15秒/人限流；重试仍失败走正常风控计数。
      *
      * @return true = 本轮 /login 已交给异步对账流程处理（调用方直接 return）
@@ -306,7 +306,7 @@ public class LoginManager {
         if (last != null && now - last < 15000L) return false;   // 15秒/人限流
         pwSyncRetryAt.put(name, now);
         pwSyncRetrying.add(name);
-        p.sendMessage("§e§l[登录] §e正在核对网页端最新密码…");
+        p.sendMessage("§e§l[登录] §e正在同步账号数据…");
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 plugin.webManager.pushWebLoginCredentials();   // 含 alignGate 拉回
