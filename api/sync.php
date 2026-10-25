@@ -2930,6 +2930,19 @@ function pushPlayerLoginStatus() {
         $loginVerified = $val ? (int)$val : 0;
     }
 
+    // ★ 第56批：读取邮箱后缀配置（Java端配置为唯一权威）
+    $emailSuffixMode = (string)getParam('email_suffix_mode', '默认');
+    $emailSuffixList = (string)getParam('email_suffix_list', '');
+
+    // ★ 存储后缀配置（供PHP注册/绑邮箱时校验）
+    $cfgDb = getDB();
+    $cfgDb->exec("CREATE TABLE IF NOT EXISTS email_suffix_config (id INTEGER PRIMARY KEY DEFAULT 1, mode TEXT DEFAULT '默认', suffix_list TEXT DEFAULT '', updated_at INTEGER DEFAULT 0)");
+    $cfgUpd = $cfgDb->prepare("INSERT OR REPLACE INTO email_suffix_config (id, mode, suffix_list, updated_at) VALUES (1, :mode, :list, :time)");
+    $cfgUpd->bindValue(':mode', $emailSuffixMode, SQLITE3_TEXT);
+    $cfgUpd->bindValue(':list', $emailSuffixList, SQLITE3_TEXT);
+    $cfgUpd->bindValue(':time', time(), SQLITE3_INTEGER);
+    $cfgUpd->execute();
+
     if (!$player || !$webToken) {
         @error_log("[pushPlayerLoginStatus] FAIL: missing player or web_token. player=" . var_export($player, true) . ", web_token=" . var_export($webToken, true));
         error('缺少player或web_token参数');
@@ -5094,6 +5107,32 @@ function checkPendingWebEmailBindRequests() {
     }
 
     success(['requests' => $requests, 'count' => count($requests)]);
+}
+
+// ===== 第56批：邮箱后缀校验（与Java端ConfigManager.isEmailSuffixAllowed逻辑一致）=====
+function checkEmailSuffix($email) {
+    $db = getDB();
+    $cfgRow = $db->query("SELECT mode, suffix_list FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+    if (!$cfgRow) return true; // 无配置=默认模式=不校验
+    $mode = (string)$cfgRow['mode'];
+    $suffixList = (string)$cfgRow['suffix_list'];
+    if ($mode === '默认' || $suffixList === '') return true;
+
+    $suffix = '';
+    $atIdx = strpos($email, '@');
+    if ($atIdx !== false && $atIdx < strlen($email) - 1) {
+        $suffix = strtolower(trim(substr($email, $atIdx + 1)));
+    }
+
+    $suffixes = preg_split('/[,;\\n]+/', $suffixList);
+    $found = false;
+    foreach ($suffixes as $s) {
+        $t = strtolower(trim($s));
+        if ($t !== '' && $t === $suffix) { $found = true; break; }
+    }
+    if ($mode === '白名单') return $found;
+    if ($mode === '黑名单') return !$found;
+    return true;
 }
 
 // ===== 第53批：插件回传游戏内玩家对邮箱绑定请求的处理结果（SECRET_KEY认证）=====

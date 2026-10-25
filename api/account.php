@@ -891,6 +891,17 @@ function acctBindEmailStart() {
     if ($email === '') error('请输入邮箱地址');
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) error('邮箱格式不正确');
 
+    // ★ 第56批：邮箱后缀校验（与Java端ConfigManager一致）
+    if (!checkEmailSuffix($email)) {
+        $mode = '默认';
+        $cfgDb = getDB();
+        $cfgRow = $cfgDb->query("SELECT mode FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+        if ($cfgRow) $mode = (string)$cfgRow['mode'];
+        if ($mode === '白名单') error('该邮箱后缀不在允许列表中');
+        else if ($mode === '黑名单') error('该邮箱后缀被禁止使用');
+        else error('该邮箱后缀不可用');
+    }
+
     $cur = acctEmailOf($player);
     if ($cur !== '') error('账号已绑定邮箱，无需重复绑定');
 

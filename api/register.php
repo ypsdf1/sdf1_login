@@ -70,6 +70,17 @@ function registerAccount($token) {
     if (!$passwordHash) error('缺少password_hash');
     if (!$salt) error('缺少salt');
 
+    // ★ 第56批：邮箱后缀校验（与Java端一致）
+    if ($email !== '' && !checkEmailSuffix($email)) {
+        $mode = '默认';
+        $cfgDb = getDB();
+        $cfgRow = $cfgDb->query("SELECT mode FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+        if ($cfgRow) $mode = (string)$cfgRow['mode'];
+        if ($mode === '白名单') error('该邮箱后缀不在允许列表中');
+        else if ($mode === '黑名单') error('该邮箱后缀被禁止使用');
+        else error('该邮箱后缀不可用');
+    }
+
     // 验证token（注册需要token）
     $isPreview = true;
     if ($token) {
@@ -125,6 +136,17 @@ function webRegister() {
     if (!$webToken) error('缺少web_token');
     if (!$password) error('缺少password');
     if (strlen($password) < 6) error('密码长度至少6位');
+
+    // ★ 第56批：邮箱后缀校验（与Java端一致）
+    if ($email !== '' && !checkEmailSuffix($email)) {
+        $mode = '默认';
+        $cfgDb = getDB();
+        $cfgRow = $cfgDb->query("SELECT mode FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+        if ($cfgRow) $mode = (string)$cfgRow['mode'];
+        if ($mode === '白名单') error('该邮箱后缀不在允许列表中');
+        else if ($mode === '黑名单') error('该邮箱后缀被禁止使用');
+        else error('该邮箱后缀不可用');
+    }
 
     // 验证web_token
     $db = getDB();

@@ -248,6 +248,31 @@ if ($currentVersion !== $BUILD_VERSION) {
             from { opacity: 0; transform: translateY(30px) scale(0.95); }
             to { opacity: 1; transform: translateY(0) scale(1); }
         }
+        /* ★ 第56批：抽屉式弹窗动画（绑定邮箱专用）*/
+        @keyframes drawerSlideDown {
+            from { transform: translateY(-100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes drawerSlideUp {
+            from { transform: translateY(0); opacity: 1; }
+            to { transform: translateY(100%); opacity: 0; }
+        }
+        .drawer-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6); z-index: 999;
+            display: none; justify-content: center; align-items: flex-start;
+            padding-top: 15vh;
+            backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+        }
+        .drawer-overlay.show { display: flex; }
+        .drawer-card {
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 12px 12px 0 0; padding: 24px;
+            width: 420px; max-width: 90%;
+            box-shadow: 0 -8px 32px rgba(0,0,0,0.3);
+        }
+        .drawer-card.animate-in { animation: drawerSlideDown 0.3s ease; }
+        .drawer-card.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
         /* ★ 毛玻璃Alert弹窗 */
         .glass-alert-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -365,6 +390,18 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div id="cgSlotGlass"></div>
             <button class="login-btn" id="glassLoginBtn" onclick="doGlassLogin()">登 录</button>
             <p class="hint">也可在游戏中输入 <code>/sdf1_login weblogin</code> 获取链接</p>
+        </div>
+    </div>
+
+    <!-- ★ 第56批：抽屉式弹窗（绑定邮箱专用）-->
+    <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()">
+        <div class="drawer-card" id="drawerCard" onclick="event.stopPropagation()">
+            <h3 id="drawerTitle" style="margin-bottom:16px">📧 网页绑定邮箱</h3>
+            <div id="drawerBody"></div>
+            <div class="actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+                <button class="btn" onclick="closeDrawer()">取消</button>
+                <button class="btn btn-primary" id="drawerConfirm" onclick="confirmDrawer()">确认</button>
+            </div>
         </div>
     </div>
 
@@ -2585,8 +2622,8 @@ if ($currentVersion !== $BUILD_VERSION) {
     function acctBindEmailWizard() {
         if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
         if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
-        acctModalOpen('📧 网页绑定邮箱');
-        acctModalSet(`
+        drawerOpen('📧 网页绑定邮箱');
+        drawerSet(`
             <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
             <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
@@ -2597,23 +2634,23 @@ if ($currentVersion !== $BUILD_VERSION) {
     async function acctBindEmailStart() {
         const el = document.getElementById('bindEmailInput');
         const email = el ? el.value.trim() : '';
-        if (!email) { acctErr('请输入邮箱地址'); return; }
-        const btn = document.getElementById('modalConfirm');
-        btn.disabled = true; acctErr('发送中...');
+        if (!email) { drawerErr('请输入邮箱地址'); return; }
+        const btn = document.getElementById('drawerConfirm');
+        btn.disabled = true; drawerErr('发送中...');
         try {
             const res = await apiPost('account.php', {action: 'bind_email_start', email: email});
             btn.disabled = false;
-            if (!res.success) { acctErr(res.message || '发起失败'); return; }
+            if (!res.success) { drawerErr(res.message || '发起失败'); return; }
             _bindWizId = res.data.id;
             acctBindEmailWait(res.data.expire_in || 60);
         } catch (e) {
             btn.disabled = false;
-            acctErr('连接失败: ' + e.message);
+            drawerErr('连接失败: ' + e.message);
         }
     }
 
     function acctBindEmailWait(expireIn) {
-        acctModalSet(`
+        drawerSet(`
             <div style="font-size:13.5px;line-height:1.8;text-align:center">
                 <div style="font-size:26px">🎮</div>
                 <div style="margin-top:4px">等待游戏内批准…</div>
@@ -2622,7 +2659,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                 <div id="bindWizStatus" style="margin-top:6px;font-size:12.5px;color:var(--dim)">已向游戏发送通知…</div>
             </div>
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
-            '取消', () => { if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; } closeModal(); });
+            '取消', () => { if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; } closeDrawer(); });
         if (_bindWizTimer) clearInterval(_bindWizTimer);
         _bindWizTimer = setInterval(acctBindEmailPollTick, 1000);
         acctBindEmailPollTick();
@@ -3105,6 +3142,39 @@ if ($currentVersion !== $BUILD_VERSION) {
     }
 
     function confirmModal() {}
+
+    // ★ 第56批：抽屉式弹窗控制
+    function drawerOpen(title) {
+        const overlay = document.getElementById("drawerOverlay");
+        const card = document.getElementById("drawerCard");
+        document.getElementById("drawerTitle").textContent = title;
+        overlay.style.display = "flex";
+        card.classList.remove("animate-out");
+        card.classList.add("animate-in");
+    }
+
+    function drawerSet(html, confirmText, onConfirm) {
+        document.getElementById("drawerBody").innerHTML = html;
+        const btn = document.getElementById("drawerConfirm");
+        btn.textContent = confirmText;
+        btn.disabled = false;
+        btn.onclick = onConfirm;
+    }
+
+    function drawerErr(msg) {
+        const e = document.getElementById("acctErr");
+        if (e) e.textContent = msg || "";
+    }
+
+    function closeDrawer() {
+        const overlay = document.getElementById("drawerOverlay");
+        const card = document.getElementById("drawerCard");
+        card.classList.remove("animate-in");
+        card.classList.add("animate-out");
+        setTimeout(() => { overlay.style.display = "none"; card.classList.remove("animate-out"); }, 250);
+    }
+
+    function confirmDrawer() {}
 
     // ===== 忘记密码 =====
     function showResetPasswordModal() {
