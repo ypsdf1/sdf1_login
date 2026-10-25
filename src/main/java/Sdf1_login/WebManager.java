@@ -8841,7 +8841,9 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=" + (isLoggedIn ? "1" : "0"); // ★ 按实际登录状态告知PHP（未登录推0让PHP清除旧记录）
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
+                        + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
+                        + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8"); // ★ 按实际登录状态告知PHP（未登录推0让PHP清除旧记录）
 
                 String response = doGet(urlStr);
                 if (response != null) {
@@ -8925,7 +8927,9 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=" + (isLoggedIn ? "1" : "0");
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
+                        + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
+                        + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8");
 
                 String response = doGet(urlStr);
                 if (response != null) {

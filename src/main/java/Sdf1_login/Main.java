@@ -141,6 +141,8 @@ public class Main extends JavaPlugin
     private final Map<String, Long> ipAutoLogin =
             new HashMap<>();
     private static final long IP_SKIP_MS = 300000L;
+    // ★ 第56批：/webbind 批准密码验证失败计数（玩家名 -> 失败次数）
+    private final ConcurrentHashMap<String, Integer> webbindPwdFails = new ConcurrentHashMap<>();
     private SalesStatsManager salesStats;
 
     private final Map<UUID, Long> lastActivity =
@@ -9624,7 +9626,7 @@ public class Main extends JavaPlugin
             if (args.length < 2
                     || (!args[0].equalsIgnoreCase("approve")
                             && !args[0].equalsIgnoreCase("reject"))) {
-                wp.sendMessage("§c用法: /webbind approve|reject <id>");
+                wp.sendMessage("§c用法: /webbind approve|reject <id> [密码]");
                 return true;
             }
             final String bindReqId = args[1];
@@ -9637,13 +9639,55 @@ public class Main extends JavaPlugin
                 return true;
             }
             final boolean bindApprove = args[0].equalsIgnoreCase("approve");
-            wp.sendMessage(bindApprove ? "§e正在提交批准…" : "§e正在提交拒绝…");
+            // ★ 第56批：approve 时需要密码（Java端直接验证，不再依赖PHP复核）
+            if (bindApprove) {
+                if (args.length < 3) {
+                    wp.sendMessage("§c批准需要验证密码: /webbind approve " + bindReqId + " <密码>");
+                    return true;
+                }
+                final String bindPwd = args[2];
+                // 5次失败风控
+                int failCount = webbindPwdFails.getOrDefault(wp.getName(), 0);
+                if (failCount >= 5) {
+                    wp.sendMessage("§c§l[风控] §f密码验证失败次数过多，已被临时限制。请稍后再试");
+                    return true;
+                }
+                // Java端直接验证密码
+                String pwdSalt = (String) db.getField(wp.getName(), "password_salt");
+                String pwdHash = PasswordUtils.hash(bindPwd, pwdSalt);
+                String pwdResult = db.checkPasswordWithFallback(wp.getName(), pwdHash);
+                if (pwdResult == null) {
+                    failCount++;
+                    webbindPwdFails.put(wp.getName(), failCount);
+                    wp.sendMessage("§c密码错误（" + failCount + "/5）");
+                    if (failCount >= 5) {
+                        wp.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
+                    }
+                    return true;
+                }
+                // 密码验证通过，清零失败计数
+                webbindPwdFails.remove(wp.getName());
+                wp.sendMessage("§e正在提交批准…");
+                webManager.submitWebEmailBindResult(bindReqId, wp.getName(),
+                        "approve", "", status -> {
+                            if (status == null) {
+                                wp.sendMessage("§c提交失败，请稍后重试");
+                            } else if ("approved".equals(status)) {
+                                wp.sendMessage("§a已批准！§f邮箱绑定已完成");
+                            } else if ("expired".equals(status)) {
+                                wp.sendMessage("§c请求已超时，未做任何处置");
+                            } else {
+                                wp.sendMessage("§7请求当前状态: §f" + status);
+                            }
+                        });
+                return true;
+            }
+            // reject 不需要密码
+            wp.sendMessage("§e正在提交拒绝…");
             webManager.submitWebEmailBindResult(bindReqId, wp.getName(),
-                    bindApprove ? "approve" : "reject", "", status -> {
+                    "reject", "", status -> {
                         if (status == null) {
                             wp.sendMessage("§c提交失败，请稍后重试");
-                        } else if ("approved".equals(status)) {
-                            wp.sendMessage("§a已批准！§f请回到网页输入登录密码完成绑定（3分钟内有效）");
                         } else if ("rejected".equals(status)) {
                             wp.sendMessage("§e已拒绝，网页端将直接返回，不做任何处置");
                         } else if ("expired".equals(status)) {
