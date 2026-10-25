@@ -76,6 +76,10 @@ public class LoginManager {
         // ★ 记录Java手动登录：5分钟内重连可直接放行（检查点1）
         if (plugin.webManager != null) {
             plugin.webManager.recordJavaLogin(name, plugin.getPlayerIP(p));
+            // ★ 第57批：/login 成功后推送 login_verified=1 给 PHP，修复网页端显示未登录
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                plugin.webManager.pushLoginVerified(name);
+            });
         }
         p.setAllowFlight(false);
         p.setFlying(false);

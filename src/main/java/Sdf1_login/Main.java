@@ -2985,6 +2985,13 @@ public class Main extends JavaPlugin
         Player p = e.getPlayer();
         String name = p.getName();
         String ip = getPlayerIP(p);
+        // ★ 第57批：插件管理员登录 → CLI 通知待确认的封禁缺口
+        if (webManager != null && webManager.hasBanPending() && isAdmin(p)) {
+            p.sendMessage("\u00a7c\u00a7l[封禁-缺口] \u00a7f检测到 " + webManager.getBanPendingCount()
+                    + " 条封禁数据缺口待确认");
+            p.sendMessage("\u00a77执行 \u00a7a/sdf1_login confirm ban \u00a77拉回封禁数据");
+            p.sendMessage("\u00a77或 \u00a7a/sdf1_login cancel ban \u00a77确认解封（清空PHP数据）");
+        }
 
         // ===== 公告计分板（第35批）=====
         // 延后 1 秒：避免与登录/权限流程抢计分板
@@ -10054,6 +10061,21 @@ public class Main extends JavaPlugin
             pendingDeleteName = null;
             pendingDeleteTask = null;
             sender.sendMessage("§a已取消删除: " + name);
+            return true;
+        }
+
+        // ★ 第57批：confirm ban 确认封禁缺口拉回
+        if (sub.equals("confirm") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
+            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
+            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            webManager.confirmBanGap(sender);
+            return true;
+        }
+        // ★ 第57批：cancel ban 确认解封（清空PHP封禁数据，不写回banned-players.json）
+        if (sub.equals("cancel") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
+            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
+            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            webManager.cancelBanGap(sender);
             return true;
         }
 

@@ -1,6 +1,7 @@
 package Sdf1_login;
 
 import org.bukkit.Bukkit;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.BlockStateMeta;
@@ -331,6 +332,16 @@ public class WebManager {
     private String lastBondBalanceHash = "";
     private String lastLandDataHash = "";
     private String lastBansHash = "";
+    // ★ 第57批：封禁数据缺口待确认状态机
+    private static final int BAN_GAP_THRESHOLD = 3;
+    private volatile boolean banPending = false;
+    private volatile int banPendingCount = 0;
+    private volatile long banPendingAt = 0;
+    private volatile List<Map<String, Object>> banPendingRows = null;
+    private volatile java.io.File banBakFile = null;
+    private volatile boolean banCollectOnly = false;
+    private volatile List<Map<String, Object>> banCollectedRows = new ArrayList<>();
+
     private boolean bansCreatedPushed = false;  // ★ 第十九批：进程内是否已把 created/起点推给PHP过一次
     private long lastPushedCutoff = -1;         //    上次推送时的播报起点（变了就再强制推一轮）
     private String lastAdminsHash = "";
@@ -5706,6 +5717,180 @@ public class WebManager {
         syncAdmins();
     }
 
+    // ★ 第57批：封禁缺口确认/取消 + 登录验证推送
+
+    /** 进入封禁缺口待确认模式：写bak备份，等管理员确认 */
+    private void enterBanPendingMode(List<Map<String, Object>> rows) {
+        banPending = true;
+        banPendingCount = rows.size();
+        banPendingRows = new ArrayList<>(rows);
+        banPendingAt = System.currentTimeMillis();
+        writeBannedBackup(rows);
+        plugin.getLogger().warning("[封禁-缺口] ★★ 检测到 " + rows.size() + " 条封禁数据缺口！");
+        plugin.getLogger().warning("[封禁-缺口] 服主可能批量解封删了 banned-players.json");
+        plugin.getLogger().warning("[封禁-缺口] 执行 /sdf1_login confirm ban 拉回封禁");
+        plugin.getLogger().warning("[封禁-缺口] 执行 /sdf1_login cancel ban 确认解封");
+    }
+
+    /** 管理员确认拉回封禁缺口 */
+    public void confirmBanGap(CommandSender sender) {
+        if (!banPending) {
+            sender.sendMessage("\u00a7c当前没有待确认的封禁缺口");
+            return;
+        }
+        if (banBakFile != null && banBakFile.exists()) {
+            List<Map<String, Object>> rows = readBannedBackup(banBakFile);
+            if (rows.isEmpty()) {
+                sender.sendMessage("\u00a7c备份文件已损坏，无法拉回");
+                return;
+            }
+            sender.sendMessage("\u00a7a正在拉回 \u00a7e" + rows.size() + " \u00a7a条封禁数据...");
+            for (Map<String, Object> row : rows) {
+                applyPulledRow("bans", row);
+            }
+            Bukkit.getScheduler().runTaskAsynchronously(plugin, this::forceSyncBansAndAdmins);
+        }
+        banPending = false;
+        banPendingRows = null;
+        banPendingAt = 0;
+        banBakFile = null;
+        sender.sendMessage("\u00a7a封禁数据已拉回，已同步到 PHP");
+    }
+
+    /** 管理员确认解封：不写回 banned-players.json，清空 PHP 的 web_player_bans */
+    public void cancelBanGap(CommandSender sender) {
+        if (!banPending) {
+            sender.sendMessage("\u00a7c当前没有待确认的封禁缺口");
+            return;
+        }
+        clearPhpBans();
+        sender.sendMessage("\u00a7a已取消封禁缺口确认，PHP 端封禁数据已清空（服主的解封生效）");
+        banPending = false;
+        banPendingRows = null;
+        banPendingAt = 0;
+        banBakFile = null;
+    }
+
+    /** 清空 PHP 端 web_player_bans */
+    private void clearPhpBans() {
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("secret", secretKey);
+            String resp = httpPost("api/sync.php?action=clear_bans", mapToJson(body));
+            if (resp != null && resp.contains("\"success\":true")) {
+                plugin.getLogger().info("[封禁-缺口] 已清空 PHP 端封禁数据");
+            } else {
+                plugin.getLogger().warning("[封禁-缺口] 清空 PHP 封禁数据失败: " + resp);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[封禁-缺口] 清空 PHP 封禁数据异常: " + e.getMessage());
+        }
+    }
+
+    /** 写 banned-players.json.bak（原子写） */
+    private void writeBannedBackup(List<Map<String, Object>> rows) {
+        try {
+            java.io.File wc = Bukkit.getWorldContainer();
+            if (wc == null) return;
+            java.io.File bak = new java.io.File(wc, "banned-players.json.bak");
+            banBakFile = bak;
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Map<String, Object> row : rows) {
+                if (!first) sb.append(",");
+                first = false;
+                String target = strOf(row.get("target"));
+                boolean isIp = "ip".equalsIgnoreCase(strOf(row.get("type")));
+                String name = isIp ? "" : target;
+                sb.append("{\"name\":\"").append(escapeJson(name))
+                  .append("\",\"uuid\":\"\"")
+                  .append(",\"created\":").append(longOf(row.get("created")))
+                  .append(",\"expires\":").append(longOf(row.get("expire")))
+                  .append(",\"source\":\"").append(escapeJson(strOf(row.get("source"))))
+                  .append("\",\"reason\":\"").append(escapeJson(strOf(row.get("reason"))))
+                  .append("\"}");
+            }
+            sb.append("]");
+            java.io.File tmp = new java.io.File(bak.getPath() + ".tmp");
+            try (java.io.OutputStreamWriter w = new java.io.OutputStreamWriter(
+                    new java.io.FileOutputStream(tmp), java.nio.charset.StandardCharsets.UTF_8)) {
+                w.write(sb.toString());
+            }
+            if (bak.exists()) bak.delete();
+            tmp.renameTo(bak);
+            plugin.getLogger().warning("[封禁-缺口] 已写入备份: " + bak.getPath() + " (" + rows.size() + "条)");
+        } catch (Exception e) {
+            plugin.getLogger().warning("[封禁-缺口] 写备份失败: " + e.getMessage());
+        }
+    }
+
+    /** 读 banned-players.json.bak → Java 侧字段名的行 */
+    private List<Map<String, Object>> readBannedBackup(java.io.File bak) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try {
+            String txt = new String(java.nio.file.Files.readAllBytes(bak.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(txt);
+            if (!root.isJsonArray()) return out;
+            for (com.google.gson.JsonElement el : root.getAsJsonArray()) {
+                if (!el.isJsonObject()) continue;
+                com.google.gson.JsonObject o = el.getAsJsonObject();
+                Map<String, Object> row = new LinkedHashMap<>();
+                String name = str(o, "name");
+                row.put("target", name.isEmpty() ? str(o, "uuid") : name);
+                row.put("type", "name");
+                row.put("reason", str(o, "reason"));
+                row.put("source", str(o, "source"));
+                row.put("expire", o.has("expires") && !o.get("expires").isJsonNull()
+                        ? o.get("expires").getAsLong() : 0L);
+                row.put("created", o.has("created") && !o.get("created").isJsonNull()
+                        ? o.get("created").getAsLong() : 0L);
+                out.add(row);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[封禁-缺口] 读备份失败: " + e.getMessage());
+        }
+        return out;
+    }
+
+    /** 是否存在待确认的封禁缺口 */
+    public boolean hasBanPending() { return banPending; }
+
+    /** 待确认缺口的封禁条数 */
+    public int getBanPendingCount() { return banPendingCount; }
+
+    /** 第57批：/login 成功后推送 login_verified=1 给 PHP（修复网页端显示未登录） */
+    public void pushLoginVerified(String playerName) {
+        if (!enabled) return;
+        try {
+            String token = generateToken(playerName, "weblogin");
+            String urlStr = webBaseUrl + "/api/sync.php?action=push_player_login_status"
+                    + "&secret=" + java.net.URLEncoder.encode(secretKey, "UTF-8")
+                    + "&player=" + java.net.URLEncoder.encode(playerName, "UTF-8")
+                    + "&web_token=" + java.net.URLEncoder.encode(token, "UTF-8")
+                    + "&expire_seconds=" + tokenExpireSeconds
+                    + "&online=1"
+                    + "&registered=1"
+                    + "&login_verified=1";
+            String response = doGet(urlStr);
+            if (response != null && response.contains("\"success\":true")) {
+                plugin.getLogger().info("[Web通信] 推送登录验证状态: " + playerName + " login_verified=1");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[Web通信] 推送登录验证状态失败: " + e.getMessage());
+        }
+    }
+
+    /** str(JsonObject, key) 辅助 */
+    private static String str(com.google.gson.JsonObject o, String k) {
+        try {
+            if (o == null || !o.has(k) || o.get(k).isJsonNull()) return "";
+            return o.get(k).getAsString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     // ★ 第32批（#208）：拉黑名单同步到PHP（web_player_blacklist），
     //   供 PHP 后台识别被拉黑玩家并给出明确提示（登录/兑换码双链路）。
 
@@ -5767,6 +5952,12 @@ public class WebManager {
      */
     private void syncBans() {
         if (!enabled) return;
+        // ★ 第57批：存在待确认缺口时冻结对账，不拉回不推送
+        if (banPending) {
+            plugin.getLogger().info("[对账-封禁] 存在待确认缺口(" + banPendingCount + "条)，本轮对账冻结");
+            return;
+        }
+
         try {
             org.bukkit.BanList nameBanList = Bukkit.getBanList(org.bukkit.BanList.Type.NAME);
             org.bukkit.BanList ipBanList = Bukkit.getBanList(org.bukkit.BanList.Type.IP);
@@ -5823,6 +6014,13 @@ public class WebManager {
             @SuppressWarnings("unchecked")
             Set<org.bukkit.BanEntry<?>> ib0 = (Set<org.bukkit.BanEntry<?>>) (Set<?>) ipBanList.getEntries();
             for (org.bukkit.BanEntry<?> e0 : ib0) banRows.add(banRowOf(e0, "ip"));
+            // ★ 第57批：本地名单为空 + 本轮收回>=3条 → 判定大缺口，转pending等管理员确认
+            boolean localBanEmpty = nameBanList.getEntries().isEmpty()
+                    && ipBanList.getEntries().isEmpty();
+            if (localBanEmpty) {
+                banCollectOnly = true;
+                banCollectedRows = new ArrayList<>();
+            }
             AlignResult arAlign = alignGate("bans", banRows);
             // ★ 第十九批：created/ban_cutoff（PHP公示过滤历史封禁用）不进对账列，两端行一致时
             //   alignGate 判「零发送」会把它们永远拦住 —— 进程内首轮 & 起点配置变化时强制整包推一轮；
