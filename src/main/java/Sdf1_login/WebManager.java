@@ -9311,7 +9311,7 @@ public class WebManager {
      */
 
     public void autoGenerateWebLoginToken(Player player) {
-        if (!enabled) return;
+        if (!isEnabled()) return;
         // ★ 第30批：拉黑玩家禁止访问 PHP 后端（不签发 token）
         if (plugin.getBlacklist() != null
                 && plugin.getBlacklist().isBlacklisted(player.getName())) {
