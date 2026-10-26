@@ -158,13 +158,20 @@ if ($currentVersion !== $BUILD_VERSION) {
         .empty { text-align: center; color: var(--dim); padding: 40px; }
         .modal-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.6); display: flex; justify-content: center;
+            background: rgba(0,0,0,0.55); display: flex; justify-content: center;
             align-items: center; z-index: 999; display: none;
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
         }
+        .modal-overlay.show { display: flex; }
         .modal {
-            background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+            background: rgba(22,27,34,0.75); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
+            border: 1px solid rgba(88,166,255,0.25); border-radius: 12px;
             padding: 24px; width: 400px; max-width: 90%;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08);
         }
+        body.bg-img-mode .modal { background: rgba(22,27,34,0.6); }
+        .light-theme .modal { background: rgba(255,255,255,0.8); border-color: rgba(9,105,218,0.25); }
+        .light-theme.bg-img-mode .modal { background: rgba(255,255,255,0.6); }
         .modal h3 { margin-bottom: 16px; }
         .modal .row { margin-bottom: 12px; }
         .modal label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 4px; }
@@ -2744,6 +2751,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <input type="password" id="bindPwdInput" placeholder="当前登录密码" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
             '确认绑定', acctBindEmailConfirm);
+        document.getElementById('modalOverlay').style.display = 'flex';
         setTimeout(() => { const p = document.getElementById('bindPwdInput'); if (p) p.focus(); }, 120);
     }
 
