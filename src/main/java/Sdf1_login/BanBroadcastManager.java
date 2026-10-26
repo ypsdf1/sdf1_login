@@ -543,13 +543,16 @@ public class BanBroadcastManager implements Listener {
             if (df == null) return 0;
             File[] files = df.listFiles();
             if (files == null) return 0;
+            // ★ 第57批续：多份时间戳文件取最小值（用户手动放的固定值 < 插件启动创建的当前秒值）
+            long minTs = -1;
             for (File f : files) {
                 String name = f.getName();
                 if (name.length() == 10 && name.chars().allMatch(Character::isDigit)) {
                     long ts = Long.parseLong(name);
-                    if (ts > 0) return ts * 1000L;
+                    if (ts > 0 && (minTs < 0 || ts < minTs)) minTs = ts;
                 }
             }
+            if (minTs > 0) return minTs * 1000L;
         } catch (Exception e) {
             warn("读时间戳文件失败: " + e.getMessage());
         }
@@ -563,6 +566,16 @@ public class BanBroadcastManager implements Listener {
         try {
             File df = plugin.getDataFolder();
             if (df == null || !df.exists()) return;
+            // ★ 第57批续：目录里已有任意时间戳文件就跳过，不重复创建
+            File[] files = df.listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    String name = f.getName();
+                    if (name.length() == 10 && name.chars().allMatch(Character::isDigit)) {
+                        return; // 已有时间戳文件，不创建
+                    }
+                }
+            }
             long tsSec = System.currentTimeMillis() / 1000L;
             File tsFile = new File(df, String.valueOf(tsSec));
             if (!tsFile.exists()) {
