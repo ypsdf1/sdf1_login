@@ -2738,19 +2738,23 @@ if ($currentVersion !== $BUILD_VERSION) {
             }
             if (d.status === 'approved') {
                 if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+                closeDrawer();
                 acctBindEmailPwdStep();
                 return;
             }
             if (d.status === 'completed') {
                 if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+                closeDrawer();
                 acctBindEmailCodeStep(d.email);
                 return;
             }
+            closeDrawer();
             acctBindEmailFinish(d.status, d.fail_reason);
         } catch (e) { /* 网络抖动忽略，下一轮重试 */ }
     }
 
     function acctBindEmailCodeStep(email) {
+        closeDrawer();
         const _masked = (email || '').replace(/^(.).*(@.*)$/, '$1***$2');
         acctModalSet(`
             <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">✅ 游戏内已批准，邮箱 <b>${_masked}</b> 已绑定。
@@ -2822,6 +2826,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     function acctBindEmailFinish(status, reason) {
         if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+        closeDrawer();
         if (status === 'rejected') {
             acctModalSet(
                 '<div style="text-align:center;padding:20px 0;font-size:14px;line-height:1.8">' +

@@ -315,7 +315,19 @@ function acctAuthPlayer() {
     if ($ban !== null) error('账号已被封禁：' . $ban, 403);
     $blk = playerWebBlacklistReason($player);
     if ($blk !== null) error('你已被拉黑，无法进行账号安全操作', 403);
-    if (!isPlayerRegistered($player)) error('玩家未注册', 403);
+    if (!isPlayerRegistered($player)) {
+        // ★第57批续9：Java端已验证的玩家（web_login_verified表）放行，避免users表同步延迟导致偶发无效
+        $vdb = getDB();
+        try {
+            $vdb->exec("CREATE TABLE IF NOT EXISTS web_login_verified (player_name TEXT PRIMARY KEY, verified_at INTEGER NOT NULL)");
+            $vStmt = $vdb->prepare("SELECT 1 FROM web_login_verified WHERE player_name = :player");
+            $vStmt->bindValue(':player', $player, SQLITE3_TEXT);
+            $vRow = $vStmt->execute()->fetchArray();
+            if (!$vRow) error('玩家未注册', 403);
+        } catch (\Throwable $e) {
+            error('玩家未注册', 403);
+        }
+    }
     return $player;
 }
 
