@@ -2714,7 +2714,8 @@ if ($currentVersion !== $BUILD_VERSION) {
                 <div id="bindWizStatus" style="margin-top:6px;font-size:12.5px;color:var(--dim)">已向游戏发送通知…</div>
             </div>
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
-            '取消', () => { if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; } closeDrawer(); });
+            '等待批准中…', () => {});
+        document.getElementById('drawerConfirm').disabled = true;
         if (_bindWizTimer) clearInterval(_bindWizTimer);
         _bindWizTimer = setInterval(acctBindEmailPollTick, 1000);
         acctBindEmailPollTick();
@@ -2737,9 +2738,8 @@ if ($currentVersion !== $BUILD_VERSION) {
                 return;
             }
             if (d.status === 'approved') {
-                if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
-                closeDrawer();
-                acctBindEmailPwdStep();
+                // 游戏内已批准，Java 正在验密码 → 继续轮询等 completed，不切界面
+                if (stEl) stEl.textContent = '游戏内已批准，正在验证密码…';
                 return;
             }
             if (d.status === 'completed') {
