@@ -20,6 +20,17 @@ if (is_file($ossTxt)) {
     }
 }
 
+// ★ 第57批续3：无充值规则时隐藏在线充值入口
+$HAS_RECHARGE_RULES = false;
+try {
+    if (defined("ORDERS_DB_PATH") && file_exists(ORDERS_DB_PATH)) {
+        $_rechDb = new PDO("sqlite:" . ORDERS_DB_PATH);
+        $_cnt = $_rechDb->query("SELECT COUNT(*) FROM shop_configs WHERE is_active = 1")->fetchColumn();
+        $HAS_RECHARGE_RULES = ((int)$_cnt > 0);
+    }
+} catch (Throwable $_e) {
+    // 库不存在/建表前：false = 隐藏入口
+}
 $BUILD_VERSION = 'v' . filemtime(__FILE__);  // 文件修改时间 = 版本号
 $currentVersion = isset($_GET['_v']) ? $_GET['_v'] : '';
 if ($currentVersion !== $BUILD_VERSION) {
@@ -345,7 +356,9 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="lands" onclick="switchPage('lands')">🏡 领地管理</div>
             <div class="sidebar-item" data-page="cdk" onclick="switchPage('cdk')">🎁 CDK兑换</div>
             <div class="sidebar-item" data-page="balance" onclick="switchPage('balance')">💰 余额查询</div>
+<?php if ($HAS_RECHARGE_RULES): ?>
             <div class="sidebar-item" data-page="recharge" onclick="switchPage('recharge')">💳 在线充值</div>
+<?php endif; ?>
             <div class="sidebar-item" data-page="orders" onclick="switchPage('orders')">📋 我的订单</div>
             <div class="sidebar-item" data-page="groups" onclick="switchPage('groups')">👥 用户组</div>
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
@@ -467,6 +480,8 @@ if ($currentVersion !== $BUILD_VERSION) {
     // ★ 版本检测：强制清除浏览器缓存的旧版JS
     (function() {
         const buildVersion = '<?php echo $BUILD_VERSION; ?>';
+        // ★ 第57批续3：无充值规则时隐藏在线充值入口
+        const hasRechargeRules = '<?php echo $HAS_RECHARGE_RULES ? '1' : '0'; ?>';
         const lastVersion = localStorage.getItem('sdf1_build_version');
         if (lastVersion && lastVersion !== buildVersion) {
             // 版本变化 → 清除所有缓存，强制刷新
