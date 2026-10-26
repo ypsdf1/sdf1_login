@@ -991,7 +991,7 @@ function acctBindEmailPoll() {
     if ($id <= 0) error('缺少请求id');
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT id, player_name, status, created_at, expire_at, approved_at, fail_reason FROM web_email_bind_requests WHERE id = :id");
+    $stmt = $db->prepare("SELECT id, player_name, email, status, created_at, expire_at, approved_at, fail_reason FROM web_email_bind_requests WHERE id = :id");
     $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('请求不存在');
@@ -1025,6 +1025,7 @@ function acctBindEmailPoll() {
         'status' => $status,
         'left' => $left,
         'fail_reason' => (string)$row['fail_reason'],
+        'email' => (string)$row['email'],
     ], 'ok');
 }
 

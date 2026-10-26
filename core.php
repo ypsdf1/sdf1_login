@@ -3445,7 +3445,7 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
         'ip' => $ipAddress
     ]);
 
-    // 4. view操作：Token有效 + 在线 + Java推送web_login_verified → 允许访问
+    // 4. view操作：Token有效 + 在线 → 直接放行（token 10分钟内有效，不要求web_login_verified）
     if ($action === 'view') {
         if (!$isRegistered) {
             // ★ 玩家未在游戏中注册 → 允许Web注册，录入注册请求等待插件同步
@@ -3457,24 +3457,9 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
             debugLog("validateWebAccess: 需要密码(不在线)", ['player' => $playerName]);
             return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => false, 'message' => '请输入游戏登录密码以同步登录游戏'];
         }
-        // ★ 在线但未通过Java推送web_login_verified → 也需要密码（防止偷token自动登录）
-        $isWebVerified = false;
-        try {
-            // ★ 使用token的有效期作为窗口（而非硬编码5分钟），确保与token生命周期一致
-            $verifiedWindow = time() - $expireSeconds;
-            $wvStmt = $db->prepare("SELECT 1 FROM web_login_verified WHERE player_name = :player AND verified_at >= :expire");
-            $wvStmt->bindValue(':player', $playerName, SQLITE3_TEXT);
-            $wvStmt->bindValue(':expire', $verifiedWindow, SQLITE3_INTEGER);
-            $wvResult = $wvStmt->execute();
-            $wvRow = $wvResult->fetchArray();
-            if ($wvRow) $isWebVerified = true;
-        } catch (\Throwable $e) {}
-        if (!$isWebVerified) {
-            debugLog("validateWebAccess: 需要密码(在线但未验证)", ['player' => $playerName]);
-            return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => true, 'message' => '请输入游戏登录密码以验证身份'];
-        }
+        // ★ token有效+在线 → 直接放行（10分钟内有效，不需要web_login_verified）
         $sessionToken = recordWebSession($playerName, $ipAddress);
-        debugLog("validateWebAccess: 验证成功(Java已确认)", ['player' => $playerName, 'mode' => 'full']);
+        debugLog("validateWebAccess: 验证成功(token有效)", ['player' => $playerName, 'mode' => 'full']);
         return ['ok' => true, 'mode' => 'full', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => $isOnline, 'message' => '验证成功'];
     }
 
