@@ -2834,6 +2834,7 @@ if ($currentVersion !== $BUILD_VERSION) {
                   '<div style="color:var(--red);font-size:15px">请求已被拒绝</div>' +
                   '<div style="color:var(--dim);font-size:12px;margin-top:6px">游戏内玩家拒绝了本次绑定</div></div>',
                 '关闭', () => { closeModal(); acctRefreshStatus(); });
+            document.getElementById('modalOverlay').style.display = 'flex';
             return;
         }
         const msgs = {
@@ -2849,12 +2850,14 @@ if ($currentVersion !== $BUILD_VERSION) {
                     <div style="font-size:12px;color:var(--dim);margin-top:6px">现在可以完成第二层验证了，请重新发起刚才的操作</div>
                 </div>`,
                 '完成', () => { closeModal(); acctRefreshStatus(); });
+            document.getElementById('modalOverlay').style.display = 'flex';
             return;
         }
         const msg = msgs[status] || ('状态: ' + status);
         acctModalSet(`
             <div style="text-align:center;padding:12px 0;font-size:14px;line-height:1.8">${escapeHtml(msg)}</div>`,
             '知道了', () => { closeModal(); acctRefreshStatus(); });
+        document.getElementById('modalOverlay').style.display = 'flex';
     }
 
     // ===== 通用 =====
