@@ -5145,7 +5145,7 @@ function webEmailBindResult() {
     $action = getParam('action', '');      // approve / reject / offline / failed
     $player = getParam('player', '');
     $failReason = getParam('fail_reason', '');
-    $pwdVerified = (getParam('pwd_verified', '0') === '1');
+    $pwdVerified = ((string)getParam('pwd_verified', '0') === '1');
     if ($savedGetAction !== null) $_GET['action'] = $savedGetAction;
 
     if (!$requestId) error('缺少request_id');
