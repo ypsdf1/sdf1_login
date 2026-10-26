@@ -158,20 +158,21 @@ if ($currentVersion !== $BUILD_VERSION) {
         .empty { text-align: center; color: var(--dim); padding: 40px; }
         .modal-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.55); display: flex; justify-content: center;
+            background: rgba(0,0,0,0.2); display: flex; justify-content: center;
             align-items: center; z-index: 999; display: none;
-            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(20px) saturate(1.8); -webkit-backdrop-filter: blur(20px) saturate(1.8);
+            will-change: backdrop-filter;
         }
         .modal-overlay.show { display: flex; }
         .modal {
-            background: rgba(22,27,34,0.75); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
-            border: 1px solid rgba(88,166,255,0.25); border-radius: 12px;
-            padding: 24px; width: 400px; max-width: 90%;
-            box-shadow: 0 12px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08);
+            background: rgba(22,27,34,0.35);
+            border: 1px solid rgba(88,166,255,0.2); border-radius: 16px;
+            padding: 24px; width: 420px; max-width: 90%;
+            box-shadow: 0 20px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.1);
         }
-        body.bg-img-mode .modal { background: rgba(22,27,34,0.6); }
-        .light-theme .modal { background: rgba(255,255,255,0.8); border-color: rgba(9,105,218,0.25); }
-        .light-theme.bg-img-mode .modal { background: rgba(255,255,255,0.6); }
+        body.bg-img-mode .modal { background: rgba(22,27,34,0.25); }
+        .light-theme .modal { background: rgba(255,255,255,0.4); border-color: rgba(9,105,218,0.2); }
+        .light-theme.bg-img-mode .modal { background: rgba(255,255,255,0.25); }
         .modal.animate-in { animation: drawerSlideDown 0.3s ease; }
         .modal.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
         .modal h3 { margin-bottom: 16px; }
@@ -216,18 +217,18 @@ if ($currentVersion !== $BUILD_VERSION) {
         /* ★ 毛玻璃登录弹窗 */
         .glass-login-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.35);
-            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            background: rgba(0,0,0,0.15);
+            backdrop-filter: blur(20px) saturate(1.8); -webkit-backdrop-filter: blur(20px) saturate(1.8);
             z-index: 2000; justify-content: center; align-items: center;
             animation: glassFadeIn 0.3s ease;
+            will-change: backdrop-filter;
         }
         .glass-login-overlay.show { display: flex; }
         .glass-card {
-            background: rgba(22,27,34,0.88);
-            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-            border: 1px solid rgba(88,166,255,0.25);
+            background: rgba(22,27,34,0.35);
+            border: 1px solid rgba(88,166,255,0.2);
             border-radius: 20px; padding: 36px 32px; width: 400px; max-width: 90%;
-            box-shadow: 0 16px 64px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+            box-shadow: 0 20px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.1);
             animation: glassSlideUp 0.35s ease;
             position: relative;
         }
@@ -279,44 +280,45 @@ if ($currentVersion !== $BUILD_VERSION) {
         }
         .drawer-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.6); z-index: 999;
+            background: rgba(0,0,0,0.15); z-index: 999;
             display: none; justify-content: center; align-items: flex-start;
             padding-top: 15vh;
-            backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+            backdrop-filter: blur(20px) saturate(1.8); -webkit-backdrop-filter: blur(20px) saturate(1.8);
+            will-change: backdrop-filter;
         }
         .drawer-overlay.show { display: flex; }
         .drawer-card {
-            background: rgba(22,27,34,0.65); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
-            border: 1px solid rgba(88,166,255,0.25); border-radius: 12px 12px 0 0; padding: 24px;
+            background: rgba(22,27,34,0.3);
+            border: 1px solid rgba(88,166,255,0.2); border-radius: 16px 16px 0 0; padding: 24px;
             width: 420px; max-width: 90%;
-            box-shadow: 0 -8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+            box-shadow: 0 -20px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.1);
         }
         body.bg-img-mode .drawer-card {
-            background: rgba(22,27,34,0.5);
+            background: rgba(22,27,34,0.2);
         }
         .light-theme .drawer-card {
-            background: rgba(255,255,255,0.7); border-color: rgba(9,105,218,0.25);
+            background: rgba(255,255,255,0.35); border-color: rgba(9,105,218,0.2);
         }
         .light-theme.bg-img-mode .drawer-card {
-            background: rgba(255,255,255,0.5);
+            background: rgba(255,255,255,0.2);
         }
         .drawer-card.animate-in { animation: drawerSlideDown 0.3s ease; }
         .drawer-card.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
         /* ★ 毛玻璃Alert弹窗 */
         .glass-alert-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.45);
-            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            background: rgba(0,0,0,0.15);
+            backdrop-filter: blur(20px) saturate(1.8); -webkit-backdrop-filter: blur(20px) saturate(1.8);
             z-index: 5000; justify-content: center; align-items: center;
             animation: glassFadeIn 0.25s ease;
+            will-change: backdrop-filter;
         }
         .glass-alert-overlay.show { display: flex; }
         .glass-alert-card {
-            background: rgba(22,27,34,0.65); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
-            backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-            border: 1px solid rgba(88,166,255,0.25);
+            background: rgba(22,27,34,0.3);
+            border: 1px solid rgba(88,166,255,0.2);
             border-radius: 16px; padding: 28px 28px 20px; width: 360px; max-width: 88%;
-            box-shadow: 0 12px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+            box-shadow: 0 20px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.1);
             animation: glassSlideUp 0.3s ease;
             text-align: center;
         }
