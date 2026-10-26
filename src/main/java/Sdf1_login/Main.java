@@ -9619,6 +9619,10 @@ public class Main extends JavaPlugin
                 // ★ 未绑定邮箱：登录成功后提示
                 if (loggedIn.contains(p.getName())) {
                     remindEmailBindIfNeeded(p);
+                    // ★ 第57批续6：/login成功后重新推送weblogin token（onJoin时推送的token login_verified=0，Web端不认）
+                    if (webManager != null) {
+                        webManager.autoGenerateWebLoginToken(p);
+                    }
                 }
 
             } catch (Exception e) {
