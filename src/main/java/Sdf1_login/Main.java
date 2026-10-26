@@ -143,6 +143,8 @@ public class Main extends JavaPlugin
     private static final long IP_SKIP_MS = 300000L;
     // ★ 第56批：/webbind 批准密码验证失败计数（玩家名 -> 失败次数）
     private final ConcurrentHashMap<String, Integer> webbindPwdFails = new ConcurrentHashMap<>();
+    // ★ 第57批续5: /webbind approve 改聊天框输入密码（玩家名 -> 请求ID）
+    private final ConcurrentHashMap<String, String> pendingWebbindApprove = new ConcurrentHashMap<>();
     private SalesStatsManager salesStats;
 
     private final Map<UUID, Long> lastActivity =
@@ -2987,10 +2989,22 @@ public class Main extends JavaPlugin
         String ip = getPlayerIP(p);
         // ★ 第57批：插件管理员登录 → CLI 通知待确认的封禁缺口
         if (webManager != null && webManager.hasBanPending() && isAdmin(p)) {
-            p.sendMessage("\u00a7c\u00a7l[封禁-缺口] \u00a7f检测到 " + webManager.getBanPendingCount()
-                    + " 条封禁数据缺口待确认");
-            p.sendMessage("\u00a77执行 \u00a7a/sdf1_login confirm ban \u00a77拉回封禁数据");
-            p.sendMessage("\u00a77或 \u00a7a/sdf1_login cancel ban \u00a77确认解封（清空PHP数据）");
+            p.sendMessage(net.kyori.adventure.text.Component.text()
+                    .append(net.kyori.adventure.text.Component.text("§c§l[封禁-缺口] §f检测到 "))
+                    .append(net.kyori.adventure.text.Component.text(String.valueOf(webManager.getBanPendingCount()))
+                            .color(net.kyori.adventure.text.format.NamedTextColor.RED))
+                    .append(net.kyori.adventure.text.Component.text(" 条封禁数据缺口待确认"))
+                    .build());
+            p.sendMessage(net.kyori.adventure.text.Component.text()
+                    .append(net.kyori.adventure.text.Component.text("§a[点击拉回封禁] §7").clickEvent(
+                            net.kyori.adventure.text.event.ClickEvent.runCommand("/sdf1_login confirm ban")))
+                    .append(net.kyori.adventure.text.Component.text("§7= /sdf1_login confirm ban"))
+                    .build());
+            p.sendMessage(net.kyori.adventure.text.Component.text()
+                    .append(net.kyori.adventure.text.Component.text("§c[点击确认解封] §7").clickEvent(
+                            net.kyori.adventure.text.event.ClickEvent.runCommand("/sdf1_login cancel ban")))
+                    .append(net.kyori.adventure.text.Component.text("§7= /sdf1_login cancel ban"))
+                    .build());
         }
 
         // ===== 公告计分板（第35批）=====
@@ -6241,6 +6255,49 @@ public class Main extends JavaPlugin
         if (this.getCDK() != null && this.getCDK().isListening(p.getName())) {
             e.setCancelled(true);
             this.getCDK().onChat(p, msg);
+            return;
+        }
+
+        // ★ 第57批续5: /webbind approve 密码输入拦截
+        String pendingBindReq = pendingWebbindApprove.get(p.getName());
+        if (pendingBindReq != null) {
+            e.setCancelled(true);
+            String input = msg.trim();
+            // 拒绝选项
+            if (input.equalsIgnoreCase("拒绝") || input.equalsIgnoreCase("reject")) {
+                pendingWebbindApprove.remove(p.getName());
+                p.sendMessage("§e已拒绝，网页端直接返回");
+                webManager.submitWebEmailBindResult(pendingBindReq, p.getName(),
+                        "reject", "", status -> {});
+                return;
+            }
+            // 密码验证
+            int failCount2 = webbindPwdFails.getOrDefault(p.getName(), 0);
+            if (failCount2 >= 5) {
+                pendingWebbindApprove.remove(p.getName());
+                p.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
+                return;
+            }
+            String pwdSalt2 = (String) db.getField(p.getName(), "password_salt");
+            String pwdHash2 = PasswordUtils.hash(input, pwdSalt2);
+            String pwdResult2 = db.checkPasswordWithFallback(p.getName(), pwdHash2);
+            if (pwdResult2 == null) {
+                failCount2++;
+                webbindPwdFails.put(p.getName(), failCount2);
+                p.sendMessage("§c密码错误（" + failCount2 + "/5）");
+                if (failCount2 >= 5) {
+                    p.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
+                    pendingWebbindApprove.remove(p.getName());
+                }
+                return;
+            }
+            // 验证通过，清零计数
+            webbindPwdFails.remove(p.getName());
+            String reqId2 = pendingBindReq;
+            pendingWebbindApprove.remove(p.getName());
+            p.sendMessage("§e正在提交批准…");
+            webManager.submitWebEmailBindResult(reqId2, p.getName(),
+                    "approve", "", status -> {});
             return;
         }
 
@@ -9648,45 +9705,15 @@ public class Main extends JavaPlugin
             final boolean bindApprove = args[0].equalsIgnoreCase("approve");
             // ★ 第56批：approve 时需要密码（Java端直接验证，不再依赖PHP复核）
             if (bindApprove) {
-                if (args.length < 3) {
-                    wp.sendMessage("§c批准需要验证密码: /webbind approve " + bindReqId + " <密码>");
-                    return true;
-                }
-                final String bindPwd = args[2];
-                // 5次失败风控
+                // ★ 第57批续5: 改聊天框输入密码（不再要求命令行参数密码）
                 int failCount = webbindPwdFails.getOrDefault(wp.getName(), 0);
                 if (failCount >= 5) {
                     wp.sendMessage("§c§l[风控] §f密码验证失败次数过多，已被临时限制。请稍后再试");
                     return true;
                 }
-                // Java端直接验证密码
-                String pwdSalt = (String) db.getField(wp.getName(), "password_salt");
-                String pwdHash = PasswordUtils.hash(bindPwd, pwdSalt);
-                String pwdResult = db.checkPasswordWithFallback(wp.getName(), pwdHash);
-                if (pwdResult == null) {
-                    failCount++;
-                    webbindPwdFails.put(wp.getName(), failCount);
-                    wp.sendMessage("§c密码错误（" + failCount + "/5）");
-                    if (failCount >= 5) {
-                        wp.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
-                    }
-                    return true;
-                }
-                // 密码验证通过，清零失败计数
-                webbindPwdFails.remove(wp.getName());
-                wp.sendMessage("§e正在提交批准…");
-                webManager.submitWebEmailBindResult(bindReqId, wp.getName(),
-                        "approve", "", status -> {
-                            if (status == null) {
-                                wp.sendMessage("§c提交失败，请稍后重试");
-                            } else if ("approved".equals(status)) {
-                                wp.sendMessage("§a已批准！§f邮箱绑定已完成");
-                            } else if ("expired".equals(status)) {
-                                wp.sendMessage("§c请求已超时，未做任何处置");
-                            } else {
-                                wp.sendMessage("§7请求当前状态: §f" + status);
-                            }
-                        });
+                pendingWebbindApprove.put(wp.getName(), bindReqId);
+                wp.sendMessage("§e请在聊天框输入密码完成验证");
+                wp.sendMessage("§7还是输入「拒绝」拒绝本次绑定");
                 return true;
             }
             // reject 不需要密码
