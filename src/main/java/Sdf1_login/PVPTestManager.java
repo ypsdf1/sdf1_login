@@ -182,10 +182,10 @@ public class PVPTestManager implements Listener {
         // 世界规则：常昼 / 无天气 / 关闭自然刷怪（只有我们生成的练习生物）/ PVP 开启
         // ★ KEEP_INVENTORY=false：死亡掉落由事件处理器清空掉落物+复活时还原，避免gamerule与事件冲突
         w.setPVP(true);
-        w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-        w.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
-        w.setGameRule(GameRule.DO_MOB_SPAWNING, false);
-        w.setGameRule(GameRule.KEEP_INVENTORY, false);
+        w.setGameRule(GameRules.ADVANCE_TIME, false);
+        w.setGameRule(GameRules.ADVANCE_WEATHER, false);
+        w.setGameRule(GameRules.SPAWN_MONSTERS, false);
+        w.setGameRule(GameRules.KEEP_INVENTORY, false);
         w.setTime(6000);
         w.setKeepSpawnInMemory(false);
 
@@ -895,7 +895,7 @@ public class PVPTestManager implements Listener {
                     // 抵消皮革帽自带的1点护甲，使其不增加玩家对练习生物的伤害减免(纯用于挡太阳)
                     hm.addAttributeModifier(Attribute.ARMOR,
                             new AttributeModifier(
-                                    "pvp_test_no_armor", -1.0,
+                                    new NamespacedKey(plugin, "pvp_test_no_armor"), -1.0,
                                     AttributeModifier.Operation.ADD_NUMBER));
                     hat.setItemMeta(hm);
                 }

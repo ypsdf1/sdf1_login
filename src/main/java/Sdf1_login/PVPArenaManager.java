@@ -550,8 +550,8 @@ public class PVPArenaManager implements Listener {
         w.setPVP(true);
         // ★ 和平模式：排除敌对生物干扰PVP
         w.setDifficulty(Difficulty.PEACEFUL);
-        w.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-        w.setGameRule(GameRule.DO_WEATHER_CYCLE, false);
+        w.setGameRule(GameRules.ADVANCE_TIME, false);
+        w.setGameRule(GameRules.ADVANCE_WEATHER, false);
         w.setTime(6000);
         // ★ 不常驻出生点区块（与 WorldCreator.keepSpawnInMemory(false) 一致），避免同步加载区块卡主线程
         w.setKeepSpawnInMemory(false);
