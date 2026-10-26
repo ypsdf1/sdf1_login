@@ -10017,6 +10017,23 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ★ 第57批：confirm ban 确认封禁缺口拉回
+        if (sub.equals("confirm") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
+            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
+            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
+            webManager.confirmBanGap(sender);
+            return true;
+        }
+        // ★ 第57批：cancel ban 确认解封（清空PHP封禁数据，不写回banned-players.json）
+        if (sub.equals("cancel") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
+            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
+            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
+            webManager.cancelBanGap(sender);
+            return true;
+        }
+
         if (sub.equals("confirm")) {
             if (!isAdmin(sender)) {
                 sender.sendMessage("§c权限不足");
@@ -10068,23 +10085,6 @@ public class Main extends JavaPlugin
             pendingDeleteName = null;
             pendingDeleteTask = null;
             sender.sendMessage("§a已取消删除: " + name);
-            return true;
-        }
-
-        // ★ 第57批：confirm ban 确认封禁缺口拉回
-        if (sub.equals("confirm") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
-            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
-            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
-            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
-            webManager.confirmBanGap(sender);
-            return true;
-        }
-        // ★ 第57批：cancel ban 确认解封（清空PHP封禁数据，不写回banned-players.json）
-        if (sub.equals("cancel") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
-            if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
-            if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
-            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
-            webManager.cancelBanGap(sender);
             return true;
         }
 
