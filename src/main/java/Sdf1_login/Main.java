@@ -142,7 +142,6 @@ public class Main extends JavaPlugin
             new HashMap<>();
     private static final long IP_SKIP_MS = 300000L;
     // ★ 第56批：/webbind 批准密码验证失败计数（玩家名 -> 失败次数）
-    private final ConcurrentHashMap<String, Integer> webbindPwdFails = new ConcurrentHashMap<>();
     // ★ 第57批续5: /webbind approve 改聊天框输入密码（玩家名 -> 请求ID）
     private final ConcurrentHashMap<String, String> pendingWebbindApprove = new ConcurrentHashMap<>();
     private SalesStatsManager salesStats;
@@ -6271,28 +6270,36 @@ public class Main extends JavaPlugin
                         "reject", "", status -> {});
                 return;
             }
-            // 密码验证
-            int failCount2 = webbindPwdFails.getOrDefault(p.getName(), 0);
-            if (failCount2 >= 5) {
+            // ★ 第57批续10：接入统一风控（RiskControlManager），与 /login 完全一致
+            //   密码错5次 → Bukkit真实封禁5分钟 + 踢出 + 报警邮件（不再仅提示）
+            if (riskControl != null && riskControl.isBanned(p.getName())) {
+                int rem2 = riskControl.getBanRemainingSeconds(p.getName());
                 pendingWebbindApprove.remove(p.getName());
-                p.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
+                p.sendMessage("§c§l[风控] §f密码错误次数过多，账号已被临时封禁 §e"
+                        + rem2 + " §f秒");
                 return;
             }
             String pwdSalt2 = (String) db.getField(p.getName(), "password_salt");
             String pwdHash2 = PasswordUtils.hash(input, pwdSalt2);
             String pwdResult2 = db.checkPasswordWithFallback(p.getName(), pwdHash2);
             if (pwdResult2 == null) {
-                failCount2++;
-                webbindPwdFails.put(p.getName(), failCount2);
-                p.sendMessage("§c密码错误（" + failCount2 + "/5）");
-                if (failCount2 >= 5) {
-                    p.sendMessage("§c§l[风控] §f连续5次失败，已被临时限制");
+                int remaining2 = riskControl != null
+                        ? riskControl.recordFailAttempt(p) : 4;
+                if (remaining2 < 0) {
+                    // 已达阈值：triggerBan 已真实封禁并踢出
+                    return;
+                }
+                p.sendMessage("§c密码错误");
+                if (remaining2 > 0) {
+                    p.sendMessage("§c§l[风控] §f剩余 §e" + remaining2 + " §f次尝试机会");
+                } else {
+                    p.sendMessage("§c§l[风控] §f连续5次失败，已被临时封禁");
                     pendingWebbindApprove.remove(p.getName());
                 }
                 return;
             }
-            // 验证通过，清零计数
-            webbindPwdFails.remove(p.getName());
+            // 验证通过，重置风控计数
+            if (riskControl != null) riskControl.onLoginSuccess(p.getName());
             String reqId2 = pendingBindReq;
             pendingWebbindApprove.remove(p.getName());
             p.sendMessage("§e正在提交批准…");
@@ -9710,9 +9717,11 @@ public class Main extends JavaPlugin
             // ★ 第56批：approve 时需要密码（Java端直接验证，不再依赖PHP复核）
             if (bindApprove) {
                 // ★ 第57批续5: 改聊天框输入密码（不再要求命令行参数密码）
-                int failCount = webbindPwdFails.getOrDefault(wp.getName(), 0);
-                if (failCount >= 5) {
-                    wp.sendMessage("§c§l[风控] §f密码验证失败次数过多，已被临时限制。请稍后再试");
+                // ★ 第57批续10：接入统一风控，封禁期内直接拒绝
+                if (riskControl != null && riskControl.isBanned(wp.getName())) {
+                    int rem = riskControl.getBanRemainingSeconds(wp.getName());
+                    wp.sendMessage("§c§l[风控] §f密码错误次数过多，账号已被临时封禁 §e"
+                            + rem + " §f秒，请稍后再试");
                     return true;
                 }
                 pendingWebbindApprove.put(wp.getName(), bindReqId);

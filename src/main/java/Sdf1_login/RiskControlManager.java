@@ -88,23 +88,18 @@ public class RiskControlManager {
     public int recordFailAttempt(Player player) {
         String name = player.getName();
         int maxAttempts = getMaxFailAttempts();
-
         // 已被封禁，直接返回
         if (isBanned(name)) {
             return -1;
         }
-
         int current = failAttempts
                 .getOrDefault(name, 0) + 1;
         failAttempts.put(name, current);
-
         int remaining = Math.max(0, maxAttempts - current);
-
         // 达到阈值 → 触发封禁
         if (current >= maxAttempts) {
             triggerBan(player);
         }
-
         return remaining;
     }
 
@@ -117,16 +112,13 @@ public class RiskControlManager {
         long durationMs = getBanDurationMs();
         long until = System.currentTimeMillis() + durationMs;
         banUntil.put(name, until);
-
         String ip = plugin.getPlayerIP(player);
         int banMinutes = (int) (durationMs / 60000);
-
         plugin.getLogger().warning(
                 "[风控] 玩家 " + name
                         + " 密码错误达到阈值("
                         + getMaxFailAttempts() + "次)"
                         + "，封禁 " + banMinutes + " 分钟");
-
         // ★ 真实封禁：调用Bukkit BanList API阻止玩家重新加入服务器
         String banReason = "§c§l[安全风控] 密码连续错误"
                 + getMaxFailAttempts() + "次，"
@@ -145,7 +137,6 @@ public class RiskControlManager {
         }
         // 踢出玩家（无论BanList是否成功，立即踢出）
         player.kickPlayer(banReason);
-
         // 异步发送报警邮件
         sendBanAlertEmail(name, ip, banMinutes);
     }
@@ -164,7 +155,6 @@ public class RiskControlManager {
                             + " 未绑定邮箱，跳过报警邮件");
             return;
         }
-
         String subject =
                 "[安全警告] 您的账号已被临时封禁";
         String body = "尊敬的玩家 " + playerName + ":\n\n"
@@ -187,7 +177,6 @@ public class RiskControlManager {
                 + "如果非本人操作，建议您立即修改密码"
                 + "(使用 /sdf1_login pw)。\n\n"
                 + "--Sdf1_login 安全系统";
-
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 plugin.getEmail().sendBody(
