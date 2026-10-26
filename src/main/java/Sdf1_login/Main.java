@@ -10064,10 +10064,19 @@ public class Main extends JavaPlugin
             return true;
         }
 
+        // ★ 第57批续3：/delete ban 拦截（ban 不作为待删除玩家账号的名字）
+        if (sub.equals("delete") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
+            sender.sendMessage("§cban 是封禁缺口确认命令，不是玩家账号名");
+            sender.sendMessage("§7确认拉回封禁：§a/sdf1_login confirm ban");
+            sender.sendMessage("§7确认解封：§a/sdf1_login cancel ban");
+            return true;
+        }
+
         // ★ 第57批：confirm ban 确认封禁缺口拉回
         if (sub.equals("confirm") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
             if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
             if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
             webManager.confirmBanGap(sender);
             return true;
         }
@@ -10075,6 +10084,7 @@ public class Main extends JavaPlugin
         if (sub.equals("cancel") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
             if (!isAdmin(sender)) { sender.sendMessage("\u00a7c权限不足"); return true; }
             if (webManager == null) { sender.sendMessage("\u00a7cWeb通信未初始化"); return true; }
+            if (!webManager.hasBanPending()) { sender.sendMessage("§c当前没有待确认的封禁缺口"); return true; }
             webManager.cancelBanGap(sender);
             return true;
         }
