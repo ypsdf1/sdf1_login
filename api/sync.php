@@ -4380,6 +4380,22 @@ function maskEmail($email) {
     return 'xx@' . $domain;
 }
 
+// ===== 第57批续7：Java端密码验证通过后直接完成邮箱绑定 =====
+function acctCompleteEmailBind($requestId, $player, $email) {
+    $db = getDB();
+    $upd = $db->prepare("UPDATE users SET email = :e WHERE player_name = :p");
+    $upd->bindValue(':e', $email, SQLITE3_TEXT);
+    $upd->bindValue(':p', $player, SQLITE3_TEXT);
+    $upd->execute();
+    if ($db->changes() <= 0) return false;
+    $done = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
+    $done->bindValue(':t', time(), SQLITE3_INTEGER);
+    $done->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
+    $done->execute();
+    debugLog('[sync.php] Java端验证通过，直接完成邮箱绑定', ['player' => $player, 'id' => $requestId]);
+    return true;
+}
+
 // ===== 发送邮箱验证码 =====
 function sendEmailCode() {
     $player = getParam('player');
@@ -5129,6 +5145,7 @@ function webEmailBindResult() {
     $action = getParam('action', '');      // approve / reject / offline / failed
     $player = getParam('player', '');
     $failReason = getParam('fail_reason', '');
+    $pwdVerified = (getParam('pwd_verified', '0') === '1');
     if ($savedGetAction !== null) $_GET['action'] = $savedGetAction;
 
     if (!$requestId) error('缺少request_id');
@@ -5136,7 +5153,7 @@ function webEmailBindResult() {
     if (!$player) error('缺少player');
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT id, player_name, status, expire_at FROM web_email_bind_requests WHERE id = :id");
+    $stmt = $db->prepare("SELECT id, player_name, email, status, expire_at FROM web_email_bind_requests WHERE id = :id");
     $stmt->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('请求不存在');
@@ -5153,6 +5170,15 @@ function webEmailBindResult() {
     }
 
     if ($action === 'approve') {
+        if ($pwdVerified && $now <= (int)$row['expire_at']) {
+            $bindEmail = (string)$row['email'];
+            if (!$bindEmail || !filter_var($bindEmail, FILTER_VALIDATE_EMAIL)) error('请求数据异常');
+            if (acctCompleteEmailBind($requestId, $player, $bindEmail)) {
+                success(['request_id' => (int)$requestId, 'status' => 'completed', 'email' => $bindEmail]);
+                return;
+            }
+            error('绑定失败，请重试');
+        }
         $newStatus = ($now > (int)$row['expire_at']) ? 'expired' : 'approved';
     } elseif ($action === 'reject') {
         $newStatus = 'rejected';

@@ -65,6 +65,7 @@ try {
         case 'bind_email_start':    acctBindEmailStart(); break;
         case 'bind_email_poll':     acctBindEmailPoll(); break;
         case 'bind_email_confirm':  acctBindEmailConfirm(); break;
+        case 'bind_email_send_code': acctBindEmailSendCode(); break;
         case 'get_email_suffix_config': acctGetEmailSuffixConfig(); break;
         default:
             error('未知操作: ' . $action);
@@ -1015,76 +1016,114 @@ function acctBindEmailPoll() {
     ], 'ok');
 }
 
-/** 终态确认：批准窗口内复核登录密码 → 写 users.email（IP 连错5次封5分钟） */
-function acctBindEmailConfirm() {
+/** 第57批续7：向刚绑定的邮箱发送验证码（Java端已验密码，PHP不重复验） */
+function acctBindEmailSendCode() {
     $player = acctAuthPlayer();
     $id = (int)getParam('id', 0);
-    $pwd = (string)getParam('password', '');
     if ($id <= 0) error('缺少请求id');
-    if ($pwd === '') error('请输入登录密码');
-
-    $ip = acctClientIp();
-    // ★第53批风控：绑定确认按 IP 计数，连错 5 次封锁 5 分钟（防密码爆破盗绑）
-    $locked = acctThrottleLocked('bindip', $ip, 5, 300);
-    if ($locked > 0) error('密码错误次数过多，IP 已被限制，请 ' . $locked . ' 秒后再试', 429);
 
     $db = getDB();
-    $stmt = $db->prepare("SELECT id, player_name, email, status, approved_at FROM web_email_bind_requests WHERE id = :id");
+    $stmt = $db->prepare("SELECT id, player_name, email, status FROM web_email_bind_requests WHERE id = :id");
     $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
     $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
     if (!$row) error('请求不存在');
     if ((string)$row['player_name'] !== $player) error('无权操作该请求');
-
-    $status = (string)$row['status'];
-    if ($status === 'completed') success(['id' => $id, 'status' => 'completed'], '邮箱已绑定');
-    if ($status !== 'approved') error('该请求未获游戏内批准或已失效，请重新发起绑定');
-
-    $now = time();
-    if ($now > ((int)$row['approved_at'] + 180)) {
-        $exp = $db->prepare("UPDATE web_email_bind_requests SET status = 'expired', processed_at = :t WHERE id = :id");
-        $exp->bindValue(':t', $now, SQLITE3_INTEGER);
-        $exp->bindValue(':id', $id, SQLITE3_INTEGER);
-        $exp->execute();
-        error('批准已超时，未做任何处置，请重新发起绑定');
-    }
+    if ((string)$row['status'] !== 'completed') error('绑定尚未完成，无法发送验证码');
 
     $email = (string)$row['email'];
-    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        error('请求数据异常，请重新发起绑定');
-    }
-    if (acctEmailOf($player) !== '') {
-        // 绑定期间已被别处绑定 → 幂等终结本请求
-        $dup = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
-        $dup->bindValue(':t', $now, SQLITE3_INTEGER);
-        $dup->bindValue(':id', $id, SQLITE3_INTEGER);
-        $dup->execute();
-        success(['id' => $id, 'status' => 'completed'], '邮箱已绑定');
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) error('邮箱数据异常');
+
+    // 复用 acctSendEmailCode 的发送逻辑（限频 + SMTP）
+    $locked = acctThrottleLocked('mail', $player, 10, 3600);
+    if ($locked > 0) error('发送过于频繁，请 ' . $locked . ' 秒后再试', 429);
+
+    $last = $db->query("SELECT created_at FROM email_codes WHERE player_name = '" . $db->escapeString($player) . "' ORDER BY id DESC LIMIT 1")->fetchArray(SQLITE3_ASSOC);
+    if ($last) {
+        $gap = time() - (int)$last['created_at'];
+        if ($gap < 60) error('发送过于频繁，请 ' . (60 - $gap) . ' 秒后再试', 429);
     }
 
-    // 密码复核（只认主密码，同第一层）——错：保持 approved 可在窗口内重试，IP 计数
-    $cred = acctCredentials($player);
-    if (!acctPwdCheck($cred, $pwd)) {
-        $remain = acctThrottleFail('bindip', $ip, 5, 300);
-        debugLog('[account.php] 网页绑邮箱密码错误', ['player' => $player, 'ip' => $ip, 'id' => $id]);
-        if ($remain > 0) error('密码错误（连续错误 5 次将封锁 IP 5 分钟），IP 即将被限制', 403);
-        error('密码错误', 403);
-    }
-    acctThrottleReset('bindip', $ip);
+    $smtpHost = SMTP_HOST; $smtpPort = SMTP_PORT; $smtpUser = SMTP_USER; $smtpPass = SMTP_PASS;
+    $senderName = SMTP_SENDER_NAME;
+    if (empty($smtpHost) || empty($smtpUser) || empty($smtpPass)) error('SMTP配置不完整，无法发送邮件验证');
 
-    // 写库：users.email —— users 类别对账 pull 会在几十秒内同步到 Java login.db
-    $upd = $db->prepare("UPDATE users SET email = :e WHERE player_name = :p");
-    $upd->bindValue(':e', $email, SQLITE3_TEXT);
+    $code = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+    $expireTime = time() + 300;
+
+    // 旧验证码全部作废
+    $upd = $db->prepare("UPDATE email_codes SET used = 1 WHERE player_name = :p AND used = 0");
     $upd->bindValue(':p', $player, SQLITE3_TEXT);
     $upd->execute();
-    if ($db->changes() <= 0) {
-        error('绑定失败：玩家数据不存在，请重新发起');
+
+    $ins = $db->prepare("INSERT INTO email_codes (player_name, email, code, expire_at, used, created_at) VALUES (:p, :e, :c, :x, 0, :t)");
+    $ins->bindValue(':p', $player, SQLITE3_TEXT);
+    $ins->bindValue(':e', $email, SQLITE3_TEXT);
+    $ins->bindValue(':c', $code, SQLITE3_TEXT);
+    $ins->bindValue(':x', $expireTime, SQLITE3_INTEGER);
+    $ins->bindValue(':t', time(), SQLITE3_INTEGER);
+    $ins->execute();
+
+    $subject = "【" . $senderName . "】邮箱绑定验证";
+    $htmlBody = "<div style='font-family:Arial,sans-serif;max-width:400px;margin:0 auto;padding:20px;background:#f5f5f5;border-radius:10px'>"
+            . "<h2 style='color:#333;text-align:center'>📧 邮箱绑定验证</h2>"
+            . "<div style='background:#fff;padding:20px;border-radius:8px;text-align:center;margin:20px 0'>"
+            . "<p style='font-size:14px;color:#666;margin-bottom:10px'>验证码：</p>"
+            . "<p style='font-size:32px;font-weight:bold;color:#4CAF50;letter-spacing:8px;margin:0'>" . $code . "</p>"
+            . "</div>"
+            . "<p style='font-size:12px;color:#999;text-align:center'>验证码5分钟内有效</p></div>";
+    $headers = "MIME-Version: 1.0\r\n"
+            . "Content-type: text/html; charset=UTF-8\r\n"
+            . "From: " . $senderName . " <" . $smtpUser . ">\r\n";
+
+    try {
+        $sent = smtpSendEmail($smtpHost, $smtpPort, $smtpUser, $smtpPass, $email, $subject, $htmlBody, $headers, SMTP_USE_SSL);
+    } catch (\Throwable $e) {
+        $sent = false;
+        debugLog('[account.php] 邮件异常: ' . $e->getMessage(), ['player' => $player]);
     }
-
-    $done = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
-    $done->bindValue(':t', time(), SQLITE3_INTEGER);
-    $done->bindValue(':id', $id, SQLITE3_INTEGER);
-    $done->execute();
-
-    debugLog('[account.php] 网页绑邮箱成功', ['player' => $player, 'id' => $id, 'ip' => $ip]);
-    success(['id' => $id, 'status' => 'completed', 'email_masked' => acctMaskEmail($email)], '邮箱绑定成功');
+    if (!$sent) {
+        $del = $db->prepare("UPDATE email_codes SET used = 1 WHERE player_name = :p AND code = :c");
+        $del->bindValue(':p', $player, SQLITE3_TEXT);
+        $del->bindValue(':c', $code, SQLITE3_TEXT);
+        $del->execute();
+        error('邮件发送失败，请稍后重试');
+    }
+    acctThrottleFail('mail', $player, 10, 3600);
+    success(['masked_email' => acctMaskEmail($email), 'resend_in' => 60, 'code_expire_in' => 300], '验证码已发送至 ' . acctMaskEmail($email));
 }
+
+/** 终态确认：验证邮箱验证码 → 完成绑定 */
+/** 终态确认：验证邮箱验证码 → 完成绑定 */
+function acctBindEmailConfirm() {
+    $player = acctAuthPlayer();
+    $id = (int)getParam('id', 0);
+    $emailCode = (string)getParam('email_code', '');
+    if ($id <= 0) error('缺少请求id');
+    if ($emailCode === '' || strlen($emailCode) !== 6) error('请输入6位验证码');
+
+    $db = getDB();
+    $stmt = $db->prepare("SELECT id, player_name, email, status FROM web_email_bind_requests WHERE id = :id");
+    $stmt->bindValue(':id', $id, SQLITE3_INTEGER);
+    $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$row) error('请求不存在');
+    if ((string)$row['player_name'] !== $player) error('无权操作该请求');
+    if ((string)$row['status'] !== 'completed') error('绑定尚未完成');
+
+    // 验证邮箱验证码（只认未使用且未过期的最新一条）
+    $codeStmt = $db->prepare("SELECT id FROM email_codes WHERE player_name = :p AND code = :c AND used = 0 AND expire_at > :t ORDER BY id DESC LIMIT 1");
+    $codeStmt->bindValue(':p', $player, SQLITE3_TEXT);
+    $codeStmt->bindValue(':c', $emailCode, SQLITE3_TEXT);
+    $codeStmt->bindValue(':t', time(), SQLITE3_INTEGER);
+    $codeRow = $codeStmt->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$codeRow) error('验证码错误或已过期');
+
+    // 核销验证码
+    $usedUpd = $db->prepare("UPDATE email_codes SET used = 1 WHERE id = :id");
+    $usedUpd->bindValue(':id', (int)$codeRow['id'], SQLITE3_INTEGER);
+    $usedUpd->execute();
+
+    $email = (string)$row['email'];
+    debugLog('[account.php] 邮箱验证码验证通过', ['player' => $player, 'id' => $id]);
+    success(['id' => $id, 'status' => 'completed', 'email_masked' => acctMaskEmail($email)], '邮箱绑定验证通过');
+}
+

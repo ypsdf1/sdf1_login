@@ -172,6 +172,8 @@ if ($currentVersion !== $BUILD_VERSION) {
         body.bg-img-mode .modal { background: rgba(22,27,34,0.6); }
         .light-theme .modal { background: rgba(255,255,255,0.8); border-color: rgba(9,105,218,0.25); }
         .light-theme.bg-img-mode .modal { background: rgba(255,255,255,0.6); }
+        .modal.animate-in { animation: drawerSlideDown 0.3s ease; }
+        .modal.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
         .modal h3 { margin-bottom: 16px; }
         .modal .row { margin-bottom: 12px; }
         .modal label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 4px; }
@@ -304,13 +306,13 @@ if ($currentVersion !== $BUILD_VERSION) {
         .glass-alert-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.45);
-            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
             z-index: 5000; justify-content: center; align-items: center;
             animation: glassFadeIn 0.25s ease;
         }
         .glass-alert-overlay.show { display: flex; }
         .glass-alert-card {
-            background: rgba(22,27,34,0.92);
+            background: rgba(22,27,34,0.65); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
             backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
             border: 1px solid rgba(88,166,255,0.25);
             border-radius: 16px; padding: 28px 28px 20px; width: 360px; max-width: 88%;
@@ -2741,40 +2743,79 @@ if ($currentVersion !== $BUILD_VERSION) {
                 acctBindEmailPwdStep();
                 return;
             }
+            if (d.status === 'completed') {
+                if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+                acctBindEmailCodeStep(d.email);
+                return;
+            }
             acctBindEmailFinish(d.status, d.fail_reason);
         } catch (e) { /* 网络抖动忽略，下一轮重试 */ }
     }
 
-    function acctBindEmailPwdStep() {
+    function acctBindEmailCodeStep(email) {
+        const _masked = (email || '').replace(/^(.).*(@.*)$/, '$1***$2');
         acctModalSet(`
-            <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">✅ 游戏内已批准。输入登录密码完成绑定（<b>3分钟内有效</b>；密码错误不生效、可重试，连错 5 次将封锁 IP 5 分钟）</div>
-            <input type="password" id="bindPwdInput" placeholder="当前登录密码" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
-            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
-            '确认绑定', acctBindEmailConfirm);
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">✅ 游戏内已批准，邮箱 <b>${_masked}</b> 已绑定。
+            <br>为确认邮箱可用，请输入验证码完成验证。</div>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+                <input type="text" id="bindCodeInput" placeholder="6位验证码" maxlength="6" inputmode="numeric" style="flex:1;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:16px;font-family:monospace;letter-spacing:4px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+                <button class="btn btn-dim" id="bindCodeSend" onclick="acctBindEmailSendCode()" style="white-space:nowrap">发送验证码</button>
+            </div>
+            <div id="bindCodeTimer" style="font-size:12px;color:var(--dim);margin-bottom:8px"></div>
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px"></div>`,
+            '确认验证', acctBindEmailCodeConfirm);
         document.getElementById('modalOverlay').style.display = 'flex';
-        setTimeout(() => { const p = document.getElementById('bindPwdInput'); if (p) p.focus(); }, 120);
+        setTimeout(() => { const p = document.getElementById('bindCodeInput'); if (p) p.focus(); }, 120);
     }
 
-    async function acctBindEmailConfirm() {
-        const el = document.getElementById('bindPwdInput');
-        const pwd = el ? el.value : '';
-        if (!pwd) { acctErr('请输入密码'); return; }
+    async function acctBindEmailSendCode() {
+        const btn = document.getElementById('bindCodeSend');
+        if (!btn) return;
+        btn.disabled = true; btn.textContent = '发送中...';
+        try {
+            const res = await apiPost('account.php', {action: 'bind_email_send_code', id: _bindWizId});
+            btn.disabled = false; btn.textContent = '发送验证码';
+            if (!res.success) { acctErr(res.message || '发送失败'); return; }
+            acctErr('');
+            startBindCodeTimer(60);
+        } catch (e) {
+            btn.disabled = false; btn.textContent = '发送验证码';
+            acctErr('连接失败: ' + e.message);
+        }
+    }
+
+    let _bindCodeTimer = null;
+    function startBindCodeTimer(sec) {
+        const el = document.getElementById('bindCodeTimer');
+        if (!el) return;
+        let left = sec;
+        el.textContent = '验证码已发送，' + left + 's 后可重新发送';
+        if (_bindCodeTimer) clearInterval(_bindCodeTimer);
+        _bindCodeTimer = setInterval(() => {
+            left--;
+            if (left <= 0) { clearInterval(_bindCodeTimer); _bindCodeTimer = null; el.textContent = '可重新发送验证码'; return; }
+            el.textContent = '验证码已发送，' + left + 's 后可重新发送';
+        }, 1000);
+    }
+
+    async function acctBindEmailCodeConfirm() {
+        const el = document.getElementById('bindCodeInput');
+        const code = el ? el.value.trim() : '';
+        if (!code || code.length !== 6) { acctErr('请输入6位验证码'); return; }
         const btn = document.getElementById('modalConfirm');
         btn.disabled = true; acctErr('验证中...');
         try {
-            const res = await apiPost('account.php', {action: 'bind_email_confirm', id: _bindWizId, password: pwd});
+            const res = await apiPost('account.php', {action: 'bind_email_confirm', id: _bindWizId, email_code: code});
             btn.disabled = false;
-            if (!res.success) { acctErr(res.message || '密码错误'); return; }
-            if (res.data && res.data.status === 'completed') {
-                acctModalSet(`
-                    <div style="text-align:center;padding:10px 0;line-height:1.8">
-                        <div style="font-size:34px">🎉</div>
-                        <div style="font-size:15px;margin-top:4px">邮箱绑定成功</div>
-                        <div style="font-size:13px;color:var(--dim)">${escapeHtml(res.data.email_masked || '')}</div>
-                        <div style="font-size:12px;color:var(--dim);margin-top:6px">现在可以完成第二层验证了，请重新发起刚才的操作</div>
-                    </div>`,
-                    '完成', () => { closeModal(); acctRefreshStatus(); });
-            }
+            if (!res.success) { acctErr(res.message || '验证码错误'); return; }
+            acctModalSet(`
+                <div style="text-align:center;padding:10px 0;line-height:1.8">
+                    <div style="font-size:34px">🎉</div>
+                    <div style="font-size:15px;margin-top:4px">邮箱绑定成功</div>
+                    <div style="font-size:13px;color:var(--dim)">${escapeHtml(res.data.email_masked || '')}</div>
+                    <div style="font-size:12px;color:var(--dim);margin-top:6px">现在可以完成第二层验证了，请重新发起刚才的操作</div>
+                </div>`,
+                '完成', () => { closeModal(); acctRefreshStatus(); });
         } catch (e) {
             btn.disabled = false;
             acctErr('连接失败: ' + e.message);
@@ -2796,8 +2837,17 @@ if ($currentVersion !== $BUILD_VERSION) {
             offline: '📴 你当前不在线，无法批准。请先登录游戏后重新发起',
             expired: '⌛ 1分钟内未处理，请求已超时作废（未做任何处置）',
             failed: '⚠️ 绑定失败：' + (reason || '未知原因'),
-            completed: '✅ 邮箱已绑定'
         };
+        if (status === 'completed') {
+            acctModalSet(`
+                <div style="text-align:center;padding:10px 0;line-height:1.8">
+                    <div style="font-size:34px">🎉</div>
+                    <div style="font-size:15px;margin-top:4px">邮箱绑定成功</div>
+                    <div style="font-size:12px;color:var(--dim);margin-top:6px">现在可以完成第二层验证了，请重新发起刚才的操作</div>
+                </div>`,
+                '完成', () => { closeModal(); acctRefreshStatus(); });
+            return;
+        }
         const msg = msgs[status] || ('状态: ' + status);
         acctModalSet(`
             <div style="text-align:center;padding:12px 0;font-size:14px;line-height:1.8">${escapeHtml(msg)}</div>`,
@@ -3198,7 +3248,9 @@ if ($currentVersion !== $BUILD_VERSION) {
     })();
 
     function closeModal() {
-        document.getElementById('modalOverlay').style.display = 'none';
+        var _mc = document.getElementById('modalOverlay');
+        if (_mc) { var _m = _mc.querySelector('.modal'); if (_m) { _m.classList.remove('animate-in'); _m.classList.add('animate-out'); } }
+        setTimeout(function() { document.getElementById('modalOverlay').style.display = 'none'; }, 200);
         // ★ 密码验证被取消 → 清除token，进入游客模式（防止未认证玩家数据泄露）
         if (NEED_PASSWORD && !AUTHENTICATED) {
             showGuestMode();
@@ -3287,6 +3339,7 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     function acctModalSet(html, confirmText, onConfirm) {
         document.getElementById('modalBody').innerHTML = html;
+        var _m2 = document.getElementById('modalOverlay').querySelector('.modal'); if (_m2) { _m2.classList.remove('animate-out'); _m2.classList.add('animate-in'); }
         const btn = document.getElementById('modalConfirm');
         btn.textContent = confirmText;
         btn.disabled = false;
