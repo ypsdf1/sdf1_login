@@ -6297,7 +6297,7 @@ public class Main extends JavaPlugin
             pendingWebbindApprove.remove(p.getName());
             p.sendMessage("§e正在提交批准…");
             webManager.submitWebEmailBindResult(reqId2, p.getName(),
-                    "approve", "", status -> {});
+                    "approve", "", true, status -> {});
             return;
         }
 

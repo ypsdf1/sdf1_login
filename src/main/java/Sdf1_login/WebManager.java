@@ -12394,6 +12394,12 @@ public class WebManager {
     public void submitWebEmailBindResult(final String reqId, final String playerName,
             final String action, final String failReason,
             final java.util.function.Consumer<String> callback) {
+        submitWebEmailBindResult(reqId, playerName, action, failReason, false, callback);
+    }
+
+    public void submitWebEmailBindResult(final String reqId, final String playerName,
+            final String action, final String failReason, final boolean pwdVerified,
+            final java.util.function.Consumer<String> callback) {
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -12402,7 +12408,8 @@ public class WebManager {
                     String bodyJson = "{\"request_id\":" + reqId
                             + ",\"player\":\"" + escapeJson(playerName) + "\""
                             + ",\"action\":\"" + escapeJson(action) + "\""
-                            + ",\"fail_reason\":\"" + escapeJson(failReason == null ? "" : failReason) + "\"}";
+                            + ",\"fail_reason\":\"" + escapeJson(failReason == null ? "" : failReason) + "\""
+                            + ",\"pwd_verified\":" + (pwdVerified ? "1" : "0") + "}";
                     String postUrl = webBaseUrl + "/api/sync.php?action=web_email_bind_result&secret="
                             + java.net.URLEncoder.encode(secretKey, "UTF-8");
                     String resp = doPost(postUrl, bodyJson);
