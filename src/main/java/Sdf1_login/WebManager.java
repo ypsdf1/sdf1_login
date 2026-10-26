@@ -5895,6 +5895,24 @@ public class WebManager {
             }
         }
     }
+    // ★ 第57批续3：给所有在线管理员发可点击消息（管理员直接点击执行命令）
+    private void broadcastClickableToAdmins(net.kyori.adventure.text.Component comp) {
+        String adminTag = plugin.getConfigMgr().areaProtectAdminTag;
+        if (adminTag == null || adminTag.isEmpty()) adminTag = "admin";
+        for (org.bukkit.entity.Player p : Bukkit.getOnlinePlayers()) {
+            if (p.hasPermission("group." + adminTag) || p.isOp()) {
+                p.sendMessage(comp);
+                continue;
+            }
+            for (String tag : p.getScoreboardTags()) {
+                if (tag.equalsIgnoreCase(adminTag)) {
+                    p.sendMessage(comp);
+                    break;
+                }
+            }
+        }
+    }
+
 
     // ★ 第57批：封禁缺口确认/取消 + 登录验证推送
     /** 进入封禁缺口待确认模式：写bak备份，等管理员确认 */
@@ -5908,9 +5926,24 @@ public class WebManager {
         plugin.getLogger().warning("[封禁-缺口] 服主可能批量解封删了 banned-players.json");
         plugin.getLogger().warning("[封禁-缺口] 执行 /sdf1_login confirm ban 拉回封禁");
         plugin.getLogger().warning("[封禁-缺口] 执行 /sdf1_login cancel ban 确认解封");
-        broadcastToAdmins("§c§l[封禁-缺口] §f检测到 " + rows.size() + " 条封禁数据缺口待确认");
-        broadcastToAdmins("§7执行 §a/sdf1_login confirm ban §7拉回封禁数据");
-        broadcastToAdmins("§7或 §a/sdf1_login cancel ban §7确认解封（清空PHP数据）");
+        // ★ 第57批续3：可点击通知（管理员点击直接执行 confirm/cancel）
+        net.kyori.adventure.text.Component confirmBtn = net.kyori.adventure.text.Component.text()
+                .append(net.kyori.adventure.text.Component.text("§a[点击拉回封禁] ").clickEvent(
+                        net.kyori.adventure.text.event.ClickEvent.runCommand("/sdf1_login confirm ban")))
+                .append(net.kyori.adventure.text.Component.text("§7= /sdf1_login confirm ban"))
+                .build();
+        net.kyori.adventure.text.Component cancelBtn = net.kyori.adventure.text.Component.text()
+                .append(net.kyori.adventure.text.Component.text("§c[点击确认解封] ").clickEvent(
+                        net.kyori.adventure.text.event.ClickEvent.runCommand("/sdf1_login cancel ban")))
+                .append(net.kyori.adventure.text.Component.text("§7= /sdf1_login cancel ban"))
+                .build();
+        broadcastClickableToAdmins(net.kyori.adventure.text.Component.text()
+                .append(net.kyori.adventure.text.Component.text("§c§l[封禁-缺口] §f检测到 "))
+                .append(net.kyori.adventure.text.Component.text(String.valueOf(rows.size())).color(net.kyori.adventure.text.format.NamedTextColor.RED))
+                .append(net.kyori.adventure.text.Component.text(" 条封禁数据缺口待确认"))
+                .build());
+        broadcastClickableToAdmins(confirmBtn);
+        broadcastClickableToAdmins(cancelBtn);
     }
 
     /** 管理员确认拉回封禁缺口 */

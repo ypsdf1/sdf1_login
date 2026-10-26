@@ -9952,6 +9952,13 @@ public class Main extends JavaPlugin
                 return true;
             }
             String target = args[1];
+            // ★ 第57批续3：/del ban 拦截（ban 不作为待删除玩家账号的名字）
+            if (target.equalsIgnoreCase("ban")) {
+                sender.sendMessage("§cban 是封禁缺口确认命令，不是玩家账号名");
+                sender.sendMessage("§7确认拉回封禁：§a/sdf1_login confirm ban");
+                sender.sendMessage("§7确认解封：§a/sdf1_login cancel ban");
+                return true;
+            }
             if (!db.userExists(target)) {
                 String twin = db.findSimilarUserNameIgnoreCase(target);
                 sender.sendMessage(
@@ -10061,14 +10068,6 @@ public class Main extends JavaPlugin
             pendingDeleteName = null;
             pendingDeleteTask = null;
             sender.sendMessage("§a已取消删除: " + name);
-            return true;
-        }
-
-        // ★ 第57批续3：/delete ban 拦截（ban 不作为待删除玩家账号的名字）
-        if (sub.equals("delete") && args.length >= 2 && args[1].equalsIgnoreCase("ban")) {
-            sender.sendMessage("§cban 是封禁缺口确认命令，不是玩家账号名");
-            sender.sendMessage("§7确认拉回封禁：§a/sdf1_login confirm ban");
-            sender.sendMessage("§7确认解封：§a/sdf1_login cancel ban");
             return true;
         }
 
