@@ -65,6 +65,7 @@ try {
         case 'bind_email_start':    acctBindEmailStart(); break;
         case 'bind_email_poll':     acctBindEmailPoll(); break;
         case 'bind_email_confirm':  acctBindEmailConfirm(); break;
+        case 'get_email_suffix_config': acctGetEmailSuffixConfig(); break;
         default:
             error('未知操作: ' . $action);
     }
@@ -859,6 +860,33 @@ function acctRecoveryRegen() {
     success(['recovery_codes' => $codes], '恢复代码已重新生成，旧代码全部作废');
 }
 
+// ★ 第57批续4：获取邮箱后缀配置（供前端展示可绑定的邮箱类型）
+function acctGetEmailSuffixConfig() {
+    $player = acctAuthPlayer();
+    $db = getDB();
+    try {
+        $cfgRow = $db->query("SELECT mode, suffix_list FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+    } catch (\Throwable $e) {
+        success(['email_mode' => '默认', 'email_suffixes' => []]);
+        return;
+    }
+    if (!$cfgRow) {
+        success(['email_mode' => '默认', 'email_suffixes' => []]);
+        return;
+    }
+    $mode = (string)$cfgRow['mode'];
+    $suffixList = (string)$cfgRow['suffix_list'];
+    if ($mode === '默认' || $suffixList === '') {
+        success(['email_mode' => '默认', 'email_suffixes' => []]);
+        return;
+    }
+    $suffixes = preg_split('/[,;\n]+/', $suffixList);
+    $suffixes = array_map('trim', $suffixes);
+    $suffixes = array_map('strtolower', $suffixes);
+    $suffixes = array_filter($suffixes, function ($s) { return $s !== ''; });
+    success(['email_mode' => $mode, 'email_suffixes' => array_values($suffixes)]);
+}
+
 // ===================== 第53批：网页端绑定邮箱（游戏内批准流） =====================
 //
 // 流程：bind_email_start 建 60 秒请求（要求玩家在线）→ Java 定时器A 拉取并游戏内发
@@ -928,7 +956,19 @@ function acctBindEmailStart() {
     $id = (int)$db->lastInsertRowID();
 
     debugLog('[account.php] 发起网页绑邮箱', ['player' => $player, 'id' => $id, 'ip' => acctClientIp()]);
-    success(['id' => $id, 'expire_in' => 60], '请求已发送，等待游戏内批准');
+
+    // ★ 第57批续4：返回后缀配置，供前端展示可绑定的邮箱类型
+    $mode = '默认'; $suffixList = '';
+    try {
+        $cfgRow = $db->query("SELECT mode, suffix_list FROM email_suffix_config WHERE id = 1")->fetchArray(SQLITE3_ASSOC);
+        if ($cfgRow) {
+            $mode = (string)$cfgRow['mode'];
+            $suffixList = (string)$cfgRow['suffix_list'];
+        }
+    } catch (\Throwable $_e) {}
+    $suffixes = array_filter(array_map('trim', preg_split('/[,;\n]+/', $suffixList)));
+    $suffixes = array_map(function ($s) { return strtolower($s); }, $suffixes);
+    success(['id' => $id, 'expire_in' => 60, 'email_mode' => $mode, 'email_suffixes' => array_values($suffixes)], '请求已发送，等待游戏内批准');
 }
 
 /** 前端轮询请求状态（1秒一次）：pending/notified/approved/rejected/offline/expired/completed/failed */

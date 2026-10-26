@@ -277,10 +277,13 @@ if ($currentVersion !== $BUILD_VERSION) {
         }
         .drawer-overlay.show { display: flex; }
         .drawer-card {
-            background: var(--card); border: 1px solid var(--border);
-            border-radius: 12px 12px 0 0; padding: 24px;
+            background: rgba(22,27,34,0.85); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(88,166,255,0.2); border-radius: 12px 12px 0 0; padding: 24px;
             width: 420px; max-width: 90%;
-            box-shadow: 0 -8px 32px rgba(0,0,0,0.3);
+            box-shadow: 0 -8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+        }
+        .light-theme .drawer-card {
+            background: rgba(255,255,255,0.85); border-color: rgba(9,105,218,0.2);
         }
         .drawer-card.animate-in { animation: drawerSlideDown 0.3s ease; }
         .drawer-card.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
@@ -2638,12 +2641,36 @@ if ($currentVersion !== $BUILD_VERSION) {
         if (IS_PREVIEW || !TOKEN || !currentPlayer) { showToast('请先登录游戏后再操作', 'error'); return; }
         if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
         drawerOpen('📧 网页绑定邮箱');
-        drawerSet(`
+        // ★ 第57批续4：先获取邮箱后缀配置，展示可绑定的邮箱类型
+        apiPost('account.php', {action: 'get_email_suffix_config'}).then(res => {
+            let hintHtml = '';
+            if (res.success && res.data) {
+                const mode = res.data.email_mode || '默认';
+                const suffixes = res.data.email_suffixes || [];
+                if (suffixes.length > 0) {
+                    if (mode === '白名单') {
+                        hintHtml = '<div style="font-size:12px;color:var(--green);margin-bottom:8px;line-height:1.6">✅ 仅允许绑定以下邮箱：<br>' + suffixes.map(s => '<span style="background:rgba(63,185,80,0.15);padding:2px 8px;border-radius:4px;margin:2px;font-family:monospace">@' + s + '</span>').join('') + '</div>';
+                    } else if (mode === '黑名单') {
+                        hintHtml = '<div style="font-size:12px;color:var(--red);margin-bottom:8px;line-height:1.6">❌ 以下邮箱被禁止绑定：<br>' + suffixes.map(s => '<span style="background:rgba(248,81,73,0.15);padding:2px 8px;border-radius:4px;margin:2px;font-family:monospace">@' + s + '</span>').join('') + '</div>';
+                    }
+                }
+            }
+            drawerSet(`
+            <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
+            ${hintHtml}
+            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
+                '发送批准请求 →', acctBindEmailStart);
+            setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
+        }).catch(() => {
+            // API 失败也展示基础向导
+            drawerSet(`
             <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
             <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
-            '发送批准请求 →', acctBindEmailStart);
-        setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
+                '发送批准请求 →', acctBindEmailStart);
+            setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
+        });
     }
 
     async function acctBindEmailStart() {
