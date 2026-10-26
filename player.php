@@ -277,13 +277,19 @@ if ($currentVersion !== $BUILD_VERSION) {
         }
         .drawer-overlay.show { display: flex; }
         .drawer-card {
-            background: rgba(22,27,34,0.85); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-            border: 1px solid rgba(88,166,255,0.2); border-radius: 12px 12px 0 0; padding: 24px;
+            background: rgba(22,27,34,0.65); backdrop-filter: blur(32px) saturate(1.8); -webkit-backdrop-filter: blur(32px) saturate(1.8);
+            border: 1px solid rgba(88,166,255,0.25); border-radius: 12px 12px 0 0; padding: 24px;
             width: 420px; max-width: 90%;
-            box-shadow: 0 -8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05);
+            box-shadow: 0 -8px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.08);
+        }
+        body.bg-img-mode .drawer-card {
+            background: rgba(22,27,34,0.5);
         }
         .light-theme .drawer-card {
-            background: rgba(255,255,255,0.85); border-color: rgba(9,105,218,0.2);
+            background: rgba(255,255,255,0.7); border-color: rgba(9,105,218,0.25);
+        }
+        .light-theme.bg-img-mode .drawer-card {
+            background: rgba(255,255,255,0.5);
         }
         .drawer-card.animate-in { animation: drawerSlideDown 0.3s ease; }
         .drawer-card.animate-out { animation: drawerSlideUp 0.25s ease forwards; }
@@ -2769,8 +2775,16 @@ if ($currentVersion !== $BUILD_VERSION) {
 
     function acctBindEmailFinish(status, reason) {
         if (_bindWizTimer) { clearInterval(_bindWizTimer); _bindWizTimer = null; }
+        if (status === 'rejected') {
+            acctModalSet(
+                '<div style="text-align:center;padding:20px 0;font-size:14px;line-height:1.8">' +
+                  '<div style="font-size:28px;margin-bottom:8px">🚫</div>' +
+                  '<div style="color:var(--red);font-size:15px">请求已被拒绝</div>' +
+                  '<div style="color:var(--dim);font-size:12px;margin-top:6px">游戏内玩家拒绝了本次绑定</div></div>',
+                '关闭', () => { closeModal(); acctRefreshStatus(); });
+            return;
+        }
         const msgs = {
-            rejected: '❌ 你在游戏内拒绝了本次绑定，已折返、不做任何处置',
             offline: '📴 你当前不在线，无法批准。请先登录游戏后重新发起',
             expired: '⌛ 1分钟内未处理，请求已超时作废（未做任何处置）',
             failed: '⚠️ 绑定失败：' + (reason || '未知原因'),
