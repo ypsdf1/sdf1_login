@@ -5170,7 +5170,8 @@ function webEmailBindResult() {
     }
 
     if ($action === 'approve') {
-        if ($pwdVerified && $now <= (int)$row['expire_at']) {
+        if ($pwdVerified) {
+            // ★ 第57批续14: pwdVerified=true→Java已验密码，直接完成，expire_at只约束pending/notified阶段
             $bindEmail = (string)$row['email'];
             if (!$bindEmail || !filter_var($bindEmail, FILTER_VALIDATE_EMAIL)) error('请求数据异常');
             if (acctCompleteEmailBind($requestId, $player, $bindEmail)) {
