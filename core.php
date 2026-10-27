@@ -1932,8 +1932,20 @@ function initTables($db, $side = null) {
             player_name TEXT PRIMARY KEY,
             web_token TEXT NOT NULL,
             created_at INTEGER NOT NULL,
-            expire_seconds INTEGER DEFAULT 600
+            expire_seconds INTEGER DEFAULT 600,
+            login_verified INTEGER DEFAULT 0
         )");
+        // ★ 第57批续19: 旧表迁移补 login_verified 列
+        try {
+            $lvCheck = $db->query("PRAGMA table_info(weblogin_tokens)");
+            $hasLV = false;
+            while ($lc = $lvCheck->fetchArray(SQLITE3_ASSOC)) {
+                if ($lc['name'] === 'login_verified') { $hasLV = true; break; }
+            }
+            if (!$hasLV) {
+                $db->exec("ALTER TABLE weblogin_tokens ADD COLUMN login_verified INTEGER DEFAULT 0");
+            }
+        } catch (\Throwable $e) {}
 
         // 债券缓存表
         $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (
@@ -3453,8 +3465,17 @@ function validateWebAccess($webToken, $action = 'view', $password = null, $ipAdd
             return ['ok' => false, 'mode' => 'need_register', 'player' => $playerName, 'registered' => false, 'online' => $isOnline, 'message' => '玩家未注册，可以在Web端注册账号'];
         }
         if (!$isOnline) {
+            // ★ 第57批续19: token 0/1 状态位 —— 玩家刚登录但 online_players 尚未同步(Java register 不触发 syncOnlinePlayers)
+            //   若该 token 的 login_verified=1 且 10 分钟内有效 → 直接放行, 不要求二次输密码
+            $tokenLoginVerified = (isset($row['login_verified']) ? (int)$row['login_verified'] : 0) === 1;
+            $lvWindowOk = $createdAt + $expireSeconds > time(); // token 未过期即视为 10 分钟窗口内
+            if ($tokenLoginVerified && $lvWindowOk) {
+                @error_log("[validateWebAccess] ★ 第57批续19: token login_verified=1 放行(不在线但刚登录): player=$playerName");
+                $sessionToken = recordWebSession($playerName, $ipAddress);
+                return ['ok' => true, 'mode' => 'full', 'player' => $playerName, 'session' => $sessionToken, 'registered' => $isRegistered, 'online' => false, 'message' => '验证成功(登录状态同步中)'];
+            }
             // 玩家已注册但在游戏中未登录 → 需要密码
-            debugLog("validateWebAccess: 需要密码(不在线)", ['player' => $playerName]);
+            debugLog("validateWebAccess: 需要密码(不在线且token未标记已登录)", ['player' => $playerName]);
             return ['ok' => false, 'mode' => 'need_password', 'player' => $playerName, 'registered' => true, 'online' => false, 'message' => '请输入游戏登录密码以同步登录游戏'];
         }
         // ★ token有效+在线 → 直接放行（10分钟内有效，不需要web_login_verified）

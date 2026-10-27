@@ -2831,14 +2831,18 @@ function syncWebloginToken() {
     }
 
     $db = getDB();
-    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
+    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600, login_verified INTEGER DEFAULT 0)");
+    // ★ 第57批续19: 旧表迁移补 login_verified 列(已有表无此列时ALTER)
+    try { $colCheck = $db->query("PRAGMA table_info(weblogin_tokens)"); $hasLV=false; while($c=$colCheck->fetchArray(SQLITE3_ASSOC)){ if($c['name']==='login_verified'){ $hasLV=true; break; } } if(!$hasLV){ $db->exec("ALTER TABLE weblogin_tokens ADD COLUMN login_verified INTEGER DEFAULT 0"); @error_log("[syncToken] 迁移weblogin_tokens补login_verified列"); } } catch(\Throwable $e){}
 
     $now = time();
-    $stmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds) VALUES (:player, :token, :time, :expire)");
+    $stmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds, login_verified) VALUES (:player, :token, :time, :expire, :lv)");
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
     $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
     $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
     $stmt->bindValue(':expire', $expireSeconds, SQLITE3_INTEGER);
+    // ★ 第57批续19: 默认 0, syncToken 走此路径的 token 不自动放行
+    $stmt->bindValue(':lv', 0, SQLITE3_INTEGER);
     $stmt->execute();
 
     success(['player' => $player], "Web登录Token已同步");
@@ -2880,7 +2884,9 @@ function apiValidateWebloginToken() {
             error('你已被拉黑：' . $blackReason);
         }
 
-        success(['player' => $row['player_name']], 'Token有效');
+        // ★ 第57批续19: 返回 token 的 login_verified 状态位(老行可能无此列, 默认0)
+        $lvVal = isset($row['login_verified']) ? (int)$row['login_verified'] : 0;
+        success(['player' => $row['player_name'], 'login_verified' => $lvVal], 'Token有效');
     } catch (\Throwable $e) {
         error('Token验证失败: ' . $e->getMessage());
     }
@@ -2995,13 +3001,18 @@ function pushPlayerLoginStatus() {
     $db->exec("BEGIN IMMEDIATE");
     try {
     // 1. 同步weblogin_tokens表（登录页面需要的token）
-    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600)");
-    $stmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds) VALUES (:player, :token, :time, :expire)");
+    $db->exec("CREATE TABLE IF NOT EXISTS weblogin_tokens (player_name TEXT PRIMARY KEY, web_token TEXT NOT NULL, created_at INTEGER NOT NULL, expire_seconds INTEGER DEFAULT 600, login_verified INTEGER DEFAULT 0)");
+    // ★ 第57批续19: 旧表迁移补 login_verified 列
+    try { $colCheck = $db->query("PRAGMA table_info(weblogin_tokens)"); $hasLV=false; while($c=$colCheck->fetchArray(SQLITE3_ASSOC)){ if($c['name']==='login_verified'){ $hasLV=true; break; } } if(!$hasLV){ $db->exec("ALTER TABLE weblogin_tokens ADD COLUMN login_verified INTEGER DEFAULT 0"); @error_log("[pushPlayerLoginStatus] 迁移weblogin_tokens补login_verified列"); } } catch(\Throwable $e){}
+    // ★ 第57批续19: token 带 0/1 状态位 —— login_verified=1 网页直接放行, =0 要求输密码/注册
+    $stmt = $db->prepare("INSERT OR REPLACE INTO weblogin_tokens (player_name, web_token, created_at, expire_seconds, login_verified) VALUES (:player, :token, :time, :expire, :lv)");
     $stmt->bindValue(':player', $player, SQLITE3_TEXT);
     $stmt->bindValue(':token', $webToken, SQLITE3_TEXT);
     $stmt->bindValue(':time', $now, SQLITE3_INTEGER);
     $stmt->bindValue(':expire', $expireSeconds, SQLITE3_INTEGER);
+    $stmt->bindValue(':lv', (int)$loginVerified, SQLITE3_INTEGER);
     $stmt->execute();
+    @error_log("[pushPlayerLoginStatus] weblogin_tokens写入: player=$player, login_verified=" . (int)$loginVerified);
 
     // 1.5 ★ 如果Java标记login_verified=1，写入web_login_verified表（安全锁：Java验证过的玩家PHP直接放行）
     if ($loginVerified) {
