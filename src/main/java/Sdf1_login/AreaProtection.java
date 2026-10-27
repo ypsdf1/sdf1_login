@@ -1259,6 +1259,7 @@ public class AreaProtection implements Listener {
             try { ac.badEffects = parseEffectsString(rs.getString("bad_effects")); } catch (Exception ignored) { ac.badEffects = new ArrayList<>(); }
         try { ac.confiscateCount = rs.getInt("confiscate_count"); } catch (Exception ignored) {}
         try { ac.returnOnLeave = rs.getInt("return_on_leave") == 1; } catch (Exception ignored) {}
+        try { ac.parentId = rs.getInt("parent_id"); } catch (Exception ignored) { ac.parentId = 0; } // ★ 第57批续21
                 try { ac.warpX = rs.getDouble("warp_x"); } catch (Exception ignored) {}
                 try { ac.warpY = rs.getDouble("warp_y"); } catch (Exception ignored) {}
                 try { ac.warpZ = rs.getDouble("warp_z"); } catch (Exception ignored) {}
@@ -1483,7 +1484,8 @@ public class AreaProtection implements Listener {
                             + "enable_announce INTEGER DEFAULT 0,"
                             + "announce_template TEXT DEFAULT '',"
                             + "txt_content TEXT DEFAULT '',"
-                            + "created_at INTEGER NOT NULL)");
+                            + "created_at INTEGER NOT NULL,"
+                            + "parent_id INTEGER DEFAULT 0)");
 
             // ★ 领地权限表（管理员/用户/访客三级权限）
             stmt.executeUpdate(
@@ -1567,6 +1569,8 @@ public class AreaProtection implements Listener {
         // ★ 违禁品管理面板（2026-10-11）：没收计数 + 退出是否归还
         try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN confiscate_count INTEGER DEFAULT 0"); } catch (Exception ignored) {}
         try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN return_on_leave INTEGER DEFAULT 0"); } catch (Exception ignored) {}
+        // ★ 第57批续21 子领地列：旧库补列（已存在则忽略）
+        try { stmt.executeUpdate("ALTER TABLE area_lands ADD COLUMN parent_id INTEGER DEFAULT 0"); } catch (Exception ignored) {}
 
             // ★ 全局配置默认值
             try {
@@ -2569,6 +2573,47 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 第57批续21：查找【完全包含】指定矩形区域(世界+归一化坐标)的主领地（parentId==0）。
+     * 子领地(有父)不视为"包含方"——部分重叠只算与父领地重叠，避免在子领地内再嵌套(仅1级)。
+     * 多个主领地都完全包含时返回第一个（子领地完全包含于唯一主领地，正常不会多）。
+     * @return 主领地的 AreaConfig；无则 null
+     */
+    public AreaConfig findContainingMainLand(String world, int nx1, int nz1, int nx2, int nz2) {
+        if (world == null) return null;
+        int minX = Math.min(nx1, nx2), maxX = Math.max(nx1, nx2);
+        int minZ = Math.min(nz1, nz2), maxZ = Math.max(nz1, nz2);
+        for (AreaConfig other : areas.values()) {
+            if (other == null) continue;
+            if (other.parentId != 0) continue; // 只看主领地
+            if (!other.world.equalsIgnoreCase(world)) continue;
+            int oMinX = Math.min(other.x1, other.x2), oMaxX = Math.max(other.x1, other.x2);
+            int oMinZ = Math.min(other.z1, other.z2), oMaxZ = Math.max(other.z1, other.z2);
+            // 完全包含：other ⊇ new
+            if (oMinX <= minX && oMaxX >= maxX && oMinZ <= minZ && oMaxZ >= maxZ) {
+                return other;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * ★ 第57批续21：创建子领地的身份闸门——判定玩家是否具备主领地的
+     * 领地主 / 领地管理员 / 插件管理员 任一身份（授权管理员=该领地里 role='admin' 的行）。
+     * 只有合格者才允许在主领地内创建子领地；不合格一律拒绝。
+     */
+    public boolean isQualifiedLandManager(Player p, AreaConfig mainLand) {
+        if (p == null || mainLand == null) return false;
+        if (isAreaAdmin(p)) return true; // 插件管理员(OP/ScoreboardTag)
+        if (samePlayer(p.getName(), mainLand.owner)) return true; // 领地主
+        int lid = getLandIdFromDb(mainLand.name);
+        if (lid > 0) {
+            PermRow row = findPermRowExact(lid, p.getName());
+            if (row != null && "admin".equalsIgnoreCase(row.role)) return true; // 授权领地管理员
+        }
+        return false;
+    }
+
+    /**
      * 获取玩家在指定领地的权限级别
      */
     public PermissionLevel getPermissionLevel(Player player, AreaConfig ac) {
@@ -2581,6 +2626,21 @@ public class AreaProtection implements Listener {
         if (ac != null && ac.owner != null && !ac.owner.isEmpty()) {
             if (samePlayer(player.getName(), ac.owner)) {
                 return PermissionLevel.OWNER;
+            }
+        }
+
+        // 2.5) ★ 第57批续21 子领地继承：玩家对本领地无直接角色，但父领地里是
+        //     领地主/授权管理员/插件管理员 → 在子领地内同样行使管理权（防越权绕过）。
+        //     子领地 owner=主领地主，上面第2步已覆盖 owner；这里补授权管理员/插件管理员继承。
+        if (ac != null && ac.parentId > 0 && dbConnection != null) {
+            String parentName = findLandNameById(ac.parentId);
+            if (parentName != null) {
+                AreaConfig parent = areas.get(parentName);
+                if (parent != null
+                        && !samePlayer(player.getName(), parent.owner)
+                        && isQualifiedLandManager(player, parent)) {
+                    return PermissionLevel.ADMIN;
+                }
             }
         }
 
@@ -2961,44 +3021,82 @@ public class AreaProtection implements Listener {
         }
     }
 
-    /**
-     * 拉黑时撤销该玩家在所有领地的管理员身份（admin -> visitor）。
-     * 走 normName 定位（历史数据大小写可能不一致），逐行 UPDATE。
-     * @return 撤销的管理员身份数量
-     */
-    public int demoteBlacklistAdmins(String playerName) {
-        if (dbConnection == null || playerName == null || playerName.isEmpty()) return 0;
-        int count = 0;
-        String target = normName(playerName);
-        java.util.List<Integer> ids = new java.util.ArrayList<>();
-        try {
-            PreparedStatement sel = dbConnection.prepareStatement(
-                    "SELECT id, player_name FROM area_land_permissions WHERE role = 'admin'");
-            ResultSet rs = sel.executeQuery();
-            while (rs.next()) {
-                String pn = rs.getString("player_name");
-                if (pn != null && normName(pn).equals(target)) {
-                    ids.add(rs.getInt("id"));
-                }
-            }
-            rs.close();
-            sel.close();
-        } catch (SQLException e) {
-            return 0;
-        }
-        for (int id : ids) {
-            try {
-                PreparedStatement up = dbConnection.prepareStatement(
-                        "UPDATE area_land_permissions SET role = 'visitor' WHERE id = ?");
-                up.setInt(1, id);
-                count += up.executeUpdate();
-                up.close();
-            } catch (SQLException ignored) {
-            }
-        }
-        return count;
-    }
-
+    /**
+
+     * 拉黑时撤销该玩家在所有领地的管理员身份（admin -> visitor）。
+
+     * 走 normName 定位（历史数据大小写可能不一致），逐行 UPDATE。
+
+     * @return 撤销的管理员身份数量
+
+     */
+
+    public int demoteBlacklistAdmins(String playerName) {
+
+        if (dbConnection == null || playerName == null || playerName.isEmpty()) return 0;
+
+        int count = 0;
+
+        String target = normName(playerName);
+
+        java.util.List<Integer> ids = new java.util.ArrayList<>();
+
+        try {
+
+            PreparedStatement sel = dbConnection.prepareStatement(
+
+                    "SELECT id, player_name FROM area_land_permissions WHERE role = 'admin'");
+
+            ResultSet rs = sel.executeQuery();
+
+            while (rs.next()) {
+
+                String pn = rs.getString("player_name");
+
+                if (pn != null && normName(pn).equals(target)) {
+
+                    ids.add(rs.getInt("id"));
+
+                }
+
+            }
+
+            rs.close();
+
+            sel.close();
+
+        } catch (SQLException e) {
+
+            return 0;
+
+        }
+
+        for (int id : ids) {
+
+            try {
+
+                PreparedStatement up = dbConnection.prepareStatement(
+
+                        "UPDATE area_land_permissions SET role = 'visitor' WHERE id = ?");
+
+                up.setInt(1, id);
+
+                count += up.executeUpdate();
+
+                up.close();
+
+            } catch (SQLException ignored) {
+
+            }
+
+        }
+
+        return count;
+
+    }
+
+
+
     /**
      * 插入一条领地权限记录（角色为 member/visitor），已存在则忽略
      * 用于 PHP 端添加成员时同步到 Java
@@ -5896,6 +5994,31 @@ public class AreaProtection implements Listener {
                                 BondManager bnd = plugin.getBonds();
                                 int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
                                 p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
+                                // ★ 第57批续21 圈地棒选区后智能识别：若落在已有领地内，提示需具备该领地管理身份才能建子领地
+                                {
+                                    int sx1 = Math.min(lp1.getBlockX(), newLoc.getBlockX());
+                                    int sx2 = Math.max(lp1.getBlockX(), newLoc.getBlockX());
+                                    int sz1 = Math.min(lp1.getBlockZ(), newLoc.getBlockZ());
+                                    int sz2 = Math.max(lp1.getBlockZ(), newLoc.getBlockZ());
+                                    AreaConfig selMain = findContainingMainLand(p.getWorld().getName(), sx1, sz1, sx2, sz2);
+                                    if (selMain != null) {
+                                        p.sendMessage("§d§l[智能识别] §f选区位于领地 §e" + selMain.name + " §f内 → 创建成功则为【子领地】，需你具备该领地领主/管理员身份");
+                                        if (!isQualifiedLandManager(p, selMain)) {
+                                            p.sendMessage("§c 你当前不具备 §e" + selMain.name + " §f的管理身份，确认创建将被拒绝");
+                                        }
+                                    } else {
+                                        for (AreaConfig sot : areas.values()) {
+                                            if (sot == null || sot.parentId != 0) continue;
+                                            if (!sot.world.equalsIgnoreCase(p.getWorld().getName())) continue;
+                                            int so1x = Math.min(sot.x1, sot.x2), so2x = Math.max(sot.x1, sot.x2);
+                                            int so1z = Math.min(sot.z1, sot.z2), so2z = Math.max(sot.z1, sot.z2);
+                                            if (sx1 <= so2x && sx2 >= so1x && sz1 <= so2z && sz2 >= so1z) {
+                                                p.sendMessage("§c§l[智能识别] §f选区与领地 §e" + sot.name + " §f部分重叠（跨边界），子领地必须完整位于某主领地内");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
                                 // ★ 一键创建超链接：自动用玩家名，冲突则加数字（重名不区分大小写）
                                 String autoName = p.getName();
                                 if (areaNameExists(autoName)) {
@@ -7785,8 +7908,51 @@ public class AreaProtection implements Listener {
             if (!pos1.containsKey(cp.getUniqueId()) || !pos2.containsKey(cp.getUniqueId())) {
                 cp.sendMessage("§c请先用工具选点"); return true;
             }
+            // ★ 第57批续21 提前取选区坐标（供空间重叠识别，原在下方重复声明已移除）
+            Location cl1 = pos1.get(cp.getUniqueId());
+            Location cl2 = pos2.get(cp.getUniqueId());
+            int cw = Math.abs(cl2.getBlockX() - cl1.getBlockX()) + 1;
+            int cl = Math.abs(cl2.getBlockZ() - cl1.getBlockZ()) + 1;
+            int cArea = cw * cl;
             // 检查重名（不区分大小写）
             if (areaNameExists(confirmName)) { cp.sendMessage("§c区域已存在（大小写不同也算重复）"); return true; }
+            // ★ 第57批续21 空间重叠智能识别 + 子领地身份闸门（修"任何人能在别人领地内建重叠领地"绕过漏洞）
+            int cnx1 = Math.min(cl1.getBlockX(), cl2.getBlockX());
+            int cnz1 = Math.min(cl1.getBlockZ(), cl2.getBlockZ());
+            int cnx2 = Math.max(cl1.getBlockX(), cl2.getBlockX());
+            int cnz2 = Math.max(cl1.getBlockZ(), cl2.getBlockZ());
+            String cnWorld = cl1.getWorld().getName();
+            AreaConfig cnMain = findContainingMainLand(cnWorld, cnx1, cnz1, cnx2, cnz2);
+            boolean cnIsSub = cnMain != null;
+            if (cnIsSub) {
+                if (!isQualifiedLandManager(cp, cnMain)) {
+                    cp.sendMessage("§c§l[防护] §f拒绝创建: 当前选区已在领地 §e" + cnMain.name
+                            + " §f范围内，你需具备该领地的领主/管理员/授权管理员身份才能创建子领地。");
+                    return true;
+                }
+            } else {
+                // 无完全包含的主领地 → 部分重叠（跨边界）一律拒绝
+                for (AreaConfig ot : areas.values()) {
+                    if (ot == null || ot.parentId != 0) continue;
+                    if (!ot.world.equalsIgnoreCase(cnWorld)) continue;
+                    int omx = Math.min(ot.x1, ot.x2), omx2 = Math.max(ot.x1, ot.x2);
+                    int omz = Math.min(ot.z1, ot.z2), omz2 = Math.max(ot.z1, ot.z2);
+                    if (cnx1 <= omx2 && cnx2 >= omx && cnz1 <= omz2 && cnz2 >= omz) {
+                        cp.sendMessage("§c§l[防护] §f拒绝创建: 选区与领地 §e" + ot.name
+                                + " §f部分重叠（跨边界），子领地必须完整位于某主领地内，请重选区域。");
+                        return true;
+                    }
+                }
+            }
+            if (cnIsSub) {
+                // 子领地命名冲突：自动追加序号（父领地内子领地可多个）
+                String subName = confirmName;
+                if (areaNameExists(subName)) {
+                    int s2 = 1;
+                    while (areaNameExists(subName + s2)) s2++;
+                    confirmName = subName + s2;
+                }
+            }
             // ★ 检查上限（含DB兜底）
             UserGroupManager cugm = plugin.getUserGroup();
             int cMaxLands = (cugm != null) ? cugm.getPlayerMaxLands(cp.getName(), globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
@@ -7800,12 +7966,7 @@ public class AreaProtection implements Listener {
                     cr.close(); cs.close();
                 } catch (Exception ignored) {}
             }
-            if (cLandCount >= cMaxLands) { cp.sendMessage("§c§l[防护] §f已达领地上限！"); return true; }
-            Location cl1 = pos1.get(cp.getUniqueId());
-            Location cl2 = pos2.get(cp.getUniqueId());
-            int cw = Math.abs(cl2.getBlockX() - cl1.getBlockX()) + 1;
-            int cl = Math.abs(cl2.getBlockZ() - cl1.getBlockZ()) + 1;
-            int cArea = cw * cl;
+            if (!cnIsSub && cLandCount >= cMaxLands) { cp.sendMessage("§c§l[防护] §f已达领地上限！"); return true; }
             int cPrice = (cugm != null) ? cugm.getPlayerLandPricePerSqm(cp.getName(), globalCreatePricePerSqm) : globalCreatePricePerSqm;
             int cCost = cArea * cPrice;
 
@@ -7832,13 +7993,21 @@ public class AreaProtection implements Listener {
                 }
             }
             AreaConfig cac = new AreaConfig();
-            cac.name = confirmName; cac.owner = cp.getName(); cac.world = cl1.getWorld().getName();
+            cac.name = confirmName;
+            // ★ 第57批续21 子领地：owner 沿用主领地主；主领地：owner=创建者
+            cac.owner = cnIsSub ? cnMain.owner : cp.getName();
+            cac.world = cl1.getWorld().getName();
             cac.x1 = cl1.getBlockX(); cac.z1 = cl1.getBlockZ(); cac.x2 = cl2.getBlockX(); cac.z2 = cl2.getBlockZ();
             cac.yMin = 0; cac.yMax = 255;
             cac.createCost = chargedCost; // ★ 记录创建扣款（删除时按比例退费的基数）
+            cac.parentId = cnIsSub ? getLandIdFromDb(cnMain.name) : 0; // ★ 第57批续21 子领地父ID
             saveAreaToDb(cac);
             areas.put(confirmName, cac); // ★ 立即更新内存
-            cp.sendMessage("§a§l[防护] §f区域 " + confirmName + " 已创建 (owner: " + cp.getName() + ")");
+            if (cnIsSub) {
+                cp.sendMessage("§a§l[防护] §f子领地 §e" + confirmName + " §f已创建（父领地: " + cnMain.name + "）");
+            } else {
+                cp.sendMessage("§a§l[防护] §f区域 " + confirmName + " 已创建 (owner: " + cac.owner + ")");
+            }
             loadAllAreas();
             return true;
         }
@@ -10454,6 +10623,39 @@ public class AreaProtection implements Listener {
                 adm.sendMessage("§c§l[审批] §f领地名 §e" + pe.landName + " §f已被占用，申请作废");
                 return;
             }
+            // ★ 第57批续21 审批路径也套空间重叠闸门：申请人具备主领地管理身份(领地主/管理员/授权管理员)
+            //   才能在重叠区创建子领地；审批管理员本人申请时 isAreaAdmin=true 恒合格。
+            int aN1x = Math.min(pe.newX1, pe.newX2), aN2x = Math.max(pe.newX1, pe.newX2);
+            int aN1z = Math.min(pe.newZ1, pe.newZ2), aN2z = Math.max(pe.newZ1, pe.newZ2);
+            AreaConfig apMain = findContainingMainLand(pe.world, aN1x, aN1z, aN2x, aN2z);
+            boolean apIsSub = apMain != null;
+            Player apReqOnline = Bukkit.getPlayerExact(pe.requester);
+            if (apIsSub) {
+                if (apReqOnline == null || !isQualifiedLandManager(apReqOnline, apMain)) {
+                    pendingExpands.remove(pe.landName.toLowerCase());
+                    adm.sendMessage("§c§l[审批] §f申请区已在领地 §e" + apMain.name
+                            + " §f内，但申请人 §e" + pe.requester + " §f不具备该领地的管理身份，申请作废");
+                    return;
+                }
+            } else {
+                for (AreaConfig aot : areas.values()) {
+                    if (aot == null || aot.parentId != 0) continue;
+                    if (!aot.world.equalsIgnoreCase(pe.world)) continue;
+                    int ao1x = Math.min(aot.x1, aot.x2), ao2x = Math.max(aot.x1, aot.x2);
+                    int ao1z = Math.min(aot.z1, aot.z2), ao2z = Math.max(aot.z1, aot.z2);
+                    if (aN1x <= ao2x && aN2x >= ao1x && aN1z <= ao2z && aN2z >= ao1z) {
+                        pendingExpands.remove(pe.landName.toLowerCase());
+                        adm.sendMessage("§c§l[审批] §f申请区与领地 §e" + aot.name
+                                + " §f部分重叠（跨边界），子领地必须完整位于某主领地内，申请作废");
+                        return;
+                    }
+                }
+            }
+            if (apIsSub && areaNameExists(pe.landName)) {
+                int sa = 1;
+                while (areaNameExists(pe.landName + sa)) sa++;
+                pe.landName = pe.landName + sa;
+            }
             UserGroupManager aPugm = plugin.getUserGroup();
             int aMax = (aPugm != null) ? aPugm.getPlayerMaxLands(pe.requester, globalMaxLandsPerPlayer) : globalMaxLandsPerPlayer;
             long aCnt = areas.values().stream().filter(a -> samePlayer(pe.requester, a.owner)).count();
@@ -10485,18 +10687,25 @@ public class AreaProtection implements Listener {
             }
             AreaConfig nc = new AreaConfig();
             nc.name = pe.landName;
-            nc.owner = pe.requester;
+            // ★ 第57批续21 子领地：owner 沿用主领地主；主领地：owner=申请人
+            nc.owner = apIsSub ? apMain.owner : pe.requester;
             nc.world = pe.world;
             nc.x1 = pe.newX1; nc.z1 = pe.newZ1;
             nc.x2 = pe.newX2; nc.z2 = pe.newZ2;
             nc.yMin = 0; nc.yMax = 255;
             nc.createCost = charged;
+            nc.parentId = apIsSub ? getLandIdFromDb(apMain.name) : 0; // ★ 第57批续21 子领地父ID
             saveAreaToDb(nc);
             areas.put(pe.landName, nc);
             pendingExpands.remove(pe.landName.toLowerCase());
             loadAllAreas();
-            adm.sendMessage("§a§l[审批] §f已批准创建领地 §e" + pe.landName + " §f(§e"
-                    + pe.area + "㎡§f)，向申请人扣除 §e" + charged + " §f债券");
+            if (apIsSub) {
+                adm.sendMessage("§a§l[审批] §f已批准创建子领地 §e" + pe.landName
+                        + " §f(父领地 " + apMain.name + ", §e" + pe.area + "㎡§f)，向申请人扣除 §e" + charged + " §f债券");
+            } else {
+                adm.sendMessage("§a§l[审批] §f已批准创建领地 §e" + pe.landName + " §f(§e"
+                        + pe.area + "㎡§f)，向申请人扣除 §e" + charged + " §f债券");
+            }
             if (requester != null && requester.isOnline()) {
                 requester.sendMessage("§a§l[防护] §f你的领地 §e" + pe.landName
                         + " §f已由管理员审批创建成功（" + pe.area + "㎡，扣除 " + charged + " 债券）");
@@ -10761,7 +10970,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg, enable_announce, announce_template, txt_content, created_at, "
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
-                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade, confiscate_count, return_on_leave) "
+                    + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade, confiscate_count, return_on_leave, parent_id) "
                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
@@ -10775,7 +10984,7 @@ public class AreaProtection implements Listener {
                     + "confiscate_msg=excluded.confiscate_msg, enable_announce=excluded.enable_announce, announce_template=excluded.announce_template, txt_content=excluded.txt_content, created_at=excluded.created_at, "
                     + "deny_thrown_projectiles=excluded.deny_thrown_projectiles, deny_glowing=excluded.deny_glowing, deny_redstone_interaction=excluded.deny_redstone_interaction, deny_door_interaction=excluded.deny_door_interaction, "
                     + "deny_noteblock_jukebox=excluded.deny_noteblock_jukebox, deny_lead=excluded.deny_lead, deny_crop_harvest=excluded.deny_crop_harvest, deny_wool_shear=excluded.deny_wool_shear, deny_animal_feeding=excluded.deny_animal_feeding, "
-                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects, deny_villager_trade=excluded.deny_villager_trade, confiscate_count=excluded.confiscate_count, return_on_leave=excluded.return_on_leave");
+                    + "warp_x=excluded.warp_x, warp_y=excluded.warp_y, warp_z=excluded.warp_z, warp_yaw=excluded.warp_yaw, warp_pitch=excluded.warp_pitch, warp_world=excluded.warp_world, deny_container=excluded.deny_container, deny_mob_attack=excluded.deny_mob_attack, deny_sign_edit=excluded.deny_sign_edit, is_public_building=excluded.is_public_building, allow_visitor_teleport=excluded.allow_visitor_teleport, deny_farmland_trample=excluded.deny_farmland_trample, deny_ender_teleport=excluded.deny_ender_teleport, create_cost=excluded.create_cost, deny_spawn_egg=excluded.deny_spawn_egg, deny_wax=excluded.deny_wax, bad_effects=excluded.bad_effects, deny_villager_trade=excluded.deny_villager_trade, confiscate_count=excluded.confiscate_count, return_on_leave=excluded.return_on_leave, parent_id=excluded.parent_id");
 
             stmt.setString(1, ac.name);
             stmt.setString(2, ac.owner != null ? ac.owner : "");
@@ -10853,6 +11062,7 @@ public class AreaProtection implements Listener {
             stmt.setInt(74, ac.denyVillagerTrade ? 1 : 0);
             stmt.setInt(75, ac.confiscateCount);
             stmt.setInt(76, ac.returnOnLeave ? 1 : 0);
+            stmt.setInt(77, ac.parentId); // ★ 第57批续21 子领地父ID（0=主领地）
             stmt.executeUpdate();
             stmt.close();
             // ★ 领地设置变更：立即触发PHP同步（防抖10秒）
@@ -10951,6 +11161,22 @@ public class AreaProtection implements Listener {
     /**
      * 从数据库获取领地ID
      */
+    /** ★ 第57批续21：按 area_lands.id 反查领地名（子领地继承判定用） */
+    public String findLandNameById(int id) {
+        if (dbConnection == null || id <= 0) return null;
+        try {
+            PreparedStatement stmt = dbConnection.prepareStatement("SELECT name FROM area_lands WHERE id = ?");
+            stmt.setInt(1, id);
+            ResultSet rs = stmt.executeQuery();
+            String n = rs.next() ? rs.getString("name") : null;
+            rs.close();
+            stmt.close();
+            return n;
+        } catch (SQLException e) {
+            return null;
+        }
+    }
+
     public int getLandIdFromDb(String name) {
         if (dbConnection == null) return -1;
         try {
@@ -13782,6 +14008,10 @@ public class AreaProtection implements Listener {
         public boolean allowVisitorTeleport = false;
         // ★ 创建领地时实际扣款金额（删除领地按比例退费的基数；0=无扣款）
         public int createCost = 0;
+        // ★ 第57批续21 子领地：父领地（主领地）的 area_lands.id；0=主领地（无父）
+        //   子领地必须完整包含在某主领地内（1级，不可再嵌套），owner 沿用主领地主，
+        //   权限行挂在父领地 land_id 下（area_land_permissions），可单独收紧/放行。
+        public int parentId = 0;
 
 
 
@@ -13948,11 +14178,27 @@ public class AreaProtection implements Listener {
         int x2 = cx + 1, z2 = cz + 1;
         int area = 9; // 3×3
 
-        // ★ 检查这个区域是否与其他领地重叠
+        // ★ 第57批续21 先查 3×3 是否完全包含于某主领地 → 领地主身份合格则自动转 confirm_create 建子领地
+        AreaConfig qMain = findContainingMainLand(p.getWorld().getName(), x1, z1, x2, z2);
+        if (qMain != null) {
+            if (isQualifiedLandManager(p, qMain)) {
+                p.sendMessage("§a§l[防护] §f检测到 3×3 区域在主领地 §e" + qMain.name
+                        + " §f内，已为你转为创建子领地");
+                p.performCommand("protect confirm_create " + p.getName());
+                return true;
+            } else {
+                p.sendMessage("§c§l[防护] §f该区域已在领地 §e" + qMain.name
+                        + " §f内，你需具备该领地的领主/管理员身份才能创建子领地");
+                return false;
+            }
+        }
+        // ★ 部分重叠（跨边界）仍拒绝
         for (AreaConfig other : areas.values()) {
+            if (other.parentId != 0) continue;
             if (!other.world.equalsIgnoreCase(p.getWorld().getName())) continue;
-            // AABB重叠检测
-            if (x1 <= other.x2 && x2 >= other.x1 && z1 <= other.z2 && z2 >= other.z1) {
+            int omx = Math.min(other.x1, other.x2), omx2 = Math.max(other.x1, other.x2);
+            int omz = Math.min(other.z1, other.z2), omz2 = Math.max(other.z1, other.z2);
+            if (x1 <= omx2 && x2 >= omx && z1 <= omz2 && z2 >= omz) {
                 p.sendMessage("§c§l[防护] §f该区域与领地 §e" + other.name + " §f重叠，请走远点再试");
                 return false;
             }
