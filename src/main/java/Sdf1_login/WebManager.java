@@ -6082,7 +6082,9 @@ public class WebManager {
     public boolean hasBanPending() { return banPending; }
     /** 待确认缺口的封禁条数 */
     public int getBanPendingCount() { return banPendingCount; }
-    /** 第57批：/login 成功后推送 login_verified=1 给 PHP（修复网页端显示未登录） */
+    /** 第57批：/login 成功后推送 login_verified=1 给 PHP（修复网页端显示未登录）
+     *  ★ 第57批续19: 登录收口(finishPasswordLogin)已保证玩家已登录, 此路径固定推 login_verified=1
+     *  （PHP 收到 1 → 该 token 网页直接放行, 不要求二次输密码） */
     public void pushLoginVerified(String playerName) {
         if (!enabled) return;
         try {
@@ -9254,7 +9256,8 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
+                        // ★ 第57批续19: login_verified 状态位统一管理 —— 手动 /weblogin 同逻辑(已注册推1, 未注册推0)
+                        + "&login_verified=" + (isRegistered ? "1" : "0")
                         + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
                         + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8"); // ★ 按实际登录状态告知PHP（未登录推0让PHP清除旧记录）
                 String response = doGet(urlStr);
@@ -9323,6 +9326,14 @@ public class WebManager {
             return;
         }
         String playerName = player.getName();
+        // ★ 第57批续19: 10秒冷却去重 —— 修"每次登录推2个token"刷屏
+        //   进服/重连/手动/weblogin 多条链路短时间内对同一玩家触发多次, 只保留最新一次
+        long now = System.currentTimeMillis();
+        Long lastTime = webloginTokenTimestamps.get(playerName);
+        if (lastTime != null && (now - lastTime) < WEBLOGIN_TOKEN_COOLDOWN_MS) {
+            return; // 冷却期内跳过, 避免刷屏+重复推送
+        }
+        webloginTokenTimestamps.put(playerName, now);
         // 生成weblogin专用Token
         String token = generateToken(playerName, "weblogin");
         // ★ 生成token时检查login.db并推送注册状态给PHP
@@ -9346,7 +9357,8 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
+                        // ★ 第57批续19: login_verified 状态位统一管理 —— 已注册/已登录推1(网页直接放行), 未注册推0(网页要求输密码/注册)
+                        + "&login_verified=" + (isRegistered ? "1" : "0")
                         + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
                         + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8");
                 String response = doGet(urlStr);
@@ -12467,6 +12479,7 @@ public class WebManager {
             final String action, final String failReason,
             final java.util.function.Consumer<String> callback) {
         submitWebEmailBindResult(reqId, playerName, action, failReason, false, callback);
+        // ★ 第57批续19修复: 上面为委托调用(非递归), 方法体保留供 12372/12381 行 5参调用点使用
     }
 
     public void submitWebEmailBindResult(final String reqId, final String playerName,
