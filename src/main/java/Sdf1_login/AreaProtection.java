@@ -5994,6 +5994,7 @@ public class AreaProtection implements Listener {
                                 BondManager bnd = plugin.getBonds();
                                 int bal = (bnd != null) ? bnd.getBonds(p.getName()) : 0;
                                 p.sendMessage("§e§l[防护] §f选区完成！面积: §a" + a + "㎡§7（" + w + "×" + l + "）  单价: §f" + pricePerSqm + "/㎡" + src + "  预估: §e" + totalCost + "§7债券  余额: §a" + bal);
+                                boolean canCreateSub = true; // ★ 续21修1: 身份不合格/部分重叠时不展示确认创建按钮
                                 // ★ 第57批续21 圈地棒选区后智能识别：若落在已有领地内，提示需具备该领地管理身份才能建子领地
                                 {
                                     int sx1 = Math.min(lp1.getBlockX(), newLoc.getBlockX());
@@ -6004,6 +6005,7 @@ public class AreaProtection implements Listener {
                                     if (selMain != null) {
                                         p.sendMessage("§d§l[智能识别] §f选区位于领地 §e" + selMain.name + " §f内 → 创建成功则为【子领地】，需你具备该领地领主/管理员身份");
                                         if (!isQualifiedLandManager(p, selMain)) {
+                                            canCreateSub = false;
                                             p.sendMessage("§c 你当前不具备 §e" + selMain.name + " §f的管理身份，确认创建将被拒绝");
                                         }
                                     } else {
@@ -6013,12 +6015,14 @@ public class AreaProtection implements Listener {
                                             int so1x = Math.min(sot.x1, sot.x2), so2x = Math.max(sot.x1, sot.x2);
                                             int so1z = Math.min(sot.z1, sot.z2), so2z = Math.max(sot.z1, sot.z2);
                                             if (sx1 <= so2x && sx2 >= so1x && sz1 <= so2z && sz2 >= so1z) {
+                                                canCreateSub = false;
                                                 p.sendMessage("§c§l[智能识别] §f选区与领地 §e" + sot.name + " §f部分重叠（跨边界），子领地必须完整位于某主领地内");
                                                 break;
                                             }
                                         }
                                     }
                                 }
+                                if (canCreateSub) {
                                 // ★ 一键创建超链接：自动用玩家名，冲突则加数字（重名不区分大小写）
                                 String autoName = p.getName();
                                 if (areaNameExists(autoName)) {
@@ -6034,6 +6038,9 @@ public class AreaProtection implements Listener {
                                         .clickEvent(ClickEvent.runCommand("/protect confirm_create " + finalAutoName))
                                 );
                                 p.sendMessage(Component.text("§7或输入 §f/protect 创建 <自定义名> §7指定领地名"));
+                                } else {
+                                p.sendMessage("§c§l[防护] §f因身份或范围限制，已隐藏确认创建按钮");
+                                }
                             }
                         }
                     }
@@ -10971,7 +10978,7 @@ public class AreaProtection implements Listener {
                     + "deny_thrown_projectiles, deny_glowing, deny_redstone_interaction, deny_door_interaction, "
                     + "deny_noteblock_jukebox, deny_lead, deny_crop_harvest, deny_wool_shear, deny_animal_feeding, "
                     + "warp_x, warp_y, warp_z, warp_yaw, warp_pitch, warp_world, deny_container, deny_mob_attack, deny_sign_edit, is_public_building, allow_visitor_teleport, deny_farmland_trample, deny_ender_teleport, create_cost, deny_spawn_egg, deny_wax, bad_effects, deny_villager_trade, confiscate_count, return_on_leave, parent_id) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     + "ON CONFLICT(name) DO UPDATE SET "
                     + "owner=excluded.owner, world=excluded.world, x1=excluded.x1, z1=excluded.z1, x2=excluded.x2, z2=excluded.z2, y_min=excluded.y_min, y_max=excluded.y_max, "
                     + "confiscate_items=excluded.confiscate_items, deny_use_items=excluded.deny_use_items, give_effects=excluded.give_effects, clear_effects=excluded.clear_effects, clear_all_bad=excluded.clear_all_bad, "
