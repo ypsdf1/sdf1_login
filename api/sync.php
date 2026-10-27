@@ -306,6 +306,9 @@ switch ($action) {
     case 'check_pending_web_email_bind_requests':
         checkPendingWebEmailBindRequests();
         break;
+    case 'pull_email_bindings':
+        pullEmailBindings();
+        break;
     case 'web_email_bind_result':
         webEmailBindResult();
         break;
@@ -4383,16 +4386,33 @@ function maskEmail($email) {
 // ===== 第57批续7：Java端密码验证通过后直接完成邮箱绑定 =====
 function acctCompleteEmailBind($requestId, $player, $email) {
     $db = getDB();
-    $upd = $db->prepare("UPDATE users SET email = :e WHERE player_name = :p");
-    $upd->bindValue(':e', $email, SQLITE3_TEXT);
-    $upd->bindValue(':p', $player, SQLITE3_TEXT);
-    $upd->execute();
-    if ($db->changes() <= 0) return false;
+    // ★ 第57批续17：权威权交还 Java——PHP 不再独占写 users.email（避免与 Java db 双写冲突）。
+    //   改为把 (player,email,来源=网页绑定验证通过) 投递到 email_bind_return 队列，
+    //   Java 定时 pull_email_bindings 拉取后写权威 db，再经 sync_players 收敛 PHP 镜像。
+    $db->exec("CREATE TABLE IF NOT EXISTS email_bind_return (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        source TEXT DEFAULT 'web_bind',
+        pending INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        processed_at INTEGER DEFAULT 0
+    )");
+    // 同玩家保留最新一条待处理（幂等：旧未处理作废，避免拉取到过期值）
+    $void = $db->prepare("UPDATE email_bind_return SET pending = 0 WHERE player_name = :p AND pending = 1");
+    $void->bindValue(':p', $player, SQLITE3_TEXT);
+    $void->execute();
+    $ins = $db->prepare("INSERT INTO email_bind_return (player_name, email, source, pending, created_at, processed_at) VALUES (:p, :e, 'web_bind', 1, :t, 0)");
+    $ins->bindValue(':p', $player, SQLITE3_TEXT);
+    $ins->bindValue(':e', $email, SQLITE3_TEXT);
+    $ins->bindValue(':t', time(), SQLITE3_INTEGER);
+    $ins->execute();
+    // 网页绑定请求本身标记完成（这是前端流程的终态，与邮箱是否入 PHP 解耦）
     $done = $db->prepare("UPDATE web_email_bind_requests SET status = 'completed', processed_at = :t WHERE id = :id");
     $done->bindValue(':t', time(), SQLITE3_INTEGER);
     $done->bindValue(':id', (int)$requestId, SQLITE3_INTEGER);
     $done->execute();
-    debugLog('[sync.php] Java端验证通过，直接完成邮箱绑定', ['player' => $player, 'id' => $requestId]);
+    debugLog('[sync.php] 邮箱绑定验证通过，已投递回推队列待Java确认（不直接写users.email）', ['player' => $player, 'id' => $requestId, 'email' => $email]);
     return true;
 }
 
@@ -5201,6 +5221,44 @@ function webEmailBindResult() {
     $upd->execute();
 
     success(['request_id' => (int)$requestId, 'status' => $newStatus]);
+}
+
+// ===== 第57批续17：Java 定时拉取待确认的邮箱变更（PHP 不独占写 users.email，权威权交还 Java）=====
+// PHP 只负责验证+投递队列；Java 拉走后写权威 db，再经 sync_players 收敛 PHP 镜像。
+function pullEmailBindings() {
+    $secret = getParam('secret');
+    if (!$secret || $secret !== SECRET_KEY) error('密钥验证失败', 403);
+    $db = getDB();
+    $db->exec("CREATE TABLE IF NOT EXISTS email_bind_return (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        player_name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        source TEXT DEFAULT 'web_bind',
+        pending INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        processed_at INTEGER DEFAULT 0
+    )");
+    // 拉取全部待确认（pending=1），逐条返回给 Java
+    $stmt = $db->prepare("SELECT id, player_name, email, source FROM email_bind_return WHERE pending = 1 ORDER BY id ASC");
+    $result = $stmt->execute();
+    $rows = array();
+    $ids = array();
+    while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = array(
+            'id' => (int)$row['id'],
+            'player_name' => (string)$row['player_name'],
+            'email' => (string)$row['email'],
+            'source' => (string)$row['source]
+        );
+        $ids[] = (int)$row['id'];
+    }
+    // 拉取即标记 pending=0（Java 收到后会写权威 db；若 Java 宕机下轮不再拉到——
+    // 与既有 check_pending 拉取即标记语义一致；存量对账用 migrate 重新投递兜底）
+    if (!empty($ids)) {
+        $idList = implode(',', $ids);
+        $db->exec("UPDATE email_bind_return SET pending = 0, processed_at = " . time() . " WHERE id IN ($idList) AND pending = 1");
+    }
+    success(['bindings' => $rows, 'count' => count($rows)]);
 }
 
 // ===== CDK验证（供sdf1插件调用）=====
