@@ -9256,8 +9256,8 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        // ★ 第57批续19: login_verified 状态位统一管理 —— 手动 /weblogin 同逻辑(已注册推1, 未注册推0)
-                        + "&login_verified=" + (isRegistered ? "1" : "0")
+                        // ★ 第57批续19-hotfix: login_verified 严格按 isLoggedIn 推 —— 手动 /weblogin 同逻辑
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
                         + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
                         + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8"); // ★ 按实际登录状态告知PHP（未登录推0让PHP清除旧记录）
                 String response = doGet(urlStr);
@@ -9357,8 +9357,8 @@ public class WebManager {
                         + "&online=1"
                         + "&registered=" + (isRegistered ? "1" : "0")
                         + "&ip=" + java.net.URLEncoder.encode(playerIp, "UTF-8")
-                        // ★ 第57批续19: login_verified 状态位统一管理 —— 已注册/已登录推1(网页直接放行), 未注册推0(网页要求输密码/注册)
-                        + "&login_verified=" + (isRegistered ? "1" : "0")
+                        // ★ 第57批续19-hotfix: login_verified 严格按 isLoggedIn 推 —— 仅"密码验证通过"才=1, 已注册但未登录=0(网页要求输密码)
+                        + "&login_verified=" + (isLoggedIn ? "1" : "0")
                         + "&email_suffix_mode=" + java.net.URLEncoder.encode(config != null ? config.getEmailValidationMode() : "默认", "UTF-8")
                         + "&email_suffix_list=" + java.net.URLEncoder.encode(config != null ? config.getEmailSuffixList() : "", "UTF-8");
                 String response = doGet(urlStr);
