@@ -2671,7 +2671,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             drawerSet(`
             <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
             ${hintHtml}
-            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('drawerConfirm').click()">
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
                 '发送批准请求 →', acctBindEmailStart);
             setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
@@ -2679,7 +2679,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             // API 失败也展示基础向导
             drawerSet(`
             <div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.7">输入邮箱后，你的游戏内会收到一条批准通知（需在线）。<b>1分钟内</b>点击「✔ 批准」，再回到这里输入登录密码即可完成绑定；拒绝或超时则直接折返，不做任何处置。</div>
-            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('modalConfirm').click()">
+            <input type="email" id="bindEmailInput" placeholder="you@example.com" autocomplete="email" style="width:100%;box-sizing:border-box;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px" onkeydown="if(event.key==='Enter')document.getElementById('drawerConfirm').click()">
             <div id="acctErr" style="color:var(--red);font-size:12px;min-height:16px;margin-top:8px"></div>`,
                 '发送批准请求 →', acctBindEmailStart);
             setTimeout(() => { const el = document.getElementById('bindEmailInput'); if (el) el.focus(); }, 120);
@@ -3284,7 +3284,7 @@ if ($currentVersion !== $BUILD_VERSION) {
     }
 
     function drawerErr(msg) {
-        const e = document.getElementById("acctErr");
+        const e = document.querySelector('#drawerBody #acctErr');
         if (e) e.textContent = msg || "";
     }
 
@@ -3293,7 +3293,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         const card = document.getElementById("drawerCard");
         card.classList.remove("animate-in");
         card.classList.add("animate-out");
-        setTimeout(() => { overlay.style.display = "none"; card.classList.remove("animate-out"); }, 250);
+        setTimeout(() => { overlay.style.display = "none"; card.classList.remove("animate-out"); document.getElementById("drawerBody").innerHTML = ""; }, 250);
     }
 
     function confirmDrawer() {}
@@ -3353,7 +3353,8 @@ if ($currentVersion !== $BUILD_VERSION) {
     }
 
     function acctErr(msg) {
-        const e = document.getElementById('acctErr');
+        // ★ 第57批续16：抽屉/模态框同id acctErr 冲突修复——限定模态框容器，防止命中抽屉残留隐藏div（验证码提交无反应根因）
+        const e = document.querySelector('#modalBody #acctErr');
         if (e) e.textContent = msg || '';
     }
 
