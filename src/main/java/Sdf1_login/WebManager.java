@@ -8654,11 +8654,13 @@ public class WebManager {
         }
         try {
             java.util.Collection<? extends Player> onlinePlayers = Bukkit.getOnlinePlayers();
-            java.util.Set<String> loggedInPlayers = plugin.getLoggedIn(); // ★ 只推送已登录的玩家
+            java.util.Set<String> loggedInPlayers = plugin.getLoggedIn(); // ★ 仅用于日志变化检测
+            // ★ 第57批续20: 推送全部在线玩家(已登录+未登录), 不再筛 loggedIn。
+            //   根因: 刚注册未 /login 的玩家在 loggedIn 里但不在 online_players 表里,
+            //   PHP validateWebAccess 判 !isOnline → 弹"未在线"。
+            //   修复后: 在线=PHP online_players 有记录, 能否绕过密码=login_verified 位(续19-hotfix), 两者解耦。
             List<Map<String, Object>> playersData = new ArrayList<>();
             for (Player p : onlinePlayers) {
-                // ★ 关键：只有真正输入密码登录的玩家才推送到PHP
-                if (!loggedInPlayers.contains(p.getName())) continue;
                 Map<String, Object> playerInfo = new LinkedHashMap<>();
                 playerInfo.put("name", p.getName());
                 playerInfo.put("login_time", System.currentTimeMillis() / 1000);
