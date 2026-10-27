@@ -121,5 +121,7 @@ test.*
 *.md
 # 过滤readme和配置文件
 !readme.md
-!scr/main/resources
+!src/main/resources
 !src/main/resources/**/*.*
+# 临时屏蔽resources的开发文件
+src/main/resources/openai/*
