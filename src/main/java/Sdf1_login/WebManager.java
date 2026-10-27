@@ -5096,6 +5096,11 @@ public class WebManager {
                     long created = longOf(row.get("created"));
                     if (pulled != null && created > 0) {
                         pulled.setCreated(new java.util.Date(created));
+                        // ★ 第57批续22续: setCreated 只改内存对象，Bukkit BanList 无 updateBan API。
+                        //   banned-players.json 里保留的是 addBan 即当前时间，
+                        //   BanBroadcastManager 读文件 → 封禁播报全员时间混乱。
+                        //   直接改写文件持久化真实创建时间。
+                        persistBanCreatedToFile(target, created);
                     }
                     plugin.getLogger().info("[对账] 已收回 Web 端封禁: " + (isIp ? "IP " : "") + target);
                     return true;
@@ -5857,6 +5862,51 @@ public class WebManager {
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[防护-sync] 管理员列表同步异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 第57批续22续: 封禁收回时持久化真实创建时间到 banned-players.json。
+     *
+     * setCreated 只改内存 BanEntry 对象，Bukkit BanList 没有 updateBan API，
+     * 文件里保留的是 addBan 时的当前时间。BanBroadcastManager 直接读文件，
+     * 不持久化 → 所有被收回的封禁 created 都变成收回时间 → 封禁播报全员时间陷入同一天。
+     *
+     * 方案：读 banned-players.json → Gson 解析 → 定位 target 对应条目 → 改 created 字段 → 写回。
+     * 文件不存在/解析失败/未找到 target → 安全返回（内存 setCreated 仍有效）。
+     */
+    private void persistBanCreatedToFile(String target, long createdMs) {
+        if (target == null || target.isEmpty() || createdMs <= 0) return;
+        try {
+            java.io.File bf = new java.io.File(plugin.getServer().getWorldContainer(), "banned-players.json");
+            if (!bf.exists()) return;
+            String txt = new String(java.nio.file.Files.readAllBytes(bf.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(txt);
+            if (!root.isJsonArray()) return;
+            com.google.gson.JsonArray arr = root.getAsJsonArray();
+            boolean changed = false;
+            for (com.google.gson.JsonElement el : arr) {
+                if (el == null || !el.isJsonObject()) continue;
+                com.google.gson.JsonObject o = el.getAsJsonObject();
+                String name = o.has("name") ? o.get("name").getAsString() : "";
+                if (name.equals(target)) {
+                    // Gson JsonPrimitive 无 Date 构造器，用 SimpleDateFormat 格式化为 ISO-8601
+                    String isoTs = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.ROOT)
+                            .format(new java.util.Date(createdMs));
+                    o.add("created", new com.google.gson.JsonPrimitive(isoTs));
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed) {
+                java.nio.file.Files.write(bf.toPath(),
+                        arr.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                plugin.getLogger().info("[对账] 已持久化封禁创建时间: " + target
+                        + " created=" + createdMs);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[对账] 持久化封禁创建时间失败: " + e.getMessage());
         }
     }
 

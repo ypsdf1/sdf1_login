@@ -3222,6 +3222,62 @@ public class AreaProtection implements Listener {
     }
 
     /**
+     * ★ 第57批续22: 子领地创建时继承主领地权限一次。
+     * 后续子领地权限由子领地主/管理员/子领地授权管理员单独调配，
+     * 不再跟随主领地变化。
+     * 继承范围: deny* 权限开关、出入提示、游戏模式强制、公共建筑标记。
+     * 不继承: owner(创建者)、坐标、parentId、createCost。
+     */
+    private void copyLandPermissions(AreaConfig src, AreaConfig dst) {
+        if (src == null || dst == null) return;
+        dst.denyBlockPlace = src.denyBlockPlace;
+        dst.denyBlockBreak = src.denyBlockBreak;
+        dst.denySignEdit = src.denySignEdit;
+        dst.denyContainer = src.denyContainer;
+        dst.denyPVP = src.denyPVP;
+        dst.denyFallDamage = src.denyFallDamage;
+        dst.denyHunger = src.denyHunger;
+        dst.denyAllDamage = src.denyAllDamage;
+        dst.denyMount = src.denyMount;
+        dst.allowDrop = src.allowDrop;
+        dst.denyEnderPearl = src.denyEnderPearl;
+        dst.denyBow = src.denyBow;
+        dst.denyPotion = src.denyPotion;
+        dst.denyExplosion = src.denyExplosion;
+        dst.denyMove = src.denyMove;
+        dst.allowPickup = src.allowPickup;
+        dst.denyFire = src.denyFire;
+        dst.denyThrownProjectiles = src.denyThrownProjectiles;
+        dst.denyGlowing = src.denyGlowing;
+        dst.denyRedstoneInteraction = src.denyRedstoneInteraction;
+        dst.denyDoorInteraction = src.denyDoorInteraction;
+        dst.denyNoteblockJukebox = src.denyNoteblockJukebox;
+        dst.denyLead = src.denyLead;
+        dst.denyCropHarvest = src.denyCropHarvest;
+        dst.denyFarmlandTrample = src.denyFarmlandTrample;
+        dst.denyEnderTeleport = src.denyEnderTeleport;
+        dst.denyWoolShear = src.denyWoolShear;
+        dst.denyAnimalFeeding = src.denyAnimalFeeding;
+        dst.denySpawnEgg = src.denySpawnEgg;
+        dst.denyWax = src.denyWax;
+        dst.denyMobAttack = src.denyMobAttack;
+        dst.denyVillagerTrade = src.denyVillagerTrade;
+        dst.denyRaid = src.denyRaid;
+        dst.denyFireSpread = src.denyFireSpread;
+        dst.denyAllEffects = src.denyAllEffects;
+        dst.denyItemFrame = src.denyItemFrame;
+        dst.denyEntityInteract = src.denyEntityInteract;
+        dst.enterMsg = src.enterMsg;
+        dst.leaveMsg = src.leaveMsg;
+        dst.enforceGameMode = src.enforceGameMode;
+        dst.isPublicBuilding = src.isPublicBuilding;
+        dst.allowVisitorTeleport = src.allowVisitorTeleport;
+        dst.peaceMode = src.peaceMode;
+        dst.peaceModeDuration = src.peaceModeDuration;
+        dst.clearAllBadEffects = src.clearAllBadEffects;
+    }
+
+    /**
      * 获取领地默认deny状态（按字段名映射）
      */
     private boolean getLandDefaultDeny(AreaConfig ac, String permName) {
@@ -3613,6 +3669,12 @@ public class AreaProtection implements Listener {
         String newArea = null;
         String forcedMode = null;
 
+        // ★ 第57批续22: 收集所有匹配领地，选面积最小的。
+        //   子领地完全包含在主领地内，ConcurrentHashMap 遍历顺序不定，
+        //   先 break 可能命中主领地 → 子领地 deny_move=1 不生效。
+        //   面积最小 = 子领地（完全包含时面积必然更小），天然优先级正确。
+        AreaConfig bestAc = null;
+        String bestName = null;
         for (Map.Entry<String, AreaConfig> entry
                 : areas.entrySet()) {
             AreaConfig ac = entry.getValue();
@@ -3628,10 +3690,24 @@ public class AreaProtection implements Listener {
             if (px >= minX && px <= maxX
                     && pz >= minZ && pz <= maxZ
                     && py >= ac.yMin && py <= ac.yMax) {
-                newArea = entry.getKey();
-                forcedMode = ac.enforceGameMode;
-                break;
+                if (bestAc == null) {
+                    bestAc = ac;
+                    bestName = entry.getKey();
+                } else {
+                    long bestArea = (long)(Math.abs(bestAc.x1 - bestAc.x2) + 1)
+                            * (Math.abs(bestAc.z1 - bestAc.z2) + 1);
+                    long curArea = (long)(Math.abs(ac.x1 - ac.x2) + 1)
+                            * (Math.abs(ac.z1 - ac.z2) + 1);
+                    if (curArea <= bestArea) {
+                        bestAc = ac;
+                        bestName = entry.getKey();
+                    }
+                }
             }
+        }
+        if (bestName != null) {
+            newArea = bestName;
+            forcedMode = bestAc.enforceGameMode;
         }
 
      /*   plugin.getLogger().info(
@@ -8010,6 +8086,10 @@ public class AreaProtection implements Listener {
             cac.yMin = 0; cac.yMax = 255;
             cac.createCost = chargedCost; // ★ 记录创建扣款（删除时按比例退费的基数）
             cac.parentId = cnIsSub ? getLandIdFromDb(cnMain.name) : 0; // ★ 第57批续21 子领地父ID
+            // ★ 第57批续22: 子领地创建时继承主领地权限一次（后续可单独调配）
+            if (cnIsSub) {
+                copyLandPermissions(cnMain, cac);
+            }
             saveAreaToDb(cac);
             areas.put(confirmName, cac); // ★ 立即更新内存
             if (cnIsSub) {
@@ -10705,6 +10785,10 @@ public class AreaProtection implements Listener {
             nc.yMin = 0; nc.yMax = 255;
             nc.createCost = charged;
             nc.parentId = apIsSub ? getLandIdFromDb(apMain.name) : 0; // ★ 第57批续21 子领地父ID
+            // ★ 第57批续22: 子领地创建时继承主领地权限一次（后续可单独调配）
+            if (apIsSub) {
+                copyLandPermissions(apMain, nc);
+            }
             saveAreaToDb(nc);
             areas.put(pe.landName, nc);
             pendingExpands.remove(pe.landName.toLowerCase());
