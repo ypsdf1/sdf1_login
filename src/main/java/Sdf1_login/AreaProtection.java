@@ -6003,10 +6003,10 @@ public class AreaProtection implements Listener {
                                     int sz2 = Math.max(lp1.getBlockZ(), newLoc.getBlockZ());
                                     AreaConfig selMain = findContainingMainLand(p.getWorld().getName(), sx1, sz1, sx2, sz2);
                                     if (selMain != null) {
-                                        p.sendMessage("§d§l[智能识别] §f选区位于领地 §e" + selMain.name + " §f内 → 创建成功则为【子领地】，需你具备该领地领主/管理员身份");
+                                        // 身份判定静默：不合格则不展示按钮，不提示原因
                                         if (!isQualifiedLandManager(p, selMain)) {
                                             canCreateSub = false;
-                                            p.sendMessage("§c 你当前不具备 §e" + selMain.name + " §f的管理身份，确认创建将被拒绝");
+
                                         }
                                     } else {
                                         for (AreaConfig sot : areas.values()) {
@@ -6016,7 +6016,7 @@ public class AreaProtection implements Listener {
                                             int so1z = Math.min(sot.z1, sot.z2), so2z = Math.max(sot.z1, sot.z2);
                                             if (sx1 <= so2x && sx2 >= so1x && sz1 <= so2z && sz2 >= so1z) {
                                                 canCreateSub = false;
-                                                p.sendMessage("§c§l[智能识别] §f选区与领地 §e" + sot.name + " §f部分重叠（跨边界），子领地必须完整位于某主领地内");
+
                                                 break;
                                             }
                                         }
@@ -6039,7 +6039,7 @@ public class AreaProtection implements Listener {
                                 );
                                 p.sendMessage(Component.text("§7或输入 §f/protect 创建 <自定义名> §7指定领地名"));
                                 } else {
-                                p.sendMessage("§c§l[防护] §f因身份或范围限制，已隐藏确认创建按钮");
+                                // 身份/范围限制：静默隐藏按钮，不提示原因
                                 }
                             }
                         }
@@ -8002,7 +8002,9 @@ public class AreaProtection implements Listener {
             AreaConfig cac = new AreaConfig();
             cac.name = confirmName;
             // ★ 第57批续21 子领地：owner 沿用主领地主；主领地：owner=创建者
-            cac.owner = cnIsSub ? cnMain.owner : cp.getName();
+            // ★ 续21续2: 子领地 owner=创建者(付款人)——退款退给付款人。
+            //   权限继承靠 getPermissionLevel 父领地ADMIN继承(已实现),子领地权限行挂父领地land_id
+            cac.owner = cp.getName();
             cac.world = cl1.getWorld().getName();
             cac.x1 = cl1.getBlockX(); cac.z1 = cl1.getBlockZ(); cac.x2 = cl2.getBlockX(); cac.z2 = cl2.getBlockZ();
             cac.yMin = 0; cac.yMax = 255;
@@ -10695,7 +10697,8 @@ public class AreaProtection implements Listener {
             AreaConfig nc = new AreaConfig();
             nc.name = pe.landName;
             // ★ 第57批续21 子领地：owner 沿用主领地主；主领地：owner=申请人
-            nc.owner = apIsSub ? apMain.owner : pe.requester;
+            // ★ 续21续2: 子领地 owner=申请人(付款人)——退款退给付款人。权限继承靠父领地ADMIN继承
+            nc.owner = pe.requester;
             nc.world = pe.world;
             nc.x1 = pe.newX1; nc.z1 = pe.newZ1;
             nc.x2 = pe.newX2; nc.z2 = pe.newZ2;
