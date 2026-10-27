@@ -5248,7 +5248,7 @@ function pullEmailBindings() {
             'id' => (int)$row['id'],
             'player_name' => (string)$row['player_name'],
             'email' => (string)$row['email'],
-            'source' => (string)$row['source]
+            'source' => (string)$row['source']
         );
         $ids[] = (int)$row['id'];
     }
