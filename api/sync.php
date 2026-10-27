@@ -1872,11 +1872,41 @@ function syncLogin() {
                 $phpUsers[] = $row['player_name'];
             }
             
+            // ★ 第57批续18: 注册宽限期 —— 仅删"不在本次推送 且 注册距今超过24h"的玩家
+            // 防止 Java 端某轮漏推导致刚注册玩家被误删(网页端重新要求 /reg)
             $orphanedUsers = array_diff($phpUsers, $namesInSync);
+            $graceCutoff = $now - 24 * 3600;
+            $deletableUsers = [];
+            $skippedRecent = [];
             if (!empty($orphanedUsers)) {
-                $nameList = implode("','", array_map(function($n) use ($db) { return addslashes($n); }, $orphanedUsers));
-                $db->exec("DELETE FROM users WHERE player_name IN ('" . $nameList . "')");
-                debugLog("sync_login: 清理了 " . count($orphanedUsers) . " 个孤立的 users 记录", ['orphaned' => $orphanedUsers]);
+                foreach (array_chunk(array_map(function($n) { return (string)$n; }, $orphanedUsers), 200) as $chunk) {
+                    $inPlaceholder = implode(",", array_fill(0, count($chunk), "?"));
+                    $s2 = $db->prepare("SELECT player_name, register_time FROM users WHERE player_name IN (" . $inPlaceholder . ")");
+                    foreach ($chunk as $i => $n) {
+                        $s2->bindValue($i + 1, $n, SQLITE3_TEXT);
+                    }
+                    $res = $s2->execute();
+                    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                        $rt = (int)$row['register_time'];
+                        // register_time 存的是秒;若异常为毫秒则归一
+                        if ($rt > 1000000000000) { $rt = intval($rt / 1000); }
+                        if ($rt > 0 && $rt >= $graceCutoff) {
+                            $skippedRecent[] = $row['player_name'];
+                        } else {
+                            $deletableUsers[] = $row['player_name'];
+                        }
+                    }
+                }
+                if (!empty($deletableUsers)) {
+                    $nameList = implode("','", array_map(function($n) { return addslashes($n); }, $deletableUsers));
+                    $db->exec("DELETE FROM users WHERE player_name IN ('" . $nameList . "')");
+                    debugLog("sync_login: 清理了 " . count($deletableUsers) . " 个孤立的 users 记录", [
+                        'deleted' => $deletableUsers,
+                        'skipped_recent_grace' => $skippedRecent
+                    ]);
+                } elseif (!empty($skippedRecent)) {
+                    debugLog("sync_login: 宽限期内保留 " . count($skippedRecent) . " 个刚注册用户", ['skipped' => $skippedRecent]);
+                }
             }
         } catch (\Throwable $e) {
             debugLog("sync_login: 清理孤立 users 记录失败", ['error' => $e->getMessage()]);
