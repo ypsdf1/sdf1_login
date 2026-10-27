@@ -2804,6 +2804,11 @@ public class WebManager {
                         catch (Exception e) {
                             plugin.getLogger().warning("[合并A-网页绑邮箱] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
                         }
+                        // ★ 第57批续17：拉取PHP邮箱回推队列（权威权交还Java）→写db后既有sync收敛
+                        try { pullEmailBindings(); }
+                        catch (Exception e) {
+                            plugin.getLogger().warning("[合并A-邮箱回推拉取] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+                        }
                     });
                 }
                 // ★ 定期同步在线玩家（保持PHP心跳，全员下线时也推送空列表）
@@ -12382,6 +12387,73 @@ public class WebManager {
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[网页绑邮箱轮询] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+        }
+    }
+
+    // ==================== 第57批续17：拉取PHP邮箱回推队列（权威权交还Java） ====================
+    /**
+     * 拉取 PHP 侧「邮箱绑定验证通过」回推队列（pull_email_bindings），
+     * 由 Java 统一写权威 db（users.email），再经既有 syncUserRegistrations 收敛 PHP 镜像。
+     * 幂等：已一致的邮箱不重复写；拉取后若 Java 宕机，PHP 队列已置 pending=0，
+     * 由一次性对账脚本重新投递兜底。
+     */
+    private void pullEmailBindings() {
+        try {
+            String urlStr = webBaseUrl + "/api/sync.php?action=pull_email_bindings&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+            String json = doGet(urlStr);
+            if (json == null || json.contains("database is locked")) return;
+            if (!json.contains("\"success\":true")) return;
+            int countStart = json.indexOf("\"count\":");
+            if (countStart < 0) return;
+            int cvStart = countStart + 8;
+            int cvEnd = cvStart;
+            while (cvEnd < json.length() && Character.isDigit(json.charAt(cvEnd))) cvEnd++;
+            if (cvEnd == cvStart) return;
+            int count = Integer.parseInt(json.substring(cvStart, cvEnd));
+            if (count == 0) return;
+            int arrStart = json.indexOf("\"bindings\":[");
+            if (arrStart < 0) return;
+            arrStart += 12;
+            int arrEnd = findMatchingBracket(json, arrStart - 1);
+            if (arrEnd < 0) return;
+            String arrStr = json.substring(arrStart, arrEnd);
+            int idx = 0;
+            final java.util.concurrent.atomic.AtomicInteger applied = new java.util.concurrent.atomic.AtomicInteger(0);
+            while (idx < arrStr.length()) {
+                int objStart = arrStr.indexOf('{', idx);
+                if (objStart == -1) break;
+                int objEnd = arrStr.indexOf('}', objStart);
+                if (objEnd == -1) break;
+                String item = arrStr.substring(objStart, objEnd + 1);
+                idx = objEnd + 1;
+                final String playerName = extractJsonString(item, "player_name");
+                final String emailAddr = extractJsonString(item, "email");
+                if (playerName == null || emailAddr == null || emailAddr.isEmpty()) continue;
+                final String fEmail = emailAddr;
+                final String fPlayer = playerName;
+                submitDbTask("邮箱回推写db", () -> {
+                    try {
+                        DatabaseManager dbMgr = plugin.getDb();
+                        if (dbMgr == null) return;
+                        Object cur = dbMgr.getField(fPlayer, "email");
+                        String curEmail = cur == null ? "" : String.valueOf(cur).trim();
+                        if (fEmail.equals(curEmail)) return;  // 已一致，幂等跳过
+                        if (!dbMgr.userExists(fPlayer)) dbMgr.createUser(fPlayer, "", "");
+                        dbMgr.setField(fPlayer, "email", fEmail);
+                        applied.incrementAndGet();
+                        plugin.getLogger().info("[邮箱回推] 已写Java权威db: " + fPlayer + " -> " + fEmail);
+                    } catch (Exception ex) {
+                        plugin.getLogger().warning("[邮箱回推] 写db异常: " + ex.getMessage());
+                    }
+                }, true);
+            }
+            if (applied.get() > 0) {
+                // 触发既有收敛：把 Java 权威值写回 PHP users.email（单向 Java→PHP 镜像）
+                submitDbTask("邮箱回推收敛", () -> syncUserRegistrations());
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[邮箱回推拉取] 异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
         }
     }
 
