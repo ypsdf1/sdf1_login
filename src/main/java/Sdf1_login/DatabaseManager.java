@@ -3083,17 +3083,20 @@ public class DatabaseManager {
         return list;
     }
 
-    /** 清理超过 cutoff（毫秒时间戳）的领地记录，返回删除行数 */
+    /** 清理超过 cutoff（毫秒时间戳）的领地记录，返回删除行数
+     *  ★ 第58批续27修复：改用 getConnection() 而非直接用 db 字段，
+     *    避免 db 在 worker 线程被重建后，scheduler 线程持有旧引用报 "database connection closed" */
     public int pruneLandRecordsOlderThan(long cutoff) {
         int deleted = 0;
         try {
-            PreparedStatement ps1 = db.prepareStatement(
+            Connection conn = getConnection();
+            PreparedStatement ps1 = conn.prepareStatement(
                     "DELETE FROM land_block_log WHERE time < ?");
             ps1.setLong(1, cutoff);
             deleted += ps1.executeUpdate();
             ps1.close();
 
-            PreparedStatement ps2 = db.prepareStatement(
+            PreparedStatement ps2 = conn.prepareStatement(
                     "DELETE FROM land_container_log WHERE time < ?");
             ps2.setLong(1, cutoff);
             deleted += ps2.executeUpdate();

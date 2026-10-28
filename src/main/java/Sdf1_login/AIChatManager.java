@@ -639,7 +639,34 @@ public class AIChatManager {
 
                 return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             } catch (Exception e) {
-                plugin.getLogger().warning("[AI聊天] 请求异常: " + e.getMessage());
+                // ★ 完整异常日志：区分连接超时/响应超时/DNS/SSL/拒绝连接
+                String excClass = e.getClass().getName();
+                String excMsg = e.getMessage();
+                plugin.getLogger().warning("[AI聊天-调试] === 请求异常 ===");
+                plugin.getLogger().warning("[AI聊天-调试] 异常类型: " + excClass);
+                plugin.getLogger().warning("[AI聊天-调试] 异常消息: " + excMsg);
+                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + modelFull);
+                plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                // 打印栈帧前5层
+                StackTraceElement[] st = e.getStackTrace();
+                for (int i = 0; i < Math.min(5, st.length); i++) {
+                    plugin.getLogger().warning("[AI聊天-调试] 栈: " + st[i].toString());
+                }
+                // ★ 诊断分类：帮助快速定位问题层级
+                if (e instanceof java.net.http.HttpConnectTimeoutException) {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: 连接超时——请求未发出，目标地址不可达或DNS解析慢");
+                } else if (e instanceof java.net.http.HttpTimeoutException) {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: 响应超时——请求已发出，上游60秒内未返回（可能限流/处理慢/挂死）");
+                } else if (e instanceof java.net.ConnectException) {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: 连接被拒——目标端口未监听或防火墙拦截");
+                } else if (e instanceof java.net.UnknownHostException) {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: DNS解析失败——域名不存在或DNS配置问题");
+                } else if (e instanceof javax.net.ssl.SSLException) {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: SSL/TLS握手失败——证书问题或协议不匹配");
+                } else {
+                    plugin.getLogger().warning("[AI聊天-调试] 诊断: 其他异常——详见上方类型和消息");
+                }
+                plugin.getLogger().warning("[AI聊天-调试] === 请求异常结束 ===");
                 return null;
             }
         }).thenAccept(response -> {
@@ -981,8 +1008,30 @@ public class AIChatManager {
 
                     return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 } catch (Exception e) {
-                    // ★ 完整异常详情：搞明白是上游真寄了还是本地问题
-                    plugin.getLogger().warning("[AI聊天-调试] 自动互动请求异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                    // ★ 完整异常诊断（与 sendToModel 一致）：区分连接超时/响应超时/DNS/SSL/拒绝连接
+                    plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求异常 ===");
+                    plugin.getLogger().warning("[AI聊天-调试] 异常类型: " + e.getClass().getName());
+                    plugin.getLogger().warning("[AI聊天-调试] 异常消息: " + e.getMessage());
+                    plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + defaultModelFull);
+                    plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                    StackTraceElement[] st = e.getStackTrace();
+                    for (int i = 0; i < Math.min(5, st.length); i++) {
+                        plugin.getLogger().warning("[AI聊天-调试] 栈: " + st[i].toString());
+                    }
+                    if (e instanceof java.net.http.HttpConnectTimeoutException) {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: 连接超时——请求未发出，目标地址不可达或DNS解析慢");
+                    } else if (e instanceof java.net.http.HttpTimeoutException) {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: 响应超时——请求已发出，上游60秒内未返回（可能限流/处理慢/挂死）");
+                    } else if (e instanceof java.net.ConnectException) {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: 连接被拒——目标端口未监听或防火墙拦截");
+                    } else if (e instanceof java.net.UnknownHostException) {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: DNS解析失败——域名不存在或DNS配置问题");
+                    } else if (e instanceof javax.net.ssl.SSLException) {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: SSL/TLS握手失败——证书问题或协议不匹配");
+                    } else {
+                        plugin.getLogger().warning("[AI聊天-调试] 诊断: 其他异常——详见上方类型和消息");
+                    }
+                    plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求异常结束 ===");
                     return null;
                 }
             }).thenAccept(response -> {
