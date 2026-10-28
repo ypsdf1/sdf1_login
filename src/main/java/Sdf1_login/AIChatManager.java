@@ -388,18 +388,82 @@ public class AIChatManager {
     }
 
     /**
+     * 从字符串中提取 token：中文段 + 英文/数字段。
+     * "讯飞maas" → [讯飞, maas]
+     * "讯飞星辰MaaS" → [讯飞星辰, maas]
+     * "mimo/按量计费" → [mimo, 按量计费]
+     */
+    private java.util.List<String> extractTokens(String s) {
+        java.util.List<String> tokens = new java.util.ArrayList<>();
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("[\\u4e00-\\u9fa5]+|[a-zA-Z0-9]+")
+                .matcher(s.toLowerCase());
+        while (m.find()) {
+            tokens.add(m.group());
+        }
+        return tokens;
+    }
+
+    /**
      * 大小写不敏感地获取 JsonObject 中的元素。
-     * 先精确匹配，再大小写不敏感匹配（解决 讯飞星辰maas vs 讯飞星辰MaaS 的问题）。
+     * 四层匹配策略：
+     *   1. 精确匹配
+     *   2. 大小写不敏感完全匹配（讯飞星辰maas vs 讯飞星辰MaaS）
+     *   3. ★ token 级匹配：把 key 拆成中文段+英文段，
+     *      entry key 的对应 token 包含 key 的所有 token → 匹配
+     *      如 key="讯飞maas" → tokens=[讯飞, maas]
+     *      entry "讯飞星辰MaaS" → tokens=[讯飞星辰, maas]
+     *      讯飞⊆讯飞星辰 ✅ + maas⊆maas ✅ → 匹配
+     *      解决用户写简称/缩写（讯飞maas）匹配不上完整键名（讯飞星辰MaaS）的问题
+     *   4. 兜底：去空格/下划线/连字符后的包含匹配
      */
     private JsonElement getElementIgnoreCase(JsonObject obj, String key) {
+        // 1. 精确匹配
         JsonElement el = obj.get(key);
         if (el != null) return el;
+
         String lower = key.toLowerCase();
+
+        // 2. 大小写不敏感完全匹配
         for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
             if (entry.getKey().toLowerCase().equals(lower)) {
                 return entry.getValue();
             }
         }
+
+        // 3. ★ token 级匹配：中文段+英文段拆分
+        java.util.List<String> keyTokens = extractTokens(key);
+        if (!keyTokens.isEmpty()) {
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                java.util.List<String> entryTokens = extractTokens(entry.getKey());
+                if (entryTokens.isEmpty()) continue;
+                boolean allFound = true;
+                for (String kt : keyTokens) {
+                    boolean found = false;
+                    for (String et : entryTokens) {
+                        if (et.contains(kt)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        allFound = false;
+                        break;
+                    }
+                }
+                if (allFound) return entry.getValue();
+            }
+        }
+
+        // 4. 兜底：去空格/下划线/连字符后的包含匹配
+        String keyClean = key.toLowerCase().replaceAll("[\\s_\\-]", "");
+        for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+            String entryClean = entry.getKey().toLowerCase().replaceAll("[\\s_\\-]", "");
+            if (entryClean.contains(keyClean) || keyClean.contains(entryClean)) {
+                return entry.getValue();
+            }
+        }
+
         return null;
     }
 
