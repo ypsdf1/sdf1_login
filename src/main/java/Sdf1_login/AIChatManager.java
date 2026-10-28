@@ -534,6 +534,8 @@ public class AIChatManager {
     private void handleRequestFailure(String prompt, String errorDetail) {
         plugin.getLogger().warning("[AI聊天] 请求失败: " + errorDetail);
         recordIssue(prompt, "[请求失败] " + errorDetail);
+        // ★ 死循环防护：失败也更新时间戳，间隔内不会再触发
+        lastAiReplyTime = System.currentTimeMillis();
     }
 
     // ==================== 聊天处理 ====================
@@ -611,6 +613,8 @@ public class AIChatManager {
             String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地参与对话或回答问题。";
 
             plugin.getLogger().info("[AI聊天] 触发自动互动");
+            // ★ 死循环防护：触发前先更新时间戳，请求挂起/超时/失败都不会被下一秒重复触发
+            lastAiReplyTime = System.currentTimeMillis();
 
             // 异步发送
             String systemPrompt = buildSystemPrompt();
