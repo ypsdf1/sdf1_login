@@ -296,12 +296,17 @@ switch ($action) {
         $syncSecret = getParam('secret', '');
         if (!$syncSecret || $syncSecret !== SECRET_KEY) error('同步密钥无效', 401);
 
-        $playersJson = getParam('players', '');
-        $recordsJson = getParam('records', '');
+        // ★ getParam 对 JSON body 直接返回已解码数组，无需再 json_decode（PHP8 json_decode(数组) 抛 TypeError）
+        $playerData = getParam('players', null);
+        if (is_string($playerData)) $playerData = json_decode($playerData, true);
+        if (!is_array($playerData)) $playerData = [];
+
+        $recordData = getParam('records', null);
+        if (is_string($recordData)) $recordData = json_decode($recordData, true);
+        if (!is_array($recordData)) $recordData = [];
 
         // 批量更新玩家积分
-        $playerData = json_decode($playersJson, true);
-        if (is_array($playerData) && !empty($playerData)) {
+        if (!empty($playerData)) {
             $db->beginTransaction();
             foreach ($playerData as $pname => $score) {
                 // 确保玩家存在
@@ -325,8 +330,7 @@ switch ($action) {
         }
 
         // 批量插入/更新积分记录（去重：同 target+source+created_at 的记录跳过）
-        $recordData = json_decode($recordsJson, true);
-        if (is_array($recordData) && !empty($recordData)) {
+        if (!empty($recordData)) {
             foreach ($recordData as $rec) {
                 $target = $rec['target_player'] ?? '';
                 $reporter = $rec['reporter_player'] ?? '';
