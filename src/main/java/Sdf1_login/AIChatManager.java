@@ -153,7 +153,7 @@ public class AIChatManager {
                     JsonObject section1 = config.getAsJsonObject("1");
                     if (section1.has("模型配置")) {
                         JsonObject modelConfig = section1.getAsJsonObject("模型配置");
-                        parseModelConfig(modelConfig);
+                        parseModelConfig(modelConfig, quiet);
                     }
                 }
 
@@ -259,7 +259,7 @@ public class AIChatManager {
         }
     }
 
-    private void parseModelConfig(JsonObject modelConfig) {
+    private void parseModelConfig(JsonObject modelConfig, boolean quiet) {
         // ★ 重读前清理，避免旧配置残留（putIfAbsent 不会覆盖已存在的键）
         modelEndpoints.clear();
         providerToModel.clear();
@@ -275,7 +275,7 @@ public class AIChatManager {
             boolean isBuiltin = supplierConfig.has("供应商名字");
 
             if (!isCustom && !isBuiltin) {
-                plugin.getLogger().info("[AI聊天] 配置跳过[" + key + "]: 既无baseurl也无供应商名字");
+                if (!quiet) plugin.getLogger().info("[AI聊天] 配置跳过[" + key + "]: 既无baseurl也无供应商名字");
                 continue;
             }
 
@@ -288,15 +288,23 @@ public class AIChatManager {
                 baseUrl = getStr(supplierConfig, "baseurl");
             } else {
                 String providerName = getStr(supplierConfig, "供应商名字");
+                // ★ 空模板（供应商名字=''）不是有效配置：用户没配内置供应商，直接跳过
+                //   之前没有这个判断 → 每秒重读配置都拿空名字去找 URL → 3条warning刷屏
+                if (providerName == null || providerName.isEmpty()) {
+                    if (!quiet) plugin.getLogger().info("[AI聊天] 配置跳过[" + key + "]: 内置供应商名字为空（模板占位，忽略）");
+                    continue;
+                }
                 baseUrl = findProviderUrl(providerName);
                 if (baseUrl == null || baseUrl.isEmpty()) {
-                    plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: 内置供应商 '" + providerName + "' 在 供应商.json 中找不到URL");
-                    plugin.getLogger().warning("[AI聊天] 诊断: 请确认 供应商.json 中存在路径 '" + providerName + "'，且路径拼写完全正确");
+                    if (!quiet) {
+                        plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: 内置供应商 '" + providerName + "' 在 供应商.json 中找不到URL");
+                        plugin.getLogger().warning("[AI聊天] 诊断: 请确认 供应商.json 中存在路径 '" + providerName + "'，且路径拼写完全正确");
+                    }
                 }
             }
 
             if (baseUrl == null || baseUrl.isEmpty() || apiKey == null || apiKey.isEmpty()) {
-                plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: baseUrl=" + baseUrl + ", apiKey=" + apiKey);
+                if (!quiet) plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: baseUrl=" + baseUrl + ", apiKey=" + apiKey);
                 continue;
             }
 
