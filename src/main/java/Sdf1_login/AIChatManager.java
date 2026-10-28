@@ -34,7 +34,11 @@ public class AIChatManager {
     private JsonObject providersConfig;
     private final Map<String, String> aliasToFullModel = new HashMap<>();  // 简称 → 模型全名
     private final Map<String, ModelEndpoint> modelEndpoints = new HashMap<>();  // 模型全名 → 端点
+    private final Map<String, String> providerToModel = new HashMap<>();  // 厂家名 → 默认模型全名（@//厂家名/）
     private final List<String> blacklist = new ArrayList<>();
+
+    // ★ 互动指标跳过日志静默：首次跳过记一条，之后只在状态变化（从≥→<）时再记
+    private boolean prevOnlineSufficient = true;
 
     // 默认模型
     private String defaultModelFull = "";
@@ -290,7 +294,26 @@ public class AIChatManager {
                 }
             }
 
-            // 默认使用
+            // ★ 注册厂家名 → 默认模型全名（@//厂家名/ 快捷引用）
+            // 内置供应商：厂家名 = 「供应商名字」第一段（mimo/token-plan → mimo，deepseek → deepseek）
+            // 自定义供应商：别名走「提示词.txt」的 models=全名=别名 映射（aliasToFullModel），这里不重复注册
+            if (isBuiltin) {
+                String providerName = getStr(supplierConfig, "供应商名字");
+                if (providerName != null && !providerName.isEmpty()) {
+                    String providerShort = providerName.split("/")[0].trim();
+                    String defaultUse = getStr(supplierConfig, "默认使用");
+                    if (defaultUse != null && !defaultUse.isEmpty()) {
+                        providerToModel.put(providerShort, defaultUse);
+                    } else if (supplierConfig.has("可用模型")) {
+                        JsonElement models = supplierConfig.get("可用模型");
+                        if (models.isJsonArray() && models.getAsJsonArray().size() > 0) {
+                            providerToModel.put(providerShort, models.getAsJsonArray().get(0).getAsString());
+                        }
+                    }
+                }
+            }
+
+            // 默认使用（全局默认模型）
             String defaultUse = getStr(supplierConfig, "默认使用");
             if (defaultUse != null && !defaultUse.isEmpty() && defaultModelFull.isEmpty()) {
                 defaultModelFull = defaultUse;
@@ -329,12 +352,22 @@ public class AIChatManager {
 
     /**
      * 将简称解析为模型全名
+     * 支持三种格式：
+     * 1. 提示词.txt 里定义的简称（models=全名=简称）
+     * 2. 厂家名快捷引用（@//agnes/ → 该供应商的默认模型）
+     * 3. 直接使用模型全名
      */
     public String resolveModelAlias(String alias) {
+        if (alias == null || alias.isEmpty()) return null;
+        // 1. 简称 → 模型全名
         if (aliasToFullModel.containsKey(alias)) {
             return aliasToFullModel.get(alias);
         }
-        // 如果不是简称，尝试直接作为模型全名
+        // 2. 厂家名 → 默认模型全名
+        if (providerToModel.containsKey(alias)) {
+            return providerToModel.get(alias);
+        }
+        // 3. 直接作为模型全名
         if (modelEndpoints.containsKey(alias)) {
             return alias;
         }
@@ -381,13 +414,17 @@ public class AIChatManager {
         String modelFull = resolveModelAlias(modelAlias);
         if (modelFull == null) {
             if (player != null) {
-                player.sendMessage("§c[AI聊天] §f未知模型: " + modelAlias);
+                player.sendMessage("§c[AI聊天] §f未知模型/厂家: " + modelAlias);
                 List<String> models = getAvailableModels();
+                List<String> providers = new ArrayList<>(providerToModel.keySet());
+                StringBuilder sb = new StringBuilder();
+                sb.append("§7可用厂家: ").append(String.join(", ", providers));
                 if (!models.isEmpty()) {
-                    player.sendMessage("§7可用模型: " + String.join(", ", models));
+                    sb.append("\n§7可用模型: ").append(String.join(", ", models));
                 } else {
-                    player.sendMessage("§7未配置模型，请先在 openai/models.json 和 openai/提示词.txt 中配置");
+                    sb.append("\n§7未配置模型，请先在 openai/models.json 和 openai/提示词.txt 中配置");
                 }
+                player.sendMessage(sb.toString());
             }
             return;
         }
@@ -609,7 +646,8 @@ public class AIChatManager {
 
     /**
      * 处理玩家聊天消息
-     * 检测 @//模型名/ 前缀触发直接提问
+     * 检测 @//模型名/ 或 @//厂家名/ 前缀触发直接提问
+     * 格式: @//模型名/内容  或  @//模型名  (不带内容时用默认提示)
      */
     public void handlePlayerChat(Player p, String message) {
         // 记录到聊天缓冲区
@@ -621,19 +659,27 @@ public class AIChatManager {
 
         // 检测 @//模型名/ 前缀
         if (message.startsWith("@//")) {
-            // 格式: @//模型名/内容
+            // 格式: @//模型名/内容  或  @//模型名  (尾部无斜杠)
             int slashIdx = message.indexOf('/', 3);
+            String modelAlias;
+            String prompt;
             if (slashIdx > 0) {
-                String modelAlias = message.substring(3, slashIdx);
-                String prompt = message.substring(slashIdx + 1);
-                if (prompt.isEmpty()) {
-                    p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名/内容");
-                    return;
-                }
-                sendToModel(modelAlias, prompt, p, false);
+                modelAlias = message.substring(3, slashIdx);
+                prompt = message.substring(slashIdx + 1).trim();
             } else {
-                p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名/内容");
+                // 尾部无斜杠：整段去掉 @// 前缀作为模型名
+                modelAlias = message.substring(3).trim();
+                prompt = "";
             }
+            if (modelAlias.isEmpty()) {
+                p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名/内容");
+                return;
+            }
+            if (prompt.isEmpty()) {
+                // 不带内容时用默认提示：让模型根据人设自我介绍
+                prompt = "请用一句话介绍一下你自己，以及你能为服务器玩家做什么。";
+            }
+            sendToModel(modelAlias, prompt, p, false);
         }
     }
 
@@ -673,11 +719,22 @@ public class AIChatManager {
             if (defaultModelFull.isEmpty()) return;
 
             // ★ 互动指标：在线玩家数量达标才触发自动互动
+            // ★ 日志静默：调度器每1秒跑一次，跳过时不再每秒刷屏。
+            //   仅在状态变化（在线玩家从达标→不达标）时记一条，避免日志被刷屏。
             int onlineCount = Bukkit.getOnlinePlayers().size();
             if (onlineCount < interactionMetric) {
-                plugin.getLogger().info("[AI聊天] 在线玩家 " + onlineCount + " < 互动指标 " + interactionMetric + "，跳过自动互动");
+                if (prevOnlineSufficient) {
+                    // 之前达标，现在不达标了：状态变化，记一条
+                    plugin.getLogger().info("[AI聊天] 在线玩家 " + onlineCount + " < 互动指标 " + interactionMetric + "，停止自动互动");
+                }
+                prevOnlineSufficient = false;
                 return;
             }
+            // 在线玩家刚从不足→达标：记一条恢复
+            if (!prevOnlineSufficient) {
+                plugin.getLogger().info("[AI聊天] 在线玩家 " + onlineCount + " ≥ 互动指标 " + interactionMetric + "，恢复自动互动");
+            }
+            prevOnlineSufficient = true;
 
             ModelEndpoint endpoint = modelEndpoints.get(defaultModelFull);
             if (endpoint == null) return;
