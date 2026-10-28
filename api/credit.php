@@ -78,7 +78,9 @@ function creditRequirePlayer() {
 
 /** 管理端 session 校验 */
 function creditRequireAdmin() {
-    if (empty($_SESSION['admin_logged_in']) || !$_SESSION['admin_logged_in']) {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+    // ★ 与 core.php requireAdminSession() 保持一致：admin_auth
+    if (empty($_SESSION['admin_auth']) || !$_SESSION['admin_auth']) {
         error('需要管理员权限', 401);
     }
 }
