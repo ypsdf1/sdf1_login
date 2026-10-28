@@ -32,7 +32,7 @@ function ensureCreditTables($db) {
         type TEXT NOT NULL,
         content TEXT DEFAULT '',
         status TEXT DEFAULT 'pending',
-        score_change INTEGER DEFAULT 0,
+        score_change REAL DEFAULT 0,
         created_at INTEGER DEFAULT 0,
         approved_at INTEGER DEFAULT 0,
         approve_reason TEXT DEFAULT '',
@@ -53,7 +53,8 @@ function ensureCreditTables($db) {
     $cols = [];
     while ($c = $ci->fetchArray(SQLITE3_ASSOC)) $cols[] = $c['name'];
     if (!in_array('credit_score', $cols)) {
-        $db->exec("ALTER TABLE users ADD COLUMN credit_score INTEGER DEFAULT 100");
+        // ★ 第58批-问题4：REAL 支持小数积分
+        $db->exec("ALTER TABLE users ADD COLUMN credit_score REAL DEFAULT 100");
     }
     // 默认规则
     $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) VALUES ('禁止交易', 60, 0, 'trade', 0, '低于60分时禁止与NPC交易')");
@@ -123,7 +124,7 @@ switch ($action) {
         $stmt->bindValue(1, $player, SQLITE3_TEXT);
         $res = $stmt->execute();
         $score = 100;
-        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (int)$row['credit_score'];
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (float)$row['credit_score'];
         success(['player' => $player, 'credit_score' => $score]);
         break;
 
@@ -136,7 +137,7 @@ switch ($action) {
         $stmt->bindValue(1, $target, SQLITE3_TEXT);
         $res = $stmt->execute();
         $score = 100;
-        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (int)$row['credit_score'];
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (float)$row['credit_score'];
         success(['player' => $target, 'credit_score' => $score]);
         break;
 
@@ -165,7 +166,7 @@ switch ($action) {
     case 'approve':
         creditRequireAdmin();
         $recordId = (int)getParam('id', 0);
-        $amount = (int)getParam('amount', 10);
+        $amount = (float)getParam('amount', 10);
         $reason = getParam('reason', '信誉积分审批通过');
         if ($recordId <= 0) error('缺少记录ID');
         // 查目标玩家
@@ -177,14 +178,14 @@ switch ($action) {
         if (!$target) error('记录不存在');
         // 更新记录
         $stmt = $db->prepare("UPDATE credit_records SET status = 'approved', score_change = ?, approved_at = ?, approve_reason = ? WHERE id = ?");
-        $stmt->bindValue(1, $amount, SQLITE3_INTEGER);
+        $stmt->bindValue(1, $amount, SQLITE3_REAL);
         $stmt->bindValue(2, time(), SQLITE3_INTEGER);
         $stmt->bindValue(3, $reason, SQLITE3_TEXT);
         $stmt->bindValue(4, $recordId, SQLITE3_INTEGER);
         $stmt->execute();
         // 更新积分
         $stmt = $db->prepare("UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?");
-        $stmt->bindValue(1, $amount, SQLITE3_INTEGER);
+        $stmt->bindValue(1, $amount, SQLITE3_REAL);
         $stmt->bindValue(2, $target, SQLITE3_TEXT);
         $stmt->execute();
         success(['target' => $target, 'amount' => $amount], '审批通过，积分已更新');
@@ -246,7 +247,7 @@ switch ($action) {
         $stmt->bindValue(1, $target, SQLITE3_TEXT);
         $res = $stmt->execute();
         $score = 100;
-        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (int)$row['credit_score'];
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (float)$row['credit_score'];
         success(['player' => $target, 'credit_score' => $score]);
         break;
 
@@ -254,7 +255,7 @@ switch ($action) {
     case 'admin_adjust_score':
         creditRequireAdmin();
         $target = getParam('target', '');
-        $amount = (int)getParam('amount', 0);
+        $amount = (float)getParam('amount', 0);
         $reason = getParam('reason', '管理员手动调整');
         if (!$target) error('缺少玩家名');
         if ($amount == 0) error('积分变动值不能为0');
@@ -264,14 +265,14 @@ switch ($action) {
         $stmt->bindValue(1, $target, SQLITE3_TEXT);
         $res = $stmt->execute();
         $oldScore = 100;
-        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $oldScore = (int)$row['credit_score'];
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $oldScore = (float)$row['credit_score'];
 
         // 更新积分
         $newScore = $oldScore + $amount;
         if ($newScore < 0) $newScore = 0;
         if ($newScore > 1000) $newScore = 1000; // 上限防溢出
         $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
-        $stmt->bindValue(1, $newScore, SQLITE3_INTEGER);
+        $stmt->bindValue(1, $newScore, SQLITE3_REAL);
         $stmt->bindValue(2, $target, SQLITE3_TEXT);
         $stmt->execute();
 
@@ -282,7 +283,7 @@ switch ($action) {
         $stmt->bindValue(2, $_SESSION['admin_user'] ?? 'admin', SQLITE3_TEXT);
         $stmt->bindValue(3, $type, SQLITE3_TEXT);
         $stmt->bindValue(4, $reason, SQLITE3_TEXT);
-        $stmt->bindValue(5, $amount, SQLITE3_INTEGER);
+        $stmt->bindValue(5, $amount, SQLITE3_REAL);
         $stmt->bindValue(6, time(), SQLITE3_INTEGER);
         $stmt->bindValue(7, time(), SQLITE3_INTEGER);
         $stmt->bindValue(8, $reason, SQLITE3_TEXT);
@@ -317,14 +318,14 @@ switch ($action) {
                 $res = $stmt->execute();
                 if ($row = $res->fetchArray()) {
                     $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
-                    $stmt->bindValue(1, (int)$score, SQLITE3_INTEGER);
+                    $stmt->bindValue(1, (float)$score, SQLITE3_REAL);
                     $stmt->bindValue(2, $pname, SQLITE3_TEXT);
                     $stmt->execute();
                 } else {
                     // 玩家不存在则插入
                     $stmt = $db->prepare("INSERT INTO users (player_name, credit_score) VALUES (?, ?)");
                     $stmt->bindValue(1, $pname, SQLITE3_TEXT);
-                    $stmt->bindValue(2, (int)$score, SQLITE3_INTEGER);
+                    $stmt->bindValue(2, (float)$score, SQLITE3_REAL);
                     $stmt->execute();
                 }
             }
@@ -338,7 +339,7 @@ switch ($action) {
                 $type = $rec['type'] ?? 'good';
                 $content = $rec['content'] ?? '';
                 $status = $rec['status'] ?? 'approved';
-                $scoreChange = (int)($rec['score_change'] ?? 0);
+                $scoreChange = (float)($rec['score_change'] ?? 0);
                 $createdAt = (int)($rec['created_at'] ?? 0);
                 $approvedAt = (int)($rec['approved_at'] ?? 0);
                 $reason = $rec['approve_reason'] ?? '';
@@ -361,7 +362,7 @@ switch ($action) {
                 $stmt->bindValue(3, $type, SQLITE3_TEXT);
                 $stmt->bindValue(4, $content, SQLITE3_TEXT);
                 $stmt->bindValue(5, $status, SQLITE3_TEXT);
-                $stmt->bindValue(6, $scoreChange, SQLITE3_INTEGER);
+                $stmt->bindValue(6, $scoreChange, SQLITE3_REAL);
                 $stmt->bindValue(7, $createdAt, SQLITE3_INTEGER);
                 $stmt->bindValue(8, $approvedAt, SQLITE3_INTEGER);
                 $stmt->bindValue(9, $reason, SQLITE3_TEXT);
@@ -383,7 +384,7 @@ switch ($action) {
         $res = $stmt->execute();
         $players = [];
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
-            $players[$row['player_name']] = (int)$row['credit_score'];
+            $players[$row['player_name']] = (float)$row['credit_score'];
         }
 
         // 返回所有积分记录（标记 source='admin' 的是管理员手动调整的）
