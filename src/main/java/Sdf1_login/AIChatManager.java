@@ -40,6 +40,10 @@ public class AIChatManager {
     // ★ 互动指标跳过日志静默：首次跳过记一条，之后只在状态变化（从≥→<）时再记
     private boolean prevOnlineSufficient = true;
 
+    // ★ 自动互动日志静默：只在状态变化（成功→失败 或 失败→成功）时记一条
+    //   正常触发不打印，失败只一行简要错误，避免日志被刷屏
+    private boolean prevAutoChatFailed = false;
+
     // 默认模型
     private String defaultModelFull = "";
 
@@ -801,22 +805,16 @@ public class AIChatManager {
             String recentChat = compressChatBuffer(endpoint.maxToken);
             String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地抛出一个话题或问题，引导大家参与讨论，带动服务器的活跃气氛。不要直接点名任何玩家，而是抛出一个开放性的话题让大家都能参与。";
 
-            plugin.getLogger().info("[AI聊天] 触发自动互动");
             // ★ 死循环防护：触发前先更新时间戳，请求挂起/超时/失败都不会被下一秒重复触发
             lastAiReplyTime = System.currentTimeMillis();
+
+            // ★ 日志静默：正常触发不打印"触发自动互动"，只在失败时记一条简要错误
+            //   状态变化（失败→成功 或 成功→失败）时记一条恢复/告警
 
             // 异步发送
             String systemPrompt = buildSystemPrompt();
             String jsonBody = buildChatRequest(defaultModelFull, systemPrompt, prompt, endpoint.maxToken);
             String requestUrl = buildRequestUrl(endpoint);
-
-            // ★ 400调试日志：自动互动请求
-            plugin.getLogger().info("[AI聊天-调试] === 自动互动请求开始 ===");
-            plugin.getLogger().info("[AI聊天-调试] 模型全名: " + defaultModelFull);
-            plugin.getLogger().info("[AI聊天-调试] 请求URL: " + requestUrl);
-            plugin.getLogger().info("[AI聊天-调试] 自定义供应商: " + endpoint.isCustom);
-            plugin.getLogger().info("[AI聊天-调试] 请求体JSON: " + jsonBody);
-            plugin.getLogger().info("[AI聊天-调试] === 自动互动请求结束 ===");
 
             CompletableFuture.supplyAsync(() -> {
                 try {
@@ -830,33 +828,41 @@ public class AIChatManager {
 
                     return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 } catch (Exception e) {
-                    plugin.getLogger().warning("[AI聊天] 自动互动请求异常: " + e.getMessage());
                     return null;
                 }
             }).thenAccept(response -> {
-                if (response == null || response.statusCode() != 200) {
-                    // ★ 400调试日志：自动互动失败
-                    if (response != null) {
-                        plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败 ===");
-                        plugin.getLogger().warning("[AI聊天-调试] HTTP状态码: " + response.statusCode());
-                        plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + defaultModelFull);
-                        plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
-                        plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
-                        response.headers().map().forEach((name, values) -> {
-                            plugin.getLogger().warning("[AI聊天-调试] 响应头 " + name + ": " + String.join(", ", values));
-                        });
-                        plugin.getLogger().warning("[AI聊天-调试] 响应体: " + response.body());
-                        plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败结束 ===");
-                    }
-                    handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())),
-                            "自动互动失败: HTTP " + (response != null ? response.statusCode() : "N/A"));
+                if (response == null) {
+                    // ★ 日志静默：异常只记一行，不刷屏
+                    plugin.getLogger().warning("[AI聊天] 自动互动请求异常（网络超时）");
+                    handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())), "自动互动失败: 请求异常");
+                    prevAutoChatFailed = true;
                     return;
                 }
+                if (response.statusCode() != 200) {
+                    // ★ 日志静默：非200只记一行状态码，不打印完整响应体
+                    plugin.getLogger().warning("[AI聊天] 自动互动失败: HTTP " + response.statusCode());
+                    handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())),
+                            "自动互动失败: HTTP " + response.statusCode());
+                    prevAutoChatFailed = true;
+                    return;
+                }
+
                 String reply = parseChatResponse(response.body());
                 if (reply != null) {
                     Bukkit.broadcastMessage("§d§l[AI] §f" + reply);
                     recordIssue("[自动] " + prompt.substring(0, Math.min(100, prompt.length())), reply);
                     lastAiReplyTime = System.currentTimeMillis();
+
+                    // ★ 状态变化：失败→成功，记一条恢复日志
+                    if (prevAutoChatFailed) {
+                        plugin.getLogger().info("[AI聊天] 自动互动恢复正常");
+                        prevAutoChatFailed = false;
+                    }
+                } else {
+                    plugin.getLogger().warning("[AI聊天] 自动互动响应解析失败");
+                    handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())),
+                            "自动互动失败: 响应解析失败");
+                    prevAutoChatFailed = true;
                 }
             });
         } finally {
