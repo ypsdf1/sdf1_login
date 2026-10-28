@@ -473,7 +473,8 @@ public class AIChatManager {
         String url = endpoint.baseUrl;
         // 内置供应商的 baseUrl 总是基础地址，必须拼接；自定义供应商受自动补齐开关控制
         boolean needAppend = !endpoint.isCustom || autoAppendCompletions;
-        if (needAppend) {
+        // ★ 防御性：即使开关为开，若 URL 已含 chat/completions 也绝不再补（避免双重地址）
+        if (needAppend && !url.contains("chat/completions")) {
             if (!url.endsWith("/")) url += "/";
             url += "chat/completions";
         }
