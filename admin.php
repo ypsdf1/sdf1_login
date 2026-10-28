@@ -204,6 +204,7 @@ if (is_file($ossTxt)) {
         <div class="si" data-p="sn" onclick="go('sn')">🔢 SN防伪管理</div>
         <div class="si" data-p="lands" onclick="go('lands')">🏡 领地管理</div>
         <div class="si" data-p="usergroups" onclick="go('usergroups')">👥 用户组</div>
+        <div class="si" data-p="credit" onclick="go('credit')">⭐ 信誉积分</div>
         <div class="si" data-p="cashier" onclick="openCashierPage()">🧾 收银台(独立页)</div>
         <div class="si" data-p="cashier_manage" onclick="go('cashier_manage')">🧾 收银员管理</div>
         <div class="si" data-p="recharge_orders" onclick="go('recharge_orders')">💳 充值对账</div>
@@ -282,6 +283,7 @@ function go(p) {
     else if (p==='sn') loadSn(c);
     else if (p==='lands') loadLands(c);
     else if (p==='usergroups') loadUserGroups(c);
+    else if (p==='credit') loadCredit(c);
     else if (p==='cashier') loadCashier(c);
     else if (p==='cashier_manage') loadCashierManage(c);
     else if (p==='recharge_orders') loadRechargeOrders(c);
@@ -3393,6 +3395,185 @@ async function loadUserGroups(el) {
     } catch(e) {
         console.error('[USERGROUPS] Error:', e);
         el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+    }
+}
+
+async function loadCredit(el) {
+    el.innerHTML = '<div style="text-align:center;padding:40px;color:var(--dim)">加载中...</div>';
+    try {
+        const [pendingRes, listRes, rulesRes] = await Promise.all([
+            fetch('api/credit.php?action=pending_list').then(r => r.json()),
+            fetch('api/credit.php?action=approved_list').then(r => r.json()),
+            fetch('api/credit.php?action=rules').then(r => r.json())
+        ]);
+
+        const pending = (pendingRes.success && pendingRes.data) ? (pendingRes.data.records || []) : [];
+        const records = (listRes.success && listRes.data) ? (listRes.data.records || []) : [];
+        const rules = (rulesRes.success && rulesRes.data) ? (rulesRes.data.rules || []) : [];
+
+        let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">';
+        html += '<h2 style="margin:0;color:var(--fg)">⭐ 信誉积分管理</h2>';
+        html += '<div style="display:flex;gap:8px">';
+        html += `<button onclick="loadCredit(document.getElementById('C'))" style="padding:6px 12px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px">🔄 刷新</button>`;
+        html += '</div></div>';
+
+        // 统计卡片
+        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px">';
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:var(--yellow)">${pending.length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">待审批</div>
+        </div>`;
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#4caf50">${records.filter(r => r.status === 'approved').length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">已通过</div>
+        </div>`;
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:#f44336">${records.filter(r => r.status === 'rejected').length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">已驳回</div>
+        </div>`;
+        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
+            <div style="font-size:24px;font-weight:bold;color:var(--accent)">${rules.length}</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">规则数</div>
+        </div>`;
+        html += '</div>';
+
+        // 待审批区域
+        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">';
+        html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">⏳ 待审批上报 (' + pending.length + ')</h3>';
+        if (pending.length === 0) {
+            html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无待审批上报</div>';
+        } else {
+            html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+            html += '<tr style="color:var(--dim);text-align:left"><th style="padding:6px">目标玩家</th><th style="padding:6px">上报人</th><th style="padding:6px">类型</th><th style="padding:6px">内容</th><th style="padding:6px">时间</th><th style="padding:6px">操作</th></tr>';
+            for (const r of pending) {
+                const t = new Date(r.created_at * 1000);
+                const timeStr = t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+                html += '<tr style="border-top:1px solid var(--border)">';
+                html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
+                html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
+                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:#4caf50">好人好事</span>' : '<span style="color:#f44336">举报</span>') + '</td>';
+                html += '<td style="padding:6px;color:var(--dim);word-break:break-all">' + escAdmHtml(r.content || '') + '</td>';
+                html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
+                html += '<td style="padding:6px;white-space:nowrap">';
+                html += '<button onclick="creditApprove(' + r.id + ')" style="padding:3px 8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-right:4px">通过</button>';
+                html += '<button onclick="creditReject(' + r.id + ')" style="padding:3px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">驳回</button>';
+                html += '</td></tr>';
+            }
+            html += '</table></div>';
+        }
+        html += '</div>';
+
+        // 积分规则
+        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">';
+        html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📋 积分规则</h3>';
+        if (rules.length === 0) {
+            html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无规则</div>';
+        } else {
+            html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">';
+            for (const r of rules) {
+                const typeName = {trade: '禁止交易', pvp: '禁止PVP', teleport: '禁止传送'}[r.restriction_type] || r.restriction_type || '';
+                html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px">';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
+                html += '<span style="font-size:13px;font-weight:bold">' + escAdmHtml(r.rule_name) + '</span>';
+                html += '<span style="font-size:11px;padding:2px 8px;border-radius:10px;' + (r.enabled ? 'background:rgba(76,175,80,0.15);color:#4caf50' : 'background:rgba(244,67,54,0.15);color:#f44336') + '">' + (r.enabled ? '启用' : '禁用') + '</span>';
+                html += '</div>';
+                html += '<div style="font-size:12px;color:var(--dim)">低于 ' + r.min_score + ' 分触发 ' + escAdmHtml(typeName) + '</div>';
+                html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + escAdmHtml(r.description || '') + '</div>';
+                html += '<button onclick="creditToggleRule(' + r.id + ', ' + (r.enabled ? 0 : 1) + ')" style="margin-top:6px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">' + (r.enabled ? '禁用' : '启用') + '</button>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // 全部记录
+        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">';
+        html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📜 全部审批记录 (' + records.length + ')</h3>';
+        if (records.length === 0) {
+            html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无记录</div>';
+        } else {
+            html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+            html += '<tr style="color:var(--dim);text-align:left"><th style="padding:6px">ID</th><th style="padding:6px">目标玩家</th><th style="padding:6px">上报人</th><th style="padding:6px">类型</th><th style="padding:6px">状态</th><th style="padding:6px">变动</th><th style="padding:6px">时间</th></tr>';
+            for (const r of records) {
+                const t = new Date((r.approved_at || r.created_at) * 1000);
+                const timeStr = t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
+                const statusColor = {pending: 'var(--yellow)', approved: '#4caf50', rejected: '#f44336'}[r.status] || 'var(--dim)';
+                html += '<tr style="border-top:1px solid var(--border)">';
+                html += '<td style="padding:6px">' + r.id + '</td>';
+                html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
+                html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
+                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:#4caf50">好人好事</span>' : '<span style="color:#f44336">举报</span>') + '</td>';
+                html += '<td style="padding:6px"><span style="color:' + statusColor + '">' + escAdmHtml(r.status) + '</span></td>';
+                html += '<td style="padding:6px;font-weight:bold;color:' + (r.score_change > 0 ? '#4caf50' : r.score_change < 0 ? '#f44336' : 'var(--dim)') + '">' + (r.score_change > 0 ? '+' : '') + r.score_change + '</td>';
+                html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
+                html += '</tr>';
+            }
+            html += '</table></div>';
+        }
+        html += '</div>';
+
+        el.innerHTML = html;
+    } catch(e) {
+        console.error('[CREDIT] Error:', e);
+        el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+    }
+}
+
+function creditApprove(recordId) {
+    const html = `<div style="padding:16px">
+        <h3 style="margin:0 0 12px;color:var(--fg)">✅ 审批通过 - 积分变动</h3>
+        <p style="font-size:12px;color:var(--dim);margin:0 0 12px">请输入积分变动值：正数加分，负数扣分（如 +10 / -5）</p>
+        <div style="margin-bottom:12px">
+            <input id="creditAmount" type="text" placeholder="+10 或 -5" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <button onclick="doCreditApprove(${recordId})" style="width:100%;padding:8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer">确认通过</button>
+    </div>`;
+    showModal('审批通过', '', null, html);
+}
+
+async function doCreditApprove(recordId) {
+    const amount = document.getElementById('creditAmount')?.value || '0';
+    try {
+        const r = await fetch('api/credit.php?action=approve&id=' + recordId + '&amount=' + encodeURIComponent(amount), { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { alert('操作失败: ' + (r.message || '未知错误')); return; }
+        showModal('成功', '', null, `<div style="text-align:center;padding:16px"><p style="color:#4caf50;font-size:14px">${escAdmHtml(r.message || '审批通过')}</p><button onclick="closeModal()" style="margin-top:12px;padding:8px 24px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">确定</button></div>`);
+        setTimeout(() => { closeModal(); loadCredit(document.getElementById('C')); }, 1500);
+    } catch(e) {
+        alert('操作异常: ' + e.message);
+    }
+}
+
+function creditReject(recordId) {
+    const html = `<div style="padding:16px">
+        <h3 style="margin:0 0 12px;color:var(--fg)">❌ 驳回上报</h3>
+        <p style="font-size:12px;color:var(--dim);margin:0 0 12px">驳回后不扣分不加分</p>
+        <div style="margin-bottom:12px">
+            <input id="creditRejectReason" type="text" placeholder="驳回理由（可选）" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+        </div>
+        <button onclick="doCreditReject(${recordId})" style="width:100%;padding:8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer">确认驳回</button>
+    </div>`;
+    showModal('驳回上报', '', null, html);
+}
+
+async function doCreditReject(recordId) {
+    const reason = document.getElementById('creditRejectReason')?.value || '管理员驳回';
+    try {
+        const r = await fetch('api/credit.php?action=reject&id=' + recordId + '&reason=' + encodeURIComponent(reason), { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { alert('操作失败: ' + (r.message || '未知错误')); return; }
+        closeModal();
+        loadCredit(document.getElementById('C'));
+    } catch(e) {
+        alert('操作异常: ' + e.message);
+    }
+}
+
+async function creditToggleRule(ruleId, enabled) {
+    try {
+        const r = await fetch('api/credit.php?action=update_rule&id=' + ruleId + '&enabled=' + enabled, { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { alert('操作失败: ' + (r.message || '未知错误')); return; }
+        loadCredit(document.getElementById('C'));
+    } catch(e) {
+        alert('操作异常: ' + e.message);
     }
 }
 
