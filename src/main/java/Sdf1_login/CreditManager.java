@@ -73,6 +73,9 @@ public class CreditManager {
     }
     private final Map<String, FlowData> chatFlows = new ConcurrentHashMap<>();
 
+    // 玩家当前查看的待审批详情记录ID（不拦截聊天，仅记录）
+    private final Map<String, Integer> detailViewRecord = new ConcurrentHashMap<>();
+
     public CreditManager(Main plugin) {
         this.plugin = plugin;
         this.db = plugin.getDb();
@@ -447,7 +450,7 @@ public class CreditManager {
                     "§7内容: " + r.get("content"),
                     "§7来源: " + r.get("source"),
                     "",
-                    "§e点击查看详情，右键通过，Shift+右键驳回"));
+                    "§e点击查看详情"));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
         return inv;
@@ -741,57 +744,50 @@ public class CreditManager {
             return;
         }
 
-        // 待审批GUI — 点击记录打开详情，右键直接通过，Shift+右键驳回
-        if (title != null && title.contains("待审批")) {
-            // 详情GUI的返回按钮
+        // 待审批详情GUI — 独立处理（标题含「审批详情」，不含「待审批」）
+        if (title != null && title.contains("审批详情")) {
+            // 返回按钮
             if (slot == 4) {
-                // 清除临时状态，避免拦截后续聊天
-                chatFlows.remove(p.getName());
+                detailViewRecord.remove(p.getName());
                 p.closeInventory();
                 p.openInventory(createPendingGUI(p));
                 return;
             }
-            // 详情GUI的按钮
-            if (title.contains("审批详情")) {
-                if (slot == 0) { // 通过
-                    // 从当前打开的详情GUI中获取 recordId
-                    // 需要从 GUI title 中解析，或者用 FlowData
-                    // 简化：直接从 chatFlows 获取（如果有），否则提示
-                    FlowData fd = chatFlows.get(p.getName());
-                    if (fd == null) {
-                        // 没有引导状态，需要从 inventory 中推断
-                        // 改用另一种方式：在详情GUI打开时设置一个临时状态
-                        p.sendMessage("§c§l[信誉积分] §c无法获取记录ID，请重新打开详情");
-                        p.closeInventory();
-                        return;
-                    }
-                    int rid = fd.recordId;
-                    // 标记审批通过，等待输入积分变动
-                    fd.state = FlowState.APPROVE_SCORE_CHANGE;
-                    fd.tempName = null;
-                    // 先查目标玩家名
-                    String targetName = getRecordTarget(rid);
-                    fd.tempName = targetName;
-                    p.closeInventory();
-                    p.sendMessage("§a§l[信誉积分] §f审批通过 #" + rid + " (目标: " + targetName + ")");
-                    p.sendMessage("§7请输入积分变动值(正数加分，负数扣分，如 +10 或 -5)");
-                    return;
-                }
-                if (slot == 1) { // 驳回
-                    FlowData fd = chatFlows.get(p.getName());
-                    if (fd == null) {
-                        p.sendMessage("§c§l[信誉积分] §c无法获取记录ID，请重新打开详情");
-                        p.closeInventory();
-                        return;
-                    }
-                    int rid = fd.recordId;
-                    approveRecord(rid, false, "管理员GUI驳回", 0, p.getName());
-                    chatFlows.remove(p.getName());
-                    p.closeInventory();
-                    p.sendMessage("§c§l[信誉积分] §f已驳回 #" + rid + " (不扣分不加分)");
-                    return;
-                }
+            Integer rid = detailViewRecord.get(p.getName());
+            if (rid == null) {
+                p.sendMessage("§c§l[信誉积分] §c记录已失效，请重新打开");
+                p.closeInventory();
+                return;
             }
+            int recordId = rid;
+            // Slot 0: 通过
+            if (slot == 0) {
+                String targetName = getRecordTarget(recordId);
+                FlowData fd = new FlowData();
+                fd.state = FlowState.APPROVE_SCORE_CHANGE;
+                fd.recordId = recordId;
+                fd.tempName = targetName;
+                chatFlows.put(p.getName(), fd);
+                detailViewRecord.remove(p.getName());
+                p.closeInventory();
+                p.sendMessage("§a§l[信誉积分] §f审批通过 #" + recordId + " (目标: " + targetName + ")");
+                p.sendMessage("§7请输入积分变动值(正数加分，负数扣分，如 +10 或 -5)");
+                return;
+            }
+            // Slot 1: 驳回
+            if (slot == 1) {
+                approveRecord(recordId, false, "管理员GUI驳回", 0, p.getName());
+                detailViewRecord.remove(p.getName());
+                p.closeInventory();
+                p.sendMessage("§c§l[信誉积分] §f已驳回 #" + recordId + " (不扣分不加分)");
+                return;
+            }
+            p.closeInventory();
+            return;
+        }
+
+        // 待审批列表GUI
+        if (title != null && title.contains("待审批")) {
             // 列表GUI的返回按钮
             if (slot == 53) {
                 p.closeInventory();
@@ -804,12 +800,7 @@ public class CreditManager {
                 if (slot < records.size()) {
                     Map<String, Object> r = records.get(slot);
                     int recordId = ((Number) r.get("id")).intValue();
-                    // 先清除之前的引导状态，记录ID
-                    chatFlows.remove(p.getName());
-                    FlowData fd = new FlowData();
-                    fd.state = FlowState.APPROVE_SCORE_CHANGE; // 占位，实际点击按钮时才用
-                    fd.recordId = recordId;
-                    chatFlows.put(p.getName(), fd);
+                    detailViewRecord.put(p.getName(), recordId);
                     p.closeInventory();
                     p.openInventory(createPendingDetailGUI(p, recordId));
                     return;
