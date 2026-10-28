@@ -103,6 +103,14 @@ public class AIChatManager {
     // ==================== 配置加载 ====================
 
     private void loadConfig() {
+        loadConfig(false);
+    }
+
+    /**
+     * 加载配置
+     * @param quiet true=静默模式（重读时不打印"配置加载完成"），false=初始加载（打印）
+     */
+    private void loadConfig(boolean quiet) {
         try {
             // 确保 openai 目录存在
             File openaiDir = new File(plugin.getDataFolder(), "openai");
@@ -229,8 +237,10 @@ public class AIChatManager {
                 issueRecord = JsonParser.parseString(Files.readString(issueFile.toPath(), StandardCharsets.UTF_8)).getAsJsonObject();
             }
 
-            plugin.getLogger().info("[AI聊天] 配置加载完成: " + modelEndpoints.size() + "个模型, "
-                    + aliasToFullModel.size() + "个别名, 黑名单" + blacklist.size() + "条");
+            if (!quiet) {
+                plugin.getLogger().info("[AI聊天] 配置加载完成: " + modelEndpoints.size() + "个模型, "
+                        + aliasToFullModel.size() + "个别名, 黑名单" + blacklist.size() + "条");
+            }
 
         } catch (Exception e) {
             plugin.getLogger().warning("[AI聊天] 配置加载失败: " + e.getMessage());
@@ -770,15 +780,15 @@ public class AIChatManager {
         if (!autoChatRunning.compareAndSet(false, true)) return;
 
         try {
-            // ★ 每次发请求前重读配置，获取最新的模型、人设、黑名单等信息
-            loadConfig();
-
             // 检查是否到了自动互动时间
             long intervalMs = (minIntervalMin + (int)(Math.random() * (maxIntervalMin - minIntervalMin + 1))) * 60000L;
 
             if (System.currentTimeMillis() - lastAiReplyTime < intervalMs) return;
             if (recentChatBuffer.isEmpty()) return;
             if (defaultModelFull.isEmpty()) return;
+
+            // ★ 每次发请求前重读配置（静默模式，不打印日志避免刷屏）
+            loadConfig(true);
 
             // ★ 互动指标：在线玩家数量达标才触发自动互动
             // ★ 日志静默：调度器每1秒跑一次，跳过时不再每秒刷屏。
