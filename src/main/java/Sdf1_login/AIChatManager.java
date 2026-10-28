@@ -260,6 +260,10 @@ public class AIChatManager {
     }
 
     private void parseModelConfig(JsonObject modelConfig) {
+        // ★ 重读前清理，避免旧配置残留（putIfAbsent 不会覆盖已存在的键）
+        modelEndpoints.clear();
+        providerToModel.clear();
+
         // 遍历所有供应商配置
         for (Map.Entry<String, JsonElement> entry : modelConfig.entrySet()) {
             String key = entry.getKey();
@@ -327,16 +331,11 @@ public class AIChatManager {
                         }
                     }
                     if (firstModel != null) {
-                        // 第1段如果是供应商.json顶层分组名（如「国产」「非国产」）→ 屏蔽不注册
-                        // 从第2段开始才是厂家名/子分组名，注册为 @// 参数
+                        // 注册所有路径段为厂家名别名（包括顶层分组名）
+                        // 如 "非国产/agnes/中国版" → 非国产、agnes、中国版 都能 @// 调用
+                        // ★ 第58批修复：顶层分组名（如"非国产"）也要注册，否则 @//非国产/ 报"未知厂家"
                         String[] segs = providerName.split("/");
-                        int startIdx = 0;
-                        if (segs.length >= 1 && providersConfig != null
-                                && providersConfig.has(segs[0].trim())) {
-                            // 第1段是分组名，跳过
-                            startIdx = 1;
-                        }
-                        for (int i = startIdx; i < segs.length; i++) {
+                        for (int i = 0; i < segs.length; i++) {
                             String name = segs[i].trim();
                             if (!name.isEmpty()) {
                                 providerToModel.putIfAbsent(name, firstModel);
@@ -420,10 +419,15 @@ public class AIChatManager {
     }
 
     /**
-     * 获取可用模型简称列表
+     * 获取可用模型列表（别名 + 厂家名 + 模型全名）
      */
     public List<String> getAvailableModels() {
-        return new ArrayList<>(aliasToFullModel.keySet());
+        // 合并别名、厂家名、模型全名，去重
+        LinkedHashSet<String> all = new LinkedHashSet<>();
+        all.addAll(aliasToFullModel.keySet());
+        all.addAll(providerToModel.keySet());
+        all.addAll(modelEndpoints.keySet());
+        return new ArrayList<>(all);
     }
 
     // ==================== HTTP 请求 ====================
@@ -838,19 +842,33 @@ public class AIChatManager {
 
                     return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 } catch (Exception e) {
+                    // ★ 完整异常详情：搞明白是上游真寄了还是本地问题
+                    plugin.getLogger().warning("[AI聊天-调试] 自动互动请求异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
                     return null;
                 }
             }).thenAccept(response -> {
                 if (response == null) {
-                    // ★ 日志静默：异常只记一行，不刷屏
-                    plugin.getLogger().warning("[AI聊天] 自动互动请求异常（网络超时）");
+                    plugin.getLogger().warning("[AI聊天-调试] 自动互动请求失败: 网络异常/超时");
+                    plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + defaultModelFull);
+                    plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                    plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
                     handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())), "自动互动失败: 请求异常");
                     prevAutoChatFailed = true;
                     return;
                 }
                 if (response.statusCode() != 200) {
-                    // ★ 日志静默：非200只记一行状态码，不打印完整响应体
-                    plugin.getLogger().warning("[AI聊天] 自动互动失败: HTTP " + response.statusCode());
+                    // ★ 完整错误日志：请求头 + HTTP 返回一起打出来，定位上游是否真寄了
+                    String errBody = response.body();
+                    plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败 ===");
+                    plugin.getLogger().warning("[AI聊天-调试] HTTP状态码: " + response.statusCode());
+                    plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + defaultModelFull);
+                    plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                    plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
+                    response.headers().map().forEach((name, values) -> {
+                        plugin.getLogger().warning("[AI聊天-调试] 响应头 " + name + ": " + String.join(", ", values));
+                    });
+                    plugin.getLogger().warning("[AI聊天-调试] 响应体: " + errBody);
+                    plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败结束 ===");
                     handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())),
                             "自动互动失败: HTTP " + response.statusCode());
                     prevAutoChatFailed = true;

@@ -14,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import javax.net.ssl.*;
 import java.io.*;
 import java.net.*;
@@ -2401,6 +2403,10 @@ public class WebManager {
             awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
             // ★ syncLandData已由Timer D独立定时器处理（15~25秒），不再放批处理队列防SQL锁
             submitNormalDbTask("周期-pollAdminChanges", () -> pollAdminChanges());
+            // ★ 信誉积分双向同步：Java推送到PHP + 从PHP拉回管理员手动调整
+            submitNormalDbTask("周期-pushCreditToPhp", () -> pushCreditToPhp());
+            awaitDbQueueIdle(14000);
+            submitNormalDbTask("周期-pullCreditFromPhp", () -> pullCreditFromPhp());
             checkSyncNotify();
         } catch (Exception e) {
             plugin.getLogger().warning("[合并C] 全量同步异常: " + e.getMessage());
@@ -11890,10 +11896,200 @@ public class WebManager {
         }
     }
 
+    // ==================== 信誉积分双向同步 ====================
+
     /**
+     * Java → PHP 推送信誉积分数据（PHP 端作为副本镜像）
+     * 推送内容：所有非默认积分的玩家 + 最近200条积分记录
+     * 在 Timer C 批处理中调用，错峰执行
+     */
+    public void pushCreditToPhp() {
+        if (!isEnabled()) return;
+        try {
+            CreditManager cm = plugin.getCreditManager();
+            if (cm == null) return;
 
+            DatabaseManager db = plugin.getDb();
+            if (db == null) return;
+
+            // 收集所有非默认积分的玩家（默认100分不推，减少数据量）
+            Gson gson = new Gson();
+            JsonObject playersObj = new JsonObject();
+            try (Connection conn = db.getConnection();
+                 Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery(
+                     "SELECT player_name, credit_score FROM users WHERE credit_score IS NOT NULL AND credit_score != 100 ORDER BY player_name")) {
+                while (rs.next()) {
+                    playersObj.addProperty(rs.getString("player_name"), rs.getInt("credit_score"));
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[信誉同步] 查询玩家积分失败: " + e.getMessage());
+                return;
+            }
+
+            // 收集最近200条积分记录
+            JsonArray recordsArr = new JsonArray();
+            try (Connection conn = db.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(
+                     "SELECT target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source "
+                     + "FROM credit_records ORDER BY created_at DESC LIMIT 200")) {
+                ResultSet rs = ps.executeQuery();
+                while (rs.next()) {
+                    JsonObject rec = new JsonObject();
+                    rec.addProperty("target_player", rs.getString("target_player"));
+                    rec.addProperty("reporter_player", rs.getString("reporter_player"));
+                    rec.addProperty("type", rs.getString("type"));
+                    rec.addProperty("content", rs.getString("content"));
+                    rec.addProperty("status", rs.getString("status"));
+                    rec.addProperty("score_change", rs.getInt("score_change"));
+                    rec.addProperty("created_at", rs.getLong("created_at"));
+                    rec.addProperty("approved_at", rs.getLong("approved_at"));
+                    rec.addProperty("approve_reason", rs.getString("approve_reason"));
+                    rec.addProperty("source", rs.getString("source"));
+                    recordsArr.add(rec);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[信誉同步] 查询积分记录失败: " + e.getMessage());
+                return;
+            }
+
+            if (playersObj.entrySet().isEmpty() && recordsArr.isEmpty()) return;
+
+            // POST 到 PHP sync_push
+            String url = webBaseUrl + "/api/credit.php?action=sync_push&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+
+            JsonObject body = new JsonObject();
+            body.add("players", playersObj);
+            body.add("records", recordsArr);
+            String jsonBody = gson.toJson(body);
+
+            String result = doPost(url, jsonBody);
+            if (result != null) {
+                try {
+                    JsonObject root = JsonParser.parseString(result).getAsJsonObject();
+                    if (root.has("success") && root.get("success").getAsBoolean()) {
+                        plugin.getLogger().info("[信誉同步] 推送PHP成功: " + playersObj.size() + "玩家, " + recordsArr.size() + "记录");
+                    } else {
+                        plugin.getLogger().warning("[信誉同步] 推送PHP失败: " + (root.has("message") ? root.get("message").getAsString() : "未知"));
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[信誉同步] 推送PHP响应解析失败: " + e.getMessage());
+                }
+            } else {
+                plugin.getLogger().warning("[信誉同步] 推送PHP请求失败（网络超时）");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉同步] 推送PHP异常: " + e.getMessage());
+        }
+    }
+
+    /**
+     * PHP → Java 拉回管理员手动调整的信誉积分
+     * 拉回内容：PHP端 source='admin' 的积分记录 → 应用到 Java DB
+     * 在 Timer C 批处理中调用，紧跟 pushCreditToPhp 之后
+     */
+    public void pullCreditFromPhp() {
+        if (!isEnabled()) return;
+        try {
+            String url = webBaseUrl + "/api/credit.php?action=sync_pull&secret="
+                    + java.net.URLEncoder.encode(secretKey, "UTF-8");
+
+            String result = doGet(url);
+            if (result == null) {
+                plugin.getLogger().warning("[信誉同步] 拉回PHP失败（网络超时）");
+                return;
+            }
+
+            JsonObject root = JsonParser.parseString(result).getAsJsonObject();
+            if (!root.has("success") || !root.get("success").getAsBoolean()) {
+                plugin.getLogger().warning("[信誉同步] 拉回PHP失败: " + (root.has("message") ? root.get("message").getAsString() : "未知"));
+                return;
+            }
+
+            if (!root.has("data") || !root.get("data").isJsonObject()) return;
+            JsonObject data = root.getAsJsonObject("data");
+
+            // 处理管理员手动调整的记录（source='admin'）
+            if (data.has("records") && data.get("records").isJsonArray()) {
+                JsonArray records = data.getAsJsonArray("records");
+                DatabaseManager db = plugin.getDb();
+                if (db == null) return;
+
+                int appliedCount = 0;
+                for (JsonElement el : records) {
+                    JsonObject rec = el.getAsJsonObject();
+                    String source = rec.has("source") ? rec.get("source").getAsString() : "";
+                    // 只处理管理员手动调整的记录
+                    if (!"admin".equals(source)) continue;
+
+                    String target = rec.get("target_player").getAsString();
+                    int scoreChange = rec.has("score_change") ? rec.get("score_change").getAsInt() : 0;
+                    long createdAt = rec.has("created_at") ? rec.get("created_at").getAsLong() : 0;
+
+                    // 去重：Java端已有同 target+source+created_at 的记录则跳过
+                    try (Connection conn = db.getConnection();
+                         PreparedStatement check = conn.prepareStatement(
+                             "SELECT 1 FROM credit_records WHERE target_player = ? AND source = 'php' AND created_at = ?")) {
+                        check.setString(1, target);
+                        check.setLong(2, createdAt);
+                        ResultSet checkRs = check.executeQuery();
+                        if (checkRs.next()) {
+                            checkRs.close();
+                            continue; // 已同步过，跳过
+                        }
+                        checkRs.close();
+                    } catch (Exception e) {
+                        continue;
+                    }
+
+                    // 插入记录 + 更新积分
+                    try (Connection conn = db.getConnection()) {
+                        conn.setAutoCommit(false);
+
+                        // 插入 credit_record
+                        String type = scoreChange > 0 ? "good" : "bad";
+                        String reason = rec.has("approve_reason") ? rec.get("approve_reason").getAsString() : "管理员手动调整";
+                        try (PreparedStatement ps = conn.prepareStatement(
+                                "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) "
+                                + "VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, 'php')")) {
+                            ps.setString(1, target);
+                            ps.setString(2, rec.has("reporter_player") ? rec.get("reporter_player").getAsString() : "admin");
+                            ps.setString(3, type);
+                            ps.setString(4, rec.has("content") ? rec.get("content").getAsString() : reason);
+                            ps.setInt(5, scoreChange);
+                            ps.setLong(6, createdAt);
+                            ps.setLong(7, rec.has("approved_at") ? rec.get("approved_at").getAsLong() : createdAt);
+                            ps.setString(8, reason);
+                            ps.executeUpdate();
+                        }
+
+                        // 更新玩家积分（直接设值，PHP端是副本但管理员调整需回写Java）
+                        try (PreparedStatement ps = conn.prepareStatement(
+                                "UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?")) {
+                            ps.setInt(1, scoreChange);
+                            ps.setString(2, target);
+                            ps.executeUpdate();
+                        }
+
+                        conn.commit();
+                        appliedCount++;
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[信誉同步] 拉回记录应用失败 " + target + ": " + e.getMessage());
+                    }
+                }
+
+                if (appliedCount > 0) {
+                    plugin.getLogger().info("[信誉同步] 从PHP拉回" + appliedCount + "条管理员调整记录");
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉同步] 拉回PHP异常: " + e.getMessage());
+        }
+    }
+
+    /**
      * 检查同步通知文件
-
      */
 
     private void checkSyncNotify() {
