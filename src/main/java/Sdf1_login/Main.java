@@ -80,6 +80,8 @@ public class Main extends JavaPlugin
     private CheckInManager checkIn;
     private InviteManager invite;
     private PointsManager points;
+    private CreditManager creditManager;
+    private AIChatManager aiChatManager;
     public GUIManager gui;
     private ChatInputManager chatInput;
     private VerificationManager verification;
@@ -319,6 +321,10 @@ public class Main extends JavaPlugin
         return points;
     }
 
+    public CreditManager getCreditManager() {
+        return creditManager;
+    }
+
     public GUIManager getGui() {
         return gui;
     }
@@ -482,6 +488,9 @@ public class Main extends JavaPlugin
         checkIn = new CheckInManager(this);
         invite = new InviteManager(this);
         points = new PointsManager(this);
+        creditManager = new CreditManager(this);
+        aiChatManager = new AIChatManager(this);
+        aiChatManager.onEnable();
         chatInput = new ChatInputManager();
         verification = new VerificationManager(this);
         riskControl = new RiskControlManager(this);
@@ -1053,6 +1062,7 @@ public class Main extends JavaPlugin
         }
         if (db != null) db.close();
         if (garbage != null) garbage.close();
+        if (aiChatManager != null) aiChatManager.onDisable();
         if (chatTransPool != null) {
             chatTransPool.shutdownNow();
         }
@@ -6179,6 +6189,11 @@ public class Main extends JavaPlugin
         if (chatFilter != null) {
             chatFilter.markPlayerActive(p.getName());
         }
+
+        // ★ 第58批：AI聊天介入 — @//模型名/ 前缀触发直接提问
+        if (aiChatManager != null) {
+            aiChatManager.handlePlayerChat(p, msg);
+        }
         
         // ★ 先探一次禁言状态：若刚好到期，isMuted() 内部会立即解禁并打上
         //   「需重新人机验证」标记（2026-10-08：解禁≠解除人机验证）
@@ -7159,6 +7174,15 @@ public class Main extends JavaPlugin
                 return;
             e.setCancelled(true);
             ticket.handleClick(p, title, slot);
+            return;
+        }
+
+        // ===== 信誉积分 GUI 点击处理 =====
+        if (title != null && title.contains("信誉积分")) {
+            if (creditManager != null) {
+                e.setCancelled(true);
+                creditManager.handleClick(p, slot, title);
+            }
             return;
         }
 
@@ -9432,6 +9456,15 @@ public class Main extends JavaPlugin
                 jsonGui.open(p);
             }
             return true;
+        }
+
+        // ===== /credits：信誉积分管理 =====
+        if (cmdName.equals("credits")) {
+            if (creditManager == null) {
+                sender.sendMessage("§c信誉积分模块未初始化");
+                return true;
+            }
+            return creditManager.handleCommand(sender, args);
         }
 
 

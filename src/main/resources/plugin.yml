@@ -211,3 +211,6 @@ commands:
   json:
     description: JSON消息构造器（tellraw/大标题/小标题/actionbar+颜色，需OP以上权限）
     usage: /json
+  credits:
+    description: 信誉积分管理（上报/审批/记录/规则）
+    usage: /credits [上报|审批|记录|规则] [参数]

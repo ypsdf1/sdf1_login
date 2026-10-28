@@ -1,0 +1,63 @@
+{
+  "openai协议": "内置供应商",
+  "添加方法": [
+    "键值对格式，键是供应商名字，值是请求地址",
+    "如果供应商有区分按量计费、token-plan则用一堆花括号即可。可参考mimo的写法",
+    "如果要备注，就用花括号展开，比如向Agnes、opencode一样",
+    "额外说明：本文件默认会从插件内置的服务器定期拉取更新。"
+  ],
+  "国产": {
+    "mimo": {
+      "按量计费": "https://api.xiaomimimo.com/v1",
+      "token-plan": "https://token-plan-cn.xiaomimimo.com/v1",
+      "批量推理": "https://batch-api-cn.xiaomimimo.com/v1"
+    },
+    "deepseek": "https://api.deepseek.com",
+    "kimi": "https://api.moonshot.cn/v1",
+    "智谱GLM": "https://open.bigmodel.cn/api/paas/v4",
+    "通义千问": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "百度AIStudio": "https://aistudio.baidu.com/llm/lmapi/v3",
+    "MiniMax": "https://api.minimax.cn/v1",
+    "阶跃星辰": {
+      "标准": "https://api.stepfun.com/v1",
+      "step-plan": "https://api.stepfun.com/step_plan/v1"
+    },
+    "零一万物": "https://api.lingyiwanwu.com/v1",
+    "百川": "https://api.baichuan-ai.com/v1",
+    "美团": "https://api.longcat.chat/openai",
+    "抖音云(豆包/火山)": "https://ark.cn-beijing.volces.com/api/v3",
+    "讯飞": {
+      "讯飞星火": "https://spark-api-open.xf-yun.com/v1",
+      "讯飞星辰MaaS": {
+        "标准": "https://maas-api.cn-huabei-1.xf-yun.com/v2",
+        "Coding Plan": "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
+        "Token Plan": "https://maas-token-api.cn-huabei-1.xf-yun.com/v2"
+      }
+    },
+    "腾讯云": {
+      "Token Plan": "https://api.lkeap.cloud.tencent.com/plan/v3",
+      "Coding Plan": "https://api.lkeap.cloud.tencent.com/coding/v3",
+      "TokenHub(广州)": "https://tokenhub.tencentmaas.com",
+      "TokenHub(新加坡)": "https://tokenhub-intl.tencentmaas.com"
+    },
+    "硅基流动": "https://api.siliconflow.cn/v1"
+  },
+  "非国产": {
+    "OpenAI": "https://api.openai.com/v1",
+    "Claude(Anthropic)": "https://api.anthropic.com/v1/",
+    "推特(xAI Grok)": "https://api.x.ai/v1",
+    "Gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "英伟达": "https://integrate.api.nvidia.com/v1",
+    "agnes": {
+      "国际版": "https://apihub.agnes-ai.com/v1",
+      "中国版": "https://apihub.agnes-ai.cn/v1",
+      "说明": "中国版和国际版互通key，但账号、token-plan不互通"
+    },
+    "opencode": {
+      "zen": "https://opencode.ai/zen/v1",
+      "go": "https://opencode.ai/zen/go/v1",
+      "说明": "opencode zen可以通过9router或其它工具反代opencode cli终端免费使用。但不推荐，额度特别低。作者实测：反代出来跑了50万~100万左右就429限流。"
+    },
+    "OpenRouter": "https://openrouter.ai/api/v1"
+  }
+}

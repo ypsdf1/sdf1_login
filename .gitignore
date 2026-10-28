@@ -123,5 +123,7 @@ test.*
 !readme.md
 !src/main/resources
 !src/main/resources/**/*.*
-# 临时屏蔽resources的开发文件
-src/main/resources/openai/*
+# openai资源文件已启用（第58批 AI聊天功能）
+!src/main/resources/openai/
+!src/main/resources/openai/*.json
+!src/main/resources/openai/*.txt
