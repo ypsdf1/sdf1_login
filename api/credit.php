@@ -306,8 +306,8 @@ switch ($action) {
         if (!is_array($recordData)) $recordData = [];
 
         // 批量更新玩家积分
+        // ★ 不用 beginTransaction：SdfMySqlDb(MySQL适配器) 未实现事务，__call 直接抛异常
         if (!empty($playerData)) {
-            $db->beginTransaction();
             foreach ($playerData as $pname => $score) {
                 // 确保玩家存在
                 $stmt = $db->prepare("SELECT 1 FROM users WHERE player_name = ?");
@@ -326,7 +326,6 @@ switch ($action) {
                     $stmt->execute();
                 }
             }
-            $db->commit();
         }
 
         // 批量插入/更新积分记录（去重：同 target+source+created_at 的记录跳过）
