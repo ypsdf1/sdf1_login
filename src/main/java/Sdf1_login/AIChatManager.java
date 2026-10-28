@@ -274,7 +274,10 @@ public class AIChatManager {
             boolean isCustom = supplierConfig.has("baseurl");
             boolean isBuiltin = supplierConfig.has("供应商名字");
 
-            if (!isCustom && !isBuiltin) continue;
+            if (!isCustom && !isBuiltin) {
+                plugin.getLogger().info("[AI聊天] 配置跳过[" + key + "]: 既无baseurl也无供应商名字");
+                continue;
+            }
 
             String baseUrl;
             String apiKey = getStr(supplierConfig, "apikey");
@@ -286,9 +289,14 @@ public class AIChatManager {
             } else {
                 String providerName = getStr(supplierConfig, "供应商名字");
                 baseUrl = findProviderUrl(providerName);
+                if (baseUrl == null || baseUrl.isEmpty()) {
+                    plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: 内置供应商 '" + providerName + "' 在 供应商.json 中找不到URL");
+                    plugin.getLogger().warning("[AI聊天] 诊断: 请确认 供应商.json 中存在路径 '" + providerName + "'，且路径拼写完全正确");
+                }
             }
 
             if (baseUrl == null || baseUrl.isEmpty() || apiKey == null || apiKey.isEmpty()) {
+                plugin.getLogger().warning("[AI聊天] 配置跳过[" + key + "]: baseUrl=" + baseUrl + ", apiKey=" + apiKey);
                 continue;
             }
 

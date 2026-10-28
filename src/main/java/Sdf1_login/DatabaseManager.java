@@ -526,7 +526,24 @@ public class DatabaseManager {
         }
     }
 
+    /** 获取数据库连接，连接已关闭时自动重连。★ 第58批修复：避免 SN/信誉同步等模块拿到已关闭连接报 "database connection closed"。 */
     public Connection getConnection() {
+        try {
+            if (db == null || db.isClosed()) {
+                File dbDir = new File(dataFolder, "登录凭证");
+                dbDir.mkdirs();
+                File dbFile = new File(dbDir, "login.db");
+                db = DriverManager.getConnection(
+                        "jdbc:sqlite:" + dbFile.getAbsolutePath());
+                Statement st = db.createStatement();
+                st.execute("PRAGMA journal_mode=WAL");
+                st.execute("PRAGMA busy_timeout=5000");
+                st.close();
+                logger.warning("[Sdf1_login] 数据库连接已自动重建");
+            }
+        } catch (Exception e) {
+            logger.severe("[Sdf1_login] 数据库自动重连失败: " + e.getMessage());
+        }
         return db;
     }
 
@@ -704,7 +721,7 @@ public class DatabaseManager {
 
     public boolean userExists(String name) {
         try {
-            PreparedStatement ps = db.prepareStatement(
+            PreparedStatement ps = getConnection().prepareStatement(
                     "SELECT 1 FROM users "
                             + "WHERE player_name=?");
             ps.setString(1, name);
@@ -724,7 +741,7 @@ public class DatabaseManager {
     public boolean userExistsIgnoreCase(String name) {
         if (name == null || name.isEmpty()) return false;
         try {
-            PreparedStatement ps = db.prepareStatement(
+            PreparedStatement ps = getConnection().prepareStatement(
                     "SELECT 1 FROM users "
                             + "WHERE player_name=? "
                             + "COLLATE NOCASE");
@@ -747,7 +764,7 @@ public class DatabaseManager {
     public boolean userExistsStrict(String name) {
         if (name == null || name.isEmpty()) return false;
         try {
-            PreparedStatement ps = db.prepareStatement(
+            PreparedStatement ps = getConnection().prepareStatement(
                     "SELECT 1 FROM users "
                             + "WHERE player_name=? "
                             + "COLLATE NOCASE");
@@ -2206,44 +2223,44 @@ public class DatabaseManager {
     }
 
 
-    /**
-     * 获取玩家最新一份自动背包备份（黑名单解除时返还用）。
-     * @return String[]{contents_b64, armor_b64, extra_b64, level, experience}，无备份返回 null
-     */
-    public String[] getLatestAutoBackup(String playerName) {
-        try {
-            PreparedStatement ps =
-                    db.prepareStatement(
-                            "SELECT contents_b64, "
-                                    + "armor_b64, "
-                                    + "extra_b64, "
-                                    + "level, "
-                                    + "experience "
-                                    + "FROM inv_backup_auto "
-                                    + "WHERE player_name=? "
-                                    + "ORDER BY save_time DESC "
-                                    + "LIMIT 1");
-            ps.setString(1, playerName);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) {
-                String[] result = new String[5];
-                result[0] = rs.getString("contents_b64");
-                result[1] = rs.getString("armor_b64");
-                result[2] = rs.getString("extra_b64");
-                result[3] = String.valueOf(rs.getInt("level"));
-                result[4] = String.valueOf(rs.getDouble("experience"));
-                rs.close();
-                ps.close();
-                return result;
-            }
-            rs.close();
-            ps.close();
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
+    /**
+     * 获取玩家最新一份自动背包备份（黑名单解除时返还用）。
+     * @return String[]{contents_b64, armor_b64, extra_b64, level, experience}，无备份返回 null
+     */
+    public String[] getLatestAutoBackup(String playerName) {
+        try {
+            PreparedStatement ps =
+                    db.prepareStatement(
+                            "SELECT contents_b64, "
+                                    + "armor_b64, "
+                                    + "extra_b64, "
+                                    + "level, "
+                                    + "experience "
+                                    + "FROM inv_backup_auto "
+                                    + "WHERE player_name=? "
+                                    + "ORDER BY save_time DESC "
+                                    + "LIMIT 1");
+            ps.setString(1, playerName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String[] result = new String[5];
+                result[0] = rs.getString("contents_b64");
+                result[1] = rs.getString("armor_b64");
+                result[2] = rs.getString("extra_b64");
+                result[3] = String.valueOf(rs.getInt("level"));
+                result[4] = String.valueOf(rs.getDouble("experience"));
+                rs.close();
+                ps.close();
+                return result;
+            }
+            rs.close();
+            ps.close();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
     /**
      * 获取玩家最新背包备份
      */

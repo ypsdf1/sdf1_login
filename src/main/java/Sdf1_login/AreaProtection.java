@@ -10911,8 +10911,11 @@ public class AreaProtection implements Listener {
                     String reason = (String) o[1];
                     if (reason == null) {
                         if (dbMgr == null) continue;
+                        // ★ 第58批修复：SQL 异常时 userExists 返回 false，
+                        // 会把 DB 抖动误判为"账户已注销"从而删领地。
+                        // 改用 userExistsIgnoreCase（异常返回 true，宁可放过）。
                         try {
-                            if (!dbMgr.userExists(ac.owner)) {
+                            if (!dbMgr.userExistsIgnoreCase(ac.owner)) {
                                 reason = "账户已注销";
                             }
                         } catch (Exception ignored) {}
