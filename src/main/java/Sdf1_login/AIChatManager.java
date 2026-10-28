@@ -51,6 +51,9 @@ public class AIChatManager {
     // 默认上下文长度
     private String defaultContextLength = "200000";
 
+    // 自定义供应商 URL 是否自动拼接 chat/completions（自动补齐开关，默认 true）
+    private boolean autoAppendCompletions = true;
+
     // 空闲调度器
     private BukkitTask autoChatTask = null;
     private long lastAiReplyTime = 0;
@@ -75,6 +78,7 @@ public class AIChatManager {
         String baseUrl;
         String apiKey;
         String maxToken;
+        boolean isCustom;  // true=自定义供应商(受自动补齐开关控制), false=内置供应商(总是拼接)
     }
 
     public AIChatManager(Main plugin) {
@@ -137,6 +141,15 @@ public class AIChatManager {
                 // 解析全局配置（配置部分 → "2"）
                 if (config.has("2")) {
                     JsonObject section2 = config.getAsJsonObject("2");
+                    // 自动补齐开关：自定义供应商 baseurl 是否自动拼接 chat/completions
+                    if (section2.has("自动补齐")) {
+                        JsonElement autoEl = section2.get("自动补齐");
+                        if (autoEl != null && autoEl.isJsonPrimitive()) {
+                            String av = autoEl.getAsString();
+                            // 支持 true/false 字符串与布尔
+                            autoAppendCompletions = "true".equalsIgnoreCase(av);
+                        }
+                    }
                     defaultContextLength = getStr(section2, "默认上下文长度");
                     if (defaultContextLength == null || defaultContextLength.isEmpty()) {
                         defaultContextLength = "200000";
@@ -244,15 +257,12 @@ public class AIChatManager {
                 continue;
             }
 
-            // 确保 baseUrl 以 / 结尾（用于拼接 chat/completions）
-            if (!baseUrl.endsWith("/")) {
-                baseUrl = baseUrl + "/";
-            }
-
+            // 存储原始 baseUrl（尾斜杠统一在发送时按自动补齐开关处理）
             ModelEndpoint endpoint = new ModelEndpoint();
             endpoint.baseUrl = baseUrl;
             endpoint.apiKey = apiKey;
             endpoint.maxToken = maxToken;
+            endpoint.isCustom = isCustom;
 
             // 解析可用模型列表
             if (supplierConfig.has("可用模型")) {
@@ -280,16 +290,11 @@ public class AIChatManager {
     private String findProviderUrl(String providerPath) {
         if (providerPath == null || providerPath.isEmpty()) return null;
         String[] parts = providerPath.split("/");
-
-        // 先在国产下找
-        if (providersConfig != null && providersConfig.has("国产")) {
-            String url = findUrlInObject(providersConfig.getAsJsonObject("国产"), parts);
-            if (url != null) return url;
-        }
-        // 再在非国产下找
-        if (providersConfig != null && providersConfig.has("非国产")) {
-            String url = findUrlInObject(providersConfig.getAsJsonObject("非国产"), parts);
-            if (url != null) return url;
+        // 第一段是顶层分组名（国产/非国产），从第二段开始在分组对象里逐层找
+        String group = parts[0].trim();
+        String[] rest = Arrays.copyOfRange(parts, 1, parts.length);
+        if (providersConfig != null && providersConfig.has(group)) {
+            return findUrlInObject(providersConfig.getAsJsonObject(group), rest);
         }
         return null;
     }
@@ -385,12 +390,13 @@ public class AIChatManager {
         // 构建请求体
         String systemPrompt = buildSystemPrompt();
         String jsonBody = buildChatRequest(modelFull, systemPrompt, prompt, endpoint.maxToken);
+        String requestUrl = buildRequestUrl(endpoint);
 
         // 异步发送请求
         CompletableFuture.supplyAsync(() -> {
             try {
                 HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(endpoint.baseUrl + "chat/completions"))
+                        .uri(URI.create(requestUrl))
                         .header("Content-Type", "application/json; charset=utf-8")
                         .header("Authorization", "Bearer " + endpoint.apiKey)
                         .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
@@ -456,6 +462,22 @@ public class AIChatManager {
             sb.append("写法要求: ").append(writingStyle).append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * 构建请求 URL
+     * 自动补齐=true：baseUrl 以 / 结尾后拼接 chat/completions（默认）
+     * 自动补齐=false：baseUrl 已是完整端点（如 .../v1/chat/completions），直接用
+     */
+    private String buildRequestUrl(ModelEndpoint endpoint) {
+        String url = endpoint.baseUrl;
+        // 内置供应商的 baseUrl 总是基础地址，必须拼接；自定义供应商受自动补齐开关控制
+        boolean needAppend = !endpoint.isCustom || autoAppendCompletions;
+        if (needAppend) {
+            if (!url.endsWith("/")) url += "/";
+            url += "chat/completions";
+        }
+        return url;
     }
 
     private String buildChatRequest(String model, String systemPrompt, String userPrompt, String maxToken) {
@@ -592,11 +614,12 @@ public class AIChatManager {
             // 异步发送
             String systemPrompt = buildSystemPrompt();
             String jsonBody = buildChatRequest(defaultModelFull, systemPrompt, prompt, endpoint.maxToken);
+            String requestUrl = buildRequestUrl(endpoint);
 
             CompletableFuture.supplyAsync(() -> {
                 try {
                     HttpRequest request = HttpRequest.newBuilder()
-                            .uri(URI.create(endpoint.baseUrl + "chat/completions"))
+                            .uri(URI.create(requestUrl))
                             .header("Content-Type", "application/json; charset=utf-8")
                             .header("Authorization", "Bearer " + endpoint.apiKey)
                             .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))

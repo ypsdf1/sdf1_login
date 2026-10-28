@@ -1563,7 +1563,7 @@ public class Main extends JavaPlugin
         emailBindTasks.put(uid, holder);
     }
 
-    private boolean isAdmin(CommandSender sender) {
+    public boolean isAdmin(CommandSender sender) {
         if (sender instanceof Player)
             return ((Player) sender)
                     .getScoreboardTags()
@@ -6193,6 +6193,13 @@ public class Main extends JavaPlugin
         // ★ 第58批：AI聊天介入 — @//模型名/ 前缀触发直接提问
         if (aiChatManager != null) {
             aiChatManager.handlePlayerChat(p, msg);
+        }
+
+        // ★ 第58批：信誉积分聊天引导 — 上报/加分/扣分分步输入
+        if (creditManager != null && creditManager.isInChatFlow(p)) {
+            e.setCancelled(true);
+            creditManager.handleChatInput(p, msg);
+            return;
         }
         
         // ★ 先探一次禁言状态：若刚好到期，isMuted() 内部会立即解禁并打上

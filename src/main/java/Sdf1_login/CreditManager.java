@@ -18,9 +18,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * 核心逻辑:
  *   - 每人初始化100积分
- *   - /credits 上报好人好事/举报
- *   - PHP 端可提交线索
- *   - 管理员审批 → 加分/扣分
+ *   - /credits 打开9格GUI：上报好人好事/举报违规/我的积分/积分明细
+ *   - 管理员(Tag)额外：加分/扣分/待审批/审批记录
+ *   - /credits user <玩家名> 任何人可查他人积分
+ *   - 上报通过聊天框分步引导：填目标玩家名 → 填上报理由
  *   - 低于阈值 → 行为限制（可配置规则）
  */
 public class CreditManager {
@@ -43,6 +44,33 @@ public class CreditManager {
     // 玩家积分缓存 (playerName -> score)
     private final Map<String, Integer> scoreCache = new ConcurrentHashMap<>();
 
+    // GUI标题
+    public static final String GUI_TITLE = "§d§l信誉积分";
+
+    // GUI尺寸
+    private static final int GUI_SIZE = 9;
+
+    // ==================== 聊天引导状态 ====================
+
+    /** 上报/审批聊天引导状态 */
+    public enum FlowState {
+        REPORT_GOOD_TARGET,       // 好人好事 → 等待目标玩家名
+        REPORT_GOOD_REASON,       // 好人好事 → 等待上报理由
+        REPORT_BAD_TARGET,        // 举报 → 等待目标玩家名
+        REPORT_BAD_REASON,        // 举报 → 等待上报理由
+        ADD_SCORE_TARGET,         // 加分 → 等待玩家名
+        ADD_SCORE_AMOUNT,         // 加分 → 等待数值
+        DEDUCT_SCORE_TARGET,      // 扣分 → 等待玩家名
+        DEDUCT_SCORE_AMOUNT       // 扣分 → 等待数值
+    }
+
+    // 玩家当前引导状态 (playerName -> FlowState + 临时数据)
+    private static class FlowData {
+        FlowState state;
+        String tempName;  // 临时存储的目标玩家名
+    }
+    private final Map<String, FlowData> chatFlows = new ConcurrentHashMap<>();
+
     public CreditManager(Main plugin) {
         this.plugin = plugin;
         this.db = plugin.getDb();
@@ -58,29 +86,28 @@ public class CreditManager {
             // 信誉积分记录表
             st.execute("CREATE TABLE IF NOT EXISTS credit_records ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                    + "target_player TEXT NOT NULL,"          // 被评价的玩家
-                    + "reporter_player TEXT NOT NULL,"        // 上报人
-                    + "type TEXT NOT NULL,"                   // good / bad
-                    + "content TEXT DEFAULT '',"              // 详细内容
-                    + "status TEXT DEFAULT 'pending',"        // pending / approved / rejected
-                    + "score_change INTEGER DEFAULT 0,"        // 审批后的积分变动
-                    + "created_at INTEGER DEFAULT 0,"          // 上报时间
-                    + "approved_at INTEGER DEFAULT 0,"        // 审批时间
-                    + "approve_reason TEXT DEFAULT '',"       // 审批理由
-                    + "source TEXT DEFAULT 'game',"           // game / php
-                    + "FOREIGN KEY(target_player) REFERENCES users(player_name)"
+                    + "target_player TEXT NOT NULL,"
+                    + "reporter_player TEXT NOT NULL,"
+                    + "type TEXT NOT NULL,"
+                    + "content TEXT DEFAULT '',"
+                    + "status TEXT DEFAULT 'pending',"
+                    + "score_change INTEGER DEFAULT 0,"
+                    + "created_at INTEGER DEFAULT 0,"
+                    + "approved_at INTEGER DEFAULT 0,"
+                    + "approve_reason TEXT DEFAULT '',"
+                    + "source TEXT DEFAULT 'game'"
                     + ")");
 
             // 信誉限制规则表
             st.execute("CREATE TABLE IF NOT EXISTS credit_rules ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                    + "rule_name TEXT NOT NULL UNIQUE,"       // 规则名
-                    + "min_score INTEGER DEFAULT 0,"          // 低于此分触发
-                    + "max_score INTEGER DEFAULT 0,"          // 高于此分解除（0=无上限）
-                    + "restriction_type TEXT DEFAULT '',"     // 限制类型
-                    + "restriction_duration INTEGER DEFAULT 0," // 持续秒数（0=直到加分）
-                    + "enabled INTEGER DEFAULT 1,"            // 1=启用 0=禁用
-                    + "description TEXT DEFAULT ''"           // 说明
+                    + "rule_name TEXT NOT NULL UNIQUE,"
+                    + "min_score INTEGER DEFAULT 0,"
+                    + "max_score INTEGER DEFAULT 0,"
+                    + "restriction_type TEXT DEFAULT '',"
+                    + "restriction_duration INTEGER DEFAULT 0,"
+                    + "enabled INTEGER DEFAULT 1,"
+                    + "description TEXT DEFAULT ''"
                     + ")");
 
             // 默认规则初始化
@@ -99,13 +126,10 @@ public class CreditManager {
     private void initDefaultRules() {
         try {
             Statement st = db.getConnection().createStatement();
-            // 默认规则：低于60分禁止交易
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
                     + "VALUES ('禁止交易', 60, 0, 'trade', 0, '低于60分时禁止与NPC交易')");
-            // 默认规则：低于40分禁止进入PVP区域
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
                     + "VALUES ('禁止PVP', 40, 0, 'pvp', 0, '低于40分时禁止进入PVP竞技场')");
-            // 默认规则：低于20分禁止使用传送
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
                     + "VALUES ('禁止传送', 20, 0, 'teleport', 0, '低于20分时禁止使用传送功能')");
         } catch (Exception ignored) {}
@@ -182,6 +206,15 @@ public class CreditManager {
 
     public boolean approveRecord(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
         try {
+            // 先查目标玩家
+            String target = null;
+            PreparedStatement ps2 = db.getConnection().prepareStatement(
+                    "SELECT target_player FROM credit_records WHERE id = ?");
+            ps2.setInt(1, recordId);
+            ResultSet rs2 = ps2.executeQuery();
+            if (rs2.next()) target = rs2.getString("target_player");
+            ps2.close();
+
             PreparedStatement ps = db.getConnection().prepareStatement(
                     "UPDATE credit_records SET status = ?, score_change = ?, approved_at = ?, approve_reason = ? WHERE id = ?");
             ps.setString(1, approved ? STATUS_APPROVED : STATUS_REJECTED);
@@ -192,19 +225,10 @@ public class CreditManager {
             ps.executeUpdate();
             ps.close();
 
-            if (approved && scoreChange != 0) {
-                // 查询目标玩家
-                PreparedStatement ps2 = db.getConnection().prepareStatement(
-                        "SELECT target_player FROM credit_records WHERE id = ?");
-                ps2.setInt(1, recordId);
-                ResultSet rs = ps2.executeQuery();
-                if (rs.next()) {
-                    String target = rs.getString("target_player");
-                    addScore(target, scoreChange, "信誉积分审批(" + (approved ? "通过" : "驳回") + "): " + reason);
-                    plugin.getLogger().info("[信誉积分] " + approverName + " 审批通过 " + target
-                            + " 积分变动: " + (scoreChange > 0 ? "+" : "") + scoreChange);
-                }
-                ps2.close();
+            if (approved && scoreChange != 0 && target != null) {
+                addScore(target, scoreChange, "信誉积分审批(" + (approved ? "通过" : "驳回") + "): " + reason);
+                plugin.getLogger().info("[信誉积分] " + approverName + " 审批通过 " + target
+                        + " 积分变动: " + (scoreChange > 0 ? "+" : "") + scoreChange);
             }
             return true;
         } catch (Exception e) {
@@ -305,7 +329,6 @@ public class CreditManager {
     }
 
     private void checkRestrictions(String playerName, int score) {
-        // 检查是否触发限制，通知玩家
         for (Map<String, Object> rule : getEnabledRules()) {
             int minScore = ((Number) rule.get("min_score")).intValue();
             int maxScore = ((Number) rule.get("max_score")).intValue();
@@ -322,10 +345,92 @@ public class CreditManager {
         }
     }
 
-    // ==================== GUI ====================
+    // ==================== 9格 GUI ====================
+
+    public Inventory createMainGUI(Player p) {
+        Inventory inv = Bukkit.createInventory(null, GUI_SIZE, GUI_TITLE);
+        boolean admin = plugin.isAdmin(p);
+
+        // Slot 0: 上报好人好事
+        inv.setItem(0, mkItem(Material.EMERALD,
+                "§a§l上报好人好事",
+                "§7表扬其他玩家的良好行为",
+                "§7点击后聊天框输入目标玩家名"));
+
+        // Slot 1: 举报违规违纪
+        inv.setItem(1, mkItem(Material.REDSTONE,
+                "§c§l举报违规违纪",
+                "§7举报其他玩家的违规行为",
+                "§7点击后聊天框输入目标玩家名"));
+
+        // Slot 2: 我的积分
+        int myScore = getScore(p.getName());
+        inv.setItem(2, mkItem(Material.GOLD_INGOT,
+                "§e§l我的积分",
+                "§7当前积分: " + myScore,
+                "§7初始积分: " + DEFAULT_INIT_SCORE));
+
+        // Slot 3: 积分明细
+        inv.setItem(3, mkItem(Material.PAPER,
+                "§f§l积分明细",
+                "§7查看自己的积分变动记录",
+                "§7点击查看"));
+
+        // Slot 4: 加分 (管理员)
+        if (admin) {
+            inv.setItem(4, mkItem(Material.EMERALD,
+                    "§a§l加分",
+                    "§7管理员给玩家加分",
+                    "§7点击后聊天框输入玩家名"));
+        }
+
+        // Slot 5: 扣分 (管理员)
+        if (admin) {
+            inv.setItem(5, mkItem(Material.REDSTONE,
+                    "§c§l扣分",
+                    "§7管理员给玩家扣分",
+                    "§7点击后聊天框输入玩家名"));
+        }
+
+        // Slot 6: 待审批 (管理员)
+        if (admin) {
+            inv.setItem(6, mkItem(Material.CHEST,
+                    "§e§l待审批",
+                    "§7审批玩家上报的好人好事/举报",
+                    "§7点击查看"));
+        }
+
+        // Slot 7: 审批记录 (管理员)
+        if (admin) {
+            inv.setItem(7, mkItem(Material.BOOK,
+                    "§b§l审批记录",
+                    "§7查看历史审批记录",
+                    "§7点击查看"));
+        }
+
+        // Slot 8: 规则说明
+        inv.setItem(8, mkItem(Material.IRON_INGOT,
+                "§7§l规则说明",
+                "§7低于60分: 禁止交易",
+                "§7低于40分: 禁止PVP",
+                "§7低于20分: 禁止传送"));
+
+        // 非管理员在 4-7 槽显示锁定
+        if (!admin) {
+            for (int i = 4; i <= 7; i++) {
+                if (inv.getItem(i) == null) {
+                    inv.setItem(i, mkItem(Material.RED_STAINED_GLASS_PANE,
+                            "§c§l管理员专属",
+                            "§7需要Tag管理员身份"));
+                }
+            }
+        }
+
+        return inv;
+    }
 
     public Inventory createPendingGUI(Player p) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§d§l信誉积分 - 待审批");
+        Inventory inv = Bukkit.createInventory(null, 54, GUI_TITLE + " - 待审批");
         fillBg(inv);
         List<Map<String, Object>> records = getPendingRecords();
         for (int i = 0; i < records.size() && i < 49; i++) {
@@ -340,14 +445,41 @@ public class CreditManager {
                     "§7内容: " + r.get("content"),
                     "§7来源: " + r.get("source"),
                     "",
-                    "§e点击审批"));
+                    "§e/credits approve " + r.get("id") + " <通过|驳回> <理由> [积分变动]"));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
         return inv;
     }
 
     public Inventory createRecordsGUI(Player p) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§d§l信誉积分 - 历史记录");
+        Inventory inv = Bukkit.createInventory(null, 54, GUI_TITLE + " - 历史记录");
+        fillBg(inv);
+        // 只看自己的记录
+        List<Map<String, Object>> records = new ArrayList<>();
+        for (Map<String, Object> r : getAllRecords(49)) {
+            if (r.get("target_player").equals(p.getName())) {
+                records.add(r);
+            }
+        }
+        for (int i = 0; i < records.size() && i < 49; i++) {
+            Map<String, Object> r = records.get(i);
+            String status = (String) r.get("status");
+            String statusText = STATUS_APPROVED.equals(status) ? "§a已通过"
+                    : STATUS_REJECTED.equals(status) ? "§c已驳回" : "§e待审批";
+            inv.setItem(i, mkItem(Material.PAPER,
+                    "§e#" + r.get("id") + " " + r.get("type"),
+                    "§7上报人: " + r.get("reporter_player"),
+                    "§7状态: " + statusText,
+                    "§7积分变动: " + r.get("score_change"),
+                    "§7内容: " + r.get("content"),
+                    "§7来源: " + r.get("source")));
+        }
+        inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
+        return inv;
+    }
+
+    public Inventory createAdminRecordsGUI(Player p) {
+        Inventory inv = Bukkit.createInventory(null, 54, GUI_TITLE + " - 审批记录");
         fillBg(inv);
         List<Map<String, Object>> records = getAllRecords(49);
         for (int i = 0; i < records.size() && i < 49; i++) {
@@ -368,33 +500,15 @@ public class CreditManager {
         return inv;
     }
 
-    public Inventory createRulesGUI(Player p) {
-        Inventory inv = Bukkit.createInventory(null, 54, "§d§l信誉积分 - 限制规则");
-        fillBg(inv);
-        List<Map<String, Object>> rules = getEnabledRules();
-        for (int i = 0; i < rules.size() && i < 49; i++) {
-            Map<String, Object> r = rules.get(i);
-            inv.setItem(i, mkItem(Material.GOLD_INGOT,
-                    "§e" + r.get("rule_name"),
-                    "§7阈值: " + r.get("min_score"),
-                    "§7类型: " + r.get("restriction_type"),
-                    "§7说明: " + r.get("description")));
-        }
-        inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
-        return inv;
-    }
-
     // ==================== 命令入口 ====================
 
     public boolean handleCommand(CommandSender sender, String[] args) {
+        // /credits → 打开GUI
         if (args.length == 0) {
-            // 无参数：显示玩家自己的积分
             if (sender instanceof Player) {
-                String name = ((Player) sender).getName();
-                int score = getScore(name);
-                sender.sendMessage("§d§l[信誉积分] §f你的当前积分: §e" + score + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                ((Player) sender).openInventory(createMainGUI((Player) sender));
             } else {
-                sender.sendMessage("§c用法: /credits [上报|审批|记录|规则] [参数]");
+                sender.sendMessage("§c用法: /credits [user <玩家名>]");
             }
             return true;
         }
@@ -402,36 +516,30 @@ public class CreditManager {
         String sub = args[0].toLowerCase();
 
         switch (sub) {
-            case "上报":
-            case "report":
-                // /credits report <目标玩家> <good|bad> <内容>
-                if (args.length < 4) {
-                    sender.sendMessage("§c用法: /credits report <目标玩家> <good|bad> <内容>");
+            case "user":
+                // /credits user <玩家名> — 任何人可查他人积分
+                if (args.length < 2) {
+                    sender.sendMessage("§c用法: /credits user <玩家名>");
                     return true;
                 }
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("§c此命令只能玩家使用");
-                    return true;
+                String targetName = args[1];
+                int targetScore = getScore(targetName);
+                sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + targetScore
+                        + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                // 判断是否触发限制
+                for (Map<String, Object> rule : getEnabledRules()) {
+                    int minScore = ((Number) rule.get("min_score")).intValue();
+                    if (targetScore < minScore) {
+                        String desc = (String) rule.get("description");
+                        sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
+                    }
                 }
-                String target = args[1];
-                String type = args[2].toLowerCase();
-                StringBuilder content = new StringBuilder();
-                for (int i = 3; i < args.length; i++) {
-                    if (i > 3) content.append(" ");
-                    content.append(args[i]);
-                }
-                if (!TYPE_GOOD.equals(type) && !TYPE_BAD.equals(type)) {
-                    sender.sendMessage("§c类型必须是 good 或 bad");
-                    return true;
-                }
-                submitReport(target, ((Player) sender).getName(), type, content.toString(), "game");
-                sender.sendMessage("§a[信誉积分] 上报成功，等待管理员审批");
                 return true;
 
             case "审批":
             case "approve":
                 // 管理员审批
-                if (!(sender.hasPermission("sdf1_login.admin"))) {
+                if (!(sender instanceof Player && plugin.isAdmin(sender))) {
                     sender.sendMessage("§c权限不足");
                     return true;
                 }
@@ -472,17 +580,14 @@ public class CreditManager {
                         if (i > 3) reason.append(" ");
                         reason.append(args[i]);
                     }
-                    // 解析积分变动（最后一个参数如果是数字）
                     int scoreChange = 0;
                     String reasonStr = reason.toString();
-                    // 检查是否以数字结尾（积分变动在最后）
                     java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)$").matcher(reasonStr);
                     if (approved && m.find()) {
                         scoreChange = Integer.parseInt(m.group(1));
                         reasonStr = reasonStr.substring(0, reasonStr.length() - m.group(1).length()).trim();
                         if (reasonStr.isEmpty()) reasonStr = "信誉积分审批";
                     } else if (approved) {
-                        // 默认好人好事+10，举报+10
                         scoreChange = 10;
                     }
                     String approver = sender instanceof Player ? ((Player) sender).getName() : "控制台";
@@ -497,38 +602,9 @@ public class CreditManager {
                 }
                 return true;
 
-            case "记录":
-            case "records":
-                // 查看历史记录
-                if (sender instanceof Player) {
-                    ((Player) sender).openInventory(createRecordsGUI((Player) sender));
-                } else {
-                    List<Map<String, Object>> records = getAllRecords(20);
-                    for (Map<String, Object> r : records) {
-                        sender.sendMessage("§e#" + r.get("id") + " " + r.get("target_player")
-                                + " §7(" + r.get("type") + ") " + r.get("status")
-                                + " §7积分变动=" + r.get("score_change"));
-                    }
-                }
-                return true;
-
-            case "规则":
-            case "rules":
-                // 查看限制规则
-                if (sender instanceof Player) {
-                    ((Player) sender).openInventory(createRulesGUI((Player) sender));
-                } else {
-                    for (Map<String, Object> r : getEnabledRules()) {
-                        sender.sendMessage("§e" + r.get("rule_name")
-                                + " §7阈值=" + r.get("min_score")
-                                + " §7类型=" + r.get("restriction_type")
-                                + " §7说明=" + r.get("description"));
-                    }
-                }
-                return true;
-
             default:
                 sender.sendMessage("§c未知子命令: " + sub);
+                sender.sendMessage("§7用法: /credits [user <玩家名>]");
                 return true;
         }
     }
@@ -536,19 +612,187 @@ public class CreditManager {
     // ==================== GUI 点击处理 ====================
 
     public void handleClick(Player p, int slot, String title) {
+        // 子GUI的返回按钮
         if (slot == 53) {
             p.closeInventory();
+            p.openInventory(createMainGUI(p));
             return;
         }
 
+        // 主GUI
+        if (title != null && title.equals(GUI_TITLE)) {
+            switch (slot) {
+                case 0: // 上报好人好事
+                    startFlow(p, FlowState.REPORT_GOOD_TARGET);
+                    p.closeInventory();
+                    p.sendMessage("§a§l[信誉积分] §f请输入要表扬的玩家名");
+                    p.sendMessage("§7直接在聊天框输入名字即可");
+                    break;
+                case 1: // 举报违规违纪
+                    startFlow(p, FlowState.REPORT_BAD_TARGET);
+                    p.closeInventory();
+                    p.sendMessage("§c§l[信誉积分] §f请输入要举报的玩家名");
+                    p.sendMessage("§7直接在聊天框输入名字即可");
+                    break;
+                case 2: // 我的积分
+                    int myScore = getScore(p.getName());
+                    p.closeInventory();
+                    p.sendMessage("§d§l[信誉积分] §f你的当前积分: §e" + myScore + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                    break;
+                case 3: // 积分明细
+                    p.closeInventory();
+                    p.openInventory(createRecordsGUI(p));
+                    break;
+                case 4: // 加分 (管理员)
+                    if (!plugin.isAdmin(p)) {
+                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                        return;
+                    }
+                    startFlow(p, FlowState.ADD_SCORE_TARGET);
+                    p.closeInventory();
+                    p.sendMessage("§a§l[信誉积分] §f请输入要加分的玩家名");
+                    break;
+                case 5: // 扣分 (管理员)
+                    if (!plugin.isAdmin(p)) {
+                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                        return;
+                    }
+                    startFlow(p, FlowState.DEDUCT_SCORE_TARGET);
+                    p.closeInventory();
+                    p.sendMessage("§c§l[信誉积分] §f请输入要扣分的玩家名");
+                    break;
+                case 6: // 待审批 (管理员)
+                    if (!plugin.isAdmin(p)) {
+                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                        return;
+                    }
+                    p.closeInventory();
+                    p.openInventory(createPendingGUI(p));
+                    break;
+                case 7: // 审批记录 (管理员)
+                    if (!plugin.isAdmin(p)) {
+                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                        return;
+                    }
+                    p.closeInventory();
+                    p.openInventory(createAdminRecordsGUI(p));
+                    break;
+                case 8: // 规则说明
+                    p.closeInventory();
+                    p.sendMessage("§d§l[信誉积分] §f规则说明:");
+                    for (Map<String, Object> r : getEnabledRules()) {
+                        p.sendMessage("§7" + r.get("rule_name") + ": " + r.get("description"));
+                    }
+                    break;
+            }
+            return;
+        }
+
+        // 待审批GUI — 点击物品提示用命令审批
         if (title != null && title.contains("待审批")) {
             p.sendMessage("§c请使用 /credits approve <id> <通过|驳回> <理由> [积分变动]");
             p.closeInventory();
-        } else if (title != null && title.contains("历史记录")) {
-            p.sendMessage("§7此GUI仅展示，请用命令管理");
-        } else if (title != null && title.contains("限制规则")) {
-            p.sendMessage("§7规则阈值低于当前积分则触发限制");
+            return;
         }
+    }
+
+    // ==================== 聊天引导处理 ====================
+
+    /**
+     * 在 Main.java onChat 中调用，处理信誉积分的聊天引导输入
+     * @return true=消息已消费(需取消聊天事件)，false=非引导状态(放行正常聊天)
+     */
+    public boolean handleChatInput(Player p, String msg) {
+        FlowData fd = chatFlows.get(p.getName());
+        if (fd == null) return false;
+
+        switch (fd.state) {
+            case REPORT_GOOD_TARGET:
+                fd.tempName = msg.trim();
+                fd.state = FlowState.REPORT_GOOD_REASON;
+                p.sendMessage("§a§l[信誉积分] §f已记录: " + fd.tempName);
+                p.sendMessage("§7请输入上报理由(好人好事)");
+                return true;
+
+            case REPORT_GOOD_REASON:
+                submitReport(fd.tempName, p.getName(), TYPE_GOOD, msg.trim(), "game");
+                chatFlows.remove(p.getName());
+                p.sendMessage("§a§l[信誉积分] §f上报成功，等待管理员审批");
+                return true;
+
+            case REPORT_BAD_TARGET:
+                fd.tempName = msg.trim();
+                fd.state = FlowState.REPORT_BAD_REASON;
+                p.sendMessage("§c§l[信誉积分] §f已记录: " + fd.tempName);
+                p.sendMessage("§7请输入举报理由");
+                return true;
+
+            case REPORT_BAD_REASON:
+                submitReport(fd.tempName, p.getName(), TYPE_BAD, msg.trim(), "game");
+                chatFlows.remove(p.getName());
+                p.sendMessage("§a§l[信誉积分] §f举报已提交，等待管理员审批");
+                return true;
+
+            case ADD_SCORE_TARGET:
+                fd.tempName = msg.trim();
+                fd.state = FlowState.ADD_SCORE_AMOUNT;
+                p.sendMessage("§a§l[信誉积分] §f已记录: " + fd.tempName);
+                p.sendMessage("§7请输入加分数值(正整数)");
+                return true;
+
+            case ADD_SCORE_AMOUNT:
+                try {
+                    int amount = Integer.parseInt(msg.trim());
+                    if (amount <= 0) {
+                        p.sendMessage("§c数值必须是正整数");
+                        fd.state = FlowState.ADD_SCORE_AMOUNT;
+                        return true;
+                    }
+                    addScore(fd.tempName, amount, "管理员手动加分");
+                    chatFlows.remove(p.getName());
+                    p.sendMessage("§a§l[信誉积分] §f已给 " + fd.tempName + " 加分 §e+" + amount);
+                } catch (NumberFormatException e) {
+                    p.sendMessage("§c请输入数字");
+                    fd.state = FlowState.ADD_SCORE_AMOUNT;
+                }
+                return true;
+
+            case DEDUCT_SCORE_TARGET:
+                fd.tempName = msg.trim();
+                fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
+                p.sendMessage("§c§l[信誉积分] §f已记录: " + fd.tempName);
+                p.sendMessage("§7请输入扣分数值(正整数)");
+                return true;
+
+            case DEDUCT_SCORE_AMOUNT:
+                try {
+                    int amount = Integer.parseInt(msg.trim());
+                    if (amount <= 0) {
+                        p.sendMessage("§c数值必须是正整数");
+                        fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
+                        return true;
+                    }
+                    addScore(fd.tempName, -amount, "管理员手动扣分");
+                    chatFlows.remove(p.getName());
+                    p.sendMessage("§c§l[信誉积分] §f已给 " + fd.tempName + " 扣分 §e-" + amount);
+                } catch (NumberFormatException e) {
+                    p.sendMessage("§c请输入数字");
+                    fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
+                }
+                return true;
+        }
+        return true;
+    }
+
+    private void startFlow(Player p, FlowState state) {
+        FlowData fd = new FlowData();
+        fd.state = state;
+        chatFlows.put(p.getName(), fd);
+    }
+
+    /** 是否处于聊天引导状态 */
+    public boolean isInChatFlow(Player p) {
+        return chatFlows.containsKey(p.getName());
     }
 
     // ==================== GUI 工具 ====================
@@ -571,17 +815,11 @@ public class CreditManager {
 
     // ==================== PHP 端提交线索 ====================
 
-    /**
-     * 供 PHP 端调用的提交线索接口（通过 WebManager 对账或独立 API）
-     */
     public boolean submitFromPhp(String targetPlayer, String reporterPlayer, String type, String content) {
         submitReport(targetPlayer, reporterPlayer, type, content, "php");
         return true;
     }
 
-    /**
-     * 供 PHP 端调用的审批接口
-     */
     public boolean approveFromPhp(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
         return approveRecord(recordId, approved, reason, scoreChange, approverName);
     }
