@@ -422,6 +422,10 @@ public class AIChatManager {
      * @param broadcast 是否广播回复（自动互动时为 true）
      */
     public void sendToModel(String modelAlias, String prompt, Player player, boolean broadcast) {
+        // ★ 每次发请求前重读配置，获取最新的模型、人设、黑名单等信息
+        // 避免模型429、403等报错后还用旧配置继续发请求
+        loadConfig();
+
         // 黑名单检查
         if (isBlacklisted(prompt)) {
             plugin.getLogger().info("[AI聊天] 黑名单拦截: " + prompt.substring(0, Math.min(50, prompt.length())));
@@ -762,6 +766,9 @@ public class AIChatManager {
         if (!autoChatRunning.compareAndSet(false, true)) return;
 
         try {
+            // ★ 每次发请求前重读配置，获取最新的模型、人设、黑名单等信息
+            loadConfig();
+
             // 检查是否到了自动互动时间
             long intervalMs = (minIntervalMin + (int)(Math.random() * (maxIntervalMin - minIntervalMin + 1))) * 60000L;
 
