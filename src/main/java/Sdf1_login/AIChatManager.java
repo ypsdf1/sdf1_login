@@ -313,9 +313,17 @@ public class AIChatManager {
                         }
                     }
                     if (firstModel != null) {
-                        // 注册路径中的每一段作为厂家名别名
-                        for (String seg : providerName.split("/")) {
-                            String name = seg.trim();
+                        // 第1段如果是供应商.json顶层分组名（如「国产」「非国产」）→ 屏蔽不注册
+                        // 从第2段开始才是厂家名/子分组名，注册为 @// 参数
+                        String[] segs = providerName.split("/");
+                        int startIdx = 0;
+                        if (segs.length >= 1 && providersConfig != null
+                                && providersConfig.has(segs[0].trim())) {
+                            // 第1段是分组名，跳过
+                            startIdx = 1;
+                        }
+                        for (int i = startIdx; i < segs.length; i++) {
+                            String name = segs[i].trim();
                             if (!name.isEmpty()) {
                                 providerToModel.putIfAbsent(name, firstModel);
                             }
@@ -337,11 +345,23 @@ public class AIChatManager {
     private String findProviderUrl(String providerPath) {
         if (providerPath == null || providerPath.isEmpty()) return null;
         String[] parts = providerPath.split("/");
-        // 第一段是顶层分组名（国产/非国产），从第二段开始在分组对象里逐层找
-        String group = parts[0].trim();
-        String[] rest = Arrays.copyOfRange(parts, 1, parts.length);
-        if (providersConfig != null && providersConfig.has(group)) {
-            return findUrlInObject(providersConfig.getAsJsonObject(group), rest);
+        String first = parts[0].trim();
+
+        // 第1段是顶层分组名（如「国产」「非国产」）→ 直接在该分组里找
+        if (providersConfig != null && providersConfig.has(first)) {
+            String[] rest = Arrays.copyOfRange(parts, 1, parts.length);
+            return findUrlInObject(providersConfig.getAsJsonObject(first), rest);
+        }
+
+        // 第1段不是分组名 → 在所有顶层分组里尝试匹配（支持省略组名配置）
+        // 如 "deepseek" → 在国产/非国产里找 "deepseek" 键
+        if (providersConfig != null) {
+            for (Map.Entry<String, JsonElement> entry : providersConfig.entrySet()) {
+                if (entry.getValue().isJsonObject()) {
+                    String url = findUrlInObject(entry.getValue().getAsJsonObject(), parts);
+                    if (url != null) return url;
+                }
+            }
         }
         return null;
     }
