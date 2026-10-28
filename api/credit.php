@@ -235,6 +235,163 @@ switch ($action) {
         success(null, '规则已更新');
         break;
 
+    // ====== 管理员：查询玩家当前积分 ======
+    case 'admin_player_score':
+        creditRequireAdmin();
+        $target = getParam('target', '');
+        if (!$target) error('缺少玩家名');
+        $stmt = $db->prepare("SELECT credit_score FROM users WHERE player_name = ?");
+        $stmt->bindValue(1, $target, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $score = 100;
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $score = (int)$row['credit_score'];
+        success(['player' => $target, 'credit_score' => $score]);
+        break;
+
+    // ====== 管理员：手动加减积分（直接调整玩家积分） ======
+    case 'admin_adjust_score':
+        creditRequireAdmin();
+        $target = getParam('target', '');
+        $amount = (int)getParam('amount', 0);
+        $reason = getParam('reason', '管理员手动调整');
+        if (!$target) error('缺少玩家名');
+        if ($amount == 0) error('积分变动值不能为0');
+
+        // 查当前积分
+        $stmt = $db->prepare("SELECT credit_score FROM users WHERE player_name = ?");
+        $stmt->bindValue(1, $target, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $oldScore = 100;
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $oldScore = (int)$row['credit_score'];
+
+        // 更新积分
+        $newScore = $oldScore + $amount;
+        if ($newScore < 0) $newScore = 0;
+        if ($newScore > 1000) $newScore = 1000; // 上限防溢出
+        $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
+        $stmt->bindValue(1, $newScore, SQLITE3_INTEGER);
+        $stmt->bindValue(2, $target, SQLITE3_TEXT);
+        $stmt->execute();
+
+        // 记录一条 credit_record（source='admin' 标记管理员手动调整）
+        $stmt = $db->prepare("INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, 'admin')");
+        $type = $amount > 0 ? 'good' : 'bad';
+        $stmt->bindValue(1, $target, SQLITE3_TEXT);
+        $stmt->bindValue(2, $_SESSION['admin_user'] ?? 'admin', SQLITE3_TEXT);
+        $stmt->bindValue(3, $type, SQLITE3_TEXT);
+        $stmt->bindValue(4, $reason, SQLITE3_TEXT);
+        $stmt->bindValue(5, $amount, SQLITE3_INTEGER);
+        $stmt->bindValue(6, time(), SQLITE3_INTEGER);
+        $stmt->bindValue(7, time(), SQLITE3_INTEGER);
+        $stmt->bindValue(8, $reason, SQLITE3_TEXT);
+        $stmt->execute();
+
+        success(['target' => $target, 'old_score' => $oldScore, 'new_score' => $newScore, 'amount' => $amount],
+            '积分已调整: ' . $target . ' ' . ($amount > 0 ? '+' : '') . $amount . ' (当前: ' . $newScore . ')');
+        break;
+
+    // ====== Java 推送同步：接收 Java 端推送的积分数据（覆盖 PHP 副本） ======
+    case 'sync_push':
+        // 接收 Java 端 SECRET_KEY 验证
+        $syncSecret = getParam('secret', '');
+        if (!$syncSecret || $syncSecret !== SECRET_KEY) error('同步密钥无效', 401);
+
+        $playersJson = getParam('players', '');
+        $recordsJson = getParam('records', '');
+
+        // 批量更新玩家积分
+        $playerData = json_decode($playersJson, true);
+        if (is_array($playerData) && !empty($playerData)) {
+            $db->beginTransaction();
+            foreach ($playerData as $pname => $score) {
+                // 确保玩家存在
+                $stmt = $db->prepare("SELECT 1 FROM users WHERE player_name = ?");
+                $stmt->bindValue(1, $pname, SQLITE3_TEXT);
+                $res = $stmt->execute();
+                if ($row = $res->fetchArray()) {
+                    $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
+                    $stmt->bindValue(1, (int)$score, SQLITE3_INTEGER);
+                    $stmt->bindValue(2, $pname, SQLITE3_TEXT);
+                    $stmt->execute();
+                } else {
+                    // 玩家不存在则插入
+                    $stmt = $db->prepare("INSERT INTO users (player_name, credit_score) VALUES (?, ?)");
+                    $stmt->bindValue(1, $pname, SQLITE3_TEXT);
+                    $stmt->bindValue(2, (int)$score, SQLITE3_INTEGER);
+                    $stmt->execute();
+                }
+            }
+            $db->commit();
+        }
+
+        // 批量插入/更新积分记录（去重：同 target+source+created_at 的记录跳过）
+        $recordData = json_decode($recordsJson, true);
+        if (is_array($recordData) && !empty($recordData)) {
+            foreach ($recordData as $rec) {
+                $target = $rec['target_player'] ?? '';
+                $reporter = $rec['reporter_player'] ?? '';
+                $type = $rec['type'] ?? 'good';
+                $content = $rec['content'] ?? '';
+                $status = $rec['status'] ?? 'approved';
+                $scoreChange = (int)($rec['score_change'] ?? 0);
+                $createdAt = (int)($rec['created_at'] ?? 0);
+                $approvedAt = (int)($rec['approved_at'] ?? 0);
+                $reason = $rec['approve_reason'] ?? '';
+                $source = $rec['source'] ?? 'game';
+
+                if (!$target || !$createdAt) continue;
+
+                // 去重检查
+                $stmt = $db->prepare("SELECT 1 FROM credit_records WHERE target_player = ? AND source = ? AND created_at = ? AND type = ?");
+                $stmt->bindValue(1, $target, SQLITE3_TEXT);
+                $stmt->bindValue(2, $source, SQLITE3_TEXT);
+                $stmt->bindValue(3, $createdAt, SQLITE3_INTEGER);
+                $stmt->bindValue(4, $type, SQLITE3_TEXT);
+                $res = $stmt->execute();
+                if ($row = $res->fetchArray()) continue; // 已存在，跳过
+
+                $stmt = $db->prepare("INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                $stmt->bindValue(1, $target, SQLITE3_TEXT);
+                $stmt->bindValue(2, $reporter, SQLITE3_TEXT);
+                $stmt->bindValue(3, $type, SQLITE3_TEXT);
+                $stmt->bindValue(4, $content, SQLITE3_TEXT);
+                $stmt->bindValue(5, $status, SQLITE3_TEXT);
+                $stmt->bindValue(6, $scoreChange, SQLITE3_INTEGER);
+                $stmt->bindValue(7, $createdAt, SQLITE3_INTEGER);
+                $stmt->bindValue(8, $approvedAt, SQLITE3_INTEGER);
+                $stmt->bindValue(9, $reason, SQLITE3_TEXT);
+                $stmt->bindValue(10, $source, SQLITE3_TEXT);
+                $stmt->execute();
+            }
+        }
+
+        success(['synced' => count($playerData ?? []) . ' players, ' . count($recordData ?? []) . ' records'], 'Java同步推送成功');
+        break;
+
+    // ====== Java 拉回同步：返回 PHP 端所有积分数据（管理员手动调整的部分） ======
+    case 'sync_pull':
+        $syncSecret = getParam('secret', '');
+        if (!$syncSecret || $syncSecret !== SECRET_KEY) error('同步密钥无效', 401);
+
+        // 返回所有玩家积分
+        $stmt = $db->prepare("SELECT player_name, credit_score FROM users WHERE credit_score IS NOT NULL ORDER BY player_name");
+        $res = $stmt->execute();
+        $players = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $players[$row['player_name']] = (int)$row['credit_score'];
+        }
+
+        // 返回所有积分记录（标记 source='admin' 的是管理员手动调整的）
+        $stmt = $db->prepare("SELECT * FROM credit_records ORDER BY created_at DESC LIMIT 500");
+        $res = $stmt->execute();
+        $records = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $records[] = $row;
+        }
+
+        success(['players' => $players, 'records' => $records], 'Java同步拉回成功');
+        break;
+
     default:
         error('未知操作: ' . $action);
 }

@@ -3450,6 +3450,19 @@ async function loadCredit(el) {
         }
         html += '</div>';
 
+        // 积分管理 — 管理员手动加减积分（PHP 端副本，Java 定时拉回）
+        html += '<div class="card">';
+        html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">⚖️ 积分管理（手动加减）</h3>';
+        html += '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">';
+        html += '<div style="flex:1;min-width:200px">';
+        html += '<label style="display:block;font-size:11px;color:var(--dim);margin-bottom:4px">玩家名</label>';
+        html += '<input id="creditAdjustTarget" type="text" placeholder="输入玩家名" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">';
+        html += '</div>';
+        html += '<button onclick="creditQueryScore()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">查询积分</button>';
+        html += '</div>';
+        html += '<div id="creditAdjustResult" style="margin-top:12px"></div>';
+        html += '</div>';
+
         // 积分规则 — 使用 .card class
         html += '<div class="card">';
         html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📋 积分规则</h3>';
@@ -3560,6 +3573,77 @@ async function creditToggleRule(ruleId, enabled) {
         loadCredit(document.getElementById('C'));
     } catch(e) {
         alert('操作异常: ' + e.message);
+    }
+}
+
+async function creditQueryScore() {
+    const target = document.getElementById('creditAdjustTarget')?.value?.trim() || '';
+    if (!target) { glassAlert('请输入玩家名'); return; }
+    const resultEl = document.getElementById('creditAdjustResult');
+    resultEl.innerHTML = '<div style="text-align:center;padding:12px;color:var(--dim)">查询中...</div>';
+    try {
+        const r = await fetch('api/credit.php?action=admin_player_score&target=' + encodeURIComponent(target), { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { resultEl.innerHTML = '<div style="color:var(--red);font-size:12px">查询失败: ' + escAdmHtml(r.message || '未知错误') + '</div>'; return; }
+        const score = r.data.credit_score;
+        resultEl.innerHTML = `
+            <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin-top:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                    <span style="font-size:13px;color:var(--fg)">${escAdmHtml(r.data.player)}</span>
+                    <span style="font-size:20px;font-weight:bold;color:${score >= 60 ? 'var(--green)' : score >= 30 ? 'var(--yellow)' : 'var(--red)'}">${score}</span>
+                </div>
+                <div style="display:flex;gap:8px;align-items:flex-end">
+                    <div style="flex:1">
+                        <label style="display:block;font-size:11px;color:var(--dim);margin-bottom:4px">变动值（正数加分，负数扣分）</label>
+                        <input id="creditAdjustAmount" type="text" placeholder="如 +10 或 -5" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:13px">
+                    </div>
+                    <div style="flex:1.5">
+                        <label style="display:block;font-size:11px;color:var(--dim);margin-bottom:4px">理由（可选）</label>
+                        <input id="creditAdjustReason" type="text" placeholder="调整理由" style="width:100%;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-size:13px">
+                    </div>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:8px">
+                    <button onclick="doCreditAdjustScore('${escAdmHtml(target)}', ${score})" style="flex:1;padding:8px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">+ 加分</button>
+                    <button onclick="doCreditAdjustScore('${escAdmHtml(target)}', ${score}, true)" style="flex:1;padding:8px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">- 扣分</button>
+                </div>
+                <div id="creditAdjustStatus" style="margin-top:8px;font-size:12px;text-align:center"></div>
+            </div>
+        `;
+    } catch(e) {
+        resultEl.innerHTML = '<div style="color:var(--red);font-size:12px">查询异常: ' + escAdmHtml(e.message) + '</div>';
+    }
+}
+
+async function doCreditAdjustScore(target, currentScore, isDeduct) {
+    const amountStr = document.getElementById('creditAdjustAmount')?.value?.trim() || '';
+    if (!amountStr) { glassAlert('请输入积分变动值'); return; }
+    const amount = parseInt(amountStr, 10);
+    if (isNaN(amount) || amount === 0) { glassAlert('请输入有效的非零整数'); return; }
+    // 扣分模式强制取负
+    const finalAmount = isDeduct ? Math.abs(amount) : Math.abs(amount);
+    const sign = isDeduct ? -1 : 1;
+    const finalValue = sign * finalAmount;
+    // 检查是否超出范围
+    const newScore = currentScore + finalValue;
+    if (newScore < 0) { glassAlert('扣分后积分不能为负数（当前 ' + currentScore + '，最多扣 ' + currentScore + '）'); return; }
+    const reason = document.getElementById('creditAdjustReason')?.value?.trim() || (isDeduct ? '管理员扣分' : '管理员加分');
+
+    const statusEl = document.getElementById('creditAdjustStatus');
+    statusEl.innerHTML = '<span style="color:var(--dim)">提交中...</span>';
+    try {
+        const r = await fetch('api/credit.php?action=admin_adjust_score&target=' + encodeURIComponent(target) + '&amount=' + finalValue + '&reason=' + encodeURIComponent(reason), { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { statusEl.innerHTML = '<span style="color:var(--red)">操作失败: ' + escAdmHtml(r.message || '未知错误') + '</span>'; return; }
+        const newScore = r.data.new_score;
+        statusEl.innerHTML = '<span style="color:var(--green)">' + escAdmHtml(r.message) + '</span>';
+        // 更新显示的积分
+        const scoreSpan = statusEl.parentElement.querySelector('span:nth-child(2)');
+        if (scoreSpan) {
+            scoreSpan.textContent = newScore;
+            scoreSpan.style.color = newScore >= 60 ? 'var(--green)' : newScore >= 30 ? 'var(--yellow)' : 'var(--red)';
+        }
+        document.getElementById('creditAdjustAmount').value = '';
+        document.getElementById('creditAdjustReason').value = '';
+    } catch(e) {
+        statusEl.innerHTML = '<span style="color:var(--red)">操作异常: ' + escAdmHtml(e.message) + '</span>';
     }
 }
 
