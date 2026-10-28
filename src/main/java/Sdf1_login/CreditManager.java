@@ -21,8 +21,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *   - /credits 打开9格GUI：上报好人好事/举报违规/我的积分/积分明细
  *   - 管理员(Tag)额外：加分/扣分/待审批/审批记录
  *   - /credits user <玩家名> 任何人可查他人积分
+ *   - /credits user <玩家名> give/remove <数值> [备注] 管理员快捷加减分
+ *   - /credits user give/remove <数值> [备注] 给自己加减分
  *   - 上报通过聊天框分步引导：填目标玩家名 → 填上报理由
  *   - 低于阈值 → 行为限制（可配置规则）
+ *   - ★ 第58批-问题4：积分支持小数（如0.01），内部用 double，展示保留2位
  */
 public class CreditManager {
 
@@ -41,8 +44,16 @@ public class CreditManager {
     public static final String TYPE_GOOD = "good";       // 好人好事
     public static final String TYPE_BAD = "bad";         // 举报
 
-    // 玩家积分缓存 (playerName -> score)
-    private final Map<String, Integer> scoreCache = new ConcurrentHashMap<>();
+    // ★ 第58批-问题4：积分支持小数，缓存用 Double
+    private final Map<String, Double> scoreCache = new ConcurrentHashMap<>();
+
+    /** 格式化积分展示：整数显示整数，小数保留2位 */
+    public static String formatScore(double score) {
+        if (score == Math.floor(score) && !Double.isInfinite(score)) {
+            return String.valueOf((long) score);
+        }
+        return String.format(java.util.Locale.ROOT, "%.2f", score);
+    }
 
     // GUI标题
     public static final String GUI_TITLE = "§d§l信誉积分";
@@ -89,6 +100,7 @@ public class CreditManager {
             Statement st = db.getConnection().createStatement();
 
             // 信誉积分记录表
+            // ★ 第58批-问题4：score_change 改为 REAL 支持小数积分
             st.execute("CREATE TABLE IF NOT EXISTS credit_records ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     + "target_player TEXT NOT NULL,"
@@ -96,7 +108,7 @@ public class CreditManager {
                     + "type TEXT NOT NULL,"
                     + "content TEXT DEFAULT '',"
                     + "status TEXT DEFAULT 'pending',"
-                    + "score_change INTEGER DEFAULT 0,"
+                    + "score_change REAL DEFAULT 0,"
                     + "created_at INTEGER DEFAULT 0,"
                     + "approved_at INTEGER DEFAULT 0,"
                     + "approve_reason TEXT DEFAULT '',"
@@ -119,8 +131,9 @@ public class CreditManager {
             initDefaultRules();
 
             // users 表添加 credit_score 列
+            // ★ 第58批-问题4：用 REAL 支持小数积分
             try {
-                st.executeUpdate("ALTER TABLE users ADD COLUMN credit_score INTEGER DEFAULT " + DEFAULT_INIT_SCORE);
+                st.executeUpdate("ALTER TABLE users ADD COLUMN credit_score REAL DEFAULT " + DEFAULT_INIT_SCORE);
             } catch (Exception ignored) {}
 
         } catch (Exception e) {
@@ -142,18 +155,19 @@ public class CreditManager {
 
     // ==================== 积分查询 ====================
 
-    public int getScore(String playerName) {
+    /** ★ 第58批-问题4：返回 double，支持小数积分 */
+    public double getScore(String playerName) {
         if (scoreCache.containsKey(playerName)) {
             return scoreCache.get(playerName);
         }
-        int score = DEFAULT_INIT_SCORE;
+        double score = DEFAULT_INIT_SCORE;
         try {
             PreparedStatement ps = db.getConnection().prepareStatement(
                     "SELECT credit_score FROM users WHERE player_name = ?");
             ps.setString(1, playerName);
             ResultSet rs = ps.executeQuery();
             if (rs.next()) {
-                score = rs.getInt("credit_score");
+                score = rs.getDouble("credit_score");
             }
             ps.close();
         } catch (Exception ignored) {}
@@ -161,13 +175,19 @@ public class CreditManager {
         return score;
     }
 
+    /** 兼容旧调用：返回 int 版本（截断小数） */
+    public int getScoreInt(String playerName) {
+        return (int) Math.floor(getScore(playerName));
+    }
+
     // ==================== 积分修改 ====================
 
-    public void setScore(String playerName, int score) {
+    /** ★ 第58批-问题4：setScore 支持 double */
+    public void setScore(String playerName, double score) {
         try {
             PreparedStatement ps = db.getConnection().prepareStatement(
                     "UPDATE users SET credit_score = ? WHERE player_name = ?");
-            ps.setInt(1, score);
+            ps.setDouble(1, score);
             ps.setString(2, playerName);
             ps.executeUpdate();
             ps.close();
@@ -178,11 +198,28 @@ public class CreditManager {
         checkRestrictions(playerName, score);
     }
 
-    public void addScore(String playerName, int amount, String reason) {
-        int current = getScore(playerName);
+    /** ★ 第58批-问题4：addScore 支持 double */
+    public void addScore(String playerName, double amount, String reason) {
+        double current = getScore(playerName);
         setScore(playerName, current + amount);
         plugin.getLogger().info("[信誉积分] " + playerName + " 积分变动: "
-                + (amount > 0 ? "+" : "") + amount + " (" + reason + ")");
+                + (amount > 0 ? "+" : "") + formatScore(amount) + " (" + reason + ")");
+    }
+
+    /** 兼容旧调用：int 版本的 addScore */
+    public void addScore(String playerName, int amount, String reason) {
+        addScore(playerName, (double) amount, reason);
+    }
+
+    /** 兼容旧调用：int 版本的 setScore */
+    public void setScore(String playerName, int score) {
+        setScore(playerName, (double) score);
+    }
+
+    /** 兼容旧调用：int 版本的 getScore（返回 int） */
+    @Deprecated
+    public int getScore(String playerName, boolean old) {
+        return (int) Math.floor(getScore(playerName));
     }
 
     // ==================== 上报 ====================
@@ -209,7 +246,8 @@ public class CreditManager {
 
     // ==================== 审批 ====================
 
-    public boolean approveRecord(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
+    /** ★ 第58批-问题4：scoreChange 支持 double */
+    public boolean approveRecord(int recordId, boolean approved, String reason, double scoreChange, String approverName) {
         try {
             // 先查目标玩家
             String target = null;
@@ -223,7 +261,7 @@ public class CreditManager {
             PreparedStatement ps = db.getConnection().prepareStatement(
                     "UPDATE credit_records SET status = ?, score_change = ?, approved_at = ?, approve_reason = ? WHERE id = ?");
             ps.setString(1, approved ? STATUS_APPROVED : STATUS_REJECTED);
-            ps.setInt(2, approved ? scoreChange : 0);
+            ps.setDouble(2, approved ? scoreChange : 0);
             ps.setLong(3, System.currentTimeMillis());
             ps.setString(4, reason);
             ps.setInt(5, recordId);
@@ -233,13 +271,18 @@ public class CreditManager {
             if (approved && scoreChange != 0 && target != null) {
                 addScore(target, scoreChange, "信誉积分审批(" + (approved ? "通过" : "驳回") + "): " + reason);
                 plugin.getLogger().info("[信誉积分] " + approverName + " 审批通过 " + target
-                        + " 积分变动: " + (scoreChange > 0 ? "+" : "") + scoreChange);
+                        + " 积分变动: " + (scoreChange > 0 ? "+" : "") + formatScore(scoreChange));
             }
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 审批失败: " + e.getMessage());
             return false;
         }
+    }
+
+    /** 兼容旧调用：int 版本的 approveRecord */
+    public boolean approveRecord(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
+        return approveRecord(recordId, approved, reason, (double) scoreChange, approverName);
     }
 
     // ==================== 查询 ====================
@@ -283,7 +326,7 @@ public class CreditManager {
                 row.put("type", rs.getString("type"));
                 row.put("content", rs.getString("content"));
                 row.put("status", rs.getString("status"));
-                row.put("score_change", rs.getInt("score_change"));
+                row.put("score_change", rs.getDouble("score_change"));
                 row.put("created_at", rs.getLong("created_at"));
                 row.put("source", rs.getString("source"));
                 list.add(row);
@@ -322,9 +365,9 @@ public class CreditManager {
     }
 
     public boolean isRestricted(String playerName, String restrictionType) {
-        int score = getScore(playerName);
+        double score = getScore(playerName);
         for (Map<String, Object> rule : getEnabledRules()) {
-            int minScore = ((Number) rule.get("min_score")).intValue();
+            double minScore = ((Number) rule.get("min_score")).doubleValue();
             String type = (String) rule.get("restriction_type");
             if (score < minScore && type.equals(restrictionType)) {
                 return true;
@@ -333,10 +376,10 @@ public class CreditManager {
         return false;
     }
 
-    private void checkRestrictions(String playerName, int score) {
+    private void checkRestrictions(String playerName, double score) {
         for (Map<String, Object> rule : getEnabledRules()) {
-            int minScore = ((Number) rule.get("min_score")).intValue();
-            int maxScore = ((Number) rule.get("max_score")).intValue();
+            double minScore = ((Number) rule.get("min_score")).doubleValue();
+            double maxScore = ((Number) rule.get("max_score")).doubleValue();
             String type = (String) rule.get("restriction_type");
             String desc = (String) rule.get("description");
 
@@ -344,7 +387,7 @@ public class CreditManager {
             if (p == null || !p.isOnline()) continue;
 
             if (score < minScore && (maxScore == 0 || score <= maxScore)) {
-                p.sendMessage("§c§l[信誉积分] §f你的积分 " + score + " 低于阈值 " + minScore + "，"
+                p.sendMessage("§c§l[信誉积分] §f你的积分 " + formatScore(score) + " 低于阈值 " + formatScore(minScore) + "，"
                         + "已触发限制: " + desc);
             }
         }
@@ -369,10 +412,10 @@ public class CreditManager {
                 "§7点击后聊天框输入目标玩家名"));
 
         // Slot 2: 我的积分
-        int myScore = getScore(p.getName());
+        double myScore = getScore(p.getName());
         inv.setItem(2, mkItem(Material.GOLD_INGOT,
                 "§e§l我的积分",
-                "§7当前积分: " + myScore,
+                "§7当前积分: " + formatScore(myScore),
                 "§7初始积分: " + DEFAULT_INIT_SCORE));
 
         // Slot 3: 积分明细
@@ -526,7 +569,7 @@ public class CreditManager {
                     "§e#" + r.get("id") + " " + r.get("type"),
                     "§7上报人: " + r.get("reporter_player"),
                     "§7状态: " + statusText,
-                    "§7积分变动: " + r.get("score_change"),
+                    "§7积分变动: " + formatScore((Double) r.get("score_change")),
                     "§7内容: " + r.get("content"),
                     "§7来源: " + r.get("source")));
         }
@@ -548,7 +591,7 @@ public class CreditManager {
                     "§7上报人: " + r.get("reporter_player"),
                     "§7类型: " + r.get("type"),
                     "§7状态: " + statusText,
-                    "§7积分变动: " + r.get("score_change"),
+                    "§7积分变动: " + formatScore((Double) r.get("score_change")),
                     "§7内容: " + r.get("content"),
                     "§7来源: " + r.get("source")));
         }
@@ -573,16 +616,17 @@ public class CreditManager {
 
         // ★ 快捷查积分：/credits <玩家名> 直接查，无需 user 关键字
         // 判断第一个参数是否是已知子命令
-        boolean isSubCommand = sub.equals("user") || sub.equals("审批") || sub.equals("approve");
+        boolean isSubCommand = sub.equals("user") || sub.equals("审批") || sub.equals("approve")
+                || sub.equals("give") || sub.equals("remove");
         if (!isSubCommand && args.length >= 1) {
             // 直接是玩家名 → 查询积分
             String targetName = args[0];
-            int targetScore = getScore(targetName);
-            sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + targetScore
+            double targetScore = getScore(targetName);
+            sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + formatScore(targetScore)
                     + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
             // 判断是否触发限制
             for (Map<String, Object> rule : getEnabledRules()) {
-                int minScore = ((Number) rule.get("min_score")).intValue();
+                double minScore = ((Number) rule.get("min_score")).doubleValue();
                 if (targetScore < minScore) {
                     String desc = (String) rule.get("description");
                     sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
@@ -591,20 +635,128 @@ public class CreditManager {
             return true;
         }
 
+        // ★ 第58批-问题4：/credits give/remove <数值> [备注] — 给自己加减分
+        if (sub.equals("give") || sub.equals("remove")) {
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("§c仅玩家可用");
+                return true;
+            }
+            Player p = (Player) sender;
+            boolean isGive = sub.equals("give");
+            if (!isGive && !plugin.isAdmin(p)) {
+                p.sendMessage("§c§l[信誉积分] §c权限不足");
+                return true;
+            }
+            if (args.length < 2) {
+                p.sendMessage("§c用法: /credits " + (isGive ? "give" : "remove") + " <数值> [备注]");
+                p.sendMessage("§7示例: /credits give 5 帮助新人 / credits remove 0.01 违规");
+                return true;
+            }
+            String amountStr = args[1];
+            double amount;
+            try {
+                amount = Double.parseDouble(amountStr);
+            } catch (NumberFormatException e) {
+                p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                return true;
+            }
+            if (!isGive) amount = -Math.abs(amount); // remove → 负数
+            else amount = Math.abs(amount); // give → 正数
+            String reason = args.length >= 3 ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
+            double newScore = getScore(p.getName()) + amount;
+            addScore(p.getName(), amount, reason);
+            p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
+                    + (amount > 0 ? "+" : "") + formatScore(amount)
+                    + " §7当前积分: §e" + formatScore(newScore));
+            return true;
+        }
+
         switch (sub) {
             case "user":
-                // /credits user <玩家名> — 兼容旧格式
+                // /credits user <玩家名> — 查积分
+                // /credits user <玩家名> give/remove <数值> [备注] — 快捷加减分（管理员）
+                // /credits user give/remove <数值> [备注] — 给自己加减分
                 if (args.length < 2) {
-                    sender.sendMessage("§c用法: /credits user <玩家名> 或直接 /credits <玩家名>");
+                    sender.sendMessage("§c用法: /credits user <玩家名> [give/remove <数值> [备注]]");
+                    sender.sendMessage("§7或: /credits user give/remove <数值> [备注] (给自己加减分)");
                     return true;
                 }
+                String arg1 = args[1].toLowerCase();
+
+                // ★ /credits user give/remove <数值> [备注] — 给自己加减分
+                if (arg1.equals("give") || arg1.equals("remove")) {
+                    if (!(sender instanceof Player)) {
+                        sender.sendMessage("§c仅玩家可用");
+                        return true;
+                    }
+                    Player p = (Player) sender;
+                    boolean isGive = arg1.equals("give");
+                    if (!isGive && !plugin.isAdmin(p)) {
+                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                        return true;
+                    }
+                    if (args.length < 3) {
+                        p.sendMessage("§c用法: /credits user " + (isGive ? "give" : "remove") + " <数值> [备注]");
+                        p.sendMessage("§7示例: /credits user give 5 帮助新人");
+                        return true;
+                    }
+                    String amountStr = args[2];
+                    double amount;
+                    try {
+                        amount = Double.parseDouble(amountStr);
+                    } catch (NumberFormatException e) {
+                        p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                        return true;
+                    }
+                    if (!isGive) amount = -Math.abs(amount);
+                    else amount = Math.abs(amount);
+                    String reason = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
+                    double newScore = getScore(p.getName()) + amount;
+                    addScore(p.getName(), amount, reason);
+                    p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
+                            + (amount > 0 ? "+" : "") + formatScore(amount)
+                            + " §7当前积分: §e" + formatScore(newScore));
+                    return true;
+                }
+
+                // /credits user <玩家名> [give/remove <数值> [备注>] — 查积分或快捷加减分
                 String targetName = args[1];
-                int targetScore = getScore(targetName);
-                sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + targetScore
+                // 检查是否有第三个参数 give/remove
+                if (args.length >= 4) {
+                    String action = args[2].toLowerCase();
+                    if (action.equals("give") || action.equals("remove")) {
+                        if (!(sender instanceof Player && plugin.isAdmin(sender))) {
+                            sender.sendMessage("§c§l[信誉积分] §c权限不足");
+                            return true;
+                        }
+                        boolean isGive = action.equals("give");
+                        String amountStr = args[3];
+                        double amount;
+                        try {
+                            amount = Double.parseDouble(amountStr);
+                        } catch (NumberFormatException e) {
+                            sender.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                            return true;
+                        }
+                        if (!isGive) amount = -Math.abs(amount);
+                        else amount = Math.abs(amount);
+                        String reason = args.length >= 5 ? String.join(" ", java.util.Arrays.copyOfRange(args, 4, args.length)) : (isGive ? "管理员快捷加分" : "管理员快捷扣分");
+                        double newScore = getScore(targetName) + amount;
+                        addScore(targetName, amount, reason);
+                        sender.sendMessage("§d§l[信誉积分] §f已给 " + targetName + " " + (isGive ? "加分" : "扣分") + " §e"
+                                + (amount > 0 ? "+" : "") + formatScore(amount)
+                                + " §7当前积分: §e" + formatScore(newScore));
+                        return true;
+                    }
+                }
+
+                // 普通查询
+                double targetScore = getScore(targetName);
+                sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + formatScore(targetScore)
                         + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
                 // 判断是否触发限制
                 for (Map<String, Object> rule : getEnabledRules()) {
-                    int minScore = ((Number) rule.get("min_score")).intValue();
+                    double minScore = ((Number) rule.get("min_score")).doubleValue();
                     if (targetScore < minScore) {
                         String desc = (String) rule.get("description");
                         sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
@@ -656,11 +808,11 @@ public class CreditManager {
                         if (i > 3) reason.append(" ");
                         reason.append(args[i]);
                     }
-                    int scoreChange = 0;
+                    double scoreChange = 0;
                     String reasonStr = reason.toString();
-                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("(\\d+)$").matcher(reasonStr);
+                    java.util.regex.Matcher m = java.util.regex.Pattern.compile("([+-]?\\d+(?:\\.\\d+)?)$").matcher(reasonStr);
                     if (approved && m.find()) {
-                        scoreChange = Integer.parseInt(m.group(1));
+                        scoreChange = Double.parseDouble(m.group(1));
                         reasonStr = reasonStr.substring(0, reasonStr.length() - m.group(1).length()).trim();
                         if (reasonStr.isEmpty()) reasonStr = "信誉积分审批";
                     } else if (approved) {
@@ -669,7 +821,8 @@ public class CreditManager {
                     String approver = sender instanceof Player ? ((Player) sender).getName() : "控制台";
                     boolean ok = approveRecord(recordId, approved, reasonStr, scoreChange, approver);
                     if (ok) {
-                        sender.sendMessage("§a审批完成: #" + recordId + " " + (approved ? "通过" : "驳回"));
+                        sender.sendMessage("§a审批完成: #" + recordId + " " + (approved ? "通过" : "驳回")
+                                + (approved && scoreChange != 0 ? " §e积分变动: " + (scoreChange > 0 ? "+" : "") + formatScore(scoreChange) : ""));
                     } else {
                         sender.sendMessage("§c审批失败，记录不存在或已处理");
                     }
@@ -711,9 +864,9 @@ public class CreditManager {
                     p.sendMessage("§7直接在聊天框输入名字即可");
                     break;
                 case 2: // 我的积分
-                    int myScore = getScore(p.getName());
+                    double myScore = getScore(p.getName());
                     p.closeInventory();
-                    p.sendMessage("§d§l[信誉积分] §f你的当前积分: §e" + myScore + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                    p.sendMessage("§d§l[信誉积分] §f你的当前积分: §e" + formatScore(myScore) + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
                     break;
                 case 3: // 积分明细
                     p.closeInventory();
@@ -872,20 +1025,20 @@ public class CreditManager {
                 fd.tempName = msg.trim();
                 fd.state = FlowState.ADD_SCORE_AMOUNT;
                 p.sendMessage("§a§l[信誉积分] §f已记录: " + fd.tempName);
-                p.sendMessage("§7请输入加分数值(正整数)");
+                p.sendMessage("§7请输入加分数值(正数，支持小数如 0.01)");
                 return true;
 
             case ADD_SCORE_AMOUNT:
                 try {
-                    int amount = Integer.parseInt(msg.trim());
+                    double amount = Double.parseDouble(msg.trim());
                     if (amount <= 0) {
-                        p.sendMessage("§c数值必须是正整数");
+                        p.sendMessage("§c数值必须是正数");
                         fd.state = FlowState.ADD_SCORE_AMOUNT;
                         return true;
                     }
                     addScore(fd.tempName, amount, "管理员手动加分");
                     chatFlows.remove(p.getName());
-                    p.sendMessage("§a§l[信誉积分] §f已给 " + fd.tempName + " 加分 §e+" + amount);
+                    p.sendMessage("§a§l[信誉积分] §f已给 " + fd.tempName + " 加分 §e+" + formatScore(amount));
                 } catch (NumberFormatException e) {
                     p.sendMessage("§c请输入数字");
                     fd.state = FlowState.ADD_SCORE_AMOUNT;
@@ -896,20 +1049,20 @@ public class CreditManager {
                 fd.tempName = msg.trim();
                 fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
                 p.sendMessage("§c§l[信誉积分] §f已记录: " + fd.tempName);
-                p.sendMessage("§7请输入扣分数值(正整数)");
+                p.sendMessage("§7请输入扣分数值(正数，支持小数如 0.01)");
                 return true;
 
             case DEDUCT_SCORE_AMOUNT:
                 try {
-                    int amount = Integer.parseInt(msg.trim());
+                    double amount = Double.parseDouble(msg.trim());
                     if (amount <= 0) {
-                        p.sendMessage("§c数值必须是正整数");
+                        p.sendMessage("§c数值必须是正数");
                         fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
                         return true;
                     }
                     addScore(fd.tempName, -amount, "管理员手动扣分");
                     chatFlows.remove(p.getName());
-                    p.sendMessage("§c§l[信誉积分] §f已给 " + fd.tempName + " 扣分 §e-" + amount);
+                    p.sendMessage("§c§l[信誉积分] §f已给 " + fd.tempName + " 扣分 §e-" + formatScore(amount));
                 } catch (NumberFormatException e) {
                     p.sendMessage("§c请输入数字");
                     fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
@@ -919,17 +1072,17 @@ public class CreditManager {
             case APPROVE_SCORE_CHANGE:
                 try {
                     String input = msg.trim();
-                    // 支持 +10 / -5 / 10 / -5 格式
-                    int amount = Integer.parseInt(input.replaceFirst("^[+]", ""));
+                    // 支持 +10 / -5 / 10 / -5 / 0.01 格式
+                    double amount = Double.parseDouble(input.replaceFirst("^[+]", ""));
                     int rid = fd.recordId;
                     String targetName = fd.tempName;
                     // 通过审批并加分/扣分
                     approveRecord(rid, true, "管理员GUI审批通过", amount, p.getName());
                     chatFlows.remove(p.getName());
                     p.sendMessage("§a§l[信誉积分] §f已通过 #" + rid + " " + targetName + " §e"
-                            + (amount > 0 ? "+" : "") + amount);
+                            + (amount > 0 ? "+" : "") + formatScore(amount));
                 } catch (NumberFormatException e) {
-                    p.sendMessage("§c请输入数字(如 +10 或 -5)");
+                    p.sendMessage("§c请输入数字(如 +10 或 -5 或 0.01)");
                 }
                 return true;
         }

@@ -11920,7 +11920,7 @@ public class WebManager {
                  ResultSet rs = st.executeQuery(
                      "SELECT player_name, credit_score FROM users WHERE credit_score IS NOT NULL AND credit_score != 100 ORDER BY player_name")) {
                 while (rs.next()) {
-                    playersObj.addProperty(rs.getString("player_name"), rs.getInt("credit_score"));
+                    playersObj.addProperty(rs.getString("player_name"), rs.getDouble("credit_score"));
                 }
             } catch (Exception e) {
                 plugin.getLogger().warning("[信誉同步] 查询玩家积分失败: " + e.getMessage());
@@ -11941,7 +11941,7 @@ public class WebManager {
                     rec.addProperty("type", rs.getString("type"));
                     rec.addProperty("content", rs.getString("content"));
                     rec.addProperty("status", rs.getString("status"));
-                    rec.addProperty("score_change", rs.getInt("score_change"));
+                    rec.addProperty("score_change", rs.getDouble("score_change"));
                     rec.addProperty("created_at", rs.getLong("created_at"));
                     rec.addProperty("approved_at", rs.getLong("approved_at"));
                     rec.addProperty("approve_reason", rs.getString("approve_reason"));
@@ -12024,7 +12024,7 @@ public class WebManager {
                     if (!"admin".equals(source)) continue;
 
                     String target = rec.get("target_player").getAsString();
-                    int scoreChange = rec.has("score_change") ? rec.get("score_change").getAsInt() : 0;
+                    double scoreChange = rec.has("score_change") ? rec.get("score_change").getAsDouble() : 0;
                     long createdAt = rec.has("created_at") ? rec.get("created_at").getAsLong() : 0;
 
                     // 去重：Java端已有同 target+source+created_at 的记录则跳过
@@ -12057,7 +12057,7 @@ public class WebManager {
                             ps.setString(2, rec.has("reporter_player") ? rec.get("reporter_player").getAsString() : "admin");
                             ps.setString(3, type);
                             ps.setString(4, rec.has("content") ? rec.get("content").getAsString() : reason);
-                            ps.setInt(5, scoreChange);
+                            ps.setDouble(5, scoreChange);
                             ps.setLong(6, createdAt);
                             ps.setLong(7, rec.has("approved_at") ? rec.get("approved_at").getAsLong() : createdAt);
                             ps.setString(8, reason);
@@ -12067,7 +12067,7 @@ public class WebManager {
                         // 更新玩家积分（直接设值，PHP端是副本但管理员调整需回写Java）
                         try (PreparedStatement ps = conn.prepareStatement(
                                 "UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?")) {
-                            ps.setInt(1, scoreChange);
+                            ps.setDouble(1, scoreChange);
                             ps.setString(2, target);
                             ps.executeUpdate();
                         }
