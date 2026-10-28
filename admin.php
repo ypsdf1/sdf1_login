@@ -3417,24 +3417,12 @@ async function loadCredit(el) {
         html += `<button onclick="loadCredit(document.getElementById('C'))" style="padding:6px 12px;background:var(--card);color:var(--dim);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:12px">🔄 刷新</button>`;
         html += '</div></div>';
 
-        // 统计卡片
-        html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px">';
-        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
-            <div style="font-size:24px;font-weight:bold;color:var(--yellow)">${pending.length}</div>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">待审批</div>
-        </div>`;
-        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
-            <div style="font-size:24px;font-weight:bold;color:#4caf50">${records.filter(r => r.status === 'approved').length}</div>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">已通过</div>
-        </div>`;
-        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
-            <div style="font-size:24px;font-weight:bold;color:#f44336">${records.filter(r => r.status === 'rejected').length}</div>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">已驳回</div>
-        </div>`;
-        html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
-            <div style="font-size:24px;font-weight:bold;color:var(--accent)">${rules.length}</div>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">规则数</div>
-        </div>`;
+        // 统计卡片 — 使用 .dash-stat 样式，与管理后台其他页面一致
+        html += '<div class="dash-stats">';
+        html += `<div class="dash-stat"><div class="v yellow">${pending.length}</div><div class="l">待审批</div></div>`;
+        html += `<div class="dash-stat"><div class="v green">${records.filter(r => r.status === 'approved').length}</div><div class="l">已通过</div></div>`;
+        html += `<div class="dash-stat"><div class="v red">${records.filter(r => r.status === 'rejected').length}</div><div class="l">已驳回</div></div>`;
+        html += `<div class="dash-stat"><div class="v blue">${rules.length}</div><div class="l">规则数</div></div>`;
         html += '</div>';
 
         // 待审批区域
@@ -3451,12 +3439,12 @@ async function loadCredit(el) {
                 html += '<tr style="border-top:1px solid var(--border)">';
                 html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
                 html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
-                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:#4caf50">好人好事</span>' : '<span style="color:#f44336">举报</span>') + '</td>';
+                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
                 html += '<td style="padding:6px;color:var(--dim);word-break:break-all">' + escAdmHtml(r.content || '') + '</td>';
                 html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
                 html += '<td style="padding:6px;white-space:nowrap">';
-                html += '<button onclick="creditApprove(' + r.id + ')" style="padding:3px 8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;margin-right:4px">通过</button>';
-                html += '<button onclick="creditReject(' + r.id + ')" style="padding:3px 8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">驳回</button>';
+                html += '<button onclick="creditApprove(' + r.id + ')" class="btn btn-green" style="padding:3px 8px;font-size:11px;margin-right:4px">通过</button>';
+                html += '<button onclick="creditReject(' + r.id + ')" class="btn btn-red" style="padding:3px 8px;font-size:11px">驳回</button>';
                 html += '</td></tr>';
             }
             html += '</table></div>';
@@ -3475,7 +3463,7 @@ async function loadCredit(el) {
                 html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px">';
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
                 html += '<span style="font-size:13px;font-weight:bold">' + escAdmHtml(r.rule_name) + '</span>';
-                html += '<span style="font-size:11px;padding:2px 8px;border-radius:10px;' + (r.enabled ? 'background:rgba(76,175,80,0.15);color:#4caf50' : 'background:rgba(244,67,54,0.15);color:#f44336') + '">' + (r.enabled ? '启用' : '禁用') + '</span>';
+                html += '<span style="font-size:11px;padding:2px 8px;border-radius:10px;' + (r.enabled ? 'background:rgba(63,185,80,0.2);color:var(--green)' : 'background:rgba(248,81,73,0.2);color:var(--red)') + '">' + (r.enabled ? '启用' : '禁用') + '</span>';
                 html += '</div>';
                 html += '<div style="font-size:12px;color:var(--dim)">低于 ' + r.min_score + ' 分触发 ' + escAdmHtml(typeName) + '</div>';
                 html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + escAdmHtml(r.description || '') + '</div>';
@@ -3497,14 +3485,14 @@ async function loadCredit(el) {
             for (const r of records) {
                 const t = new Date((r.approved_at || r.created_at) * 1000);
                 const timeStr = t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-                const statusColor = {pending: 'var(--yellow)', approved: '#4caf50', rejected: '#f44336'}[r.status] || 'var(--dim)';
+                const statusColor = {pending: 'var(--yellow)', approved: 'var(--green)', rejected: 'var(--red)'}[r.status] || 'var(--dim)';
                 html += '<tr style="border-top:1px solid var(--border)">';
                 html += '<td style="padding:6px">' + r.id + '</td>';
                 html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
                 html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
-                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:#4caf50">好人好事</span>' : '<span style="color:#f44336">举报</span>') + '</td>';
+                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
                 html += '<td style="padding:6px"><span style="color:' + statusColor + '">' + escAdmHtml(r.status) + '</span></td>';
-                html += '<td style="padding:6px;font-weight:bold;color:' + (r.score_change > 0 ? '#4caf50' : r.score_change < 0 ? '#f44336' : 'var(--dim)') + '">' + (r.score_change > 0 ? '+' : '') + r.score_change + '</td>';
+                html += '<td style="padding:6px;font-weight:bold;color:' + (r.score_change > 0 ? 'var(--green)' : r.score_change < 0 ? 'var(--red)' : 'var(--dim)') + '">' + (r.score_change > 0 ? '+' : '') + r.score_change + '</td>';
                 html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
                 html += '</tr>';
             }
@@ -3526,7 +3514,7 @@ function creditApprove(recordId) {
         <div style="margin-bottom:12px">
             <input id="creditAmount" type="text" placeholder="+10 或 -5" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
         </div>
-        <button onclick="doCreditApprove(${recordId})" style="width:100%;padding:8px;background:#4caf50;color:#fff;border:none;border-radius:4px;cursor:pointer">确认通过</button>
+        <button onclick="doCreditApprove(${recordId})" style="width:100%;padding:8px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer">确认通过</button>
     </div>`;
     showModal('审批通过', '', null, html);
 }
@@ -3536,7 +3524,7 @@ async function doCreditApprove(recordId) {
     try {
         const r = await fetch('api/credit.php?action=approve&id=' + recordId + '&amount=' + encodeURIComponent(amount), { credentials: 'same-origin' }).then(r => r.json());
         if (!r.success) { alert('操作失败: ' + (r.message || '未知错误')); return; }
-        showModal('成功', '', null, `<div style="text-align:center;padding:16px"><p style="color:#4caf50;font-size:14px">${escAdmHtml(r.message || '审批通过')}</p><button onclick="closeModal()" style="margin-top:12px;padding:8px 24px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">确定</button></div>`);
+        showModal('成功', '', null, `<div style="text-align:center;padding:16px"><p style="color:var(--green);font-size:14px">${escAdmHtml(r.message || '审批通过')}</p><button onclick="closeModal()" style="margin-top:12px;padding:8px 24px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">确定</button></div>`);
         setTimeout(() => { closeModal(); loadCredit(document.getElementById('C')); }, 1500);
     } catch(e) {
         alert('操作异常: ' + e.message);
@@ -3550,7 +3538,7 @@ function creditReject(recordId) {
         <div style="margin-bottom:12px">
             <input id="creditRejectReason" type="text" placeholder="驳回理由（可选）" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
         </div>
-        <button onclick="doCreditReject(${recordId})" style="width:100%;padding:8px;background:#f44336;color:#fff;border:none;border-radius:4px;cursor:pointer">确认驳回</button>
+        <button onclick="doCreditReject(${recordId})" style="width:100%;padding:8px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">确认驳回</button>
     </div>`;
     showModal('驳回上报', '', null, html);
 }
