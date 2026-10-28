@@ -40,7 +40,7 @@ if (is_file($ossTxt)) {
     <meta http-equiv="Expires" content="0">
     <title>SDF1 - 管理后台 v<?php echo date('ymd_His', filemtime(__FILE__)); ?></title>
     <style>
-        :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; }
+        :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --fg:#e6edf3; --dim:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --purple:#bc8cff; }
         * { margin:0; padding:0; box-sizing:border-box; }
         body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; min-height:100vh; }
         .header { background:linear-gradient(135deg,#1a1e2e,#0d1117); border-bottom:1px solid var(--border); padding:14px 24px; display:flex; justify-content:space-between; align-items:center; }
@@ -3425,24 +3425,23 @@ async function loadCredit(el) {
         html += `<div class="dash-stat"><div class="v blue">${rules.length}</div><div class="l">规则数</div></div>`;
         html += '</div>';
 
-        // 待审批区域
-        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">';
+        // 待审批区域 — 使用 .card class 代替内联 background
+        html += '<div class="card">';
         html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">⏳ 待审批上报 (' + pending.length + ')</h3>';
         if (pending.length === 0) {
             html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无待审批上报</div>';
         } else {
-            html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
-            html += '<tr style="color:var(--dim);text-align:left"><th style="padding:6px">目标玩家</th><th style="padding:6px">上报人</th><th style="padding:6px">类型</th><th style="padding:6px">内容</th><th style="padding:6px">时间</th><th style="padding:6px">操作</th></tr>';
+            html += '<div style="overflow-x:auto"><table class="table">';
+            html += '<tr><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">目标玩家</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">上报人</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">类型</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">内容</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">时间</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">操作</th></tr>';
             for (const r of pending) {
                 const t = new Date(r.created_at * 1000);
                 const timeStr = t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
-                html += '<tr style="border-top:1px solid var(--border)">';
-                html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
-                html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
-                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
-                html += '<td style="padding:6px;color:var(--dim);word-break:break-all">' + escAdmHtml(r.content || '') + '</td>';
-                html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
-                html += '<td style="padding:6px;white-space:nowrap">';
+                html += '<tr><td style="padding:6px;border-bottom:1px solid var(--border)">' + escAdmHtml(r.target_player) + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escAdmHtml(r.reporter_player) + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
+                html += '<td style="padding:6px;color:var(--dim);word-break:break-all;border-bottom:1px solid var(--border)">' + escAdmHtml(r.content || '') + '</td>';
+                html += '<td style="padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">' + timeStr + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border);white-space:nowrap">';
                 html += '<button onclick="creditApprove(' + r.id + ')" class="btn btn-green" style="padding:3px 8px;font-size:11px;margin-right:4px">通过</button>';
                 html += '<button onclick="creditReject(' + r.id + ')" class="btn btn-red" style="padding:3px 8px;font-size:11px">驳回</button>';
                 html += '</td></tr>';
@@ -3451,8 +3450,8 @@ async function loadCredit(el) {
         }
         html += '</div>';
 
-        // 积分规则
-        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:20px">';
+        // 积分规则 — 使用 .card class
+        html += '<div class="card">';
         html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📋 积分规则</h3>';
         if (rules.length === 0) {
             html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无规则</div>';
@@ -3474,26 +3473,25 @@ async function loadCredit(el) {
         }
         html += '</div>';
 
-        // 全部记录
-        html += '<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px">';
+        // 全部记录 — 使用 .card class
+        html += '<div class="card">';
         html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📜 全部审批记录 (' + records.length + ')</h3>';
         if (records.length === 0) {
             html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无记录</div>';
         } else {
-            html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
-            html += '<tr style="color:var(--dim);text-align:left"><th style="padding:6px">ID</th><th style="padding:6px">目标玩家</th><th style="padding:6px">上报人</th><th style="padding:6px">类型</th><th style="padding:6px">状态</th><th style="padding:6px">变动</th><th style="padding:6px">时间</th></tr>';
+            html += '<div style="overflow-x:auto"><table class="table">';
+            html += '<tr><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">ID</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">目标玩家</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">上报人</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">类型</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">状态</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">变动</th><th style="text-align:left;padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">时间</th></tr>';
             for (const r of records) {
                 const t = new Date((r.approved_at || r.created_at) * 1000);
                 const timeStr = t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0') + ' ' + String(t.getHours()).padStart(2,'0') + ':' + String(t.getMinutes()).padStart(2,'0');
                 const statusColor = {pending: 'var(--yellow)', approved: 'var(--green)', rejected: 'var(--red)'}[r.status] || 'var(--dim)';
-                html += '<tr style="border-top:1px solid var(--border)">';
-                html += '<td style="padding:6px">' + r.id + '</td>';
-                html += '<td style="padding:6px">' + escAdmHtml(r.target_player) + '</td>';
-                html += '<td style="padding:6px">' + escAdmHtml(r.reporter_player) + '</td>';
-                html += '<td style="padding:6px">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
-                html += '<td style="padding:6px"><span style="color:' + statusColor + '">' + escAdmHtml(r.status) + '</span></td>';
-                html += '<td style="padding:6px;font-weight:bold;color:' + (r.score_change > 0 ? 'var(--green)' : r.score_change < 0 ? 'var(--red)' : 'var(--dim)') + '">' + (r.score_change > 0 ? '+' : '') + r.score_change + '</td>';
-                html += '<td style="padding:6px;color:var(--dim)">' + timeStr + '</td>';
+                html += '<tr><td style="padding:6px;border-bottom:1px solid var(--border)">' + r.id + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escAdmHtml(r.target_player) + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)">' + escAdmHtml(r.reporter_player) + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)">' + (r.type === 'good' ? '<span style="color:var(--green)">好人好事</span>' : '<span style="color:var(--red)">举报</span>') + '</td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border)"><span style="color:' + statusColor + '">' + escAdmHtml(r.status) + '</span></td>';
+                html += '<td style="padding:6px;border-bottom:1px solid var(--border);font-weight:bold;color:' + (r.score_change > 0 ? 'var(--green)' : r.score_change < 0 ? 'var(--red)' : 'var(--dim)') + '">' + (r.score_change > 0 ? '+' : '') + r.score_change + '</td>';
+                html += '<td style="padding:6px;color:var(--dim);border-bottom:1px solid var(--border)">' + timeStr + '</td>';
                 html += '</tr>';
             }
             html += '</table></div>';
@@ -3503,7 +3501,7 @@ async function loadCredit(el) {
         el.innerHTML = html;
     } catch(e) {
         console.error('[CREDIT] Error:', e);
-        el.innerHTML = `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
+        el.innerHTML = `<div class="card" style="text-align:center;color:var(--dim)">加载失败: ${escAdmHtml(e.message)}</div>`;
     }
 }
 
