@@ -225,6 +225,12 @@ public class GUIManager implements Listener {
                         ? "§e点击打开GUI"
                         : "§e点击打开CLI"));
 
+        // ★ 信誉积分 - 40号位（领地系统旁边）
+        g.setItem(40, mkItem(Material.GOLD_INGOT,
+                "§d§l信誉积分",
+                "§7上报好人好事/举报违规",
+                "§7查看我的积分与明细"));
+
 
 
         // ===== Row0(0-8): 自定义菜单项 =====

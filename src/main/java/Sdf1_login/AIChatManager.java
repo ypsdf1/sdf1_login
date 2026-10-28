@@ -392,6 +392,15 @@ public class AIChatManager {
         String jsonBody = buildChatRequest(modelFull, systemPrompt, prompt, endpoint.maxToken);
         String requestUrl = buildRequestUrl(endpoint);
 
+        // ★ 400调试日志：请求发出前打印完整信息
+        plugin.getLogger().info("[AI聊天-调试] === 请求开始 ===");
+        plugin.getLogger().info("[AI聊天-调试] 模型全名: " + modelFull);
+        plugin.getLogger().info("[AI聊天-调试] 请求URL: " + requestUrl);
+        plugin.getLogger().info("[AI聊天-调试] 自定义供应商: " + endpoint.isCustom);
+        plugin.getLogger().info("[AI聊天-调试] 自动补齐开关: " + autoAppendCompletions);
+        plugin.getLogger().info("[AI聊天-调试] 请求体JSON: " + jsonBody);
+        plugin.getLogger().info("[AI聊天-调试] === 请求结束 ===");
+
         // 异步发送请求
         CompletableFuture.supplyAsync(() -> {
             try {
@@ -419,6 +428,19 @@ public class AIChatManager {
 
             if (response.statusCode() != 200) {
                 String errBody = response.body();
+                // ★ 400调试日志：打印完整响应头和响应体
+                plugin.getLogger().warning("[AI聊天-调试] === 请求失败 ===");
+                plugin.getLogger().warning("[AI聊天-调试] HTTP状态码: " + response.statusCode());
+                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + modelFull);
+                plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
+                // 打印完整响应头
+                response.headers().map().forEach((name, values) -> {
+                    plugin.getLogger().warning("[AI聊天-调试] 响应头 " + name + ": " + String.join(", ", values));
+                });
+                plugin.getLogger().warning("[AI聊天-调试] 响应体: " + errBody);
+                plugin.getLogger().warning("[AI聊天-调试] === 请求失败结束 ===");
+
                 handleRequestFailure(prompt, "HTTP " + response.statusCode() + ": " + errBody);
                 if (player != null) {
                     player.sendMessage("§c[AI聊天] §f请求失败: HTTP " + response.statusCode());
@@ -621,6 +643,14 @@ public class AIChatManager {
             String jsonBody = buildChatRequest(defaultModelFull, systemPrompt, prompt, endpoint.maxToken);
             String requestUrl = buildRequestUrl(endpoint);
 
+            // ★ 400调试日志：自动互动请求
+            plugin.getLogger().info("[AI聊天-调试] === 自动互动请求开始 ===");
+            plugin.getLogger().info("[AI聊天-调试] 模型全名: " + defaultModelFull);
+            plugin.getLogger().info("[AI聊天-调试] 请求URL: " + requestUrl);
+            plugin.getLogger().info("[AI聊天-调试] 自定义供应商: " + endpoint.isCustom);
+            plugin.getLogger().info("[AI聊天-调试] 请求体JSON: " + jsonBody);
+            plugin.getLogger().info("[AI聊天-调试] === 自动互动请求结束 ===");
+
             CompletableFuture.supplyAsync(() -> {
                 try {
                     HttpRequest request = HttpRequest.newBuilder()
@@ -638,6 +668,19 @@ public class AIChatManager {
                 }
             }).thenAccept(response -> {
                 if (response == null || response.statusCode() != 200) {
+                    // ★ 400调试日志：自动互动失败
+                    if (response != null) {
+                        plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败 ===");
+                        plugin.getLogger().warning("[AI聊天-调试] HTTP状态码: " + response.statusCode());
+                        plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + defaultModelFull);
+                        plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
+                        plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
+                        response.headers().map().forEach((name, values) -> {
+                            plugin.getLogger().warning("[AI聊天-调试] 响应头 " + name + ": " + String.join(", ", values));
+                        });
+                        plugin.getLogger().warning("[AI聊天-调试] 响应体: " + response.body());
+                        plugin.getLogger().warning("[AI聊天-调试] === 自动互动请求失败结束 ===");
+                    }
                     handleRequestFailure("[自动] " + prompt.substring(0, Math.min(100, prompt.length())),
                             "自动互动失败: HTTP " + (response != null ? response.statusCode() : "N/A"));
                     return;

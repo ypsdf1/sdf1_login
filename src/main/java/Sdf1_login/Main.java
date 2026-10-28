@@ -7885,6 +7885,14 @@ public class Main extends JavaPlugin
                     // CLI模式
                     Bukkit.dispatchCommand(p, "protect menu");
                 }
+            } else if (slot == 40) {
+                // ★ 信誉积分入口
+                p.closeInventory();
+                if (creditManager != null) {
+                    p.openInventory(creditManager.createMainGUI(p));
+                } else {
+                    p.sendMessage("§c信誉积分模块未初始化");
+                }
             }
 
 

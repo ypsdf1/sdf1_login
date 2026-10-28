@@ -61,13 +61,15 @@ public class CreditManager {
         ADD_SCORE_TARGET,         // 加分 → 等待玩家名
         ADD_SCORE_AMOUNT,         // 加分 → 等待数值
         DEDUCT_SCORE_TARGET,      // 扣分 → 等待玩家名
-        DEDUCT_SCORE_AMOUNT       // 扣分 → 等待数值
+        DEDUCT_SCORE_AMOUNT,      // 扣分 → 等待数值
+        APPROVE_SCORE_CHANGE      // 审批通过 → 等待积分变动值
     }
 
     // 玩家当前引导状态 (playerName -> FlowState + 临时数据)
     private static class FlowData {
         FlowState state;
         String tempName;  // 临时存储的目标玩家名
+        int recordId;     // 临时存储的审批记录ID
     }
     private final Map<String, FlowData> chatFlows = new ConcurrentHashMap<>();
 
@@ -445,9 +447,60 @@ public class CreditManager {
                     "§7内容: " + r.get("content"),
                     "§7来源: " + r.get("source"),
                     "",
-                    "§e/credits approve " + r.get("id") + " <通过|驳回> <理由> [积分变动]"));
+                    "§e点击查看详情，右键通过，Shift+右键驳回"));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
+        return inv;
+    }
+
+    /**
+     * 单条待审批记录详情 GUI — 含通过/驳回按钮
+     */
+    public Inventory createPendingDetailGUI(Player p, int recordId) {
+        Inventory inv = Bukkit.createInventory(null, 9, GUI_TITLE + " - 审批详情");
+        fillBg(inv);
+
+        Map<String, Object> record = null;
+        for (Map<String, Object> r : getPendingRecords()) {
+            if (((Number) r.get("id")).intValue() == recordId) {
+                record = r;
+                break;
+            }
+        }
+        if (record == null) {
+            inv.setItem(3, mkItem(Material.BARRIER, "§c§l记录不存在", "§7该记录可能已被审批"));
+            inv.setItem(4, mkItem(Material.ARROW, "§7返回"));
+            return inv;
+        }
+
+        String type = (String) record.get("type");
+        Material mat = TYPE_GOOD.equals(type) ? Material.EMERALD : Material.REDSTONE;
+        String typeText = TYPE_GOOD.equals(type) ? "§a好人好事" : "§c举报";
+
+        // Slot 0: 通过按钮 (EMERALD)
+        inv.setItem(0, mkItem(Material.EMERALD,
+                "§a§l通过",
+                "§7点击通过此条上报",
+                "§7通过后需要输入积分变动值"));
+
+        // Slot 1: 驳回按钮 (REDSTONE)
+        inv.setItem(1, mkItem(Material.REDSTONE,
+                "§c§l驳回",
+                "§7点击驳回此条上报",
+                "§7驳回则不扣分不加分"));
+
+        // Slot 3: 记录详情
+        inv.setItem(3, mkItem(mat,
+                "§e§l#" + recordId + " " + record.get("target_player"),
+                "§7上报人: " + record.get("reporter_player"),
+                "§7类型: " + typeText,
+                "§7内容: " + record.get("content"),
+                "§7来源: " + record.get("source"),
+                "§7时间: " + formatTime((Long) record.get("created_at"))));
+
+        // Slot 4: 返回
+        inv.setItem(4, mkItem(Material.ARROW, "§7返回"));
+
         return inv;
     }
 
@@ -688,9 +741,80 @@ public class CreditManager {
             return;
         }
 
-        // 待审批GUI — 点击物品提示用命令审批
+        // 待审批GUI — 点击记录打开详情，右键直接通过，Shift+右键驳回
         if (title != null && title.contains("待审批")) {
-            p.sendMessage("§c请使用 /credits approve <id> <通过|驳回> <理由> [积分变动]");
+            // 详情GUI的返回按钮
+            if (slot == 4) {
+                // 清除临时状态，避免拦截后续聊天
+                chatFlows.remove(p.getName());
+                p.closeInventory();
+                p.openInventory(createPendingGUI(p));
+                return;
+            }
+            // 详情GUI的按钮
+            if (title.contains("审批详情")) {
+                if (slot == 0) { // 通过
+                    // 从当前打开的详情GUI中获取 recordId
+                    // 需要从 GUI title 中解析，或者用 FlowData
+                    // 简化：直接从 chatFlows 获取（如果有），否则提示
+                    FlowData fd = chatFlows.get(p.getName());
+                    if (fd == null) {
+                        // 没有引导状态，需要从 inventory 中推断
+                        // 改用另一种方式：在详情GUI打开时设置一个临时状态
+                        p.sendMessage("§c§l[信誉积分] §c无法获取记录ID，请重新打开详情");
+                        p.closeInventory();
+                        return;
+                    }
+                    int rid = fd.recordId;
+                    // 标记审批通过，等待输入积分变动
+                    fd.state = FlowState.APPROVE_SCORE_CHANGE;
+                    fd.tempName = null;
+                    // 先查目标玩家名
+                    String targetName = getRecordTarget(rid);
+                    fd.tempName = targetName;
+                    p.closeInventory();
+                    p.sendMessage("§a§l[信誉积分] §f审批通过 #" + rid + " (目标: " + targetName + ")");
+                    p.sendMessage("§7请输入积分变动值(正数加分，负数扣分，如 +10 或 -5)");
+                    return;
+                }
+                if (slot == 1) { // 驳回
+                    FlowData fd = chatFlows.get(p.getName());
+                    if (fd == null) {
+                        p.sendMessage("§c§l[信誉积分] §c无法获取记录ID，请重新打开详情");
+                        p.closeInventory();
+                        return;
+                    }
+                    int rid = fd.recordId;
+                    approveRecord(rid, false, "管理员GUI驳回", 0, p.getName());
+                    chatFlows.remove(p.getName());
+                    p.closeInventory();
+                    p.sendMessage("§c§l[信誉积分] §f已驳回 #" + rid + " (不扣分不加分)");
+                    return;
+                }
+            }
+            // 列表GUI的返回按钮
+            if (slot == 53) {
+                p.closeInventory();
+                p.openInventory(createMainGUI(p));
+                return;
+            }
+            // 点击记录 → 打开详情GUI
+            if (slot >= 0 && slot < 49) {
+                List<Map<String, Object>> records = getPendingRecords();
+                if (slot < records.size()) {
+                    Map<String, Object> r = records.get(slot);
+                    int recordId = ((Number) r.get("id")).intValue();
+                    // 先清除之前的引导状态，记录ID
+                    chatFlows.remove(p.getName());
+                    FlowData fd = new FlowData();
+                    fd.state = FlowState.APPROVE_SCORE_CHANGE; // 占位，实际点击按钮时才用
+                    fd.recordId = recordId;
+                    chatFlows.put(p.getName(), fd);
+                    p.closeInventory();
+                    p.openInventory(createPendingDetailGUI(p, recordId));
+                    return;
+                }
+            }
             p.closeInventory();
             return;
         }
@@ -780,6 +904,23 @@ public class CreditManager {
                     fd.state = FlowState.DEDUCT_SCORE_AMOUNT;
                 }
                 return true;
+
+            case APPROVE_SCORE_CHANGE:
+                try {
+                    String input = msg.trim();
+                    // 支持 +10 / -5 / 10 / -5 格式
+                    int amount = Integer.parseInt(input.replaceFirst("^[+]", ""));
+                    int rid = fd.recordId;
+                    String targetName = fd.tempName;
+                    // 通过审批并加分/扣分
+                    approveRecord(rid, true, "管理员GUI审批通过", amount, p.getName());
+                    chatFlows.remove(p.getName());
+                    p.sendMessage("§a§l[信誉积分] §f已通过 #" + rid + " " + targetName + " §e"
+                            + (amount > 0 ? "+" : "") + amount);
+                } catch (NumberFormatException e) {
+                    p.sendMessage("§c请输入数字(如 +10 或 -5)");
+                }
+                return true;
         }
         return true;
     }
@@ -822,5 +963,39 @@ public class CreditManager {
 
     public boolean approveFromPhp(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
         return approveRecord(recordId, approved, reason, scoreChange, approverName);
+    }
+
+    // ==================== 辅助方法 ====================
+
+    /**
+     * 查询审批记录的目标玩家名
+     */
+    private String getRecordTarget(int recordId) {
+        try {
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "SELECT target_player FROM credit_records WHERE id = ?");
+            ps.setInt(1, recordId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                String target = rs.getString("target_player");
+                ps.close();
+                return target;
+            }
+            ps.close();
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * 格式化时间戳为可读字符串
+     */
+    private String formatTime(long timestamp) {
+        if (timestamp <= 0) return "未知";
+        try {
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            return sdf.format(new java.util.Date(timestamp));
+        } catch (Exception e) {
+            return String.valueOf(timestamp);
+        }
     }
 }
