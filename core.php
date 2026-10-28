@@ -1920,6 +1920,7 @@ function initTables($db, $side = null) {
             'last_login_ip'        => "TEXT DEFAULT ''",
             'frozen'               => "INTEGER DEFAULT 0",
             'freeze_token'         => "TEXT DEFAULT ''",
+            'credit_score'         => "INTEGER DEFAULT 100",
         ];
         foreach ($addCols as $col => $type) {
             if (!in_array($col, $userCols)) {

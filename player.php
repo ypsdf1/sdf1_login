@@ -380,6 +380,7 @@ if ($currentVersion !== $BUILD_VERSION) {
             <div class="sidebar-item" data-page="ticket" onclick="switchPage('ticket')">📋 工单系统</div>
             <div class="sidebar-item" data-page="sn" onclick="switchPage('sn')">🔢 SN设备管理</div>
             <div class="sidebar-item" data-page="account" onclick="switchPage('account')">🛡️ 账号安全</div>
+            <div class="sidebar-item" data-page="credit" onclick="switchPage('credit')">⭐ 信誉积分</div>
         </div>
 
         <div class="content" id="content">
@@ -1269,6 +1270,7 @@ if ($currentVersion !== $BUILD_VERSION) {
         else if (page === 'account') renderAccount(c);
         else if (page === 'ticket') renderTicket(c);
         else if (page === 'sn') renderSn(c);
+        else if (page === 'credit') renderCredit(c);
         else if (page === 'recharge') renderRecharge(c);
         else if (page === 'orders') renderMyOrders(c);
     }
@@ -5461,6 +5463,93 @@ async function clearAllMemberPerms(landName, targetPlayer) {
         const p = x => (x < 10 ? '0' : '') + x;
         return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
             p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+
+    // ===== 信誉积分 =====
+    function creditTypeBadge(t) {
+        const m = { good: ['好人好事', 'var(--green)'], bad: ['举报', 'var(--red)'] };
+        const v = m[t] || [t, 'var(--dim)'];
+        return '<span style="color:' + v[1] + '">' + v[0] + '</span>';
+    }
+    function creditStatusBadge(s) {
+        const m = {
+            pending:  ['待审批', 'var(--yellow)'],
+            approved: ['已通过', 'var(--green)'],
+            rejected: ['已驳回', 'var(--red)']
+        };
+        const v = m[s] || [s, 'var(--dim)'];
+        return '<span style="color:' + v[1] + '">' + v[0] + '</span>';
+    }
+
+    async function renderCredit(el) {
+        el.innerHTML = '<div class="card"><h2>⭐ 信誉积分</h2><p style="color:var(--dim)">加载中...</p></div>';
+        try {
+            const [scoreRes, recRes] = await Promise.all([
+                api('credit.php', { action: 'my_score' }),
+                api('credit.php', { action: 'my_records' })
+            ]);
+            const score = (scoreRes.success && scoreRes.data) ? scoreRes.data.credit_score : 100;
+            const records = (recRes.success && recRes.data) ? (recRes.data.records || []) : [];
+
+            let html = '<div class="card">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">' +
+                '<h2 style="margin:0">⭐ 我的信誉积分</h2>' +
+                '<div style="font-size:28px;font-weight:bold;color:' + (score >= 60 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)') + '">' + score + '</div>' +
+                '</div>';
+
+            // 上报按钮区
+            html += '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">' +
+                '<button class="btn btn-green" onclick="creditSubmitFlow(\'good\')">🌱 上报好人好事</button>' +
+                '<button class="btn btn-red" onclick="creditSubmitFlow(\'bad\')">🚩 举报违规违纪</button>' +
+                '</div>';
+
+            // 积分规则
+            html += '<div style="background:rgba(88,166,255,0.05);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:13px;color:var(--dim);line-height:1.7">' +
+                '初始积分 100 · 低于 60 禁止交易 · 低于 40 禁止PVP · 低于 20 禁止传送' +
+                '</div>';
+
+            // 记录列表
+            html += '<h3 style="margin:0 0 8px;font-size:14px">📋 积分变动记录 (' + records.length + ')</h3>';
+            if (!records.length) {
+                html += '<p style="color:var(--dim);font-size:13px">暂无记录</p>';
+            } else {
+                html += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                    '<tr style="color:var(--dim);text-align:left">' +
+                    '<th style="padding:6px">类型</th><th style="padding:6px">上报人</th><th style="padding:6px">状态</th>' +
+                    '<th style="padding:6px">变动</th><th style="padding:6px">内容</th><th style="padding:6px">来源</th></tr>';
+                for (const r of records) {
+                    html += '<tr style="border-top:1px solid var(--border)">' +
+                        '<td style="padding:6px">' + creditTypeBadge(r.type) + '</td>' +
+                        '<td style="padding:6px">' + escHtml(r.reporter_player) + '</td>' +
+                        '<td style="padding:6px">' + creditStatusBadge(r.status) + '</td>' +
+                        '<td style="padding:6px;font-weight:bold;color:' + (r.score_change > 0 ? 'var(--green)' : r.score_change < 0 ? 'var(--red)' : 'var(--dim)') + '">' +
+                        (r.score_change > 0 ? '+' : '') + r.score_change + '</td>' +
+                        '<td style="padding:6px;color:var(--dim);word-break:break-all">' + escHtml(r.content || '') + '</td>' +
+                        '<td style="padding:6px;color:var(--dim)">' + escHtml(r.source || '') + '</td></tr>';
+                }
+                html += '</table></div>';
+            }
+            html += '</div>';
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = '<div class="card"><p style="color:var(--red)">加载失败: ' + escHtml(e.message) + '</p></div>';
+        }
+    }
+
+    async function creditSubmitFlow(type) {
+        const target = await glassPrompt('请输入目标玩家名');
+        if (!target) return;
+        const content = await glassPrompt('请输入上报理由');
+        if (!content) return;
+        try {
+            const action = type === 'good' ? 'submit_good' : 'submit_bad';
+            const r = await api('credit.php', { action: action, target: target, content: content });
+            if (!r.success) { toast(r.message || '上报失败', 'error'); return; }
+            toast(r.message || '上报成功');
+            renderCredit(document.getElementById('content'));
+        } catch (e) {
+            toast('上报失败: ' + e.message, 'error');
+        }
     }
 
 function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

@@ -1848,7 +1848,7 @@ function syncLogin() {
             if ($registerTime > 1000000000000) { $registerTime = intval($registerTime / 1000); }
             if ($lastLoginTime > 1000000000000) { $lastLoginTime = intval($lastLoginTime / 1000); }
 
-            $stmt = $db->prepare("INSERT OR REPLACE INTO users (player_name, register_time, last_login_time, email, points, gift_stage, total_online_time) VALUES (:name, :rt, :lt, :email, :pts, :gs, :tot)");
+            $stmt = $db->prepare("INSERT OR REPLACE INTO users (player_name, register_time, last_login_time, email, points, gift_stage, total_online_time, credit_score) VALUES (:name, :rt, :lt, :email, :pts, :gs, :tot, :cs)");
             $stmt->bindValue(':name', $name, SQLITE3_TEXT);
             $stmt->bindValue(':rt', $registerTime, SQLITE3_INTEGER);
             $stmt->bindValue(':lt', $lastLoginTime, SQLITE3_INTEGER);
@@ -1856,6 +1856,7 @@ function syncLogin() {
             $stmt->bindValue(':pts', (int)($user['points'] ?? 0), SQLITE3_INTEGER);
             $stmt->bindValue(':gs', (int)($user['gift_stage'] ?? 0), SQLITE3_INTEGER);
             $stmt->bindValue(':tot', (int)($user['total_online_time'] ?? 0), SQLITE3_INTEGER);
+            $stmt->bindValue(':cs', (int)($user['credit_score'] ?? 100), SQLITE3_INTEGER);
             $stmt->execute();
             $count++;
         }
