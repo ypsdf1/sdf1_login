@@ -8224,6 +8224,7 @@ public class WebManager {
                 u.put("points", user.get("points"));
                 u.put("gift_stage", user.get("gift_stage"));
                 u.put("total_online_time", user.get("total_online_time"));
+                u.put("credit_score", user.get("credit_score")); // ★ 第58批：信誉积分同步
                 syncData.add(u);
             }
             // ★ 双向对账（多退少补）：先与 PHP 点一遍，三差集全空就一条都不发

@@ -54,6 +54,9 @@ public class AIChatManager {
     // 自定义供应商 URL 是否自动拼接 chat/completions（自动补齐开关，默认 true）
     private boolean autoAppendCompletions = true;
 
+    // 互动指标：在线玩家数量达到此值才触发自动互动（手动 @// 不受影响）
+    private int interactionMetric = 1;
+
     // 空闲调度器
     private BukkitTask autoChatTask = null;
     private long lastAiReplyTime = 0;
@@ -177,6 +180,16 @@ public class AIChatManager {
                                     blacklist.add(el.getAsString());
                                 }
                             }
+                        }
+                    }
+
+                    // 互动指标：在线玩家数量达到此值才触发自动互动
+                    if (section2.has("互动指标")) {
+                        JsonObject metricObj = section2.getAsJsonObject("互动指标");
+                        if (metricObj.has("指标")) {
+                            try {
+                                interactionMetric = metricObj.get("指标").getAsInt();
+                            } catch (Exception ignored) {}
                         }
                     }
                 }
@@ -503,6 +516,11 @@ public class AIChatManager {
         return url;
     }
 
+    /**
+     * 构建聊天请求体（OpenAI 兼容格式）
+     * 注意：不发送 max_tokens 字段，让 API 使用默认输出上限
+     * maxToken 参数仅用于本地上下文长度阈值判断（在 checkAutoChat 中做压缩）
+     */
     private String buildChatRequest(String model, String systemPrompt, String userPrompt, String maxToken) {
         Gson gson = new Gson();
         JsonObject body = new JsonObject();
@@ -521,15 +539,42 @@ public class AIChatManager {
 
         body.add("messages", messages);
 
-        // max_tokens
-        try {
-            int mt = Integer.parseInt(maxToken);
-            if (mt > 0) {
-                body.addProperty("max_tokens", mt);
-            }
-        } catch (NumberFormatException ignored) {}
-
         return gson.toJson(body);
+    }
+
+    /**
+     * 上下文压缩：当聊天记录总长度超过阈值时，截断旧消息只保留最近的
+     * 返回压缩后的聊天记录字符串
+     */
+    private String compressChatBuffer(String maxToken) {
+        int threshold;
+        try {
+            threshold = Integer.parseInt(maxToken);
+        } catch (NumberFormatException e) {
+            threshold = 200000;
+        }
+        if (threshold <= 0) threshold = 200000;
+
+        String joined = String.join("\n", recentChatBuffer);
+        if (joined.length() <= threshold) {
+            return joined; // 未超阈值，直接返回
+        }
+
+        // 超阈值：从尾部往前保留消息，直到达到阈值的 80%（留余量给提示词模板）
+        int targetLen = (int) (threshold * 0.8);
+        StringBuilder sb = new StringBuilder();
+        int totalLen = 0;
+        // 从最新消息开始往前累加
+        for (int i = recentChatBuffer.size() - 1; i >= 0; i--) {
+            String line = recentChatBuffer.get(i);
+            int lineLen = line.length() + 1; // +1 for newline
+            if (totalLen + lineLen > targetLen) break;
+            if (sb.length() > 0) sb.insert(0, "\n");
+            sb.insert(0, line);
+            totalLen += lineLen;
+        }
+        plugin.getLogger().info("[AI聊天] 上下文压缩: 原始" + joined.length() + "字符 → 压缩至" + sb.length() + "字符 (阈值" + threshold + ")");
+        return sb.toString();
     }
 
     private String parseChatResponse(String responseBody) {
@@ -627,11 +672,18 @@ public class AIChatManager {
             if (recentChatBuffer.isEmpty()) return;
             if (defaultModelFull.isEmpty()) return;
 
+            // ★ 互动指标：在线玩家数量达标才触发自动互动
+            int onlineCount = Bukkit.getOnlinePlayers().size();
+            if (onlineCount < interactionMetric) {
+                plugin.getLogger().info("[AI聊天] 在线玩家 " + onlineCount + " < 互动指标 " + interactionMetric + "，跳过自动互动");
+                return;
+            }
+
             ModelEndpoint endpoint = modelEndpoints.get(defaultModelFull);
             if (endpoint == null) return;
 
-            // 构建自动互动提示词
-            String recentChat = String.join("\n", recentChatBuffer);
+            // 构建自动互动提示词 — 用压缩方法（超阈值时截断旧消息）
+            String recentChat = compressChatBuffer(endpoint.maxToken);
             String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地参与对话或回答问题。";
 
             plugin.getLogger().info("[AI聊天] 触发自动互动");
