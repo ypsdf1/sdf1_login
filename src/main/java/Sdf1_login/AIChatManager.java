@@ -515,17 +515,19 @@ public class AIChatManager {
      */
     public String resolveModelAlias(String alias) {
         if (alias == null || alias.isEmpty()) return null;
-        // 1. 简称 → 模型全名
+        // ★ 第58批修复：优先级调整为 模型全名 > 简称 > 厂家名
+        //   避免自定义供应商的模型名（如 oc/mimo-v2.6-flash-free）被内置厂家名快捷引用拦截
+        // 1. 直接作为模型全名（精确匹配，优先级最高）
+        if (modelEndpoints.containsKey(alias)) {
+            return alias;
+        }
+        // 2. 简称 → 模型全名（提示词.txt 的 models=全名=简称）
         if (aliasToFullModel.containsKey(alias)) {
             return aliasToFullModel.get(alias);
         }
-        // 2. 厂家名 → 默认模型全名
+        // 3. 厂家名 → 默认模型全名（内置供应商快捷引用，最后兜底）
         if (providerToModel.containsKey(alias)) {
             return providerToModel.get(alias);
-        }
-        // 3. 直接作为模型全名
-        if (modelEndpoints.containsKey(alias)) {
-            return alias;
         }
         return null;
     }
@@ -822,7 +824,9 @@ public class AIChatManager {
             recentChatBuffer.remove(0);
         }
 
-        // 检测 @// 或 @ 前缀（支持单 @ 和双 @//）
+        // 检测 @// 或 @ 前缀
+        // @// 前缀：用 // 分隔模型名和内容，模型名可以包含单斜杠（如 oc/mimo-v2.6-flash-free）
+        // @ 前缀：用 / 或空格分隔（旧行为）
         String prefix = "";
         int prefixLen = 0;
         if (message.startsWith("@//")) {
@@ -834,30 +838,45 @@ public class AIChatManager {
         }
 
         if (!prefix.isEmpty()) {
-            // 去掉前缀后查找第一个斜杠或空格
             String afterPrefix = message.substring(prefixLen);
-            int slashIdx = afterPrefix.indexOf('/');
-            int spaceIdx = afterPrefix.indexOf(' ');
-
             String modelAlias;
             String prompt;
 
-            if (slashIdx > 0) {
-                // 格式: @厂家名/内容
-                modelAlias = afterPrefix.substring(0, slashIdx).trim();
-                prompt = afterPrefix.substring(slashIdx + 1).trim();
-            } else if (spaceIdx > 0) {
-                // 格式: @厂家名 内容（空格分隔）
-                modelAlias = afterPrefix.substring(0, spaceIdx).trim();
-                prompt = afterPrefix.substring(spaceIdx + 1).trim();
+            if (prefix.equals("@//")) {
+                // ★ @// 前缀：用 // 分隔模型名和内容，模型名可以包含单斜杠
+                //   如 @//oc/mimo-v2.6-flash-free//你好 → modelAlias=oc/mimo-v2.6-flash-free, prompt=你好
+                int sepIdx = afterPrefix.indexOf("//");
+                if (sepIdx > 0) {
+                    modelAlias = afterPrefix.substring(0, sepIdx).trim();
+                    prompt = afterPrefix.substring(sepIdx + 2).trim();
+                } else {
+                    int spaceIdx = afterPrefix.indexOf(' ');
+                    if (spaceIdx > 0) {
+                        modelAlias = afterPrefix.substring(0, spaceIdx).trim();
+                        prompt = afterPrefix.substring(spaceIdx + 1).trim();
+                    } else {
+                        modelAlias = afterPrefix.trim();
+                        prompt = "";
+                    }
+                }
             } else {
-                // 格式: @厂家名（无内容）
-                modelAlias = afterPrefix.trim();
-                prompt = "";
+                // @ 前缀（单）：旧行为，用 / 或空格分隔
+                int slashIdx = afterPrefix.indexOf('/');
+                int spaceIdx = afterPrefix.indexOf(' ');
+                if (slashIdx > 0) {
+                    modelAlias = afterPrefix.substring(0, slashIdx).trim();
+                    prompt = afterPrefix.substring(slashIdx + 1).trim();
+                } else if (spaceIdx > 0) {
+                    modelAlias = afterPrefix.substring(0, spaceIdx).trim();
+                    prompt = afterPrefix.substring(spaceIdx + 1).trim();
+                } else {
+                    modelAlias = afterPrefix.trim();
+                    prompt = "";
+                }
             }
 
             if (modelAlias.isEmpty()) {
-                p.sendMessage("§c[AI聊天] §f格式错误，应为 @厂家名/内容");
+                p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名//内容");
                 return;
             }
             if (prompt.isEmpty()) {
