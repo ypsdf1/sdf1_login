@@ -387,11 +387,51 @@ public class AIChatManager {
         return null;
     }
 
+    /**
+     * 大小写不敏感地获取 JsonObject 中的元素。
+     * 先精确匹配，再大小写不敏感匹配（解决 讯飞星辰maas vs 讯飞星辰MaaS 的问题）。
+     */
+    private JsonElement getElementIgnoreCase(JsonObject obj, String key) {
+        JsonElement el = obj.get(key);
+        if (el != null) return el;
+        String lower = key.toLowerCase();
+        for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+            if (entry.getKey().toLowerCase().equals(lower)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 深度递归：在嵌套 JsonObject 中找第一个 http URL。
+     * 不管嵌套多少层，找到第一个 http 开头的字符串值就返回。
+     * 用于路径终点是对象而非直接 URL 的场景（如 讯飞/讯飞星辰MaaS 没有指定子项）。
+     */
+    private String findFirstUrlInObject(JsonObject obj) {
+        for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+            JsonElement el = entry.getValue();
+            if (el.isJsonPrimitive()) {
+                String val = el.getAsString();
+                if (val != null && val.startsWith("http")) return val;
+            } else if (el.isJsonObject()) {
+                String url = findFirstUrlInObject(el.getAsJsonObject());
+                if (url != null) return url;
+            }
+        }
+        return null;
+    }
+
     private String findUrlInObject(JsonObject obj, String[] parts) {
-        JsonElement el = obj.get(parts[0].trim());
+        JsonElement el = getElementIgnoreCase(obj, parts[0].trim());
         if (el == null) return null;
         if (parts.length == 1) {
-            return el.isJsonPrimitive() ? el.getAsString() : null;
+            // 路径终点：如果是字符串 → 直接返回 URL
+            if (el.isJsonPrimitive()) return el.getAsString();
+            // ★ 深度递归：如果是对象 → 继续往下钻找第一个 URL
+            //   如 "讯飞/讯飞星辰MaaS" 没指定子项，钻入 MaaS 对象找第一个 URL
+            if (el.isJsonObject()) return findFirstUrlInObject(el.getAsJsonObject());
+            return null;
         }
         if (el.isJsonObject()) {
             String[] rest = Arrays.copyOfRange(parts, 1, parts.length);
