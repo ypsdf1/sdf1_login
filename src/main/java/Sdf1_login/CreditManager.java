@@ -564,18 +564,38 @@ public class CreditManager {
             if (sender instanceof Player) {
                 ((Player) sender).openInventory(createMainGUI((Player) sender));
             } else {
-                sender.sendMessage("§c用法: /credits [user <玩家名>]");
+                sender.sendMessage("§c用法: /credits [玩家名|审批|approve]");
             }
             return true;
         }
 
         String sub = args[0].toLowerCase();
 
+        // ★ 快捷查积分：/credits <玩家名> 直接查，无需 user 关键字
+        // 判断第一个参数是否是已知子命令
+        boolean isSubCommand = sub.equals("user") || sub.equals("审批") || sub.equals("approve");
+        if (!isSubCommand && args.length >= 1) {
+            // 直接是玩家名 → 查询积分
+            String targetName = args[0];
+            int targetScore = getScore(targetName);
+            sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + targetScore
+                    + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+            // 判断是否触发限制
+            for (Map<String, Object> rule : getEnabledRules()) {
+                int minScore = ((Number) rule.get("min_score")).intValue();
+                if (targetScore < minScore) {
+                    String desc = (String) rule.get("description");
+                    sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
+                }
+            }
+            return true;
+        }
+
         switch (sub) {
             case "user":
-                // /credits user <玩家名> — 任何人可查他人积分
+                // /credits user <玩家名> — 兼容旧格式
                 if (args.length < 2) {
-                    sender.sendMessage("§c用法: /credits user <玩家名>");
+                    sender.sendMessage("§c用法: /credits user <玩家名> 或直接 /credits <玩家名>");
                     return true;
                 }
                 String targetName = args[1];
@@ -660,7 +680,7 @@ public class CreditManager {
 
             default:
                 sender.sendMessage("§c未知子命令: " + sub);
-                sender.sendMessage("§7用法: /credits [user <玩家名>]");
+                sender.sendMessage("§7用法: /credits [玩家名|审批|approve]");
                 return true;
         }
     }

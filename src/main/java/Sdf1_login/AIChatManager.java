@@ -677,8 +677,8 @@ public class AIChatManager {
 
     /**
      * 处理玩家聊天消息
-     * 检测 @//模型名/ 或 @//厂家名/ 前缀触发直接提问
-     * 格式: @//模型名/内容  或  @//模型名  (不带内容时用默认提示)
+     * 检测 @厂家名/内容 或 @//厂家名/内容 前缀触发直接提问
+     * 格式: @厂家名/内容  或  @//厂家名/内容  或  @厂家名  或  @//厂家名
      */
     public void handlePlayerChat(Player p, String message) {
         // 记录到聊天缓冲区
@@ -688,22 +688,42 @@ public class AIChatManager {
             recentChatBuffer.remove(0);
         }
 
-        // 检测 @//模型名/ 前缀
+        // 检测 @// 或 @ 前缀（支持单 @ 和双 @//）
+        String prefix = "";
+        int prefixLen = 0;
         if (message.startsWith("@//")) {
-            // 格式: @//模型名/内容  或  @//模型名  (尾部无斜杠)
-            int slashIdx = message.indexOf('/', 3);
+            prefix = "@//";
+            prefixLen = 3;
+        } else if (message.startsWith("@")) {
+            prefix = "@";
+            prefixLen = 1;
+        }
+
+        if (!prefix.isEmpty()) {
+            // 去掉前缀后查找第一个斜杠或空格
+            String afterPrefix = message.substring(prefixLen);
+            int slashIdx = afterPrefix.indexOf('/');
+            int spaceIdx = afterPrefix.indexOf(' ');
+
             String modelAlias;
             String prompt;
+
             if (slashIdx > 0) {
-                modelAlias = message.substring(3, slashIdx);
-                prompt = message.substring(slashIdx + 1).trim();
+                // 格式: @厂家名/内容
+                modelAlias = afterPrefix.substring(0, slashIdx).trim();
+                prompt = afterPrefix.substring(slashIdx + 1).trim();
+            } else if (spaceIdx > 0) {
+                // 格式: @厂家名 内容（空格分隔）
+                modelAlias = afterPrefix.substring(0, spaceIdx).trim();
+                prompt = afterPrefix.substring(spaceIdx + 1).trim();
             } else {
-                // 尾部无斜杠：整段去掉 @// 前缀作为模型名
-                modelAlias = message.substring(3).trim();
+                // 格式: @厂家名（无内容）
+                modelAlias = afterPrefix.trim();
                 prompt = "";
             }
+
             if (modelAlias.isEmpty()) {
-                p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名/内容");
+                p.sendMessage("§c[AI聊天] §f格式错误，应为 @厂家名/内容");
                 return;
             }
             if (prompt.isEmpty()) {
@@ -772,7 +792,7 @@ public class AIChatManager {
 
             // 构建自动互动提示词 — 用压缩方法（超阈值时截断旧消息）
             String recentChat = compressChatBuffer(endpoint.maxToken);
-            String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地参与对话或回答问题。";
+            String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地抛出一个话题或问题，引导大家参与讨论，带动服务器的活跃气氛。不要直接点名任何玩家，而是抛出一个开放性的话题让大家都能参与。";
 
             plugin.getLogger().info("[AI聊天] 触发自动互动");
             // ★ 死循环防护：触发前先更新时间戳，请求挂起/超时/失败都不会被下一秒重复触发
