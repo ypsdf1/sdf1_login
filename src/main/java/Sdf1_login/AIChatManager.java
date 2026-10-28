@@ -295,19 +295,30 @@ public class AIChatManager {
             }
 
             // ★ 注册厂家名 → 默认模型全名（@//厂家名/ 快捷引用）
-            // 内置供应商：厂家名 = 「供应商名字」第一段（mimo/token-plan → mimo，deepseek → deepseek）
+            // 内置供应商：从「供应商名字」路径的每一段都注册为厂家名别名
+            //   如 "非国产/agnes/中国版" → 非国产/agnes/中国版 三个名字都能 @// 调用
+            //   如 "mimo/token-plan" → mimo/token-plan 都能调用
             // 自定义供应商：别名走「提示词.txt」的 models=全名=别名 映射（aliasToFullModel），这里不重复注册
             if (isBuiltin) {
                 String providerName = getStr(supplierConfig, "供应商名字");
                 if (providerName != null && !providerName.isEmpty()) {
-                    String providerShort = providerName.split("/")[0].trim();
                     String defaultUse = getStr(supplierConfig, "默认使用");
+                    String firstModel = null;
                     if (defaultUse != null && !defaultUse.isEmpty()) {
-                        providerToModel.put(providerShort, defaultUse);
+                        firstModel = defaultUse;
                     } else if (supplierConfig.has("可用模型")) {
                         JsonElement models = supplierConfig.get("可用模型");
                         if (models.isJsonArray() && models.getAsJsonArray().size() > 0) {
-                            providerToModel.put(providerShort, models.getAsJsonArray().get(0).getAsString());
+                            firstModel = models.getAsJsonArray().get(0).getAsString();
+                        }
+                    }
+                    if (firstModel != null) {
+                        // 注册路径中的每一段作为厂家名别名
+                        for (String seg : providerName.split("/")) {
+                            String name = seg.trim();
+                            if (!name.isEmpty()) {
+                                providerToModel.putIfAbsent(name, firstModel);
+                            }
                         }
                     }
                 }
