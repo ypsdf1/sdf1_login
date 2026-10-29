@@ -56,6 +56,10 @@ public class AIChatManager {
     private int minIntervalMin = 1;
     private int maxIntervalMin = 10;
 
+    // ★ 第58批-问题5：自动发言开关（false/0 = 大模型停止自动互动，手动 @ 不受影响）
+    //   配置路径：配置部分 → 2 → 发言间隔 → 自动发言
+    private boolean autoSpeakEnabled = true;
+
     // 默认上下文长度
     private String defaultContextLength = "200000";
 
@@ -184,6 +188,14 @@ public class AIChatManager {
                         }
                         if (maxStr != null && !maxStr.isEmpty()) {
                             try { maxIntervalMin = Integer.parseInt(maxStr); } catch (NumberFormatException ignored) {}
+                        }
+                        // ★ 第58批-问题5：自动发言开关
+                        //   false/0 = 停止自动互动（手动 @ 不受影响），true/1 = 按发言间隔自动发言
+                        JsonElement autoSpeakEl = interval.get("自动发言");
+                        if (autoSpeakEl != null && autoSpeakEl.isJsonPrimitive()) {
+                            String av = autoSpeakEl.getAsString();
+                            // 支持 true/false 字符串与布尔与数字 0/1
+                            autoSpeakEnabled = !"false".equalsIgnoreCase(av) && !"0".equals(av);
                         }
                     }
 
@@ -567,10 +579,11 @@ public class AIChatManager {
         loadConfig();
 
         // 黑名单检查
+        // ★ 第58批-问题6：命中黑名单直接返回固定文案，不告知玩家命中，掐断 API
         if (isBlacklisted(prompt)) {
             plugin.getLogger().info("[AI聊天] 黑名单拦截: " + prompt.substring(0, Math.min(50, prompt.length())));
             if (player != null) {
-                player.sendMessage("§c[AI聊天] §f输入内容命中黑名单，请求已拦截");
+                player.sendMessage("§c[AI聊天] §f我无法就此问题，展开讨论和回答");
             }
             return;
         }
@@ -951,7 +964,12 @@ public class AIChatManager {
 
         try {
             // 检查是否到了自动互动时间
-            long intervalMs = (minIntervalMin + (int)(Math.random() * (maxIntervalMin - minIntervalMin + 1))) * 60000L;
+            // ★ 第58批-问题5：自动发言开关关闭时直接跳过（false/0 = 停止自动互动，手动 @ 不受影响）
+            if (!autoSpeakEnabled) return;
+            // ★ 边界保护：minIntervalMin > maxIntervalMin 时 Math.random 会抛 NPE，修正区间
+            int minI = Math.max(1, minIntervalMin);
+            int maxI = Math.max(minI, maxIntervalMin);
+            long intervalMs = (minI + (int)(Math.random() * (maxI - minI + 1))) * 60000L;
 
             if (System.currentTimeMillis() - lastAiReplyTime < intervalMs) return;
             if (recentChatBuffer.isEmpty()) return;

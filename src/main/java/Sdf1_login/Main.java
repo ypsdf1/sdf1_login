@@ -406,6 +406,21 @@ public class Main extends JavaPlugin
                 areaProtection.onPlayerQuit(p.getName());
             }
         }
+
+        // ★ 第58批-问题4：玩家下线时触发一次在线玩家同步
+        //   Bukkit.getOnlinePlayers() 已不含下线玩家 → 对账检出差异 → 推送更新名单
+        //   → PHP 端移除下线玩家。定时心跳保持不动。
+        if (webManager != null) {
+            final String quitName = e.getPlayer().getName();
+            Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+                try {
+                    getLogger().info("[Web通信] 玩家下线触发在线玩家同步: " + quitName);
+                    webManager.syncOnlinePlayers();
+                } catch (Exception ex) {
+                    getLogger().warning("[Web通信] 下线同步syncOnlinePlayers异常: " + ex.getMessage());
+                }
+            });
+        }
     }
 
 

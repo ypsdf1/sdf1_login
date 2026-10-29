@@ -618,6 +618,45 @@ public class CreditManager {
         // 判断第一个参数是否是已知子命令
         boolean isSubCommand = sub.equals("user") || sub.equals("审批") || sub.equals("approve")
                 || sub.equals("give") || sub.equals("remove");
+        // ★ 第58批-问题3修复：/credits <玩家名> give/remove <数值> [备注] — 给他人加减分
+        //   之前只判断第一个参数，WRW 被当成玩家名查询，give/remove 被忽略。
+        //   现在先检查第二个参数是不是 give/remove，是的话走加减分流程。
+        if (!isSubCommand && args.length >= 3) {
+            String arg1Lower = args[1].toLowerCase();
+            if (arg1Lower.equals("give") || arg1Lower.equals("remove")) {
+                // /credits <玩家名> give/remove <数值> [备注] — 给他人加减分
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§c仅玩家可用");
+                    return true;
+                }
+                Player p = (Player) sender;
+                boolean isGive = arg1Lower.equals("give");
+                // 给他人加减分需要管理员权限
+                if (!plugin.isAdmin(p)) {
+                    p.sendMessage("§c§l[信誉积分] §c权限不足");
+                    return true;
+                }
+                String targetName = args[0];
+                String amountStr = args[2];
+                double amount;
+                try {
+                    amount = Double.parseDouble(amountStr);
+                } catch (NumberFormatException e) {
+                    p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                    return true;
+                }
+                if (!isGive) amount = -Math.abs(amount); // remove → 负数
+                else amount = Math.abs(amount); // give → 正数
+                String reason = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)) : (isGive ? "管理员加分" : "管理员扣分");
+                // ★ 第58批-问题3修复：负分用户也能继续加减分——直接 addScore，不检查 score 是否 < 0
+                double newScore = getScore(targetName) + amount;
+                addScore(targetName, amount, reason);
+                p.sendMessage("§d§l[信誉积分] §f对 " + targetName + " " + (isGive ? "加分" : "扣分") + "成功: §e"
+                        + (amount > 0 ? "+" : "") + formatScore(amount)
+                        + " §7目标当前积分: §e" + formatScore(newScore));
+                return true;
+            }
+        }
         if (!isSubCommand && args.length >= 1) {
             // 直接是玩家名 → 查询积分
             String targetName = args[0];

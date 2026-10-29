@@ -11913,10 +11913,13 @@ public class WebManager {
             if (db == null) return;
 
             // 收集所有非默认积分的玩家（默认100分不推，减少数据量）
+            // ★ 第58批-问题1修复：db.getConnection() 返回全局单例连接，不能 try-with-resources 关闭！
+            //   之前 try (Connection conn = db.getConnection(); ...) 会在块退出时 close() 掉单例连接，
+            //   导致下次访问触发"数据库连接已自动重建"，断链频率大的根源。
             Gson gson = new Gson();
             JsonObject playersObj = new JsonObject();
-            try (Connection conn = db.getConnection();
-                 Statement st = conn.createStatement();
+            Connection conn = db.getConnection();
+            try (Statement st = conn.createStatement();
                  ResultSet rs = st.executeQuery(
                      "SELECT player_name, credit_score FROM users WHERE credit_score IS NOT NULL AND credit_score != 100 ORDER BY player_name")) {
                 while (rs.next()) {
@@ -11929,11 +11932,10 @@ public class WebManager {
 
             // 收集最近200条积分记录
             JsonArray recordsArr = new JsonArray();
-            try (Connection conn = db.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
+            try (PreparedStatement ps = conn.prepareStatement(
                      "SELECT target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source "
-                     + "FROM credit_records ORDER BY created_at DESC LIMIT 200")) {
-                ResultSet rs = ps.executeQuery();
+                     + "FROM credit_records ORDER BY created_at DESC LIMIT 200");
+                 ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     JsonObject rec = new JsonObject();
                     rec.addProperty("target_player", rs.getString("target_player"));
@@ -11966,6 +11968,15 @@ public class WebManager {
 
             String result = doPost(url, jsonBody);
             if (result != null) {
+                // ★ 第58批-问题1修复：PHP 端 MySQL 断连时返回 HTML 错误页，
+                //   按 JSON 解析会抛 MalformedJsonException。先检测 HTML 特征，直接按PHP端故障记录。
+                String trimmed = result.trim();
+                if (trimmed.startsWith("<") || trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<?xml")) {
+                    // HTML 错误页：PHP端数据库断连/500错误，不是Java的问题
+                    String shortBody = trimmed.length() > 150 ? trimmed.substring(0, 150) + "..." : trimmed;
+                    plugin.getLogger().warning("[信誉同步] 推送PHP失败: PHP返回HTML错误页(可能数据库断连)，响应: " + shortBody);
+                    return;
+                }
                 try {
                     JsonObject root = JsonParser.parseString(result).getAsJsonObject();
                     if (root.has("success") && root.get("success").getAsBoolean()) {
@@ -12001,6 +12012,14 @@ public class WebManager {
                 return;
             }
 
+            // ★ 第58批-问题1修复：PHP 端 MySQL 断连时返回 HTML 错误页，按 JSON 解析会抛 MalformedJsonException
+            String trimmed = result.trim();
+            if (trimmed.startsWith("<") || trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<?xml")) {
+                String shortBody = trimmed.length() > 150 ? trimmed.substring(0, 150) + "..." : trimmed;
+                plugin.getLogger().warning("[信誉同步] 拉回PHP失败: PHP返回HTML错误页(可能数据库断连)，响应: " + shortBody);
+                return;
+            }
+
             JsonObject root = JsonParser.parseString(result).getAsJsonObject();
             if (!root.has("success") || !root.get("success").getAsBoolean()) {
                 plugin.getLogger().warning("[信誉同步] 拉回PHP失败: " + (root.has("message") ? root.get("message").getAsString() : "未知"));
@@ -12028,9 +12047,10 @@ public class WebManager {
                     long createdAt = rec.has("created_at") ? rec.get("created_at").getAsLong() : 0;
 
                     // 去重：Java端已有同 target+source+created_at 的记录则跳过
-                    try (Connection conn = db.getConnection();
-                         PreparedStatement check = conn.prepareStatement(
-                             "SELECT 1 FROM credit_records WHERE target_player = ? AND source = 'php' AND created_at = ?")) {
+                    // ★ 第58批-问题1修复：不用 try-with-resources 关闭单例连接
+                    Connection checkConn = db.getConnection();
+                    try (PreparedStatement check = checkConn.prepareStatement(
+                            "SELECT 1 FROM credit_records WHERE target_player = ? AND source = 'php' AND created_at = ?")) {
                         check.setString(1, target);
                         check.setLong(2, createdAt);
                         ResultSet checkRs = check.executeQuery();
@@ -12044,13 +12064,15 @@ public class WebManager {
                     }
 
                     // 插入记录 + 更新积分
-                    try (Connection conn = db.getConnection()) {
-                        conn.setAutoCommit(false);
+                    // ★ 第58批-问题1修复：不用 try-with-resources 关闭单例连接
+                    Connection insertConn = db.getConnection();
+                    try {
+                        insertConn.setAutoCommit(false);
 
                         // 插入 credit_record
                         String type = scoreChange > 0 ? "good" : "bad";
                         String reason = rec.has("approve_reason") ? rec.get("approve_reason").getAsString() : "管理员手动调整";
-                        try (PreparedStatement ps = conn.prepareStatement(
+                        try (PreparedStatement ps = insertConn.prepareStatement(
                                 "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) "
                                 + "VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, 'php')")) {
                             ps.setString(1, target);
@@ -12065,17 +12087,22 @@ public class WebManager {
                         }
 
                         // 更新玩家积分（直接设值，PHP端是副本但管理员调整需回写Java）
-                        try (PreparedStatement ps = conn.prepareStatement(
+                        try (PreparedStatement ps = insertConn.prepareStatement(
                                 "UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?")) {
                             ps.setDouble(1, scoreChange);
                             ps.setString(2, target);
                             ps.executeUpdate();
                         }
 
-                        conn.commit();
+                        insertConn.commit();
                         appliedCount++;
                     } catch (Exception e) {
                         plugin.getLogger().warning("[信誉同步] 拉回记录应用失败 " + target + ": " + e.getMessage());
+                        try { insertConn.rollback(); } catch (Exception ignored) {}
+                    } finally {
+                        // ★ 第58批-问题1修复：单例连接不 close，但必须恢复 autoCommit
+                        //   否则下次其他人用这个连接时 autoCommit=false 会导致未 commit 的数据丢失
+                        try { insertConn.setAutoCommit(true); } catch (Exception ignored) {}
                     }
                 }
 
