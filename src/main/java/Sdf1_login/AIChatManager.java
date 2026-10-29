@@ -1109,9 +1109,12 @@ public class AIChatManager {
     public boolean isBlacklisted(String content) {
         if (content == null || content.isEmpty()) return false;
         for (String kw : blacklist) {
-            if (kw != null && !kw.isEmpty() && content.contains(kw)) {
-                return true;
-            }
+            if (kw == null || kw.isEmpty()) continue;
+            // ★ 第58批续28-问题2：完整包含 → 拦截
+            if (content.contains(kw)) return true;
+            // ★ 前缀匹配：黑名单词的前2个字符出现在消息中 → 拦截
+            //   "测试一下" 的前2字符 "测试" 出现在 "让我们来做个测试" → 拦截
+            if (kw.length() >= 2 && content.contains(kw.substring(0, 2))) return true;
         }
         return false;
     }
