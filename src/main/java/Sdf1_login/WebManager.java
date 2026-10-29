@@ -11998,8 +11998,10 @@ public class WebManager {
     }
 
     /**
-     * PHP → Java 拉回管理员手动调整的信誉积分
-     * 拉回内容：PHP端 source='admin' 的积分记录 → 应用到 Java DB
+     * PHP → Java 拉回 PHP 端产生的信誉积分记录
+     * 拉回内容：PHP端 source='web'（网页上报）和 source='admin'（管理员手动调整）的积分记录
+     * ★ 第59批-问题1修复：原逻辑只处理 source='admin'，PHP网页提交的 source='web' 上报被过滤掉
+     *   导致 Java 端永远收不到 PHP 网页上报的记录 → PHP 后台显示0个待审核
      * 在 Timer C 批处理中调用，紧跟 pushCreditToPhp 之后
      */
     public void pullCreditFromPhp() {
@@ -12031,7 +12033,9 @@ public class WebManager {
             if (!root.has("data") || !root.get("data").isJsonObject()) return;
             JsonObject data = root.getAsJsonObject("data");
 
-            // 处理管理员手动调整的记录（source='admin'）
+            // 处理 PHP 端产生的记录（source='web' 和 source='admin'）
+            // ★ 第59批-问题1修复：原逻辑只处理 source='admin'，漏掉 source='web'
+            //   PHP网页提交的上报记录 source='web' 也被过滤 → Java 端永远收不到
             if (data.has("records") && data.get("records").isJsonArray()) {
                 JsonArray records = data.getAsJsonArray("records");
                 DatabaseManager db = plugin.getDb();
@@ -12041,63 +12045,93 @@ public class WebManager {
                 for (JsonElement el : records) {
                     JsonObject rec = el.getAsJsonObject();
                     String source = rec.has("source") ? rec.get("source").getAsString() : "";
-                    // 只处理管理员手动调整的记录
-                    if (!"admin".equals(source)) continue;
+                    // ★ 第59批-问题1修复：处理 PHP 端产生的所有记录（web + admin）
+                    //   Java 端自己的记录 source='game'，不处理（避免回环）
+                    //   PHP 同步过来的记录在 Java 端统一标记为 source='php'
+                    if (!"web".equals(source) && !"admin".equals(source)) continue;
 
                     String target = rec.get("target_player").getAsString();
                     double scoreChange = rec.has("score_change") ? rec.get("score_change").getAsDouble() : 0;
                     long createdAt = rec.has("created_at") ? rec.get("created_at").getAsLong() : 0;
+                    String phpStatus = rec.has("status") ? rec.get("status").getAsString() : "approved";
+                    String reporter = rec.has("reporter_player") ? rec.get("reporter_player").getAsString() : "admin";
+                    String content = rec.has("content") ? rec.get("content").getAsString() : "";
 
-                    // 去重：Java端已有同 target+source+created_at 的记录则跳过
+                    // ★ 第59批-问题5：PHP 端撤回上报时 status='revoked'
+                    //   需要同步更新 Java 端已有记录的状态，不能只跳过
+                    // 去重检查：Java端已有同 target+source='php'+created_at+reporter_player 的记录
                     // ★ 第58批-问题1修复：不用 try-with-resources 关闭单例连接
                     Connection checkConn = db.getConnection();
+                    int javaRecordId = -1;
+                    String javaStatus = "";
                     try (PreparedStatement check = checkConn.prepareStatement(
-                            "SELECT 1 FROM credit_records WHERE target_player = ? AND source = 'php' AND created_at = ?")) {
+                            "SELECT id, status FROM credit_records WHERE target_player = ? AND source = 'php' AND created_at = ? AND reporter_player = ?")) {
                         check.setString(1, target);
                         check.setLong(2, createdAt);
+                        check.setString(3, reporter);
                         ResultSet checkRs = check.executeQuery();
                         if (checkRs.next()) {
+                            javaRecordId = checkRs.getInt("id");
+                            javaStatus = checkRs.getString("status");
                             checkRs.close();
-                            continue; // 已同步过，跳过
                         }
-                        checkRs.close();
                     } catch (Exception e) {
                         continue;
                     }
 
-                    // 插入记录 + 更新积分
-                    // ★ 第58批-问题1修复：不用 try-with-resources 关闭单例连接
                     Connection insertConn = db.getConnection();
                     try {
                         insertConn.setAutoCommit(false);
 
-                        // 插入 credit_record
-                        String type = scoreChange > 0 ? "good" : "bad";
-                        String reason = rec.has("approve_reason") ? rec.get("approve_reason").getAsString() : "管理员手动调整";
-                        try (PreparedStatement ps = insertConn.prepareStatement(
-                                "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) "
-                                + "VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, 'php')")) {
-                            ps.setString(1, target);
-                            ps.setString(2, rec.has("reporter_player") ? rec.get("reporter_player").getAsString() : "admin");
-                            ps.setString(3, type);
-                            ps.setString(4, rec.has("content") ? rec.get("content").getAsString() : reason);
-                            ps.setDouble(5, scoreChange);
-                            ps.setLong(6, createdAt);
-                            ps.setLong(7, rec.has("approved_at") ? rec.get("approved_at").getAsLong() : createdAt);
-                            ps.setString(8, reason);
-                            ps.executeUpdate();
-                        }
+                        if (javaRecordId > 0) {
+                            // ★ 第59批-问题5：已存在的记录 → 只更新 status（如 PHP 端撤回改为 revoked）
+                            //   不重复插入，不重复扣积分
+                            if (!javaStatus.equals(phpStatus)) {
+                                try (PreparedStatement ps = insertConn.prepareStatement(
+                                        "UPDATE credit_records SET status = ?, approve_reason = ? WHERE id = ?")) {
+                                    ps.setString(1, phpStatus);
+                                    ps.setString(2, rec.has("approve_reason") ? rec.get("approve_reason").getAsString() : "");
+                                    ps.setInt(3, javaRecordId);
+                                    ps.executeUpdate();
+                                }
+                            }
+                            insertConn.commit();
+                            if (!javaStatus.equals(phpStatus)) {
+                                appliedCount++;
+                            }
+                        } else {
+                            // 新记录 → 插入
+                            String type = scoreChange > 0 ? "good" : "bad";
+                            String reason = rec.has("approve_reason") ? rec.get("approve_reason").getAsString() : "PHP端上报";
+                            try (PreparedStatement ps = insertConn.prepareStatement(
+                                    "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, approved_at, approve_reason, source) "
+                                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'php')")) {
+                                ps.setString(1, target);
+                                ps.setString(2, reporter);
+                                ps.setString(3, type);
+                                ps.setString(4, content);
+                                ps.setString(5, phpStatus);
+                                ps.setDouble(6, scoreChange);
+                                ps.setLong(7, createdAt);
+                                ps.setLong(8, rec.has("approved_at") ? rec.get("approved_at").getAsLong() : createdAt);
+                                ps.setString(9, reason);
+                                ps.executeUpdate();
+                            }
 
-                        // 更新玩家积分（直接设值，PHP端是副本但管理员调整需回写Java）
-                        try (PreparedStatement ps = insertConn.prepareStatement(
-                                "UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?")) {
-                            ps.setDouble(1, scoreChange);
-                            ps.setString(2, target);
-                            ps.executeUpdate();
-                        }
+                            // ★ 第59批-问题1修复：仅当 PHP 端记录已审批通过时才更新积分
+                            //   PHP 端 pending/revoked/rejected 的记录不应触发 Java 端积分变动
+                            if ("approved".equals(phpStatus) && scoreChange != 0) {
+                                try (PreparedStatement ps = insertConn.prepareStatement(
+                                        "UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?")) {
+                                    ps.setDouble(1, scoreChange);
+                                    ps.setString(2, target);
+                                    ps.executeUpdate();
+                                }
+                            }
 
-                        insertConn.commit();
-                        appliedCount++;
+                            insertConn.commit();
+                            appliedCount++;
+                        }
                     } catch (Exception e) {
                         plugin.getLogger().warning("[信誉同步] 拉回记录应用失败 " + target + ": " + e.getMessage());
                         try { insertConn.rollback(); } catch (Exception ignored) {}

@@ -972,14 +972,21 @@ public class AIChatManager {
         if (!autoChatRunning.compareAndSet(false, true)) return;
 
         try {
+            // ★ 第59批-问题2：先检查开关，再决定是否重读配置
+            //   原逻辑（第58批续29-问题1修复）：loadConfig(true) 前置到方法开头
+            //   → autoSpeakEnabled=false 时每秒仍执行 loadConfig(true)（4次文件读取）
+            //   → 与 sendToModel 的 loadConfig() 在异步线程上竞争 HashMap/文件IO
+            //   → sendToModel 的 HashMap 读写被打断 → HTTP 请求挂起 → 99%超时
+            //   修复：开关关闭时直接 return，不做任何文件IO
+            //   开关开启时才 loadConfig(true) 刷新（此时自动互动本就需要重读）
+            //   开关刚关闭的瞬间可能多触发一次自动互动，可接受（1秒延迟）
+            if (!autoSpeakEnabled) return;
+
             // ★ 第58批续29-问题1：先重读配置，再检查开关
-            //   原逻辑：开关检查在 loadConfig 之前 → 配置变更后第一次调度仍用旧值（true），
-            //   导致 autoSpeakEnabled=false 时模型依然发言一次。
-            //   修复：loadConfig(true) 前置，确保每次调度都用最新配置判断开关。
+            //   loadConfig(true) 仅在 autoSpeakEnabled=true 时执行，刷新模型/黑名单等
             loadConfig(true);
 
-            // 检查是否到了自动互动时间
-            // ★ 第58批-问题5：自动发言开关关闭时直接跳过（false/0 = 停止自动互动，手动 @ 不受影响）
+            // 再次检查开关（loadConfig 可能改变了 autoSpeakEnabled）
             if (!autoSpeakEnabled) return;
             // ★ 边界保护：minIntervalMin > maxIntervalMin 时 Math.random 会抛 NPE，修正区间
             int minI = Math.max(1, minIntervalMin);

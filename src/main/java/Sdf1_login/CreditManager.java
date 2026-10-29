@@ -39,6 +39,7 @@ public class CreditManager {
     public static final String STATUS_PENDING = "pending";
     public static final String STATUS_APPROVED = "approved";
     public static final String STATUS_REJECTED = "rejected";
+    public static final String STATUS_REVOKED = "revoked";  // ★ 第59批-问题3/5：上报人自行撤回
 
     // 上报类型
     public static final String TYPE_GOOD = "good";       // 好人好事
@@ -59,7 +60,14 @@ public class CreditManager {
     public static final String GUI_TITLE = "§d§l信誉积分";
 
     // GUI尺寸
-    private static final int GUI_SIZE = 9;
+    private static final int GUI_SIZE = 18;  // ★ 第59批-问题5：扩容到18格(2行)，新增"我的上报"按钮
+
+    // ★ 第59批-问题5：二级菜单27格，22-24号位翻页
+    private static final int RECORDS_MENU_SIZE = 27;
+    private static final int PAGE_PREV = 22;   // 上一页
+    private static final int PAGE_NEXT = 23;   // 下一页
+    private static final int PAGE_INFO = 24;   // 页码信息
+    private static final int RECORDS_BACK = 26; // 返回
 
     // ==================== 聊天引导状态 ====================
 
@@ -73,7 +81,8 @@ public class CreditManager {
         ADD_SCORE_AMOUNT,         // 加分 → 等待数值
         DEDUCT_SCORE_TARGET,      // 扣分 → 等待玩家名
         DEDUCT_SCORE_AMOUNT,      // 扣分 → 等待数值
-        APPROVE_SCORE_CHANGE      // 审批通过 → 等待积分变动值
+        APPROVE_SCORE_CHANGE,     // 审批通过 → 等待积分变动值
+        REVOKE_CONFIRM            // ★ 第59批-问题5：撤回上报确认
     }
 
     // 玩家当前引导状态 (playerName -> FlowState + 临时数据)
@@ -239,8 +248,35 @@ public class CreditManager {
             ps.close();
             plugin.getLogger().info("[信誉积分] 上报: " + reporterPlayer + " 举报/表扬 " + targetPlayer
                     + " 类型=" + type + " 来源=" + source);
+
+            // ★ 第59批-问题1修复：游戏内提交上报后，立即通知 PHP 拉取
+            //   原逻辑：pushCreditToPhp 只在 Timer C 周期运行，PHP 超过2分钟仍显示0个待审核
+            //   修复：submitReport 插入记录后，立即触发 pushCreditToPhp（异步，不阻塞主线程）
+            triggerCreditPushToPhp();
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 上报失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * ★ 第59批-问题1修复：立即触发信誉积分推送到 PHP
+     *   submitReport 在主线程被调用（GUI点击/聊天引导），不能直接做 HTTP 请求阻塞游戏
+     *   → 用 Bukkit 异步任务调用 WebManager.pushCreditToPhp（内部 doPost 会阻塞线程）
+     */
+    private void triggerCreditPushToPhp() {
+        try {
+            Main plugin = this.plugin;
+            if (plugin.webManager == null) return;
+            // 异步执行 HTTP 推送，不阻塞主线程
+            org.bukkit.Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+                try {
+                    plugin.webManager.pushCreditToPhp();
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[信誉积分] 异步推送PHP失败: " + e.getMessage());
+                }
+            });
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 触发推送PHP失败: " + e.getMessage());
         }
     }
 
@@ -273,6 +309,11 @@ public class CreditManager {
                 plugin.getLogger().info("[信誉积分] " + approverName + " 审批通过 " + target
                         + " 积分变动: " + (scoreChange > 0 ? "+" : "") + formatScore(scoreChange));
             }
+
+            // ★ 第59批-问题1修复：审批结果需要同步到PHP
+            //   审批通过/驳回后，PHP端需要立即看到审批结果，不用等Timer C周期
+            triggerCreditPushToPhp();
+
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 审批失败: " + e.getMessage());
@@ -338,6 +379,87 @@ public class CreditManager {
         return list;
     }
 
+    /** ★ 第59批-问题5：查询自己提交的上报（作为 reporter_player） */
+    public List<Map<String, Object>> getMyReports(String reporterName, int offset, int limit) {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "SELECT * FROM credit_records WHERE reporter_player = ? ORDER BY created_at DESC LIMIT ? OFFSET ?");
+            ps.setString(1, reporterName);
+            ps.setInt(2, limit);
+            ps.setInt(3, offset);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getInt("id"));
+                row.put("target_player", rs.getString("target_player"));
+                row.put("reporter_player", rs.getString("reporter_player"));
+                row.put("type", rs.getString("type"));
+                row.put("content", rs.getString("content"));
+                row.put("status", rs.getString("status"));
+                row.put("score_change", rs.getDouble("score_change"));
+                row.put("created_at", rs.getLong("created_at"));
+                row.put("source", rs.getString("source"));
+                row.put("approve_reason", rs.getString("approve_reason"));
+                list.add(row);
+            }
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 查询我的上报失败: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /** ★ 第59批-问题5：统计自己提交的上报总数 */
+    public int getMyReportsCount(String reporterName) {
+        try {
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "SELECT COUNT(*) as cnt FROM credit_records WHERE reporter_player = ?");
+            ps.setString(1, reporterName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) return rs.getInt("cnt");
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 统计我的上报失败: " + e.getMessage());
+        }
+        return 0;
+    }
+
+    /** ★ 第59批-问题5：撤回自己提交的上报 */
+    public boolean revokeReport(int recordId, String reporterName) {
+        try {
+            // 验证：只能撤回自己提交的记录
+            PreparedStatement check = db.getConnection().prepareStatement(
+                    "SELECT reporter_player, status FROM credit_records WHERE id = ?");
+            check.setInt(1, recordId);
+            ResultSet rs = check.executeQuery();
+            if (!rs.next()) return false;
+            String reporter = rs.getString("reporter_player");
+            String status = rs.getString("status");
+            rs.close();
+            check.close();
+
+            if (!reporter.equals(reporterName)) return false;
+            if (STATUS_APPROVED.equals(status)) return false;
+
+            // ★ 第59批-问题5：改为 revoked 状态，保留审计痕迹
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "UPDATE credit_records SET status = 'revoked', approve_reason = '上报人自行撤回' WHERE id = ?");
+            ps.setInt(1, recordId);
+            ps.executeUpdate();
+            ps.close();
+
+            // ★ 联动PHP：写 sync_requests 标记，PHP 端 pullCreditFromPhp 拉回后同步
+            triggerCreditPushToPhp();
+
+            plugin.getLogger().info("[信誉积分] " + reporterName + " 撤回上报 #" + recordId);
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 撤回上报失败: " + e.getMessage());
+            return false;
+        }
+    }
+
     // ==================== 限制规则 ====================
 
     public List<Map<String, Object>> getEnabledRules() {
@@ -399,6 +521,8 @@ public class CreditManager {
         Inventory inv = Bukkit.createInventory(null, GUI_SIZE, GUI_TITLE);
         boolean admin = plugin.isAdmin(p);
 
+        // ═══════════════ 第一行 (Slot 0-8) ═══════════════
+
         // Slot 0: 上报好人好事
         inv.setItem(0, mkItem(Material.EMERALD,
                 "§a§l上报好人好事",
@@ -424,53 +548,60 @@ public class CreditManager {
                 "§7查看自己的积分变动记录",
                 "§7点击查看"));
 
-        // Slot 4: 加分 (管理员)
+        // ★ 第59批-问题5：Slot 4: 我的上报（所有人可见）
+        inv.setItem(4, mkItem(Material.WRITABLE_BOOK,
+                "§b§l我的上报",
+                "§7查看自己提交的上报记录",
+                "§7可撤回未通过的上报",
+                "§7点击查看"));
+
+        // Slot 5: 加分 (管理员)
         if (admin) {
-            inv.setItem(4, mkItem(Material.EMERALD,
+            inv.setItem(5, mkItem(Material.EMERALD,
                     "§a§l加分",
                     "§7管理员给玩家加分",
                     "§7点击后聊天框输入玩家名"));
         }
 
-        // Slot 5: 扣分 (管理员)
+        // Slot 6: 扣分 (管理员)
         if (admin) {
-            inv.setItem(5, mkItem(Material.REDSTONE,
+            inv.setItem(6, mkItem(Material.REDSTONE,
                     "§c§l扣分",
                     "§7管理员给玩家扣分",
                     "§7点击后聊天框输入玩家名"));
         }
 
-        // Slot 6: 待审批 (管理员)
+        // Slot 7: 待审批 (管理员)
         if (admin) {
-            inv.setItem(6, mkItem(Material.CHEST,
+            inv.setItem(7, mkItem(Material.CHEST,
                     "§e§l待审批",
                     "§7审批玩家上报的好人好事/举报",
                     "§7点击查看"));
         }
 
-        // Slot 7: 审批记录 (管理员)
+        // Slot 8: 审批记录 (管理员)
         if (admin) {
-            inv.setItem(7, mkItem(Material.BOOK,
+            inv.setItem(8, mkItem(Material.BOOK,
                     "§b§l审批记录",
                     "§7查看历史审批记录",
                     "§7点击查看"));
         }
 
-        // Slot 8: 规则说明
-        inv.setItem(8, mkItem(Material.IRON_INGOT,
+        // ═══════════════ 第二行 (Slot 9-17) ═══════════════
+
+        // Slot 9: 规则说明
+        inv.setItem(9, mkItem(Material.IRON_INGOT,
                 "§7§l规则说明",
                 "§7低于60分: 禁止交易",
                 "§7低于40分: 禁止PVP",
                 "§7低于20分: 禁止传送"));
 
-        // 非管理员在 4-7 槽显示锁定
+        // ★ 第59批-问题4：非管理员在 5-8 槽不放任何物品（原4-7）
+        //   原逻辑放红玻璃"管理员专属" → 明摆着告诉玩家这里有管理员功能，违背最小化信息透露原则
+        //   现在：空槽位什么都不放，玩家无从判断是否有管理员功能存在
         if (!admin) {
-            for (int i = 4; i <= 7; i++) {
-                if (inv.getItem(i) == null) {
-                    inv.setItem(i, mkItem(Material.RED_STAINED_GLASS_PANE,
-                            "§c§l管理员专属",
-                            "§7需要Tag管理员身份"));
-                }
+            for (int i = 5; i <= 8; i++) {
+                inv.setItem(i, null);  // 清空，不留任何占位符
             }
         }
 
@@ -563,8 +694,16 @@ public class CreditManager {
         for (int i = 0; i < records.size() && i < 49; i++) {
             Map<String, Object> r = records.get(i);
             String status = (String) r.get("status");
-            String statusText = STATUS_APPROVED.equals(status) ? "§a已通过"
-                    : STATUS_REJECTED.equals(status) ? "§c已驳回" : "§e待审批";
+            String statusText;
+            if (STATUS_APPROVED.equals(status)) {
+                statusText = "§a已通过";
+            } else if (STATUS_REJECTED.equals(status)) {
+                statusText = "§c已驳回";
+            } else if (STATUS_REVOKED.equals(status)) {
+                statusText = "§7已撤回";
+            } else {
+                statusText = "§e待审批";
+            }
             inv.setItem(i, mkItem(Material.PAPER,
                     "§e#" + r.get("id") + " " + r.get("type"),
                     "§7上报人: " + r.get("reporter_player"),
@@ -584,8 +723,16 @@ public class CreditManager {
         for (int i = 0; i < records.size() && i < 49; i++) {
             Map<String, Object> r = records.get(i);
             String status = (String) r.get("status");
-            String statusText = STATUS_APPROVED.equals(status) ? "§a已通过"
-                    : STATUS_REJECTED.equals(status) ? "§c已驳回" : "§e待审批";
+            String statusText;
+            if (STATUS_APPROVED.equals(status)) {
+                statusText = "§a已通过";
+            } else if (STATUS_REJECTED.equals(status)) {
+                statusText = "§c已驳回";
+            } else if (STATUS_REVOKED.equals(status)) {
+                statusText = "§7已撤回";
+            } else {
+                statusText = "§e待审批";
+            }
             inv.setItem(i, mkItem(Material.PAPER,
                     "§e#" + r.get("id") + " " + r.get("target_player"),
                     "§7上报人: " + r.get("reporter_player"),
@@ -596,6 +743,91 @@ public class CreditManager {
                     "§7来源: " + r.get("source")));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
+        return inv;
+    }
+
+    // ==================== ★ 第59批-问题5：我的上报 27格二级菜单 ====================
+
+    // 每页显示条数（27格 - 5格导航区 = 22格，实际每页显示 20 条留边距）
+    private static final int REPORTS_PER_PAGE = 20;
+
+    // 页码跟踪（playerName -> 当前页码）
+    private final Map<String, Integer> myReportsPage = new ConcurrentHashMap<>();
+
+    /**
+     * ★ 第59批-问题5：创建"我的上报"27格二级菜单
+     * 布局：
+     *   Slot 0-19: 上报记录（每页20条）
+     *   Slot 21: 返回
+     *   Slot 22: 上一页
+     *   Slot 23: 下一页
+     *   Slot 24: 页码信息
+     */
+    public Inventory createMyReportsGUI(Player p, int page) {
+        Inventory inv = Bukkit.createInventory(null, RECORDS_MENU_SIZE, GUI_TITLE + " - 我的上报");
+        fillBg(inv);
+
+        int totalCount = getMyReportsCount(p.getName());
+        int totalPages = Math.max(1, (totalCount + REPORTS_PER_PAGE - 1) / REPORTS_PER_PAGE);
+        if (page < 1) page = 1;
+        if (page > totalPages) page = totalPages;
+        int offset = (page - 1) * REPORTS_PER_PAGE;
+
+        List<Map<String, Object>> reports = getMyReports(p.getName(), offset, REPORTS_PER_PAGE);
+        for (int i = 0; i < reports.size(); i++) {
+            Map<String, Object> r = reports.get(i);
+            String status = (String) r.get("status");
+            Material mat = TYPE_GOOD.equals(r.get("type")) ? Material.EMERALD : Material.REDSTONE;
+            String typeText = TYPE_GOOD.equals(r.get("type")) ? "§a好人好事" : "§c举报";
+            String statusText;
+            if (STATUS_PENDING.equals(status)) {
+                statusText = "§e待审批";
+            } else if (STATUS_APPROVED.equals(status)) {
+                statusText = "§a已通过";
+            } else if (STATUS_REJECTED.equals(status)) {
+                statusText = "§c已驳回";
+            } else if (STATUS_REVOKED.equals(status)) {
+                statusText = "§7已撤回";
+            } else {
+                statusText = "§7" + status;
+            }
+
+            // 判断是否可撤回：pending 或 rejected 且未撤回
+            boolean canRevoke = (STATUS_PENDING.equals(status) || STATUS_REJECTED.equals(status));
+            String revokeLore = canRevoke ? "§a§l点击查看/右键快速撤回" : "";
+
+            inv.setItem(i, mkItem(mat,
+                    "§e#" + r.get("id") + " → " + r.get("target_player"),
+                    "§7类型: " + typeText,
+                    "§7状态: " + statusText,
+                    "§7内容: " + r.get("content"),
+                    "§7时间: " + formatTime((Long) r.get("created_at")),
+                    revokeLore));
+        }
+
+        // Slot 21: 返回
+        inv.setItem(21, mkItem(Material.ARROW, "§7返回"));
+
+        // Slot 22: 上一页
+        if (page > 1) {
+            inv.setItem(PAGE_PREV, mkItem(Material.PLAYER_HEAD,
+                    "§e§l上一页",
+                    "§7当前第 " + page + "/" + totalPages + " 页"));
+        }
+
+        // Slot 23: 下一页
+        if (page < totalPages) {
+            inv.setItem(PAGE_NEXT, mkItem(Material.PLAYER_HEAD,
+                    "§e§l下一页",
+                    "§7当前第 " + page + "/" + totalPages + " 页"));
+        }
+
+        // Slot 24: 页码信息
+        inv.setItem(PAGE_INFO, mkItem(Material.PAPER,
+                "§7第 " + page + "/" + totalPages + " 页",
+                "§7共 " + totalCount + " 条上报",
+                "§7右键点击记录可撤回"));
+
         return inv;
     }
 
@@ -911,7 +1143,12 @@ public class CreditManager {
                     p.closeInventory();
                     p.openInventory(createRecordsGUI(p));
                     break;
-                case 4: // 加分 (管理员)
+                case 4: // ★ 第59批-问题5：我的上报
+                    myReportsPage.put(p.getName(), 1);
+                    p.closeInventory();
+                    p.openInventory(createMyReportsGUI(p, 1));
+                    break;
+                case 5: // 加分 (管理员)
                     if (!plugin.isAdmin(p)) {
                         p.sendMessage("§c§l[信誉积分] §c权限不足");
                         return;
@@ -920,7 +1157,7 @@ public class CreditManager {
                     p.closeInventory();
                     p.sendMessage("§a§l[信誉积分] §f请输入要加分的玩家名");
                     break;
-                case 5: // 扣分 (管理员)
+                case 6: // 扣分 (管理员)
                     if (!plugin.isAdmin(p)) {
                         p.sendMessage("§c§l[信誉积分] §c权限不足");
                         return;
@@ -929,7 +1166,7 @@ public class CreditManager {
                     p.closeInventory();
                     p.sendMessage("§c§l[信誉积分] §f请输入要扣分的玩家名");
                     break;
-                case 6: // 待审批 (管理员)
+                case 7: // 待审批 (管理员)
                     if (!plugin.isAdmin(p)) {
                         p.sendMessage("§c§l[信誉积分] §c权限不足");
                         return;
@@ -937,7 +1174,7 @@ public class CreditManager {
                     p.closeInventory();
                     p.openInventory(createPendingGUI(p));
                     break;
-                case 7: // 审批记录 (管理员)
+                case 8: // 审批记录 (管理员)
                     if (!plugin.isAdmin(p)) {
                         p.sendMessage("§c§l[信誉积分] §c权限不足");
                         return;
@@ -945,13 +1182,66 @@ public class CreditManager {
                     p.closeInventory();
                     p.openInventory(createAdminRecordsGUI(p));
                     break;
-                case 8: // 规则说明
+                case 9: // 规则说明
                     p.closeInventory();
                     p.sendMessage("§d§l[信誉积分] §f规则说明:");
                     for (Map<String, Object> r : getEnabledRules()) {
                         p.sendMessage("§7" + r.get("rule_name") + ": " + r.get("description"));
                     }
                     break;
+            }
+            return;
+        }
+
+        // ★ 第59批-问题5：我的上报27格二级菜单
+        if (title != null && title.contains("我的上报")) {
+            int currentPage = myReportsPage.getOrDefault(p.getName(), 1);
+
+            // 返回按钮
+            if (slot == 21) {
+                myReportsPage.remove(p.getName());
+                p.closeInventory();
+                p.openInventory(createMainGUI(p));
+                return;
+            }
+
+            // 翻页
+            if (slot == PAGE_PREV) {
+                currentPage = Math.max(1, currentPage - 1);
+                myReportsPage.put(p.getName(), currentPage);
+                p.closeInventory();
+                p.openInventory(createMyReportsGUI(p, currentPage));
+                return;
+            }
+            if (slot == PAGE_NEXT) {
+                currentPage++;
+                myReportsPage.put(p.getName(), currentPage);
+                p.closeInventory();
+                p.openInventory(createMyReportsGUI(p, currentPage));
+                return;
+            }
+
+            // 点击记录槽位（0-19）：打开撤回确认流程
+            if (slot >= 0 && slot < REPORTS_PER_PAGE) {
+                int offset = (currentPage - 1) * REPORTS_PER_PAGE;
+                List<Map<String, Object>> reports = getMyReports(p.getName(), offset, REPORTS_PER_PAGE);
+                if (slot < reports.size()) {
+                    Map<String, Object> r = reports.get(slot);
+                    String status = (String) r.get("status");
+                    // 只允许撤回 pending 或 rejected
+                    if (STATUS_PENDING.equals(status) || STATUS_REJECTED.equals(status)) {
+                        FlowData fd = new FlowData();
+                        fd.state = FlowState.REVOKE_CONFIRM;
+                        fd.recordId = ((Number) r.get("id")).intValue();
+                        fd.tempName = (String) r.get("target_player");
+                        chatFlows.put(p.getName(), fd);
+                        p.closeInventory();
+                        p.sendMessage("§c§l[信誉积分] §f确认撤回上报 #" + fd.recordId + " (目标: " + fd.tempName + ")？");
+                        p.sendMessage("§7输入 §e确认撤回 §7确认，输入其他内容取消");
+                    } else {
+                        p.sendMessage("§c§l[信誉积分] §c此上报状态为 " + status + "，无法撤回");
+                    }
+                }
             }
             return;
         }
@@ -1020,6 +1310,42 @@ public class CreditManager {
             }
             p.closeInventory();
             return;
+        }
+    }
+
+    /**
+     * ★ 第59批-问题5：右键撤回上报
+     * 仅在"我的上报"27格菜单中生效
+     */
+    public void handleRightClick(Player p, int slot, String title) {
+        if (title == null || !title.contains("我的上报")) return;
+
+        int currentPage = myReportsPage.getOrDefault(p.getName(), 1);
+
+        // 只处理记录槽位（0-19）
+        if (slot < 0 || slot >= REPORTS_PER_PAGE) return;
+
+        int offset = (currentPage - 1) * REPORTS_PER_PAGE;
+        List<Map<String, Object>> reports = getMyReports(p.getName(), offset, REPORTS_PER_PAGE);
+        if (slot >= reports.size()) return;
+
+        Map<String, Object> r = reports.get(slot);
+        String status = (String) r.get("status");
+        String targetName = (String) r.get("target_player");
+        int recordId = ((Number) r.get("id")).intValue();
+
+        // 只允许撤回 pending 或 rejected
+        if (STATUS_PENDING.equals(status) || STATUS_REJECTED.equals(status)) {
+            FlowData fd = new FlowData();
+            fd.state = FlowState.REVOKE_CONFIRM;
+            fd.recordId = recordId;
+            fd.tempName = targetName;
+            chatFlows.put(p.getName(), fd);
+            p.closeInventory();
+            p.sendMessage("§c§l[信誉积分] §f确认撤回上报 #" + recordId + " (目标: " + targetName + ")？");
+            p.sendMessage("§7输入 §e确认撤回 §7确认，输入其他内容取消");
+        } else {
+            p.sendMessage("§c§l[信誉积分] §c此上报状态为 " + status + "，无法撤回");
         }
     }
 
@@ -1122,6 +1448,22 @@ public class CreditManager {
                             + (amount > 0 ? "+" : "") + formatScore(amount));
                 } catch (NumberFormatException e) {
                     p.sendMessage("§c请输入数字(如 +10 或 -5 或 0.01)");
+                }
+                return true;
+
+            // ★ 第59批-问题5：撤回上报确认
+            case REVOKE_CONFIRM:
+                if ("确认撤回".equals(msg.trim())) {
+                    int rid = fd.recordId;
+                    boolean ok = revokeReport(rid, p.getName());
+                    chatFlows.remove(p.getName());
+                    if (ok) {
+                        p.sendMessage("§a§l[信誉积分] §f已撤回上报 #" + rid);
+                    } else {
+                        p.sendMessage("§c§l[信誉积分] §c撤回失败，记录不存在或状态不允许");
+                    }
+                } else {
+                    p.sendMessage("§7已取消撤回");
                 }
                 return true;
         }

@@ -7203,7 +7203,11 @@ public class Main extends JavaPlugin
         if (title != null && title.contains("信誉积分")) {
             if (creditManager != null) {
                 e.setCancelled(true);
-                creditManager.handleClick(p, slot, title);
+                if (e.isRightClick()) {
+                    creditManager.handleRightClick(p, slot, title);
+                } else {
+                    creditManager.handleClick(p, slot, title);
+                }
             }
             return;
         }
