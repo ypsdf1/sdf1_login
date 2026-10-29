@@ -56,6 +56,13 @@ public class CreditManager {
         return String.format(java.util.Locale.ROOT, "%.2f", score);
     }
 
+    /** ★ 第60批-问题3b：安全格式化 content 字段，null/empty 显示"无内容" */
+    public static String formatContent(Object content) {
+        if (content == null) return "§7无内容";
+        String s = content.toString().trim();
+        return s.isEmpty() ? "§7无内容" : "§7内容: " + s;
+    }
+
     // GUI标题
     public static final String GUI_TITLE = "§d§l信誉积分";
 
@@ -518,10 +525,12 @@ public class CreditManager {
     // ==================== 9格 GUI ====================
 
     public Inventory createMainGUI(Player p) {
-        Inventory inv = Bukkit.createInventory(null, GUI_SIZE, GUI_TITLE);
         boolean admin = plugin.isAdmin(p);
+        // ★ 第60批-问题2：管理员18格，普通用户9格
+        int size = admin ? 18 : 9;
+        Inventory inv = Bukkit.createInventory(null, size, GUI_TITLE);
 
-        // ═══════════════ 第一行 (Slot 0-8) ═══════════════
+        // ═══════════════ 所有人可见 (Slot 0-4) ═══════════════
 
         // Slot 0: 上报好人好事
         inv.setItem(0, mkItem(Material.EMERALD,
@@ -548,61 +557,53 @@ public class CreditManager {
                 "§7查看自己的积分变动记录",
                 "§7点击查看"));
 
-        // ★ 第59批-问题5：Slot 4: 我的上报（所有人可见）
+        // Slot 4: 我的上报
         inv.setItem(4, mkItem(Material.WRITABLE_BOOK,
                 "§b§l我的上报",
                 "§7查看自己提交的上报记录",
                 "§7可撤回未通过的上报",
                 "§7点击查看"));
 
-        // Slot 5: 加分 (管理员)
         if (admin) {
+            // ═══════════════ 管理员专用 (Slot 5-8) ═══════════════
+
+            // Slot 5: 加分
             inv.setItem(5, mkItem(Material.EMERALD,
                     "§a§l加分",
                     "§7管理员给玩家加分",
                     "§7点击后聊天框输入玩家名"));
-        }
 
-        // Slot 6: 扣分 (管理员)
-        if (admin) {
+            // Slot 6: 扣分
             inv.setItem(6, mkItem(Material.REDSTONE,
                     "§c§l扣分",
                     "§7管理员给玩家扣分",
                     "§7点击后聊天框输入玩家名"));
-        }
 
-        // Slot 7: 待审批 (管理员)
-        if (admin) {
+            // Slot 7: 待审批
             inv.setItem(7, mkItem(Material.CHEST,
                     "§e§l待审批",
                     "§7审批玩家上报的好人好事/举报",
                     "§7点击查看"));
-        }
 
-        // Slot 8: 审批记录 (管理员)
-        if (admin) {
+            // Slot 8: 审批记录
             inv.setItem(8, mkItem(Material.BOOK,
                     "§b§l审批记录",
                     "§7查看历史审批记录",
                     "§7点击查看"));
-        }
 
-        // ═══════════════ 第二行 (Slot 9-17) ═══════════════
-
-        // Slot 9: 规则说明
-        inv.setItem(9, mkItem(Material.IRON_INGOT,
-                "§7§l规则说明",
-                "§7低于60分: 禁止交易",
-                "§7低于40分: 禁止PVP",
-                "§7低于20分: 禁止传送"));
-
-        // ★ 第59批-问题4：非管理员在 5-8 槽不放任何物品（原4-7）
-        //   原逻辑放红玻璃"管理员专属" → 明摆着告诉玩家这里有管理员功能，违背最小化信息透露原则
-        //   现在：空槽位什么都不放，玩家无从判断是否有管理员功能存在
-        if (!admin) {
-            for (int i = 5; i <= 8; i++) {
-                inv.setItem(i, null);  // 清空，不留任何占位符
-            }
+            // Slot 9: 规则说明
+            inv.setItem(9, mkItem(Material.IRON_INGOT,
+                    "§7§l规则说明",
+                    "§7低于60分: 禁止交易",
+                    "§7低于40分: 禁止PVP",
+                    "§7低于20分: 禁止传送"));
+        } else {
+            // ═══════════════ 非管理员：规则说明放在 Slot 5 ═══════════════
+            inv.setItem(5, mkItem(Material.IRON_INGOT,
+                    "§7§l规则说明",
+                    "§7低于60分: 禁止交易",
+                    "§7低于40分: 禁止PVP",
+                    "§7低于20分: 禁止传送"));
         }
 
         return inv;
@@ -621,7 +622,7 @@ public class CreditManager {
                     "§e#" + r.get("id") + " " + r.get("target_player"),
                     "§7上报人: " + r.get("reporter_player"),
                     "§7类型: " + typeText,
-                    "§7内容: " + r.get("content"),
+                    formatContent(r.get("content")),
                     "§7来源: " + r.get("source"),
                     "",
                     "§e点击查看详情"));
@@ -671,7 +672,7 @@ public class CreditManager {
                 "§e§l#" + recordId + " " + record.get("target_player"),
                 "§7上报人: " + record.get("reporter_player"),
                 "§7类型: " + typeText,
-                "§7内容: " + record.get("content"),
+                formatContent(record.get("content")),
                 "§7来源: " + record.get("source"),
                 "§7时间: " + formatTime((Long) record.get("created_at"))));
 
@@ -709,7 +710,7 @@ public class CreditManager {
                     "§7上报人: " + r.get("reporter_player"),
                     "§7状态: " + statusText,
                     "§7积分变动: " + formatScore((Double) r.get("score_change")),
-                    "§7内容: " + r.get("content"),
+                    formatContent(r.get("content")),
                     "§7来源: " + r.get("source")));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
@@ -739,7 +740,7 @@ public class CreditManager {
                     "§7类型: " + r.get("type"),
                     "§7状态: " + statusText,
                     "§7积分变动: " + formatScore((Double) r.get("score_change")),
-                    "§7内容: " + r.get("content"),
+                    formatContent(r.get("content")),
                     "§7来源: " + r.get("source")));
         }
         inv.setItem(53, mkItem(Material.ARROW, "§7返回"));
@@ -800,7 +801,7 @@ public class CreditManager {
                     "§e#" + r.get("id") + " → " + r.get("target_player"),
                     "§7类型: " + typeText,
                     "§7状态: " + statusText,
-                    "§7内容: " + r.get("content"),
+                    formatContent(r.get("content")),
                     "§7时间: " + formatTime((Long) r.get("created_at")),
                     revokeLore));
         }
@@ -1143,51 +1144,62 @@ public class CreditManager {
                     p.closeInventory();
                     p.openInventory(createRecordsGUI(p));
                     break;
-                case 4: // ★ 第59批-问题5：我的上报
+                case 4: // 我的上报
                     myReportsPage.put(p.getName(), 1);
                     p.closeInventory();
                     p.openInventory(createMyReportsGUI(p, 1));
                     break;
-                case 5: // 加分 (管理员)
-                    if (!plugin.isAdmin(p)) {
-                        p.sendMessage("§c§l[信誉积分] §c权限不足");
-                        return;
+                case 5: // 管理员: 加分 / 非管理员: 规则说明
+                    if (plugin.isAdmin(p)) {
+                        startFlow(p, FlowState.ADD_SCORE_TARGET);
+                        p.closeInventory();
+                        p.sendMessage("§a§l[信誉积分] §f请输入要加分的玩家名");
+                    } else {
+                        p.closeInventory();
+                        p.sendMessage("§d§l[信誉积分] §f规则说明:");
+                        for (Map<String, Object> r : getEnabledRules()) {
+                            p.sendMessage("§7" + r.get("rule_name") + ": " + r.get("description"));
+                        }
                     }
-                    startFlow(p, FlowState.ADD_SCORE_TARGET);
-                    p.closeInventory();
-                    p.sendMessage("§a§l[信誉积分] §f请输入要加分的玩家名");
                     break;
-                case 6: // 扣分 (管理员)
-                    if (!plugin.isAdmin(p)) {
-                        p.sendMessage("§c§l[信誉积分] §c权限不足");
-                        return;
+                case 6: // 管理员: 扣分 / 非管理员: 静默
+                    if (plugin.isAdmin(p)) {
+                        startFlow(p, FlowState.DEDUCT_SCORE_TARGET);
+                        p.closeInventory();
+                        p.sendMessage("§c§l[信誉积分] §f请输入要扣分的玩家名");
+                    } else {
+                        p.closeInventory(); // 静默关闭，不报错
                     }
-                    startFlow(p, FlowState.DEDUCT_SCORE_TARGET);
-                    p.closeInventory();
-                    p.sendMessage("§c§l[信誉积分] §f请输入要扣分的玩家名");
                     break;
-                case 7: // 待审批 (管理员)
-                    if (!plugin.isAdmin(p)) {
-                        p.sendMessage("§c§l[信誉积分] §c权限不足");
-                        return;
+                case 7: // 管理员: 待审批 / 非管理员: 静默
+                    if (plugin.isAdmin(p)) {
+                        p.closeInventory();
+                        p.openInventory(createPendingGUI(p));
+                    } else {
+                        p.closeInventory(); // 静默关闭，不报错
                     }
-                    p.closeInventory();
-                    p.openInventory(createPendingGUI(p));
                     break;
-                case 8: // 审批记录 (管理员)
-                    if (!plugin.isAdmin(p)) {
-                        p.sendMessage("§c§l[信誉积分] §c权限不足");
-                        return;
+                case 8: // 管理员: 审批记录 / 非管理员: 静默
+                    if (plugin.isAdmin(p)) {
+                        p.closeInventory();
+                        p.openInventory(createAdminRecordsGUI(p));
+                    } else {
+                        p.closeInventory(); // 静默关闭，不报错
                     }
-                    p.closeInventory();
-                    p.openInventory(createAdminRecordsGUI(p));
                     break;
-                case 9: // 规则说明
+                case 9: // 管理员: 规则说明（18格GUI才有slot9）
                     p.closeInventory();
                     p.sendMessage("§d§l[信誉积分] §f规则说明:");
                     for (Map<String, Object> r : getEnabledRules()) {
                         p.sendMessage("§7" + r.get("rule_name") + ": " + r.get("description"));
                     }
+                    break;
+                default:
+                    // ★ 第60批-问题1：空槽位静默处理，不报"权限不足"
+                    //   非管理员9格GUI的slot 6-8没有物品，但Paper允许点击空槽位
+                    //   之前会触发权限不足提示 → 泄露管理员功能的存在
+                    //   现在：静默关闭，不报错
+                    p.closeInventory();
                     break;
             }
             return;

@@ -74,6 +74,13 @@ public class AIChatManager {
     private long lastAiReplyTime = 0;
     private final AtomicBoolean autoChatRunning = new AtomicBoolean(false);
 
+    // ★ 第60批-问题4：models.json 等配置文件热重载定时器（每1分钟检查 lastModified）
+    private BukkitTask hotReloadTask = null;
+    private long lastModelsModified = 0;
+    private long lastProvidersModified = 0;
+    private long lastPromptModified = 0;
+    private boolean hotReloadInitialized = false;
+
     // 最近聊天记录缓冲区
     private final List<String> recentChatBuffer = new ArrayList<>();
     private static final int MAX_BUFFER = 30;
@@ -917,21 +924,50 @@ public class AIChatManager {
                     }
                 }
             } else {
-                // @ 前缀（单）：旧行为，用 / 或空格分隔
-                int slashIdx = afterPrefix.indexOf('/');
+                // @ 前缀（单）：优先按空格分隔，模型名可含斜杠
+                //   如 @oc/mimo-v2.6-flash-free 你好 → modelAlias=oc/mimo-v2.6-flash-free
+                //   若空格分隔后模型名无法解析，回退到 / 分隔（旧行为）
                 int spaceIdx = afterPrefix.indexOf(' ');
-                if (slashIdx > 0) {
-                    modelAlias = afterPrefix.substring(0, slashIdx).trim();
-                    prompt = afterPrefix.substring(slashIdx + 1).trim();
-                } else if (spaceIdx > 0) {
-                    modelAlias = afterPrefix.substring(0, spaceIdx).trim();
-                    prompt = afterPrefix.substring(spaceIdx + 1).trim();
+                int slashIdx = afterPrefix.indexOf('/');
+
+                if (spaceIdx > 0) {
+                    String candidateAlias = afterPrefix.substring(0, spaceIdx).trim();
+                    // 候选模型名能解析 → 用空格分隔
+                    if (resolveModelAlias(candidateAlias) != null) {
+                        modelAlias = candidateAlias;
+                        prompt = afterPrefix.substring(spaceIdx + 1).trim();
+                    } else if (slashIdx > 0 && slashIdx < spaceIdx) {
+                        // 候选模型名不能解析，但 / 在空格之前 → 回退到 / 分隔
+                        modelAlias = afterPrefix.substring(0, slashIdx).trim();
+                        prompt = afterPrefix.substring(slashIdx + 1).trim();
+                    } else {
+                        modelAlias = candidateAlias;
+                        prompt = afterPrefix.substring(spaceIdx + 1).trim();
+                    }
+                } else if (slashIdx > 0) {
+                    // 无空格：先尝试把整个文本当模型名解析（如 @oc/mimo-v2.6-flash-free）
+                    if (resolveModelAlias(afterPrefix.trim()) != null) {
+                        modelAlias = afterPrefix.trim();
+                        prompt = "";
+                    } else {
+                        // 回退到 / 分隔（旧行为）
+                        modelAlias = afterPrefix.substring(0, slashIdx).trim();
+                        prompt = afterPrefix.substring(slashIdx + 1).trim();
+                    }
                 } else {
                     modelAlias = afterPrefix.trim();
                     prompt = "";
                 }
             }
 
+            if (modelAlias.isEmpty()) {
+                p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名//内容");
+                return;
+            }
+            // ★ 第60批-问题5：去除尾部斜杠（如 "ai/" → "ai"）
+            while (modelAlias.endsWith("/")) {
+                modelAlias = modelAlias.substring(0, modelAlias.length() - 1).trim();
+            }
             if (modelAlias.isEmpty()) {
                 p.sendMessage("§c[AI聊天] §f格式错误，应为 @//模型名//内容");
                 return;
@@ -966,6 +1002,86 @@ public class AIChatManager {
             autoChatTask.cancel();
             autoChatTask = null;
         }
+    }
+
+    // ==================== ★ 第60批-问题4：配置文件热重载 ====================
+
+    /**
+     * 启动配置文件热重载定时器
+     * 每 1 分钟检查 models.json / 供应商.json / 提示词.txt 的 lastModified
+     * 有变更则增量重载（不重启服务器）
+     */
+    public void startHotReloadScheduler() {
+        if (hotReloadTask != null) {
+            hotReloadTask.cancel();
+        }
+        // 初始化：记录当前文件时间戳
+        File openaiDir = new File(plugin.getDataFolder(), "openai");
+        File modelsFile = new File(openaiDir, "models.json");
+        File providersFile = new File(openaiDir, "供应商.json");
+        File promptFile = new File(openaiDir, "提示词.txt");
+        lastModelsModified = modelsFile.exists() ? modelsFile.lastModified() : 0;
+        lastProvidersModified = providersFile.exists() ? providersFile.lastModified() : 0;
+        lastPromptModified = promptFile.exists() ? promptFile.lastModified() : 0;
+        hotReloadInitialized = true;
+
+        // 每 1 分钟（1200 tick）检查一次
+        hotReloadTask = Bukkit.getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            try {
+                checkHotReload();
+            } catch (Exception e) {
+                plugin.getLogger().warning("[AI聊天] 热重载检查异常: " + e.getMessage());
+            }
+        }, 20L, 1200L);
+        plugin.getLogger().info("[AI聊天] 配置文件热重载调度器已启动（每1分钟检查）");
+    }
+
+    public void stopHotReloadScheduler() {
+        if (hotReloadTask != null) {
+            hotReloadTask.cancel();
+            hotReloadTask = null;
+        }
+    }
+
+    /**
+     * 检查配置文件是否有更新，有则增量热重载
+     */
+    private void checkHotReload() {
+        File openaiDir = new File(plugin.getDataFolder(), "openai");
+        File modelsFile = new File(openaiDir, "models.json");
+        File providersFile = new File(openaiDir, "供应商.json");
+        File promptFile = new File(openaiDir, "提示词.txt");
+
+        long nowModels = modelsFile.exists() ? modelsFile.lastModified() : 0;
+        long nowProviders = providersFile.exists() ? providersFile.lastModified() : 0;
+        long nowPrompt = promptFile.exists() ? promptFile.lastModified() : 0;
+
+        boolean modelsChanged = nowModels != lastModelsModified;
+        boolean providersChanged = nowProviders != lastProvidersModified;
+        boolean promptChanged = nowPrompt != lastPromptModified;
+
+        if (!modelsChanged && !providersChanged && !promptChanged) {
+            return; // 无变化，静默跳过
+        }
+
+        // 记录变更文件
+        StringBuilder changed = new StringBuilder();
+        if (modelsChanged) changed.append("models.json ");
+        if (providersChanged) changed.append("供应商.json ");
+        if (promptChanged) changed.append("提示词.txt ");
+
+        plugin.getLogger().info("[AI聊天] 检测到配置文件更新: " + changed.toString().trim() + " → 热重载中...");
+
+        // 更新时间戳（先更新再重载，避免重载耗时导致重复触发）
+        lastModelsModified = nowModels;
+        lastProvidersModified = nowProviders;
+        lastPromptModified = nowPrompt;
+
+        // 增量热重载：只重读变更的文件
+        loadConfig(true); // quiet=true，静默重读全部配置（内部会增量更新各映射）
+
+        plugin.getLogger().info("[AI聊天] 热重载完成: " + modelEndpoints.size() + "个模型, "
+                + aliasToFullModel.size() + "个别名");
     }
 
     private void checkAutoChat() {
@@ -1166,9 +1282,11 @@ public class AIChatManager {
 
     public void onEnable() {
         startAutoChatScheduler();
+        startHotReloadScheduler();
     }
 
     public void onDisable() {
         stopAutoChatScheduler();
+        stopHotReloadScheduler();
     }
 }
