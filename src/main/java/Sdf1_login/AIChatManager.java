@@ -44,6 +44,12 @@ public class AIChatManager {
     //   正常触发不打印，失败只一行简要错误，避免日志被刷屏
     private boolean prevAutoChatFailed = false;
 
+    // ★ 第61批-续1：defaultModelFull 为空的状态变化日志静默
+    private boolean prevDefaultModelEmpty = false;
+
+    // ★ 第61批-续1：endpoint 找不到的状态变化日志静默
+    private boolean prevEndpointNull = false;
+
     // 默认模型
     private String defaultModelFull = "";
 
@@ -1134,14 +1140,22 @@ public class AIChatManager {
             long intervalMs = (minI + (int)(Math.random() * (maxI - minI + 1))) * 60000L;
 
             if (System.currentTimeMillis() - lastAiReplyTime < intervalMs) return;
-            if (recentChatBuffer.isEmpty()) {
-                plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: recentChatBuffer为空");
-                return;
-            }
+
+            // ★ 第61批-续1：recentChatBuffer 为空不再跳过
+            //   原逻辑：empty → return → 永远不触发（无人聊天时 buffer 永远为空）
+            //   修复：用默认提示词触发 AI 主动抛话题，不依赖玩家先聊天
             if (defaultModelFull.isEmpty()) {
-                plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: defaultModelFull为空");
+                // ★ 状态变化时才记一条，避免每秒刷屏
+                if (prevDefaultModelEmpty) {
+                    plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: defaultModelFull为空");
+                }
+                prevDefaultModelEmpty = true;
                 return;
             }
+            if (prevDefaultModelEmpty) {
+                plugin.getLogger().info("[AI聊天-调试] 自动互动: defaultModelFull='" + defaultModelFull + "' 已就绪");
+            }
+            prevDefaultModelEmpty = false;
 
             // ★ 互动指标：在线玩家数量达标才触发自动互动
             // ★ 日志静默：调度器每1秒跑一次，跳过时不再每秒刷屏。
@@ -1163,14 +1177,27 @@ public class AIChatManager {
 
             ModelEndpoint endpoint = modelEndpoints.get(defaultModelFull);
             if (endpoint == null) {
-                plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到");
-                plugin.getLogger().warning("[AI聊天-调试] 可用模型: " + modelEndpoints.keySet());
+                if (prevEndpointNull) {
+                    plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到");
+                } else {
+                    plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到（后续静默）");
+                    plugin.getLogger().warning("[AI聊天-调试] 可用模型: " + modelEndpoints.keySet());
+                }
+                prevEndpointNull = true;
                 return;
             }
+            prevEndpointNull = false;
 
-            // 构建自动互动提示词 — 用压缩方法（超阈值时截断旧消息）
+            // 构建自动互动提示词
+            // ★ 第61批-续1：recentChatBuffer 为空时不跳过，用默认提示词让 AI 主动抛话题
             String recentChat = compressChatBuffer(endpoint.maxToken);
-            String prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地抛出一个话题或问题，引导大家参与讨论，带动服务器的活跃气氛。不要直接点名任何玩家，而是抛出一个开放性的话题让大家都能参与。";
+            String prompt;
+            if (recentChat.isEmpty()) {
+                // 没有聊天记录 → AI 主动抛出一个开放性话题带动气氛
+                prompt = "服务器目前有些安静。请自然地抛出一个开放性话题或问题，引导玩家参与讨论，带动服务器的活跃气氛。不要直接点名任何玩家，而是抛出一个大家都能参与的话题。";
+            } else {
+                prompt = "以下是服务器最近的聊天记录:\n" + recentChat + "\n\n请根据聊天内容，自然地抛出一个话题或问题，引导大家参与讨论，带动服务器的活跃气氛。不要直接点名任何玩家，而是抛出一个开放性的话题让大家都能参与。";
+            }
 
             // ★ 死循环防护：触发前先更新时间戳，请求挂起/超时/失败都不会被下一秒重复触发
             lastAiReplyTime = System.currentTimeMillis();
