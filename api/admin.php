@@ -1911,6 +1911,8 @@ function adminApproveReset() {
         $stmt->bindValue(':th', $tempHash);
         $stmt->bindValue(':te', $tempExpire);
         $stmt->execute();
+        // ★ 第58批续29-问题2：审批通过后通知Java立即同步
+        notifyJavaPluginImmediatePull();
         exit(json_encode(['success' => true, 'data' => ['temp_password' => $tempPassword]], JSON_UNESCAPED_UNICODE));
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
@@ -1928,6 +1930,8 @@ function adminRejectReset() {
         $stmt->bindValue(':t', time(), SQLITE3_INTEGER);
         $stmt->bindValue(':id', $reqId, SQLITE3_INTEGER);
         $stmt->execute();
+        // ★ 第58批续29-问题2：审批驳回后通知Java立即同步
+        notifyJavaPluginImmediatePull();
     } catch (Exception $e) {}
     exit(json_encode(['success' => true, 'message' => 'OK'], JSON_UNESCAPED_UNICODE));
 }

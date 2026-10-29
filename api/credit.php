@@ -86,6 +86,23 @@ function creditRequireAdmin() {
     }
 }
 
+/**
+ * ★ 第58批续29-问题2：审批/调整积分后通知 Java 立即拉取信誉积分数据
+ *   写入 sync_requests 标记，Java 的 doActiveSyncBatch 检测到后会执行 pullCreditFromPhp
+ */
+function creditNotifyJavaSync($db, $playerName) {
+    if (!$playerName) return;
+    try {
+        $db->exec("CREATE TABLE IF NOT EXISTS sync_requests (player_name TEXT PRIMARY KEY, created_at INTEGER NOT NULL)");
+        $stmt = $db->prepare("INSERT OR REPLACE INTO sync_requests (player_name, created_at) VALUES (:player, :time)");
+        $stmt->bindValue(':player', 'credit_sync_' . $playerName, SQLITE3_TEXT);
+        $stmt->bindValue(':time', time(), SQLITE3_INTEGER);
+        $stmt->execute();
+    } catch (Exception $e) {
+        @error_log('[credit.php] sync_requests写入失败: ' . $e->getMessage());
+    }
+}
+
 switch ($action) {
     // ====== 用户端：上报好人好事 ======
     case 'submit_good':
@@ -188,6 +205,9 @@ switch ($action) {
         $stmt->bindValue(1, $amount, SQLITE3_REAL);
         $stmt->bindValue(2, $target, SQLITE3_TEXT);
         $stmt->execute();
+
+        // ★ 第58批续29-问题2：审批通过后通知Java立即拉取信誉积分
+        creditNotifyJavaSync($db, $target);
         success(['target' => $target, 'amount' => $amount], '审批通过，积分已更新');
         break;
 
@@ -197,11 +217,20 @@ switch ($action) {
         $recordId = (int)getParam('id', 0);
         $reason = getParam('reason', '管理员驳回');
         if ($recordId <= 0) error('缺少记录ID');
+        // 查目标玩家（驳回也要通知Java，可能玩家正在线需要刷新权限）
+        $stmt = $db->prepare("SELECT target_player FROM credit_records WHERE id = ?");
+        $stmt->bindValue(1, $recordId, SQLITE3_INTEGER);
+        $res = $stmt->execute();
+        $rejectTarget = '';
+        if ($row = $res->fetchArray(SQLITE3_ASSOC)) $rejectTarget = $row['target_player'];
         $stmt = $db->prepare("UPDATE credit_records SET status = 'rejected', approved_at = ?, approve_reason = ? WHERE id = ?");
         $stmt->bindValue(1, time(), SQLITE3_INTEGER);
         $stmt->bindValue(2, $reason, SQLITE3_TEXT);
         $stmt->bindValue(3, $recordId, SQLITE3_INTEGER);
         $stmt->execute();
+
+        // ★ 第58批续29-问题2：审批驳回后通知Java刷新该玩家权限状态
+        creditNotifyJavaSync($db, $rejectTarget);
         success(null, '已驳回，不扣分不加分');
         break;
 
@@ -289,6 +318,8 @@ switch ($action) {
         $stmt->bindValue(8, $reason, SQLITE3_TEXT);
         $stmt->execute();
 
+        // ★ 第58批续29-问题2：管理员手动调整积分后通知Java立即拉取
+        creditNotifyJavaSync($db, $target);
         success(['target' => $target, 'old_score' => $oldScore, 'new_score' => $newScore, 'amount' => $amount],
             '积分已调整: ' . $target . ' ' . ($amount > 0 ? '+' : '') . $amount . ' (当前: ' . $newScore . ')');
         break;
