@@ -2117,6 +2117,11 @@ function showModal(title, message, defaultValue, customHtml) {
     });
 }
 
+// ★ 第58批续29-问题3：添加 closeModal 函数（admin.php 原本缺少）
+function closeModal() {
+    document.querySelectorAll('[data-modal-overlay]').forEach(el => el.remove());
+}
+
 // ===== 自定义背景系统（第46批）：纯色 / 图片URL / API壁纸(必应) 三模式 =====
 let _wpPendingUrl = null;   // 待应用的图片URL（预览/获取后暂存，点应用才生效）
 

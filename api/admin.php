@@ -153,8 +153,8 @@ function adminDeduct() {
     $player = getParam('player');
     $amount = (int)getParam('amount', 0);
     $reason = getParam('reason', '管理员扣减');
-    if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
-    if ($amount <= 0) exit(json_encode(['success' => false, 'message' => 'Invalid amount'], JSON_UNESCAPED_UNICODE));
+    if (!$player) jsonResponse(['success' => false, 'message' => 'Missing player']);
+    if ($amount <= 0) jsonResponse(['success' => false, 'message' => 'Invalid amount']);
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (player_name TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
     try {
@@ -162,7 +162,7 @@ function adminDeduct() {
         $stmt->bindValue(':name', $player, SQLITE3_TEXT);
         $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
         $current = $row ? $row['amount'] : 0;
-        if ($current < $amount) exit(json_encode(['success' => false, 'message' => "Insufficient: $current"], JSON_UNESCAPED_UNICODE));
+        if ($current < $amount) jsonResponse(['success' => false, 'message' => "Insufficient: $current"]);
         $newAmount = $current - $amount;
         $stmt = $db->prepare("UPDATE bond_cache SET amount = :amount, updated_at = :time WHERE player_name = :name");
         $stmt->bindValue(':amount', $newAmount, SQLITE3_INTEGER);
@@ -185,10 +185,10 @@ function adminDeduct() {
         // ★ 通知Java插件立即拉取
         notifyJavaPluginImmediatePull();
 
-        exit(json_encode(['success' => true, 'message' => 'OK', 'remaining' => $newAmount], JSON_UNESCAPED_UNICODE));
+        jsonResponse(['success' => true, 'message' => 'OK', 'remaining' => $newAmount]);
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
-        exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+        jsonResponse(['success' => false, 'message' => 'Internal error'], 500);
     }
 }
 
@@ -197,8 +197,8 @@ function adminAddBonds() {
     $player = getParam('player');
     $amount = (int)getParam('amount', 0);
     $reason = getParam('reason', '管理员充值');
-    if (!$player) exit(json_encode(['success' => false, 'message' => 'Missing player'], JSON_UNESCAPED_UNICODE));
-    if ($amount <= 0) exit(json_encode(['success' => false, 'message' => 'Invalid amount'], JSON_UNESCAPED_UNICODE));
+    if (!$player) jsonResponse(['success' => false, 'message' => 'Missing player']);
+    if ($amount <= 0) jsonResponse(['success' => false, 'message' => 'Invalid amount']);
     $db = getDB();
     $db->exec("CREATE TABLE IF NOT EXISTS bond_cache (player_name TEXT PRIMARY KEY, amount INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0)");
     try {
@@ -228,10 +228,10 @@ function adminAddBonds() {
         // ★ 通知Java插件立即拉取
         notifyJavaPluginImmediatePull();
 
-        exit(json_encode(['success' => true, 'message' => 'OK', 'new_amount' => $newAmount], JSON_UNESCAPED_UNICODE));
+        jsonResponse(['success' => true, 'message' => 'OK', 'new_amount' => $newAmount]);
     } catch (Exception $e) {
         @error_log('[Function] Error: ' . $e->getMessage());
-        exit(json_encode(['success' => false, 'message' => 'Internal error'], JSON_UNESCAPED_UNICODE));
+        jsonResponse(['success' => false, 'message' => 'Internal error'], 500);
     }
 }
 
