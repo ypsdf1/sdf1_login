@@ -12197,53 +12197,15 @@ public class WebManager {
 
     /**
      * 检查同步通知文件
+     * ★ 第61批-续2：移除文件通知机制
+     *   原逻辑：读取 sync_notify.txt 文件触发同步
+     *   问题：不是所有 MC 服务器和 web 部署在同一台机器，文件不共享
+     *   修复：依赖定时器B每5秒轮询 check_pending_transactions
      */
 
     private void checkSyncNotify() {
-        try {
-            File notifyFile = new File(plugin.getDataFolder(), "../sync_notify.txt");
-            if (notifyFile.exists()) {
-                String content = new String(java.nio.file.Files.readAllBytes(notifyFile.toPath())).trim();
-                // ★ 兼容两种格式：纯数字时间戳 或 JSON {"time":xxx,"tx_id":xxx}
-                long notifyTime = 0;
-                if (content.startsWith("{")) {
-                    // JSON格式
-                    int timeIdx = content.indexOf("\"time\":");
-                    if (timeIdx > 0) {
-                        int start = timeIdx + 8;
-                        int end = content.indexOf(",", start);
-                        if (end < 0) end = content.indexOf("}", start);
-                        if (end > start) {
-                            notifyTime = Long.parseLong(content.substring(start, end).trim());
-                        }
-                    }
-                } else {
-                    notifyTime = Long.parseLong(content);
-                }
-                long now = System.currentTimeMillis();
-                // 如果通知时间在5分钟内，执行同步
-                if (notifyTime > 0 && now - notifyTime < 300000) {
-                    // 有人在线才响应通知
-                    if (!Bukkit.getOnlinePlayers().isEmpty()) {
-                        // ★ 通过DB队列串行化执行同步
-                        submitDbTask("通知-syncOnlinePlayers", () -> syncOnlinePlayers(), true);
-                        submitDbTask("通知-pushWebLoginCredentials", () -> pushWebLoginCredentials());
-                        submitDbTask("通知-syncUserRegistrations", () -> syncUserRegistrations());
-                        submitDbTask("通知-syncServiceProviders", () -> syncServiceProviders());
-                        submitDbTask("通知-syncShopData", () -> syncShopData());
-                        submitNormalDbTask("通知-pullPendingTransactions", () -> pullPendingTransactions());
-                        submitNormalDbTask("通知-pullShopStock", () -> pullShopStock());
-                        submitNormalDbTask("通知-pullShopPrices", () -> pullShopPrices());
-                        submitNormalDbTask("通知-pullShopConfig", () -> pullShopConfig());
-                        submitNormalDbTask("通知-pullBondChanges", () -> pullBondChanges());
-                        // 删除通知文件
-                        notifyFile.delete();
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // 静默处理
-        }
+        // 已废弃：文件通知机制在跨机部署时无效
+        // 同步由定时器B的 doTransactionPollCheck() 每5秒轮询驱动
     }
 
     /**
