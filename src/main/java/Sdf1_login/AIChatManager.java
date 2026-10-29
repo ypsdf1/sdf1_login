@@ -616,6 +616,11 @@ public class AIChatManager {
 
         // 解析模型名
         String modelFull = resolveModelAlias(modelAlias);
+        // ★ 第61批-问题2：resolveModelAlias 失败时，尝试用传入的 modelAlias 直接查 modelEndpoints
+        //   解决 "oc/mimo-v2.6-flash-free" 被 / 截断为 "oc" 后，resolveModelAlias 返回 null 的问题
+        if (modelFull == null && modelEndpoints.containsKey(modelAlias)) {
+            modelFull = modelAlias;
+        }
         if (modelFull == null) {
             if (player != null) {
                 player.sendMessage("§c[AI聊天] §f未知模型/厂家: " + modelAlias);
@@ -655,6 +660,9 @@ public class AIChatManager {
         plugin.getLogger().info("[AI聊天-调试] 请求体JSON: " + jsonBody);
         plugin.getLogger().info("[AI聊天-调试] === 请求结束 ===");
 
+        // final 副本：lambda 需要 effectively final
+        final String finalModelFull = modelFull;
+
         // 异步发送请求
         CompletableFuture.supplyAsync(() -> {
             try {
@@ -674,7 +682,7 @@ public class AIChatManager {
                 plugin.getLogger().warning("[AI聊天-调试] === 请求异常 ===");
                 plugin.getLogger().warning("[AI聊天-调试] 异常类型: " + excClass);
                 plugin.getLogger().warning("[AI聊天-调试] 异常消息: " + excMsg);
-                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + modelFull);
+                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + finalModelFull);
                 plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
                 // 打印栈帧前5层
                 StackTraceElement[] st = e.getStackTrace();
@@ -712,7 +720,7 @@ public class AIChatManager {
                 // ★ 400调试日志：打印完整响应头和响应体
                 plugin.getLogger().warning("[AI聊天-调试] === 请求失败 ===");
                 plugin.getLogger().warning("[AI聊天-调试] HTTP状态码: " + response.statusCode());
-                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + modelFull);
+                plugin.getLogger().warning("[AI聊天-调试] 模型全名: " + finalModelFull);
                 plugin.getLogger().warning("[AI聊天-调试] 请求URL: " + requestUrl);
                 plugin.getLogger().warning("[AI聊天-调试] 请求体JSON: " + jsonBody);
                 // 打印完整响应头
@@ -976,6 +984,22 @@ public class AIChatManager {
                 // 不带内容时用默认提示：让模型根据人设自我介绍
                 prompt = "请用一句话介绍一下你自己，以及你能为服务器玩家做什么。";
             }
+
+            // ★ 第61批-问题4：只在能解析为模型时才拦截，否则放行正常聊天
+            //   @// 前缀始终拦截（用户明确要求AI发言）
+            //   @ 前缀：尝试 resolveModelAlias，解析失败说明不是AI命令（如 @player 聊天），
+            //   直接 return 让消息走正常聊天流程，不调用 sendToModel
+            if (!prefix.equals("@//")) {
+                String resolved = resolveModelAlias(modelAlias);
+                if (resolved == null) {
+                    // 尝试直接查 modelEndpoints（含斜杠的模型全名可能 resolveModelAlias 解析不到）
+                    if (!modelEndpoints.containsKey(modelAlias)) {
+                        // ★ 不是有效的模型/厂家名 → 放行，让 @player 聊天正常工作
+                        return;
+                    }
+                }
+            }
+
             sendToModel(modelAlias, prompt, p, false);
         }
     }
@@ -1110,8 +1134,14 @@ public class AIChatManager {
             long intervalMs = (minI + (int)(Math.random() * (maxI - minI + 1))) * 60000L;
 
             if (System.currentTimeMillis() - lastAiReplyTime < intervalMs) return;
-            if (recentChatBuffer.isEmpty()) return;
-            if (defaultModelFull.isEmpty()) return;
+            if (recentChatBuffer.isEmpty()) {
+                plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: recentChatBuffer为空");
+                return;
+            }
+            if (defaultModelFull.isEmpty()) {
+                plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: defaultModelFull为空");
+                return;
+            }
 
             // ★ 互动指标：在线玩家数量达标才触发自动互动
             // ★ 日志静默：调度器每1秒跑一次，跳过时不再每秒刷屏。
@@ -1132,7 +1162,11 @@ public class AIChatManager {
             prevOnlineSufficient = true;
 
             ModelEndpoint endpoint = modelEndpoints.get(defaultModelFull);
-            if (endpoint == null) return;
+            if (endpoint == null) {
+                plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到");
+                plugin.getLogger().warning("[AI聊天-调试] 可用模型: " + modelEndpoints.keySet());
+                return;
+            }
 
             // 构建自动互动提示词 — 用压缩方法（超阈值时截断旧消息）
             String recentChat = compressChatBuffer(endpoint.maxToken);
@@ -1272,8 +1306,17 @@ public class AIChatManager {
     // ==================== 工具方法 ====================
 
     private String getStr(JsonObject obj, String key) {
-        if (obj == null || !obj.has(key)) return "";
+        if (obj == null) return "";
         JsonElement el = obj.get(key);
+        if (el == null) {
+            // ★ 第61批-问题5：大小写不敏感匹配（修复拼写不一致返回空导致"未配置模型"）
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(key)) {
+                    el = entry.getValue();
+                    break;
+                }
+            }
+        }
         if (el == null || el.isJsonNull()) return "";
         return el.isJsonPrimitive() ? el.getAsString() : "";
     }
