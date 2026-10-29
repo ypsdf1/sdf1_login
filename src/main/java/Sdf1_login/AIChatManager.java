@@ -290,6 +290,10 @@ public class AIChatManager {
         // ★ 重读前清理，避免旧配置残留（putIfAbsent 不会覆盖已存在的键）
         modelEndpoints.clear();
         providerToModel.clear();
+        // ★ 第61批-续2：热重载时重置 defaultModelFull，否则 isEmpty() 始终 false
+        //   旧逻辑：defaultModelFull.isEmpty() 条件阻止热重载时更新默认模型
+        //   修复：每次解析都重置，让新配置的「默认使用」生效
+        defaultModelFull = "";
 
         // 遍历所有供应商配置
         for (Map.Entry<String, JsonElement> entry : modelConfig.entrySet()) {
