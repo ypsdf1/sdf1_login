@@ -5475,7 +5475,8 @@ async function clearAllMemberPerms(landName, targetPlayer) {
         const m = {
             pending:  ['待审批', 'var(--yellow)'],
             approved: ['已通过', 'var(--green)'],
-            rejected: ['已驳回', 'var(--red)']
+            rejected: ['已驳回', 'var(--red)'],
+            revoked:  ['已撤回', 'var(--dim)']
         };
         const v = m[s] || [s, 'var(--dim)'];
         return '<span style="color:' + v[1] + '">' + v[0] + '</span>';
@@ -5484,12 +5485,14 @@ async function clearAllMemberPerms(landName, targetPlayer) {
     async function renderCredit(el) {
         el.innerHTML = '<div class="card"><h2>⭐ 信誉积分</h2><p style="color:var(--dim)">加载中...</p></div>';
         try {
-            const [scoreRes, recRes] = await Promise.all([
+            const [scoreRes, recRes, repRes] = await Promise.all([
                 api('credit.php', { action: 'my_score' }),
-                api('credit.php', { action: 'my_records' })
+                api('credit.php', { action: 'my_records' }),
+                api('credit.php', { action: 'my_reports' })
             ]);
             const score = (scoreRes.success && scoreRes.data) ? scoreRes.data.credit_score : 100;
             const records = (recRes.success && recRes.data) ? (recRes.data.records || []) : [];
+            const myReports = (repRes.success && repRes.data) ? (repRes.data.records || []) : [];
 
             let html = '<div class="card">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:14px">' +
@@ -5508,7 +5511,32 @@ async function clearAllMemberPerms(landName, targetPlayer) {
                 '初始积分 100 · 低于 60 禁止交易 · 低于 40 禁止PVP · 低于 20 禁止传送' +
                 '</div>';
 
-            // 记录列表
+            // ★ 第59批-问题3：我的上报（自己提交的上报记录）
+            html += '<h3 style="margin:0 0 8px;font-size:14px">📤 我的上报 (' + myReports.length + ')</h3>';
+            if (!myReports.length) {
+                html += '<p style="color:var(--dim);font-size:13px;margin-bottom:16px">暂无上报记录</p>';
+            } else {
+                html += '<div style="overflow-x:auto;margin-bottom:16px"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+                    '<tr style="color:var(--dim);text-align:left">' +
+                    '<th style="padding:6px">#</th><th style="padding:6px">类型</th><th style="padding:6px">目标玩家</th>' +
+                    '<th style="padding:6px">状态</th><th style="padding:6px">内容</th><th style="padding:6px">操作</th></tr>';
+                for (const r of myReports) {
+                    const canRevoke = r.status === 'pending' || r.status === 'rejected';
+                    const revokeBtn = canRevoke
+                        ? '<button class="btn btn-sm btn-red" onclick="creditRevokeReport(' + r.id + ')">撤回</button>'
+                        : '<span style="color:var(--dim);font-size:12px">-</span>';
+                    html += '<tr style="border-top:1px solid var(--border)">' +
+                        '<td style="padding:6px">#' + r.id + '</td>' +
+                        '<td style="padding:6px">' + creditTypeBadge(r.type) + '</td>' +
+                        '<td style="padding:6px">' + escHtml(r.target_player) + '</td>' +
+                        '<td style="padding:6px">' + creditStatusBadge(r.status) + '</td>' +
+                        '<td style="padding:6px;color:var(--dim);word-break:break-all">' + escHtml(r.content || '') + '</td>' +
+                        '<td style="padding:6px">' + revokeBtn + '</td></tr>';
+                }
+                html += '</table></div>';
+            }
+
+            // 积分变动记录（自己被上报/被审批的记录）
             html += '<h3 style="margin:0 0 8px;font-size:14px">📋 积分变动记录 (' + records.length + ')</h3>';
             if (!records.length) {
                 html += '<p style="color:var(--dim);font-size:13px">暂无记录</p>';
@@ -5533,6 +5561,19 @@ async function clearAllMemberPerms(landName, targetPlayer) {
             el.innerHTML = html;
         } catch (e) {
             el.innerHTML = '<div class="card"><p style="color:var(--red)">加载失败: ' + escHtml(e.message) + '</p></div>';
+        }
+    }
+
+    // ★ 第59批-问题3：撤回自己提交的上报
+    async function creditRevokeReport(recordId) {
+        if (!confirm('确认撤回上报 #' + recordId + '？')) return;
+        try {
+            const r = await api('credit.php', { action: 'revoke', id: recordId });
+            if (!r.success) { toast(r.message || '撤回失败', 'error'); return; }
+            toast(r.message || '已撤回');
+            renderCredit(document.getElementById('content'));
+        } catch (e) {
+            toast('撤回失败: ' + e.message, 'error');
         }
     }
 

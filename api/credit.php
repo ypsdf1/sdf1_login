@@ -169,6 +169,51 @@ switch ($action) {
         success(['records' => $records]);
         break;
 
+    // ====== 用户端：查看自己提交的上报（我的上报） ======
+    // ★ 第59批-问题3：查询自己作为 reporter_player 的记录
+    case 'my_reports':
+        $player = creditRequirePlayer();
+        $stmt = $db->prepare("SELECT * FROM credit_records WHERE reporter_player = ? ORDER BY created_at DESC LIMIT 50");
+        $stmt->bindValue(1, $player, SQLITE3_TEXT);
+        $res = $stmt->execute();
+        $records = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) $records[] = $row;
+        success(['records' => $records]);
+        break;
+
+    // ====== 用户端：撤回自己提交的未批准/驳回的上报 ======
+    // ★ 第59批-问题3：撤回未批准(pending)或已驳回(rejected)的上报
+    //   联动Java端：写 sync_requests 标记，Java 端 pullCreditFromPhp 拉回后同步删除/标记
+    case 'revoke':
+        $player = creditRequirePlayer();
+        $recordId = (int)getParam('id', 0);
+        if ($recordId <= 0) error('缺少记录ID');
+
+        // 验证：只能撤回自己提交的记录
+        $stmt = $db->prepare("SELECT reporter_player, status FROM credit_records WHERE id = ?");
+        $stmt->bindValue(1, $recordId, SQLITE3_INTEGER);
+        $res = $stmt->execute();
+        $row = $res->fetchArray(SQLITE3_ASSOC);
+        if (!$row) error('记录不存在');
+        if ($row['reporter_player'] !== $player) error('只能撤回自己提交的上报');
+
+        // 只能撤回未批准(pending)或已驳回(rejected)的记录
+        $status = $row['status'];
+        if ($status === 'approved') error('已通过的上报不能撤回');
+
+        // ★ 第59批-问题3：把 status 改为 'revoked'（不删除，保留审计痕迹）
+        $stmt = $db->prepare("UPDATE credit_records SET status = 'revoked', approve_reason = '上报人自行撤回' WHERE id = ?");
+        $stmt->bindValue(1, $recordId, SQLITE3_INTEGER);
+        $stmt->execute();
+
+        // ★ 联动Java端：写 sync_requests 标记，Java 端 pullCreditFromPhp 拉回后同步标记 revoked
+        creditNotifyJavaSync($db, $row['target_player'] ?? '');
+        // 也通知上报人自己（确保 Java 端也更新）
+        creditNotifyJavaSync($db, $player);
+
+        success(['id' => $recordId], '上报已撤回');
+        break;
+
     // ====== 管理员：查看待审批列表 ======
     case 'pending_list':
         creditRequireAdmin();
