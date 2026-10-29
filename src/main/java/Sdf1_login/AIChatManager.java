@@ -164,6 +164,8 @@ public class AIChatManager {
                 // 解析全局配置（配置部分 → "2"）
                 if (config.has("2")) {
                     JsonObject section2 = config.getAsJsonObject("2");
+                    // ★ 第58批续29-问题2：黑名单增量重读，先清空旧词避免删词后残留拦截
+                    blacklist.clear();
                     // 自动补齐开关：自定义供应商 baseurl 是否自动拼接 chat/completions
                     if (section2.has("自动补齐")) {
                         JsonElement autoEl = section2.get("自动补齐");
