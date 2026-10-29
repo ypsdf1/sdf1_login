@@ -1475,6 +1475,8 @@ public class CreditManager {
                         p.sendMessage("§c§l[信誉积分] §c撤回失败，记录不存在或状态不允许");
                     }
                 } else {
+                    // ★ 第62批-问题3：取消撤回后必须清除 chatFlows，否则玩家永远困在 REVOKE_CONFIRM 状态
+                    chatFlows.remove(p.getName());
                     p.sendMessage("§7已取消撤回");
                 }
                 return true;
