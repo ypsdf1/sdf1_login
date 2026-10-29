@@ -240,14 +240,14 @@ switch ($action) {
         if (!$target) error('记录不存在');
         // 更新记录
         $stmt = $db->prepare("UPDATE credit_records SET status = 'approved', score_change = ?, approved_at = ?, approve_reason = ? WHERE id = ?");
-        $stmt->bindValue(1, $amount, SQLITE3_REAL);
+        $stmt->bindValue(1, $amount, SQLITE3_FLOAT);
         $stmt->bindValue(2, time(), SQLITE3_INTEGER);
         $stmt->bindValue(3, $reason, SQLITE3_TEXT);
         $stmt->bindValue(4, $recordId, SQLITE3_INTEGER);
         $stmt->execute();
         // 更新积分
         $stmt = $db->prepare("UPDATE users SET credit_score = credit_score + ? WHERE player_name = ?");
-        $stmt->bindValue(1, $amount, SQLITE3_REAL);
+        $stmt->bindValue(1, $amount, SQLITE3_FLOAT);
         $stmt->bindValue(2, $target, SQLITE3_TEXT);
         $stmt->execute();
 
@@ -346,7 +346,7 @@ switch ($action) {
         if ($newScore < 0) $newScore = 0;
         if ($newScore > 1000) $newScore = 1000; // 上限防溢出
         $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
-        $stmt->bindValue(1, $newScore, SQLITE3_REAL);
+        $stmt->bindValue(1, $newScore, SQLITE3_FLOAT);
         $stmt->bindValue(2, $target, SQLITE3_TEXT);
         $stmt->execute();
 
@@ -357,7 +357,7 @@ switch ($action) {
         $stmt->bindValue(2, $_SESSION['admin_user'] ?? 'admin', SQLITE3_TEXT);
         $stmt->bindValue(3, $type, SQLITE3_TEXT);
         $stmt->bindValue(4, $reason, SQLITE3_TEXT);
-        $stmt->bindValue(5, $amount, SQLITE3_REAL);
+        $stmt->bindValue(5, $amount, SQLITE3_FLOAT);
         $stmt->bindValue(6, time(), SQLITE3_INTEGER);
         $stmt->bindValue(7, time(), SQLITE3_INTEGER);
         $stmt->bindValue(8, $reason, SQLITE3_TEXT);
@@ -394,14 +394,14 @@ switch ($action) {
                 $res = $stmt->execute();
                 if ($row = $res->fetchArray()) {
                     $stmt = $db->prepare("UPDATE users SET credit_score = ? WHERE player_name = ?");
-                    $stmt->bindValue(1, (float)$score, SQLITE3_REAL);
+                    $stmt->bindValue(1, (float)$score, SQLITE3_FLOAT);
                     $stmt->bindValue(2, $pname, SQLITE3_TEXT);
                     $stmt->execute();
                 } else {
                     // 玩家不存在则插入
                     $stmt = $db->prepare("INSERT INTO users (player_name, credit_score) VALUES (?, ?)");
                     $stmt->bindValue(1, $pname, SQLITE3_TEXT);
-                    $stmt->bindValue(2, (float)$score, SQLITE3_REAL);
+                    $stmt->bindValue(2, (float)$score, SQLITE3_FLOAT);
                     $stmt->execute();
                 }
             }
@@ -438,7 +438,7 @@ switch ($action) {
                 $stmt->bindValue(3, $type, SQLITE3_TEXT);
                 $stmt->bindValue(4, $content, SQLITE3_TEXT);
                 $stmt->bindValue(5, $status, SQLITE3_TEXT);
-                $stmt->bindValue(6, $scoreChange, SQLITE3_REAL);
+                $stmt->bindValue(6, $scoreChange, SQLITE3_FLOAT);
                 $stmt->bindValue(7, $createdAt, SQLITE3_INTEGER);
                 $stmt->bindValue(8, $approvedAt, SQLITE3_INTEGER);
                 $stmt->bindValue(9, $reason, SQLITE3_TEXT);
