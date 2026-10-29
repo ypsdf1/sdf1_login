@@ -537,6 +537,11 @@ public class AIChatManager {
      */
     public String resolveModelAlias(String alias) {
         if (alias == null || alias.isEmpty()) return null;
+        // ★ 第58批续29-问题3：通用前缀 "ai" → 默认模型
+        //   @//ai/xxx、@ai/xxx 都能触发AI发言，使用配置中的默认模型
+        if ("ai".equalsIgnoreCase(alias) || "AI".equalsIgnoreCase(alias)) {
+            return defaultModelFull.isEmpty() ? alias : defaultModelFull;
+        }
         // ★ 第58批修复：优先级调整为 模型全名 > 简称 > 厂家名
         //   避免自定义供应商的模型名（如 oc/mimo-v2.6-flash-free）被内置厂家名快捷引用拦截
         // 1. 直接作为模型全名（精确匹配，优先级最高）
@@ -560,6 +565,8 @@ public class AIChatManager {
     public List<String> getAvailableModels() {
         // 合并别名、厂家名、模型全名，去重
         LinkedHashSet<String> all = new LinkedHashSet<>();
+        // ★ 第58批续29-问题3：通用前缀 ai
+        all.add("ai");
         all.addAll(aliasToFullModel.keySet());
         all.addAll(providerToModel.keySet());
         all.addAll(modelEndpoints.keySet());
@@ -965,6 +972,12 @@ public class AIChatManager {
         if (!autoChatRunning.compareAndSet(false, true)) return;
 
         try {
+            // ★ 第58批续29-问题1：先重读配置，再检查开关
+            //   原逻辑：开关检查在 loadConfig 之前 → 配置变更后第一次调度仍用旧值（true），
+            //   导致 autoSpeakEnabled=false 时模型依然发言一次。
+            //   修复：loadConfig(true) 前置，确保每次调度都用最新配置判断开关。
+            loadConfig(true);
+
             // 检查是否到了自动互动时间
             // ★ 第58批-问题5：自动发言开关关闭时直接跳过（false/0 = 停止自动互动，手动 @ 不受影响）
             if (!autoSpeakEnabled) return;
@@ -976,9 +989,6 @@ public class AIChatManager {
             if (System.currentTimeMillis() - lastAiReplyTime < intervalMs) return;
             if (recentChatBuffer.isEmpty()) return;
             if (defaultModelFull.isEmpty()) return;
-
-            // ★ 每次发请求前重读配置（静默模式，不打印日志避免刷屏）
-            loadConfig(true);
 
             // ★ 互动指标：在线玩家数量达标才触发自动互动
             // ★ 日志静默：调度器每1秒跑一次，跳过时不再每秒刷屏。

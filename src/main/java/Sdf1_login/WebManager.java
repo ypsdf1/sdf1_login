@@ -2326,6 +2326,8 @@ public class WebManager {
                         awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-pullBondChanges", () -> pullBondChanges());
                         awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
+                        submitNormalDbTask("即时-pullCreditFromPhp", () -> pullCreditFromPhp());
+                        awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-syncAllPlayerIps", () -> syncAllPlayerIps());
                         awaitDbQueueIdle(14000);   // 等队列排空（原为固定6~14秒错峰）
                         submitNormalDbTask("即时-syncServiceProviders", () -> syncServiceProviders());
