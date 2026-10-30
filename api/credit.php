@@ -496,7 +496,60 @@ switch ($action) {
             }
         }
 
-        success(['synced' => count($playerData ?? []) . ' players, ' . count($recordData ?? []) . ' records'], 'Java同步推送成功');
+        // ★ 第65批修复（#341）：接收 Java 端推送的规则（双向交换）
+        //   Java 推规则时把本地完整状态推回，PHP 端按 rule_name 匹配更新
+        //   开关状态由 Java 端决定（Java 最后改的说了算）
+        $ruleData = getParam('rules', null);
+        if (is_string($ruleData)) $ruleData = json_decode($ruleData, true);
+        if (!is_array($ruleData)) $ruleData = [];
+
+        if (!empty($ruleData)) {
+            foreach ($ruleData as $r) {
+                $ruleName = $r['rule_name'] ?? '';
+                if (!$ruleName) continue;
+                $minScore = (int)($r['min_score'] ?? 0);
+                $maxScore = (int)($r['max_score'] ?? 0);
+                $restrictionType = $r['restriction_type'] ?? '';
+                $restrictionDuration = (int)($r['restriction_duration'] ?? 0);
+                $enabled = (int)($r['enabled'] ?? 0);
+                $description = $r['description'] ?? '';
+                $limitAmount = (float)($r['limit_amount'] ?? 0);
+                $multiplier = (float)($r['multiplier'] ?? 0);
+                $amount = (float)($r['amount'] ?? 0);
+
+                // 按 rule_name 匹配更新
+                $stmt = $db->prepare("UPDATE credit_rules SET min_score=?, max_score=?, restriction_type=?, restriction_duration=?, enabled=?, description=?, limit_amount=?, multiplier=?, amount=? WHERE rule_name=?");
+                $stmt->bindValue(1, $minScore, SQLITE3_INTEGER);
+                $stmt->bindValue(2, $maxScore, SQLITE3_INTEGER);
+                $stmt->bindValue(3, $restrictionType, SQLITE3_TEXT);
+                $stmt->bindValue(4, $restrictionDuration, SQLITE3_INTEGER);
+                $stmt->bindValue(5, $enabled, SQLITE3_INTEGER);
+                $stmt->bindValue(6, $description, SQLITE3_TEXT);
+                $stmt->bindValue(7, $limitAmount, SQLITE3_FLOAT);
+                $stmt->bindValue(8, $multiplier, SQLITE3_FLOAT);
+                $stmt->bindValue(9, $amount, SQLITE3_FLOAT);
+                $stmt->bindValue(10, $ruleName, SQLITE3_TEXT);
+                $stmt->execute();
+
+                // PHP 没有的规则则插入
+                if ($stmt->changes() === 0) {
+                    $stmt2 = $db->prepare("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    $stmt2->bindValue(1, $ruleName, SQLITE3_TEXT);
+                    $stmt2->bindValue(2, $minScore, SQLITE3_INTEGER);
+                    $stmt2->bindValue(3, $maxScore, SQLITE3_INTEGER);
+                    $stmt2->bindValue(4, $restrictionType, SQLITE3_TEXT);
+                    $stmt2->bindValue(5, $restrictionDuration, SQLITE3_INTEGER);
+                    $stmt2->bindValue(6, $enabled, SQLITE3_INTEGER);
+                    $stmt2->bindValue(7, $description, SQLITE3_TEXT);
+                    $stmt2->bindValue(8, $limitAmount, SQLITE3_FLOAT);
+                    $stmt2->bindValue(9, $multiplier, SQLITE3_FLOAT);
+                    $stmt2->bindValue(10, $amount, SQLITE3_FLOAT);
+                    $stmt2->execute();
+                }
+            }
+        }
+
+        success(['synced' => count($playerData ?? []) . ' players, ' . count($recordData ?? []) . ' records, ' . count($ruleData ?? []) . ' rules'], 'Java同步推送成功');
         break;
 
     // ====== Java 拉回同步：返回 PHP 端所有积分数据 + 规则数据 ======

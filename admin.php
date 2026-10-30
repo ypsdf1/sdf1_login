@@ -2082,25 +2082,25 @@ function showModal(title, message, defaultValue, customHtml) {
         document.querySelectorAll('[data-modal-overlay]').forEach(el => el.remove());
         const overlay = document.createElement('div');
         overlay.dataset.modalOverlay = '1';
-        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;justify-content:center;align-items:center;z-index:1000';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;justify-content:center;align-items:center;z-index:1000;animation:glassFadeIn 0.2s ease';
         if (customHtml) {
             overlay.innerHTML = `
-                <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
+                <div style="background:rgba(22,27,34,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(88,166,255,0.25);border-radius:16px;padding:24px;width:400px;max-width:90%;box-shadow:0 12px 48px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.05);animation:glassSlideUp 0.3s ease">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                        <h3 style="margin:0">${title}</h3>
-                        <span class="modal-close" style="cursor:pointer;font-size:18px;color:var(--dim)" onclick="this.closest('div[style*=fixed]').remove()">✕</span>
+                        <h3 style="margin:0;color:#e6edf3">${title}</h3>
+                        <span class="modal-close" style="cursor:pointer;font-size:18px;color:#8b949e" onclick="this.closest('div[style*=fixed]').remove()">✕</span>
                     </div>
                     ${customHtml}
                 </div>`;
         } else {
             overlay.innerHTML = `
-                <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;width:400px;max-width:90%">
-                    <h3 style="margin-bottom:12px">${title}</h3>
-                    <p style="color:var(--dim);font-size:13px;margin-bottom:12px">${message}</p>
-                    <input type="text" id="modalInput" value="${defaultValue}" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;box-sizing:border-box">
+                <div style="background:rgba(22,27,34,0.92);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(88,166,255,0.25);border-radius:16px;padding:24px;width:400px;max-width:90%;box-shadow:0 12px 48px rgba(0,0,0,0.5),inset 0 1px 0 rgba(255,255,255,0.05);animation:glassSlideUp 0.3s ease">
+                    <h3 style="margin-bottom:12px;color:#e6edf3">${title}</h3>
+                    <p style="color:#8b949e;font-size:13px;margin-bottom:12px">${message}</p>
+                    <input type="text" id="modalInput" value="${defaultValue}" style="width:100%;padding:8px 12px;background:rgba(13,17,23,0.8);border:1px solid rgba(88,166,255,0.3);border-radius:8px;color:#e6edf3;font-size:14px;box-sizing:border-box;outline:none;transition:border 0.2s">
                     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-                        <button class="btn" id="modalCancel">取消</button>
-                        <button class="btn btn-blue" id="modalConfirm">确认</button>
+                        <button class="btn" id="modalCancel" style="background:rgba(255,255,255,0.08);color:#8b949e;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:600">取消</button>
+                        <button class="btn btn-blue" id="modalConfirm" style="background:#58a6ff;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:600">确认</button>
                     </div>
                 </div>`;
         }
@@ -3487,7 +3487,7 @@ async function loadCredit(el) {
                 html += '</div>';
                 // ★ 修复阈值显示：区分低于/高于
                 let thresholdText = '';
-                if (r.min_score > 0 || r.min_score < 0) {
+                if (r.min_score != 0) {
                     thresholdText = '低于 ' + r.min_score + ' 分触发';
                 } else if (r.max_score > 0) {
                     thresholdText = '高于 ' + r.max_score + ' 分触发';
