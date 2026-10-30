@@ -11957,7 +11957,35 @@ public class WebManager {
                 return;
             }
 
-            if (playersObj.entrySet().isEmpty() && recordsArr.isEmpty()) return;
+            // ★ 第65批修复（#341）：收集所有规则（含禁用）推回 PHP
+            //   双向交换：Java 拉取 PHP 规则时接受 PHP 的 enabled
+            //             Java 推送时把本地完整规则状态推回 PHP
+            //             → 谁最后改谁说了算
+            JsonArray rulesArr = new JsonArray();
+            try (PreparedStatement ps2 = conn.prepareStatement(
+                     "SELECT rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount FROM credit_rules ORDER BY id");
+                 ResultSet rs2 = ps2.executeQuery()) {
+                while (rs2.next()) {
+                    JsonObject rule = new JsonObject();
+                    rule.addProperty("rule_name", rs2.getString("rule_name"));
+                    rule.addProperty("min_score", rs2.getInt("min_score"));
+                    rule.addProperty("max_score", rs2.getInt("max_score"));
+                    rule.addProperty("restriction_type", rs2.getString("restriction_type"));
+                    rule.addProperty("restriction_duration", rs2.getInt("restriction_duration"));
+                    rule.addProperty("enabled", rs2.getInt("enabled"));
+                    rule.addProperty("description", rs2.getString("description"));
+                    rule.addProperty("limit_amount", rs2.getDouble("limit_amount"));
+                    rule.addProperty("multiplier", rs2.getDouble("multiplier"));
+                    rule.addProperty("amount", rs2.getDouble("amount"));
+                    rulesArr.add(rule);
+                }
+            } catch (Exception e) {
+                plugin.getLogger().warning("[信誉同步] 查询规则失败: " + e.getMessage());
+            }
+
+            // ★ 第65批修复（#341）：只要 rulesArr 非空就推（即使没有玩家/记录）
+            //   之前空 players+records 直接 return，导致规则不推
+            if (playersObj.entrySet().isEmpty() && recordsArr.isEmpty() && rulesArr.isEmpty()) return;
 
             // POST 到 PHP sync_push
             String url = webBaseUrl + "/api/credit.php?action=sync_push&secret="
@@ -11966,6 +11994,7 @@ public class WebManager {
             JsonObject body = new JsonObject();
             body.add("players", playersObj);
             body.add("records", recordsArr);
+            body.add("rules", rulesArr);
             String jsonBody = gson.toJson(body);
 
             String result = doPost(url, jsonBody);
@@ -12204,6 +12233,26 @@ public class WebManager {
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
+                }
+
+                // ★ 第65批修复（#341）：规则双向交换
+                //   Java 拉取 PHP 规则后，立即把本地完整规则状态推回 PHP
+                //   → 形成双向交换：PHP 开了 → Java 收下；Java 开了 → PHP 收下
+                //   谁最后改谁说了算
+                try {
+                    CreditManager cm2 = plugin.getCreditManager();
+                    if (cm2 != null) {
+                        // 延迟 2 秒推送（等 syncCreditRulesFromPhp 完成写入）
+                        org.bukkit.Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+                            try {
+                                pushCreditToPhp();
+                            } catch (Exception e) {
+                                plugin.getLogger().warning("[信誉同步] 规则双向交换推送失败: " + e.getMessage());
+                            }
+                        }, 40L); // 2 秒 = 40 ticks
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[信誉同步] 规则双向交换触发失败: " + e.getMessage());
                 }
             }
         } catch (Exception e) {

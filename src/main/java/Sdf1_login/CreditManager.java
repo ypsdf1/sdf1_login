@@ -654,6 +654,7 @@ public class CreditManager {
 
     /**
      * ★ 第63批：切换规则启用/禁用状态
+     * ★ 第65批修复（#341）：toggle 后立即推回 PHP（双向交换）
      */
     public boolean toggleRule(int ruleId) {
         try {
@@ -662,6 +663,8 @@ public class CreditManager {
             ps.setInt(1, ruleId);
             ps.executeUpdate();
             ps.close();
+            // ★ 第65批修复（#341）：Java 端改了开关 → 立即推回 PHP
+            triggerCreditPushToPhpDebounced();
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 切换规则失败: " + e.getMessage());
@@ -907,6 +910,8 @@ public class CreditManager {
             ps.executeUpdate();
             ps.close();
             plugin.getLogger().info("[信誉积分] 规则 #" + ruleId + " 参数已更新");
+            // ★ 第65批修复（#341）：Java 端改了规则参数 → 立即推回 PHP
+            triggerCreditPushToPhpDebounced();
             return true;
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 更新规则参数失败: " + e.getMessage());
@@ -2254,23 +2259,10 @@ public class CreditManager {
                 String description = rule.has("description") ? rule.get("description").getAsString() : "";
 
                 // ★ 按 rule_name 匹配（UNIQUE 列），id 跨库不一致不能用作匹配键
-                // ★ 第65批修复（#341）：enabled 以本地为准，不从 PHP 覆盖
-                //   原因：PHP 端 chat_penalty 默认 enabled=0，管理员在 Java 端 GUI 启用后，
-                //   PHP 同步时把 enabled=0 写回 → 规则被禁用 → 后续违规不再扣分
-                //   → 参数（阈值/限额/倍数/amount/描述）跨端同步，开关各端独立管理
-                int localEnabled = rule.has("enabled") ? rule.get("enabled").getAsInt() : 0;
-                // 先查本地当前 enabled 值
-                int localEnabledNow = 0;
-                try {
-                    PreparedStatement qs = db.getConnection().prepareStatement(
-                            "SELECT enabled FROM credit_rules WHERE rule_name = ?");
-                    qs.setString(1, ruleName);
-                    ResultSet qrs = qs.executeQuery();
-                    if (qrs.next()) localEnabledNow = qrs.getInt("enabled");
-                    qs.close();
-                } catch (Exception ignored) {}
-                // 本地有记录 → 保留本地 enabled；本地无记录 → 用 PHP 的 enabled
-                int useEnabled = localEnabledNow != 0 ? localEnabledNow : localEnabled;
+                // ★ 第65批修复（#341）：双向交换设计
+                //   Java 拉取 PHP 规则时：正常接受 PHP 的 enabled（PHP 开了 → Java 收下）
+                //   拉取后：Java 把本地完整规则状态推回 PHP（Java 开了 → PHP 收下）
+                //   → 形成双向交换，谁最后改谁说了算
                 PreparedStatement ps = db.getConnection().prepareStatement(
                         "UPDATE credit_rules SET min_score = ?, max_score = ?, "
                         + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
@@ -2278,7 +2270,7 @@ public class CreditManager {
                 ps.setInt(1, minScore);
                 ps.setInt(2, maxScore);
                 ps.setString(3, restrictionType);
-                ps.setInt(4, useEnabled);
+                ps.setInt(4, enabled);
                 ps.setString(5, description);
                 ps.setDouble(6, limitAmount);
                 ps.setDouble(7, multiplier);
