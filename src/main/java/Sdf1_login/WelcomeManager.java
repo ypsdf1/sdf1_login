@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Random;
 
 public class WelcomeManager {
-
+//
     private final Main plugin;
     private final Random random = new Random();
     private final List<String> registerMsgs =
