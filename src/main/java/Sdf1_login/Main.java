@@ -6534,17 +6534,10 @@ public class Main extends JavaPlugin
                 }
                 chatFilter.incrementViolation(p.getName());
                 int sc = chatFilter.getViolationCount(p.getName());
-                // ★ 2026-10-08：命中必须给发送者明确反馈——此前 warn 档完全静默、
-                //   自回显又与正常聊天一模一样 →观感「中文敏感词没过滤」
-                getLogger().info("[Sdf1_chat] " + p.getName() + " 命中敏感词("
-                        + ms.get(0) + ")，累计违规 " + sc + " 次，消息已拦截");
-                p.sendMessage("§c§l[聊天过滤] §7消息包含违规词 §f" + ms.get(0)
-                        + " §7已被拦截，§8本次为第 " + sc + " 次违规");
-                String punishHint = chatFilter.nextPunishHint(sc);
-                if (punishHint != null) {
-                    // ★ 只报处罚档位，不报「第N次」——与上一行的次数并列易被读成跳号
-                    p.sendMessage("§8再次违规将处罚: §e" + punishHint);
-                }
+                // ★ 第65批修复（#338）：最小信息泄露——不告诉玩家命中的敏感词、
+                //   累计次数、处罚档位。只告知消息被拦截，避免被用作绕过探测工具。
+                getLogger().info("[Sdf1_chat] " + p.getName() + " 命中敏感词，累计违规 " + sc + " 次，消息已拦截");
+                p.sendMessage("§c§l[聊天过滤] §7你的消息包含违规内容，已被拦截");
                 String swReason = "说出敏感词("
                         + ms.get(0) + ")";
                 String ptype = chatFilter.applyPunishment(

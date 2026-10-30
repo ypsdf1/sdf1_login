@@ -266,11 +266,48 @@ public class CreditManager {
     public void addScore(String playerName, double amount, String reason) {
         double current = getScore(playerName);
         setScore(playerName, current + amount);
+        // ★ 第65批修复（#336）：每次积分变动都写入 credit_records，确保 PHP 端能看到完整记录
+        //   之前只有 UPDATE users 表，PHP 同步时查不到记录，导致违规扣分/登录恢复等记录缺失
+        insertScoreRecord(playerName, amount, reason);
         plugin.getLogger().info("[信誉积分] " + playerName + " 积分变动: "
                 + (amount > 0 ? "+" : "") + formatScore(amount) + " (" + reason + ")");
         // ★ 第64批修复（#335）：积分变动后异步推送 PHP，避免 PHP 端长时间显示旧值
         //   防抖：5秒内只推一次，避免连续扣分时疯狂打 HTTP
         triggerCreditPushToPhpDebounced();
+    }
+
+    /**
+     * ★ 第65批修复（#336）：写入积分变动记录到 credit_records
+     *   自动触发的积分变动（违规扣分/登录恢复/管理员调整）都记录在此
+     *   status='approved'（系统自动操作，无需审核）
+     *   source='game'（来自游戏内，区别于 PHP 端上报）
+     */
+    private void insertScoreRecord(String playerName, double amount, String reason) {
+        try {
+            // 根据 reason 推导 type（用于 PHP 端分类展示）
+            String type;
+            if (reason.contains("聊天违规")) {
+                type = "chat_penalty";
+            } else if (reason.contains("登录恢复")) {
+                type = "login_restore";
+            } else if (reason.contains("管理员") || reason.contains("调整")) {
+                type = "admin_adjust";
+            } else {
+                type = "system_adjust";
+            }
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, source) "
+                            + "VALUES (?, NULL, ?, ?, 'approved', ?, ?, 'game')");
+            ps.setString(1, playerName);
+            ps.setString(2, type);
+            ps.setString(3, reason);
+            ps.setDouble(4, amount);
+            ps.setString(5, java.time.LocalDateTime.now().toString());
+            ps.executeUpdate();
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 写入积分记录失败: " + e.getMessage());
+        }
     }
 
     /** 兼容旧调用：int 版本的 addScore */
@@ -2217,6 +2254,23 @@ public class CreditManager {
                 String description = rule.has("description") ? rule.get("description").getAsString() : "";
 
                 // ★ 按 rule_name 匹配（UNIQUE 列），id 跨库不一致不能用作匹配键
+                // ★ 第65批修复（#341）：enabled 以本地为准，不从 PHP 覆盖
+                //   原因：PHP 端 chat_penalty 默认 enabled=0，管理员在 Java 端 GUI 启用后，
+                //   PHP 同步时把 enabled=0 写回 → 规则被禁用 → 后续违规不再扣分
+                //   → 参数（阈值/限额/倍数/amount/描述）跨端同步，开关各端独立管理
+                int localEnabled = rule.has("enabled") ? rule.get("enabled").getAsInt() : 0;
+                // 先查本地当前 enabled 值
+                int localEnabledNow = 0;
+                try {
+                    PreparedStatement qs = db.getConnection().prepareStatement(
+                            "SELECT enabled FROM credit_rules WHERE rule_name = ?");
+                    qs.setString(1, ruleName);
+                    ResultSet qrs = qs.executeQuery();
+                    if (qrs.next()) localEnabledNow = qrs.getInt("enabled");
+                    qs.close();
+                } catch (Exception ignored) {}
+                // 本地有记录 → 保留本地 enabled；本地无记录 → 用 PHP 的 enabled
+                int useEnabled = localEnabledNow != 0 ? localEnabledNow : localEnabled;
                 PreparedStatement ps = db.getConnection().prepareStatement(
                         "UPDATE credit_rules SET min_score = ?, max_score = ?, "
                         + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
@@ -2224,7 +2278,7 @@ public class CreditManager {
                 ps.setInt(1, minScore);
                 ps.setInt(2, maxScore);
                 ps.setString(3, restrictionType);
-                ps.setInt(4, enabled);
+                ps.setInt(4, useEnabled);
                 ps.setString(5, description);
                 ps.setDouble(6, limitAmount);
                 ps.setDouble(7, multiplier);

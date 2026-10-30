@@ -1876,8 +1876,20 @@ public class ChatFilterManager {
         if (msg == null || msg.isEmpty() || sensitiveWords.isEmpty())
             return Collections.emptyList();
         String lower = msg.toLowerCase();
-        // 归一化：去分隔符，用于捕获 "s.b"/"s b" 等变体
-        String normalized = lower.replaceAll("[\\s.\\-*_/\\\\]", "");
+        // ★ 第65批修复（#339）：归一化扩展 + 叠词压缩
+        //   分隔符：空格、点号、连字符、星号、下划线、斜杠、反斜杠、反引号、中点号、波浪线
+        //   "c`n`m" → "cnm", "s·b" → "sb", "s~b" → "sb"
+        String normalized = lower.replaceAll("[\\s.\\-*_/\\\\`·~]", "");
+        // ★ 叠词压缩：连续重复字母 → 单字母
+        //   "ssbb" → "sb", "ccnnmm" → "cm", "sssb" → "sb"
+        //   逐字符扫描：同字母连续出现则跳过
+        StringBuilder compressed = new StringBuilder();
+        for (int i = 0; i < normalized.length(); i++) {
+            char c = normalized.charAt(i);
+            if (i > 0 && c == normalized.charAt(i - 1)) continue; // 跳过重复字母
+            compressed.append(c);
+        }
+        String compact = compressed.toString();
         List<String> matched = new ArrayList<>();
         for (String sw : sensitiveWords) {
             if (sw.isEmpty()) continue;
@@ -1886,14 +1898,15 @@ public class ChatFilterManager {
                 // 归一化后 "sb你" → "sb" 后跟中文（非 a-z）→ 匹配；"isbad" → "sb" 前后都是 a-z → 不匹配
                 java.util.regex.Pattern p = java.util.regex.Pattern.compile(
                     "(?<![a-z])" + java.util.regex.Pattern.quote(sw) + "(?![a-z])");
-                if (p.matcher(normalized).find()) {
+                if (p.matcher(normalized).find() || p.matcher(compact).find()) {
                     matched.add(sw);
                 }
             } else {
-                // 长词或中文词：原文和归一化文本各查一次
+                // 长词或中文词：原文、归一化文本、压缩文本各查一次
                 // 原文查：保持原有行为（"fuck you" 直接含 "fuck"）
                 // 归一化查：捕获 "s.h.i.t" → "shit" 等分隔符变体
-                if (lower.contains(sw) || normalized.contains(sw)) {
+                // 压缩查：捕获 "shhhiitt" → "shit" 等叠词变体
+                if (lower.contains(sw) || normalized.contains(sw) || compact.contains(sw)) {
                     matched.add(sw);
                 }
             }
