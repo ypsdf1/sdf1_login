@@ -572,7 +572,10 @@ public class WebManager {
         int no = alignNoRespCount.getAndSet(0);
         int rej = alignRejectCount.getAndSet(0);
         if (ok + no + rej == 0) return;
-        plugin.getLogger().info("[对账] 近5分钟：成功 " + ok + " 次，无答复 " + no + " 次，PHP拒绝 " + rej + " 次");
+        // ★ 第65批：全部成功则静默，有异常（无答复/PHP拒绝）才打
+        if (no + rej > 0) {
+            plugin.getLogger().warning("[对账] 近5分钟：成功 " + ok + " 次，无答复 " + no + " 次，PHP拒绝 " + rej + " 次");
+        }
     }
 
     /**
@@ -3726,9 +3729,7 @@ public class WebManager {
             String resp = doPost(webBaseUrl + "/api/sync.php?action=receive_token", jsonBody);
             // ★ 只有 PHP 明确 success=true 才算注册成功（供 system/sync token 复用判定，防假成功）
             boolean ok = resp != null && resp.contains("\"success\":true");
-            if (ok) {
-                plugin.getLogger().info("[Web通信] Token注册成功");
-            }
+            // ★ 第65批：成功静默（每5分钟一次太吵），异常才由 catch 输出
             return ok;
         } catch (Exception e) {
             plugin.getLogger().warning("[Web通信] Token注册失败: " + e.getClass().getSimpleName() + " - " + e.getMessage());
@@ -3818,7 +3819,8 @@ public class WebManager {
                     batch.add(new String[]{token, "system", "sync"});
                     if (syncTokensToWeb(batch)) {
                         rememberSyncToken(token);
-                        plugin.getLogger().info("[Web通信] system/sync token 已异步续期");
+                    } else {
+                        plugin.getLogger().warning("[Web通信] system/sync token 异步续期失败（旧token仍有效，下轮再试）");
                     }
                 } catch (Throwable t) {
                     // 刷新失败不影响本轮：手里的旧 token 到硬到期前都还能用
