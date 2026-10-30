@@ -63,6 +63,11 @@ public class CDKManager {
                     && plugin.getBlacklist().isBlacklisted(player))
                 return "fail:blacklisted";
 
+            // ★ 第63批：信誉积分低于-10分禁止使用CDK
+            if (plugin.getCreditManager() != null
+                    && plugin.getCreditManager().isRestricted(player, "block_cdk_and_bond"))
+                return "fail:credit_restricted";
+
             PreparedStatement ps = db.prepareStatement(
                     "SELECT amount,type,used FROM cdk "
                             + "WHERE code=?");

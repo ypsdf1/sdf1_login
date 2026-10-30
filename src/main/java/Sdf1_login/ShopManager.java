@@ -4274,6 +4274,14 @@ public class ShopManager implements Listener {
                             ? "§7手续费: §6" + shsp[0] + " §7（奸商模式）§7你需支付 §6" + shsp[1]
                             : "§7无手续费");
                 }
+                // ★ 第63批：信誉积分标记（卖家）
+                if (plugin.getCreditManager() != null) {
+                    if (plugin.getCreditManager().isShopLowWarning(l.seller)) {
+                        lore.add("§c§l⚠ §c卖家信誉分很低，请谨慎购买");
+                    } else if (plugin.getCreditManager().isShopHighRecommend(l.seller)) {
+                        lore.add("§a§l✓ §a卖家信誉分极好，可以放心购买");
+                    }
+                }
                 lore.add("§7上架时间: §f" + new SimpleDateFormat("MM-dd HH:mm")
                         .format(new Date(l.createdAt)));
                 lore.add("");

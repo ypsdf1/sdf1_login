@@ -1,3 +1,11 @@
 # 此文件填写的模型将被正是运用请求
 # 以#开头的表示注释，会被忽略
-# models=name，这个=就是模型的简称，比如你可以配置deepseek=大肥鱼，后续用户@大肥鱼 xx，就会自动向deepseek的模型发起请求
+# models=name，这个=就是模型的简称，比如你可以配置deepseek=大肥鱼，后续用户@大肥鱼 xx，就会自动向deepseek的模型发起请求。可以是一个厂家，也可以是单独的模型
+# 以下是示例配置
+# 大肥鱼=deepseek-flash
+# 这里大肥鱼=deepseek-flash，意思是@大肥鱼时，向deepseek-flash模型发起请求，而deepseek-v4-pro不受影响，因为没命中这条规则
+# 噶啦吗=GLM
+# 这里噶啦吗=glm，意思是@噶啦吗时，向配置的GLM系列模型发起请求。所有glm系列厂家都会影响，不管是glm5.3、glm5.2等
+# 不区分大小写
+
+

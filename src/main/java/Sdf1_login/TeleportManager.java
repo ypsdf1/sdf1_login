@@ -1117,7 +1117,13 @@ public class TeleportManager implements Listener {
         int count = 0;
         String sender = player.getName();
         long now = nowUptime();
-        
+
+        // ★ 第63批：信誉积分低于20分禁止使用群戏传送
+        if (plugin.getCreditManager() != null && plugin.getCreditManager().isRestricted(sender, "block_tpaall")) {
+            player.sendMessage("§c§l[信誉积分] §c你的积分过低，禁止使用群戏传送");
+            return true;
+        }
+
         // 检查冷却
         Long lastTime = teleportCooldown.get(sender);
         if (lastTime != null && now - lastTime < teleportCooldownMs) {

@@ -53,6 +53,55 @@ public class BondManager {
         initDB();
     }
 
+    // ===== 信誉积分债券交易限额（★ 第63批） =====
+
+    /** 交易型类型（买卖全算限额），非交易型（管理员/系统）不受限 */
+    private static boolean isTradeType(String type) {
+        return TX_TRANSFER_OUT.equals(type)
+                || TX_TRANSFER_IN.equals(type)
+                || TX_SHOP_BUY.equals(type);
+    }
+
+    /**
+     * 查询玩家本小时债券交易累计总额（买入+卖出全算）
+     */
+    private int getHourlyBondTradeTotal(String player) {
+        try {
+            long oneHourAgo = System.currentTimeMillis() - 3600_000L;
+            PreparedStatement ps = db.prepareStatement(
+                    "SELECT COALESCE(SUM(amount), 0) as total FROM bond_transaction "
+                            + "WHERE player_name=? AND time > ?");
+            ps.setString(1, player);
+            ps.setLong(2, oneHourAgo);
+            ResultSet rs = ps.executeQuery();
+            int total = 0;
+            if (rs.next()) total = rs.getInt("total");
+            rs.close(); ps.close();
+            return total;
+        } catch (SQLException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * ★ 第63批：检查玩家债券交易是否超限
+     * @return true=允许交易，false=超限被拒
+     */
+    private boolean checkBondTradeLimit(String player, int amount) {
+        // 管理员操作不受限
+        if (plugin.getCreditManager() == null) return true;
+        double limit = plugin.getCreditManager().getBondTradeLimit(player);
+        if (limit <= 0) return true; // 无限制
+        // 获取倍数（>80分 → 1.2倍）
+        double multiplier = plugin.getCreditManager().getBondTradeMultiplier(player);
+        double effectiveLimit = limit * multiplier;
+        int currentTotal = getHourlyBondTradeTotal(player);
+        if (currentTotal + amount > effectiveLimit) {
+            return false; // 超限
+        }
+        return true;
+    }
+
     /**
      * ★ 第十批（2026-10-12）：暴露 bond.db 连接。
      * bond_transaction 在 bond.db（财务债券/），不在 login.db——
@@ -320,6 +369,14 @@ public class BondManager {
                         String operator,
                         String reason) {
         if (isFrozen(player)) return -1;
+        // ★ 第63批：交易型操作检查债券限额
+        if (isTradeType(type) && !checkBondTradeLimit(player, Math.abs(amount))) {
+            Player p = org.bukkit.Bukkit.getPlayerExact(player);
+            if (p != null) {
+                p.sendMessage("§c§l[信誉积分] §c债券交易超限，本小时交易额已达上限");
+            }
+            return -1;
+        }
         return addBondsInternal(player, amount,
                 type, targetPlayer, operator, reason);
     }
@@ -475,13 +532,21 @@ public class BondManager {
 
     // ======================== 扣除债券 ========================
 
-    /** 完整版：含冻结检查 + 流水记录 */
+    /** 完整版：含冻结检查 + 信誉积分限额 + 流水记录 */
     public boolean deductBonds(String player, int amount,
                                String type,
                                String targetPlayer,
                                String operator,
                                String reason) {
         if (isFrozen(player)) return false;
+        // ★ 第63批：交易型操作检查债券限额
+        if (isTradeType(type) && !checkBondTradeLimit(player, Math.abs(amount))) {
+            Player p = org.bukkit.Bukkit.getPlayerExact(player);
+            if (p != null) {
+                p.sendMessage("§c§l[信誉积分] §c债券交易超限，本小时交易额已达上限");
+            }
+            return false;
+        }
         return deductBondsInternal(player, amount,
                 type, targetPlayer, operator, reason);
     }

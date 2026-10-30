@@ -132,6 +132,7 @@ public class CreditManager {
                     + ")");
 
             // 信誉限制规则表
+            // ★ 第63批：新增 limit_amount(限额) 和 multiplier(倍数) 两列
             st.execute("CREATE TABLE IF NOT EXISTS credit_rules ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     + "rule_name TEXT NOT NULL UNIQUE,"
@@ -139,9 +140,15 @@ public class CreditManager {
                     + "max_score INTEGER DEFAULT 0,"
                     + "restriction_type TEXT DEFAULT '',"
                     + "restriction_duration INTEGER DEFAULT 0,"
-                    + "enabled INTEGER DEFAULT 1,"
-                    + "description TEXT DEFAULT ''"
+                    + "enabled INTEGER DEFAULT 0,"
+                    + "description TEXT DEFAULT '',"
+                    + "limit_amount REAL DEFAULT 0,"
+                    + "multiplier REAL DEFAULT 0"
                     + ")");
+
+            // ★ 第63批：已有表扩展新列（列已存在时报错，忽略）
+            try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN limit_amount REAL DEFAULT 0"); } catch (Exception ignored) {}
+            try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN multiplier REAL DEFAULT 0"); } catch (Exception ignored) {}
 
             // 默认规则初始化
             initDefaultRules();
@@ -157,15 +164,43 @@ public class CreditManager {
         }
     }
 
+    /**
+     * ★ 第63批：6条内置规则，默认全部禁用（enabled=0）
+     * 每条规则启用后，满足分数阈值时对目标玩家做对应限制/加成
+     */
     private void initDefaultRules() {
         try {
             Statement st = db.getConnection().createStatement();
-            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
-                    + "VALUES ('禁止交易', 60, 0, 'trade', 0, '低于60分时禁止与NPC交易')");
-            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
-                    + "VALUES ('禁止PVP', 40, 0, 'pvp', 0, '低于40分时禁止进入PVP竞技场')");
-            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) "
-                    + "VALUES ('禁止传送', 20, 0, 'teleport', 0, '低于20分时禁止使用传送功能')");
+
+            // 规则1: ＜60分 → 债券每小时交易限额5000元(卖出/买入全算)
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('债券交易限额5000', 60, 0, 'bond_trade_limit', 0, 0, '低于60分时债券每小时交易限额5000元(买入/卖出全算)', 5000, 0)");
+
+            // 规则2: ＜20分 → 禁止使用群戏传送
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('禁止群戏传送', 20, 0, 'block_tpaall', 0, 0, '低于20分时禁止使用群戏传送(/tpaall)', 0, 0)");
+
+            // 规则3: ＜0分 → 二手商店内商品标记，提示买家谨慎购买
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('二手商店低信誉警示', 0, 0, 'shop_low_warning', 0, 0, '低于0分时二手商店商品标记为低信誉卖家，提示买家谨慎购买', 0, 0)");
+
+            // 规则4: ＜-10分 → 禁止使用CDK + 债券每小时交易限额1000元
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('禁止CDK+债券限额1000', -10, 0, 'block_cdk_and_bond', 0, 0, '低于-10分时禁止使用CDK兑换码，债券每小时交易限额1000元(买入/卖出全算)', 1000, 0)");
+
+            // 规则5: ＞80分 → 债券每小时交易额1.2倍(接入债券出售限额)
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('债券交易额1.2倍', 0, 80, 'bond_trade_bonus', 0, 0, '高于80分时债券每小时交易额1.2倍(接入债券出售限额)', 0, 1.2)");
+
+            // 规则6: ＞100分 → 二手商店内商品标记为信誉极好，放心购买
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
+                    + "VALUES ('二手商店高信誉推荐', 0, 100, 'shop_high_recommend', 0, 0, '高于100分时二手商店商品标记为信誉极好卖家，可以放心购买', 0, 0)");
+
+            // ★ 清理旧规则（禁止交易/禁止PVP/禁止传送）
+            // 第63批替换了内置规则，旧的3条规则不再使用，删除它们
+            // 保留管理员手动添加的自定义规则（这些不在内置规则列表中）
+            st.execute("DELETE FROM credit_rules WHERE rule_name IN ('禁止交易', '禁止PVP', '禁止传送')");
+
         } catch (Exception ignored) {}
     }
 
@@ -484,6 +519,9 @@ public class CreditManager {
                 row.put("restriction_type", rs.getString("restriction_type"));
                 row.put("restriction_duration", rs.getInt("restriction_duration"));
                 row.put("description", rs.getString("description"));
+                // ★ 第63批：新增列
+                try { row.put("limit_amount", rs.getDouble("limit_amount")); } catch (Exception ignored) {}
+                try { row.put("multiplier", rs.getDouble("multiplier")); } catch (Exception ignored) {}
                 list.add(row);
             }
             ps.close();
@@ -493,14 +531,150 @@ public class CreditManager {
         return list;
     }
 
+    /**
+     * ★ 第63批：获取所有规则（含禁用）供管理员GUI展示
+     */
+    public List<Map<String, Object>> getAllRules() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        try {
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "SELECT * FROM credit_rules ORDER BY min_score DESC, rule_name");
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", rs.getInt("id"));
+                row.put("rule_name", rs.getString("rule_name"));
+                row.put("min_score", rs.getInt("min_score"));
+                row.put("max_score", rs.getInt("max_score"));
+                row.put("restriction_type", rs.getString("restriction_type"));
+                row.put("restriction_duration", rs.getInt("restriction_duration"));
+                row.put("enabled", rs.getInt("enabled"));
+                row.put("description", rs.getString("description"));
+                try { row.put("limit_amount", rs.getDouble("limit_amount")); } catch (Exception ignored) {}
+                try { row.put("multiplier", rs.getDouble("multiplier")); } catch (Exception ignored) {}
+                list.add(row);
+            }
+            ps.close();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 查询所有规则失败: " + e.getMessage());
+        }
+        return list;
+    }
+
+    /**
+     * ★ 第63批：切换规则启用/禁用状态
+     */
+    public boolean toggleRule(int ruleId) {
+        try {
+            PreparedStatement ps = db.getConnection().prepareStatement(
+                    "UPDATE credit_rules SET enabled = CASE enabled WHEN 1 THEN 0 ELSE 1 END WHERE id = ?");
+            ps.setInt(1, ruleId);
+            ps.executeUpdate();
+            ps.close();
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 切换规则失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * ★ 第63批：检查玩家是否受某类型限制
+     *   - score < min_score → 触发（低于阈值，min_score 可为正/零/负）
+     *   - score > max_score → 触发（高于阈值，bonus类规则）
+     */
     public boolean isRestricted(String playerName, String restrictionType) {
         double score = getScore(playerName);
         for (Map<String, Object> rule : getEnabledRules()) {
-            double minScore = ((Number) rule.get("min_score")).doubleValue();
             String type = (String) rule.get("restriction_type");
-            if (score < minScore && type.equals(restrictionType)) {
-                return true;
+            if (!type.equals(restrictionType)) continue;
+            double minScore = ((Number) rule.get("min_score")).doubleValue();
+            double maxScore = ((Number) rule.get("max_score")).doubleValue();
+            // 低于阈值触发（覆盖所有 min_score 情况：正/零/负）
+            if (score < minScore) return true;
+            // 高于阈值触发（bonus类规则）
+            if (maxScore > 0 && score > maxScore) return true;
+        }
+        return false;
+    }
+
+    /**
+     * ★ 第63批：获取玩家债券每小时交易限额
+     *   规则1: <60分 → 5000元
+     *   规则4: <-10分 → 1000元（更严格，覆盖规则1）
+     *   返回 0 表示无限制
+     */
+    public double getBondTradeLimit(String playerName) {
+        double score = getScore(playerName);
+        double limit = 0;
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (!type.equals("bond_trade_limit") && !type.equals("block_cdk_and_bond")) continue;
+            double ruleLimit = ((Number) rule.getOrDefault("limit_amount", 0)).doubleValue();
+            if (ruleLimit <= 0) continue;
+            double minScore = ((Number) rule.get("min_score")).doubleValue();
+            // 分数低于阈值 → 适用此限额
+            if (score < minScore) {
+                // 取最严格的限额（最小的值）
+                if (limit == 0 || ruleLimit < limit) {
+                    limit = ruleLimit;
+                }
             }
+        }
+        return limit;
+    }
+
+    /**
+     * ★ 第63批：获取玩家债券交易倍数
+     *   规则5: >80分 → 1.2倍
+     *   返回 1.0 表示无加成
+     */
+    public double getBondTradeMultiplier(String playerName) {
+        double score = getScore(playerName);
+        double multiplier = 1.0;
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (!type.equals("bond_trade_bonus")) continue;
+            double ruleMultiplier = ((Number) rule.getOrDefault("multiplier", 0)).doubleValue();
+            if (ruleMultiplier <= 0) continue;
+            double maxScore = ((Number) rule.get("max_score")).doubleValue();
+            // 分数高于阈值 → 适用此倍数
+            if (score > maxScore) {
+                // 取最高的倍数
+                if (ruleMultiplier > multiplier) {
+                    multiplier = ruleMultiplier;
+                }
+            }
+        }
+        return multiplier;
+    }
+
+    /**
+     * ★ 第63批：二手商店低信誉警示（规则3）
+     *   分数 < 0 时返回 true，商品标记为低信誉卖家
+     */
+    public boolean isShopLowWarning(String playerName) {
+        double score = getScore(playerName);
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (!type.equals("shop_low_warning")) continue;
+            double minScore = ((Number) rule.get("min_score")).doubleValue();
+            if (score < minScore) return true;
+        }
+        return false;
+    }
+
+    /**
+     * ★ 第63批：二手商店高信誉推荐（规则6）
+     *   分数 > 100 时返回 true，商品标记为信誉极好
+     */
+    public boolean isShopHighRecommend(String playerName) {
+        double score = getScore(playerName);
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (!type.equals("shop_high_recommend")) continue;
+            double maxScore = ((Number) rule.get("max_score")).doubleValue();
+            if (score > maxScore) return true;
         }
         return false;
     }
@@ -515,9 +689,17 @@ public class CreditManager {
             Player p = Bukkit.getPlayerExact(playerName);
             if (p == null || !p.isOnline()) continue;
 
-            if (score < minScore && (maxScore == 0 || score <= maxScore)) {
-                p.sendMessage("§c§l[信誉积分] §f你的积分 " + formatScore(score) + " 低于阈值 " + formatScore(minScore) + "，"
-                        + "已触发限制: " + desc);
+            // 低于阈值触发（限制类规则）
+            boolean belowThreshold = score < minScore;
+            // 高于阈值触发（加成类规则，如债券1.2倍）
+            boolean aboveThreshold = maxScore > 0 && score > maxScore;
+
+            if (belowThreshold || aboveThreshold) {
+                String direction = belowThreshold ? "低于阈值" : "高于阈值";
+                double threshold = belowThreshold ? minScore : maxScore;
+                p.sendMessage("§c§l[信誉积分] §f你的积分 " + formatScore(score) + " " + direction
+                        + " " + formatScore(threshold) + "，"
+                        + (aboveThreshold ? "§a已触发加成: " : "已触发限制: ") + desc);
             }
         }
     }
@@ -591,19 +773,22 @@ public class CreditManager {
                     "§7查看历史审批记录",
                     "§7点击查看"));
 
-            // Slot 9: 规则说明
-            inv.setItem(9, mkItem(Material.IRON_INGOT,
-                    "§7§l规则说明",
-                    "§7低于60分: 禁止交易",
-                    "§7低于40分: 禁止PVP",
-                    "§7低于20分: 禁止传送"));
+            // Slot 9: 规则配置（管理员）
+            inv.setItem(9, mkItem(Material.COMMAND_BLOCK,
+                    "§6§l规则配置",
+                    "§7管理信誉积分限制规则",
+                    "§7启用/禁用内置规则",
+                    "§7点击查看"));
         } else {
             // ═══════════════ 非管理员：规则说明放在 Slot 5 ═══════════════
             inv.setItem(5, mkItem(Material.IRON_INGOT,
                     "§7§l规则说明",
-                    "§7低于60分: 禁止交易",
-                    "§7低于40分: 禁止PVP",
-                    "§7低于20分: 禁止传送"));
+                    "§7信誉积分低于60分: 债券交易限额5000元",
+                    "§7信誉积分低于20分: 禁止使用群戏传送",
+                    "§7信誉积分低于0分: 二手商店警示买家",
+                    "§7信誉积分低于-10分: 禁止CDK+债券限额1000元",
+                    "§7信誉积分高于80分: 债券交易额1.2倍",
+                    "§7信誉积分高于100分: 二手商店信誉极好"));
         }
 
         return inv;
@@ -828,6 +1013,102 @@ public class CreditManager {
                 "§7第 " + page + "/" + totalPages + " 页",
                 "§7共 " + totalCount + " 条上报",
                 "§7右键点击记录可撤回"));
+
+        return inv;
+    }
+
+    /**
+     * ★ 第63批：规则配置GUI（27格，每页显示5条规则）
+     * 布局：
+     *   Slot 0-4: 5条规则（点击启用/禁用）
+     *   Slot 21: 返回
+     *   Slot 22: 上一页
+     *   Slot 23: 下一页
+     *   Slot 24: 页码信息
+     */
+    private static final int RULES_MENU_SIZE = 27;
+    private static final int RULES_PER_PAGE = 5;
+
+    private final Map<String, Integer> rulesPage = new ConcurrentHashMap<>();
+
+    public Inventory createRulesGUI(Player p, int page) {
+        Inventory inv = Bukkit.createInventory(null, RULES_MENU_SIZE, GUI_TITLE + " - 规则配置");
+        fillBg(inv);
+
+        List<Map<String, Object>> rules = getAllRules();
+        int totalCount = rules.size();
+        int totalPages = Math.max(1, (totalCount + RULES_PER_PAGE - 1) / RULES_PER_PAGE);
+        if (page < 1) page = 1;
+        if (page > totalPages) page = totalPages;
+        int offset = (page - 1) * RULES_PER_PAGE;
+
+        for (int i = 0; i < RULES_PER_PAGE; i++) {
+            int idx = offset + i;
+            if (idx >= rules.size()) break;
+            Map<String, Object> r = rules.get(idx);
+            int ruleId = ((Number) r.get("id")).intValue();
+            int enabled = ((Number) r.get("enabled")).intValue();
+            String ruleName = (String) r.get("rule_name");
+            String description = (String) r.get("description");
+            double minScore = ((Number) r.get("min_score")).doubleValue();
+            double maxScore = ((Number) r.get("max_score")).doubleValue();
+            double limitAmount = ((Number) r.getOrDefault("limit_amount", 0)).doubleValue();
+            double multiplier = ((Number) r.getOrDefault("multiplier", 0)).doubleValue();
+
+            // 启用状态决定颜色和材质
+            Material mat = enabled == 1 ? Material.GREEN_WOOL : Material.RED_WOOL;
+            String statusText = enabled == 1 ? "§a§l已启用" : "§c§l已禁用";
+
+            // 构建lore
+            String thresholdText;
+            if (minScore > 0 && maxScore > 0) {
+                thresholdText = "§7阈值: " + minScore + " < 积分 < " + maxScore;
+            } else if (minScore > 0) {
+                thresholdText = "§7低于 " + minScore + " 分时触发";
+            } else if (maxScore > 0) {
+                thresholdText = "§7高于 " + maxScore + " 分时触发";
+            } else {
+                thresholdText = "§7无限阈值";
+            }
+
+            String detailText = "§7" + description;
+            if (limitAmount > 0) {
+                detailText += "\n§7限额: " + formatScore(limitAmount) + " 元/小时";
+            }
+            if (multiplier > 0) {
+                detailText += "\n§7倍数: " + multiplier + " 倍";
+            }
+
+            inv.setItem(i, mkItem(mat,
+                    "§e§l" + ruleName + " " + statusText,
+                    thresholdText,
+                    detailText,
+                    "",
+                    "§7点击切换启用状态"));
+        }
+
+        // Slot 21: 返回
+        inv.setItem(21, mkItem(Material.ARROW, "§7返回"));
+
+        // Slot 22: 上一页
+        if (page > 1) {
+            inv.setItem(22, mkItem(Material.PLAYER_HEAD,
+                    "§e§l上一页",
+                    "§7当前第 " + page + "/" + totalPages + " 页"));
+        }
+
+        // Slot 23: 下一页
+        if (page < totalPages) {
+            inv.setItem(23, mkItem(Material.PLAYER_HEAD,
+                    "§e§l下一页",
+                    "§7当前第 " + page + "/" + totalPages + " 页"));
+        }
+
+        // Slot 24: 页码信息
+        inv.setItem(24, mkItem(Material.PAPER,
+                "§7第 " + page + "/" + totalPages + " 页",
+                "§7共 " + totalCount + " 条规则",
+                "§7点击规则可切换启用/禁用"));
 
         return inv;
     }
@@ -1187,11 +1468,14 @@ public class CreditManager {
                         p.closeInventory(); // 静默关闭，不报错
                     }
                     break;
-                case 9: // 管理员: 规则说明（18格GUI才有slot9）
-                    p.closeInventory();
-                    p.sendMessage("§d§l[信誉积分] §f规则说明:");
-                    for (Map<String, Object> r : getEnabledRules()) {
-                        p.sendMessage("§7" + r.get("rule_name") + ": " + r.get("description"));
+                case 9: // 管理员: 规则配置（18格GUI才有slot9）
+                    if (plugin.isAdmin(p)) {
+                        rulesPage.put(p.getName(), 1);
+                        p.closeInventory();
+                        p.openInventory(createRulesGUI(p, 1));
+                    } else {
+                        // 非管理员不应进入slot9，静默关闭
+                        p.closeInventory();
                     }
                     break;
                 default:
@@ -1202,6 +1486,64 @@ public class CreditManager {
                     p.closeInventory();
                     break;
             }
+            return;
+        }
+
+        // ★ 第63批：规则配置GUI
+        if (title != null && title.contains("规则配置")) {
+            int currentPage = rulesPage.getOrDefault(p.getName(), 1);
+
+            // 返回按钮
+            if (slot == 21) {
+                rulesPage.remove(p.getName());
+                p.closeInventory();
+                p.openInventory(createMainGUI(p));
+                return;
+            }
+
+            // 翻页
+            if (slot == 22) {
+                currentPage = Math.max(1, currentPage - 1);
+                rulesPage.put(p.getName(), currentPage);
+                p.closeInventory();
+                p.openInventory(createRulesGUI(p, currentPage));
+                return;
+            }
+            if (slot == 23) {
+                currentPage++;
+                rulesPage.put(p.getName(), currentPage);
+                p.closeInventory();
+                p.openInventory(createRulesGUI(p, currentPage));
+                return;
+            }
+
+            // 点击规则槽位（0-4）：切换启用/禁用
+            if (slot >= 0 && slot < RULES_PER_PAGE) {
+                int offset = (currentPage - 1) * RULES_PER_PAGE;
+                List<Map<String, Object>> rules = getAllRules();
+                if (slot < rules.size()) {
+                    // 实际上需要按offset索引
+                    int idx = offset + slot;
+                    if (idx < rules.size()) {
+                        Map<String, Object> r = rules.get(idx);
+                        int ruleId = ((Number) r.get("id")).intValue();
+                        String ruleName = (String) r.get("rule_name");
+                        int enabled = ((Number) r.get("enabled")).intValue();
+                        boolean ok = toggleRule(ruleId);
+                        if (ok) {
+                            p.sendMessage("§a§l[信誉积分] §f规则 §e" + ruleName + " §f已"
+                                + (enabled == 1 ? "§c禁用" : "§a启用"));
+                        } else {
+                            p.sendMessage("§c§l[信誉积分] §c切换规则失败");
+                        }
+                        // 重新打开规则GUI刷新显示
+                        p.closeInventory();
+                        p.openInventory(createRulesGUI(p, currentPage));
+                        return;
+                    }
+                }
+            }
+            p.closeInventory();
             return;
         }
 
