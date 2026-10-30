@@ -3480,7 +3480,7 @@ async function loadCredit(el) {
             html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">';
             for (const r of rules) {
                 const typeName = {bond_trade_limit: '债券限额', block_biome_tp: '禁止群系传送', shop_low_warning: '二手低信誉警示', block_cdk_and_bond: '禁CDK+债券限额', bond_trade_bonus: '债券交易加成', shop_high_recommend: '二手高信誉推荐', login_restore: '每日登录恢复', chat_penalty: '聊天违规扣分'}[r.restriction_type] || r.restriction_type || '';
-                html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px">';
+                html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;min-height:110px">';
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
                 html += '<span style="font-size:13px;font-weight:bold">' + escAdmHtml(r.rule_name) + '</span>';
                 html += '<span style="font-size:11px;padding:2px 8px;border-radius:10px;' + (r.enabled ? 'background:rgba(63,185,80,0.2);color:var(--green)' : 'background:rgba(248,81,73,0.2);color:var(--red)') + '">' + (r.enabled ? '启用' : '禁用') + '</span>';
@@ -3495,7 +3495,7 @@ async function loadCredit(el) {
                     thresholdText = '登录/聊天触发';
                 }
                 html += '<div style="font-size:12px;color:var(--dim)">' + thresholdText + ' ' + escAdmHtml(typeName) + '</div>';
-                html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + escAdmHtml(r.description || '') + '</div>';
+                html += '<div style="font-size:11px;color:var(--dim);margin-top:4px;flex:1">' + escAdmHtml(r.description || '') + '</div>';
                 // 参数显示
                 let paramText = '';
                 if (r.limit_amount > 0) paramText += '限额:' + r.limit_amount;
@@ -3504,7 +3504,7 @@ async function loadCredit(el) {
                 if (paramText) {
                     html += '<div style="font-size:11px;color:var(--purple);margin-top:4px">' + paramText + '</div>';
                 }
-                html += '<div style="display:flex;gap:4px;margin-top:6px">';
+                html += '<div style="display:flex;gap:4px;margin-top:auto">';
                 html += '<button onclick="creditToggleRule(' + r.id + ', ' + (r.enabled ? 0 : 1) + ')" style="flex:1;padding:3px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">' + (r.enabled ? '禁用' : '启用') + '</button>';
                 html += '<button onclick="creditEditRule(' + r.id + ')" style="flex:1;padding:3px 8px;background:var(--purple);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">编辑</button>';
                 html += '</div>';
@@ -3675,7 +3675,7 @@ async function doCreditEditRule(ruleId) {
 
 // ★ 第64批：恢复出厂默认
 async function creditResetBuiltin() {
-    if (!confirm('确认将所有内置规则恢复为出厂默认参数？\n自定义规则不受影响。')) return;
+    if (!await glassConfirm('确认将所有内置规则恢复为出厂默认参数？\n自定义规则不受影响。')) return;
     // PHP 端没有 reset 接口，通过逐条恢复实现
     // 直接用 update_rule 恢复每条内置规则的默认值
     const defaults = [
@@ -3689,30 +3689,33 @@ async function creditResetBuiltin() {
         { name: '聊天违规扣0.5分', min_score: 0, max_score: 0, enabled: 0, limit_amount: 0, multiplier: 0, amount: 0.5 },
     ];
     // 先获取所有规则找到 id
-    fetch('api/credit.php?action=rules', { credentials: 'same-origin' })
-        .then(r => r.json())
-        .then(res => {
-            if (!res.success) { alert('获取规则失败'); return; }
-            const rules = res.data?.rules || [];
-            let count = 0;
-            for (const d of defaults) {
-                const rule = rules.find(r => r.rule_name === d.name);
-                if (rule) {
-                    const params = new URLSearchParams();
-                    params.append('id', rule.id);
-                    params.append('min_score', d.min_score);
-                    params.append('max_score', d.max_score);
-                    params.append('enabled', d.enabled);
-                    params.append('limit_amount', d.limit_amount);
-                    params.append('multiplier', d.multiplier);
-                    params.append('amount', d.amount);
-                    fetch('api/credit.php?action=update_rule&' + params.toString(), { credentials: 'same-origin' });
-                    count++;
-                }
+    try {
+        const res = await fetch('api/credit.php?action=rules', { credentials: 'same-origin' }).then(r => r.json());
+        if (!res.success) { glassAlert('获取规则失败'); return; }
+        const rules = res.data?.rules || [];
+        let count = 0, failed = 0;
+        for (const d of defaults) {
+            const rule = rules.find(r => r.rule_name === d.name);
+            if (rule) {
+                const params = new URLSearchParams();
+                params.append('id', rule.id);
+                params.append('min_score', d.min_score);
+                params.append('max_score', d.max_score);
+                params.append('enabled', d.enabled);
+                params.append('limit_amount', d.limit_amount);
+                params.append('multiplier', d.multiplier);
+                params.append('amount', d.amount);
+                // ★ 串行 await，避免并发请求导致部分失败后数据不一致
+                const r = await fetch('api/credit.php?action=update_rule&' + params.toString(), { credentials: 'same-origin' }).then(r => r.json());
+                if (!r.success) { failed++; }
+                else { count++; }
             }
-            setTimeout(() => loadCredit(document.getElementById('C')), 500);
-            alert('已恢复 ' + count + ' 条内置规则为出厂默认');
-        });
+        }
+        loadCredit(document.getElementById('C'));
+        glassAlert(`已恢复 ${count} 条内置规则为出厂默认${failed > 0 ? `，${failed} 条失败` : ''}`);
+    } catch(e) {
+        glassAlert('恢复失败: ' + e.message);
+    }
 }
 
 async function creditQueryScore() {

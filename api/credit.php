@@ -530,9 +530,9 @@ switch ($action) {
                 $stmt->bindValue(9, $amount, SQLITE3_FLOAT);
                 $stmt->bindValue(10, $ruleName, SQLITE3_TEXT);
                 $stmt->execute();
-
+                $changed = $db->changes();
                 // PHP 没有的规则则插入
-                if ($stmt->changes() === 0) {
+                if ($changed === 0) {
                     $stmt2 = $db->prepare("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                     $stmt2->bindValue(1, $ruleName, SQLITE3_TEXT);
                     $stmt2->bindValue(2, $minScore, SQLITE3_INTEGER);
