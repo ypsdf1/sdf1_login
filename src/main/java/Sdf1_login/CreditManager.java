@@ -2263,6 +2263,17 @@ public class CreditManager {
                 //   Java 拉取 PHP 规则时：正常接受 PHP 的 enabled（PHP 开了 → Java 收下）
                 //   拉取后：Java 把本地完整规则状态推回 PHP（Java 开了 → PHP 收下）
                 //   → 形成双向交换，谁最后改谁说了算
+                // ★ 第65批诊断增强：更新前先读当前 enabled，变化时逐条张嘴
+                int currentEnabled = -1;
+                try {
+                    PreparedStatement checkPs = db.getConnection().prepareStatement(
+                        "SELECT enabled FROM credit_rules WHERE rule_name = ?");
+                    checkPs.setString(1, ruleName);
+                    ResultSet checkRs = checkPs.executeQuery();
+                    if (checkRs.next()) currentEnabled = checkRs.getInt("enabled");
+                    checkRs.close();
+                    checkPs.close();
+                } catch (Exception ignored) {}
                 PreparedStatement ps = db.getConnection().prepareStatement(
                         "UPDATE credit_rules SET min_score = ?, max_score = ?, "
                         + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
@@ -2278,6 +2289,13 @@ public class CreditManager {
                 ps.setString(9, ruleName);
                 int rows = ps.executeUpdate();
                 ps.close();
+
+                // ★ 第65批诊断：enabled 变化必须张嘴说出来，排查数据对不上就靠这个
+                if (currentEnabled >= 0 && currentEnabled != enabled) {
+                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
+                        + " enabled " + currentEnabled + "→" + enabled
+                        + " (min=" + minScore + " max=" + maxScore + ")");
+                }
 
                 if (rows == 0) {
                     // PHP 有的规则 Java 本地没有 → INSERT OR IGNORE（rule_name UNIQUE）

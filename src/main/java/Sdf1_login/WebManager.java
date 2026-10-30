@@ -2831,6 +2831,15 @@ public class WebManager {
                         catch (Exception e) { /* 静默 */ }
                     }, true);
                 }
+                // ★ 第65批：信誉积分高频双向同步（挂到 Timer A，3~5秒一轮）
+                //   PHP 改规则 → sync_requests → Java 下轮即拉取 → 10秒内 PHP 结果回到 Java
+                //   与 pushCreditToPhp/pullCreditFromPhp 组成双向交换，谁最后改谁说了算
+                submitNormalDbTask("TimerA-信誉同步", () -> {
+                    try { pushCreditToPhp(); }
+                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 推送异常: " + e.getMessage()); }
+                    try { pullCreditFromPhp(); }
+                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 拉取异常: " + e.getMessage()); }
+                });
                 // ★ CDK离线兑付：Timer A永不暂停，定期拉取CDK交易
                 // 解决全员下线时Timer B暂停导致CDK兑换不到账的bug
                 //
@@ -12013,7 +12022,7 @@ public class WebManager {
                 try {
                     JsonObject root = JsonParser.parseString(result).getAsJsonObject();
                     if (root.has("success") && root.get("success").getAsBoolean()) {
-                        plugin.getLogger().info("[信誉同步] 推送PHP成功: " + playersObj.size() + "玩家, " + recordsArr.size() + "记录");
+                        plugin.getLogger().info("[信誉同步] 推送PHP成功: " + playersObj.size() + "玩家, " + recordsArr.size() + "记录, " + rulesArr.size() + "规则");
                     } else {
                         plugin.getLogger().warning("[信誉同步] 推送PHP失败: " + (root.has("message") ? root.get("message").getAsString() : "未知"));
                     }
@@ -12229,9 +12238,7 @@ public class WebManager {
                     if (cm != null) {
                         com.google.gson.JsonArray rulesArr = data.getAsJsonArray("rules");
                         int syncedCount = cm.syncCreditRulesFromPhp(rulesArr);
-                        if (syncedCount > 0) {
-                            plugin.getLogger().info("[信誉同步] 从PHP同步了 " + syncedCount + " 条规则");
-                        }
+                        plugin.getLogger().info("[信誉同步] 拉取PHP: 规则 " + rulesArr.size() + " 条, 实际同步 " + syncedCount + " 条");
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
