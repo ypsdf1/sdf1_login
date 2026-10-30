@@ -654,18 +654,11 @@ public class AIChatManager {
             modelFull = modelAlias;
         }
         if (modelFull == null) {
+            // ★ 第65批修复：模型解析失败时只发一条简洁消息，不刷屏
+            //   原来发 2-3 行（未知模型名 + 厂家列表 + 模型列表），造成刷屏
+            plugin.getLogger().info("[AI聊天] 玩家 " + (player != null ? player.getName() : "未知") + " 请求了不存在的模型/厂家: " + modelAlias + "，无可用模型");
             if (player != null) {
-                player.sendMessage("§c[AI聊天] §f未知模型/厂家: " + modelAlias);
-                List<String> models = getAvailableModels();
-                List<String> providers = new ArrayList<>(providerToModel.keySet());
-                StringBuilder sb = new StringBuilder();
-                sb.append("§7可用厂家: ").append(String.join(", ", providers));
-                if (!models.isEmpty()) {
-                    sb.append("\n§7可用模型: ").append(String.join(", ", models));
-                } else {
-                    sb.append("\n§7未配置模型，请先在 openai/models.json 和 openai/模型简写.txt 中配置");
-                }
-                player.sendMessage(sb.toString());
+                player.sendMessage("§c[AI聊天] §f当前没有可用模型");
             }
             return;
         }
@@ -1236,7 +1229,8 @@ public class AIChatManager {
             //   修复：用默认提示词触发 AI 主动抛话题，不依赖玩家先聊天
             if (defaultModelFull.isEmpty()) {
                 // ★ 状态变化时才记一条，避免每秒刷屏
-                if (prevDefaultModelEmpty) {
+                //   从「有模型」→「无模型」转变时打一条，之后静默
+                if (!prevDefaultModelEmpty) {
                     plugin.getLogger().info("[AI聊天-调试] 自动互动跳过: defaultModelFull为空");
                 }
                 prevDefaultModelEmpty = true;
@@ -1267,10 +1261,9 @@ public class AIChatManager {
 
             ModelEndpoint endpoint = modelEndpoints.get(defaultModelFull);
             if (endpoint == null) {
-                if (prevEndpointNull) {
+                // ★ 状态变化时才记一条（false→true 转变），避免每秒刷屏
+                if (!prevEndpointNull) {
                     plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到");
-                } else {
-                    plugin.getLogger().warning("[AI聊天-调试] 自动互动跳过: defaultModelFull='" + defaultModelFull + "' 在 modelEndpoints 中找不到（后续静默）");
                     plugin.getLogger().warning("[AI聊天-调试] 可用模型: " + modelEndpoints.keySet());
                 }
                 prevEndpointNull = true;
