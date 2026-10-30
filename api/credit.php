@@ -45,9 +45,26 @@ function ensureCreditTables($db) {
         max_score INTEGER DEFAULT 0,
         restriction_type TEXT DEFAULT '',
         restriction_duration INTEGER DEFAULT 0,
-        enabled INTEGER DEFAULT 1,
-        description TEXT DEFAULT ''
+        enabled INTEGER DEFAULT 0,
+        description TEXT DEFAULT '',
+        limit_amount REAL DEFAULT 0,
+        multiplier REAL DEFAULT 0,
+        amount REAL DEFAULT 0
     )");
+    // ★ 第63批：已有表扩展新列
+    $ci2 = $db->query("PRAGMA table_info(credit_rules)");
+    $crCols = [];
+    while ($c = $ci2->fetchArray(SQLITE3_ASSOC)) $crCols[] = $c['name'];
+    if (!in_array('limit_amount', $crCols)) {
+        $db->exec("ALTER TABLE credit_rules ADD COLUMN limit_amount REAL DEFAULT 0");
+    }
+    if (!in_array('multiplier', $crCols)) {
+        $db->exec("ALTER TABLE credit_rules ADD COLUMN multiplier REAL DEFAULT 0");
+    }
+    // ★ 第64批：amount 列
+    if (!in_array('amount', $crCols)) {
+        $db->exec("ALTER TABLE credit_rules ADD COLUMN amount REAL DEFAULT 0");
+    }
     // users 表加 credit_score 列（如果不存在）
     $ci = $db->query("PRAGMA table_info(users)");
     $cols = [];
@@ -56,10 +73,19 @@ function ensureCreditTables($db) {
         // ★ 第58批-问题4：REAL 支持小数积分
         $db->exec("ALTER TABLE users ADD COLUMN credit_score REAL DEFAULT 100");
     }
-    // 默认规则
-    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) VALUES ('禁止交易', 60, 0, 'trade', 0, '低于60分时禁止与NPC交易')");
-    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) VALUES ('禁止PVP', 40, 0, 'pvp', 0, '低于40分时禁止进入PVP竞技场')");
-    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, description) VALUES ('禁止传送', 20, 0, 'teleport', 0, '低于20分时禁止使用传送功能')");
+    // ★ 第63批：6条内置规则，默认全部禁用
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('债券交易限额5000', 60, 0, 'bond_trade_limit', 0, 0, '低于60分时债券每小时交易限额5000元(买入/卖出全算)', 5000, 0)");
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('禁止群系传送', 20, 0, 'block_biome_tp', 0, 0, '低于20分时禁止使用群系传送', 0, 0)");
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('二手商店低信誉警示', 0, 0, 'shop_low_warning', 0, 0, '低于0分时二手商店商品标记为低信誉卖家，提示买家谨慎购买', 0, 0)");
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('禁止CDK+债券限额1000', -10, 0, 'block_cdk_and_bond', 0, 0, '低于-10分时禁止使用CDK兑换码，债券每小时交易限额1000元(买入/卖出全算)', 1000, 0)");
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('债券交易额1.2倍', 0, 80, 'bond_trade_bonus', 0, 0, '高于80分时债券每小时交易额1.2倍(接入债券出售限额)', 0, 1.2)");
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) VALUES ('二手商店高信誉推荐', 0, 100, 'shop_high_recommend', 0, 0, '高于100分时二手商店商品标记为信誉极好卖家，可以放心购买', 0, 0)");
+    // ★ 第64批：新规则7 — 每日登录自动恢复积分（默认启用，amount=0.1）
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) VALUES ('每日登录恢复0.1分', 0, 0, 'login_restore', 0, 1, '每日登录自动恢复信誉积分(默认0.1分，可配置)', 0, 0, 0.1)");
+    // ★ 第64批：新规则8 — 聊天违规扣分（默认禁用，amount=0.5）
+    $db->exec("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) VALUES ('聊天违规扣0.5分', 0, 0, 'chat_penalty', 0, 0, '发送脏话或违规链接扣除信誉积分(默认0.5分，可配置)', 0, 0, 0.5)");
+    // ★ 第63批：清理旧规则
+    $db->exec("DELETE FROM credit_rules WHERE rule_name IN ('禁止交易', '禁止PVP', '禁止传送')");
 }
 
 ensureCreditTables($db);
@@ -299,16 +325,39 @@ switch ($action) {
         success(['rules' => $rules]);
         break;
 
-    // ====== 管理员：更新规则 ======
+    // ====== 管理员：更新规则（支持完整参数） ======
     case 'update_rule':
         creditRequireAdmin();
         $ruleId = (int)getParam('id', 0);
-        $enabled = (int)getParam('enabled', 1);
         if ($ruleId <= 0) error('缺少规则ID');
-        $stmt = $db->prepare("UPDATE credit_rules SET enabled = ? WHERE id = ?");
-        $stmt->bindValue(1, $enabled, SQLITE3_INTEGER);
-        $stmt->bindValue(2, $ruleId, SQLITE3_INTEGER);
+        // 构建动态 UPDATE
+        $sets = [];
+        $params = [];
+        $intFields = ['min_score', 'max_score', 'enabled', 'restriction_duration'];
+        $floatFields = ['limit_amount', 'multiplier', 'amount'];
+        $strFields = ['restriction_type', 'description'];
+        foreach ($intFields as $f) {
+            $v = getParam($f, null);
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (int)$v; }
+        }
+        foreach ($floatFields as $f) {
+            $v = getParam($f, null);
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (float)$v; }
+        }
+        foreach ($strFields as $f) {
+            $v = getParam($f, null);
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = $v; }
+        }
+        if (empty($sets)) error('没有要更新的字段');
+        $sql = "UPDATE credit_rules SET " . implode(', ', $sets) . " WHERE id = ?";
+        $params[] = $ruleId;
+        $stmt = $db->prepare($sql);
+        for ($i = 0; $i < count($params); $i++) {
+            $stmt->bindValue($i + 1, $params[$i], SQLITE3_TEXT);
+        }
         $stmt->execute();
+        // ★ 第64批：规则变更后通知 Java 立即拉取
+        creditNotifyJavaSync($db, '__rules_sync__');
         success(null, '规则已更新');
         break;
 
@@ -450,7 +499,7 @@ switch ($action) {
         success(['synced' => count($playerData ?? []) . ' players, ' . count($recordData ?? []) . ' records'], 'Java同步推送成功');
         break;
 
-    // ====== Java 拉回同步：返回 PHP 端所有积分数据（管理员手动调整的部分） ======
+    // ====== Java 拉回同步：返回 PHP 端所有积分数据 + 规则数据 ======
     case 'sync_pull':
         $syncSecret = getParam('secret', '');
         if (!$syncSecret || $syncSecret !== SECRET_KEY) error('同步密钥无效', 401);
@@ -463,7 +512,7 @@ switch ($action) {
             $players[$row['player_name']] = (float)$row['credit_score'];
         }
 
-        // 返回所有积分记录（标记 source='admin' 的是管理员手动调整的）
+        // 返回所有积分记录
         $stmt = $db->prepare("SELECT * FROM credit_records ORDER BY created_at DESC LIMIT 500");
         $res = $stmt->execute();
         $records = [];
@@ -471,7 +520,15 @@ switch ($action) {
             $records[] = $row;
         }
 
-        success(['players' => $players, 'records' => $records], 'Java同步拉回成功');
+        // ★ 第64批：返回所有规则（Java 端同步用）
+        $stmt = $db->prepare("SELECT id, rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount FROM credit_rules ORDER BY id");
+        $res = $stmt->execute();
+        $rules = [];
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $rules[] = $row;
+        }
+
+        success(['players' => $players, 'records' => $records, 'rules' => $rules], 'Java同步拉回成功');
         break;
 
     default:

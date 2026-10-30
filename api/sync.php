@@ -4347,12 +4347,10 @@ function notifySync() {
     $db->exec("CREATE TABLE IF NOT EXISTS web_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, player_name TEXT NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL, operator TEXT DEFAULT '', reason TEXT, detail TEXT, status TEXT DEFAULT 'pending', created_at INTEGER NOT NULL, processed_at INTEGER)");
     $txId = getParam('tx_id', 0);
     
-    // 写入同步通知文件（包含交易ID）
-    $notifyFile = __DIR__ . '/../../sync_notify.txt';
-    $notifyData = json_encode(['time' => time(), 'tx_id' => (int)$txId]);
-    @file_put_contents($notifyFile, $notifyData, LOCK_EX);
-
-    // ★ 不再使用HTTP回调，Java的transactionPolling每5秒轮询check_pending_transactions
+    // ★ 第61批-续2：移除文件通知（跨机部署无效）
+    //   原逻辑：写 sync_notify.txt 文件，Java 端 checkSyncNotify() 读取
+    //   问题：不是所有 MC 服务器和 web 部署在同一台机器，文件不共享
+    //   修复：依赖 Java 端每5秒轮询 check_pending_transactions
     @error_log('[notifySync] 收到同步通知，tx_id=' . $txId . '，Java轮询会自动拉取');
 
     success(['tx_id' => (int)$txId], '已通知插件立即同步交易数据');

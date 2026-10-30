@@ -3470,21 +3470,44 @@ async function loadCredit(el) {
 
         // 积分规则 — 使用 .card class
         html += '<div class="card">';
-        html += '<h3 style="margin:0 0 12px;color:var(--fg);font-size:14px">📋 积分规则</h3>';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+        html += '<h3 style="margin:0;color:var(--fg);font-size:14px">📋 积分规则</h3>';
+        html += '<button onclick="creditResetBuiltin()" style="padding:6px 12px;background:var(--yellow);color:#000;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">恢复出厂默认</button>';
+        html += '</div>';
         if (rules.length === 0) {
             html += '<div style="text-align:center;padding:16px;color:var(--dim);font-size:13px">暂无规则</div>';
         } else {
             html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">';
             for (const r of rules) {
-                const typeName = {trade: '禁止交易', pvp: '禁止PVP', teleport: '禁止传送'}[r.restriction_type] || r.restriction_type || '';
+                const typeName = {bond_trade_limit: '债券限额', block_biome_tp: '禁止群系传送', shop_low_warning: '二手低信誉警示', block_cdk_and_bond: '禁CDK+债券限额', bond_trade_bonus: '债券交易加成', shop_high_recommend: '二手高信誉推荐', login_restore: '每日登录恢复', chat_penalty: '聊天违规扣分'}[r.restriction_type] || r.restriction_type || '';
                 html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px">';
                 html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
                 html += '<span style="font-size:13px;font-weight:bold">' + escAdmHtml(r.rule_name) + '</span>';
                 html += '<span style="font-size:11px;padding:2px 8px;border-radius:10px;' + (r.enabled ? 'background:rgba(63,185,80,0.2);color:var(--green)' : 'background:rgba(248,81,73,0.2);color:var(--red)') + '">' + (r.enabled ? '启用' : '禁用') + '</span>';
                 html += '</div>';
-                html += '<div style="font-size:12px;color:var(--dim)">低于 ' + r.min_score + ' 分触发 ' + escAdmHtml(typeName) + '</div>';
+                // ★ 修复阈值显示：区分低于/高于
+                let thresholdText = '';
+                if (r.min_score > 0 || r.min_score < 0) {
+                    thresholdText = '低于 ' + r.min_score + ' 分触发';
+                } else if (r.max_score > 0) {
+                    thresholdText = '高于 ' + r.max_score + ' 分触发';
+                } else {
+                    thresholdText = '登录/聊天触发';
+                }
+                html += '<div style="font-size:12px;color:var(--dim)">' + thresholdText + ' ' + escAdmHtml(typeName) + '</div>';
                 html += '<div style="font-size:11px;color:var(--dim);margin-top:4px">' + escAdmHtml(r.description || '') + '</div>';
-                html += '<button onclick="creditToggleRule(' + r.id + ', ' + (r.enabled ? 0 : 1) + ')" style="margin-top:6px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">' + (r.enabled ? '禁用' : '启用') + '</button>';
+                // 参数显示
+                let paramText = '';
+                if (r.limit_amount > 0) paramText += '限额:' + r.limit_amount;
+                if (r.multiplier > 0) paramText += (paramText ? ' ' : '') + '倍数:' + r.multiplier;
+                if (r.amount > 0) paramText += (paramText ? ' ' : '') + '参数:' + r.amount;
+                if (paramText) {
+                    html += '<div style="font-size:11px;color:var(--purple);margin-top:4px">' + paramText + '</div>';
+                }
+                html += '<div style="display:flex;gap:4px;margin-top:6px">';
+                html += '<button onclick="creditToggleRule(' + r.id + ', ' + (r.enabled ? 0 : 1) + ')" style="flex:1;padding:3px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">' + (r.enabled ? '禁用' : '启用') + '</button>';
+                html += '<button onclick="creditEditRule(' + r.id + ')" style="flex:1;padding:3px 8px;background:var(--purple);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">编辑</button>';
+                html += '</div>';
                 html += '</div>';
             }
             html += '</div>';
@@ -3579,6 +3602,117 @@ async function creditToggleRule(ruleId, enabled) {
     } catch(e) {
         alert('操作异常: ' + e.message);
     }
+}
+
+// ★ 第64批：编辑规则参数
+function creditEditRule(ruleId) {
+    // 先获取规则详情
+    fetch('api/credit.php?action=rules', { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) { alert('获取规则失败'); return; }
+            const rules = res.data?.rules || [];
+            const r = rules.find(x => x.id === ruleId);
+            if (!r) { alert('规则不存在'); return; }
+            const html = `
+                <div style="padding:16px">
+                    <h3 style="margin:0 0 12px;color:var(--fg)">✏️ 编辑规则: ${escAdmHtml(r.rule_name)}</h3>
+                    <div style="display:grid;gap:8px;font-size:13px">
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">低于阈值</label>
+                            <input id="editMinScore" type="number" value="${r.min_score}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">高于阈值</label>
+                            <input id="editMaxScore" type="number" value="${r.max_score}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">限额</label>
+                            <input id="editLimit" type="number" value="${r.limit_amount || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">倍数</label>
+                            <input id="editMult" type="number" step="0.1" value="${r.multiplier || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">参数值</label>
+                            <input id="editAmount" type="number" step="0.1" value="${r.amount || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                            <span style="font-size:11px;color:var(--dim)">如登录+0.5 / 违规-0.5</span>
+                        </div>
+                        <div style="display:flex;gap:8px;align-items:center">
+                            <label style="width:80px;color:var(--dim)">启用状态</label>
+                            <select id="editEnabled" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                                <option value="1" ${r.enabled ? 'selected' : ''}>启用</option>
+                                <option value="0" ${!r.enabled ? 'selected' : ''}>禁用</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button onclick="doCreditEditRule(${ruleId})" style="width:100%;margin-top:12px;padding:8px;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer">保存修改</button>
+                </div>
+            `;
+            showModal('编辑规则', '', null, html);
+        });
+}
+
+async function doCreditEditRule(ruleId) {
+    const params = new URLSearchParams();
+    params.append('id', ruleId);
+    params.append('min_score', document.getElementById('editMinScore').value);
+    params.append('max_score', document.getElementById('editMaxScore').value);
+    params.append('limit_amount', document.getElementById('editLimit').value);
+    params.append('multiplier', document.getElementById('editMult').value);
+    params.append('amount', document.getElementById('editAmount').value);
+    params.append('enabled', document.getElementById('editEnabled').value);
+    try {
+        const r = await fetch('api/credit.php?action=update_rule&' + params.toString(), { credentials: 'same-origin' }).then(r => r.json());
+        if (!r.success) { alert('操作失败: ' + (r.message || '未知错误')); return; }
+        closeModal();
+        loadCredit(document.getElementById('C'));
+    } catch(e) {
+        alert('操作异常: ' + e.message);
+    }
+}
+
+// ★ 第64批：恢复出厂默认
+async function creditResetBuiltin() {
+    if (!confirm('确认将所有内置规则恢复为出厂默认参数？\n自定义规则不受影响。')) return;
+    // PHP 端没有 reset 接口，通过逐条恢复实现
+    // 直接用 update_rule 恢复每条内置规则的默认值
+    const defaults = [
+        { name: '债券交易限额5000', min_score: 60, max_score: 0, enabled: 0, limit_amount: 5000, multiplier: 0, amount: 0 },
+        { name: '禁止群系传送', min_score: 20, max_score: 0, enabled: 0, limit_amount: 0, multiplier: 0, amount: 0 },
+        { name: '二手商店低信誉警示', min_score: 0, max_score: 0, enabled: 0, limit_amount: 0, multiplier: 0, amount: 0 },
+        { name: '禁止CDK+债券限额1000', min_score: -10, max_score: 0, enabled: 0, limit_amount: 1000, multiplier: 0, amount: 0 },
+        { name: '债券交易额1.2倍', min_score: 0, max_score: 80, enabled: 0, limit_amount: 0, multiplier: 1.2, amount: 0 },
+        { name: '二手商店高信誉推荐', min_score: 0, max_score: 100, enabled: 0, limit_amount: 0, multiplier: 0, amount: 0 },
+        { name: '每日登录恢复0.1分', min_score: 0, max_score: 0, enabled: 1, limit_amount: 0, multiplier: 0, amount: 0.1 },
+        { name: '聊天违规扣0.5分', min_score: 0, max_score: 0, enabled: 0, limit_amount: 0, multiplier: 0, amount: 0.5 },
+    ];
+    // 先获取所有规则找到 id
+    fetch('api/credit.php?action=rules', { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(res => {
+            if (!res.success) { alert('获取规则失败'); return; }
+            const rules = res.data?.rules || [];
+            let count = 0;
+            for (const d of defaults) {
+                const rule = rules.find(r => r.rule_name === d.name);
+                if (rule) {
+                    const params = new URLSearchParams();
+                    params.append('id', rule.id);
+                    params.append('min_score', d.min_score);
+                    params.append('max_score', d.max_score);
+                    params.append('enabled', d.enabled);
+                    params.append('limit_amount', d.limit_amount);
+                    params.append('multiplier', d.multiplier);
+                    params.append('amount', d.amount);
+                    fetch('api/credit.php?action=update_rule&' + params.toString(), { credentials: 'same-origin' });
+                    count++;
+                }
+            }
+            setTimeout(() => loadCredit(document.getElementById('C')), 500);
+            alert('已恢复 ' + count + ' 条内置规则为出厂默认');
+        });
 }
 
 async function creditQueryScore() {
