@@ -297,7 +297,7 @@ public class CreditManager {
             }
             PreparedStatement ps = db.getConnection().prepareStatement(
                     "INSERT INTO credit_records (target_player, reporter_player, type, content, status, score_change, created_at, source) "
-                            + "VALUES (?, NULL, ?, ?, 'approved', ?, ?, 'game')");
+                            + "VALUES (?, '', ?, ?, 'approved', ?, ?, 'game')");
             ps.setString(1, playerName);
             ps.setString(2, type);
             ps.setString(3, reason);
@@ -2308,6 +2308,12 @@ public class CreditManager {
             }
             if (synced > 0) {
                 plugin.getLogger().info("[信誉同步] 从PHP同步了 " + synced + " 条规则 (新增" + inserted + " 更新" + (synced - inserted) + ")");
+                // ★ 第65批修复（#343）：规则同步后对在线玩家重新执行限制检查
+                //   之前只更新了本地表，不会触发 checkRestrictions → 在线玩家不执行新规则
+                for (org.bukkit.entity.Player p : org.bukkit.Bukkit.getOnlinePlayers()) {
+                    double score = getScore(p.getName());
+                    checkRestrictions(p.getName(), score);
+                }
             } else if (failed > 0) {
                 plugin.getLogger().info("[信誉同步] PHP 规则同步无写入 (" + failed + " 条跳过)");
             }
