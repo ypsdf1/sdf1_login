@@ -3049,6 +3049,22 @@ public class Main extends JavaPlugin
                     }, 20L);
         }
 
+        // ===== ★ 第64批修复（#334）：每日登录恢复信誉积分 =====
+        // tryDailyLoginRestore 只在 autoLogin() 里调用，但以下路径会绕过它：
+        //   1. 双验证（IP风控两关）早退：autoLogin 第2513行 return，永不到第2610行
+        //   2. 手动 /login 登录：不经过 autoLogin
+        // 修复：在 onJoin 入口就排一个延迟任务，所有路径都覆盖
+        // 幂等保护：tryDailyLoginRestore 内部有 lastRestoreDate 当日去重
+        if (creditManager != null) {
+            final Player restorePlayer = p;
+            getServer().getScheduler()
+                    .runTaskLater(this, () -> {
+                        if (restorePlayer.isOnline()) {
+                            creditManager.tryDailyLoginRestore(restorePlayer);
+                        }
+                    }, 100L); // 100 tick = 5秒，等登录流程稳定后触发
+        }
+
         // ===== 风控封禁检查：密码错误阈值封禁期间拒绝加入 =====
         if (riskControl != null && riskControl.isBanned(name)) {
             int remaining = riskControl.getBanRemainingSeconds(name);

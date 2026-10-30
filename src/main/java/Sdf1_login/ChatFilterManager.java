@@ -1864,16 +1864,38 @@ public class ChatFilterManager {
 
     /**
      * 检查消息是否包含敏感词
+     * ★ 第64批修复（#333）：归一化后匹配，防止 "s.b" / "s b" / "s*b" 绕过
+     *   归一化：去除空格、点号、连字符、星号、下划线、斜杠等分隔符
+     *   "s.b" / "s b" / "s*b" / "s_b" 全部归一化为 "sb" 再匹配
+     *   短 ASCII 词（≤3 字符，如 "sb"/"cao"）用词边界正则防误匹配
+     *   （"is bad"→"isbad" 含 "sb" 子串，词边界可排除）
+     *   白名单URL不受影响（URL在 extractUrls/shouldBlockUrl 单独处理，不走这里）
      * @return 匹配到的敏感词列表（空列表表示无匹配）
      */
     public List<String> checkSensitiveWords(String msg) {
         if (msg == null || msg.isEmpty() || sensitiveWords.isEmpty())
             return Collections.emptyList();
         String lower = msg.toLowerCase();
+        // 归一化：去分隔符，用于捕获 "s.b"/"s b" 等变体
+        String normalized = lower.replaceAll("[\\s.\\-*_/\\\\]", "");
         List<String> matched = new ArrayList<>();
         for (String sw : sensitiveWords) {
-            if (lower.contains(sw)) {
-                matched.add(sw);
+            if (sw.isEmpty()) continue;
+            if (sw.length() <= 3 && sw.matches("[a-z]+")) {
+                // 短 ASCII 词：词边界正则，只在独立出现时匹配
+                // 归一化后 "sb你" → "sb" 后跟中文（非 a-z）→ 匹配；"isbad" → "sb" 前后都是 a-z → 不匹配
+                java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                    "(?<![a-z])" + java.util.regex.Pattern.quote(sw) + "(?![a-z])");
+                if (p.matcher(normalized).find()) {
+                    matched.add(sw);
+                }
+            } else {
+                // 长词或中文词：原文和归一化文本各查一次
+                // 原文查：保持原有行为（"fuck you" 直接含 "fuck"）
+                // 归一化查：捕获 "s.h.i.t" → "shit" 等分隔符变体
+                if (lower.contains(sw) || normalized.contains(sw)) {
+                    matched.add(sw);
+                }
             }
         }
         return matched;

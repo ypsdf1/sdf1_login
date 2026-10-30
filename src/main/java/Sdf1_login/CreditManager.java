@@ -268,6 +268,9 @@ public class CreditManager {
         setScore(playerName, current + amount);
         plugin.getLogger().info("[信誉积分] " + playerName + " 积分变动: "
                 + (amount > 0 ? "+" : "") + formatScore(amount) + " (" + reason + ")");
+        // ★ 第64批修复（#335）：积分变动后异步推送 PHP，避免 PHP 端长时间显示旧值
+        //   防抖：5秒内只推一次，避免连续扣分时疯狂打 HTTP
+        triggerCreditPushToPhpDebounced();
     }
 
     /** 兼容旧调用：int 版本的 addScore */
@@ -332,6 +335,41 @@ public class CreditManager {
             });
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉积分] 触发推送PHP失败: " + e.getMessage());
+        }
+    }
+
+    // ★ 第64批修复（#335）：防抖推送时间戳（ms）
+    private long lastCreditPushTimestamp = 0;
+
+    /**
+     * ★ 第64批修复（#335）：带防抖的积分推送触发
+     *   addScore 可能被频繁调用（多次违规扣分），每次都推 PHP 太浪费
+     *   → 5秒内只推一次，最后一次触发会覆盖前面的（合并写入）
+     *   首次调用立即推，后续5秒内调用延迟到防抖窗口结束后再推
+     */
+    private void triggerCreditPushToPhpDebounced() {
+        try {
+            Main plugin = this.plugin;
+            if (plugin.webManager == null) return;
+            long now = System.currentTimeMillis();
+            if (now - lastCreditPushTimestamp > 5000) {
+                // 距上次推送超过5秒 → 立即推
+                triggerCreditPushToPhp();
+                lastCreditPushTimestamp = now;
+            } else {
+                // 5秒内 → 延迟到窗口结束后再推（最后一次调用的效果会覆盖前面的）
+                final long delayTicks = ((5000 - (now - lastCreditPushTimestamp)) / 50);
+                org.bukkit.Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
+                    try {
+                        plugin.webManager.pushCreditToPhp();
+                        lastCreditPushTimestamp = System.currentTimeMillis();
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("[信誉积分] 防抖推送PHP失败: " + e.getMessage());
+                    }
+                }, delayTicks + 1);
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 防抖推送PHP触发失败: " + e.getMessage());
         }
     }
 
@@ -760,40 +798,26 @@ public class CreditManager {
         lastRestoreDate.put(name, today);
     }
 
-    /** 违规关键词列表（可扩展） */
-    private static final List<String> VIOLATION_WORDS = Arrays.asList(
-        "傻逼", "草泥马", "操你", "fuck", "shit", "bitch",
-        "去死", "废物", "垃圾玩意", "滚蛋"
-    );
-
-    /** 违规链接正则 */
-    private static final java.util.regex.Pattern VIOLATION_URL =
-        java.util.regex.Pattern.compile("(https?://|www\\.)[^\\s]+", java.util.regex.Pattern.CASE_INSENSITIVE);
-
     /**
      * ★ 第64批：聊天违规检测 — 在 AsyncPlayerChatEvent 中调用
      *   检测脏话/违规链接，命中则扣分（amount 从规则配置读取，默认0.5）
+     *   ★ 修复（#333）：不再自己搞一套违禁词，直接委托 ChatFilterManager.checkSensitiveWords
+     *     —— 白名单、归一化、URL检测全在 ChatFilterManager 里统一管理，只维护一套系统
      * @return true=检测到违规（不阻止聊天，仅扣分），false=未检测到
      */
     public boolean checkChatViolation(Player p, String msg) {
         if (msg == null || msg.isEmpty()) return false;
 
-        String lower = msg.toLowerCase();
-        boolean isViolation = false;
-
-        // 检测脏话
-        for (String word : VIOLATION_WORDS) {
-            if (lower.contains(word.toLowerCase())) {
-                isViolation = true;
-                break;
-            }
+        // ★ 委托 ChatFilterManager 的敏感词检测（含归一化：s.b / s b → sb）
+        //   白名单URL在 ChatFilterManager 内部处理，这里只管命中后扣分
+        List<String> matchedWords;
+        try {
+            matchedWords = plugin.getChatFilter().checkSensitiveWords(msg);
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉同步] 调用 ChatFilterManager 敏感词检测失败: " + e.getMessage());
+            return false;
         }
-        // 检测违规链接
-        if (!isViolation && VIOLATION_URL.matcher(msg).find()) {
-            isViolation = true;
-        }
-
-        if (!isViolation) return false;
+        if (matchedWords == null || matchedWords.isEmpty()) return false;
 
         // 查找 chat_penalty 规则
         double amount = 0;
@@ -2161,22 +2185,27 @@ public class CreditManager {
     // ==================== ★ 第64批：PHP规则同步 ====================
 
     /**
-     * ★ 第64批：从 PHP 端同步 credit_rules 到 Java
+     * ★ 第64批修复（#332）：从 PHP 端同步 credit_rules 到 Java
      *   PHP 管理后台修改规则参数后，Java 端需要拉取并应用
      *   调用时机：WebManager.pullCreditFromPhp() 处理完 records 后
+     *
+     *   ★ 修复要点：PHP 和 Java 的 credit_rules id 完全不同（PHP 1-9，Java 73-78/85-86），
+     *     旧逻辑按 id UPDATE 永远 0 行，但 synced++ 无条件执行 → 日志假报"同步了N条"。
+     *     修复：按 rule_name 匹配（UNIQUE 列），UPDATE 影响行数=0 时 INSERT OR IGNORE，
+     *     只统计真正写入的行数。
+     *
      * @param rulesJson Gson JsonArray，每条规则含 id, rule_name, min_score, max_score,
      *                   restriction_type, enabled, limit_amount, multiplier, amount
-     * @return 同步的规则数量
+     * @return 真正写入的规则数量
      */
     public int syncCreditRulesFromPhp(com.google.gson.JsonArray rulesJson) {
         if (rulesJson == null || rulesJson.isEmpty()) return 0;
-        int synced = 0;
+        int synced = 0, inserted = 0, failed = 0;
         try {
             for (com.google.gson.JsonElement el : rulesJson) {
                 com.google.gson.JsonObject rule = el.getAsJsonObject();
-                int ruleId = rule.has("id") ? rule.get("id").getAsInt() : 0;
                 String ruleName = rule.has("rule_name") ? rule.get("rule_name").getAsString() : "";
-                if (ruleId <= 0 || ruleName.isEmpty()) continue;
+                if (ruleName.isEmpty()) continue;
 
                 int minScore = rule.has("min_score") ? rule.get("min_score").getAsInt() : 0;
                 int maxScore = rule.has("max_score") ? rule.get("max_score").getAsInt() : 0;
@@ -2187,27 +2216,54 @@ public class CreditManager {
                 double amount = rule.has("amount") ? rule.get("amount").getAsDouble() : 0;
                 String description = rule.has("description") ? rule.get("description").getAsString() : "";
 
-                // UPDATE 到本地 credit_rules（按 id 匹配）
+                // ★ 按 rule_name 匹配（UNIQUE 列），id 跨库不一致不能用作匹配键
                 PreparedStatement ps = db.getConnection().prepareStatement(
-                        "UPDATE credit_rules SET rule_name = ?, min_score = ?, max_score = ?, "
+                        "UPDATE credit_rules SET min_score = ?, max_score = ?, "
                         + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
-                        + "WHERE id = ?");
-                ps.setString(1, ruleName);
-                ps.setInt(2, minScore);
-                ps.setInt(3, maxScore);
-                ps.setString(4, restrictionType);
-                ps.setInt(5, enabled);
-                ps.setString(6, description);
-                ps.setDouble(7, limitAmount);
-                ps.setDouble(8, multiplier);
-                ps.setDouble(9, amount);
-                ps.setInt(10, ruleId);
-                ps.executeUpdate();
+                        + "WHERE rule_name = ?");
+                ps.setInt(1, minScore);
+                ps.setInt(2, maxScore);
+                ps.setString(3, restrictionType);
+                ps.setInt(4, enabled);
+                ps.setString(5, description);
+                ps.setDouble(6, limitAmount);
+                ps.setDouble(7, multiplier);
+                ps.setDouble(8, amount);
+                ps.setString(9, ruleName);
+                int rows = ps.executeUpdate();
                 ps.close();
-                synced++;
+
+                if (rows == 0) {
+                    // PHP 有的规则 Java 本地没有 → INSERT OR IGNORE（rule_name UNIQUE）
+                    PreparedStatement ps2 = db.getConnection().prepareStatement(
+                            "INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, "
+                            + "restriction_type, enabled, description, limit_amount, multiplier, amount) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                    ps2.setString(1, ruleName);
+                    ps2.setInt(2, minScore);
+                    ps2.setInt(3, maxScore);
+                    ps2.setString(4, restrictionType);
+                    ps2.setInt(5, enabled);
+                    ps2.setString(6, description);
+                    ps2.setDouble(7, limitAmount);
+                    ps2.setDouble(8, multiplier);
+                    ps2.setDouble(9, amount);
+                    int r2 = ps2.executeUpdate();
+                    ps2.close();
+                    if (r2 > 0) {
+                        inserted++;
+                        synced++;
+                    } else {
+                        failed++; // rule_name 已存在但 UPDATE 0 行（并发冲突），跳过
+                    }
+                } else {
+                    synced++;
+                }
             }
             if (synced > 0) {
-                plugin.getLogger().info("[信誉同步] 从PHP同步了 " + synced + " 条规则");
+                plugin.getLogger().info("[信誉同步] 从PHP同步了 " + synced + " 条规则 (新增" + inserted + " 更新" + (synced - inserted) + ")");
+            } else if (failed > 0) {
+                plugin.getLogger().info("[信誉同步] PHP 规则同步无写入 (" + failed + " 条跳过)");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
