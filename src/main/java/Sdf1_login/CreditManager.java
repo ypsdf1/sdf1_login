@@ -89,7 +89,8 @@ public class CreditManager {
         DEDUCT_SCORE_TARGET,      // 扣分 → 等待玩家名
         DEDUCT_SCORE_AMOUNT,      // 扣分 → 等待数值
         APPROVE_SCORE_CHANGE,     // 审批通过 → 等待积分变动值
-        REVOKE_CONFIRM            // ★ 第59批-问题5：撤回上报确认
+        REVOKE_CONFIRM,           // ★ 第59批-问题5：撤回上报确认
+        RULE_EDIT_PARAMS          // ★ 第64批：编辑规则参数
     }
 
     // 玩家当前引导状态 (playerName -> FlowState + 临时数据)
@@ -133,6 +134,7 @@ public class CreditManager {
 
             // 信誉限制规则表
             // ★ 第63批：新增 limit_amount(限额) 和 multiplier(倍数) 两列
+            // ★ 第64批：新增 amount 列 — 规则的参数值（如 login_restore=0.1, chat_penalty=0.5）
             st.execute("CREATE TABLE IF NOT EXISTS credit_rules ("
                     + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
                     + "rule_name TEXT NOT NULL UNIQUE,"
@@ -143,12 +145,15 @@ public class CreditManager {
                     + "enabled INTEGER DEFAULT 0,"
                     + "description TEXT DEFAULT '',"
                     + "limit_amount REAL DEFAULT 0,"
-                    + "multiplier REAL DEFAULT 0"
+                    + "multiplier REAL DEFAULT 0,"
+                    + "amount REAL DEFAULT 0"
                     + ")");
 
             // ★ 第63批：已有表扩展新列（列已存在时报错，忽略）
             try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN limit_amount REAL DEFAULT 0"); } catch (Exception ignored) {}
             try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN multiplier REAL DEFAULT 0"); } catch (Exception ignored) {}
+            // ★ 第64批：amount 列 — 新规则的参数值（如 login_restore=0.1, chat_penalty=0.5）
+            try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN amount REAL DEFAULT 0"); } catch (Exception ignored) {}
 
             // 默认规则初始化
             initDefaultRules();
@@ -193,8 +198,16 @@ public class CreditManager {
                     + "VALUES ('债券交易额1.2倍', 0, 80, 'bond_trade_bonus', 0, 0, '高于80分时债券每小时交易额1.2倍(接入债券出售限额)', 0, 1.2)");
 
             // 规则6: ＞100分 → 二手商店内商品标记为信誉极好，放心购买
-            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
-                    + "VALUES ('二手商店高信誉推荐', 0, 100, 'shop_high_recommend', 0, 0, '高于100分时二手商店商品标记为信誉极好卖家，可以放心购买', 0, 0)");
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) "
+                    + "VALUES ('二手商店高信誉推荐', 0, 100, 'shop_high_recommend', 0, 0, '高于100分时二手商店商品标记为信誉极好卖家，可以放心购买', 0, 0, 0)");
+
+            // ★ 第64批：新规则7 — 每日登录自动恢复积分（默认启用，amount=0.1）
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) "
+                    + "VALUES ('每日登录恢复0.1分', 0, 0, 'login_restore', 0, 1, '每日登录自动恢复信誉积分(默认0.1分，可配置)', 0, 0, 0.1)");
+
+            // ★ 第64批：新规则8 — 聊天违规扣分（默认禁用，amount=0.5）
+            st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) "
+                    + "VALUES ('聊天违规扣0.5分', 0, 0, 'chat_penalty', 0, 0, '发送脏话或违规链接扣除信誉积分(默认0.5分，可配置)', 0, 0, 0.5)");
 
             // ★ 清理旧规则（禁止交易/禁止PVP/禁止传送）
             // 第63批替换了内置规则，旧的3条规则不再使用，删除它们
@@ -522,6 +535,8 @@ public class CreditManager {
                 // ★ 第63批：新增列
                 try { row.put("limit_amount", rs.getDouble("limit_amount")); } catch (Exception ignored) {}
                 try { row.put("multiplier", rs.getDouble("multiplier")); } catch (Exception ignored) {}
+                // ★ 第64批：amount 列
+                try { row.put("amount", rs.getDouble("amount")); } catch (Exception ignored) {}
                 list.add(row);
             }
             ps.close();
@@ -552,6 +567,7 @@ public class CreditManager {
                 row.put("description", rs.getString("description"));
                 try { row.put("limit_amount", rs.getDouble("limit_amount")); } catch (Exception ignored) {}
                 try { row.put("multiplier", rs.getDouble("multiplier")); } catch (Exception ignored) {}
+                try { row.put("amount", rs.getDouble("amount")); } catch (Exception ignored) {}
                 list.add(row);
             }
             ps.close();
@@ -704,6 +720,169 @@ public class CreditManager {
         }
     }
 
+    // ==================== ★ 第64批：登录恢复 & 聊天管控 ====================
+
+    /** 玩家上次每日恢复的日期（playerName -> "YYYY-MM-DD"） */
+    private final Map<String, String> lastRestoreDate = new ConcurrentHashMap<>();
+
+    /** 内置规则名称列表（用于恢复出厂时识别） */
+    private static final List<String> BUILTIN_RULE_NAMES = Arrays.asList(
+        "债券交易限额5000", "禁止群系传送", "二手商店低信誉警示",
+        "禁止CDK+债券限额1000", "债券交易额1.2倍", "二手商店高信誉推荐",
+        "每日登录恢复0.1分", "聊天违规扣0.5分"
+    );
+
+    /**
+     * ★ 第64批：每日登录自动恢复积分
+     *   在 PlayerJoinEvent 中调用，每日仅触发一次
+     *   amount 参数从规则配置中读取，默认0.1
+     */
+    public void tryDailyLoginRestore(Player p) {
+        String name = p.getName();
+        String today = java.time.LocalDate.now().toString();
+        String lastDate = lastRestoreDate.get(name);
+        if (lastDate != null && lastDate.equals(today)) return; // 今天已经恢复过了
+
+        // 查找 login_restore 规则
+        double amount = 0;
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (type.equals("login_restore")) {
+                amount = ((Number) rule.getOrDefault("amount", 0)).doubleValue();
+                break;
+            }
+        }
+        if (amount <= 0) return; // 规则未启用或 amount 未配置
+
+        // 恢复积分
+        addScore(name, amount, "每日登录自动恢复");
+        p.sendMessage("§a§l[信誉积分] §f每日登录恢复信誉积分 §e+" + formatScore(amount));
+        lastRestoreDate.put(name, today);
+    }
+
+    /** 违规关键词列表（可扩展） */
+    private static final List<String> VIOLATION_WORDS = Arrays.asList(
+        "傻逼", "草泥马", "操你", "fuck", "shit", "bitch",
+        "去死", "废物", "垃圾玩意", "滚蛋"
+    );
+
+    /** 违规链接正则 */
+    private static final java.util.regex.Pattern VIOLATION_URL =
+        java.util.regex.Pattern.compile("(https?://|www\\.)[^\\s]+", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * ★ 第64批：聊天违规检测 — 在 AsyncPlayerChatEvent 中调用
+     *   检测脏话/违规链接，命中则扣分（amount 从规则配置读取，默认0.5）
+     * @return true=检测到违规（不阻止聊天，仅扣分），false=未检测到
+     */
+    public boolean checkChatViolation(Player p, String msg) {
+        if (msg == null || msg.isEmpty()) return false;
+
+        String lower = msg.toLowerCase();
+        boolean isViolation = false;
+
+        // 检测脏话
+        for (String word : VIOLATION_WORDS) {
+            if (lower.contains(word.toLowerCase())) {
+                isViolation = true;
+                break;
+            }
+        }
+        // 检测违规链接
+        if (!isViolation && VIOLATION_URL.matcher(msg).find()) {
+            isViolation = true;
+        }
+
+        if (!isViolation) return false;
+
+        // 查找 chat_penalty 规则
+        double amount = 0;
+        for (Map<String, Object> rule : getEnabledRules()) {
+            String type = (String) rule.get("restriction_type");
+            if (type.equals("chat_penalty")) {
+                amount = ((Number) rule.getOrDefault("amount", 0)).doubleValue();
+                break;
+            }
+        }
+        if (amount <= 0) return false; // 规则未启用
+
+        // 扣分
+        addScore(p.getName(), -amount, "聊天违规扣分");
+        p.sendMessage("§c§l[信誉积分] §c聊天违规，扣除信誉积分 §e-" + formatScore(amount));
+        return true;
+    }
+
+    // ==================== ★ 第64批：规则参数编辑 & 恢复出厂 ====================
+
+    /**
+     * ★ 第64批：更新规则的参数
+     *   ruleId, minScore, maxScore, limitAmount, multiplier, amount
+     *   只更新非0值（null 或 <=0 的字段跳过，避免误清空）
+     */
+    public boolean updateRuleParams(int ruleId, int minScore, int maxScore,
+                                   double limitAmount, double multiplier, double amount) {
+        try {
+            // 构建动态 UPDATE
+            StringBuilder sql = new StringBuilder("UPDATE credit_rules SET ");
+            List<Object> params = new ArrayList<>();
+
+            boolean hasAny = false;
+            if (minScore != 0) { sql.append("min_score = ?, "); params.add(minScore); hasAny = true; }
+            if (maxScore != 0) { sql.append("max_score = ?, "); params.add(maxScore); hasAny = true; }
+            if (limitAmount != 0) { sql.append("limit_amount = ?, "); params.add(limitAmount); hasAny = true; }
+            if (multiplier != 0) { sql.append("multiplier = ?, "); params.add(multiplier); hasAny = true; }
+            if (amount != 0) { sql.append("amount = ?, "); params.add(amount); hasAny = true; }
+
+            if (!hasAny) return false;
+
+            sql.setLength(sql.length() - 2); // 去掉末尾 ", "
+            sql.append(" WHERE id = ?");
+            params.add(ruleId);
+
+            PreparedStatement ps = db.getConnection().prepareStatement(sql.toString());
+            for (int i = 0; i < params.size(); i++) {
+                ps.setObject(i + 1, params.get(i));
+            }
+            ps.executeUpdate();
+            ps.close();
+            plugin.getLogger().info("[信誉积分] 规则 #" + ruleId + " 参数已更新");
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 更新规则参数失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * ★ 第64批：一键恢复内置规则到出厂默认
+     *   仅恢复 BUILTIN_RULE_NAMES 列表中的规则
+     *   description 和 rule_name 不变，只恢复数值参数
+     */
+    public boolean resetBuiltinRulesToDefault() {
+        try {
+            Statement st = db.getConnection().createStatement();
+            // 恢复默认参数（rule_name → min, max, enabled, limit_amount, multiplier, amount）
+            st.execute("UPDATE credit_rules SET min_score=60, max_score=0, enabled=0, limit_amount=5000, multiplier=0, amount=0 WHERE rule_name='债券交易限额5000'");
+            st.execute("UPDATE credit_rules SET min_score=20, max_score=0, enabled=0, limit_amount=0, multiplier=0, amount=0 WHERE rule_name='禁止群系传送'");
+            st.execute("UPDATE credit_rules SET min_score=0, max_score=0, enabled=0, limit_amount=0, multiplier=0, amount=0 WHERE rule_name='二手商店低信誉警示'");
+            st.execute("UPDATE credit_rules SET min_score=-10, max_score=0, enabled=0, limit_amount=1000, multiplier=0, amount=0 WHERE rule_name='禁止CDK+债券限额1000'");
+            st.execute("UPDATE credit_rules SET min_score=0, max_score=80, enabled=0, limit_amount=0, multiplier=1.2, amount=0 WHERE rule_name='债券交易额1.2倍'");
+            st.execute("UPDATE credit_rules SET min_score=0, max_score=100, enabled=0, limit_amount=0, multiplier=0, amount=0 WHERE rule_name='二手商店高信誉推荐'");
+            st.execute("UPDATE credit_rules SET min_score=0, max_score=0, enabled=1, limit_amount=0, multiplier=0, amount=0.1 WHERE rule_name='每日登录恢复0.1分'");
+            st.execute("UPDATE credit_rules SET min_score=0, max_score=0, enabled=0, limit_amount=0, multiplier=0, amount=0.5 WHERE rule_name='聊天违规扣0.5分'");
+            plugin.getLogger().info("[信誉积分] 内置规则已恢复出厂默认");
+            return true;
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 恢复出厂失败: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** 检查规则名是否为内置规则 */
+    public boolean isBuiltinRule(String ruleName) {
+        return BUILTIN_RULE_NAMES.contains(ruleName);
+    }
+
     // ==================== 9格 GUI ====================
 
     public Inventory createMainGUI(Player p) {
@@ -788,7 +967,9 @@ public class CreditManager {
                     "§7信誉积分低于0分: 二手商店警示买家",
                     "§7信誉积分低于-10分: 禁止CDK+债券限额1000元",
                     "§7信誉积分高于80分: 债券交易额1.2倍",
-                    "§7信誉积分高于100分: 二手商店信誉极好"));
+                    "§7信誉积分高于100分: 二手商店信誉极好",
+                    "§7每日登录: 自动恢复0.1分",
+                    "§7聊天违规: 扣0.5分(默认禁用)"));
         }
 
         return inv;
@@ -1054,6 +1235,7 @@ public class CreditManager {
             double maxScore = ((Number) r.get("max_score")).doubleValue();
             double limitAmount = ((Number) r.getOrDefault("limit_amount", 0)).doubleValue();
             double multiplier = ((Number) r.getOrDefault("multiplier", 0)).doubleValue();
+            double amount = ((Number) r.getOrDefault("amount", 0)).doubleValue();
 
             // 启用状态决定颜色和材质
             Material mat = enabled == 1 ? Material.GREEN_WOOL : Material.RED_WOOL;
@@ -1078,17 +1260,27 @@ public class CreditManager {
             if (multiplier > 0) {
                 detailText += "\n§7倍数: " + multiplier + " 倍";
             }
+            if (amount > 0) {
+                detailText += "\n§7参数值: " + amount;
+            }
 
             inv.setItem(i, mkItem(mat,
                     "§e§l" + ruleName + " " + statusText,
                     thresholdText,
                     detailText,
                     "",
-                    "§7点击切换启用状态"));
+                    "§7点击切换启用状态",
+                    "§7右键编辑参数"));
         }
 
         // Slot 21: 返回
         inv.setItem(21, mkItem(Material.ARROW, "§7返回"));
+
+        // Slot 25: 恢复出厂
+        inv.setItem(25, mkItem(Material.GOLD_INGOT,
+                "§6§l恢复出厂默认",
+                "§7将所有内置规则参数恢复为默认值",
+                "§7不影响自定义规则"));
 
         // Slot 22: 上一页
         if (page > 1) {
@@ -1108,7 +1300,8 @@ public class CreditManager {
         inv.setItem(24, mkItem(Material.PAPER,
                 "§7第 " + page + "/" + totalPages + " 页",
                 "§7共 " + totalCount + " 条规则",
-                "§7点击规则可切换启用/禁用"));
+                "§7点击切换启用",
+                "§7右键编辑参数"));
 
         return inv;
     }
@@ -1501,6 +1694,19 @@ public class CreditManager {
                 return;
             }
 
+            // ★ 第64批：恢复出厂默认
+            if (slot == 25) {
+                boolean ok = resetBuiltinRulesToDefault();
+                if (ok) {
+                    p.sendMessage("§a§l[信誉积分] §f内置规则已恢复出厂默认");
+                    p.closeInventory();
+                    p.openInventory(createRulesGUI(p, currentPage));
+                } else {
+                    p.sendMessage("§c§l[信誉积分] §c恢复出厂失败");
+                }
+                return;
+            }
+
             // 翻页
             if (slot == 22) {
                 currentPage = Math.max(1, currentPage - 1);
@@ -1672,7 +1878,51 @@ public class CreditManager {
      * 仅在"我的上报"27格菜单中生效
      */
     public void handleRightClick(Player p, int slot, String title) {
-        if (title == null || !title.contains("我的上报")) return;
+        if (title == null) return;
+
+        // ★ 第64批：规则配置GUI右键 → 编辑参数
+        if (title.contains("规则配置")) {
+            if (!plugin.isAdmin(p)) {
+                p.sendMessage("§c§l[信誉积分] §c权限不足");
+                return;
+            }
+            int currentPage = rulesPage.getOrDefault(p.getName(), 1);
+            if (slot < 0 || slot >= RULES_PER_PAGE) return;
+
+            int offset = (currentPage - 1) * RULES_PER_PAGE;
+            List<Map<String, Object>> rules = getAllRules();
+            int idx = offset + slot;
+            if (idx >= rules.size()) return;
+
+            Map<String, Object> r = rules.get(idx);
+            int ruleId = ((Number) r.get("id")).intValue();
+            String ruleName = (String) r.get("rule_name");
+            String restrictionType = (String) r.get("restriction_type");
+            double currentMin = ((Number) r.get("min_score")).doubleValue();
+            double currentMax = ((Number) r.get("max_score")).doubleValue();
+            double currentLimit = ((Number) r.getOrDefault("limit_amount", 0)).doubleValue();
+            double currentMultiplier = ((Number) r.getOrDefault("multiplier", 0)).doubleValue();
+            double currentAmount = ((Number) r.getOrDefault("amount", 0)).doubleValue();
+
+            p.closeInventory();
+            p.sendMessage("§6§l[信誉积分] §f编辑规则: §e" + ruleName);
+            p.sendMessage("§7类型: §f" + restrictionType);
+            p.sendMessage("§7当前值: §emin=" + currentMin + " max=" + currentMax + " limit=" + currentLimit + " mult=" + currentMultiplier + " amount=" + currentAmount);
+            p.sendMessage("");
+            p.sendMessage("§7请按格式输入新参数（只需输入要修改的值，其他保持不变）：");
+            p.sendMessage("§7格式: §emin:60 max:0 limit:5000 mult:0 amount:0.1");
+            p.sendMessage("§7可用字段: min, max, limit, mult, amount");
+            p.sendMessage("§7输入 §e取消编辑 §7取消");
+
+            FlowData fd = new FlowData();
+            fd.state = FlowState.RULE_EDIT_PARAMS;
+            fd.recordId = ruleId;
+            fd.tempName = ruleName + "|" + restrictionType + "|" + currentMin + "|" + currentMax + "|" + currentLimit + "|" + currentMultiplier + "|" + currentAmount;
+            chatFlows.put(p.getName(), fd);
+            return;
+        }
+
+        if (!title.contains("我的上报")) return;
 
         int currentPage = myReportsPage.getOrDefault(p.getName(), 1);
 
@@ -1822,6 +2072,48 @@ public class CreditManager {
                     p.sendMessage("§7已取消撤回");
                 }
                 return true;
+
+            // ★ 第64批：编辑规则参数
+            case RULE_EDIT_PARAMS:
+                String input = msg.trim();
+                if (input.equals("取消编辑")) {
+                    chatFlows.remove(p.getName());
+                    p.sendMessage("§7已取消编辑");
+                    return true;
+                }
+                // 解析格式: min:60 max:0 limit:5000 mult:0 amount:0.1
+                int ruleId = fd.recordId;
+                String[] parts = fd.tempName.split("\\|");
+                String ruleName = parts[0];
+                double curMin = Double.parseDouble(parts[2]);
+                double curMax = Double.parseDouble(parts[3]);
+                double curLimit = Double.parseDouble(parts[4]);
+                double curMult = Double.parseDouble(parts[5]);
+                double curAmount = Double.parseDouble(parts[6]);
+
+                // 解析新值
+                double newMin = curMin, newMax = curMax, newLimit = curLimit, newMult = curMult, newAmount = curAmount;
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile("min:(-?\\d+(?:\\.\\d+)?)").matcher(input);
+                if (m.find()) newMin = Double.parseDouble(m.group(1));
+                m = java.util.regex.Pattern.compile("max:(-?\\d+(?:\\.\\d+)?)").matcher(input);
+                if (m.find()) newMax = Double.parseDouble(m.group(1));
+                m = java.util.regex.Pattern.compile("limit:(-?\\d+(?:\\.\\d+)?)").matcher(input);
+                if (m.find()) newLimit = Double.parseDouble(m.group(1));
+                m = java.util.regex.Pattern.compile("mult:(-?\\d+(?:\\.\\d+)?)").matcher(input);
+                if (m.find()) newMult = Double.parseDouble(m.group(1));
+                m = java.util.regex.Pattern.compile("amount:(-?\\d+(?:\\.\\d+)?)").matcher(input);
+                if (m.find()) newAmount = Double.parseDouble(m.group(1));
+
+                boolean ok = updateRuleParams(ruleId,
+                        (int) newMin, (int) newMax, newLimit, newMult, newAmount);
+                chatFlows.remove(p.getName());
+                if (ok) {
+                    p.sendMessage("§a§l[信誉积分] §f规则 §e" + ruleName + " §f参数已更新:");
+                    p.sendMessage("§7  min=" + newMin + " max=" + newMax + " limit=" + newLimit + " mult=" + newMult + " amount=" + newAmount);
+                } else {
+                    p.sendMessage("§c§l[信誉积分] §c更新失败，参数格式有误");
+                }
+                return true;
         }
         return true;
     }
@@ -1864,6 +2156,63 @@ public class CreditManager {
 
     public boolean approveFromPhp(int recordId, boolean approved, String reason, int scoreChange, String approverName) {
         return approveRecord(recordId, approved, reason, scoreChange, approverName);
+    }
+
+    // ==================== ★ 第64批：PHP规则同步 ====================
+
+    /**
+     * ★ 第64批：从 PHP 端同步 credit_rules 到 Java
+     *   PHP 管理后台修改规则参数后，Java 端需要拉取并应用
+     *   调用时机：WebManager.pullCreditFromPhp() 处理完 records 后
+     * @param rulesJson Gson JsonArray，每条规则含 id, rule_name, min_score, max_score,
+     *                   restriction_type, enabled, limit_amount, multiplier, amount
+     * @return 同步的规则数量
+     */
+    public int syncCreditRulesFromPhp(com.google.gson.JsonArray rulesJson) {
+        if (rulesJson == null || rulesJson.isEmpty()) return 0;
+        int synced = 0;
+        try {
+            for (com.google.gson.JsonElement el : rulesJson) {
+                com.google.gson.JsonObject rule = el.getAsJsonObject();
+                int ruleId = rule.has("id") ? rule.get("id").getAsInt() : 0;
+                String ruleName = rule.has("rule_name") ? rule.get("rule_name").getAsString() : "";
+                if (ruleId <= 0 || ruleName.isEmpty()) continue;
+
+                int minScore = rule.has("min_score") ? rule.get("min_score").getAsInt() : 0;
+                int maxScore = rule.has("max_score") ? rule.get("max_score").getAsInt() : 0;
+                int enabled = rule.has("enabled") ? rule.get("enabled").getAsInt() : 0;
+                String restrictionType = rule.has("restriction_type") ? rule.get("restriction_type").getAsString() : "";
+                double limitAmount = rule.has("limit_amount") ? rule.get("limit_amount").getAsDouble() : 0;
+                double multiplier = rule.has("multiplier") ? rule.get("multiplier").getAsDouble() : 0;
+                double amount = rule.has("amount") ? rule.get("amount").getAsDouble() : 0;
+                String description = rule.has("description") ? rule.get("description").getAsString() : "";
+
+                // UPDATE 到本地 credit_rules（按 id 匹配）
+                PreparedStatement ps = db.getConnection().prepareStatement(
+                        "UPDATE credit_rules SET rule_name = ?, min_score = ?, max_score = ?, "
+                        + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
+                        + "WHERE id = ?");
+                ps.setString(1, ruleName);
+                ps.setInt(2, minScore);
+                ps.setInt(3, maxScore);
+                ps.setString(4, restrictionType);
+                ps.setInt(5, enabled);
+                ps.setString(6, description);
+                ps.setDouble(7, limitAmount);
+                ps.setDouble(8, multiplier);
+                ps.setDouble(9, amount);
+                ps.setInt(10, ruleId);
+                ps.executeUpdate();
+                ps.close();
+                synced++;
+            }
+            if (synced > 0) {
+                plugin.getLogger().info("[信誉同步] 从PHP同步了 " + synced + " 条规则");
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
+        }
+        return synced;
     }
 
     // ==================== 辅助方法 ====================

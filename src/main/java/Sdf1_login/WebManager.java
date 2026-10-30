@@ -12190,6 +12190,22 @@ public class WebManager {
                     plugin.getLogger().info("[信誉同步] 从PHP拉回" + appliedCount + "条管理员调整记录");
                 }
             }
+
+            // ★ 第64批：同步 credit_rules 规则表
+            if (data.has("rules") && data.get("rules").isJsonArray()) {
+                try {
+                    CreditManager cm = plugin.getCreditManager();
+                    if (cm != null) {
+                        com.google.gson.JsonArray rulesArr = data.getAsJsonArray("rules");
+                        int syncedCount = cm.syncCreditRulesFromPhp(rulesArr);
+                        if (syncedCount > 0) {
+                            plugin.getLogger().info("[信誉同步] 从PHP同步了 " + syncedCount + " 条规则");
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
+                }
+            }
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉同步] 拉回PHP异常: " + e.getMessage());
         }

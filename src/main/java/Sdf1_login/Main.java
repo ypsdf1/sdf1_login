@@ -2605,6 +2605,11 @@ public class Main extends JavaPlugin
             areaProt.onPlayerJoin(p);
         }
 
+        // ★ 第64批：每日登录自动恢复信誉积分
+        if (creditManager != null) {
+            creditManager.tryDailyLoginRestore(p);
+        }
+
     }
 
     /**
@@ -6221,6 +6226,11 @@ public class Main extends JavaPlugin
         //   「需重新人机验证」标记（2026-10-08：解禁≠解除人机验证）
         if (chatFilter != null) {
             chatFilter.isMuted(p.getName());
+        }
+
+        // ★ 第64批：信誉积分聊天违规检测 — 脏话/违规链接扣分（不阻止聊天）
+        if (creditManager != null) {
+            creditManager.checkChatViolation(p, msg);
         }
 
         // ===== 新玩家验证码检查（N+1机制） =====
