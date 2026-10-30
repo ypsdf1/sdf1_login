@@ -176,9 +176,9 @@ public class CreditManager {
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
                     + "VALUES ('债券交易限额5000', 60, 0, 'bond_trade_limit', 0, 0, '低于60分时债券每小时交易限额5000元(买入/卖出全算)', 5000, 0)");
 
-            // 规则2: ＜20分 → 禁止使用群戏传送
+            // 规则2: ＜20分 → 禁止使用群系传送（GUIManager.teleportToBiome）
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
-                    + "VALUES ('禁止群戏传送', 20, 0, 'block_tpaall', 0, 0, '低于20分时禁止使用群戏传送(/tpaall)', 0, 0)");
+                    + "VALUES ('禁止群系传送', 20, 0, 'block_biome_tp', 0, 0, '低于20分时禁止使用群系传送', 0, 0)");
 
             // 规则3: ＜0分 → 二手商店内商品标记，提示买家谨慎购买
             st.execute("INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier) "
@@ -784,7 +784,7 @@ public class CreditManager {
             inv.setItem(5, mkItem(Material.IRON_INGOT,
                     "§7§l规则说明",
                     "§7信誉积分低于60分: 债券交易限额5000元",
-                    "§7信誉积分低于20分: 禁止使用群戏传送",
+                    "§7信誉积分低于20分: 禁止使用群系传送",
                     "§7信誉积分低于0分: 二手商店警示买家",
                     "§7信誉积分低于-10分: 禁止CDK+债券限额1000元",
                     "§7信誉积分高于80分: 债券交易额1.2倍",

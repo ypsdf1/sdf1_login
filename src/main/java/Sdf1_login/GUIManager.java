@@ -716,6 +716,12 @@ public class GUIManager implements Listener {
 
     public void teleportToBiome(
             Player p, String category) {
+        // ★ 第63批：信誉积分低于20分禁止使用群系传送（群戏传送）
+        if (plugin.getCreditManager() != null
+                && plugin.getCreditManager().isRestricted(p.getName(), "block_biome_tp")) {
+            p.sendMessage("§c§l[信誉积分] §c你的积分过低，禁止使用群系传送");
+            return;
+        }
         p.sendMessage("§e正在搜索 "
                 + category + " 群系...");
 
