@@ -18,6 +18,21 @@ set_error_handler(function($errno, $errstr, $errfile, $errline) {
     @error_log("[credit.php PRE-LOAD] $errstr in $errfile on line $errline");
     return true;
 });
+// ★ 第65批：未捕获异常（如 DB 连接断开、SQL 执行失败抛出的 Exception）
+//   默认会被 PHP 顶层处理器输出成 HTML 错误页，污染 JSON 响应导致前端崩溃。
+//   这里把所有未捕获异常兜底转为 JSON，保证 API 任何路径都返回合法 JSON。
+set_exception_handler(function($ex) {
+    @error_log('[credit.php UNCAUGHT] ' . $ex->getMessage()
+        . ' @ ' . $ex->getFile() . ':' . $ex->getLine());
+    while (ob_get_level() > 0) ob_end_clean();
+    header('Content-Type: application/json; charset=utf-8');
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'message' => '服务器内部错误: ' . $ex->getMessage(),
+    ], JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    exit;
+});
 require_once $coreFile;
 
 $action = $_GET['action'] ?? '';
@@ -333,29 +348,36 @@ switch ($action) {
         // 构建动态 UPDATE
         $sets = [];
         $params = [];
+        $paramTypes = [];
         $intFields = ['min_score', 'max_score', 'enabled', 'restriction_duration'];
         $floatFields = ['limit_amount', 'multiplier', 'amount'];
         $strFields = ['restriction_type', 'description'];
         foreach ($intFields as $f) {
             $v = getParam($f, null);
-            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (int)$v; }
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (int)$v; $paramTypes[] = SQLITE3_INTEGER; }
         }
         foreach ($floatFields as $f) {
             $v = getParam($f, null);
-            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (float)$v; }
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = (float)$v; $paramTypes[] = SQLITE3_FLOAT; }
         }
         foreach ($strFields as $f) {
             $v = getParam($f, null);
-            if ($v !== null) { $sets[] = "$f = ?"; $params[] = $v; }
+            if ($v !== null) { $sets[] = "$f = ?"; $params[] = $v; $paramTypes[] = SQLITE3_TEXT; }
         }
         if (empty($sets)) error('没有要更新的字段');
         $sql = "UPDATE credit_rules SET " . implode(', ', $sets) . " WHERE id = ?";
         $params[] = $ruleId;
-        $stmt = $db->prepare($sql);
-        for ($i = 0; $i < count($params); $i++) {
-            $stmt->bindValue($i + 1, $params[$i], SQLITE3_TEXT);
+        $paramTypes[] = SQLITE3_INTEGER;
+        try {
+            $stmt = $db->prepare($sql);
+            for ($i = 0; $i < count($params); $i++) {
+                $stmt->bindValue($i + 1, $params[$i], $paramTypes[$i]);
+            }
+            $stmt->execute();
+        } catch (\Throwable $e) {
+            @error_log('[credit.php] update_rule 失败: ' . $e->getMessage());
+            error('规则更新失败: ' . $e->getMessage(), 500);
         }
-        $stmt->execute();
         // ★ 第64批：规则变更后通知 Java 立即拉取
         creditNotifyJavaSync($db, '__rules_sync__');
         success(null, '规则已更新');
