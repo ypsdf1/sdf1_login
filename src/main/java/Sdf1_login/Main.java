@@ -3948,10 +3948,11 @@ public class Main extends JavaPlugin
                     }
                     // 主手斧头 + 副手盾 → 去皮
                     if (handIsAxe) {
-                        String typeName = clicked.getType().name();
-                        if (typeName.endsWith("_LOG")) {
+                        Material bt = clicked.getType();
+                        String btName = bt.name();
+                        if (btName.endsWith("_LOG") || btName.endsWith("_STEM")) {
                             e.setCancelled(true);
-                            String strippedName = typeName.replace("_LOG", "_STRIPPED_LOG");
+                            String strippedName = "STRIPPED_" + btName;
                             Material strippedMat = Material.getMaterial(strippedName);
                             if (strippedMat != null) {
                                 clicked.setType(strippedMat);
