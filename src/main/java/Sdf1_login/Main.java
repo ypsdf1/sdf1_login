@@ -3922,6 +3922,44 @@ public class Main extends JavaPlugin
         // ★ 屏蔽Sdf1_game宝箱自定义物品
         if (isTreasureItem(hand) || isTreasureItem(offhand)) return;
 
+        // ★ 第65批：持盾锄地/去皮修复
+        //   MC 原版：主手盾牌右击方块时，盾牌优先触发格挡，锄头/斧头无法工作
+        //   修复：主手盾牌 + 副手锄头/斧头 + 目标方块可交互时，手动执行方块交互
+        if (e.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
+            if (hand.getType() == Material.SHIELD) {
+                org.bukkit.block.Block clicked = e.getClickedBlock();
+                if (clicked != null) {
+                    // 副手锄头：草方块/菌丝土 → 耕地
+                    String offhandName = offhand.getType().name();
+                    boolean isHoe = offhandName.endsWith("_HOE");
+                    if (isHoe) {
+                        Material bt = clicked.getType();
+                        if (bt == Material.GRASS_BLOCK || bt == Material.PODZOL) {
+                            e.setCancelled(true);
+                            clicked.setType(Material.FARMLAND);
+                            clicked.getWorld().playSound(clicked.getLocation(), Sound.BLOCK_GRASS_HIT, 1, 1);
+                            return;
+                        }
+                    }
+                    // 副手斧头：原木 → 去皮原木
+                    boolean isAxe = offhandName.endsWith("_AXE");
+                    if (isAxe) {
+                        String typeName = clicked.getType().name();
+                        if (typeName.endsWith("_LOG")) {
+                            e.setCancelled(true);
+                            String strippedName = typeName.replace("_LOG", "_STRIPPED_LOG");
+                            Material strippedMat = Material.getMaterial(strippedName);
+                            if (strippedMat != null) {
+                                clicked.setType(strippedMat);
+                                clicked.getWorld().playSound(clicked.getLocation(), Sound.BLOCK_WOOD_HIT, 1, 1);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (isMenuSnowball(hand)
                 || isMenuSnowball(offhand)) {
             e.setCancelled(true);
