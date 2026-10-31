@@ -155,6 +155,14 @@ public class CreditManager {
             // ★ 第64批：amount 列 — 新规则的参数值（如 login_restore=0.1, chat_penalty=0.5）
             try { st.executeUpdate("ALTER TABLE credit_rules ADD COLUMN amount REAL DEFAULT 0"); } catch (Exception ignored) {}
 
+            // ★ 第65批修复：每日恢复日志表 — 持久化记录，替代内存 Map
+            //   解决服务器重启后同一天重复恢复的问题
+            st.execute("CREATE TABLE IF NOT EXISTS credit_restore_log ("
+                    + "player_name TEXT NOT NULL PRIMARY KEY,"
+                    + "last_restore_date TEXT NOT NULL,"
+                    + "restored_at INTEGER DEFAULT 0"
+                    + ")");
+
             // 默认规则初始化
             initDefaultRules();
 
@@ -812,15 +820,35 @@ public class CreditManager {
     );
 
     /**
-     * ★ 第64批：每日登录自动恢复积分
+     * ★ 第65批修复：每日登录自动恢复积分（持久化版）
      *   在 PlayerJoinEvent 中调用，每日仅触发一次
      *   amount 参数从规则配置中读取，默认0.1
+     *   持久化到 credit_restore_log 表，服务器重启后同一天不会重复恢复
      */
     public void tryDailyLoginRestore(Player p) {
         String name = p.getName();
         String today = java.time.LocalDate.now().toString();
-        String lastDate = lastRestoreDate.get(name);
-        if (lastDate != null && lastDate.equals(today)) return; // 今天已经恢复过了
+
+        // 先查内存缓存（快路径）
+        String memDate = lastRestoreDate.get(name);
+        if (memDate != null && memDate.equals(today)) return; // 今天已经恢复过了
+
+        // 查数据库（持久化，防重启重复）
+        try (PreparedStatement ps = db.getConnection().prepareStatement(
+                "SELECT last_restore_date FROM credit_restore_log WHERE player_name = ?")) {
+            ps.setString(1, name);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String dbDate = rs.getString("last_restore_date");
+                    if (dbDate != null && dbDate.equals(today)) {
+                        lastRestoreDate.put(name, today); // 回填缓存
+                        return; // 今天已经恢复过了
+                    }
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 查询恢复日志失败: " + e.getMessage());
+        }
 
         // 查找 login_restore 规则
         double amount = 0;
@@ -836,6 +864,19 @@ public class CreditManager {
         // 恢复积分
         addScore(name, amount, "每日登录自动恢复");
         p.sendMessage("§a§l[信誉积分] §f每日登录恢复信誉积分 §e+" + formatScore(amount));
+
+        // 持久化到数据库
+        try (PreparedStatement ps = db.getConnection().prepareStatement(
+                "INSERT OR REPLACE INTO credit_restore_log (player_name, last_restore_date, restored_at) VALUES (?, ?, ?)")) {
+            ps.setString(1, name);
+            ps.setString(2, today);
+            ps.setLong(3, System.currentTimeMillis());
+            ps.executeUpdate();
+        } catch (Exception e) {
+            plugin.getLogger().warning("[信誉积分] 写入恢复日志失败: " + e.getMessage());
+        }
+
+        // 回填内存缓存
         lastRestoreDate.put(name, today);
     }
 
