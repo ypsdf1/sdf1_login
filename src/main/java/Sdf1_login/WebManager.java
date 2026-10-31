@@ -10107,6 +10107,7 @@ public class WebManager {
      *   现在把推送数据的摘要算成签名，和上一轮比，没变就静默
      */
     private static volatile String lastCreditPushSignature = null;
+    private static volatile String lastCreditPullSignature = null;
     /**
 
      * ★ 2026-10-08 补单提速（第二轮）：两次补单触发的最小间隔。
@@ -12105,14 +12106,14 @@ public class WebManager {
                 DatabaseManager db = plugin.getDb();
                 if (db == null) return;
 
+                // ★ 第65批修复（#341d）：拉回记录签名对比，数据没变闭嘴
+                //   appliedCount > 0 表示本轮有写入/状态变更，但每轮都拉到同样的记录也会导致 appliedCount > 0
+                //   现在把拉回记录的签名算出来，和上一轮比较，没变就静默
+                StringBuilder pullSig = new StringBuilder();
                 int appliedCount = 0;
                 for (JsonElement el : records) {
                     JsonObject rec = el.getAsJsonObject();
                     String source = rec.has("source") ? rec.get("source").getAsString() : "";
-                    // ★ 第61批-问题3修复：source='game' 是 Java 端 push 过去的记录
-                    //   PHP 审批后需要同步审批状态回 Java，并补更新积分
-                    //   source='web'/'admin' 是 PHP 端产生的记录，需要插入 Java
-                    //   source='php' 是 Java 从 PHP 拉回的记录（避免回环）
                     if (!"web".equals(source) && !"admin".equals(source) && !"game".equals(source)) continue;
 
                     String target = rec.get("target_player").getAsString();
@@ -12121,6 +12122,9 @@ public class WebManager {
                     String phpStatus = rec.has("status") ? rec.get("status").getAsString() : "approved";
                     String reporter = rec.has("reporter_player") ? rec.get("reporter_player").getAsString() : "admin";
                     String content = rec.has("content") ? rec.get("content").getAsString() : "";
+
+                    // 签名：target=source=status:createdAt
+                    pullSig.append(target).append("=").append(source).append("=").append(phpStatus).append(":").append(createdAt).append(";");
 
                     // ★ 第59批-问题5：PHP 端撤回上报时 status='revoked'
                     //   需要同步更新 Java 端已有记录的状态，不能只跳过
@@ -12250,7 +12254,11 @@ public class WebManager {
                 }
 
                 if (appliedCount > 0) {
-                    plugin.getLogger().info("[信誉同步] 从PHP拉回" + appliedCount + "条管理员调整记录");
+                    String sig = pullSig.toString();
+                    if (!sig.equals(lastCreditPullSignature)) {
+                        plugin.getLogger().info("[信誉同步] 从PHP拉回" + appliedCount + "条管理员调整记录");
+                        lastCreditPullSignature = sig;
+                    }
                 }
             }
 
