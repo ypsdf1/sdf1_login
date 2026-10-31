@@ -791,9 +791,10 @@ public class CreditManager {
             if (belowThreshold || aboveThreshold) {
                 String direction = belowThreshold ? "低于阈值" : "高于阈值";
                 double threshold = belowThreshold ? minScore : maxScore;
+                String ruleName = (String) rule.get("rule_name");
                 p.sendMessage("§c§l[信誉积分] §f你的积分 " + formatScore(score) + " " + direction
                         + " " + formatScore(threshold) + "，"
-                        + (aboveThreshold ? "§a已触发加成: " : "已触发限制: ") + desc);
+                        + (aboveThreshold ? "§a已触发加成: §e" : "已触发限制: §e") + ruleName);
             }
         }
     }
