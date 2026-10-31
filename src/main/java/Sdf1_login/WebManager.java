@@ -2833,12 +2833,14 @@ public class WebManager {
                 }
                 // ★ 第65批：信誉积分高频双向同步（挂到 Timer A，3~5秒一轮）
                 //   PHP 改规则 → sync_requests → Java 下轮即拉取 → 10秒内 PHP 结果回到 Java
-                //   与 pushCreditToPhp/pullCreditFromPhp 组成双向交换，谁最后改谁说了算
+                //   ★ 第65批修复（#341b）：必须先拉后推！
+                //   之前先推后拉 → Java 先把 enabled=0 覆盖到 PHP → pull 读到的已经是 0 → 无脑全部关闭
+                //   现在先 pull 拿到 PHP 的最新状态 → 再 push 把 Java 更新后的状态推回 → 双向交换正确收敛
                 submitNormalDbTask("TimerA-信誉同步", () -> {
-                    try { pushCreditToPhp(); }
-                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 推送异常: " + e.getMessage()); }
                     try { pullCreditFromPhp(); }
                     catch (Exception e) { plugin.getLogger().warning("[信誉同步] 拉取异常: " + e.getMessage()); }
+                    try { pushCreditToPhp(); }
+                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 推送异常: " + e.getMessage()); }
                 });
                 // ★ CDK离线兑付：Timer A永不暂停，定期拉取CDK交易
                 // 解决全员下线时Timer B暂停导致CDK兑换不到账的bug
