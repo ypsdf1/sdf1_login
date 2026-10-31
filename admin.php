@@ -3632,11 +3632,11 @@ function creditEditRule(ruleId) {
                         </div>
                         <div style="display:flex;gap:8px;align-items:center">
                             <label style="width:80px;color:var(--dim)">倍数</label>
-                            <input id="editMult" type="number" step="0.1" value="${r.multiplier || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                            <input id="editMult" type="number" step="any" value="${r.multiplier || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
                         </div>
                         <div style="display:flex;gap:8px;align-items:center">
                             <label style="width:80px;color:var(--dim)">参数值</label>
-                            <input id="editAmount" type="number" step="0.1" value="${r.amount || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
+                            <input id="editAmount" type="number" step="any" value="${r.amount || 0}" style="flex:1;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg)">
                             <span style="font-size:11px;color:var(--dim)">如登录+0.5 / 违规-0.5</span>
                         </div>
                         <div style="display:flex;gap:8px;align-items:center">
