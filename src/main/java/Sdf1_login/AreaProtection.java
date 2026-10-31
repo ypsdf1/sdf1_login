@@ -65,6 +65,10 @@ public class AreaProtection implements Listener {
             = new HashMap<>();
     private final Map<String, AreaConfig> areas =
             new ConcurrentHashMap<>();
+    // ★ 第65批修复（#345）：landId 内存缓存，避免每次传送同步查 SQLite
+    //   landId 在领地创建时分配，之后不变 → 适合缓存
+    //   areas.put/remove 时同步清缓存
+    private final Map<String, Integer> landIdCache = new ConcurrentHashMap<>();
     private Connection dbConnection;
     // ★ 防止"无法识别效果"刷屏：同一名称只警告一次
     private static final Set<String> UNKNOWN_EFFECT_WARNINGS = ConcurrentHashMap.newKeySet();
@@ -1119,6 +1123,8 @@ public class AreaProtection implements Listener {
 
     public void loadAllAreas() {
         areas.clear();
+        // ★ 第65批修复（#345）：领地数据变更时清 landId 缓存
+        landIdCache.clear();
 
         // ★ 优先从数据库加载
         loadAreasFromDb();
@@ -5529,6 +5535,8 @@ public class AreaProtection implements Listener {
      */
     public void deleteLand(String name) {
         areas.remove(name);
+        // ★ 第65批修复（#345）：清 landId 缓存
+        landIdCache.remove(name);
         // 删除数据库记录
         try {
             if (dbConnection != null && !dbConnection.isClosed()) {
@@ -11276,6 +11284,9 @@ public class AreaProtection implements Listener {
 
     public int getLandIdFromDb(String name) {
         if (dbConnection == null) return -1;
+        // ★ 第65批修复（#345）：先查内存缓存，命中直接返回
+        Integer cached = landIdCache.get(name);
+        if (cached != null) return cached;
         try {
             PreparedStatement stmt = dbConnection.prepareStatement("SELECT id FROM area_lands WHERE name = ?");
             stmt.setString(1, name);
@@ -11283,6 +11294,8 @@ public class AreaProtection implements Listener {
             int id = rs.next() ? rs.getInt("id") : -1;
             rs.close();
             stmt.close();
+            // 缓存结果（-1 也缓存，避免频繁查不存在的领地）
+            landIdCache.put(name, id);
             return id;
         } catch (SQLException e) {
             return -1;
@@ -11488,6 +11501,10 @@ public class AreaProtection implements Listener {
                 ac.name = newName;
                 areas.put(newName, ac);
             }
+
+            // ★ 第65批修复（#345）：landId 缓存迁移（landId 不变，只是 key 换了）
+            Integer landId = landIdCache.remove(oldName);
+            if (landId != null) landIdCache.put(newName, landId);
 
             // 4d. 更新内存中的成员权限缓存等（如果有以旧名字为key的缓存）
             // areaPlayerWhitelist 也以 landName 为 key，需同步
