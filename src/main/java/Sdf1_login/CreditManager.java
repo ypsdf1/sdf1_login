@@ -1441,8 +1441,8 @@ public class CreditManager {
             for (Map<String, Object> rule : getEnabledRules()) {
                 double minScore = ((Number) rule.get("min_score")).doubleValue();
                 if (targetScore < minScore) {
-                    String desc = (String) rule.get("description");
-                    sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
+                    String ruleName = (String) rule.get("rule_name");
+                    sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + ruleName);
                 }
             }
             return true;
@@ -1571,8 +1571,8 @@ public class CreditManager {
                 for (Map<String, Object> rule : getEnabledRules()) {
                     double minScore = ((Number) rule.get("min_score")).doubleValue();
                     if (targetScore < minScore) {
-                        String desc = (String) rule.get("description");
-                        sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + desc);
+                        String ruleName = (String) rule.get("rule_name");
+                        sender.sendMessage("§c§l[信誉积分] §f" + targetName + " §7已触发限制: §c" + ruleName);
                     }
                 }
                 return true;
