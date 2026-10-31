@@ -2831,17 +2831,6 @@ public class WebManager {
                         catch (Exception e) { /* 静默 */ }
                     }, true);
                 }
-                // ★ 第65批：信誉积分高频双向同步（挂到 Timer A，3~5秒一轮）
-                //   PHP 改规则 → sync_requests → Java 下轮即拉取 → 10秒内 PHP 结果回到 Java
-                //   ★ 第65批修复（#341b）：必须先拉后推！
-                //   之前先推后拉 → Java 先把 enabled=0 覆盖到 PHP → pull 读到的已经是 0 → 无脑全部关闭
-                //   现在先 pull 拿到 PHP 的最新状态 → 再 push 把 Java 更新后的状态推回 → 双向交换正确收敛
-                submitNormalDbTask("TimerA-信誉同步", () -> {
-                    try { pullCreditFromPhp(); }
-                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 拉取异常: " + e.getMessage()); }
-                    try { pushCreditToPhp(); }
-                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 推送异常: " + e.getMessage()); }
-                });
                 // ★ CDK离线兑付：Timer A永不暂停，定期拉取CDK交易
                 // 解决全员下线时Timer B暂停导致CDK兑换不到账的bug
                 //
@@ -2993,6 +2982,16 @@ public class WebManager {
                     plugin.getLogger().warning(
                             "[SN] 同步异常: " + t.getMessage());
                 }
+                // ★ 第65批修复（#341e）：信誉积分双向同步（挂到 Timer C，10~20秒一轮）
+                //   之前挂在 TIMER_A（3~5秒）→ 单任务含2~3次HTTP → 单任务耗时>10秒 → 队列积压
+                //   移到 TIMER_C：10~20秒频率，满足"10秒内PHP结果回到Java"，且不会拖垮队列
+                //   先拉后推：pullCreditFromPhp → pushCreditToPhp → 双向交换正确收敛
+                submitNormalDbTask("TimerC-信誉同步", () -> {
+                    try { pullCreditFromPhp(); }
+                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 拉取异常: " + e.getMessage()); }
+                    try { pushCreditToPhp(); }
+                    catch (Exception e) { plugin.getLogger().warning("[信誉同步] 推送异常: " + e.getMessage()); }
+                });
                 // 全量批处理同步（仅在nextSyncTime到达时执行）
                 // ★ doActiveSyncBatch 内部有 9 处 6~14 秒的错峰 sleep（合计 54~126 秒），
                 //   原来同步跑在本定时器里，直接把 Timer C 单轮拉长到约 2 分钟，
@@ -12277,25 +12276,10 @@ public class WebManager {
                     plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
                 }
 
-                // ★ 第65批修复（#341）：规则双向交换
-                //   Java 拉取 PHP 规则后，立即把本地完整规则状态推回 PHP
-                //   → 形成双向交换：PHP 开了 → Java 收下；Java 开了 → PHP 收下
-                //   谁最后改谁说了算
-                try {
-                    CreditManager cm2 = plugin.getCreditManager();
-                    if (cm2 != null) {
-                        // 延迟 2 秒推送（等 syncCreditRulesFromPhp 完成写入）
-                        org.bukkit.Bukkit.getScheduler().runTaskLaterAsynchronously(plugin, () -> {
-                            try {
-                                pushCreditToPhp();
-                            } catch (Exception e) {
-                                plugin.getLogger().warning("[信誉同步] 规则双向交换推送失败: " + e.getMessage());
-                            }
-                        }, 40L); // 2 秒 = 40 ticks
-                    }
-                } catch (Exception e) {
-                    plugin.getLogger().warning("[信誉同步] 规则双向交换触发失败: " + e.getMessage());
-                }
+                // ★ 第65批修复（#341e）：移除延迟2秒的二次pushCreditToPhp
+                //   原因：TIMER_C 的 doActiveSyncBatch 已会做双向交换，
+                //   再加上这个延迟push → 每轮 3 次 HTTP → 队列积压 → 超时 → 丢弃
+                //   pull 后由 TIMER_C 主循环的 pushCreditToPhp 完成双向交换
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉同步] 拉回PHP异常: " + e.getMessage());
