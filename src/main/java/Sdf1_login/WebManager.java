@@ -10102,6 +10102,12 @@ public class WebManager {
     private long lastPollWebLoginExceptionLog = 0;
     private long lastPollerTriggerTime = 0; // 补单触发限流（多触发源共用）
     /**
+     * ★ 第65批修复（#341c）：信誉同步推送签名，数据没变闭嘴
+     *   pushCreditToPhp 每 3~5 秒跑一轮，每次成功都打日志太吵
+     *   现在把推送数据的摘要算成签名，和上一轮比，没变就静默
+     */
+    private static volatile String lastCreditPushSignature = null;
+    /**
 
      * ★ 2026-10-08 补单提速（第二轮）：两次补单触发的最小间隔。
 
@@ -12000,6 +12006,18 @@ public class WebManager {
             //   之前空 players+records 直接 return，导致规则不推
             if (playersObj.entrySet().isEmpty() && recordsArr.isEmpty() && rulesArr.isEmpty()) return;
 
+            // ★ 第65批修复（#341c）：签名对比，数据没变闭嘴
+            //   pushCreditToPhp 每 3~5 秒跑一轮，每次成功都打日志太吵
+            //   现在把推送数据的摘要算成签名，和上一轮比，没变就静默
+            String dataSignature = "p" + playersObj.size() + "r" + recordsArr.size() + "g" + rulesArr.size();
+            // 逐条规则拼签名（rule_name=enabled|min-max|type）
+            for (com.google.gson.JsonElement el : rulesArr) {
+                com.google.gson.JsonObject r = el.getAsJsonObject();
+                dataSignature += "|" + r.get("rule_name").getAsString() + "="
+                    + r.get("enabled").getAsInt() + ":" + r.get("min_score").getAsInt() + "-" + r.get("max_score").getAsInt();
+            }
+            String prevSignature = lastCreditPushSignature;
+
             // POST 到 PHP sync_push
             String url = webBaseUrl + "/api/credit.php?action=sync_push&secret="
                     + java.net.URLEncoder.encode(secretKey, "UTF-8");
@@ -12024,7 +12042,10 @@ public class WebManager {
                 try {
                     JsonObject root = JsonParser.parseString(result).getAsJsonObject();
                     if (root.has("success") && root.get("success").getAsBoolean()) {
-                        plugin.getLogger().info("[信誉同步] 推送PHP成功: " + playersObj.size() + "玩家, " + recordsArr.size() + "记录, " + rulesArr.size() + "规则");
+                        lastCreditPushSignature = dataSignature;
+                        if (!dataSignature.equals(prevSignature)) {
+                            plugin.getLogger().info("[信誉同步] 推送PHP: " + playersObj.size() + "玩家, " + recordsArr.size() + "记录, " + rulesArr.size() + "规则");
+                        }
                     } else {
                         plugin.getLogger().warning("[信誉同步] 推送PHP失败: " + (root.has("message") ? root.get("message").getAsString() : "未知"));
                     }
@@ -12240,7 +12261,9 @@ public class WebManager {
                     if (cm != null) {
                         com.google.gson.JsonArray rulesArr = data.getAsJsonArray("rules");
                         int syncedCount = cm.syncCreditRulesFromPhp(rulesArr);
-                        plugin.getLogger().info("[信誉同步] 拉取PHP: 规则 " + rulesArr.size() + " 条, 实际同步 " + syncedCount + " 条");
+                        if (syncedCount > 0) {
+                            plugin.getLogger().info("[信誉同步] 拉取PHP: 规则 " + rulesArr.size() + " 条, 实际同步 " + syncedCount + " 条");
+                        }
                     }
                 } catch (Exception e) {
                     plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());

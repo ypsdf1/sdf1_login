@@ -2258,46 +2258,34 @@ public class CreditManager {
                 double amount = rule.has("amount") ? rule.get("amount").getAsDouble() : 0;
                 String description = rule.has("description") ? rule.get("description").getAsString() : "";
 
-                // ★ 按 rule_name 匹配（UNIQUE 列），id 跨库不一致不能用作匹配键
-                // ★ 第65批修复（#341）：双向交换设计
-                //   Java 拉取 PHP 规则时：正常接受 PHP 的 enabled（PHP 开了 → Java 收下）
-                //   拉取后：Java 把本地完整规则状态推回 PHP（Java 开了 → PHP 收下）
-                //   → 形成双向交换，谁最后改谁说了算
-                // ★ 第65批诊断增强：更新前先读当前 enabled，变化时逐条张嘴
-                int currentEnabled = -1;
+                // ★ 第65批修复（#341b）：全字段变化检测
+                //   SQLite UPDATE 返回匹配行数，不是变化行数 → 之前每次都 synced++ 永远张嘴
+                //   现在先读当前全字段，逐字段对比，只有真变了才 UPDATE + 计数
+                boolean exists = false;
+                int curMin = 0, curMax = 0, curEnabled = 0;
+                String curRestriction = "", curDesc = "";
+                double curLimit = 0, curMult = 0, curAmount = 0;
                 try {
                     PreparedStatement checkPs = db.getConnection().prepareStatement(
-                        "SELECT enabled FROM credit_rules WHERE rule_name = ?");
+                        "SELECT min_score, max_score, enabled, restriction_type, description, limit_amount, multiplier, amount FROM credit_rules WHERE rule_name = ?");
                     checkPs.setString(1, ruleName);
                     ResultSet checkRs = checkPs.executeQuery();
-                    if (checkRs.next()) currentEnabled = checkRs.getInt("enabled");
+                    if (checkRs.next()) {
+                        exists = true;
+                        curMin = checkRs.getInt("min_score");
+                        curMax = checkRs.getInt("max_score");
+                        curEnabled = checkRs.getInt("enabled");
+                        curRestriction = checkRs.getString("restriction_type");
+                        curDesc = checkRs.getString("description");
+                        curLimit = checkRs.getDouble("limit_amount");
+                        curMult = checkRs.getDouble("multiplier");
+                        curAmount = checkRs.getDouble("amount");
+                    }
                     checkRs.close();
                     checkPs.close();
                 } catch (Exception ignored) {}
-                PreparedStatement ps = db.getConnection().prepareStatement(
-                        "UPDATE credit_rules SET min_score = ?, max_score = ?, "
-                        + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
-                        + "WHERE rule_name = ?");
-                ps.setInt(1, minScore);
-                ps.setInt(2, maxScore);
-                ps.setString(3, restrictionType);
-                ps.setInt(4, enabled);
-                ps.setString(5, description);
-                ps.setDouble(6, limitAmount);
-                ps.setDouble(7, multiplier);
-                ps.setDouble(8, amount);
-                ps.setString(9, ruleName);
-                int rows = ps.executeUpdate();
-                ps.close();
 
-                // ★ 第65批诊断：enabled 变化必须张嘴说出来，排查数据对不上就靠这个
-                if (currentEnabled >= 0 && currentEnabled != enabled) {
-                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
-                        + " enabled " + currentEnabled + "→" + enabled
-                        + " (min=" + minScore + " max=" + maxScore + ")");
-                }
-
-                if (rows == 0) {
+                if (!exists) {
                     // PHP 有的规则 Java 本地没有 → INSERT OR IGNORE（rule_name UNIQUE）
                     PreparedStatement ps2 = db.getConnection().prepareStatement(
                             "INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, "
@@ -2317,11 +2305,44 @@ public class CreditManager {
                     if (r2 > 0) {
                         inserted++;
                         synced++;
+                        plugin.getLogger().info("[信誉同步] 规则新增: " + ruleName + " enabled=" + enabled);
                     } else {
-                        failed++; // rule_name 已存在但 UPDATE 0 行（并发冲突），跳过
+                        failed++;
                     }
+                    continue;
+                }
+
+                // ★ 全字段对比：只有任一字段不同才 UPDATE
+                boolean changed = curMin != minScore || curMax != maxScore || curEnabled != enabled
+                    || !curRestriction.equals(restrictionType) || !curDesc.equals(description)
+                    || curLimit != limitAmount || curMult != multiplier || curAmount != amount;
+                if (!changed) continue;
+
+                PreparedStatement ps = db.getConnection().prepareStatement(
+                        "UPDATE credit_rules SET min_score = ?, max_score = ?, "
+                        + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
+                        + "WHERE rule_name = ?");
+                ps.setInt(1, minScore);
+                ps.setInt(2, maxScore);
+                ps.setString(3, restrictionType);
+                ps.setInt(4, enabled);
+                ps.setString(5, description);
+                ps.setDouble(6, limitAmount);
+                ps.setDouble(7, multiplier);
+                ps.setDouble(8, amount);
+                ps.setString(9, ruleName);
+                ps.executeUpdate();
+                ps.close();
+
+                synced++;
+                // ★ enabled 变化必须张嘴说出来，排查数据对不上就靠这个
+                if (curEnabled != enabled) {
+                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
+                        + " enabled " + curEnabled + "→" + enabled
+                        + " (min=" + minScore + " max=" + maxScore + ")");
                 } else {
-                    synced++;
+                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
+                        + " (min " + curMin + "→" + minScore + ", max " + curMax + "→" + maxScore + ")");
                 }
             }
             if (synced > 0) {
@@ -2332,8 +2353,6 @@ public class CreditManager {
                     double score = getScore(p.getName());
                     checkRestrictions(p.getName(), score);
                 }
-            } else if (failed > 0) {
-                plugin.getLogger().info("[信誉同步] PHP 规则同步无写入 (" + failed + " 条跳过)");
             }
         } catch (Exception e) {
             plugin.getLogger().warning("[信誉同步] 同步规则失败: " + e.getMessage());
