@@ -2282,6 +2282,20 @@ public class CreditManager {
      *                   restriction_type, enabled, limit_amount, multiplier, amount
      * @return 真正写入的规则数量
      */
+    /**
+     * ★ 第65批修复（#344）：PHP→Java 规则同步 — 谁最后改谁说了算
+     *
+     * 核心原则：
+     *   1. PHP 传了哪个字段，就更新哪个字段
+     *   2. PHP 没传的字段，保持 Java 本地原值不变
+     *   3. 这样 Java 拉了 PHP 的修改后，不会把没传的参数覆盖成0
+     *      → push 回 PHP 时不会把 PHP 刚改的值拒掉
+     *
+     * 之前 bug：PHP 没传的字段被当成0/空串，UPDATE 把所有字段覆盖，
+     *          Java 本地的参数被清零，push 回去把 PHP 的修改拒掉。
+     *
+     * @return 实际同步的规则数（新增+更新）
+     */
     public int syncCreditRulesFromPhp(com.google.gson.JsonArray rulesJson) {
         if (rulesJson == null || rulesJson.isEmpty()) return 0;
         int synced = 0, inserted = 0, failed = 0;
@@ -2291,25 +2305,36 @@ public class CreditManager {
                 String ruleName = rule.has("rule_name") ? rule.get("rule_name").getAsString() : "";
                 if (ruleName.isEmpty()) continue;
 
-                int minScore = rule.has("min_score") ? rule.get("min_score").getAsInt() : 0;
-                int maxScore = rule.has("max_score") ? rule.get("max_score").getAsInt() : 0;
-                int enabled = rule.has("enabled") ? rule.get("enabled").getAsInt() : 0;
-                String restrictionType = rule.has("restriction_type") ? rule.get("restriction_type").getAsString() : "";
-                double limitAmount = rule.has("limit_amount") ? rule.get("limit_amount").getAsDouble() : 0;
-                double multiplier = rule.has("multiplier") ? rule.get("multiplier").getAsDouble() : 0;
-                double amount = rule.has("amount") ? rule.get("amount").getAsDouble() : 0;
-                String description = rule.has("description") ? rule.get("description").getAsString() : "";
+                // ★ 只记录 PHP 实际传了的字段，没传的保持 Java 原值
+                boolean hasMinScore = rule.has("min_score");
+                boolean hasMaxScore = rule.has("max_score");
+                boolean hasEnabled = rule.has("enabled");
+                boolean hasRestrictionType = rule.has("restriction_type");
+                boolean hasRestrictionDuration = rule.has("restriction_duration");
+                boolean hasDescription = rule.has("description");
+                boolean hasLimitAmount = rule.has("limit_amount");
+                boolean hasMultiplier = rule.has("multiplier");
+                boolean hasAmount = rule.has("amount");
 
-                // ★ 第65批修复（#341b）：全字段变化检测
-                //   SQLite UPDATE 返回匹配行数，不是变化行数 → 之前每次都 synced++ 永远张嘴
-                //   现在先读当前全字段，逐字段对比，只有真变了才 UPDATE + 计数
+                // PHP 传的值（没传的用占位值，UPDATE 时不会用到）
+                int minScore = hasMinScore ? rule.get("min_score").getAsInt() : 0;
+                int maxScore = hasMaxScore ? rule.get("max_score").getAsInt() : 0;
+                int enabled = hasEnabled ? rule.get("enabled").getAsInt() : 0;
+                int restrictionDuration = hasRestrictionDuration ? rule.get("restriction_duration").getAsInt() : 0;
+                String restrictionType = hasRestrictionType ? rule.get("restriction_type").getAsString() : "";
+                String description = hasDescription ? rule.get("description").getAsString() : "";
+                double limitAmount = hasLimitAmount ? rule.get("limit_amount").getAsDouble() : 0;
+                double multiplier = hasMultiplier ? rule.get("multiplier").getAsDouble() : 0;
+                double amount = hasAmount ? rule.get("amount").getAsDouble() : 0;
+
+                // 读取 Java 本地当前全字段
                 boolean exists = false;
-                int curMin = 0, curMax = 0, curEnabled = 0;
+                int curMin = 0, curMax = 0, curEnabled = 0, curDuration = 0;
                 String curRestriction = "", curDesc = "";
                 double curLimit = 0, curMult = 0, curAmount = 0;
                 try {
                     PreparedStatement checkPs = db.getConnection().prepareStatement(
-                        "SELECT min_score, max_score, enabled, restriction_type, description, limit_amount, multiplier, amount FROM credit_rules WHERE rule_name = ?");
+                        "SELECT min_score, max_score, enabled, restriction_type, restriction_duration, description, limit_amount, multiplier, amount FROM credit_rules WHERE rule_name = ?");
                     checkPs.setString(1, ruleName);
                     ResultSet checkRs = checkPs.executeQuery();
                     if (checkRs.next()) {
@@ -2318,6 +2343,7 @@ public class CreditManager {
                         curMax = checkRs.getInt("max_score");
                         curEnabled = checkRs.getInt("enabled");
                         curRestriction = checkRs.getString("restriction_type");
+                        curDuration = checkRs.getInt("restriction_duration");
                         curDesc = checkRs.getString("description");
                         curLimit = checkRs.getDouble("limit_amount");
                         curMult = checkRs.getDouble("multiplier");
@@ -2329,19 +2355,21 @@ public class CreditManager {
 
                 if (!exists) {
                     // PHP 有的规则 Java 本地没有 → INSERT OR IGNORE（rule_name UNIQUE）
+                    // 没传的字段用 Java 默认值，不强行设0
                     PreparedStatement ps2 = db.getConnection().prepareStatement(
                             "INSERT OR IGNORE INTO credit_rules (rule_name, min_score, max_score, "
-                            + "restriction_type, enabled, description, limit_amount, multiplier, amount) "
-                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                            + "restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount) "
+                            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                     ps2.setString(1, ruleName);
                     ps2.setInt(2, minScore);
                     ps2.setInt(3, maxScore);
                     ps2.setString(4, restrictionType);
-                    ps2.setInt(5, enabled);
-                    ps2.setString(6, description);
-                    ps2.setDouble(7, limitAmount);
-                    ps2.setDouble(8, multiplier);
-                    ps2.setDouble(9, amount);
+                    ps2.setInt(5, restrictionDuration);
+                    ps2.setInt(6, enabled);
+                    ps2.setString(7, description);
+                    ps2.setDouble(8, limitAmount);
+                    ps2.setDouble(9, multiplier);
+                    ps2.setDouble(10, amount);
                     int r2 = ps2.executeUpdate();
                     ps2.close();
                     if (r2 > 0) {
@@ -2354,43 +2382,90 @@ public class CreditManager {
                     continue;
                 }
 
-                // ★ 全字段对比：只有任一字段不同才 UPDATE
-                boolean changed = curMin != minScore || curMax != maxScore || curEnabled != enabled
-                    || !curRestriction.equals(restrictionType) || !curDesc.equals(description)
-                    || curLimit != limitAmount || curMult != multiplier || curAmount != amount;
-                if (!changed) continue;
+                // ★ 谁最后改谁说了算：只更新 PHP 传了的字段
+                //   PHP 没传的字段保持 Java 本地原值，不覆盖
+                //   用动态 SET 构建，只写 PHP 实际传了的字段
+                StringBuilder setClause = new StringBuilder();
+                List<Object> setParams = new ArrayList<>();
+                boolean anyChanged = false;
+
+                // 逐字段对比：PHP 传了的字段才参与对比和 UPDATE
+                if (hasMinScore && curMin != minScore) {
+                    setClause.append("min_score = ?, "); setParams.add(minScore);
+                    anyChanged = true;
+                }
+                if (hasMaxScore && curMax != maxScore) {
+                    setClause.append("max_score = ?, "); setParams.add(maxScore);
+                    anyChanged = true;
+                }
+                if (hasEnabled && curEnabled != enabled) {
+                    setClause.append("enabled = ?, "); setParams.add(enabled);
+                    anyChanged = true;
+                }
+                if (hasRestrictionDuration && curDuration != restrictionDuration) {
+                    setClause.append("restriction_duration = ?, "); setParams.add(restrictionDuration);
+                    anyChanged = true;
+                }
+                if (hasRestrictionType && !curRestriction.equals(restrictionType)) {
+                    setClause.append("restriction_type = ?, "); setParams.add(restrictionType);
+                    anyChanged = true;
+                }
+                if (hasDescription && !curDesc.equals(description)) {
+                    setClause.append("description = ?, "); setParams.add(description);
+                    anyChanged = true;
+                }
+                if (hasLimitAmount && curLimit != limitAmount) {
+                    setClause.append("limit_amount = ?, "); setParams.add(limitAmount);
+                    anyChanged = true;
+                }
+                if (hasMultiplier && curMult != multiplier) {
+                    setClause.append("multiplier = ?, "); setParams.add(multiplier);
+                    anyChanged = true;
+                }
+                if (hasAmount && curAmount != amount) {
+                    setClause.append("amount = ?, "); setParams.add(amount);
+                    anyChanged = true;
+                }
+
+                if (!anyChanged) continue;
+
+                setClause.setLength(setClause.length() - 2); // 去掉末尾 ", "
 
                 PreparedStatement ps = db.getConnection().prepareStatement(
-                        "UPDATE credit_rules SET min_score = ?, max_score = ?, "
-                        + "restriction_type = ?, enabled = ?, description = ?, limit_amount = ?, multiplier = ?, amount = ? "
-                        + "WHERE rule_name = ?");
-                ps.setInt(1, minScore);
-                ps.setInt(2, maxScore);
-                ps.setString(3, restrictionType);
-                ps.setInt(4, enabled);
-                ps.setString(5, description);
-                ps.setDouble(6, limitAmount);
-                ps.setDouble(7, multiplier);
-                ps.setDouble(8, amount);
-                ps.setString(9, ruleName);
+                        "UPDATE credit_rules SET " + setClause + " WHERE rule_name = ?");
+                for (int i = 0; i < setParams.size(); i++) {
+                    ps.setObject(i + 1, setParams.get(i));
+                }
+                ps.setString(setParams.size() + 1, ruleName);
                 ps.executeUpdate();
                 ps.close();
 
                 synced++;
-                // ★ enabled 变化必须张嘴说出来，排查数据对不上就靠这个
-                if (curEnabled != enabled) {
-                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
-                        + " enabled " + curEnabled + "→" + enabled
-                        + " (min=" + minScore + " max=" + maxScore + ")");
-                } else {
-                    plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName
-                        + " (min " + curMin + "→" + minScore + ", max " + curMax + "→" + maxScore + ")");
+                // ★ 张嘴说变更详情：哪些字段变了
+                StringBuilder changes = new StringBuilder();
+                if (hasEnabled && curEnabled != enabled) {
+                    changes.append("enabled ").append(curEnabled).append("→").append(enabled);
                 }
+                if (hasMinScore && curMin != minScore) {
+                    changes.append(" ").append(changes.length() > 0 ? "," : "").append("min ").append(curMin).append("→").append(minScore);
+                }
+                if (hasMaxScore && curMax != maxScore) {
+                    changes.append(" ").append(changes.length() > 0 ? "," : "").append("max ").append(curMax).append("→").append(maxScore);
+                }
+                if (hasAmount && curAmount != amount) {
+                    changes.append(" ").append(changes.length() > 0 ? "," : "").append("amount ").append(curAmount).append("→").append(amount);
+                }
+                if (hasLimitAmount && curLimit != limitAmount) {
+                    changes.append(" ").append(changes.length() > 0 ? "," : "").append("limit ").append(curLimit).append("→").append(limitAmount);
+                }
+                if (hasMultiplier && curMult != multiplier) {
+                    changes.append(" ").append(changes.length() > 0 ? "," : "").append("mult ").append(curMult).append("→").append(multiplier);
+                }
+                plugin.getLogger().info("[信誉同步] 规则变更: " + ruleName + " " + changes);
             }
             if (synced > 0) {
                 plugin.getLogger().info("[信誉同步] 从PHP同步了 " + synced + " 条规则 (新增" + inserted + " 更新" + (synced - inserted) + ")");
-                // ★ 第65批修复（#343）：规则同步后对在线玩家重新执行限制检查
-                //   之前只更新了本地表，不会触发 checkRestrictions → 在线玩家不执行新规则
+                // ★ 规则同步后对在线玩家重新执行限制检查
                 for (org.bukkit.entity.Player p : org.bukkit.Bukkit.getOnlinePlayers()) {
                     double score = getScore(p.getName());
                     checkRestrictions(p.getName(), score);
