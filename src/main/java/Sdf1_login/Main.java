@@ -4006,6 +4006,112 @@ public class Main extends JavaPlugin
             questTracker.onBlockMined(p.getName(),
                     e.getBlock().getType().name());
 
+        // ★ 第65批：连锁采集 — 按住Shift+斧头/稿子触发范围采集
+        tryChainBreak(p, e.getBlock());
+
+    }
+
+    /**
+     * ★ 第65批：连锁采集功能
+     *   按住Shift+斧头/稿子采矿/砍树时，自动将9×9范围内的同种类方块变成掉落物
+     *   仅按住Shift时生效，未按住Shift交还原版逻辑
+     */
+    private void tryChainBreak(Player p, org.bukkit.block.Block centerBlock) {
+        // 检查是否按住Shift
+        if (!p.isSneaking()) return;
+
+        // 检查主手工具
+        ItemStack hand = p.getInventory().getItemInMainHand();
+        if (hand == null || hand.getType() == org.bukkit.Material.AIR) return;
+
+        String toolName = hand.getType().name();
+        boolean isPickaxe = toolName.endsWith("_PICKAXE");
+        boolean isAxe = toolName.endsWith("_AXE");
+        if (!isPickaxe && !isAxe) return;
+
+        // 检查当前方块是否为矿物或树木
+        Material targetType = centerBlock.getType();
+        boolean isOre = isOreBlock(targetType);
+        boolean isLog = isLogBlock(targetType);
+        if (!isOre && !isLog) return;
+
+        // 工具匹配检查：矿物需要稿子，树木需要斧头
+        if (isOre && !isPickaxe) return;
+        if (isLog && !isAxe) return;
+
+        // 连锁采集：以被破坏方块为中心，9×9范围（前后各4格）
+        org.bukkit.Location center = centerBlock.getLocation();
+        int range = 4; // 9×9 = 中心±4
+
+        List<org.bukkit.block.Block> sameTypeBlocks = new ArrayList<>();
+        org.bukkit.World world = center.getWorld();
+        int cx = center.getBlockX();
+        int cy = center.getBlockY();
+        int cz = center.getBlockZ();
+
+        for (int x = -range; x <= range; x++) {
+            for (int z = -range; z <= range; z++) {
+                // 跳过中心方块（已由原版逻辑处理）
+                if (x == 0 && z == 0) continue;
+
+                org.bukkit.block.Block block =
+                    world.getBlockAt(cx + x, cy, cz + z);
+
+                // 只采集同一层、同类型、固体方块
+                if (block.getType() == targetType && block.getType().isSolid()) {
+                    sameTypeBlocks.add(block);
+                }
+            }
+        }
+
+        if (sameTypeBlocks.isEmpty()) return;
+
+        // 延迟1tick执行，避免主线程卡顿
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            int broken = 0;
+            for (org.bukkit.block.Block block : sameTypeBlocks) {
+                // 二次检查：方块仍然存在且类型未变
+                if (block.getType() != targetType) continue;
+
+                // 生成掉落物
+                org.bukkit.Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
+                org.bukkit.entity.Item item = (org.bukkit.entity.Item)
+                    block.getWorld().dropItemNaturally(dropLoc, new org.bukkit.inventory.ItemStack(targetType));
+                item.setPickupDelay(0);
+
+                // 设置方块为空气
+                block.setType(org.bukkit.Material.AIR);
+
+                broken++;
+            }
+
+            if (broken > 0) {
+                p.sendMessage("§a§l[连锁采集] §f采集了 §e" + broken + " §f个" + (isLog ? "方块" : "矿物"));
+            }
+        }, 1L);
+    }
+
+    /** 检查是否为矿物方块 */
+    private boolean isOreBlock(org.bukkit.Material type) {
+        String name = type.name();
+        return name.endsWith("_ORE")
+            || name.contains("_ORE")
+            || name.equals("COAL_BLOCK")
+            || name.equals("IRON_BLOCK")
+            || name.equals("GOLD_BLOCK")
+            || name.equals("DIAMOND_BLOCK")
+            || name.equals("EMERALD_BLOCK")
+            || name.equals("LAPIS_BLOCK")
+            || name.equals("QUARTZ_BLOCK")
+            || name.equals("ANCIENT_DEBRIS");
+    }
+
+    /** 检查是否为树木方块 */
+    private boolean isLogBlock(org.bukkit.Material type) {
+        String name = type.name();
+        return name.endsWith("_LOG")
+            || name.endsWith("_STEM")
+            || name.endsWith("_WOOD");
     }
 
     @EventHandler
