@@ -1440,24 +1440,25 @@ public class CreditManager {
             String arg1Lower = args[1].toLowerCase();
             if (arg1Lower.equals("give") || arg1Lower.equals("remove")) {
                 // /credits <玩家名> give/remove <数值> [备注] — 给他人加减分
-                if (!(sender instanceof Player)) {
-                    sender.sendMessage("§c仅玩家可用");
+                // 控台和玩家都可执行，控台默认有权限
+                boolean isAdmin;
+                if (sender instanceof Player) {
+                    isAdmin = plugin.isAdmin((Player) sender);
+                } else {
+                    isAdmin = true; // 控台默认有权限
+                }
+                if (!isAdmin) {
+                    sender.sendMessage("§c§l[信誉积分] §c权限不足");
                     return true;
                 }
-                Player p = (Player) sender;
                 boolean isGive = arg1Lower.equals("give");
-                // 给他人加减分需要管理员权限
-                if (!plugin.isAdmin(p)) {
-                    p.sendMessage("§c§l[信誉积分] §c权限不足");
-                    return true;
-                }
                 String targetName = args[0];
                 String amountStr = args[2];
                 double amount;
                 try {
                     amount = Double.parseDouble(amountStr);
                 } catch (NumberFormatException e) {
-                    p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                    sender.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
                     return true;
                 }
                 if (!isGive) amount = -Math.abs(amount); // remove → 负数
@@ -1466,7 +1467,7 @@ public class CreditManager {
                 // ★ 第58批-问题3修复：负分用户也能继续加减分——直接 addScore，不检查 score 是否 < 0
                 double newScore = getScore(targetName) + amount;
                 addScore(targetName, amount, reason);
-                p.sendMessage("§d§l[信誉积分] §f对 " + targetName + " " + (isGive ? "加分" : "扣分") + "成功: §e"
+                sender.sendMessage("§d§l[信誉积分] §f对 " + targetName + " " + (isGive ? "加分" : "扣分") + "成功: §e"
                         + (amount > 0 ? "+" : "") + formatScore(amount)
                         + " §7目标当前积分: §e" + formatScore(newScore));
                 return true;
@@ -1491,38 +1492,43 @@ public class CreditManager {
 
         // ★ 第58批-问题4：/credits give/remove <数值> [备注] — 给自己加减分
         if (sub.equals("give") || sub.equals("remove")) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage("§c仅玩家可用");
-                return true;
-            }
-            Player p = (Player) sender;
             boolean isGive = sub.equals("give");
-            if (!isGive && !plugin.isAdmin(p)) {
-                p.sendMessage("§c§l[信誉积分] §c权限不足");
+            if (sender instanceof Player) {
+                Player p = (Player) sender;
+                // 非管理员 remove → 不提示权限不足，当作查询自己积分
+                if (!isGive && !plugin.isAdmin(p)) {
+                    double s = getScore(p.getName());
+                    p.sendMessage("§d§l[信誉积分] §f" + p.getName() + " §7的当前积分: §e" + formatScore(s)
+                            + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                    return true;
+                }
+                if (args.length < 2) {
+                    p.sendMessage("§c用法: /credits " + (isGive ? "give" : "remove") + " <数值> [备注]");
+                    p.sendMessage("§7示例: /credits give 5 帮助新人 / credits remove 0.01 违规");
+                    return true;
+                }
+                String amountStr = args[1];
+                double amount;
+                try {
+                    amount = Double.parseDouble(amountStr);
+                } catch (NumberFormatException e) {
+                    p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                    return true;
+                }
+                if (!isGive) amount = -Math.abs(amount); // remove → 负数
+                else amount = Math.abs(amount); // give → 正数
+                String reason = args.length >= 3 ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
+                double newScore = getScore(p.getName()) + amount;
+                addScore(p.getName(), amount, reason);
+                p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
+                        + (amount > 0 ? "+" : "") + formatScore(amount)
+                        + " §7当前积分: §e" + formatScore(newScore));
+                return true;
+            } else {
+                // 控台没有"自己"，提示用法（不提示权限不足）
+                sender.sendMessage("§7用法: /credits <玩家名> give/remove <数值> [备注]");
                 return true;
             }
-            if (args.length < 2) {
-                p.sendMessage("§c用法: /credits " + (isGive ? "give" : "remove") + " <数值> [备注]");
-                p.sendMessage("§7示例: /credits give 5 帮助新人 / credits remove 0.01 违规");
-                return true;
-            }
-            String amountStr = args[1];
-            double amount;
-            try {
-                amount = Double.parseDouble(amountStr);
-            } catch (NumberFormatException e) {
-                p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
-                return true;
-            }
-            if (!isGive) amount = -Math.abs(amount); // remove → 负数
-            else amount = Math.abs(amount); // give → 正数
-            String reason = args.length >= 3 ? String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
-            double newScore = getScore(p.getName()) + amount;
-            addScore(p.getName(), amount, reason);
-            p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
-                    + (amount > 0 ? "+" : "") + formatScore(amount)
-                    + " §7当前积分: §e" + formatScore(newScore));
-            return true;
         }
 
         switch (sub) {
@@ -1539,38 +1545,43 @@ public class CreditManager {
 
                 // ★ /credits user give/remove <数值> [备注] — 给自己加减分
                 if (arg1.equals("give") || arg1.equals("remove")) {
-                    if (!(sender instanceof Player)) {
-                        sender.sendMessage("§c仅玩家可用");
-                        return true;
-                    }
-                    Player p = (Player) sender;
                     boolean isGive = arg1.equals("give");
-                    if (!isGive && !plugin.isAdmin(p)) {
-                        p.sendMessage("§c§l[信誉积分] §c权限不足");
+                    if (sender instanceof Player) {
+                        Player p = (Player) sender;
+                        // 非管理员 remove → 不提示权限不足，当作查询自己积分
+                        if (!isGive && !plugin.isAdmin(p)) {
+                            double s = getScore(p.getName());
+                            p.sendMessage("§d§l[信誉积分] §f" + p.getName() + " §7的当前积分: §e" + formatScore(s)
+                                    + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
+                            return true;
+                        }
+                        if (args.length < 3) {
+                            p.sendMessage("§c用法: /credits user " + (isGive ? "give" : "remove") + " <数值> [备注]");
+                            p.sendMessage("§7示例: /credits user give 5 帮助新人");
+                            return true;
+                        }
+                        String amountStr = args[2];
+                        double amount;
+                        try {
+                            amount = Double.parseDouble(amountStr);
+                        } catch (NumberFormatException e) {
+                            p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
+                            return true;
+                        }
+                        if (!isGive) amount = -Math.abs(amount);
+                        else amount = Math.abs(amount);
+                        String reason = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
+                        double newScore = getScore(p.getName()) + amount;
+                        addScore(p.getName(), amount, reason);
+                        p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
+                                + (amount > 0 ? "+" : "") + formatScore(amount)
+                                + " §7当前积分: §e" + formatScore(newScore));
+                        return true;
+                    } else {
+                        // 控台没有"自己"，提示用法（不提示权限不足）
+                        sender.sendMessage("§7用法: /credits user <玩家名> [give/remove <数值> [备注]]");
                         return true;
                     }
-                    if (args.length < 3) {
-                        p.sendMessage("§c用法: /credits user " + (isGive ? "give" : "remove") + " <数值> [备注]");
-                        p.sendMessage("§7示例: /credits user give 5 帮助新人");
-                        return true;
-                    }
-                    String amountStr = args[2];
-                    double amount;
-                    try {
-                        amount = Double.parseDouble(amountStr);
-                    } catch (NumberFormatException e) {
-                        p.sendMessage("§c§l[信誉积分] §c数值必须是数字: " + amountStr);
-                        return true;
-                    }
-                    if (!isGive) amount = -Math.abs(amount);
-                    else amount = Math.abs(amount);
-                    String reason = args.length >= 4 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)) : (isGive ? "快捷加分" : "快捷扣分");
-                    double newScore = getScore(p.getName()) + amount;
-                    addScore(p.getName(), amount, reason);
-                    p.sendMessage("§d§l[信誉积分] §f" + (isGive ? "加分" : "扣分") + "成功: §e"
-                            + (amount > 0 ? "+" : "") + formatScore(amount)
-                            + " §7当前积分: §e" + formatScore(newScore));
-                    return true;
                 }
 
                 // /credits user <玩家名> [give/remove <数值> [备注>] — 查积分或快捷加减分
@@ -1579,8 +1590,17 @@ public class CreditManager {
                 if (args.length >= 4) {
                     String action = args[2].toLowerCase();
                     if (action.equals("give") || action.equals("remove")) {
-                        if (!(sender instanceof Player && plugin.isAdmin(sender))) {
-                            sender.sendMessage("§c§l[信誉积分] §c权限不足");
+                        boolean isAdmin;
+                        if (sender instanceof Player) {
+                            isAdmin = plugin.isAdmin((Player) sender);
+                        } else {
+                            isAdmin = true; // 控台默认有权限
+                        }
+                        // 无权限 → 不提示权限不足，当作普通查询返回结果（最小化信息透露）
+                        if (!isAdmin) {
+                            double s = getScore(targetName);
+                            sender.sendMessage("§d§l[信誉积分] §f" + targetName + " §7的当前积分: §e" + formatScore(s)
+                                    + " §7(初始: " + DEFAULT_INIT_SCORE + ")");
                             return true;
                         }
                         boolean isGive = action.equals("give");
