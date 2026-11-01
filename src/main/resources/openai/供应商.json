@@ -40,7 +40,8 @@
       "TokenHub(广州)": "https://tokenhub.tencentmaas.com",
       "TokenHub(新加坡)": "https://tokenhub-intl.tencentmaas.com"
     },
-    "硅基流动": "https://api.siliconflow.cn/v1"
+    "硅基流动": "https://api.siliconflow.cn/v1",
+    "书生端砚": "https://discovery-api.intern-ai.org.cn/v1"
   },
   "非国产": {
     "OpenAI": "https://api.openai.com/v1",
