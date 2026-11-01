@@ -4039,7 +4039,7 @@ public class Main extends JavaPlugin
         if (isOre && !isPickaxe) return;
         if (isLog && !isAxe) return;
 
-        // 连锁采集：树木优先垂直，矿物水平辐射
+        // 连锁采集：树木垂直上下搜索，矿物水平9×9搜索
         org.bukkit.Location center = centerBlock.getLocation();
         int range = 4; // 9×9 = 中心±4
 
@@ -4050,34 +4050,29 @@ public class Main extends JavaPlugin
         int cz = center.getBlockZ();
 
         if (isLog) {
-            // 树木：先垂直扫描树干，再从树顶水平辐射
-            // 1. 向上找同类型树干，直到找不到
-            List<org.bukkit.block.Block> trunkBlocks = new ArrayList<>();
-            for (int y = cy; y <= 255; y++) {
+            // 树木：以被破坏方块为中心，垂直上下搜索整棵树干
+            // 树干天然上下连通，水平方向不需要辐射
+            // 向上搜索
+            for (int y = cy + 1; y <= 255; y++) {
                 org.bukkit.block.Block block = world.getBlockAt(cx, y, cz);
                 if (block.getType() == targetType && block.getType().isSolid()) {
-                    trunkBlocks.add(block);
+                    sameTypeBlocks.add(block);
                 } else {
                     break; // 树干结束
                 }
             }
-            // 2. 从每个树干位置水平 9×9 辐射
-            for (org.bukkit.block.Block trunk : trunkBlocks) {
-                int tx = trunk.getX();
-                int ty = trunk.getY();
-                int tz = trunk.getZ();
-                for (int x = -range; x <= range; x++) {
-                    for (int z = -range; z <= range; z++) {
-                        if (x == 0 && z == 0) continue; // 跳过树干本身（已收集）
-                        org.bukkit.block.Block block = world.getBlockAt(tx + x, ty, tz + z);
-                        if (block.getType() == targetType && block.getType().isSolid()) {
-                            sameTypeBlocks.add(block);
-                        }
-                    }
+            // 向下搜索
+            for (int y = cy - 1; y >= 0; y--) {
+                org.bukkit.block.Block block = world.getBlockAt(cx, y, cz);
+                if (block.getType() == targetType && block.getType().isSolid()) {
+                    sameTypeBlocks.add(block);
+                } else {
+                    break; // 树干结束
                 }
             }
         } else {
-            // 矿物：直接水平 9×9 辐射
+            // 矿物：以被破坏方块为中心，水平9×9搜索
+            // 不管是否连在一起，卡墙里的也采到
             for (int x = -range; x <= range; x++) {
                 for (int z = -range; z <= range; z++) {
                     if (x == 0 && z == 0) continue; // 跳过中心方块
