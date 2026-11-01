@@ -4039,7 +4039,7 @@ public class Main extends JavaPlugin
         if (isOre && !isPickaxe) return;
         if (isLog && !isAxe) return;
 
-        // 连锁采集：以被破坏方块为中心，9×9范围（前后各4格）
+        // 连锁采集：树木优先垂直，矿物水平辐射
         org.bukkit.Location center = centerBlock.getLocation();
         int range = 4; // 9×9 = 中心±4
 
@@ -4049,17 +4049,42 @@ public class Main extends JavaPlugin
         int cy = center.getBlockY();
         int cz = center.getBlockZ();
 
-        for (int x = -range; x <= range; x++) {
-            for (int z = -range; z <= range; z++) {
-                // 跳过中心方块（已由原版逻辑处理）
-                if (x == 0 && z == 0) continue;
-
-                org.bukkit.block.Block block =
-                    world.getBlockAt(cx + x, cy, cz + z);
-
-                // 只采集同一层、同类型、固体方块
+        if (isLog) {
+            // 树木：先垂直扫描树干，再从树顶水平辐射
+            // 1. 向上找同类型树干，直到找不到
+            List<org.bukkit.block.Block> trunkBlocks = new ArrayList<>();
+            for (int y = cy; y <= 255; y++) {
+                org.bukkit.block.Block block = world.getBlockAt(cx, y, cz);
                 if (block.getType() == targetType && block.getType().isSolid()) {
-                    sameTypeBlocks.add(block);
+                    trunkBlocks.add(block);
+                } else {
+                    break; // 树干结束
+                }
+            }
+            // 2. 从每个树干位置水平 9×9 辐射
+            for (org.bukkit.block.Block trunk : trunkBlocks) {
+                int tx = trunk.getX();
+                int ty = trunk.getY();
+                int tz = trunk.getZ();
+                for (int x = -range; x <= range; x++) {
+                    for (int z = -range; z <= range; z++) {
+                        if (x == 0 && z == 0) continue; // 跳过树干本身（已收集）
+                        org.bukkit.block.Block block = world.getBlockAt(tx + x, ty, tz + z);
+                        if (block.getType() == targetType && block.getType().isSolid()) {
+                            sameTypeBlocks.add(block);
+                        }
+                    }
+                }
+            }
+        } else {
+            // 矿物：直接水平 9×9 辐射
+            for (int x = -range; x <= range; x++) {
+                for (int z = -range; z <= range; z++) {
+                    if (x == 0 && z == 0) continue; // 跳过中心方块
+                    org.bukkit.block.Block block = world.getBlockAt(cx + x, cy, cz + z);
+                    if (block.getType() == targetType && block.getType().isSolid()) {
+                        sameTypeBlocks.add(block);
+                    }
                 }
             }
         }
@@ -4073,10 +4098,11 @@ public class Main extends JavaPlugin
                 // 二次检查：方块仍然存在且类型未变
                 if (block.getType() != targetType) continue;
 
-                // 生成掉落物
+                // 生成掉落物（矿物掉落对应矿石物品，树木掉落原木）
+                Material dropType = getDropMaterial(targetType, isOre);
                 org.bukkit.Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
                 org.bukkit.entity.Item item = (org.bukkit.entity.Item)
-                    block.getWorld().dropItemNaturally(dropLoc, new org.bukkit.inventory.ItemStack(targetType));
+                    block.getWorld().dropItemNaturally(dropLoc, new org.bukkit.inventory.ItemStack(dropType));
                 item.setPickupDelay(0);
 
                 // 设置方块为空气
@@ -4089,6 +4115,36 @@ public class Main extends JavaPlugin
                 p.sendMessage("§a§l[连锁采集] §f采集了 §e" + broken + " §f个" + (isLog ? "方块" : "矿物"));
             }
         }, 1L);
+    }
+
+    /** 获取方块的掉落物类型（矿物掉落矿石物品，原木掉落原木） */
+    private Material getDropMaterial(Material blockType, boolean isOre) {
+        if (isOre) {
+            // 矿物→矿石物品映射（用字符串查找，避免Paper 26.x enum缺失）
+            String name = blockType.name();
+            if (name.endsWith("_RAW_ORE")) return blockType; // 已经是矿石物品
+            // 深板岩矿石先去掉 DEEPSLATE_ 前缀匹配
+            String stripped = name.startsWith("DEEPSLATE_") ? name.substring(10) : name;
+            // 映射到矿石物品名
+            String dropName = null;
+            if (stripped.equals("COPPER_ORE")) dropName = "COPPER_RAW_ORE";
+            else if (stripped.equals("IRON_ORE")) dropName = "IRON_RAW_ORE";
+            else if (stripped.equals("GOLD_ORE")) dropName = "GOLD_RAW_ORE";
+            else if (stripped.equals("DIAMOND_ORE")) dropName = "DIAMOND";
+            else if (stripped.equals("COAL_ORE")) dropName = "COAL";
+            else if (stripped.equals("EMERALD_ORE")) dropName = "EMERALD";
+            else if (stripped.equals("LAPIS_LAZULI_ORE")) dropName = "LAPIS_LAZULI";
+            else if (stripped.equals("LAPIS_ORE")) dropName = "LAPIS_LAZULI";
+            else if (stripped.equals("NETHER_QUARTZ_ORE")) dropName = "QUARTZ";
+            else if (stripped.equals("ANCIENT_DEBRIS")) dropName = "ANCIENT_DEBRIS";
+            if (dropName != null) {
+                Material m = Material.getMaterial(dropName);
+                if (m != null) return m;
+            }
+            return blockType; // 找不到就返回原方块
+        } else {
+            return blockType; // 树木直接返回原木
+        }
     }
 
     /** 检查是否为矿物方块 */
