@@ -1582,6 +1582,12 @@ function doLazyLoadSearch() {
         return;
     }
     
+    // ★ 立即清空旧结果，避免关键词清空后页面仍停留在上次搜索结果
+    const container = document.getElementById('userLazyContainer');
+    if (container) container.innerHTML = '<div class="empty">加载中...</div>';
+    const loadMore = document.getElementById('userLazyLoadMore');
+    if (loadMore) loadMore.style.display = 'none';
+    
     // 重置分页状态
     lazyLoadState.currentPage = 1;
     lazyLoadState.totalPages = 1;
