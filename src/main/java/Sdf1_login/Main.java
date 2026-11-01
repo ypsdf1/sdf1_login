@@ -4095,8 +4095,10 @@ public class Main extends JavaPlugin
             for (org.bukkit.block.Block block : sameTypeBlocks) {
                 if (block.getType() != targetType) continue;
 
-                // 用 block.getDrops() 获取正确掉落物（矿物→矿石物品，自动处理深板岩）
-                java.util.Collection<org.bukkit.inventory.ItemStack> drops = block.getDrops();
+                // 用 block.getDrops(hand) 获取正确掉落物
+                // 矿物需要镐子 → 掉落矿石物品（COPPER_ORE→COPPER_RAW_ORE）
+                // 树木需要斧头 → 掉落原木
+                java.util.Collection<org.bukkit.inventory.ItemStack> drops = block.getDrops(hand);
                 for (org.bukkit.inventory.ItemStack drop : drops) {
                     org.bukkit.entity.Item item = (org.bukkit.entity.Item)
                         world.dropItemNaturally(dropCenter, drop);
