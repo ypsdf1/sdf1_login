@@ -3764,10 +3764,10 @@ async function creditQueryScore() {
 async function doCreditAdjustScore(target, currentScore, isDeduct) {
     const amountStr = document.getElementById('creditAdjustAmount')?.value?.trim() || '';
     if (!amountStr) { glassAlert('请输入积分变动值'); return; }
-    const amount = parseInt(amountStr, 10);
-    if (isNaN(amount) || amount === 0) { glassAlert('请输入有效的非零整数'); return; }
+    const amount = parseFloat(amountStr);
+    if (isNaN(amount) || amount === 0) { glassAlert('请输入有效的非零数值（支持小数如 0.5）'); return; }
     // 扣分模式强制取负
-    const finalAmount = isDeduct ? Math.abs(amount) : Math.abs(amount);
+    const finalAmount = Math.abs(amount);
     const sign = isDeduct ? -1 : 1;
     const finalValue = sign * finalAmount;
     // 检查是否超出范围

@@ -487,8 +487,9 @@ switch ($action) {
                 $content = $rec['content'] ?? '';
                 $status = $rec['status'] ?? 'approved';
                 $scoreChange = (float)($rec['score_change'] ?? 0);
-                $createdAt = (int)($rec['created_at'] ?? 0);
-                $approvedAt = (int)($rec['approved_at'] ?? 0);
+                // ★ 第65批修复：Java 推送毫秒时间戳，PHP 统一用秒
+                $createdAt = (int)(($rec['created_at'] ?? 0) / 1000);
+                $approvedAt = (int)(($rec['approved_at'] ?? 0) / 1000);
                 $reason = $rec['approve_reason'] ?? '';
                 $source = $rec['source'] ?? 'game';
 
