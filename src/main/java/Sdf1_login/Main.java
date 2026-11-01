@@ -4039,9 +4039,9 @@ public class Main extends JavaPlugin
         if (isOre && !isPickaxe) return;
         if (isLog && !isAxe) return;
 
-        // 连锁采集：树木垂直上下搜索，矿物水平9×9搜索
+        // 连锁采集：树木垂直上下搜索，矿物3D 9×9×9搜索
         org.bukkit.Location center = centerBlock.getLocation();
-        int range = 4; // 9×9 = 中心±4
+        int range = 4; // 9×9×9 = 中心±4
 
         List<org.bukkit.block.Block> sameTypeBlocks = new ArrayList<>();
         org.bukkit.World world = center.getWorld();
@@ -4052,33 +4052,33 @@ public class Main extends JavaPlugin
         if (isLog) {
             // 树木：以被破坏方块为中心，垂直上下搜索整棵树干
             // 树干天然上下连通，水平方向不需要辐射
-            // 向上搜索
             for (int y = cy + 1; y <= 255; y++) {
                 org.bukkit.block.Block block = world.getBlockAt(cx, y, cz);
                 if (block.getType() == targetType && block.getType().isSolid()) {
                     sameTypeBlocks.add(block);
                 } else {
-                    break; // 树干结束
+                    break;
                 }
             }
-            // 向下搜索
             for (int y = cy - 1; y >= 0; y--) {
                 org.bukkit.block.Block block = world.getBlockAt(cx, y, cz);
                 if (block.getType() == targetType && block.getType().isSolid()) {
                     sameTypeBlocks.add(block);
                 } else {
-                    break; // 树干结束
+                    break;
                 }
             }
         } else {
-            // 矿物：以被破坏方块为中心，水平9×9搜索
-            // 不管是否连在一起，卡墙里的也采到
+            // 矿物：以被破坏方块为中心，3D 9×9×9 搜索
+            // 不管是否连在一起，高处的、卡墙里的都能采到
             for (int x = -range; x <= range; x++) {
-                for (int z = -range; z <= range; z++) {
-                    if (x == 0 && z == 0) continue; // 跳过中心方块
-                    org.bukkit.block.Block block = world.getBlockAt(cx + x, cy, cz + z);
-                    if (block.getType() == targetType && block.getType().isSolid()) {
-                        sameTypeBlocks.add(block);
+                for (int y = -range; y <= range; y++) {
+                    for (int z = -range; z <= range; z++) {
+                        if (x == 0 && y == 0 && z == 0) continue;
+                        org.bukkit.block.Block block = world.getBlockAt(cx + x, cy + y, cz + z);
+                        if (block.getType() == targetType && block.getType().isSolid()) {
+                            sameTypeBlocks.add(block);
+                        }
                     }
                 }
             }
@@ -4086,23 +4086,24 @@ public class Main extends JavaPlugin
 
         if (sameTypeBlocks.isEmpty()) return;
 
+        // 掉落物汇总位置：第一个被破坏的方块上方
+        org.bukkit.Location dropCenter = centerBlock.getLocation().add(0.5, 0.5, 0.5);
+
         // 延迟1tick执行，避免主线程卡顿
         Bukkit.getScheduler().runTaskLater(this, () -> {
             int broken = 0;
             for (org.bukkit.block.Block block : sameTypeBlocks) {
-                // 二次检查：方块仍然存在且类型未变
                 if (block.getType() != targetType) continue;
 
-                // 生成掉落物（矿物掉落对应矿石物品，树木掉落原木）
-                Material dropType = getDropMaterial(targetType, isOre);
-                org.bukkit.Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
-                org.bukkit.entity.Item item = (org.bukkit.entity.Item)
-                    block.getWorld().dropItemNaturally(dropLoc, new org.bukkit.inventory.ItemStack(dropType));
-                item.setPickupDelay(0);
+                // 用 block.getDrops() 获取正确掉落物（矿物→矿石物品，自动处理深板岩）
+                java.util.Collection<org.bukkit.inventory.ItemStack> drops = block.getDrops();
+                for (org.bukkit.inventory.ItemStack drop : drops) {
+                    org.bukkit.entity.Item item = (org.bukkit.entity.Item)
+                        world.dropItemNaturally(dropCenter, drop);
+                    item.setPickupDelay(0);
+                }
 
-                // 设置方块为空气
                 block.setType(org.bukkit.Material.AIR);
-
                 broken++;
             }
 
