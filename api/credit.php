@@ -128,6 +128,27 @@ function creditRequireAdmin() {
 }
 
 /**
+ * ★ 第66批修复（#346）：时间戳归一化
+ *   Java 推送的历史记录 created_at/approved_at 存的是毫秒（System.currentTimeMillis）
+ *   前端统一按 `new Date(ts * 1000)` 渲染（秒语义）
+ *   → 大于 9999999999 的数值判定为毫秒，除以 1000 折成秒
+ *   对新记录（已是秒）无影响，对旧记录（毫秒）自动修复
+ */
+function creditNormalizeTimestamps($records) {
+    if (!is_array($records)) return $records;
+    foreach ($records as &$r) {
+        if (isset($r['created_at']) && $r['created_at'] > 9999999999) {
+            $r['created_at'] = (int)($r['created_at'] / 1000);
+        }
+        if (isset($r['approved_at']) && $r['approved_at'] > 9999999999) {
+            $r['approved_at'] = (int)($r['approved_at'] / 1000);
+        }
+    }
+    unset($r);
+    return $records;
+}
+
+/**
  * ★ 第58批续29-问题2：审批/调整积分后通知 Java 立即拉取信誉积分数据
  *   写入 sync_requests 标记，Java 的 doActiveSyncBatch 检测到后会执行 pullCreditFromPhp
  */
@@ -207,7 +228,7 @@ switch ($action) {
         $res = $stmt->execute();
         $records = [];
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) $records[] = $row;
-        success(['records' => $records]);
+        success(['records' => creditNormalizeTimestamps($records)]);
         break;
 
     // ====== 用户端：查看自己提交的上报（我的上报） ======
@@ -219,7 +240,7 @@ switch ($action) {
         $res = $stmt->execute();
         $records = [];
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) $records[] = $row;
-        success(['records' => $records]);
+        success(['records' => creditNormalizeTimestamps($records)]);
         break;
 
     // ====== 用户端：撤回自己提交的未批准/驳回的上报 ======
@@ -262,7 +283,7 @@ switch ($action) {
         $res = $stmt->execute();
         $records = [];
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) $records[] = $row;
-        success(['records' => $records]);
+        success(['records' => creditNormalizeTimestamps($records)]);
         break;
 
     // ====== 管理员：审批通过 ======
@@ -327,7 +348,7 @@ switch ($action) {
         $res = $stmt->execute();
         $records = [];
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) $records[] = $row;
-        success(['records' => $records]);
+        success(['records' => creditNormalizeTimestamps($records)]);
         break;
 
     // ====== 管理员：查看所有规则 ======
@@ -496,11 +517,15 @@ switch ($action) {
                 if (!$target || !$createdAt) continue;
 
                 // 去重检查
-                $stmt = $db->prepare("SELECT 1 FROM credit_records WHERE target_player = ? AND source = ? AND created_at = ? AND type = ?");
+                // ★ 第66批修复（#346）：旧记录 created_at 是毫秒，新记录存秒
+                //   去重时需同时匹配秒值和毫秒值，否则旧记录会被重复插入
+                $createdAtMs = $createdAt * 1000;
+                $stmt = $db->prepare("SELECT 1 FROM credit_records WHERE target_player = ? AND source = ? AND type = ? AND (created_at = ? OR created_at = ?)");
                 $stmt->bindValue(1, $target, SQLITE3_TEXT);
                 $stmt->bindValue(2, $source, SQLITE3_TEXT);
-                $stmt->bindValue(3, $createdAt, SQLITE3_INTEGER);
-                $stmt->bindValue(4, $type, SQLITE3_TEXT);
+                $stmt->bindValue(3, $type, SQLITE3_TEXT);
+                $stmt->bindValue(4, $createdAt, SQLITE3_INTEGER);
+                $stmt->bindValue(5, $createdAtMs, SQLITE3_INTEGER);
                 $res = $stmt->execute();
                 if ($row = $res->fetchArray()) continue; // 已存在，跳过
 
@@ -595,6 +620,7 @@ switch ($action) {
         while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
             $records[] = $row;
         }
+        $records = creditNormalizeTimestamps($records);
 
         // ★ 第64批：返回所有规则（Java 端同步用）
         $stmt = $db->prepare("SELECT id, rule_name, min_score, max_score, restriction_type, restriction_duration, enabled, description, limit_amount, multiplier, amount FROM credit_rules ORDER BY id");
